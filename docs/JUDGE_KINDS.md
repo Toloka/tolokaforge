@@ -18,8 +18,7 @@ One kind ships in the reference distribution: `single_shot_rubric`
 `LLMJudgeRubricEvaluator`). Downstream packages register alternatives
 (chunked, agentic, jury) alongside without a framework PR.
 
-> Phase C4 (#1572) grows this document with the full JudgeKind
-> catalog and ADR-0044.
+> This document currently covers the parity gate only; wider catalog is TODO (#1572).
 
 ## Parity gate
 
@@ -105,13 +104,12 @@ The lane runs keyless, network-free, and under a hard runtime budget
 (inner-sum < 60 s, full wall-clock < 90 s), so it stays cheap enough
 for every CI run.
 
-`pytest --live-parity` opts into live-mode: the same lane, but each
-cassette is regenerated against the real `LiteLLMJudgeModelProvider`
-(requires `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) and the
-runtime-budget assertions skip. A developer runs live-parity after a
-preset edit or a litellm bump so the committed cassettes track the
-current judge behaviour; CI never runs live-mode (real judge tokens
-are out of scope for the gate).
+`pytest --live-parity` is a flag-parity contract only today: passing
+the flag opts into live-mode, and the runner then requires
+`OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in the environment. The
+cassette-refresh writeback against a real `LiteLLMJudgeModelProvider`
+is TODO (#1572); with the flag set the lane skips with a message
+naming the missing writeback. CI never passes `--live-parity`.
 
 ### Adding a new judge kind
 

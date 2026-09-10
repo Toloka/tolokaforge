@@ -67,13 +67,5 @@ Three families of fixture shape:
 
 ## Refreshing cassettes against a live judge
 
-```bash
-pytest --live-parity tests/canonical/test_judge_kind_parity.py
-```
-
-Requires `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` and skips the
-runtime-budget assertions because live dispatch has no bounded latency.
-CI never runs `--live-parity` — real judge tokens are out of scope for
-the gate. The writeback is idempotent (a second run over freshly
-written cassettes produces zero diff), so a developer refreshing after
-a preset edit gets a clean, single-commit diff.
+The `--live-parity` flag is reserved for #1572; the cassette-refresh
+writeback is not wired today.

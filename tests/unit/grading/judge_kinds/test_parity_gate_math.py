@@ -8,10 +8,10 @@ independently of any LLM stack, cassette I/O, or corpus load.
 
 Every case constructs :class:`CriterionObservation` values directly;
 Cohen's κ is exercised through :func:`build_report`. The cases here are
-intentionally the boundary cases the plan surfaces — a full-agreement
-corpus, a disagreement below the block bar, a κ in the warn band, an
-undefined κ, plus a hand-rolled cross-kind driver and the
-``replays >= 2`` guard on :func:`measure_self_consistency`.
+intentionally the boundary cases — a full-agreement corpus, a
+disagreement below the block bar, a κ in the warn band, an undefined
+κ, plus a hand-rolled cross-kind driver and the ``replays >= 2`` guard
+on :func:`measure_self_consistency`.
 """
 
 from __future__ import annotations

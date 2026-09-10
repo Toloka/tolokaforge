@@ -17,10 +17,10 @@ to a :class:`ScriptedLLMClient` seeded from each fixture's
 network-free, and under a hard runtime budget (inner-sum < 60 s, full
 wall-clock < 90 s).
 
-**Live mode** (``pytest --live-parity``) re-records each cassette
-against the real ``litellm`` judge — requires ``OPENAI_API_KEY`` or
-``ANTHROPIC_API_KEY``; the runtime-budget assertions skip under this
-flag because live dispatch has no bounded latency.
+**Live mode** (``pytest --live-parity``) is a flag-parity contract
+only today: passing the flag requires ``OPENAI_API_KEY`` or
+``ANTHROPIC_API_KEY``. Cassette-refresh writeback against the real
+``litellm`` judge is TODO (#1572); with the flag set the lane skips.
 
 The corpus loader raises loudly (``KeyError``) when a fixture is missing
 a cassette for a kind under test — silent skips are the failure mode
@@ -61,9 +61,8 @@ _CORPUS_ROOT = Path(__file__).parent.parent / "data" / "judge_kind_parity_corpus
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
 _LIVE_API_KEYS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
-# Wall-clock budgets — the ticket AC's "< 60s in CI" gate lives on the
-# inner-sum (kind work only); the outer wall-clock adds 30 s slack for
-# corpus load, YAML parse, and shared-CI scheduler jitter.
+# Inner-sum budgets kind work only; outer wall-clock adds ~30 s for
+# corpus load and CI jitter.
 _INNER_SUM_BUDGET_S = 60.0
 _FULL_WALLCLOCK_BUDGET_S = 90.0
 
@@ -111,8 +110,9 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
     Fails loud on a malformed rubric (Pydantic validation) or a missing
     top-level key. Cassette presence for a specific kind is checked at
     dispatch time by :func:`_cassette_for` so a corpus fixture without
-    the fixture kind's script still loads (Stage 2 authors kind-specific
-    scripts inline; corpus-YAML only ships single_shot_rubric).
+    the fixture kind's script still loads (kind-specific scripts, like
+    fixture kinds such as ``_FlakyJudgeKind``, are authored inline in
+    the test file; corpus YAML ships ``single_shot_rubric`` only).
     """
     data = yaml.safe_load(path.read_text())
     raw_scripts = data.get("judge_scripts", {}) or {}
@@ -306,7 +306,8 @@ def test_missing_cassette_raises_with_entry_and_kind_name() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cassette-mode gate behaviour — the four measurements the ticket AC asks for.
+# Cassette-mode gate behaviour — four measurements: cross-kind ships,
+# cross-kind blocks, self-consistency ships, self-consistency blocks.
 # ---------------------------------------------------------------------------
 
 
@@ -342,8 +343,8 @@ def test_flaky_kind_fails_self_consistency() -> None:
     """:class:`_FlakyJudgeKind` returns opposite verdicts on odd vs even
     replay indices; five replays paired against replay 0 pool into
     per-criterion κ well below 0.7, so the self-consistency gate
-    blocks. Every per-criterion verdict lands as ``"block"`` — the
-    load-bearing "proves the gate works" test the ticket AC demands.
+    blocks. Every per-criterion verdict lands as ``"block"`` —
+    proving the gate catches non-determinism.
     """
     corpus = _load_corpus()
     report = measure_self_consistency(
@@ -368,8 +369,7 @@ def test_flaky_kind_fails_self_consistency() -> None:
 def test_cross_kind_identity_ships() -> None:
     """``single_shot_rubric`` vs ``single_shot_rubric`` on the same
     cassettes produces per-criterion κ = 1.0 everywhere. Byte-parity is
-    the κ=1.0 special case; this is the ticket AC's cross-kind identity
-    lock."""
+    the κ=1.0 special case."""
     corpus = _load_corpus()
     report = measure_cross_kind_agreement(
         reference_kind=_single_shot_kind(),
@@ -407,9 +407,8 @@ def test_report_reports_per_criterion_not_aggregate() -> None:
     """Cross-kind identity → :class:`ParityGateDecision` carries a
     per-criterion verdict for every criterion id in the pool, and
     ``shippable`` is the ``all(status in {pass, warn})`` roll-up rather
-    than a single-number aggregate κ. Locks the ticket AC "Reports
-    per-criterion, not aggregate" against a silent flip to aggregate
-    scoring."""
+    than a single-number aggregate κ. Locks per-criterion output (not
+    aggregate) against a silent flip to aggregate scoring."""
     corpus = _load_corpus()
     report = measure_cross_kind_agreement(
         reference_kind=_single_shot_kind(),
@@ -509,29 +508,18 @@ def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
 
 @pytest.mark.integration
 def test_live_mode_flag_skips_when_no_api_key(request: pytest.FixtureRequest) -> None:
-    """When ``--live-parity`` is passed but neither ``OPENAI_API_KEY``
-    nor ``ANTHROPIC_API_KEY`` is set in the process env, the lane skips
-    with a message naming the required env vars.
-
-    When ``--live-parity`` is passed AND a key is present, this test is
-    a placeholder for the cassette-refresh workflow — Stage 2 does NOT
-    hook the real ``LiteLLMJudgeModelProvider`` into the lane (the
-    writeback is a developer-invoked flow outside the CI gate, per plan
-    Non-goals "Wiring live-mode into CI cron"). A future Phase C4 ticket
-    grows the writeback path; today's contract is that the flag is
-    parsed and honoured. Marked ``integration`` so the canonical lane
-    stays keyless."""
+    """``--live-parity`` is a flag-parity contract today: passed →
+    live-mode opt-in, missing ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY``
+    skips. Cassette-refresh writeback is TODO (#1572). Marked
+    ``integration`` so the canonical lane stays keyless."""
     if not request.config.getoption("--live-parity"):
         pytest.skip("live-parity mode disabled — pass --live-parity to opt in")
     if not any(os.environ.get(k) for k in _LIVE_API_KEYS):
         pytest.skip(f"live-parity requires one of {_LIVE_API_KEYS!r} in the process env")
-    # A key is set. The Stage 2 lane does not yet exercise a real judge
-    # (see docstring); leaving this as an explicit skip keeps the flag
-    # observable end-to-end without imposing live-token cost on any
-    # accidental CI run that happens to have a key present.
+    # Cassette-refresh writeback not wired yet (TODO #1572).
     pytest.skip(
-        "live-parity cassette-refresh workflow lands in Phase C4 (#1572); "
-        "the flag is honoured today, the writeback is not yet wired"
+        "live-parity cassette-refresh writeback not wired (TODO #1572); "
+        "flag is parsed and honoured."
     )
 
 
