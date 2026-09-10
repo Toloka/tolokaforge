@@ -134,6 +134,14 @@ def _user_message_contents(result: JudgeResult) -> list[str]:
     return [str(m["content"]) for m in result.transcript if m.get("role") == "user"]
 
 
+def _critique_call(
+    criteria: list[Criterion], *, verdicts: dict[str, bool] | None = None
+) -> list[tuple[str, dict[str, Any]]]:
+    """One ``critique(verdict_draft=...)`` turn wrapping a ``submit_report``-shaped draft."""
+    ((_, args),) = _report_call("submit_report", criteria, verdicts=verdicts)
+    return [("critique", {"verdict_draft": args})]
+
+
 @pytest.mark.parametrize(
     ("kind_config", "expected_error_fragment"),
     [
@@ -141,6 +149,8 @@ def _user_message_contents(result: JudgeResult) -> list[str]:
         ({"critique_turn_budget": 5}, None),
         ({"critique_turn_budget": 0}, "must be >= 1"),
         ({"unknown_key": "x"}, "unknown_key"),
+        ({"enable_critique_tool": False}, None),
+        ({"enable_critique_tool": "yes"}, "enable_critique_tool"),
     ],
 )
 def test_kind_config_schema(
@@ -166,6 +176,52 @@ def test_kind_config_schema(
         "kind_config must be validated before judge_model_provider.build()"
     )
     assert provider.build_calls == 0, build_before_validation_msg
+
+
+def test_agentic_kind_config_accepts_enable_critique_tool_flag() -> None:
+    """``enable_critique_tool: False`` is accepted and the episode still completes."""
+    rubric = _binary_rubric(1)
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider, kind_config={"enable_critique_tool": False})
+
+    assert result.status is JudgeStatus.COMPLETED
+
+
+def test_agentic_kind_config_rejects_non_bool_enable_critique_tool() -> None:
+    """A non-``bool`` ``enable_critique_tool`` is rejected before any judge dispatch."""
+    rubric = _binary_rubric(1)
+    provider = _SingleClientProvider(ScriptedLLMClient([]))
+
+    with pytest.raises(ValueError, match="enable_critique_tool"):
+        _evaluate(rubric, provider=provider, kind_config={"enable_critique_tool": "yes"})
+    assert provider.build_calls == 0
+
+
+def test_critique_tool_call_between_draft_and_submit_resumes_loop() -> None:
+    """A scripted critique(verdict_draft=...) call between draft and submit resumes the loop.
+
+    ``critique`` is a plain registered tool, not a termination trigger, so it
+    must be executed and answered like any other tool call — never pausing
+    the episode the way ``draft_report``/``submit_report`` do.
+    """
+    rubric = _binary_rubric(1)
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        _critique_call(rubric.criteria),
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider)
+
+    assert result.status is JudgeStatus.COMPLETED
+    tool_messages = _tool_message_contents(result)
+    assert "{}" in tool_messages, "critique found no evidence in the minimal test transcript"
 
 
 def test_draft_then_submit_flow_completes() -> None:
