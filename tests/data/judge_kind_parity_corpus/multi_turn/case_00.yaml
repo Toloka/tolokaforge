@@ -34,6 +34,21 @@ judge_scripts:
             order_shipped_justification: "because order_shipped\nVERDICT: MET"
             cancellation_confirmed: true
             cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report

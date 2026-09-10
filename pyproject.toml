@@ -245,9 +245,10 @@ test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGra
 # include_agent_system_prompt, kind_config, logger) -> JudgeResult``. The
 # runner-side composite dispatch resolves this loader to reach the LLM-judge
 # implementation registered as ``single_shot_rubric``; downstream packages
-# register alternative kinds (chunked, agentic, jury) alongside without a
+# register alternative kinds (jury, downstream-specific) alongside without a
 # framework PR. See :mod:`tolokaforge.core.grading.judge_kinds`.
 [project.entry-points."tolokaforge.judge_kinds"]
+agentic_rubric = "tolokaforge.core.grading.judge_kinds.agentic:AgenticRubricJudgeKind"
 chunked_rubric = "tolokaforge.core.grading.judge_kinds.chunked:ChunkedRubricJudgeKind"
 single_shot_rubric = "tolokaforge.core.grading.judge_kinds.single_shot:SingleShotRubricJudgeKind"
 

@@ -35,6 +35,7 @@ from tolokaforge.core.grading.grading_method import (
     TestExecutionGradingMethod,
 )
 from tolokaforge.core.grading.judge_kinds import (
+    AgenticRubricJudgeKind,
     ChunkedRubricJudgeKind,
     SingleShotRubricJudgeKind,
 )
@@ -218,6 +219,7 @@ def test_grader_kind_names_resolve_to_their_class(name: str, expected_cls: type)
 @pytest.mark.parametrize(
     ("name", "expected_cls"),
     [
+        ("agentic_rubric", AgenticRubricJudgeKind),
         ("chunked_rubric", ChunkedRubricJudgeKind),
         ("single_shot_rubric", SingleShotRubricJudgeKind),
     ],
@@ -247,7 +249,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_turn_policies() == ["agent_only", "conversational"]
     assert available_grading_methods() == ["composite", "test_execution"]
     assert available_grader_kinds() == ["composite", "test_execution"]
-    assert available_judge_kinds() == ["chunked_rubric", "single_shot_rubric"]
+    assert available_judge_kinds() == ["agentic_rubric", "chunked_rubric", "single_shot_rubric"]
     assert available_bundle_stores() == ["local_disk", "s3"]
     assert available_compose_materialisers() == ["docker_compose"]
     assert available_service_lifecycle_dispatchers() == ["ephemeral", "reset", "shared"]
@@ -283,7 +285,7 @@ def test_raw_entry_point_probe_lists_grader_kinds() -> None:
 
 def test_raw_entry_point_probe_lists_judge_kinds() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=JUDGE_KINDS_GROUP))
-    assert names == ["chunked_rubric", "single_shot_rubric"]
+    assert names == ["agentic_rubric", "chunked_rubric", "single_shot_rubric"]
 
 
 def test_raw_entry_point_probe_lists_bundle_stores() -> None:

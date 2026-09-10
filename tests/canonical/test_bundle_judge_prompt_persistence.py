@@ -2,7 +2,7 @@
 replay reads that recorded prompt in preference to the current engine constant.
 
 Every trial bundle's ``prompts.yaml`` must carry a top-level ``judge_prompt``
-key equal to ``_compose_judge_system_prompt(customization.system_prompt)`` for
+key equal to ``compose_judge_system_prompt(customization.system_prompt)`` for
 the trial's effective ``LLMJudgeConfig`` — the exact prose the judge would have
 graded under, byte-for-byte. A human analyst who opens the bundle sees which
 contract graded it without trusting the current engine's constant; a bundle-
@@ -38,7 +38,7 @@ Bundle-native replay side:
 
 The write path is driven end-to-end: ``InProcessConductor._write_artifacts``
 runs against a real ``FileArtifactWriter``, a real ``GradingConfig`` carrying an
-``LLMJudgeConfig``, and the real ``_compose_judge_system_prompt`` composition —
+``LLMJudgeConfig``, and the real ``compose_judge_system_prompt`` composition —
 no mocks of the code under test. Replay tests drive the real ``read_replay_inputs``
 + ``replay_trial`` path with a scripted judge model that captures the composed
 system prompt handed to it, so the "no doubled marker" invariant is asserted
@@ -75,7 +75,7 @@ from tolokaforge.core.grading.replay import (
 from tolokaforge.core.judge_prompt import (
     _JUDGE_MARKER_CONTRACT,
     _JUDGE_SYSTEM_PROMPT,
-    _compose_judge_system_prompt,
+    compose_judge_system_prompt,
 )
 from tolokaforge.core.models import (
     Grade,
@@ -173,7 +173,7 @@ def test_prompts_yaml_records_the_default_judge_prompt_when_no_customization_is_
     data = _write_prompts_yaml(tmp_path, customization=None)
 
     assert data["judge_prompt"] == _JUDGE_SYSTEM_PROMPT
-    assert data["judge_prompt"] == _compose_judge_system_prompt(None)
+    assert data["judge_prompt"] == compose_judge_system_prompt(None)
 
 
 def test_prompts_yaml_records_a_customized_judge_prompt_verbatim_with_the_marker_appended(
@@ -182,7 +182,7 @@ def test_prompts_yaml_records_a_customized_judge_prompt_verbatim_with_the_marker
     """A task's ``customization.system_prompt`` reaches ``prompts.yaml`` verbatim
     at the front, followed by the harness-owned marker contract at the tail —
     the exact composition the judge would have graded under, so a reader
-    reconstructing the contract need not re-run ``_compose_judge_system_prompt``.
+    reconstructing the contract need not re-run ``compose_judge_system_prompt``.
 
     Byte-for-byte equality against the composer's own output locks the whole
     string (body + separator + marker); the prefix / suffix assertions name what
@@ -192,7 +192,7 @@ def test_prompts_yaml_records_a_customized_judge_prompt_verbatim_with_the_marker
 
     assert data["judge_prompt"].startswith(body)
     assert data["judge_prompt"].endswith(_JUDGE_MARKER_CONTRACT)
-    assert data["judge_prompt"] == _compose_judge_system_prompt(body)
+    assert data["judge_prompt"] == compose_judge_system_prompt(body)
 
 
 def test_prompts_yaml_records_the_judge_prompt_on_an_auto_fail_trial_that_never_invoked_the_judge(
@@ -369,7 +369,7 @@ def test_bundle_recorded_judge_prompt_is_reused_verbatim_with_no_doubled_marker(
 
     Locks the two-resolver split. A regression that routed the bundle-recorded
     string through ``LLMJudge(custom_system_prompt=...)`` would trigger
-    ``_compose_judge_system_prompt`` again — the composed prompt would end with
+    ``compose_judge_system_prompt`` again — the composed prompt would end with
     the marker twice — which this test catches with a ``.count(marker) == 1``
     assertion after stripping the rubric brief."""
     pinned = f"PINNED BODY.\n\n{_JUDGE_MARKER_CONTRACT}"
@@ -416,7 +416,7 @@ def test_legacy_bundle_customized_body_falls_through_to_the_legacy_resolver(
 
     client, dest = _replay(tmp_path, trial_dir)
 
-    expected = _compose_judge_system_prompt("LEGACY BODY.")
+    expected = compose_judge_system_prompt("LEGACY BODY.")
     assert client.seen_system is not None
     assert client.seen_system.startswith(expected)
     assert client.seen_system.count(_JUDGE_MARKER_CONTRACT) == 1

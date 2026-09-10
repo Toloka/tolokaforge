@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import ToolCall
@@ -44,11 +45,18 @@ class ScriptedLLMClient:
     ``GenerationResult(text="(exhausted)", tool_calls=[], usage=Usage())``
     so a runaway loop reads a distinctive sentinel instead of blocking
     on an empty queue.
+
+    :attr:`capabilities` satisfies the :class:`JudgeModel` Protocol's
+    required attribute (a fixed :class:`ModelCapabilities`, not a live
+    build from a ``ModelConfig``) — defaults to ``ModelCapabilities()``
+    so every pre-existing call site is unaffected; a test exercising the
+    ``agentic_rubric`` kind's capability-threading passes a non-default one.
     """
 
-    def __init__(self, script: list[Any]) -> None:
+    def __init__(self, script: list[Any], *, capabilities: ModelCapabilities | None = None) -> None:
         self._script = list(script)
         self._i = 0
+        self.capabilities = capabilities if capabilities is not None else ModelCapabilities()
 
     def generate(
         self,

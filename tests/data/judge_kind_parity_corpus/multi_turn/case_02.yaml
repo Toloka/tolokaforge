@@ -46,6 +46,29 @@ judge_scripts:
             greeting_present_justification: "because greeting_present\nVERDICT: MET"
             refund_done: true
             refund_done_justification: "because refund_done\nVERDICT: MET"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            escalation_appropriate: true
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+            sla_within: 0.9
+            sla_within_justification: "because sla_within\nSCORE: 0.9"
+            greeting_present: true
+            greeting_present_justification: "because greeting_present\nVERDICT: MET"
+            refund_done: true
+            refund_done_justification: "because refund_done\nVERDICT: MET"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            escalation_appropriate: true
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+            sla_within: 0.9
+            sla_within_justification: "because sla_within\nSCORE: 0.9"
+            greeting_present: true
+            greeting_present_justification: "because greeting_present\nVERDICT: MET"
+            refund_done: true
+            refund_done_justification: "because refund_done\nVERDICT: MET"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report

@@ -70,7 +70,7 @@ That condition is decided by the component that owns turn choreography, never by
 reading assistant prose. `AgentOnlyTurnPolicy.next_actor` is the only producer that
 reaches a trajectory: the agent took a turn with no tool calls, and the shape has no
 user party. Definitional, and already implemented. The judge loop terminates on
-`submit_report` under the same reason internally (`_SubmitReportTermination` in
+`submit_report` under the same reason internally (`SubmitReportTermination` in
 `tolokaforge/core/grading/judge.py`), which no consumer reads — a `JudgeResult` carries
 no termination field, and the judge's success path discards the `LoopOutcome`.
 

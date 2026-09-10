@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.loop import LoopLLMClient, TerminationDecision
 from tolokaforge.core.models import ModelConfig
 
@@ -50,11 +51,17 @@ class JudgeModel(LoopLLMClient, Protocol):
     argument, and adds :meth:`sanitize_tools_for_execution` because
     ``LLMJudge.run`` also builds the loop's ``validation_schemas_by_tool``
     map from it (so the tool executor validates against the schema the
-    judge model was shown, not the schema the tool declares). A downstream
-    provider fronts a different LLM engine by implementing these three
-    methods; :class:`~tolokaforge.core.llm.client.LLMClient` already
-    satisfies the composed shape structurally.
+    judge model was shown, not the schema the tool declares). Also requires
+    :attr:`capabilities` — the ``agentic_rubric`` judge kind reads it to
+    thread the model's retry/summarization settings into its own
+    ``LoopConfig``. A downstream provider fronts a different LLM engine by
+    implementing these methods and attribute; :class:`~tolokaforge.core.llm.client.LLMClient`
+    already satisfies the composed shape structurally. A provider whose
+    built client lacks ``.capabilities`` raises ``AttributeError`` if
+    selected under ``agentic_rubric`` — there is no defensive fallback.
     """
+
+    capabilities: ModelCapabilities
 
     def classify_loop_error(self, exc: Exception) -> TerminationDecision: ...
 
