@@ -16,6 +16,7 @@ deterministic end to end.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -30,6 +31,7 @@ from tolokaforge.core.grading.judge_kinds.agentic import (
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
@@ -40,6 +42,18 @@ pytestmark = pytest.mark.unit
 
 
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
+
+
+class _FakeKnowledgeSearch:
+    """A real ``KnowledgeSearch``-conforming stub — no mock, a genuine object."""
+
+    def __init__(self, hits: list[SearchHit]) -> None:
+        self._hits = hits
+
+    def search(
+        self, query: str, top_k: int = 5, alpha: float = 0.5
+    ) -> list[SearchHit]:  # noqa: ARG002
+        return self._hits[:top_k]
 
 
 class _SingleClientProvider:
@@ -104,6 +118,7 @@ def _evaluate(
     provider: _SingleClientProvider,
     kind_config: dict[str, Any] | None = None,
     extra_read_tools: list[Any] | None = None,
+    kb_search: Any | None = None,
 ) -> JudgeResult:
     """Drive :meth:`AgenticRubricJudgeKind.evaluate` with a minimal input surface."""
     kind = AgenticRubricJudgeKind()
@@ -112,7 +127,7 @@ def _evaluate(
         agent_system_prompt="you are an agent",
         transcript=[{"role": "user", "content": "hi"}],
         db_reader=None,
-        kb_search=None,
+        kb_search=kb_search,
         workspace_dir=None,
         extra_read_tools=extra_read_tools or [],
         state_diff=None,
@@ -134,6 +149,14 @@ def _user_message_contents(result: JudgeResult) -> list[str]:
     return [str(m["content"]) for m in result.transcript if m.get("role") == "user"]
 
 
+def _critique_call(
+    criteria: list[Criterion], *, verdicts: dict[str, bool] | None = None
+) -> list[tuple[str, dict[str, Any]]]:
+    """One ``critique(verdict_draft=...)`` turn wrapping a ``submit_report``-shaped draft."""
+    ((_, args),) = _report_call("submit_report", criteria, verdicts=verdicts)
+    return [("critique", {"verdict_draft": args})]
+
+
 @pytest.mark.parametrize(
     ("kind_config", "expected_error_fragment"),
     [
@@ -141,6 +164,8 @@ def _user_message_contents(result: JudgeResult) -> list[str]:
         ({"critique_turn_budget": 5}, None),
         ({"critique_turn_budget": 0}, "must be >= 1"),
         ({"unknown_key": "x"}, "unknown_key"),
+        ({"enable_critique_tool": False}, None),
+        ({"enable_critique_tool": "yes"}, "enable_critique_tool"),
     ],
 )
 def test_kind_config_schema(
@@ -166,6 +191,100 @@ def test_kind_config_schema(
         "kind_config must be validated before judge_model_provider.build()"
     )
     assert provider.build_calls == 0, build_before_validation_msg
+
+
+def test_agentic_kind_config_accepts_enable_critique_tool_flag() -> None:
+    """``enable_critique_tool: False`` is accepted and the episode still completes."""
+    rubric = _binary_rubric(1)
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider, kind_config={"enable_critique_tool": False})
+
+    assert result.status is JudgeStatus.COMPLETED
+
+
+def test_agentic_kind_config_rejects_non_bool_enable_critique_tool() -> None:
+    """A non-``bool`` ``enable_critique_tool`` is rejected before any judge dispatch."""
+    rubric = _binary_rubric(1)
+    provider = _SingleClientProvider(ScriptedLLMClient([]))
+
+    with pytest.raises(ValueError, match="enable_critique_tool"):
+        _evaluate(rubric, provider=provider, kind_config={"enable_critique_tool": "yes"})
+    assert provider.build_calls == 0
+
+
+def test_critique_tool_call_between_draft_and_submit_resumes_loop() -> None:
+    """A scripted critique(verdict_draft=...) call between draft and submit resumes the loop.
+
+    ``critique`` is a plain registered tool, not a termination trigger, so it
+    must be executed and answered like any other tool call — never pausing
+    the episode the way ``draft_report``/``submit_report`` do.
+    """
+    rubric = _binary_rubric(1)
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        _critique_call(rubric.criteria),
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider)
+
+    assert result.status is JudgeStatus.COMPLETED
+    tool_messages = _tool_message_contents(result)
+    assert "{}" in tool_messages, "critique found no evidence in the minimal test transcript"
+
+
+def _tool_result_for_call(result: JudgeResult, tool_name: str) -> str:
+    """Content of the ``role=tool`` message answering the first call to ``tool_name``."""
+    call_id = next(
+        tc["id"]
+        for msg in result.transcript
+        for tc in msg.get("tool_calls") or []
+        if tc["name"] == tool_name
+    )
+    return next(
+        str(msg["content"]) for msg in result.transcript if msg.get("tool_call_id") == call_id
+    )
+
+
+def test_critique_replays_live_search_kb_hit_through_full_episode_path() -> None:
+    """A real ``search_kb`` hit, run earlier in the SAME episode, survives to ``critique``.
+
+    Drives ``draft_report -> search_kb -> critique -> submit_report`` through the
+    real ``_build_episode_setup`` -> ``ToolCallingLoop.run`` -> tool-execute path
+    with a genuine ``KnowledgeSearch`` stub — not a hand-built static ``messages``
+    list — proving the ``CritiqueTool`` sees the ``search_kb`` call/result the
+    loop appends in place to the very list it was constructed with.
+    """
+    rubric = _binary_rubric(1)
+    hit = SearchHit(
+        doc_id="criterion-0-policy",
+        source="kb",
+        score=0.9,
+        text="Policy note covering criterion 0 in detail.",
+    )
+    kb_search = _FakeKnowledgeSearch([hit])
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        [("search_kb", {"query": "criterion 0"})],
+        _critique_call(rubric.criteria),
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider, kb_search=kb_search)
+
+    assert result.status is JudgeStatus.COMPLETED
+    critique_output = json.loads(_tool_result_for_call(result, "critique"))
+    pointers = critique_output["c0"]
+    assert any(
+        p["source"] == "kb" and p["kb_doc_id"] == "criterion-0-policy" for p in pointers
+    ), f"expected a kb-source pointer for c0, got {pointers}"
 
 
 def test_draft_then_submit_flow_completes() -> None:

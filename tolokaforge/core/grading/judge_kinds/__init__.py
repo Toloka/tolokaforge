@@ -35,6 +35,15 @@ from tolokaforge.core.grading.judge_kinds.chunked import (
     DEFAULT_CHUNK_SIZE,
     ChunkedRubricJudgeKind,
 )
+from tolokaforge.core.grading.judge_kinds.critique import (
+    CritiqueContext,
+    CritiqueTool,
+    EvidencePointer,
+    EvidenceSource,
+    JudgeDraft,
+    resolve_evidence,
+    serialize_critique_context,
+)
 from tolokaforge.core.grading.judge_kinds.single_shot import SingleShotRubricJudgeKind
 
 __all__ = [
@@ -44,6 +53,13 @@ __all__ = [
     "DEFAULT_CRITIQUE_TURN_BUDGET",
     "AgenticRubricJudgeKind",
     "ChunkedRubricJudgeKind",
+    "CritiqueContext",
+    "CritiqueTool",
+    "EvidencePointer",
+    "EvidenceSource",
+    "JudgeDraft",
     "JudgeKind",
     "SingleShotRubricJudgeKind",
+    "resolve_evidence",
+    "serialize_critique_context",
 ]
