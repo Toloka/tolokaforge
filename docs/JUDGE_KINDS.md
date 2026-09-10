@@ -143,11 +143,12 @@ tool-list rebuilding is out of bounds for a single caller per AGENTS.md
 Core Rule 7. Opt in via `grading.llm_judge.judge_kind: agentic_rubric`;
 the default remains `single_shot_rubric`.
 
-`kind_config` schema: `{"critique_turn_budget": int}`. Missing key or a
-`None` config → `DEFAULT_CRITIQUE_TURN_BUDGET = 3`. Any unknown key or a
-`critique_turn_budget < 1` raises `ValueError` inside `evaluate`, before
-`judge_model_provider.build()` is ever called — the same eager-validation
-contract `chunked_rubric`'s `chunk_size` follows.
+`kind_config` schema: `{"critique_turn_budget": int, "enable_critique_tool":
+bool}`. Missing key or a `None` config → `DEFAULT_CRITIQUE_TURN_BUDGET = 3`
+and `enable_critique_tool = True`. Any unknown key, a `critique_turn_budget
+< 1`, or a non-`bool` `enable_critique_tool` raises `ValueError` inside
+`evaluate`, before `judge_model_provider.build()` is ever called — the same
+eager-validation contract `chunked_rubric`'s `chunk_size` follows.
 
 ### State machine
 
@@ -172,9 +173,11 @@ states, `awaiting_draft` and `critiquing`, and six transitions:
    `COMPLETED`. Invalid args follow the same bounded rejection/retry
    contract as transition 2; exhaustion yields `ERRORED`.
 6. No `draft_report`/`submit_report` call in the turn (pure text, or a
-   read-tool call) in either state → no injected message, no state
-   change, loop continues. This mirrors `SubmitReportTermination`'s own
-   silent-continue behaviour for a turn without a `submit_report` call.
+   read-tool call — including `critique(verdict_draft=...)`, an
+   ordinary `Tool` the termination policy never matches on) in either
+   state → no injected message, no state change, loop continues. This
+   mirrors `SubmitReportTermination`'s own silent-continue behaviour for
+   a turn without a `submit_report` call.
 
 `critique_turn_budget` is advisory only, stated in the injected critique
 message text — there is no new `TerminationReason` for exhausting it.
@@ -235,14 +238,39 @@ ever calling `submit_report` (turn budget or wall-clock exhausted
 first) errors the same way. There is never a silent partial or
 fabricated verdict.
 
-### Scope: no `critique` tool in v1
+### Critique tool
 
-The critique step above is an engine-injected `role=user` prompt over
-the judge's *existing* read tools — there is no dedicated
-`critique(verdict_draft)` tool call in this kind. Phase C3 (#1571)
-additively extends the same `_DraftReportTermination` state machine
-with a real `critique` tool call as a further transition; nothing in
-this kind's design precludes that follow-on.
+Alongside the injected critique prompt, the judge may call
+`critique(verdict_draft: JudgeDraft) -> CritiqueContext`
+(`tolokaforge/core/grading/judge_kinds/critique.py`) — an ordinary,
+read-only `Tool` registered only for `agentic_rubric`, gated on
+`kind_config.enable_critique_tool` (default `True`). Its schema wraps
+the exact `submit_report`/`draft_report` argument shape inside a single
+top-level `verdict_draft` object, so a flat, `submit_report`-shaped
+call is rejected by `ToolExecutor`'s `jsonschema` validation before
+`critique.execute` ever runs; `execute` re-validates with
+`parse_submit_report`, inheriting every one of `submit_report`'s
+fail-loud checks (missing verdict, unknown criterion id, wrong type,
+verdict/justification-marker mismatch) for free.
+
+`critique` never gathers new information — it deterministically
+resolves evidence the episode already collected, case-insensitive
+substring-matching each criterion's description/expected tokens
+against three sources: the formatted transcript, the state diff's
+lines when one was recorded, and a *replay* of any prior `search_kb`
+results already present in the judge's own in-progress transcript (no
+new `KnowledgeSearch` call). A criterion with no matching text
+contributes zero pointers, never a fabricated placeholder. Because
+`critique` is an ordinary `Tool` the termination policy never matches
+on, calling it exercises transition 6 above like any other read-tool
+call — no state-machine change was needed to add it.
+
+Registration happens inside `agentic.py`'s own `_build_episode_setup`,
+strictly before that function's `tool_schemas` snapshot — the only call
+site `AgenticRubricJudgeKind.evaluate` uses. `single_shot_rubric` and
+`chunked_rubric` both go through `LLMJudge.run` -> `build_judge_registry`
+directly and never execute `_build_episode_setup`, so `critique` cannot
+leak into either kind's registry by construction.
 
 ## Parity gate
 
