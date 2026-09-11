@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.25.0 (2026-09-11)
+
+### Feat
+
+- **coding-harness**: AgentDriver Strategy + credential-shielded LLM gateway (#1280)
+
 ## v0.24.3 (2026-09-10)
 
 ### Fix
