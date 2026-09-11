@@ -297,6 +297,12 @@ def test_runner_build_context_ships_source_tree_for_multi_stage_hatch_build() ->
         # models wheel in-place from source (rather than pulling from
         # PyPI) so the runner image installs the branch's exact bytes.
         "tolokaforge_models/",
+        # tolokaforge_coding_harnesses ships INSIDE the base tolokaforge
+        # wheel on PyPI (see workspace pyproject `[tool.hatch.build.targets.wheel]`),
+        # never as its own PyPI distribution. The runner subset still gets
+        # a companion wheel built in-container, so the source tree ships
+        # in the build context alongside tolokaforge_models.
+        "tolokaforge_coding_harnesses/",
     }
     assert set(context_files) == expected, (
         "runner image context_files drifted from the ADR-0025 multi-stage "
@@ -610,6 +616,16 @@ def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monk
     # in-container `hatchling build` step (Milestone 29 / ADR-0030).
     (packaged / "tolokaforge_models" / "src" / "tolokaforge_models").mkdir(parents=True)
     (packaged / "tolokaforge_models" / "pyproject.toml").write_text("# models pyproject\n")
+    # Same shape for tolokaforge_coding_harnesses: bundled INSIDE the base
+    # wheel on PyPI, with a packaged copy of its source at
+    # ``tolokaforge/_subset_build/tolokaforge_coding_harnesses/`` so the
+    # runner Dockerfile's in-container hatchling build step still has it.
+    (packaged / "tolokaforge_coding_harnesses" / "src" / "tolokaforge_coding_harnesses").mkdir(
+        parents=True
+    )
+    (packaged / "tolokaforge_coding_harnesses" / "pyproject.toml").write_text(
+        "# coding-harnesses pyproject\n"
+    )
     (pkg / "_python_version.txt").write_text("3.12\n")
     # The base wheel ships the Dockerfiles inside the package, so
     # ``assemble_build_context`` still finds the runner Dockerfile under
@@ -640,6 +656,8 @@ def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monk
             "tolokaforge",
             "tolokaforge_models/pyproject.toml",
             "tolokaforge_models/src/tolokaforge_models",
+            "tolokaforge_coding_harnesses/pyproject.toml",
+            "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses",
         ):
             assert (build_dir / expected).exists(), (
                 f"assembled runner context is missing '{expected}', which the "
@@ -714,6 +732,14 @@ def test_core_stack_runner_context_assembles_on_a_wheel_install(
     # in-container `hatchling build` step (Milestone 29 / ADR-0030).
     (packaged / "tolokaforge_models" / "src" / "tolokaforge_models").mkdir(parents=True)
     (packaged / "tolokaforge_models" / "pyproject.toml").write_text("# models pyproject\n")
+    # Same shape for tolokaforge_coding_harnesses (bundled INSIDE the base
+    # wheel on PyPI; source copy under _subset_build for in-container hatch).
+    (packaged / "tolokaforge_coding_harnesses" / "src" / "tolokaforge_coding_harnesses").mkdir(
+        parents=True
+    )
+    (packaged / "tolokaforge_coding_harnesses" / "pyproject.toml").write_text(
+        "# coding-harnesses pyproject\n"
+    )
     (pkg / "_python_version.txt").write_text("3.12\n")
     dockerfiles = pkg / "docker" / "dockerfiles"
     dockerfiles.mkdir(parents=True)
@@ -733,6 +759,8 @@ def test_core_stack_runner_context_assembles_on_a_wheel_install(
             "tolokaforge",
             "tolokaforge_models/pyproject.toml",
             "tolokaforge_models/src/tolokaforge_models",
+            "tolokaforge_coding_harnesses/pyproject.toml",
+            "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses",
         ):
             assert (build_dir / expected).exists(), (
                 f"core_stack()'s runner context is missing '{expected}' on a wheel "
