@@ -117,6 +117,10 @@ class MaterialiseContext:
     write_compose_env: WriteComposeEnv | None
     events: RunDisplayEvents
     component_id_prefix: str
+    # ADR-0041 credential-shield sidecar plumbing — default empty so tests
+    # constructing a context need not care about the shield surface.
+    bridged_services: frozenset[str] = frozenset()
+    stripped_container_secrets: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

@@ -230,6 +230,31 @@ def _synthesise_compose(
     agent_body_env = _set_env(agent_body.get("environment"), "TEST_DIR", "/tests")
     for key, value in sorted(harness_spec.container_env.items()):
         agent_body_env = _set_env(agent_body_env, key, value)
+    # Resolve the harness's provider envelope (``${secret:NAME}`` refs) and
+    # bake it into the agent service's compose ``environment:`` — the CLI
+    # reads credentials from its own process env, and native's compose
+    # synthesis is the only place those values land inside the trial
+    # container. Under a shielded harness (``spec.credential_gateway`` set)
+    # the sidecar mints a dummy for the CLI and holds the real token itself;
+    # under an unshielded / direct-API harness (or when the sidecar isn't
+    # wired in yet), the real credential reaches the CLI's own env — same
+    # posture as tbench's ``provider_env_keys`` path.
+    from tolokaforge.secrets import expand_secret_refs
+    from tolokaforge.secrets import get_default as _get_default_secrets
+    from tolokaforge.secrets.expand import UnresolvedReferenceError
+
+    secret_manager = _get_default_secrets()
+    for key, value in sorted(harness_spec.provider_env.items()):
+        try:
+            resolved = expand_secret_refs(
+                value, secret_manager, where=f"harness.provider_env[{key!r}]"
+            )
+        except UnresolvedReferenceError:
+            # Secret not in scope (e.g. canonical tests that render the YAML
+            # without runtime credentials). Keep the literal ``${secret:...}``
+            # reference; real trial launch resolves it or fails loudly there.
+            resolved = value
+        agent_body_env = _set_env(agent_body_env, key, resolved)
     agent_body["environment"] = agent_body_env
     services[agent_service] = agent_body
 

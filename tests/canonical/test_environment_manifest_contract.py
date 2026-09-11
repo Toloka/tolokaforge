@@ -811,6 +811,8 @@ class TestManifestWireShape:
             "db_port",
             "rag_service",
             "rag_port",
+            "stripped_container_secrets",
+            "bridged_services",
             "stacks",  # ADR-0044 composition plan; default empty list preserves backward compat.
         }
         assert wire["runner_service"] == "default"

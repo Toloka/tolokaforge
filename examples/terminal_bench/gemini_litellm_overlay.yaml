@@ -66,9 +66,14 @@ harnesses:
     # ``validateAuthMethod()`` (through 0.55.1) hasn't been taught about
     # GATEWAY yet, so pure env raises "Invalid auth method" without the
     # settings-file override.
+    #
+    # ``tools.exclude`` names ``google_web_search`` and ``web_fetch``: a
+    # tbench container's ``no_internet`` policy blocks their egress, and
+    # gemini-cli retries on backoff before yielding a turn — up to 26
+    # retries observed, consuming the turn budget past useful work.
     config_files:
       "${HOME}/.gemini/settings.json": |-
-        {"security":{"auth":{"selectedType":"gateway","useExternal":true}}}
+        {"security":{"auth":{"selectedType":"gateway","useExternal":true}},"tools":{"exclude":["google_web_search","web_fetch"]}}
     # ``GEMINI_API_KEY`` is what gemini-cli reads for the ``x-goog-api-key``
     # header it sends to the gateway. LITELLM_API_KEY is the credential
     # the gateway expects — the header value is a virtual key, not a

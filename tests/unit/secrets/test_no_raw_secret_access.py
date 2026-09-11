@@ -36,6 +36,9 @@ SCANNED_ROOTS: tuple[Path, ...] = (PKG_ROOT, MODELS_PKG_ROOT)
 ALLOWLIST = {
     PKG_ROOT / "secrets",  # the implementation
     PKG_ROOT / "runner" / "__main__.py",  # singleton bootstrap from TOLOKAFORGE_SECRETS_JSON
+    PKG_ROOT
+    / "runner"
+    / "llm_gateway_serve.py",  # sidecar bootstrap from TF_GATEWAY_UPSTREAM_TOKEN
     PKG_ROOT / "cli" / "main.py",  # init_default + export_to_environ at CLI startup
 }
 

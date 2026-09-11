@@ -138,9 +138,14 @@ class DockerComposeMaterialiser:
                 decl.runner_service or "",
                 list(ctx.limited_internet_allowlist),
                 restricted_services=ctx.restricted_services,
+                bridged_services=ctx.bridged_services,
             )
             if decl.runner_service is not None:
-                inject_runner_credentials(compose_file, decl.runner_service)
+                inject_runner_credentials(
+                    compose_file,
+                    decl.runner_service,
+                    stripped_keys=ctx.stripped_container_secrets,
+                )
                 if ctx.mount_docker_socket:
                     mount_docker_socket_into_runner(compose_file, decl.runner_service)
             compose = self.docker_compose_factory(

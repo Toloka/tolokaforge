@@ -6,8 +6,8 @@ Two config fields once lived inside the ``terminal_bench``-adapter-specific
 - ``agent_harness`` (which coding-agent CLI drives the trial)
 - ``agent_model`` (the model the CLI receives)
 
-The coding-harness lift makes ``models.agent.harness`` the canonical home for
-the first and ``models.agent.name`` the canonical home for the second. This
+The coding-harness lift makes ``models.agent.harness`` the canonical
+home for the first and ``models.agent.name`` the canonical home for the second. This
 suite pins the alias behaviour: legacy-only lifts + warns, canonical-only
 passes through, both-agree warns once, both-disagree fails loud. Same shape
 as ``test_dual_home_aliases.py``.
