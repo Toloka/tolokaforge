@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.25.0"
+version = "0.25.1"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,9 +38,11 @@ dependencies = [
     "tolokaforge-models>=1.0.0,<2.0.0",
     # Coding-harness registry, spec models and adapter-support mixin (see
     # ADR-0039). Imported unconditionally by :mod:`tolokaforge.adapters.native`
-    # and :mod:`tolokaforge.adapters.native_harness_synthesis`, so a headless
-    # ``pip install tolokaforge`` needs the sibling wheel on ``sys.path`` too.
-    "tolokaforge-coding-harnesses>=0.1.0,<1.0.0",
+    # and :mod:`tolokaforge.adapters.native_harness_synthesis`. Bundled INTO
+    # the tolokaforge wheel (see ``[tool.hatch.build.targets.wheel]`` below)
+    # rather than published as a sibling on PyPI, so ``pip install tolokaforge``
+    # is self-contained. jinja2 below is coding_harnesses' template-render dep.
+    "jinja2>=3.1.0",
     # Core LLM integration
     "litellm>=1.83.14,!=1.92.0,<2.0.0",
     # Data validation and schemas
@@ -364,7 +366,19 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["tolokaforge"]
+# ``tolokaforge_coding_harnesses`` is a workspace-sibling source tree
+# (see ``[tool.uv.workspace]`` further down) that we bundle INTO the
+# tolokaforge wheel rather than publishing as its own PyPI distribution.
+# Hatch reads each entry's basename as the installed package name, so this
+# bundles ``tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/``
+# as the top-level ``tolokaforge_coding_harnesses`` package on
+# ``site-packages``. Import paths inside ``tolokaforge.adapters.native`` and
+# friends resolve unchanged; ``pip install tolokaforge`` from PyPI is
+# self-contained.
+packages = [
+    "tolokaforge",
+    "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses",
+]
 
 # Ship `.python-version` inside the built wheel as
 # ``tolokaforge/_python_version.txt``. The repo-root dotfile is the
@@ -400,6 +414,11 @@ packages = ["tolokaforge"]
 # context entry to a packaged copy and `COPY tolokaforge_models/` fails.
 "tolokaforge_models/pyproject.toml" = "tolokaforge/_subset_build/tolokaforge_models/pyproject.toml"
 "tolokaforge_models/src" = "tolokaforge/_subset_build/tolokaforge_models/src"
+# Same pattern for the coding-harnesses sibling: the runner Dockerfile builds
+# its wheel in-container (like tolokaforge_models). ``_runner_definition()``
+# needs a packaged copy on a wheel install where the repo root is absent.
+"tolokaforge_coding_harnesses/pyproject.toml" = "tolokaforge/_subset_build/tolokaforge_coding_harnesses/pyproject.toml"
+"tolokaforge_coding_harnesses/src" = "tolokaforge/_subset_build/tolokaforge_coding_harnesses/src"
 
 [tool.hatch.build.targets.sdist]
 
