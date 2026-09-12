@@ -2,6 +2,612 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.25.2 (2026-09-12)
+
+### Fix
+
+- **packaging**: bundle coding-harnesses into tolokaforge wheel (0.25.1) (#1589)
+
+## v0.25.0 (2026-09-11)
+
+### Feat
+
+- **coding-harness**: AgentDriver Strategy + credential-shielded LLM gateway (#1280)
+
+## v0.24.3 (2026-09-10)
+
+### Fix
+
+- **examples**: declare on_missing: fail on the notes gate constraint (#1576)
+
+## v0.24.2 (2026-09-09)
+
+### Feat
+
+- **adapter**: bridge Tool.policy.timeout_s to ToolSchema.timeout_s (#1556) (#1573)
+- **adapter**: task-yaml override for per-tool output_max_chars (#1563)
+
+### Fix
+
+- **docker**: make image builds work on default macOS Docker Desktop (#1574)
+
+## v0.24.1 (2026-09-09)
+
+### Feat
+
+- arena v3 engine residuals — tool-name hint, state-hash compare_columns (both substrates), trace_checks gate advisory (#1560)
+- **engine**: M48 — post-M44 follow-ups (adapter sentinel deletion, per-tool cap, truncation + parser-error metrics, replay-snapshot fix) (#1559)
+
+## v0.24.0 (2026-09-08)
+
+### Feat
+
+- **automation**: cost summary for the integration run (agents, wire probes, key deltas) (#1542)
+- **engine-loop**: scaffold improvements for reasoning-heavy models (#1519)
+
+## v0.23.1 (2026-09-07)
+
+### Fix
+
+- **grader-v3**: carry tolokaforge.grading_methods + grader_kinds into the runner-subset wheel (#1527)
+
+## v0.23.0 (2026-09-07)
+
+### Feat
+
+- **grading**: Grader v3 — detached mode, typed grader kinds, adapter grading contract (Milestone #39) (#1490)
+
+## v0.22.5 (2026-09-04)
+
+### Fix
+
+- **runtime**: composition-plan integration-test rewiring + Bucket B (#1423 follow-up, closes #335) (#1488)
+
+## v0.22.4 (2026-09-03)
+
+### Fix
+
+- **grading**: surrogate-id-aware row pairing on _records_might_match (#1483)
+
+## v0.22.3 (2026-09-03)
+
+### Feat
+
+- **grading**: engine-eval-hardening — hash/diff parity + schema-executor parity + bundle-native judge replay (M#43) (#1481)
+
+### Fix
+
+- **tests**: unstick pre-existing test-smoke failures on main (#1475)
+
+## v0.22.2 (2026-09-02)
+
+### Feat
+
+- **grading**: engine-eval-repin-blockers — widened fail-loud contract (M#42) (#1471)
+
+### Fix
+
+- **orchestrator**: user-simulator config fails loud instead of silent Anthropic fallback (#1451)
+
+## v0.22.1 (2026-09-02)
+
+## v0.22.0 (2026-09-02)
+
+### Feat
+
+- **llm**: namespace-matched gateway wildcards, one provider-pin rule, route provenance (#1407)
+
+### Fix
+
+- **conductor**: skip Runner GetState RPC when task declares no json_db + demote no-target log (#1414)
+
+## v0.21.4 (2026-08-28)
+
+### Fix
+
+- **ci**: switch claude-review model to claude-opus-4-7 (#1338)
+- **ci**: bump Claude Code Action pin to v1.0.209 (#1337)
+
+## v0.21.3 (2026-08-28)
+
+### Feat
+
+- **grading**: engine-repin-unblock — runner wire-model aliases, expected_hash refusal, trace_checks on_missing: withhold (#1315)
+
+### Fix
+
+- **grader**: route RunnerRPCTrialGrader through runtime_backend for per-trial runtimes (#1328)
+
+## v0.21.2 (2026-08-26)
+
+### Fix
+
+- **deps**: bump grpcio floor to 1.83.0 to match generated runner stubs (#1310)
+
+## v0.21.1 (2026-08-26)
+
+### Fix
+
+- **llm**: route moonshotai/kimi-k3 to empty-assistant filler-on + rename NovaMessageAssembly (#1284) (#1288)
+- **tests**: sync pipe-listener from inside select() to stop Linux CI flake (#1289)
+
+## v0.21.0 (2026-08-26)
+
+### Fix
+
+- **publish**: grader/rag build sibling coding-harnesses; runner subset ships seam entry-points (#1285)
+
+## v0.20.0 (2026-08-25)
+
+### Feat
+
+- **grader**: standalone-extensible-grader — the deployed grader image grades the full surface (#1259) (#1276)
+- **coding-harness**: lift agent_harness to a top-level, adapter-agnostic capability (#1279)
+- **grader**: wire the queue trial grader end-to-end (#1254) (#1256)
+- **grader**: Milestone 32 — grader-detachment seam foundation (#1202)
+- **llm**: persist the OpenRouter generation id per request (#1242)
+
+### Fix
+
+- **tests**: main test-smoke regressions from milestone-36 + coding-harness lift (#1283)
+- **orchestrator**: fail loud when a docker-CLI-needing run resolves to pull (#1267)
+
+## v0.19.1 (2026-08-19)
+
+### Feat
+
+- **coding-harnesses**: RuntimeGateway + ContainerFileInjector + gateway_route (ADR-0037) (#1241)
+
+## v0.19.0 (2026-08-18)
+
+### BREAKING CHANGE
+
+- the `unsupported_effort_levels` params key is removed. Preset
+and provider blocks declaring it — in the bundled data or in an operator
+overlay — must move to `param_value_rules`, which additionally requires an
+`evidence` string. The bundled Gemini declaration is migrated in this PR; an
+overlay still using the old key fails loud at overlay load, naming the file and
+the legal keys. The models wheel now requires an engine that understands the
+new key: see docs/RELEASING.md for the release ordering.
+
+### Feat
+
+- **refactor**: hoist coding-harness surface to top-level tolokaforge_coding_harnesses (#1236)
+- **grading**: deterministic trace checks — the trace-checks tail (37 issues) (#1196)
+- **tbench**: consolidated matrix harness fixes — Kimi K2.7 middleware, opencode routing/auth, Gemini via LiteLLM, supervisord, disk hygiene (#1228)
+- **automation**: auto-integration commits the models wheel only, and releases it (#1067)
+- **tbench**: TrialMode.HARNESS + 6 shipped coding-harness CLIs + YAML-driven registry (ADRs 0031/0032) (#1083)
+- **docker**: pull-vs-build policy for tolokaforge run (docker.image_source) (#1082)
+- **core**: user simulator fidelity — the simulated user says what the task author intended (#1109)
+- **llm**: param_value_rules — declare a value a route will not take (#1110)
+
+### Fix
+
+- **runner**: _finalise preserves first_user_message_source + user_reply_guard_events (#1170)
+- **tbench**: opencode ANTHROPIC_BASE_URL /v1 + kimi-code multi-turn docs (#1159)
+- **config**: keep DockerConfig out of the orchestrator-only package (#1136)
+- **automation**: score observe contamination as a rate, not a boolean (#1127)
+- **runner**: assemble $.filesystem state at grading time (#1074) (#1096)
+
+## v0.18.1 (2026-08-12)
+
+### Feat
+
+- **tbench-adapter**: synthesise EnvironmentManifest from task compose; migrate compose lifecycle to PerTrialRuntimeBackend (#1060)
+- **skills**: pre-flight decision extraction + educative PR/umbrella templates (#1034)
+
+### Fix
+
+- **docker**: ship tolokaforge_models sources in the base wheel for wheel-install Docker builds (#1073)
+
+## v0.18.0 (2026-08-12)
+
+### Feat
+
+- **core**: Milestone 29 — tolokaforge-models split (ADR-0030 delivery) (#1058)
+- **automation**: let the Slack poller read a header-admission gateway (#1037)
+- **llm**: address the gateway in its own dialect and by its own route name (#942)
+- **ci**: auto-promote rc images to stable on green rc-smoke (#917) (#918)
+
+### Fix
+
+- **llm**: admit the parameters an operator declares, when litellm's map cannot (#1000)
+
+## v0.16.1 (2026-08-07)
+
+### Feat
+
+- **grading**: composite primary keys in state_checks.id_fields (#924)
+
+### Fix
+
+- **core**: the TypeSense Docker rewrite drops the description cache (#928)
+
+## v0.16.0 (2026-08-06)
+
+### Feat
+
+- **skills**: JSONL progress channel for orchestration subagents (#909)
+
+### Fix
+
+- **grading**: hash-source rule skips a pack whose adapter may supply the source (#911) (#914)
+- **llm**: user simulator restarts the conversation after the agent answers (CBT-021) (#905)
+
+## v0.15.0 (2026-08-05)
+
+### Feat
+
+- **grading**: deterministic trace checks, milestone 28 (#890)
+- **tools**: optional docker exec --user for compose-variant bash_session + str_replace_editor (#894)
+- **tools**: add build_check builtin — zero-arg peer-service HTTP probe (#892)
+- **core**: multi-actor architecture — interaction_mode + Actor Protocol + TurnPolicy seam (#868) (#872)
+
+### Fix
+
+- **actors**: AgentOnlyTurnPolicy signals AGENT_DONE on text-only turn (#876) (#877)
+
+## v0.14.2 (2026-08-04)
+
+### Fix
+
+- **docker**: take the runner build context from the builder in core_stack (v0.14.1 still broken) (#864)
+
+## v0.14.1 (2026-08-04)
+
+### Fix
+
+- **docker**: resolve the runner build context on a wheel install (#858)
+
+## v0.14.0 (2026-08-04)
+
+### Feat
+
+- **runtime**: runner wheel split — slim image via subset build target (M15) (#847)
+- **secrets**: resolve ${secret:NAME} references in config values (#798)
+- **runtime**: Service Readiness Contract — first-class host-invokability boundary (#803) (#817)
+
+### Fix
+
+- **orchestrator**: allow per-trial runs with heterogeneous compose files (#849)
+- **runner+orchestrator**: substrate-native support for adapters using compose-variant tools + no DB service (#843)
+- **runner-client**: accept degraded runner status + introduce HealthLevel/HealthReport pattern (#801) (#841)
+- **grading**: decode wire tool calls in run_custom_checks instead of … (#804)
+- **test**: add mkfir and write config before run orchestrator (#802)
+
+## v0.13.1 (2026-08-03)
+
+### Feat
+
+- **slack**: custom message icons, one override parameter per icon role (#724)
+- **automation**: report gateway availability and accept a route directive (#723)
+- **llm**: route LLM calls through a gateway (LiteLLM proxy), env-configured (#718)
+- **grading**: finish runner-side custom_checks as a Pattern-A extension (#704)
+
+### Fix
+
+- **grading**: make the two grading substrates agree — substrate parity, the trajectory record, hash composition, and the combine algebra (#748)
+- **automation**: resolve a request against both catalogs, and route every reply icon through the registry (#728)
+- **docker**: auto host ports for rag/mock-web; persist rag HF cache on volume (#703)
+
+## v0.13.0 (2026-07-30)
+
+### Feat
+
+- rate-limit probe mode (fixed-interval 429 retry, hours-long budgets) (#665)
+
+## v0.12.0 (2026-07-29)
+
+### Feat
+
+- **adapters**: make rag-service search_kb functional for native tasks (#107) (#666)
+- **runtime**: Runner as a distributable service (M14 consolidation) (#642)
+- **tools**: configurable working_root on str_replace_editor (#643)
+- **adapters**: adapter-declared trial-grader name on orchestrator (#631)
+
+### Fix
+
+- **docker**: widen rag healthcheck start-period to cover model load (#661)
+- **docker**: scope mock-web build context to its service files (#654)
+- **deploy**: pin linux/amd64 in standalone compose for arm64 hosts (#647)
+- **ci**: bind no environment for publish-images dry-run (#646)
+
+## v0.11.2 (2026-07-27)
+
+### Fix
+
+- **runner**: preserve simulator text glued to ###STOP### (closes #611) (#619)
+
+## v0.11.1 (2026-07-27)
+
+### Feat
+
+- **runtime**: runtime independence v1 — expose runner as an independently-usable component (#557)
+
+### Fix
+
+- **runtime**: repair two #557 regressions breaking unit + canonical tests (#615)
+- **automation**: resolve-agent prompt - code-shape discipline + code-grounded data-scope (#562)
+- **runner**: fail loud on id_fields typos + MCP diff-sync id resolution (#600 follow-ups) (#603)
+- **runner**: resolve DB primary-key field from config, not model source (#600)
+
+## v0.11.0 (2026-07-23)
+
+### Feat
+
+- **grading**: judge scoring integrity — verdict consistency, judge customization, offline replay (#528)
+
+## v0.10.0 (2026-07-23)
+
+### Feat
+
+- **cli**: Improved Terminal DX (#460)
+- **tools**: persistent agent shell + first-class editor tools (M25 consolidation) (#587)
+- **runtime**: per-service network_access opt-out on ServiceSpec (untrusted-sibling partitioning) (#588)
+
+## v0.9.3 (2026-07-22)
+
+## v0.9.2 (2026-07-21)
+
+### Feat
+
+- **project-layer**: Project-layer v1 finalization — canonical shape with warn-only compat (M9) (#531)
+- **runtime**: multi-container v1 completion (M8 consolidation) (#511)
+
+### Fix
+
+- **grading**: compare numerically-equal state values as equal (#532)
+- **adapter**: fail conversion on invalid output (#494)
+- **tools**: advertise PATCH requests (#463)
+
+## v0.9.1 (2026-07-17)
+
+## v0.9.0 (2026-07-17)
+
+### Feat
+
+- **examples,runtime,assets**: multi-container example depth (Milestone 18) (#469)
+- **core**: observability seam extension — llm_call trio + model identity (#389) (#450)
+- **automation**: model auto-integration pipeline (observe/resolve/finalize + Slack-triggered poller) (#154)
+- **project-layer**: make Project schema end-to-end runnable — task-schema relaxation, grading_defaults merge, dead-seam cleanup, docs residue (#375) (#390)
+- **skills**: milestone integration-branch workflow with rich consolidation PR (#372)
+- **examples**: swap example-microservices-pack backend-api from fictional to postgrest (real image) (#367)
+- **runtime**: per-service log capture on trial failure (#302) (#347)
+
+### Fix
+
+- **loader**: preserve storage discriminator tag under run_defaults merge (#312) (#365)
+
+### Refactor
+
+- **core**: extract RunDisplayEvents engine seam to main (#416) (#433)
+
+### Perf
+
+- **orchestration**: reclaim wall-clock in /implement-milestone via overlap, review sharding, and stack warmup (#426)
+
+## v0.8.4 (2026-07-15)
+
+### Feat
+
+- **llm**: configurable hard wall-clock timeout for upstream calls (#327)
+- **runtime**: enforce network_policy in docker provisioner + tests (#301) (#336)
+- **examples**: runnable reset-recipe pack + end-to-end integration test (#299) (#314)
+- **runtime**: Project layer runtime — isolation, reset recipes, capabilities, env identity (#298)
+- **dev**: add cbm-onboard / cbm-offboard for codebase-memory-mcp (#266)
+- **cli**: tolokaforge assets stamp verb (#263)
+- **loader**: ${VAR} interpolation in run configs + --workers CLI flag (#262)
+- **schema**: dual-home compute/storage.queue resolution (#241)
+- **schema**: actor/seed/capability reservations + task-schema relaxation (#240)
+- **schema**: EnvironmentPatch + resolve() + stack sub-object (#232)
+
+## v0.8.3 (2026-07-13)
+
+### Feat
+
+- **loader**: resolve project.yaml + run_configs base+delta merge (#219)
+- **schema**: add ProjectConfig, TaskDefaults, RunDefaults + compute/storage/observability blocks (#215)
+
+### Fix
+
+- **deps**: exclude litellm 1.92.0 due to fastapi import regression (#231)
+
+## v0.8.2 (2026-07-10)
+
+### Feat
+
+- **models**: add tencent/hy3 (Hunyuan 3 GA) (#204)
+- **models**: add openai/gpt-5.6-terra and openai/gpt-5.6-sol (#203)
+
+## v0.8.1 (2026-07-09)
+
+### Feat
+
+- **models**: add x-ai/grok-4.5 (pricing + capability certificate) (#196)
+
+## v0.8.0 (2026-07-06)
+
+### Feat
+
+- **runtime**: SharedStackRuntimeBackend consumes environment_manifest (#167)
+- **runtime**: :local engine-image alias + wire environment_manifest through TaskConfig (#163)
+- **core**: TrialExecutor Protocol + wire per-trial substrate bracket (#162)
+- **metrics**: roll up judge cost at task and run level (#159)
+
+### Fix
+
+- **docker**: materialize engine wheel via reinstall provider (closes #29, #13) (#176)
+
+### Refactor
+
+- **output**: pin schema_version + int/float wire invariants (closes #152, #153) (#174)
+- **output**: typed models for run-level aggregate payloads (stage 1) (#149)
+- **orchestrator**: collapse injection kwargs into OrchestratorDeps (#134)
+- **docker**: rename ServiceStack → EngineStack; document docker-only + non-Protocol (#169)
+- **core**: extract compose-materialisation primitives into shared module (#166)
+- **core**: decompose Conductor + extract TrialGrader Protocol (#161)
+
+## v0.7.0 (2026-07-02)
+
+### Feat
+
+- **core**: PerTrialRuntimeBackend + trial-isolation enforcement + --runtime CLI (#148)
+
+### Fix
+
+- **db-service**: support JSONPath filter expressions in /query (#157)
+
+## v0.6.0 (2026-07-02)
+
+### Feat
+
+- **grading**: diff-first default state view for the rubric judge (#151)
+
+## v0.5.0 (2026-07-02)
+
+### Feat
+
+- **core**: RuntimeBackend provisioning contract (ADR-0010) (#133)
+- **core**: add EnvironmentManifest typed schema for multicontainer environments (#121)
+
+### Fix
+
+- **orchestrator**: select full_stack when the adapter declares rag-service need (#140)
+
+### Refactor
+
+- **runtime**: move per-trial RPC methods onto RuntimeBackend (ADR-0013) (#141)
+- **runtime**: promote RunnerClient to a Protocol; rename concrete to GrpcRunnerClient (#135)
+- **core**: EnvironmentManifest as compose-as-source-of-truth (#139)
+
+## v0.4.1 (2026-07-01)
+
+### Feat
+
+- **llm**: register anthropic/claude-sonnet-5 (cert + pricing) (#129)
+
+### Fix
+
+- **pricing**: refresh GLM 5.1/5.2 rates to current OpenRouter list (#123)
+
+## v0.4.0 (2026-06-30)
+
+### Feat
+
+- **orchestrator**: make TrialArtifactWriter injectable (#112)
+
+### Fix
+
+- **core**: decouple TrialSpec.run_id from output_dir.name (#111)
+
+### Refactor
+
+- **core**: lift _run_trial behind a typed Conductor Protocol (#101)
+
+## v0.3.1 (2026-06-26)
+
+### Fix
+
+- **grading**: faithful judge KB search — judge reads the same KB the agent did (#95) (#102)
+
+### Refactor
+
+- **core**: lift DockerRuntime behind a typed RuntimeBackend Protocol (#96)
+- **grading**: relocate LLM-judge model from rubric to run config (#98)
+- **trial**: type env_endpoints with EnvEndpoints Pydantic model (#92)
+
+## v0.3.0 (2026-06-26)
+
+### Feat
+
+- **grading**: structured rubric grading via a runner-side read-only agentic judge (#94)
+- **output**: formalize RunAggregateWriter as the run-level data-plane seam (#85)
+- **output**: formalize TrialArtifactWriter as the typed data-plane seam (#79)
+- **core**: define TrialSpec / TrialResult as the typed control↔trial seam (#74)
+- **devcontainer**: add Dev Container config for reproducible dev env (#81)
+
+### Fix
+
+- **docker**: unblock clean runner/rag-service builds and integration tests (#88)
+- **ci**: pin Claude review action to claude-opus-4-8 (#78)
+
+### Refactor
+
+- **runner**: drop private-package prefix from MCP_ASYNC import path (#73)
+
+## v0.2.11 (2026-06-18)
+
+### Feat
+
+- **adapters**: register migration_bench constant in AdapterType (#71)
+- **llm**: register z-ai/glm-5.2 and moonshotai/kimi-k2.7-code (cert + pricing) (#72)
+
+## v0.2.10 (2026-06-17)
+
+### Feat
+
+- **presets**: operator-overridable preset overlay file (#69)
+- **llm**: add OpenRouter provider routing to ModelConfig (#68)
+
+### Fix
+
+- **grading**: make unknown jsonpath operators fail loud + deterministic reasons (#66)
+
+### Refactor
+
+- **adapters**: make the runner adapter-agnostic (plugin-first) (#61)
+
+## v0.2.9 (2026-06-16)
+
+### Feat
+
+- **llm**: register nemotron-3-ultra-550b-a55b (cert + pricing) (#65)
+
+## v0.2.8 (2026-06-16)
+
+### Feat
+
+- **llm**: recover MiniMax-M3 tag-conversion corruption (#55)
+
+## v0.2.7 (2026-06-10)
+
+### Feat
+
+- **llm**: register anthropic/claude-fable-5 (#52)
+
+## v0.2.6 (2026-06-08)
+
+### Feat
+
+- **llm**: register minimax/minimax-m3 with codec-only preset (#51)
+
+## v0.2.5 (2026-06-08)
+
+### Fix
+
+- **adapters**: restore bundle_writer so `adapter convert` works (#48)
+
+## v0.2.4 (2026-06-05)
+
+### Feat
+
+- **llm**: register 7 arena-lineup models with preset routing (#46)
+- **release**: automate releases with commitizen (cz bump) (#41)
+
+## v0.2.3 (2026-06-04)
+
+### Feat
+
+- **llm**: register deepseek/deepseek-v3.2-exp (#36)
+
+## v0.2.2 (2026-06-03)
+
+### Fix
+
+- **presets**: enable empty-assistant filler for OpenRouter Amazon Nova (#35)
+- **docker**: resolve the engine wheel under a relocated uv cache (#28)
+- **adapters**: drop stale FrozenMcpCoreAdapter export and docstring (#14)
+
 ## v0.25.1 (2026-09-11)
 
 ### Fix
