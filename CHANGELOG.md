@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.25.1 (2026-09-11)
+
+### Fix
+
+- **packaging**: bundle `tolokaforge_coding_harnesses` INTO the tolokaforge wheel and drop the runtime dep on the sibling PyPI distribution (which was never intended to publish). Fixes `pip install tolokaforge==0.25.0` failing with `No matching distribution found for tolokaforge-coding-harnesses`.
+- **docker**: include `tolokaforge_coding_harnesses/` in the runner + grader Dockerfile build context (both were tripping on `COPY failed: file not found in build context`).
+
 ## v0.25.0 (2026-09-11)
 
 ### Feat
