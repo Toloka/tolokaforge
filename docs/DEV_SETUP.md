@@ -65,9 +65,15 @@ uv to resolve against the named index regardless of your personal
 `~/.pip/pip.conf` / `~/.config/uv/uv.toml`, so this works from any machine
 that can reach both endpoints:
 
+The convenience path is `make refresh-locks` — it runs both `uv lock`
+invocations, refreshes both committed lockfiles, and re-hydrates
+`uv.lock` from `uv.lock.jfrog` at the end (biased toward Toloka Mac
+callers). If you prefer the raw commands:
+
 ```bash
 uv lock --config-file uv-jfrog.toml  && cp uv.lock uv.lock.jfrog
 uv lock --config-file uv-public.toml && cp uv.lock uv.lock.public
+./scripts/use-lock.sh jfrog  # or use-lock.sh public — leaves uv.lock as one specific variant
 ```
 
 Commit `uv.lock.jfrog` and `uv.lock.public` together. The two files must
@@ -147,10 +153,15 @@ lock are the source of truth. Overriding the index-url on the command
 line doesn't rewrite the lock.
 
 **Q: What happens if I forget to run `make use-{jfrog,public}` first?**
-The most likely `uv.lock` on your disk is whatever the previous
-`git checkout` / `git rebase` merged into your worktree — either the
-`jfrog` or `public` variant, depending on how git resolved things. With
-`uv.lock` gitignored, git will never touch it, so it stays as whatever
-you last copied. First `uv sync` will resolve happily against that; the
-only way to fail is if you switch environments (e.g. run in a container)
-without re-copying the appropriate variant.
+`uv.lock` is gitignored, so git will never touch it — it stays as
+whatever you last copied. First `uv sync` will resolve happily against
+that; the only way to fail is if you switch environments (e.g. run in a
+container) without re-copying the appropriate variant.
+
+**Q: I pulled a `pyproject.toml` change from upstream — do I have to
+re-run `make use-*`?** Yes. `uv sync` against a stale `uv.lock` (one
+matching an older `pyproject.toml`) will silently mutate the local
+lockfile in place to converge; if you then run `make refresh-locks` and
+commit, you'd land a mix of what uv picked. Rehydrate with
+`make use-{jfrog,public}` first so `uv sync` runs against the committed
+lock the maintainer intended.

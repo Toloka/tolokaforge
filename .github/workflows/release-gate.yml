@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           ./scripts/use-lock.sh public
-          uv sync --dev
+          uv sync --dev --locked
 
       - name: Install Playwright browsers
         run: |

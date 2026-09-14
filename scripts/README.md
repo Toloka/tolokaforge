@@ -6,6 +6,7 @@ Utility scripts for developing with Tolokaforge.
     ├── common.sh                              # Shared bash utilities (logging, env loading)
     ├── with_env.sh                            # Load .env + run a command
     ├── with_profile.sh                        # Load profile (no .env) + run a command
+    ├── use-lock.sh                            # Hydrate uv.lock from uv.lock.{jfrog,public} (see docs/DEV_SETUP.md)
     ├── generate_task_pack_compose_override.py  # Generate Docker compose overrides for task packs
     ├── analysis/
     │   └── calibrate_rubric.sh                 # Calibrate a rubric judge against golden fixtures + apply the trust gate
@@ -36,6 +37,11 @@ Utility scripts for developing with Tolokaforge.
 
     # Run the smoke test suite
     scripts/tests/smoke.sh
+
+    # Two-lockfile pattern (see docs/DEV_SETUP.md)
+    make use-jfrog        # hydrate uv.lock from uv.lock.jfrog (internal Toloka dev)
+    make use-public       # hydrate uv.lock from uv.lock.public (CI / external contributor)
+    make refresh-locks    # regenerate BOTH committed lockfiles from pyproject.toml
 
 ## Formatting and linting
 
