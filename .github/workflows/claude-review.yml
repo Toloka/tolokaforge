@@ -16,7 +16,6 @@ on:
       - tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml
       - tolokaforge_models/src/tolokaforge_models/data/pricing.json
       - tolokaforge_models/src/tolokaforge_models/certificates/registry.py
-      - uv.lock
       - uv.lock.public
       - uv.lock.jfrog
       - docs/**

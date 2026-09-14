@@ -35,12 +35,19 @@ use-public:
 # Requires network reach to pypi.org AND toloka.jfrog.io. Run this on a
 # Toloka Mac after cutting a release (the release workflow only refreshes
 # uv.lock.public); commit the updated uv.lock.jfrog as a follow-up.
+#
+# Target audience is Toloka Mac callers, so the working `uv.lock` is
+# re-hydrated from `uv.lock.jfrog` at the end — otherwise it would sit as
+# `uv.lock.public` and the next `uv sync` on the same laptop would hit
+# Defender's block on pypi.org. External / CI callers who want the public
+# flavour should run `make use-public` afterwards.
 refresh-locks:
 	uv lock --config-file uv-jfrog.toml
 	cp uv.lock uv.lock.jfrog
 	uv lock --config-file uv-public.toml
 	cp uv.lock uv.lock.public
-	@echo "Refreshed both uv.lock.jfrog and uv.lock.public"
+	@./scripts/use-lock.sh jfrog
+	@echo "Refreshed both uv.lock.jfrog and uv.lock.public; working uv.lock hydrated from uv.lock.jfrog."
 
 # =============================================================================
 # Testing

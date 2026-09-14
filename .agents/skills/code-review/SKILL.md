@@ -167,7 +167,8 @@ a category violates, skip it silently.
 
 - **Root cleanliness.** New files in the repo root must be on the
   allow-list — README/LICENSE/CHANGELOG/CONTRIBUTING/CONTRIBUTORS/
-  CITATION/AGENTS.md/CLAUDE.md/pyproject.toml/uv.lock/Makefile and
+  CITATION/AGENTS.md/CLAUDE.md/pyproject.toml/uv-public.toml/
+  uv-jfrog.toml/uv.lock.public/uv.lock.jfrog/Makefile and
   dotfiles. No data files, logs, scratch docs, or one-off scripts in
   the root.
 - **No temporary artifacts committed.** `plans/` is gitignored (local
@@ -324,7 +325,9 @@ they'll find it in `git log`, the PR description, or AGENTS.md.
 
 - Multi-stage builds; build deps separate from runtime.
 - Layer order: less-frequently-changing instructions first; copy
-  `pyproject.toml`/`uv.lock` before source for caching; combine `RUN`
+  `pyproject.toml`/`uv.lock.public` (or `uv.lock.jfrog`, matching the
+  image's target environment — see [`docs/DEV_SETUP.md`](../../../../docs/DEV_SETUP.md))
+  before source for caching; combine `RUN`
   instructions with `&&`.
 - Non-root runtime user named `runner`; minimal pinned base image
   (never `latest`); `COPY` not `ADD`.

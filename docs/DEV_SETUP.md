@@ -50,6 +50,13 @@ make use-jfrog       # or `make use-public`
 make install         # runs `uv sync`
 ```
 
+The Codespaces / devcontainer bootstrap (`scripts/setup/create_python_venv.sh`,
+invoked by `.devcontainer/post_attach_container.sh`) runs `make use-public`
+implicitly before `uv sync`, defaulting to the public variant that
+Codespaces / GitHub-hosted runners can reach. Override with
+`LOCK_VARIANT=jfrog` in the environment if you're running the bootstrap
+on a Toloka-networked machine.
+
 ## Regenerating both lockfiles (rare — only when a dep changes)
 
 When you add or bump a dependency in `pyproject.toml`, both committed

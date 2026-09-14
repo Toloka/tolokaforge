@@ -73,13 +73,22 @@ changelog_incremental = true         # only prepend new sections; never rewrite 
 bump_message = "chore(models-release): bump tolokaforge-models to $new_version"
 annotated_tag = true
 
-# Keep the workspace-root `uv.lock` in step with the models version bump.
+# Keep the workspace-root `uv.lock.public` in step with the models version bump.
 # `cz bump` writes the new version literal but does not relock; without this
-# the lockfile would pin the previous version. `uv lock` regenerates the
-# workspace root's lock from any workspace member. `pre_bump_hooks` run after
-# the version write and before cz's commit, so cz folds the staged lockfile
-# into the same release commit.
+# the lockfile would pin the previous version. The two-lockfile pattern
+# (docs/DEV_SETUP.md) commits `uv.lock.public` (the CI-canonical flavour,
+# resolved against pypi.org) and `uv.lock.jfrog` (an internal-dev convenience
+# resolved through Toloka's JFrog mirror); cz runs on GitHub-hosted runners
+# that can reach pypi.org but NOT toloka.jfrog.io, so pre_bump_hooks refresh
+# only `uv.lock.public` here. `uv.lock.jfrog` is refreshed manually by a
+# Toloka-side release cutter (`make refresh-locks`) — see
+# docs/RELEASING.md § "Refreshing the JFrog lockfile after a release".
+#
+# `--config-file` forces the index regardless of any personal pip/uv config
+# on the runner. `cz` auto-stages nothing but its own version files, hence
+# the explicit `git add` on the tracked variant.
 pre_bump_hooks = [
-    "uv lock",
-    "git add -- ../uv.lock",
+    "uv lock --config-file ../uv-public.toml",
+    "cp ../uv.lock ../uv.lock.public",
+    "git add -- ../uv.lock.public",
 ]

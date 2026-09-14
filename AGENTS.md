@@ -86,7 +86,7 @@ uv pip list
 **Key rules:**
 
 - Always use `uv run` prefix for Python commands — never `pip install` or bare `python`
-- Lockfile `uv.lock` ensures reproducible builds
+- Two committed lockfiles (`uv.lock.public`, `uv.lock.jfrog`) ensure reproducible builds across both public PyPI and Toloka's JFrog mirror; the working `uv.lock` is generated from one of them via `make use-public` / `make use-jfrog`. See [`docs/DEV_SETUP.md`](docs/DEV_SETUP.md).
 - Virtual environment lives in `.venv`
 - For new dependencies, add to `pyproject.toml` and run `uv sync`
 - `uv` does **not** load `.env` — use `scripts/with_env.sh` wrapper when env vars are needed
@@ -267,6 +267,7 @@ What TO include:
 |---|---|
 | `README.md` | Project overview, quick start, basic usage |
 | `AGENTS.md` | Agent instructions, development rules, conventions |
+| `docs/DEV_SETUP.md` | Dev-env setup: two-lockfile pattern (JFrog vs public PyPI), which variant to use, how to regenerate |
 | `docs/*.md` | Detailed reference for specific subsystems |
 
 Before adding documentation: check if info already exists in `README.md` or `AGENTS.md`. If it exists, link instead of duplicating.
@@ -387,7 +388,7 @@ FROM base AS production
 1. **Order layers by change frequency** — less frequently changed instructions first
 2. **Combine RUN instructions** — use `&&` to chain commands
 3. **Use .dockerignore** — exclude unnecessary files from build context
-4. **Copy dependencies before source** — copy `pyproject.toml`/`uv.lock` before source code for better caching
+4. **Copy dependencies before source** — copy `pyproject.toml`/`uv.lock.public` (or `uv.lock.jfrog`, depending on the target environment; see [`docs/DEV_SETUP.md`](docs/DEV_SETUP.md)) before source code for better caching
 
 ### Security
 
@@ -411,7 +412,7 @@ Use consistent casing: `FROM base AS builder`, not `FROM base as builder`.
 
 ### Root Cleanliness
 
-Only standard project files in root: README, LICENSE, CHANGELOG, CONTRIBUTING, CONTRIBUTORS, CITATION, AGENTS.md, CLAUDE.md, pyproject.toml, uv.lock, Makefile, and dotfiles (.gitignore, .pre-commit-config.yaml, etc.).
+Only standard project files in root: README, LICENSE, CHANGELOG, CONTRIBUTING, CONTRIBUTORS, CITATION, AGENTS.md, CLAUDE.md, pyproject.toml, uv-public.toml, uv-jfrog.toml, uv.lock.public, uv.lock.jfrog, Makefile, and dotfiles (.gitignore, .pre-commit-config.yaml, etc.).
 
 No scripts, data files, temporary documents, or logs in root.
 

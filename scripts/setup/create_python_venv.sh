@@ -17,6 +17,14 @@ check_installed uv "Please install uv: https://docs.astral.sh/uv/getting-started
 
 cd "$REPO_DIR"
 
+# Two-lockfile pattern (docs/DEV_SETUP.md): the working `uv.lock` is
+# gitignored and must be hydrated from one of the two committed variants
+# before `uv sync`. `LOCK_VARIANT` defaults to `public` (safe for
+# Codespaces / devcontainers / any environment outside Toloka's network);
+# a Toloka Mac dev can set `LOCK_VARIANT=jfrog` in the environment.
+log_info "Hydrating uv.lock from uv.lock.${LOCK_VARIANT:-public}..."
+"${REPO_DIR}/scripts/use-lock.sh" "${LOCK_VARIANT:-public}"
+
 # Sync Python dependencies with uv
 # doesn't have platform-specific wheels (e.g., macOS ARM64)
 log_info "Syncing Python dependencies with uv..."
