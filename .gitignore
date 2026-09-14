@@ -110,3 +110,7 @@ temp/
 
 # Devcontainer
 devcontainer-lock.json
+# Two-lockfile pattern: repo-root uv.lock is generated locally from
+# uv.lock.jfrog or uv.lock.public via `make use-{jfrog,public}`. Only the
+# two named lockfiles are tracked. See docs/DEV_SETUP.md.
+/uv.lock

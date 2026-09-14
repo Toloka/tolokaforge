@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help cbm-onboard cbm-offboard
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help cbm-onboard cbm-offboard use-jfrog use-public
 
 # =============================================================================
 # Installation (using uv)
@@ -14,6 +14,22 @@ install-dev: install
 
 # Alias for install (uv terminology)
 sync: install
+
+# =============================================================================
+# Lockfile variant selection (two-lockfile pattern)
+# =============================================================================
+# Toloka's supply-chain-security policy (2026-09-11) blocks direct PyPI
+# access from workstations; internal contributors resolve through JFrog,
+# while CI / arena runners / external contributors resolve through public
+# PyPI. This repo commits both flavours as `uv.lock.jfrog` and
+# `uv.lock.public`; `uv.lock` itself is not tracked. Pick the variant that
+# matches your environment before `make install`. See docs/DEV_SETUP.md.
+
+use-jfrog:
+	@./scripts/use-lock.sh jfrog
+
+use-public:
+	@./scripts/use-lock.sh public
 
 # =============================================================================
 # Testing

@@ -36,11 +36,14 @@ Dev install:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
+make use-public                                    # or `make use-jfrog` if you're on a Toloka Mac
 uv sync
 uv tool install --editable '.[dx]' --python 3.12   # exposes `tolokaforge` on PATH
 ```
 
 The last line installs the `tolokaforge` command globally (into `~/.local/bin/`). `--editable` keeps it pointing at your working tree so `git pull` updates it. All examples below assume `tolokaforge` is on PATH; if you skip the install step, prefix every command with `uv run` (e.g. `uv run tolokaforge run …`).
+
+**`make use-{public,jfrog}` picks which lockfile to use.** This repo commits two — `uv.lock.public` (resolves against `pypi.org`, used by CI / arena / external contributors) and `uv.lock.jfrog` (resolves against Toloka's JFrog mirror, used by Toloka Macs whose SecOps policy blocks direct PyPI). `uv.lock` itself is untracked. See [docs/DEV_SETUP.md](docs/DEV_SETUP.md) for the full explanation, including how to regenerate both when you add a dep.
 
 ### GitHub Codespaces
 

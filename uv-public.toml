@@ -1,0 +1,20 @@
+# uv config for external contributors / CI runners / any environment outside
+# Toloka's network.
+#
+# The two-lockfile pattern (see docs/DEV_SETUP.md) exists because Toloka
+# workstations resolve packages through JFrog while every other consumer
+# (CI, arena runners, external contributors, expert containers) resolves
+# through public PyPI. A single committed ``uv.lock`` would flip between
+# ``toloka.jfrog.io`` and ``pypi.org`` URLs depending on whose machine last
+# ran ``uv lock``; the two named lockfiles decouple that.
+#
+# Regenerate the public-flavoured lockfile from THIS file:
+#
+#     uv lock --config-file uv-public.toml && cp uv.lock uv.lock.public
+#
+# Day-to-day use: ``make use-public`` (or ``scripts/use-lock.sh public``)
+# hydrates ``uv.lock`` from ``uv.lock.public`` before ``uv sync``.
+
+[[index]]
+url = "https://pypi.org/simple/"
+default = true

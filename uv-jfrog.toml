@@ -1,0 +1,17 @@
+# uv config for internal Toloka contributors.
+#
+# Toloka's supply-chain-security policy blocks direct access to
+# ``pypi.org`` / ``files.pythonhosted.org`` from workstations and K8s
+# (announced 2026-08-28 in ``#team-tech``, effective 2026-09-11). Third-party
+# packages flow through JFrog Artifactory instead.
+#
+# Regenerate the JFrog-flavoured lockfile from THIS file:
+#
+#     uv lock --config-file uv-jfrog.toml && cp uv.lock uv.lock.jfrog
+#
+# Day-to-day use: ``make use-jfrog`` (or ``scripts/use-lock.sh jfrog``) hydrates
+# ``uv.lock`` from ``uv.lock.jfrog`` before ``uv sync``. See docs/DEV_SETUP.md.
+
+[[index]]
+url = "https://toloka.jfrog.io/artifactory/api/pypi/pypi-virtual/simple/"
+default = true
