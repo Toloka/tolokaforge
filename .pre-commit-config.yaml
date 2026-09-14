@@ -42,3 +42,15 @@ repos:
         pass_filenames: false
         always_run: true
         types: [python]
+
+      # No JFrog URLs in a committed uv.lock — Toloka Macs whose personal
+      # `~/.config/uv/uv.toml` points at the internal JFrog mirror can
+      # accidentally regenerate a lock full of `toloka.jfrog.io` URLs and
+      # commit them into this public repo (would break external contributors
+      # / arena runners / CI). See the hook script for the rationale + the
+      # regenerate-in-a-clean-env recovery command.
+      - id: no-jfrog-in-lock
+        name: No JFrog URLs in a committed uv.lock
+        entry: scripts/pre-commit-check-no-jfrog-in-lock.sh
+        language: system
+        files: (^|/)uv\.lock$
