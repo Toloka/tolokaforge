@@ -64,7 +64,7 @@ jobs:
         run: uv python install "$(cat .python-version)"
 
       - name: Install commitizen
-        run: uv sync --group dev
+        run: ./scripts/use-lock.sh public && uv sync --group dev
 
       - name: Configure git identity
         run: |
@@ -107,11 +107,13 @@ jobs:
           echo "new_tag=v$(uv run cz version -p)" >> "$GITHUB_OUTPUT"
 
       # Belt-and-suspenders: the cz pre_bump_hook (pyproject [tool.commitizen])
-      # relocks uv.lock to the new version and folds it into the bump commit. Assert
-      # there's no leftover drift before we publish the tag.
-      - name: Assert uv.lock is consistent with the bump
+      # relocks uv.lock.public to the new version and folds it into the bump
+      # commit. Assert there's no leftover drift before we publish the tag.
+      # Hydrate uv.lock from uv.lock.public first (two-lockfile pattern —
+      # docs/DEV_SETUP.md — uv.lock is gitignored on this repo).
+      - name: Assert uv.lock.public is consistent with the bump
         if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
-        run: uv lock --check
+        run: ./scripts/use-lock.sh public && uv lock --check --config-file uv-public.toml
 
       # Push the bump commit and its tag in a single atomic update: both refs
       # land or neither does. Avoids leaving a release commit on main with no tag

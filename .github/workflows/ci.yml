@@ -12,7 +12,11 @@ on:
       - 'scripts/**'
       - 'tools/**'
       - 'pyproject.toml'
-      - 'uv.lock'
+      - 'uv.lock.public'
+      - 'uv.lock.jfrog'
+      - 'uv-public.toml'
+      - 'uv-jfrog.toml'
+      - 'scripts/use-lock.sh'
       - '.github/workflows/ci.yml'
       - '.pre-commit-config.yaml'
   pull_request:
@@ -25,7 +29,11 @@ on:
       - 'scripts/**'
       - 'tools/**'
       - 'pyproject.toml'
-      - 'uv.lock'
+      - 'uv.lock.public'
+      - 'uv.lock.jfrog'
+      - 'uv-public.toml'
+      - 'uv-jfrog.toml'
+      - 'scripts/use-lock.sh'
       - '.github/workflows/ci.yml'
       - '.pre-commit-config.yaml'
   schedule:
@@ -55,11 +63,18 @@ jobs:
         # within [tool.uv] required-version in pyproject.toml.
         version: "0.9.5"
         enable-cache: true
-        cache-dependency-glob: "uv.lock"
+        # The two-lockfile pattern (docs/DEV_SETUP.md) keeps `uv.lock` local
+        # and untracked; CI hydrates it from `uv.lock.public` before every
+        # `uv sync`. Cache invalidates on the tracked file that actually
+        # drives the resolved set on this runner.
+        cache-dependency-glob: "uv.lock.public"
 
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
 
+
+    - name: Hydrate uv.lock from uv.lock.public (two-lockfile pattern)
+      run: ./scripts/use-lock.sh public
 
     - name: Install dependencies
       run: uv sync --dev --locked
@@ -90,7 +105,11 @@ jobs:
       with:
         version: "0.9.5"
         enable-cache: true
-        cache-dependency-glob: "uv.lock"
+        # The two-lockfile pattern (docs/DEV_SETUP.md) keeps `uv.lock` local
+        # and untracked; CI hydrates it from `uv.lock.public` before every
+        # `uv sync`. Cache invalidates on the tracked file that actually
+        # drives the resolved set on this runner.
+        cache-dependency-glob: "uv.lock.public"
 
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
@@ -166,11 +185,18 @@ jobs:
         # within [tool.uv] required-version in pyproject.toml.
         version: "0.9.5"
         enable-cache: true
-        cache-dependency-glob: "uv.lock"
+        # The two-lockfile pattern (docs/DEV_SETUP.md) keeps `uv.lock` local
+        # and untracked; CI hydrates it from `uv.lock.public` before every
+        # `uv sync`. Cache invalidates on the tracked file that actually
+        # drives the resolved set on this runner.
+        cache-dependency-glob: "uv.lock.public"
 
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
 
+
+    - name: Hydrate uv.lock from uv.lock.public (two-lockfile pattern)
+      run: ./scripts/use-lock.sh public
 
     - name: Install dependencies
       run: |
@@ -262,11 +288,18 @@ jobs:
         # within [tool.uv] required-version in pyproject.toml.
         version: "0.9.5"
         enable-cache: true
-        cache-dependency-glob: "uv.lock"
+        # The two-lockfile pattern (docs/DEV_SETUP.md) keeps `uv.lock` local
+        # and untracked; CI hydrates it from `uv.lock.public` before every
+        # `uv sync`. Cache invalidates on the tracked file that actually
+        # drives the resolved set on this runner.
+        cache-dependency-glob: "uv.lock.public"
 
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
 
+
+    - name: Hydrate uv.lock from uv.lock.public (two-lockfile pattern)
+      run: ./scripts/use-lock.sh public
 
     - name: Install dependencies
       run: |
@@ -376,11 +409,18 @@ jobs:
         # within [tool.uv] required-version in pyproject.toml.
         version: "0.9.5"
         enable-cache: true
-        cache-dependency-glob: "uv.lock"
+        # The two-lockfile pattern (docs/DEV_SETUP.md) keeps `uv.lock` local
+        # and untracked; CI hydrates it from `uv.lock.public` before every
+        # `uv sync`. Cache invalidates on the tracked file that actually
+        # drives the resolved set on this runner.
+        cache-dependency-glob: "uv.lock.public"
 
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
 
+
+    - name: Hydrate uv.lock from uv.lock.public (two-lockfile pattern)
+      run: ./scripts/use-lock.sh public
 
     - name: Install dependencies
       run: |

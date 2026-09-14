@@ -17,6 +17,8 @@ on:
       - tolokaforge_models/src/tolokaforge_models/data/pricing.json
       - tolokaforge_models/src/tolokaforge_models/certificates/registry.py
       - uv.lock
+      - uv.lock.public
+      - uv.lock.jfrog
       - docs/**
       - CHANGELOG.md
   issue_comment:
@@ -106,7 +108,8 @@ jobs:
             7. ROOT CLEANLINESS: New files in the repo root must be on
                this allow-list — README.md, LICENSE, CHANGELOG.md,
                CONTRIBUTING.md, CONTRIBUTORS.md, CITATION.*, CLAUDE.md,
-               AGENTS.md, pyproject.toml, uv.lock, Makefile,
+               AGENTS.md, pyproject.toml, uv.lock.public, uv.lock.jfrog,
+               uv-public.toml, uv-jfrog.toml, Makefile,
                docker-compose.yaml, and dotfiles (.gitignore,
                .pre-commit-config.yaml, etc.).
 

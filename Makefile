@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help cbm-onboard cbm-offboard use-jfrog use-public
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help cbm-onboard cbm-offboard use-jfrog use-public refresh-locks
 
 # =============================================================================
 # Installation (using uv)
@@ -30,6 +30,17 @@ use-jfrog:
 
 use-public:
 	@./scripts/use-lock.sh public
+
+# Regenerate BOTH committed lockfiles from the current pyproject.toml.
+# Requires network reach to pypi.org AND toloka.jfrog.io. Run this on a
+# Toloka Mac after cutting a release (the release workflow only refreshes
+# uv.lock.public); commit the updated uv.lock.jfrog as a follow-up.
+refresh-locks:
+	uv lock --config-file uv-jfrog.toml
+	cp uv.lock uv.lock.jfrog
+	uv lock --config-file uv-public.toml
+	cp uv.lock uv.lock.public
+	@echo "Refreshed both uv.lock.jfrog and uv.lock.public"
 
 # =============================================================================
 # Testing

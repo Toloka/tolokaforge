@@ -192,13 +192,13 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          cache-dependency-glob: "uv.lock.public"
 
       - name: Install Python
         run: uv python install "$(cat .python-version)"
 
       - name: Install dependencies
-        run: uv sync --dev --locked
+        run: ./scripts/use-lock.sh public && uv sync --dev --locked
 
       # The keyless image-level rc-smoke module referenced here ships alongside
       # this workflow (tests/integration/deploy/test_published_images_rc_smoke.py)

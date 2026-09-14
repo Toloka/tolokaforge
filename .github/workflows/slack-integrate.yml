@@ -101,9 +101,9 @@ jobs:
         with:
           version: "0.9.5"
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          cache-dependency-glob: "uv.lock.public"
       - run: uv python install "$(cat .python-version)"
-      - run: uv sync --dev --locked
+      - run: ./scripts/use-lock.sh public && uv sync --dev --locked
 
       - name: Poll the channel and resolve requests
         # Reads history, resolves each @bot integrate request, posts one threaded reply per

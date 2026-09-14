@@ -69,13 +69,13 @@ jobs:
         with:
           version: "0.9.5"
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          cache-dependency-glob: "uv.lock.public"
 
       - name: Set up Python (pinned in .python-version)
         run: uv python install "$(cat .python-version)"
 
       - name: Install dependencies
-        run: uv sync --dev --locked
+        run: ./scripts/use-lock.sh public && uv sync --dev --locked
 
       - name: Install terminal-bench adapter
         # The adapter is a workspace member; installing it editable makes the

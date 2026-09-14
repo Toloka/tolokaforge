@@ -35,8 +35,9 @@ A real run executes `cz bump`, which:
 
 1. Bumps `[project].version` in `pyproject.toml`.
 2. Regenerates `CHANGELOG.md` from the Conventional Commit history.
-3. Relocks `uv.lock` to the new version (a commitizen pre-bump hook) and folds it
-   into the release commit.
+3. Relocks `uv.lock.public` to the new version (a commitizen pre-bump hook) and
+   folds it into the release commit. See "Refreshing the JFrog lockfile after a
+   release" below for the companion `uv.lock.jfrog` refresh ritual.
 4. Commits `chore(release): bump version to X.Y.Z`.
 5. Creates and pushes the annotated `vX.Y.Z` tag.
 
@@ -92,8 +93,8 @@ A real run enters the `tolokaforge_models/` directory and executes
    `tolokaforge_models/src/tolokaforge_models/__init__.py` `__version__`.
 2. Regenerates `tolokaforge_models/CHANGELOG.md` from the Conventional
    Commit history.
-3. Relocks the workspace-root `uv.lock` (a commitizen pre-bump hook) and
-   folds it into the release commit.
+3. Relocks the workspace-root `uv.lock.public` (a commitizen pre-bump hook)
+   and folds it into the release commit.
 4. Commits `chore(models-release): bump tolokaforge-models to X.Y.Z`.
 5. Creates and pushes the annotated `models-vX.Y.Z` tag.
 
@@ -358,9 +359,40 @@ engine see a startup `RuntimeError` naming both versions. Land the
 matching engine minor bump in the same release cycle, and call the
 migration out in the CHANGELOG.
 
+## Refreshing the JFrog lockfile after a release
+
+The release workflow runs on GitHub-hosted runners, which can reach
+`pypi.org` but not `toloka.jfrog.io` (no JFrog credentials in that
+environment). The cz `pre_bump_hooks` therefore only regenerate
+`uv.lock.public`, and `uv.lock.jfrog` grows stale by one version each
+release.
+
+Refresh it manually on the next working day after cutting a release:
+
+```bash
+git checkout main && git pull
+make refresh-locks
+git diff -- uv.lock.jfrog  # sanity-check: only per-package URL/hash + this project's version differ
+git commit -am "chore: refresh uv.lock.jfrog after vX.Y.Z release"
+git push
+```
+
+The `refresh-locks` target regenerates both lockfiles from the current
+`pyproject.toml`; the `uv.lock.public` diff should be empty (CI already
+wrote it) and the `uv.lock.jfrog` diff is one-per-release. Run from any
+Toloka Mac with the JFrog netrc entry configured
+([docs/DEV_SETUP.md](DEV_SETUP.md#configuring-pip--uv-defaults)).
+
+If nobody refreshes for several releases, Toloka-Mac devs will still be
+able to install by regenerating `uv.lock.jfrog` locally
+(`uv lock --config-file uv-jfrog.toml && cp uv.lock uv.lock.jfrog`), but
+committed drift is easier to reason about — keep it fresh.
+
 ## See also
 
 - [Standalone Runner Guide](STANDALONE_RUNNER.md#published-images) — the published
   image tag axis and how consumers pull the images.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — Conventional Commits, the input the
   automated bump reads.
+- [`docs/DEV_SETUP.md`](DEV_SETUP.md) — the two-lockfile pattern, which flavour
+  belongs on which environment, and how personal pip/uv config interacts.

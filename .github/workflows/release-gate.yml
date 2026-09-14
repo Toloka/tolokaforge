@@ -28,7 +28,7 @@ jobs:
           # within [tool.uv] required-version in pyproject.toml.
           version: "0.9.5"
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          cache-dependency-glob: "uv.lock.public"
 
       - name: Set up Python (pinned in .python-version)
         run: uv python install "$(cat .python-version)"
@@ -36,6 +36,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          ./scripts/use-lock.sh public
           uv sync --dev
 
       - name: Install Playwright browsers
