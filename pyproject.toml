@@ -756,6 +756,22 @@ dev = [
 # every uv patch; the CI pin in .github/workflows/ci.yml lives inside this range.
 required-version = ">=0.9.5,<0.10"
 
+# uv's build-isolation resolver (the one that spins up a fresh venv to build
+# any sdist) reads its index from ``[tool.uv.pip]`` below, not from
+# ``[[tool.uv.index]]`` or the top-level ``[tool.uv] index-url``. Without a
+# setting here, it hardcodes ``pypi.org`` and blows past any personal or env
+# override — which surfaces on Toloka Macs where Defender blocks
+# ``files.pythonhosted.org`` (details in docs/DEV_SETUP.md).
+#
+# Public PyPI is the safe DEFAULT here (CI runners + external contributors +
+# GH Codespaces all reach it directly). Internal Toloka contributors override
+# this by keeping their personal ``~/.pip/pip.conf`` pointing at the JFrog
+# ``pypi-virtual`` mirror (the Claude plugin from ``#team-tech`` writes that
+# config; verified empirically that the personal override wins for
+# build-isolation).
+[tool.uv.pip]
+index-url = "https://pypi.org/simple/"
+
 [tool.uv.workspace]
 members = [
     "tolokaforge_models",

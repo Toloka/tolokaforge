@@ -106,6 +106,22 @@ announcement in `#team-tech`).
 The two-lockfile pattern in this repo is independent of these personal
 defaults — the `--config-file` flag on `uv lock` always overrides them.
 
+### Why the personal `~/.pip/pip.conf` matters for build-isolation
+
+There is one place where `~/.pip/pip.conf` **is not optional** for
+Toloka Mac devs: uv's build-isolation resolver. When `uv sync` reaches
+a package that only ships as an sdist, it spins up a fresh venv to
+compile it; that venv's resolver reads from a *separate* config surface
+than the top-level `uv.lock` URLs. In this repo, `pyproject.toml`
+declares `[tool.uv.pip] index-url = "https://pypi.org/simple/"` (safe
+public default, works on CI + external contributors); the personal
+`~/.pip/pip.conf` `index-url = <JFrog>` overrides it for build-iso, so
+Toloka Macs resolve build-time deps through the mirror. Without the
+personal `pip.conf` override, `uv sync --dev` on a Toloka Mac fails at
+the first sdist build because the default pypi.org would try to reach
+`files.pythonhosted.org`, which Defender blocks. The Claude plugin from
+the migration announcement writes this `pip.conf` for you.
+
 ## FAQ
 
 **Q: I'm on a Toloka Mac. Why doesn't `uv sync` "just work" against the
