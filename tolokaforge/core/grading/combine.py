@@ -388,8 +388,13 @@ class GradingEngine:
             )
             score, reason = self.state_checker.check_hash(
                 db_state,
-                state_digest(initial_state, numeric_string_fields=checks.numeric_string_fields),
+                state_digest(
+                    initial_state,
+                    numeric_string_fields=checks.numeric_string_fields,
+                    auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                ),
                 numeric_string_fields=checks.numeric_string_fields,
+                auto_mask_clock_columns=checks.auto_mask_clock_columns,
             )
             reasons = [reason]
         elif not hash_config.golden_actions:
@@ -414,6 +419,7 @@ class GradingEngine:
                     task_domain=self.task_domain,
                     numeric_string_fields=checks.numeric_string_fields,
                     compare_columns=checks.compare_columns,
+                    auto_mask_clock_columns=checks.auto_mask_clock_columns,
                 )
             )
             reasons = [reason]

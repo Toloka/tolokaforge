@@ -11,7 +11,9 @@ pytestmark = pytest.mark.unit
 
 from tolokaforge.core.grading.state_checks import state_digest
 from tolokaforge.core.hash import (
+    AUTO_MASKED_CLOCK_COLUMNS,
     ColumnCompareRule,
+    apply_auto_clock_mask,
     apply_compare_columns_equivalences,
     apply_compare_columns_extras,
     apply_compare_columns_ordering,
@@ -457,6 +459,99 @@ class TestUnorderedRowsAtHash:
         rules = {"notifications": {"id": ColumnCompareRule(treat_empty_string_as_null=True)}}
         result = apply_compare_columns_ordering(state, rules)
         assert result["notifications"] == state["notifications"]
+
+
+class TestAutoMaskClockColumns:
+    """H8a/b/c — conventional write-time clock columns (``updated_at``,
+    ``last_modified_date`` …) drop from every row on both sides when the pack
+    opts into :data:`AUTO_MASKED_CLOCK_COLUMNS`.
+    """
+
+    def test_default_off_still_fails_on_clock_diff(self):
+        """Baseline: without the flag, a differing clock column disagrees."""
+        actual = {"cases": [{"id": "1", "updated_at": "2026-09-14T13:00:05Z"}]}
+        expected = {"cases": [{"id": "1", "updated_at": "2026-09-14T13:00:00Z"}]}
+        assert compute_stable_hash(actual) != compute_stable_hash(expected)
+
+    def test_declared_flag_folds_differing_clocks_via_compute_stable_hash(self):
+        actual = {"cases": [{"id": "1", "updated_at": "2026-09-14T13:00:05Z"}]}
+        expected = {"cases": [{"id": "1", "updated_at": "2026-09-14T13:00:00Z"}]}
+        assert compute_stable_hash(actual, auto_mask_clock_columns=True) == compute_stable_hash(
+            expected, auto_mask_clock_columns=True
+        )
+
+    def test_declared_flag_folds_differing_clocks_via_state_digest(self):
+        """Core substrate agrees with runner substrate on the mask."""
+        actual = {"cases": [{"id": "1", "last_modified_date": "2026-09-14T13:00:05Z"}]}
+        expected = {"cases": [{"id": "1", "last_modified_date": "2026-09-14T13:00:00Z"}]}
+        assert state_digest(actual, auto_mask_clock_columns=True) == state_digest(
+            expected, auto_mask_clock_columns=True
+        )
+
+    def test_declared_flag_still_fails_on_real_content_diff(self):
+        """The mask drops clock columns; a real content diff still fails."""
+        actual = {"cases": [{"id": "1", "status": "open", "updated_at": "2026-09-14T13:00:05Z"}]}
+        expected = {
+            "cases": [{"id": "1", "status": "closed", "updated_at": "2026-09-14T13:00:00Z"}]
+        }
+        assert compute_stable_hash(actual, auto_mask_clock_columns=True) != compute_stable_hash(
+            expected, auto_mask_clock_columns=True
+        )
+
+    def test_composes_with_pack_unstable_fields(self):
+        """A pack-declared ``unstable_fields`` mask still drops what it drops;
+        the auto mask covers the clock columns the pack forgot. Both fold to
+        the same state on both sides.
+        """
+        actual = {
+            "cases": [
+                {
+                    "id": "1",
+                    "updated_at": "2026-09-14T13:00:05Z",
+                    "notes": "short answer A",
+                }
+            ]
+        }
+        expected = {
+            "cases": [
+                {
+                    "id": "1",
+                    "updated_at": "2026-09-14T13:00:00Z",
+                    "notes": "short answer B",
+                }
+            ]
+        }
+        # Pack-declared mask alone: clock is ignored by our new flag,
+        # but "notes" (which the pack itself decided to mask) still diverges
+        # only under the pack mask, and NOT under the auto mask on its own.
+        assert compute_stable_hash(
+            actual,
+            unstable_fields=["cases.notes"],
+            auto_mask_clock_columns=True,
+        ) == compute_stable_hash(
+            expected,
+            unstable_fields=["cases.notes"],
+            auto_mask_clock_columns=True,
+        )
+
+    def test_covers_every_declared_clock_column(self):
+        """Every name in :data:`AUTO_MASKED_CLOCK_COLUMNS` is dropped."""
+        for column in AUTO_MASKED_CLOCK_COLUMNS:
+            actual = {"t": [{"id": "1", column: "2026-09-14T13:00:05Z"}]}
+            expected = {"t": [{"id": "1", column: "2026-09-14T13:00:00Z"}]}
+            assert compute_stable_hash(actual, auto_mask_clock_columns=True) == compute_stable_hash(
+                expected, auto_mask_clock_columns=True
+            ), column
+
+    def test_apply_auto_clock_mask_leaves_nonclock_columns_alone(self):
+        """Direct helper contract: only known clock names are dropped."""
+        state = {
+            "t": [
+                {"id": "1", "updated_at": "x", "note": "keep", "created_at": "keep-too"},
+            ]
+        }
+        result = apply_auto_clock_mask(state)
+        assert result["t"][0].keys() == {"id", "note", "created_at"}
 
 
 # ---------------------------------------------------------------------------

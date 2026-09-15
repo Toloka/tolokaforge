@@ -2672,13 +2672,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
         numeric_string_fields = state_checks.numeric_string_fields
         compare_columns = state_checks.compare_columns
-        # When the pack declared per-column subset rules we defer hashing until
-        # after the golden replay so both raw states are in hand and the
-        # asymmetric filter has both sides. Fast server-side get_stable_hash is
-        # preserved for the common empty-compare_columns case AND for the
-        # inert-declaration case (``{table: {}}``) — an outer dict with no rules
-        # inside is behaviourally identical to no config at all.
-        client_side_hash = any(column_rules for column_rules in compare_columns.values())
+        auto_mask_clock_columns = state_checks.auto_mask_clock_columns
+        # When the pack declared per-column subset rules OR the auto clock-
+        # column mask we defer hashing until after the golden replay so both
+        # raw states are in hand and the filter has both sides. Fast server-
+        # side get_stable_hash is preserved for the common empty-compare_columns
+        # / no-clock-mask case AND for the inert-declaration case
+        # (``{table: {}}``) — an outer dict with no rules inside is
+        # behaviourally identical to no config at all.
+        client_side_hash = auto_mask_clock_columns or any(
+            column_rules for column_rules in compare_columns.values()
+        )
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
             candidates=trial_context.agent_tools.keys(),
@@ -2838,10 +2842,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 golden_state_folded, compare_columns
             )
             trial_hash = compute_stable_hash(
-                trial_state_folded, numeric_string_fields=numeric_string_fields
+                trial_state_folded,
+                numeric_string_fields=numeric_string_fields,
+                auto_mask_clock_columns=auto_mask_clock_columns,
             )
             golden_hash = compute_stable_hash(
-                golden_state_folded, numeric_string_fields=numeric_string_fields
+                golden_state_folded,
+                numeric_string_fields=numeric_string_fields,
+                auto_mask_clock_columns=auto_mask_clock_columns,
             )
             logger.debug(
                 f"GradeTrial: Client-side hashes computed (compare_columns applied) "

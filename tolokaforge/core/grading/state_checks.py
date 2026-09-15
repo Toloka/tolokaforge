@@ -20,6 +20,7 @@ from tolokaforge.core.grading.golden_replay import (
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import (
     ColumnCompareRule,
+    apply_auto_clock_mask,
     apply_compare_columns_equivalences,
     apply_compare_columns_extras,
     apply_compare_columns_ordering,
@@ -100,7 +101,12 @@ def consistent_hash(value: Hashable) -> str:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
-def state_digest(state: dict[str, Any], *, numeric_string_fields: list[str] | None = None) -> str:
+def state_digest(
+    state: dict[str, Any],
+    *,
+    numeric_string_fields: list[str] | None = None,
+    auto_mask_clock_columns: bool = False,
+) -> str:
     """The digest core writes a state in, for either side of one comparison.
 
     Both sides of a hash verdict go through here, so a caller holding the expected state
@@ -114,7 +120,14 @@ def state_digest(state: dict[str, Any], *, numeric_string_fields: list[str] | No
     every state differently while agreeing on which states are equal — so a
     comparison computes both sides on one substrate, and a digest never crosses to
     the other.
+
+    ``auto_mask_clock_columns`` (opt-in) drops every column named in
+    :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS` from every table row
+    before hashing. Symmetric with the runner's ``compute_stable_hash`` flag so
+    the two substrates continue to agree on which states are equal.
     """
+    if auto_mask_clock_columns:
+        state = apply_auto_clock_mask(state)
     string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
     return consistent_hash(to_hashable(state, string_fields))
 
@@ -341,6 +354,7 @@ class StateChecker:
         expected_hash: str,
         *,
         numeric_string_fields: list[str] | None = None,
+        auto_mask_clock_columns: bool = False,
     ) -> tuple[float, str]:
         """
         Check state hash against expected using tau-bench algorithm
@@ -350,12 +364,19 @@ class StateChecker:
             expected_hash: Expected SHA256 hash of normalized state
             numeric_string_fields: Record field names whose numeric-looking
                 string values fold when hashing (per-field opt-in).
+            auto_mask_clock_columns: Drop conventional write-time clock
+                columns from every row before hashing (per-task opt-in). Both
+                sides of one comparison must pass the same value.
 
         Returns:
             (score 0 or 1, reason)
         """
         try:
-            actual_hash = state_digest(state, numeric_string_fields=numeric_string_fields)
+            actual_hash = state_digest(
+                state,
+                numeric_string_fields=numeric_string_fields,
+                auto_mask_clock_columns=auto_mask_clock_columns,
+            )
 
             if actual_hash == expected_hash:
                 return 1.0, "State hash matches (tau-bench algorithm)"
@@ -480,6 +501,7 @@ class StateChecker:
         *,
         numeric_string_fields: list[str] | None = None,
         compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
+        auto_mask_clock_columns: bool = False,
     ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
@@ -498,6 +520,10 @@ class StateChecker:
                 dropped from ``db_state`` before hashing when the golden's row for
                 the same column does not carry them. See
                 :func:`tolokaforge.core.hash.apply_compare_columns_extras`.
+            auto_mask_clock_columns: Drop conventional write-time clock columns
+                (``updated_at``, ``last_modified_date``, ...) from every row on
+                both sides before hashing. Composes with pack-declared
+                ``unstable_fields``; see :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
 
         Returns:
             (score 0 or 1, reason, diff_result dict or None, replay record). The verdict
@@ -545,9 +571,15 @@ class StateChecker:
 
         # Compute hashes
         expected_hash = state_digest(
-            expected_state_folded, numeric_string_fields=numeric_string_fields
+            expected_state_folded,
+            numeric_string_fields=numeric_string_fields,
+            auto_mask_clock_columns=auto_mask_clock_columns,
         )
-        actual_hash = state_digest(db_state_folded, numeric_string_fields=numeric_string_fields)
+        actual_hash = state_digest(
+            db_state_folded,
+            numeric_string_fields=numeric_string_fields,
+            auto_mask_clock_columns=auto_mask_clock_columns,
+        )
 
         # Calculate diff if states don't match
         diff_result = None

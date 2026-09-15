@@ -440,6 +440,16 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         wire_shape="list[str]",
     ),
     _WireKey(
+        path="grading.state_checks.auto_mask_clock_columns",
+        emitted_for="grading.state_checks",
+        wire_shape="bool",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="state_checks.auto_mask_clock_columns",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
+    _WireKey(
         path="grading.state_checks.id_fields",
         emitted_for="grading.state_checks",
         wire_shape="dict[str, str | list[str]]",

@@ -513,6 +513,59 @@ def _convert_datetime_to_str(data: Any) -> Any:
         return data
 
 
+#: Column names whose values are auto-generated write-time clocks — dropped
+#: everywhere they appear as record keys when
+#: ``state_checks.auto_mask_clock_columns`` is enabled. The seven names cover
+#: the Salesforce / D365 / Zendesk conventions the arena v3 sweep surfaced
+#: (H8a/b/c). All matched case-sensitively at the exact record-key level; a
+#: nested field named ``updated_at`` inside a JSON payload is not touched
+#: (record keys sit at the table row's top level, one nesting layer inside
+#: the state dict). Extending the set is a wire-lock change.
+AUTO_MASKED_CLOCK_COLUMNS: frozenset[str] = frozenset(
+    {
+        "updated_at",
+        "updated_on",
+        "last_modified",
+        "last_modified_date",
+        "modified_at",
+        "modified_on",
+    }
+)
+
+
+def apply_auto_clock_mask(state: dict[str, Any]) -> dict[str, Any]:
+    """Return ``state`` with every :data:`AUTO_MASKED_CLOCK_COLUMNS` key
+    dropped from every table row (list-of-dicts) or single-row table (dict).
+
+    Symmetric — every caller runs it on both trial and golden sides before
+    hashing, so a clock column present on one side but not the other, or
+    holding two different timestamps for the same content, folds to the
+    same absent-column state on both. Composes with ``unstable_fields``:
+    a pack-declared mask still drops what it drops, this one drops the
+    clock columns the pack forgot.
+
+    Returned dict is a shallow copy; row dicts that carried none of the
+    masked columns share references with the input.
+    """
+    if not isinstance(state, dict):
+        return state
+    result: dict[str, Any] = dict(state)
+    for table, table_data in state.items():
+        if isinstance(table_data, list):
+            result[table] = [_drop_clock_columns_from_row(row) for row in table_data]
+        elif isinstance(table_data, dict):
+            result[table] = _drop_clock_columns_from_row(table_data)
+    return result
+
+
+def _drop_clock_columns_from_row(row: Any) -> Any:
+    if not isinstance(row, dict):
+        return row
+    if not AUTO_MASKED_CLOCK_COLUMNS.intersection(row.keys()):
+        return row
+    return {key: value for key, value in row.items() if key not in AUTO_MASKED_CLOCK_COLUMNS}
+
+
 def filter_unstable_fields(
     state: dict[str, Any],
     unstable_fields: list[str] | None = None,
@@ -593,6 +646,7 @@ def compute_stable_hash(
     *,
     canonicalize_numbers: bool = True,
     numeric_string_fields: Iterable[str] | None = None,
+    auto_mask_clock_columns: bool = False,
 ) -> str:
     """
     Compute a stable SHA-256 hash of the state dictionary.
@@ -634,6 +688,11 @@ def compute_stable_hash(
             quantity fields a task declares here (grading config
             ``state_checks.numeric_string_fields``). Matched by the immediate
             record key at any depth. Ignored when canonicalize_numbers is False.
+        auto_mask_clock_columns: When True, drop every column named in
+            :data:`AUTO_MASKED_CLOCK_COLUMNS` from every table row before
+            hashing. Composes with ``unstable_fields`` — pack-declared masks
+            still apply on top of this one. Grading config
+            ``state_checks.auto_mask_clock_columns``.
 
     Returns:
         Hexadecimal string of the SHA-256 hash
@@ -650,6 +709,10 @@ def compute_stable_hash(
     if unstable_fields:
         logger.debug("Filtering unstable fields: %s", unstable_fields)
         state = filter_unstable_fields(state, unstable_fields)
+
+    # Auto-mask conventional write-time clock columns (opt-in).
+    if auto_mask_clock_columns:
+        state = apply_auto_clock_mask(state)
 
     # Convert datetime objects to strings
     serializable_state = _convert_datetime_to_str(state)
