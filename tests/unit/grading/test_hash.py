@@ -14,6 +14,7 @@ from tolokaforge.core.hash import (
     ColumnCompareRule,
     apply_compare_columns_equivalences,
     apply_compare_columns_extras,
+    apply_compare_columns_ordering,
     canonical_number,
     compute_stable_hash,
     filter_unstable_fields,
@@ -373,6 +374,89 @@ class TestEquivalenceFoldsCompose:
         folded_actual = apply_compare_columns_equivalences(filtered, rules)
         folded_expected = apply_compare_columns_equivalences(expected, rules)
         assert _hashes_agree(folded_actual, folded_expected)
+
+
+# ---------------------------------------------------------------------------
+# apply_compare_columns_ordering: per-table row-permutation-insensitive hashing
+# ---------------------------------------------------------------------------
+
+
+class TestUnorderedRowsAtHash:
+    """H4 — a table whose domain semantics are set-of-rows may hash equal on any
+    permutation of the same rows when the pack declares ``order: unordered``.
+
+    Sorting runs after equivalence folds so two rows already declared equal by
+    scalar equivalence sort to the same position.
+    """
+
+    def test_default_ordered_still_fails_on_row_permutation(self):
+        """Baseline: without the flag, a pure permutation disagrees at the hash."""
+        actual = {"notifications": [{"id": "a"}, {"id": "b"}]}
+        expected = {"notifications": [{"id": "b"}, {"id": "a"}]}
+        assert not _hashes_agree(actual, expected)
+
+    def test_unordered_agrees_on_permutation(self):
+        actual = {"notifications": [{"id": "a"}, {"id": "b"}]}
+        expected = {"notifications": [{"id": "b"}, {"id": "a"}]}
+        rules = {"notifications": {"id": ColumnCompareRule(order="unordered")}}
+        assert _hashes_agree(
+            apply_compare_columns_ordering(actual, rules),
+            apply_compare_columns_ordering(expected, rules),
+        )
+
+    def test_unordered_still_fails_on_missing_row(self):
+        """Order-insensitivity is not content-insensitivity — a missing row still fails."""
+        actual = {"notifications": [{"id": "a"}]}
+        expected = {"notifications": [{"id": "b"}, {"id": "a"}]}
+        rules = {"notifications": {"id": ColumnCompareRule(order="unordered")}}
+        assert not _hashes_agree(
+            apply_compare_columns_ordering(actual, rules),
+            apply_compare_columns_ordering(expected, rules),
+        )
+
+    def test_unordered_still_fails_on_extra_row(self):
+        actual = {"notifications": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}
+        expected = {"notifications": [{"id": "b"}, {"id": "a"}]}
+        rules = {"notifications": {"id": ColumnCompareRule(order="unordered")}}
+        assert not _hashes_agree(
+            apply_compare_columns_ordering(actual, rules),
+            apply_compare_columns_ordering(expected, rules),
+        )
+
+    def test_unordered_declaration_on_any_column_covers_the_table(self):
+        """Ordering is a table-level property; declaring it on one column-rule affects the whole row list."""
+        actual = {"notifications": [{"id": "a", "body": "hi"}, {"id": "b", "body": "yo"}]}
+        expected = {"notifications": [{"id": "b", "body": "yo"}, {"id": "a", "body": "hi"}]}
+        rules = {"notifications": {"body": ColumnCompareRule(order="unordered")}}
+        assert _hashes_agree(
+            apply_compare_columns_ordering(actual, rules),
+            apply_compare_columns_ordering(expected, rules),
+        )
+
+    def test_ordering_composes_with_equivalences(self):
+        """Equivalences fold values first; ordering then sees identical rows."""
+        actual = {"tags": [{"id": "a", "custom_tags": None}, {"id": "b", "custom_tags": []}]}
+        expected = {"tags": [{"id": "b", "custom_tags": None}, {"id": "a", "custom_tags": []}]}
+        rules = {
+            "tags": {
+                "custom_tags": ColumnCompareRule(
+                    treat_null_as_empty_collection=True,
+                    order="unordered",
+                )
+            }
+        }
+        folded_actual = apply_compare_columns_equivalences(actual, rules)
+        folded_expected = apply_compare_columns_equivalences(expected, rules)
+        sorted_actual = apply_compare_columns_ordering(folded_actual, rules)
+        sorted_expected = apply_compare_columns_ordering(folded_expected, rules)
+        assert _hashes_agree(sorted_actual, sorted_expected)
+
+    def test_ordering_untouched_when_no_rule_declares_unordered(self):
+        """A table whose only rules are equivalence-only is a no-op for ordering."""
+        state = {"notifications": [{"id": "a"}, {"id": "b"}]}
+        rules = {"notifications": {"id": ColumnCompareRule(treat_empty_string_as_null=True)}}
+        result = apply_compare_columns_ordering(state, rules)
+        assert result["notifications"] == state["notifications"]
 
 
 # ---------------------------------------------------------------------------

@@ -75,6 +75,7 @@ from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatch
 from tolokaforge.core.hash import (
     apply_compare_columns_equivalences,
     apply_compare_columns_extras,
+    apply_compare_columns_ordering,
     compute_stable_hash,
 )
 from tolokaforge.core.models import (
@@ -2831,6 +2832,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             golden_state_folded = apply_compare_columns_equivalences(
                 golden_state_raw, compare_columns
+            )
+            trial_state_folded = apply_compare_columns_ordering(trial_state_folded, compare_columns)
+            golden_state_folded = apply_compare_columns_ordering(
+                golden_state_folded, compare_columns
             )
             trial_hash = compute_stable_hash(
                 trial_state_folded, numeric_string_fields=numeric_string_fields

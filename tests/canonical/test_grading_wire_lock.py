@@ -494,6 +494,12 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 since=_UNRELEASED,
                 breadth="a pack folding empty-string and null on a column",
             ),
+            _DocLock(
+                doc_key='state_checks.compare_columns.<table>.<column>.order == "unordered"',
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring a table's rows are a set (row-permutation-insensitive)",
+            ),
         ),
     ),
     _WireKey(

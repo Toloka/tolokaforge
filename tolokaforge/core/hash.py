@@ -49,6 +49,16 @@ class ColumnCompareRule(BaseModel):
     value-for-value. Mirrors the trace comparator's ``compare_args`` shape on
     ``RequiredAction``.
 
+    **Collection order** (``order: unordered``): the enclosing table's row
+    list is treated as a set — the comparator sorts rows on both sides by
+    canonical JSON before hashing so a pure row-permutation stops failing
+    the hash (H4: qsr ``send_notification_notifications``, marketplace
+    ``HC-006``, tau allocations). Set on any one column-rule of the table;
+    the ordering effect is table-wide, since row order is the property of
+    the row list, not of a single column. Default ``ordered`` keeps
+    positional-list semantics — the same shape every unmigrated column has
+    today.
+
     **Scalar equivalences** (``treat_null_as_empty_collection``,
     ``normalize_timezone_suffix``, ``treat_empty_string_as_null``): the
     column's scalar value is canonicalized to a single form before hashing on
@@ -80,6 +90,8 @@ class ColumnCompareRule(BaseModel):
         state_checks:
           compare_columns:
             send_notification_notifications:
+              notification_id:
+                order: unordered
               params:
                 mode: subset
                 extras_allowed_for: [param_case_number]
@@ -98,6 +110,7 @@ class ColumnCompareRule(BaseModel):
 
     mode: Literal["subset"] | None = None
     extras_allowed_for: list[str] = []
+    order: Literal["ordered", "unordered"] = "ordered"
     treat_null_as_empty_collection: bool = False
     normalize_timezone_suffix: bool = False
     treat_empty_string_as_null: bool = False
@@ -298,6 +311,55 @@ def apply_compare_columns_equivalences(
             result[table] = [_fold_row(row, rules_with_equivalence) for row in table_data]
         elif isinstance(table_data, dict):
             result[table] = _fold_row(table_data, rules_with_equivalence)
+    return result
+
+
+def apply_compare_columns_ordering(
+    state: dict[str, Any],
+    compare_columns: dict[str, dict[str, "ColumnCompareRule"]] | None,
+) -> dict[str, Any]:
+    """Return ``state`` with each row list sorted for tables the pack declares unordered.
+
+    Row order matters to :func:`compute_stable_hash` by default — a
+    permutation on the same rows hashes differently. For tables whose
+    domain semantics are set-of-rows, the pack opts in via ``order:
+    unordered`` on any one column-rule of the table; this pass then sorts
+    the table's row list on both sides so a pure permutation stops
+    failing the hash.
+
+    Sort key is the canonical JSON serialization of the whole row — order
+    is stable, hash-safe, and does not depend on which column carries the
+    declaration. Rows that fail to serialize (non-JSON-safe values) fall
+    back to the row's repr; the state hash later rejects any actually
+    unhashable content on its own path.
+
+    The returned dict is a shallow copy — tables absent from
+    ``compare_columns`` share list references with the input rather than
+    being deep-copied. Callers that hash the result
+    (:func:`compute_stable_hash`) and discard it — the only supported
+    use — are unaffected.
+
+    Must run after :func:`apply_compare_columns_equivalences` so scalar
+    equivalences collapse to their canonical token before the sort sees
+    them; otherwise two rows a pack has already declared equal by
+    equivalence could sort into different positions.
+    """
+    if not compare_columns:
+        return state
+
+    def _row_sort_key(row: Any) -> str:
+        try:
+            return json.dumps(row, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            return repr(row)
+
+    result = dict(state)
+    for table, column_rules in compare_columns.items():
+        if not any(rule.order == "unordered" for rule in column_rules.values()):
+            continue
+        table_data = result.get(table)
+        if isinstance(table_data, list):
+            result[table] = sorted(table_data, key=_row_sort_key)
     return result
 
 

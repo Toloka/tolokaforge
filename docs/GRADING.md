@@ -1324,6 +1324,7 @@ reject it.
 | `state_checks.compare_columns.<table>.<column>.treat_null_as_empty_collection` | a pack folding null and empty-collection on a column | `unreleased` | new engine → old image |
 | `state_checks.compare_columns.<table>.<column>.normalize_timezone_suffix` | a pack folding trailing-Z / naive datetime strings on a column | `unreleased` | new engine → old image |
 | `state_checks.compare_columns.<table>.<column>.treat_empty_string_as_null` | a pack folding empty-string and null on a column | `unreleased` | new engine → old image |
+| `state_checks.compare_columns.<table>.<column>.order == "unordered"` | a pack declaring a table's rows are a set (row-permutation-insensitive) | `unreleased` | new engine → old image |
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
 | `search.plane` | every pack | `unreleased` | new engine → old image |

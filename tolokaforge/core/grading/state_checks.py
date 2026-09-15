@@ -22,6 +22,7 @@ from tolokaforge.core.hash import (
     ColumnCompareRule,
     apply_compare_columns_equivalences,
     apply_compare_columns_extras,
+    apply_compare_columns_ordering,
     canonical_number,
 )
 from tolokaforge.core.logging import get_logger
@@ -533,6 +534,14 @@ class StateChecker:
         # disagreeing values rather than internal fold tokens.
         db_state_folded = apply_compare_columns_equivalences(db_state, compare_columns)
         expected_state_folded = apply_compare_columns_equivalences(expected_state, compare_columns)
+
+        # Sort row lists on both sides for tables the pack declares unordered.
+        # Runs after the equivalence folds so two rows the pack already
+        # declared equal by equivalence sort to the same position.
+        db_state_folded = apply_compare_columns_ordering(db_state_folded, compare_columns)
+        expected_state_folded = apply_compare_columns_ordering(
+            expected_state_folded, compare_columns
+        )
 
         # Compute hashes
         expected_hash = state_digest(
