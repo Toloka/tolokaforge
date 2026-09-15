@@ -178,6 +178,11 @@ def _make_auto_fail_grader(kind: str) -> Any:
 
 _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, TerminationReason], ...] = (
     # (subclass_kind, trial_status, trajectory_termination_reason, expected_marker)
+    # ``EMPTY_COMPLETION`` no longer synthesises — a provider-side empty
+    # completion classifies as INFRASTRUCTURE_ABORT via
+    # :data:`EXCLUDED_TYPED_REASONS`, so ``TrialGrader.grade`` returns
+    # ``None`` before this synth path can fire. Coverage for that case lives
+    # in ``TestNoVerdictProducesNoGrade`` alongside the other abort reasons.
     ("runner_rpc", TrialStatus.ERROR, None, TerminationReason.ERROR),
     ("runner_rpc", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
     (
@@ -185,12 +190,6 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TrialStatus.COMPLETED,
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
-    ),
-    (
-        "runner_rpc",
-        TrialStatus.FAILED,
-        TerminationReason.EMPTY_COMPLETION,
-        TerminationReason.EMPTY_COMPLETION,
     ),
     ("judge_backed", TrialStatus.ERROR, None, TerminationReason.ERROR),
     ("judge_backed", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
@@ -200,12 +199,6 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
     ),
-    (
-        "judge_backed",
-        TrialStatus.FAILED,
-        TerminationReason.EMPTY_COMPLETION,
-        TerminationReason.EMPTY_COMPLETION,
-    ),
     ("grader_rpc", TrialStatus.ERROR, None, TerminationReason.ERROR),
     ("grader_rpc", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
     (
@@ -214,12 +207,6 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
     ),
-    (
-        "grader_rpc",
-        TrialStatus.FAILED,
-        TerminationReason.EMPTY_COMPLETION,
-        TerminationReason.EMPTY_COMPLETION,
-    ),
     ("queue", TrialStatus.ERROR, None, TerminationReason.ERROR),
     ("queue", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
     (
@@ -227,12 +214,6 @@ _SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, Termination
         TrialStatus.COMPLETED,
         TerminationReason.STUCK_DETECTED,
         TerminationReason.STUCK_DETECTED,
-    ),
-    (
-        "queue",
-        TrialStatus.FAILED,
-        TerminationReason.EMPTY_COMPLETION,
-        TerminationReason.EMPTY_COMPLETION,
     ),
 )
 

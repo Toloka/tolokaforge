@@ -60,6 +60,7 @@ class TrialOutcomeClass(str, Enum):
 EXCLUDED_TYPED_REASONS = frozenset(
     {
         TerminationReason.API_TIMEOUT,
+        TerminationReason.EMPTY_COMPLETION,
         TerminationReason.PROVISION_ERROR,
         TerminationReason.RATE_LIMIT,
     }
@@ -67,10 +68,12 @@ EXCLUDED_TYPED_REASONS = frozenset(
 """The termination reasons that exclude a trial from the measured denominator.
 
 Membership is earned by *typed* evidence: every one of these reasons is
-produced from an exception type or an HTTP status, never from matching prose
-against an exception message. A reason produced by text matching cannot gate
-exclusion — a context-window overflow and a malformed tool schema both read as
-"an API error" — and excluding a trial the agent actually failed inflates every
+produced from an exception type, an HTTP status, or a typed empty-completion
+observation (a ``GenerationResult`` whose ``text`` is empty and whose
+``tool_calls`` list is empty after retries), never from matching prose against
+an exception message. A reason produced by text matching cannot gate exclusion
+— a context-window overflow and a malformed tool schema both read as "an API
+error" — and excluding a trial the agent actually failed inflates every
 benchmark number with nothing in the output to show it. Counting a trial the
 provider killed deflates them instead, visibly and boundedly, so that is the
 direction the tie breaks. ``tests/canonical/test_termination_reason_reachability.py``

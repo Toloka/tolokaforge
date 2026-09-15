@@ -1046,10 +1046,14 @@ contains — on this path it is stamped and most of them are absent.
   plan-shape validation (`materialise_run`), compose-up (`provision`), the
   readiness gate (`await_ready`), the per-trial reset (`reset_recipe`), the
   runner-side registration (`register_trial`), and the between-trial service
-  dispatch (`cycle`) apart without opening a log stream. `error_stage` is
-  present on this bundle and only on this bundle — a `metrics.yaml` from any
-  other trial carries no such key. `provisioning_duration_s` and
-  `captured_service_logs` are absent on this path.
+  dispatch (`cycle`) apart without opening a log stream. The one other value
+  `error_stage` can carry is `judge_missing_verdict` — recorded when a
+  completed trial's grade came back with `judge_status == errored`, i.e. the
+  rubric judge could not produce a verdict; the aggregator reads that key to
+  rejudge exactly those trials without voiding the whole cluster's analysis
+  stage. Outside those two paths a `metrics.yaml` carries no `error_stage`
+  key. `provisioning_duration_s` and `captured_service_logs` are absent on
+  this path.
 * `grade.yaml` — **not written**. The trial body never ran, so there is no
   performance to score; a `0.0` would be indistinguishable from a task the model
   failed. The failure class and reason live in `metrics.yaml`'s `error` /
