@@ -110,6 +110,7 @@ class DefaultSubstrateComposer:
                     limited_internet_allowlist=tuple(manifest.limited_internet_allowlist),
                     restricted_services=manifest.restricted_services,
                     mount_docker_socket=ctx.mount_docker_socket,
+                    expose_substrate=ctx.expose_substrate,
                     log_capture=_run_scope_log_capture(ctx.log_capture),
                     write_compose_env=None,
                     events=ctx.events,
@@ -131,6 +132,7 @@ class DefaultSubstrateComposer:
                 endpoints=None,
                 seeds=ctx.seeds,
                 mount_docker_socket=ctx.mount_docker_socket,
+                expose_substrate=ctx.expose_substrate,
                 log_capture=ctx.log_capture,
                 events=ctx.events,
             )
@@ -162,6 +164,7 @@ class DefaultSubstrateComposer:
             endpoints=endpoints,
             seeds=ctx.seeds,
             mount_docker_socket=ctx.mount_docker_socket,
+            expose_substrate=ctx.expose_substrate,
             log_capture=ctx.log_capture,
             events=ctx.events,
         )
@@ -214,6 +217,7 @@ class DefaultSubstrateComposer:
                 limited_internet_allowlist=tuple(manifest.limited_internet_allowlist),
                 restricted_services=manifest.restricted_services,
                 mount_docker_socket=run_sub.mount_docker_socket,
+                expose_substrate=run_sub.expose_substrate,
                 log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
                 write_compose_env=None,
                 events=run_sub.events,
@@ -240,6 +244,7 @@ class DefaultSubstrateComposer:
                 limited_internet_allowlist=tuple(manifest.limited_internet_allowlist),
                 restricted_services=manifest.restricted_services,
                 mount_docker_socket=run_sub.mount_docker_socket,
+                expose_substrate=run_sub.expose_substrate,
                 log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
                 write_compose_env=WriteComposeEnv(
                     trial_id=spec.trial_id,

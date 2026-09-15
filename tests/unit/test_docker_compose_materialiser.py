@@ -20,6 +20,7 @@ from tolokaforge.core.compose_materialisation import (
     DOCKER_SOCKET_PATH,
     NETPOLICY_EDGE_NETWORK,
     NETPOLICY_INTERNAL_NETWORK,
+    RUNNER_EXPOSE_SUBSTRATE_ENV_VAR,
     TOLOKAFORGE_TRIAL_SLUG_ENV,
 )
 from tolokaforge.core.composition_runtime import (
@@ -166,6 +167,7 @@ def _make_ctx(
     stack_id: str = "default",
     network_policy: NetworkPolicy = NetworkPolicy.NO_INTERNET,
     mount_docker_socket: bool = False,
+    expose_substrate: bool = False,
     log_capture: MaterialiseLogCapture | None = None,
     write_compose_env: WriteComposeEnv | None = None,
     component_id_prefix: str = "engine",
@@ -177,6 +179,7 @@ def _make_ctx(
         limited_internet_allowlist=(),
         restricted_services=frozenset(),
         mount_docker_socket=mount_docker_socket,
+        expose_substrate=expose_substrate,
         log_capture=log_capture,
         write_compose_env=write_compose_env,
         events=_NULL_EVENTS,
@@ -301,6 +304,45 @@ class TestMaterialiseTransforms:
             )
             message = f"mount_docker_socket={want_mount} produced socket_mounted={socket_mounted}"
             assert socket_mounted is want_mount, message
+
+    def test_exposes_substrate_iff_context_requests(self, tmp_path: Path) -> None:
+        """``RUNNER_EXPOSE_SUBSTRATE=true`` lands on the runner iff
+        ``ctx.expose_substrate`` is True."""
+        for want_expose in (True, False):
+            compose_file = _write_compose(tmp_path / f"expose_case_{want_expose}")
+            decl = _make_decl(compose_file)
+            ctx = _make_ctx(expose_substrate=want_expose)
+            materialiser = DockerComposeMaterialiser(docker_compose_factory=_FactoryRecorder())
+
+            handle = materialiser.materialise(decl, ctx)
+
+            written = yaml.safe_load(
+                (Path(handle.temp_dir) / compose_file.name).read_text()  # type: ignore[attr-defined]
+            )
+            env = written["services"]["runner"]["environment"]
+            exposed = RUNNER_EXPOSE_SUBSTRATE_ENV_VAR in env
+            message = f"expose_substrate={want_expose} produced exposed={exposed}"
+            assert exposed is want_expose, message
+
+    def test_skips_substrate_exposure_when_runner_service_none(self, tmp_path: Path) -> None:
+        """A runner-less stack must not receive ``RUNNER_EXPOSE_SUBSTRATE``
+        even when ``ctx.expose_substrate`` is True — the materialiser
+        bypasses ``inject_substrate_env_into_runner`` when
+        ``decl.runner_service is None``."""
+        compose_file = _write_compose(tmp_path)
+        decl = _make_decl(compose_file, runner_service=None, stack_scope="task")
+        ctx = _make_ctx(expose_substrate=True)
+        materialiser = DockerComposeMaterialiser(docker_compose_factory=_FactoryRecorder())
+
+        handle = materialiser.materialise(decl, ctx)
+
+        written = yaml.safe_load(
+            (Path(handle.temp_dir) / compose_file.name).read_text()  # type: ignore[attr-defined]
+        )
+        for svc in written["services"].values():
+            env = svc.get("environment") or {}
+            if isinstance(env, dict):
+                assert RUNNER_EXPOSE_SUBSTRATE_ENV_VAR not in env
 
     def test_writes_env_file_iff_write_compose_env_set(self, tmp_path: Path) -> None:
         """The per-trial ``.env`` is written iff the context carries a

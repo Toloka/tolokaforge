@@ -388,6 +388,44 @@ def mount_docker_socket_into_runner(compose_file: Path, runner_service: str) -> 
         yaml.safe_dump(doc, f, sort_keys=False)
 
 
+RUNNER_EXPOSE_SUBSTRATE_ENV_VAR = "RUNNER_EXPOSE_SUBSTRATE"
+
+
+def inject_substrate_env_into_runner(compose_file: Path, runner_service: str) -> None:
+    """Set ``RUNNER_EXPOSE_SUBSTRATE=true`` on ``runner_service`` in place.
+
+    The built-in shared stack's ``core_stack`` factory sets this variable
+    directly on the engine-owned runner container when
+    ``grader.expose_substrate`` is true; a task-declared compose file has
+    no such factory to opt in on its behalf, so the runner never
+    registers the ``SubstrateService`` servicer and snapshot-mode
+    grade-bundle production fails with ``UNIMPLEMENTED``. Materialisation
+    injects the variable here on the same trigger. Idempotent: an
+    existing declaration of the variable is left as-is.
+
+    Raises ``ValueError`` naming ``runner_service`` when it is absent from
+    the compose doc — unreachable through :class:`EnvironmentManifest`
+    validation, kept so an internal inconsistency is loud rather than
+    silently un-exposed.
+    """
+    with compose_file.open() as f:
+        doc = yaml.safe_load(f)
+    services: dict[str, Any] = doc["services"]
+    if runner_service not in services:
+        raise ValueError(
+            f"runner_service {runner_service!r} is not declared in the compose file "
+            f"{compose_file.name!r}; declared services are {sorted(services)!r}."
+        )
+    service = services[runner_service]
+    if _service_declares_env_var(service.get("environment"), RUNNER_EXPOSE_SUBSTRATE_ENV_VAR):
+        return
+    service["environment"] = _merge_service_env(
+        service.get("environment"), {RUNNER_EXPOSE_SUBSTRATE_ENV_VAR: "true"}
+    )
+    with compose_file.open("w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+
+
 CREDENTIALLED_COMPOSE_MODE = 0o600
 """Mode the materialised compose file is left at once it carries the credential
 payload in cleartext. ``copy_compose_context`` uses ``shutil.copy2``, which

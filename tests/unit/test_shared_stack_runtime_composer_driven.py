@@ -66,6 +66,7 @@ def _make_run_sub(runner_client: Any = None) -> RunSubstrate:
         endpoints=EnvEndpoints(db_url=None, rag_url=None, runner_url="http://x:1"),
         seeds={},
         mount_docker_socket=False,
+        expose_substrate=False,
         log_capture=None,
         events=MagicMock(),
     )

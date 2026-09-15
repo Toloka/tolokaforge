@@ -155,6 +155,7 @@ def _run_composer_scenario_a(
         run_id="run-a",
         manifest=manifest,
         mount_docker_socket=False,
+        expose_substrate=False,
         log_capture=None,
         events=_NULL_EVENTS,
         seeds={},
@@ -258,6 +259,7 @@ def _run_composer_scenario_b(
         endpoints=None,
         seeds={"baseline": seed},
         mount_docker_socket=False,
+        expose_substrate=False,
         log_capture=None,
         events=_NULL_EVENTS,
     )

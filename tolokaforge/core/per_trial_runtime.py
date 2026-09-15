@@ -49,10 +49,10 @@ class PerTrialRuntimeBackend:
     Delegates every method to an internal
     :class:`SharedStackRuntimeBackend` in per-trial mode. Constructor
     kwargs (:attr:`seeds`, :attr:`log_capture`, :attr:`mount_docker_socket`,
-    :attr:`readiness_probe_loader`, :attr:`connect_timeout`,
-    :attr:`connect_retry_interval`) flow onto the delegate; the optional
-    :attr:`composer` seam lets tests inject a materialiser stub without
-    monkeypatching module symbols.
+    :attr:`expose_substrate`, :attr:`readiness_probe_loader`,
+    :attr:`connect_timeout`, :attr:`connect_retry_interval`) flow onto the
+    delegate; the optional :attr:`composer` seam lets tests inject a
+    materialiser stub without monkeypatching module symbols.
     """
 
     isolation_mode: ClassVar[IsolationMode] = IsolationMode.PER_TRIAL_STACK
@@ -70,6 +70,7 @@ class PerTrialRuntimeBackend:
     seeds: dict[str, SeedRef] = field(default_factory=dict)
     log_capture: LogCaptureConfig | None = None
     mount_docker_socket: bool = False
+    expose_substrate: bool = False
     readiness_probe_loader: Callable[[str], ReadinessProbeFactory] = load_readiness_probe
     connect_timeout: float = 30.0
     connect_retry_interval: float = 1.0
@@ -82,6 +83,7 @@ class PerTrialRuntimeBackend:
             seeds=self.seeds,
             log_capture=self.log_capture,
             mount_docker_socket=self.mount_docker_socket,
+            expose_substrate=self.expose_substrate,
             connect_timeout=self.connect_timeout,
             connect_retry_interval=self.connect_retry_interval,
             composer=self._build_composer(),
@@ -237,6 +239,7 @@ def per_trial_runtime_backend_factory(
         seeds=ctx.seeds,
         log_capture=ctx.log_capture,
         mount_docker_socket=ctx.mount_docker_socket,
+        expose_substrate=ctx.expose_substrate,
         connect_timeout=ctx.connect_timeout_s,
         connect_retry_interval=ctx.connect_retry_interval_s,
     )

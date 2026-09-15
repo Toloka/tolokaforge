@@ -287,6 +287,13 @@ class RuntimeBackendBuildContext:
     (``tools.agent.<tool>.service``), whose wrappers ``docker exec`` from the
     runner into a sibling service. CLI without socket, or socket without CLI,
     are both useless — the two flags are one decision."""
+    expose_substrate: bool = False
+    """Set by the orchestrator from ``RunConfig.grader.expose_substrate``.
+    Threaded through the per_trial composer path so per-trial runner
+    containers spawned from task-declared compose files register the
+    ``SubstrateService`` alongside ``RunnerService``, matching what the
+    built-in shared-stack factory does. Required for snapshot-mode
+    grade-bundle production on per_trial + task-declared-compose runs."""
     per_trial_mode: bool = False
     """The plan has no run-scope substrate — every task materialises per
     trial from its own manifest at :meth:`RuntimeBackend.provision` time.
