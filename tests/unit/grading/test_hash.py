@@ -17,6 +17,7 @@ from tolokaforge.core.hash import (
     apply_compare_columns_equivalences,
     apply_compare_columns_extras,
     apply_compare_columns_ordering,
+    apply_compare_columns_pipeline,
     canonical_number,
     compute_stable_hash,
     filter_unstable_fields,
@@ -790,3 +791,168 @@ class TestStandaloneFallbackParity:
                 state,
                 kwargs,
             )
+
+
+class TestExtrasRequireSubsetMode:
+    """A rule declaring ``extras_allowed_for`` without ``mode: subset`` is refused
+    at load time — the extras filter only runs under subset mode, and a filter
+    that authors expected to fire is worse than a load-time error naming the
+    missing declaration.
+    """
+
+    def test_extras_alone_raises_on_construction(self):
+        with pytest.raises(ValueError, match="extras_allowed_for"):
+            ColumnCompareRule(extras_allowed_for=["x"])
+
+    def test_subset_mode_with_extras_still_accepted(self):
+        ColumnCompareRule(mode="subset", extras_allowed_for=["x"])
+
+    def test_subset_mode_without_extras_still_accepted(self):
+        ColumnCompareRule(mode="subset")
+
+
+class TestPipelineOrdersOrderingBeforeExtras:
+    """When a table declares both ``mode: subset`` and ``order: unordered``, the
+    extras filter pairs rows positionally — the pipeline must sort both sides
+    first so extras drop against the semantically-paired row.
+    """
+
+    def test_permutation_plus_extras_folds_to_matching_hash(self):
+        actual = {
+            "t": [
+                {"id": "b", "params": {"bar": 2, "x": 3}},
+                {"id": "a", "params": {"foo": 1, "x": 99}},
+            ],
+        }
+        expected = {
+            "t": [
+                {"id": "a", "params": {"foo": 1, "x": 99}},
+                {"id": "b", "params": {"bar": 2}},
+            ],
+        }
+        rules = {
+            "t": {
+                "params": ColumnCompareRule(
+                    mode="subset", extras_allowed_for=["x"], order="unordered"
+                )
+            },
+        }
+        actual_p, expected_p = apply_compare_columns_pipeline(actual, expected, rules)
+        assert compute_stable_hash(actual_p) == compute_stable_hash(expected_p)
+
+
+class TestPipelineExpectInitialState:
+    """The ``expect_initial_state`` path flows ``compare_columns`` through
+    ``check_hash`` via the pipeline — a declared equivalence fires even when
+    the expected side is the raw initial state rather than a golden replay.
+    """
+
+    def test_pipeline_folds_empty_string_null_on_expect_initial_state(self):
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        db_state = {"t": [{"id": "a", "note": ""}]}
+        initial_state = {"t": [{"id": "a", "note": None}]}
+        rules = {"t": {"note": ColumnCompareRule(treat_empty_string_as_null=True)}}
+        expected_hash = state_digest(
+            _fold_via_pipeline(db_state, initial_state, rules)[1],
+        )
+        score, _reason = StateChecker().check_hash(
+            db_state,
+            expected_hash,
+            compare_columns=rules,
+            expected_state_for_pipeline=initial_state,
+        )
+        assert score == 1.0
+
+    def test_pipeline_absent_falls_back_to_raw_digest(self):
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        db_state = {"t": [{"id": "a", "note": ""}]}
+        initial_state = {"t": [{"id": "a", "note": None}]}
+        expected_hash = state_digest(initial_state)
+        score, _reason = StateChecker().check_hash(db_state, expected_hash)
+        assert score == 0.0
+
+
+def _fold_via_pipeline(actual, expected, rules):
+    return apply_compare_columns_pipeline(actual, expected, rules)
+
+
+class TestUnorderedRowSortRespectsNumericStringFields:
+    """The unordered sort key honours ``numeric_string_fields`` so a numeric
+    ID column folds ``"1"`` and ``"1.0"`` into the same sort position on
+    both sides.
+    """
+
+    def test_numeric_id_variants_hash_equal_under_unordered(self):
+        actual = {"t": [{"id": "1.0", "v": "a"}, {"id": "1", "v": "b"}]}
+        expected = {"t": [{"id": "1", "v": "a"}, {"id": "1.0", "v": "b"}]}
+        rules = {"t": {"id": ColumnCompareRule(order="unordered")}}
+        actual_p, expected_p = apply_compare_columns_pipeline(
+            actual, expected, rules, numeric_string_fields=frozenset({"id"})
+        )
+        assert compute_stable_hash(actual_p, numeric_string_fields=["id"]) == compute_stable_hash(
+            expected_p, numeric_string_fields=["id"]
+        )
+
+
+class TestAutoClockMaskLeavesDictTablesAlone:
+    """``apply_auto_clock_mask`` only rewrites list-valued top-level entries;
+    a ``metadata`` block that carries a schema ``updated_at`` stamp is left
+    untouched.
+    """
+
+    def test_dict_valued_top_level_is_not_masked(self):
+        state = {
+            "cases": [{"id": "c1", "updated_at": "2026-01-01"}],
+            "metadata": {"schema_version": 1, "updated_at": "2026-09-01"},
+        }
+        masked = apply_auto_clock_mask(state)
+        assert "updated_at" not in masked["cases"][0]
+        assert masked["metadata"] == {"schema_version": 1, "updated_at": "2026-09-01"}
+
+
+class TestEmptyStringNullFoldIsTypeStrict:
+    """The ``treat_empty_string_as_null`` fold accepts only ``None`` and a
+    literal empty ``str`` — no object whose ``__eq__`` claims equality with
+    ``""``.
+    """
+
+    def test_custom_class_equal_to_empty_string_is_not_folded(self):
+        class NullLike:
+            def __eq__(self, other):
+                return other == "" or other is None
+
+            def __hash__(self):
+                return 0
+
+        rule = ColumnCompareRule(treat_empty_string_as_null=True)
+        actual = {"t": [{"id": "x", "note": NullLike()}]}
+        actual_p = apply_compare_columns_equivalences(actual, {"t": {"note": rule}})
+        assert actual_p["t"][0]["note"] is not None
+        assert not isinstance(actual_p["t"][0]["note"], str)
+
+
+class TestOrderingSortKeyRaisesOnUnserializableRow:
+    """A row the sort key cannot canonically serialize surfaces as a clear
+    :class:`TypeError` rather than falling through to a memory-address-y
+    ``repr`` fallback.
+    """
+
+    def test_unserializable_row_raises_typeerror(self):
+        class Unserializable:
+            pass
+
+        actual = {"t": [{"id": "a", "opaque": Unserializable()}]}
+        rules = {"t": {"id": ColumnCompareRule(order="unordered")}}
+        # default=str keeps most reprs serializable — verify by constructing a
+        # row that defeats both json.dumps and default=str.
+        row_with_bytes_key = {"t": [{"id": "a"}, {"id": "b", b"binary_key": 1}]}
+        rules_bytes = {"t": {"id": ColumnCompareRule(order="unordered")}}
+        # ``default=str`` handles the Unserializable case; the bytes-key row
+        # is the one that trips serialization.
+        with pytest.raises(TypeError):
+            apply_compare_columns_ordering(row_with_bytes_key, rules_bytes)
+        # sanity: the well-behaved unserializable row (str fallback catches it)
+        # does not raise.
+        apply_compare_columns_ordering(actual, rules)

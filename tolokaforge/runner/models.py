@@ -501,8 +501,8 @@ class RunnerStateChecksConfig(BaseModel):
     # Opt-in: drop conventional write-time clock columns (``updated_at``,
     # ``last_modified_date``, ``modified_at``, ``last_modified``,
     # ``updated_on``, ``modified_on``) from every table row before hashing.
-    # Composes with pack-declared ``unstable_fields``; targets the H8a/b/c
-    # class of clock-column bleed the arena v3 sweep surfaced. See
+    # Composes with pack-declared ``unstable_fields``; the pack's explicit
+    # mask still wins on additive fields. See
     # :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
     auto_mask_clock_columns: bool = False
 

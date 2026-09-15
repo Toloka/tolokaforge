@@ -282,17 +282,27 @@ class ProvisioningTrialExecutor:
         self, trajectory: Trajectory, task_id: str, trial_idx: int
     ) -> None:
         """Amend ``metrics.yaml`` with ``error_stage=judge_missing_verdict`` when
-        the grade came back with :attr:`JudgeStatus.ERRORED`.
+        the grading pipeline finished without a usable judge verdict.
 
-        The judge malfunction leaves ``grade.components.llm_judge`` incomplete
-        rather than ``0.0``; a downstream aggregator reading ``score`` alone
-        cannot tell the two apart, and a whole cluster's analysis stage is
-        voided by a single missing verdict. Recording the ``error_stage`` at
-        this level lets the aggregator rejudge only the affected trials
-        instead of re-running the cluster.
+        Two shapes reach this state:
+
+        * ``grade`` present with :attr:`JudgeStatus.ERRORED` — the judge
+          returned but its verdict was malformed; ``grade.components.llm_judge``
+          is incomplete rather than ``0.0``.
+        * ``grade`` unset with ``grading_error`` populated — the grading RPC
+          raised :class:`GradingFailedError` before a verdict was produced,
+          so no components are recorded at all.
+
+        A downstream aggregator reading ``score`` alone cannot tell either
+        state apart from a scored trial, and a whole cluster's analysis
+        stage is voided by a single missing verdict. Recording the
+        ``error_stage`` at this level lets the aggregator rejudge only the
+        affected trials instead of re-running the cluster.
         """
         grade = trajectory.grade
-        if grade is None or grade.judge_status is not JudgeStatus.ERRORED:
+        judge_errored = grade is not None and grade.judge_status is JudgeStatus.ERRORED
+        grading_raised = grade is None and trajectory.grading_error is not None
+        if not (judge_errored or grading_raised):
             return
         self._amend_trial_metrics(
             task_id,

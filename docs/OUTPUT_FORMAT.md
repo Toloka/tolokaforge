@@ -1196,11 +1196,16 @@ judge_custom_prompt: false      # null (no judge) | false (default prompt) | tru
 judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated out) | true (included)
 synthesized_by_termination_reason: null  # null on every grade produced by a real evaluator;
                                 # named ``TerminationReason`` (e.g. ``stuck_detected``,
-                                # ``empty_completion``, ``context_window_exceeded``,
-                                # ``error``) when a ``TrialGrader`` auto-fail branch
-                                # synthesised the grade — no evaluator ran on the trial,
+                                # ``context_window_exceeded``, ``error``) when a
+                                # ``TrialGrader`` auto-fail branch synthesised the
+                                # grade — no evaluator ran on the trial,
                                 # ``components`` is empty and this field names which reason
-                                # the harness synthesised from. See docs/GRADING.md
+                                # the harness synthesised from. ``empty_completion``
+                                # no longer appears here — those trials classify as
+                                # infrastructure-abort rather than task-fail, so a
+                                # downstream reader keyed on
+                                # ``synthesized_by_termination_reason == 'empty_completion'``
+                                # sees no matching rows. See docs/GRADING.md
                                 # § Harness auto-fail synthesis.
 ```
 

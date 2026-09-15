@@ -447,6 +447,7 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         lock=_DocLock(
             doc_key="state_checks.auto_mask_clock_columns",
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `state_checks.auto_mask_clock_columns: true`",
         ),
     ),
     _WireKey(

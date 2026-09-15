@@ -21,9 +21,7 @@ from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import (
     ColumnCompareRule,
     apply_auto_clock_mask,
-    apply_compare_columns_equivalences,
-    apply_compare_columns_extras,
-    apply_compare_columns_ordering,
+    apply_compare_columns_pipeline,
     canonical_number,
 )
 from tolokaforge.core.logging import get_logger
@@ -355,6 +353,8 @@ class StateChecker:
         *,
         numeric_string_fields: list[str] | None = None,
         auto_mask_clock_columns: bool = False,
+        compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
+        expected_state_for_pipeline: dict[str, Any] | None = None,
     ) -> tuple[float, str]:
         """
         Check state hash against expected using tau-bench algorithm
@@ -367,11 +367,30 @@ class StateChecker:
             auto_mask_clock_columns: Drop conventional write-time clock
                 columns from every row before hashing (per-task opt-in). Both
                 sides of one comparison must pass the same value.
+            compare_columns: Per-(table, column) rules folded and pruned via
+                :func:`apply_compare_columns_pipeline` before hashing. The
+                pipeline needs the expected state to run — pass
+                ``expected_state_for_pipeline`` alongside; without it the
+                pipeline is skipped and the flag falls to a no-op.
+            expected_state_for_pipeline: Expected state the ``compare_columns``
+                pipeline uses to pair rows for the extras filter. The caller
+                that provides ``expected_hash`` derived from a stored digest
+                (``expect_initial_state`` path) also holds this state and
+                threads it here.
 
         Returns:
             (score 0 or 1, reason)
         """
         try:
+            if compare_columns and expected_state_for_pipeline is not None:
+                state, _ = apply_compare_columns_pipeline(
+                    state,
+                    expected_state_for_pipeline,
+                    compare_columns,
+                    numeric_string_fields=(
+                        frozenset(numeric_string_fields) if numeric_string_fields else None
+                    ),
+                )
             actual_hash = state_digest(
                 state,
                 numeric_string_fields=numeric_string_fields,
@@ -548,25 +567,15 @@ class StateChecker:
             self.logger.error("Failed to execute golden actions", error=str(e))
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
 
-        # Apply per-(table, column) subset rules before hashing so a model-added key
-        # the prompt explicitly permits does not fail an otherwise-matching state.
-        # apply_compare_columns_extras is a no-op when compare_columns is None/empty,
-        # so pass through unconditionally.
-        db_state = apply_compare_columns_extras(db_state, expected_state, compare_columns)
-
-        # Fold column-level equivalences symmetrically on both sides at hash
-        # time only. Downstream diff reporting reads db_state and
-        # expected_state as they stand, so the author sees the actual
-        # disagreeing values rather than internal fold tokens.
-        db_state_folded = apply_compare_columns_equivalences(db_state, compare_columns)
-        expected_state_folded = apply_compare_columns_equivalences(expected_state, compare_columns)
-
-        # Sort row lists on both sides for tables the pack declares unordered.
-        # Runs after the equivalence folds so two rows the pack already
-        # declared equal by equivalence sort to the same position.
-        db_state_folded = apply_compare_columns_ordering(db_state_folded, compare_columns)
-        expected_state_folded = apply_compare_columns_ordering(
-            expected_state_folded, compare_columns
+        # Run the per-column pipeline (equivalence folds, ordering, extras)
+        # symmetrically on both sides. Downstream diff reporting reads
+        # db_state and expected_state as they stand, so the author sees the
+        # actual disagreeing values rather than internal fold tokens.
+        db_state_folded, expected_state_folded = apply_compare_columns_pipeline(
+            db_state,
+            expected_state,
+            compare_columns,
+            numeric_string_fields=frozenset(numeric_string_fields or ()),
         )
 
         # Compute hashes
