@@ -678,12 +678,12 @@ routes those trials to a live-callback path in the caller.
 
 <a id="extension-points-the-nine-plug-in-groups"></a>
 
-## Extension points — the ten plug-in groups
+## Extension points — the nine plug-in groups
 
-Ten `importlib.metadata` entry-point groups let a downstream package
+Nine `importlib.metadata` entry-point groups let a downstream package
 extend the grader without a framework change: one runner-side dispatch
 selector (paired with the typed-kind registry), one substrate group, and
-seven sub-component seams. Each group has a matching loader on
+six sub-component seams. Each group has a matching loader on
 [`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
 
 - `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Every shipped name also registers in `tolokaforge.grader_kinds` below — `RegisterTrial` validates the wire name against both groups.

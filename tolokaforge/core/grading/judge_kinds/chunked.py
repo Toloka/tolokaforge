@@ -17,14 +17,13 @@ budget exhausts, whole-trial :attr:`JudgeStatus.ERRORED`. With N chunks
 of ~K criteria each, no single ``submit_report`` payload is large
 enough to truncate.
 
-Fail-loud (#1471): ANY chunk that returns ``status != COMPLETED`` or is
-missing one of its chunk's criterion ids yields a whole-trial
+Fail-loud: ANY chunk that returns ``status != COMPLETED`` or is missing
+one of its chunk's criterion ids yields a whole-trial
 :attr:`JudgeStatus.ERRORED` :class:`JudgeResult` with ``score=None`` and
 ``criterion_results=()``. The failing chunk index and its criterion ids
 plus the underlying reason are surfaced in the merged ``reasons``, and
-``chunk_boundaries`` is still populated with every boundary attempted
-(so #1569's bundle wiring can persist them and offline replay can retry
-only the failing chunk).
+``chunk_boundaries`` is still populated with every boundary attempted so
+bundle persistence and offline replay can retry only the failing chunk.
 """
 
 from __future__ import annotations
@@ -52,7 +51,6 @@ __all__ = [
 ]
 
 #: Default number of criteria per chunk when ``kind_config`` omits ``chunk_size``.
-#: Live A/B tuning tracked in #1581.
 DEFAULT_CHUNK_SIZE = 5
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
