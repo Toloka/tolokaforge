@@ -498,6 +498,14 @@ class RunnerStateChecksConfig(BaseModel):
     # hash so the asymmetric filter has both sides.
     compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
 
+    # Opt-in: drop conventional write-time clock columns (``updated_at``,
+    # ``last_modified_date``, ``modified_at``, ``last_modified``,
+    # ``updated_on``, ``modified_on``) from every table row before hashing.
+    # Composes with pack-declared ``unstable_fields``; the pack's explicit
+    # mask still wins on additive fields. See
+    # :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
+    auto_mask_clock_columns: bool = False
+
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
 

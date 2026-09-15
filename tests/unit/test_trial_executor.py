@@ -22,8 +22,17 @@ from tests.canonical._factories import (
     make_trial_spec,
 )
 from tolokaforge.core.conductor import InMemoryConductor
-from tolokaforge.core.models import TerminationReason, TrialStatus
-from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
+from tolokaforge.core.models import (
+    Grade,
+    GradeComponents,
+    JudgeStatus,
+    MessageRole,
+    Metrics,
+    TerminationReason,
+    Trajectory,
+    TrialStatus,
+)
+from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend, ProvisionError
 from tolokaforge.core.trial_executor import (
     ProvisioningTrialExecutor,
@@ -216,6 +225,190 @@ class TestSafeTeardown:
 
         warn_msgs = [c.args[0] for c in logger.warning.call_args_list]
         assert "Teardown raised; continuing" in warn_msgs
+
+
+class TestJudgeMissingVerdictErrorStage:
+    """A trial whose grade came back with :attr:`JudgeStatus.ERRORED` has its
+    ``metrics.yaml`` amended with ``error_stage: judge_missing_verdict`` so
+    the downstream aggregator can rejudge exactly those trials without
+    voiding the cluster's analysis stage.
+    """
+
+    def _make_trajectory_with_grade(
+        self, judge_status: JudgeStatus, task_id: str = "task-1", trial_idx: int = 0
+    ) -> Trajectory:
+        from datetime import UTC, datetime
+
+        from tolokaforge.core.models import Message
+
+        return Trajectory(
+            task_id=task_id,
+            trial_index=trial_idx,
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
+            status=TrialStatus.COMPLETED,
+            termination_reason=TerminationReason.AGENT_DONE,
+            messages=[Message(role=MessageRole.USER, content="hello")],
+            metrics=Metrics(),
+            grade=Grade(
+                binary_pass=False,
+                score=0.5,
+                components=GradeComponents(state_checks=0.5),
+                reasons="state 0.5",
+                judge_status=judge_status,
+            ),
+        )
+
+    def test_metrics_amended_when_judge_errored(self, tmp_path: Path) -> None:
+        trial_dir = tmp_path / "trials" / "task-1" / "0"
+        trial_dir.mkdir(parents=True)
+        trajectory = self._make_trajectory_with_grade(JudgeStatus.ERRORED)
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=InMemoryConductor(trajectory_factory=lambda *_: trajectory),
+            logger=MagicMock(),
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        executor._maybe_flag_missing_judge_verdict(trajectory, "task-1", 0)
+
+        import yaml
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert metrics["error_stage"] == "judge_missing_verdict"
+
+    def test_metrics_untouched_when_judge_completed(self, tmp_path: Path) -> None:
+        trial_dir = tmp_path / "trials" / "task-1" / "0"
+        trial_dir.mkdir(parents=True)
+        trajectory = self._make_trajectory_with_grade(JudgeStatus.COMPLETED)
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=InMemoryConductor(trajectory_factory=lambda *_: trajectory),
+            logger=MagicMock(),
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        executor._maybe_flag_missing_judge_verdict(trajectory, "task-1", 0)
+
+        import yaml
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert "error_stage" not in metrics
+
+    def test_metrics_untouched_when_grade_is_none_without_grading_error(
+        self, tmp_path: Path
+    ) -> None:
+        """``grade=None`` with no ``grading_error`` covers unscored trials that
+        never reached grading — e.g. an infrastructure abort. Nothing is
+        recorded here; the outcome classifier owns those.
+        """
+        from datetime import UTC, datetime
+
+        from tolokaforge.core.models import Message
+
+        trial_dir = tmp_path / "trials" / "task-1" / "0"
+        trial_dir.mkdir(parents=True)
+        trajectory = Trajectory(
+            task_id="task-1",
+            trial_index=0,
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
+            status=TrialStatus.COMPLETED,
+            termination_reason=TerminationReason.AGENT_DONE,
+            messages=[Message(role=MessageRole.USER, content="hello")],
+            metrics=Metrics(),
+            grade=None,
+        )
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=InMemoryConductor(trajectory_factory=lambda *_: trajectory),
+            logger=MagicMock(),
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        executor._maybe_flag_missing_judge_verdict(trajectory, "task-1", 0)
+
+        import yaml
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert "error_stage" not in metrics
+
+    def test_metrics_amended_when_grading_failed_error_raised(self, tmp_path: Path) -> None:
+        """``grade=None`` with ``grading_error`` set covers the
+        :class:`GradingFailedError` path — the grading RPC raised before a
+        verdict was produced. The aggregator's rejudge loop keys on
+        ``error_stage``, so this state must be flagged the same way an
+        ``ERRORED`` judge status is.
+        """
+        from datetime import UTC, datetime
+
+        from tolokaforge.core.models import Message
+
+        trial_dir = tmp_path / "trials" / "task-1" / "0"
+        trial_dir.mkdir(parents=True)
+        trajectory = Trajectory(
+            task_id="task-1",
+            trial_index=0,
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
+            status=TrialStatus.COMPLETED,
+            termination_reason=TerminationReason.AGENT_DONE,
+            messages=[Message(role=MessageRole.USER, content="hello")],
+            metrics=Metrics(),
+            grade=None,
+            grading_error="Grading failed for trial 'task-1:0': runner produced no verdict",
+        )
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=InMemoryConductor(trajectory_factory=lambda *_: trajectory),
+            logger=MagicMock(),
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        executor._maybe_flag_missing_judge_verdict(trajectory, "task-1", 0)
+
+        import yaml
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert metrics["error_stage"] == "judge_missing_verdict"
+
+
+class TestEmptyCompletionRoutesToInfrastructureAbort:
+    """``TerminationReason.EMPTY_COMPLETION`` classifies as
+    ``INFRASTRUCTURE_ABORT`` — the provider returned no text and no tool
+    calls, so the trial never gave the agent something to do; it drops out
+    of the measured denominator alongside API_TIMEOUT / RATE_LIMIT.
+    """
+
+    def test_empty_completion_is_infrastructure_abort(self) -> None:
+        from datetime import UTC, datetime
+
+        from tolokaforge.core.failure_attribution import (
+            TrialOutcomeClass,
+            classify_trial_outcome,
+        )
+        from tolokaforge.core.models import Message
+
+        trajectory = Trajectory(
+            task_id="task-empty",
+            trial_index=0,
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
+            status=TrialStatus.FAILED,
+            termination_reason=TerminationReason.EMPTY_COMPLETION,
+            messages=[Message(role=MessageRole.USER, content="hello")],
+            metrics=Metrics(),
+        )
+
+        assert classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT
 
 
 class TestSynthesizedFailureShape:
