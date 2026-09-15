@@ -61,6 +61,11 @@ from .container_injection import (
 from .fingerprint import HarnessFingerprint, compute_harness_fingerprint
 from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
 from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
+from .stdout_telemetry import (
+    STDOUT_TELEMETRY_DIALECTS,
+    HarnessStdoutTelemetry,
+    parse_harness_stdout,
+)
 
 __all__ = [
     "ALTERNATIVE_GATEWAYS",
@@ -79,6 +84,7 @@ __all__ = [
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "SHIPPED_REGISTRY_META_FILE",
+    "STDOUT_TELEMETRY_DIALECTS",
     "CodingHarnessAdapterMixin",
     "ContainerFileInjector",
     "ContainerInjectionError",
@@ -89,6 +95,7 @@ __all__ = [
     "GatewayRoute",
     "HarnessFingerprint",
     "HarnessSpec",
+    "HarnessStdoutTelemetry",
     "LinuxRootResolver",
     "PathResolver",
     "PluginBundle",
@@ -104,6 +111,7 @@ __all__ = [
     "harness_command",
     "harness_model",
     "load_harness_registry",
+    "parse_harness_stdout",
     "provider_env_input",
     "resolve_effective_registry",
     "validate_harness",

@@ -484,6 +484,22 @@ class Metrics(BaseModel):
     reach OpenRouter at all" read this list."""
 
     cost_usd: float | None = None
+
+    harness_stdout_dialect: str | None = None
+    """The coding-harness stdout dialect ``turns``, ``cost_usd`` and ``usage``
+    on this trial were read from, when they came from the CLI rather than the
+    engine.
+
+    A harness trial is one tool call, so the engine issues no LLM request and
+    measures no usage of its own. Where the CLI prints its own totals, the
+    parser named here supplies them, and the counts above are that CLI's
+    accounting — its internal turn count, and the cost it billed itself.
+
+    ``None`` on every engine-loop trial (the counts are the engine's own) and
+    on a harness trial whose CLI reported nothing, where the counts stay at
+    the defaults a single tool call produces. So it reads as "these numbers
+    are the CLI's, parsed from *this* dialect", never as a quality claim."""
+
     tool_calls: int = 0
     tool_success_rate: float = 0.0
     stuck_detected: bool = False

@@ -913,11 +913,18 @@ class InProcessConductor:
             events=self.events,
             interaction_mode=task_config.interaction_mode,
         )
+        # Names which CLI the command starts, so the runner can pick a parser
+        # for the totals it prints. Not load-bearing: a missing or non-string
+        # value costs the trial its turn / token / cost accounting and nothing
+        # else, so it reads as absent rather than raising the way a malformed
+        # ``agent_harness_command`` does.
+        harness = spec.task.metadata.get("agent_harness")
         trajectory = runner.run_harness(
             tool_name=tool.name,
             command=harness_command,
             instruction=task_config.initial_user_message or task_config.description,
             timeout_s=timeout_s,
+            harness=harness if isinstance(harness, str) else "",
         )
         return trajectory, runner, system_prompt
 

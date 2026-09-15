@@ -5,10 +5,21 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
+from tolokaforge_coding_harnesses.stdout_telemetry import (
+    HarnessStdoutTelemetry,
+    parse_harness_stdout,
+)
+
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
-from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm import (
+    SIMULATOR_GREETING,
+    GenerationResult,
+    LLMClient,
+    Usage,
+    UserSimulator,
+)
 from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
@@ -163,6 +174,10 @@ class TrialRunner:
         # used is disambiguated for the other rather than recorded twice.
         self._call_ids = EpisodeUniqueCallIds()
         self.metrics = Metrics()
+        # Staged by :meth:`run_harness` when the CLI reported its own totals,
+        # applied at trial end by :meth:`_apply_harness_stdout_telemetry`.
+        # Stays ``None`` on every other way a trial can be driven.
+        self._harness_stdout_telemetry: HarnessStdoutTelemetry | None = None
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
         self._effective_system_prompt: str | None = None
@@ -442,6 +457,7 @@ class TrialRunner:
         command: str,
         instruction: str,
         timeout_s: float,
+        harness: str = "",
     ) -> Trajectory:
         """Run the trial as a single invocation of a coding-harness CLI.
 
@@ -463,6 +479,10 @@ class TrialRunner:
                 budget the runner resolves and enforces is the one the tool
                 declares, so no per-call value rides the wire; passing the
                 same number here keeps the engine-side overrun warning honest.
+            harness: Name of the CLI the command starts, used only to pick a
+                parser for the totals it prints. Empty, unrecognised, or a CLI
+                that prints no totals all leave the trial's turn / token / cost
+                accounting exactly as a single tool call produces it.
         """
         trial_id = f"{self.task_id}:{self.trial_index}"
         with trial_id_scope(trial_id):
@@ -494,6 +514,12 @@ class TrialRunner:
             )
             output = resolve_tool_output(result)
             tool_status = resolve_tool_status(result)
+            # Read the CLI's stdout, not the recorded output: a failed call
+            # records its error text instead, and a CLI that billed for real
+            # work before exiting non-zero still spent that money. Parsing the
+            # raw stream keeps the trial's cost honest in that case, and an
+            # empty stream simply reports nothing.
+            self._harness_stdout_telemetry = parse_harness_stdout(harness, result.output or "")
             self.tool_call_recorder.record(
                 call_id=call_id,
                 tool_name=tool_name,
@@ -543,6 +569,7 @@ class TrialRunner:
         self.metrics.latency_total_s = time.time() - self.start_time
         self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
         self._apply_probe_stats()
+        self._apply_harness_stdout_telemetry()
 
         recorded_calls = self.tool_call_recorder.recorded
         # Both describe the agent's tool use — the scoping stuck detection
@@ -589,6 +616,35 @@ class TrialRunner:
             user_reply_guard_events=list(self._user_reply_guard_events),
             metrics=self.metrics,
             tool_log=list(recorded_calls),
+        )
+
+    def _apply_harness_stdout_telemetry(self) -> None:
+        """Replace the single-tool-call accounting with what the CLI reported.
+
+        No-op on every trial except a harness trial whose CLI printed its own
+        totals, so a run that reaches none of them carries the numbers it
+        always did.
+
+        ``turns`` and ``usage`` are *replaced*, not added to: on this path the
+        engine issued no LLM request, so its own figures are the artefacts of
+        driving the CLI as one tool call — a turn count of 1 and an empty usage
+        block — and summing them with the CLI's would double-count nothing
+        while leaving the total wrong by one turn. ``tool_calls`` keeps the
+        engine's count: one ``docker exec`` is what the engine executed, and
+        the CLI's own tool use is a different quantity this record does not
+        carry.
+        """
+        telemetry = self._harness_stdout_telemetry
+        if telemetry is None:
+            return
+        self.metrics.harness_stdout_dialect = telemetry.dialect
+        self.metrics.turns = telemetry.turns
+        self.metrics.cost_usd = telemetry.cost_usd
+        self.metrics.usage = Usage(
+            prompt_tokens=telemetry.prompt_tokens,
+            completion_tokens=telemetry.completion_tokens,
+            cache_read_input_tokens=telemetry.cache_read_input_tokens,
+            cache_creation_input_tokens=telemetry.cache_creation_input_tokens,
         )
 
     def _apply_probe_stats(self) -> None:

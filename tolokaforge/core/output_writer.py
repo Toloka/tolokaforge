@@ -18,8 +18,17 @@ from tolokaforge.core.redaction import (
     RedactionStamp,
 )
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 4
+TRIAL_BUNDLE_SCHEMA_VERSION = 5
 """The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 5 bundles report a coding-harness trial's ``turns``, ``cost_usd`` and
+``usage`` from the CLI's own totals where the CLI prints them, rather than
+leaving the single-tool-call artefacts (``turns: 1``, a null cost, an empty
+usage block) a version-4 reader would see on every such trial.
+``harness_stdout_dialect`` names the parser those numbers came from and is
+``null`` whenever they are the engine's own, so the two are never conflated.
+``api_calls`` stays ``0`` on that path — the engine issues no LLM request when
+a CLI drives the trial.
 
 Version 4 bundles carry the trial's tool-call record as ``tool_log.yaml`` beside
 the message view in ``trajectory.yaml``, so a bundle re-grades to the verdict its

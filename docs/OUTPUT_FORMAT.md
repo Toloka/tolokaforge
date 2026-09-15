@@ -605,6 +605,18 @@ the serving-path provenance when the call went through an LLM gateway, else
 null), and `openrouter_generation_id` — the trial-level `cost_usd` is the
 sum of those entries.
 
+`harness_stdout_dialect` names the coding-harness stdout dialect `turns`,
+`cost_usd` and `usage` were read from, and is `null` whenever they are the
+engine's own measurements. A harness trial runs the CLI as one tool call, so
+the engine issues no LLM request and measures no usage of its own; where the
+CLI prints its own totals they are parsed from the captured stream and replace
+the single-tool-call artefacts a reader would otherwise see (`turns: 1`, a null
+cost, an empty usage block). Those counts are then the CLI's accounting — its
+internal turn count, and the cost it billed itself — which is why the dialect
+travels with them. `api_calls` stays `0` on that path, because the engine made
+none. A harness whose CLI prints no totals keeps the artefact shape and a
+`null` dialect, so "not measured" is never reported as a measured zero.
+
 `openrouter_generation_ids` lists every OpenRouter generation id the trial's
 agent calls returned, in call order; `usage.calls[*].openrouter_generation_id`
 is the same value attributed to its individual call. Each id resolves at
@@ -621,11 +633,16 @@ need "did this trial reach OpenRouter at all" read the flat list. See
 [LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter generation ids.
 
 To help analytics consumers detect schema evolution, a trial-level metrics file
-written by `write_metrics` includes a root-level `schema_version: 4` marker. The
+written by `write_metrics` includes a root-level `schema_version: 5` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
-such a bundle is refused offline anyway. Generation 4
+such a bundle is refused offline anyway. Generation 5 bundles report a
+coding-harness trial's `turns`, `cost_usd` and `usage` from the CLI's own
+totals wherever the CLI prints them, instead of the single-tool-call artefacts
+(`turns: 1`, a null cost, an empty usage block) every such trial carried
+through generation 4; `harness_stdout_dialect` names where those numbers came
+from and is `null` whenever they are the engine's own. Generation 4 and later
 bundles carry the trial's tool-call record as
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml). They carry no
 `grade.yaml` in two cases — the trial was aborted by infrastructure before the
@@ -661,6 +678,7 @@ usage:
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
+harness_stdout_dialect: null   # non-null only when a coding-harness CLI reported its own totals
 tool_calls: 7
 tool_success_rate: 1.0
 stuck_detected: false
@@ -1027,7 +1045,7 @@ contains — on this path it is stamped and most of them are absent.
   `provision_stage` set to the lifecycle step that raised (see below),
   `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 4`, empty `tool_usage`) plus three top-level failure-signal
+  `schema_version: 5`, empty `tool_usage`) plus three top-level failure-signal
   keys:
 
   ```yaml
@@ -1717,7 +1735,7 @@ evidence about us, and our own defects stay counted. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
-| `metrics.yaml` | `schema_version` | `4` | The per-trial bundle's file set or field semantics change |
+| `metrics.yaml` | `schema_version` | `5` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
