@@ -13,7 +13,7 @@
 # Example:
 #   scripts/analysis/run_judge_kind_ab.sh \
 #     /tmp/judge-kind-ab-bundles --model-ref openrouter/openai/gpt-4.1-mini \
-#     --kinds single_shot_rubric,chunked_rubric,agentic_rubric \
+#     --kinds single_shot_rubric,chunked_rubric \
 #     --replays 5 --out-dir /tmp/judge-kind-ab-report
 
 set -euo pipefail
