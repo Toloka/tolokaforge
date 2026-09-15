@@ -61,7 +61,7 @@ from tolokaforge.core.grading.rubric import (
     parse_submit_report,
 )
 from tolokaforge.core.judge_prompt import (
-    compose_judge_system_prompt,
+    _compose_judge_system_prompt,
     effective_judge_system_prompt,
 )
 from tolokaforge.core.llm.client import GenerationResult, LLMClient
@@ -125,7 +125,7 @@ class DBReader(Protocol):
 
 
 @dataclass
-class JudgeMetricsSink(MetricsSink):
+class _JudgeMetricsSink(MetricsSink):
     """Loop :class:`MetricsSink` that tallies the judge's token usage / cost."""
 
     calls: int = 0
@@ -165,7 +165,7 @@ class JudgeMetricsSink(MetricsSink):
 
 
 @dataclass
-class SubmitReportTermination:
+class _SubmitReportTermination:
     """Terminate the judge loop the moment ``submit_report`` is in the tool calls.
 
     Captures the *first* ``submit_report`` call's arguments and its call id so the
@@ -206,7 +206,7 @@ def _sibling_not_executed(terminating_tool: str) -> str:
     )
 
 
-def answer_terminating_submit_report(
+def _answer_terminating_submit_report(
     messages: list[Message],
     captured_call_id: str,
     rejection: str,
@@ -260,9 +260,6 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
     grading (role/content/tool_calls dicts). Tool calls are summarised inline so
     the judge sees what the agent *did*, not just what it said.
 
-    Public: also reused by ``judge_kinds/critique.py``'s ``resolve_evidence``
-    to re-derive the same lines it scans for transcript evidence, so the two
-    callers can never drift on how a transcript line renders.
     """
     lines: list[str] = []
     for msg in transcript:
@@ -285,7 +282,7 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "(empty transcript)"
 
 
-def build_rubric_brief(rubric: Rubric) -> str:
+def _build_rubric_brief(rubric: Rubric) -> str:
     """Render the rubric (reference + per-criterion expected) for the judge.
 
     The per-criterion pass-conditions are *also* inlined in the ``submit_report``
@@ -305,7 +302,7 @@ def build_rubric_brief(rubric: Rubric) -> str:
     return "\n".join(parts)
 
 
-def serialize_judge_transcript(messages: list[Message]) -> tuple[dict[str, Any], ...]:
+def _serialize_judge_transcript(messages: list[Message]) -> tuple[dict[str, Any], ...]:
     """Serialize the judge's own loop messages to plain dicts for the audit bundle.
 
     Captures role / content / tool_calls / tool_call_id so a reviewer can replay
@@ -328,7 +325,7 @@ def serialize_judge_transcript(messages: list[Message]) -> tuple[dict[str, Any],
     return tuple(out)
 
 
-def build_opening_message(
+def _build_opening_message(
     agent_system_prompt: str,
     transcript: list[dict[str, Any]],
     state_diff: str | None = None,
@@ -392,7 +389,7 @@ def build_opening_message(
 # ---------------------------------------------------------------------------
 
 
-def build_judge_registry(
+def _build_judge_registry(
     rubric: Rubric,
     *,
     db_reader: DBReader | None,
@@ -548,7 +545,7 @@ class LLMJudge:
     Two prompt seams, mutually exclusive:
 
     * ``custom_system_prompt`` — a body fragment that replaces the default grading
-      stance; :func:`compose_judge_system_prompt` appends the marker contract at
+      stance; :func:`_compose_judge_system_prompt` appends the marker contract at
       :meth:`run` time. The eval flow and legacy replay use this seam (they carry
       the body, not the composed string).
     * ``explicit_system_prompt`` — the already-composed prompt used verbatim in
@@ -621,7 +618,7 @@ class LLMJudge:
         returns ``0.0`` / ``0.5`` on failure.
         """
         logger = self._logger or get_logger("rubric_judge")
-        metrics = JudgeMetricsSink()
+        metrics = _JudgeMetricsSink()
 
         client: JudgeModel
         if self._llm_client is not None:
@@ -629,7 +626,7 @@ class LLMJudge:
         else:
             client = LLMClient(self._model_config)
 
-        registry, kb_tools_offered, kb_tools_withheld, read_tools_offered = build_judge_registry(
+        registry, kb_tools_offered, kb_tools_withheld, read_tools_offered = _build_judge_registry(
             rubric,
             db_reader=db_reader,
             kb_search=kb_search,
@@ -641,7 +638,7 @@ class LLMJudge:
         tool_executor = ToolExecutor(registry)
         tool_schemas = registry.get_schemas(sanitize=False)
 
-        termination = SubmitReportTermination()
+        termination = _SubmitReportTermination()
         loop = ToolCallingLoop(
             llm_client=client,
             tool_executor=tool_executor,
@@ -661,7 +658,7 @@ class LLMJudge:
         messages: list[Message] = [
             Message(
                 role=MessageRole.USER,
-                content=build_opening_message(
+                content=_build_opening_message(
                     agent_system_prompt,
                     transcript,
                     state_diff,
@@ -669,11 +666,11 @@ class LLMJudge:
                 ),
             )
         ]
-        rubric_brief = build_rubric_brief(rubric)
+        rubric_brief = _build_rubric_brief(rubric)
         base_prompt = (
             self._explicit_system_prompt
             if self._explicit_system_prompt is not None
-            else compose_judge_system_prompt(self._custom_system_prompt)
+            else _compose_judge_system_prompt(self._custom_system_prompt)
         )
         system_prompt = f"{base_prompt}\n\n{rubric_brief}"
 
@@ -683,7 +680,7 @@ class LLMJudge:
                 outcome = loop.run(system_prompt, messages, start_time=time.time())
             except Exception as exc:  # noqa: BLE001 — fail loud, never score on judge crash
                 logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
-                return build_errored_judge_result(
+                return _build_errored_judge_result(
                     metrics,
                     f"Judge loop crashed: {type(exc).__name__}: {exc}",
                     messages,
@@ -698,7 +695,7 @@ class LLMJudge:
 
             if termination.captured_args is None:
                 # Loop ended without submit_report — turn / wall-time / API error.
-                return build_errored_judge_result(
+                return _build_errored_judge_result(
                     metrics,
                     f"Judge did not call submit_report "
                     f"(termination={outcome.termination_reason}, status={outcome.status}).",
@@ -725,7 +722,7 @@ class LLMJudge:
                         attempts=attempts,
                         error=str(exc),
                     )
-                    return build_errored_judge_result(
+                    return _build_errored_judge_result(
                         metrics,
                         f"submit_report invalid after {self._submit_report_retries} retries: {exc}",
                         messages,
@@ -750,7 +747,7 @@ class LLMJudge:
                     "Fix the issue and call submit_report again with a verdict "
                     "and justification for every criterion."
                 )
-                answer_terminating_submit_report(messages, termination.captured_call_id, rejection)
+                _answer_terminating_submit_report(messages, termination.captured_call_id, rejection)
                 termination.captured_args = None
                 termination.captured_call_id = None
                 continue
@@ -761,7 +758,7 @@ class LLMJudge:
                 gate_failed=aggregate.gate_failed,
                 failed_required=list(aggregate.failed_required_ids),
             )
-            reasons = build_judge_reasons(
+            reasons = _build_judge_reasons(
                 termination.captured_args,
                 aggregate.failed_required_ids,
                 kb_tools_offered,
@@ -784,12 +781,12 @@ class LLMJudge:
                 include_agent_system_prompt=self._include_agent_system_prompt,
                 read_tools_offered=read_tools_offered,
                 state_diff=state_diff,
-                transcript=serialize_judge_transcript(messages),
+                transcript=_serialize_judge_transcript(messages),
             )
 
 
-def build_errored_judge_result(
-    metrics: JudgeMetricsSink,
+def _build_errored_judge_result(
+    metrics: _JudgeMetricsSink,
     reasons: str,
     messages: list[Message],
     kb_tools_offered: tuple[str, ...],
@@ -823,7 +820,7 @@ def build_errored_judge_result(
         include_agent_system_prompt=include_agent_system_prompt,
         read_tools_offered=read_tools_offered,
         state_diff=state_diff,
-        transcript=serialize_judge_transcript(messages),
+        transcript=_serialize_judge_transcript(messages),
     )
 
 
@@ -847,7 +844,7 @@ def _kb_note(
     return "Judge KB: none offered"
 
 
-def build_judge_reasons(
+def _build_judge_reasons(
     tool_args: dict[str, Any],
     failed_required_ids: tuple[str, ...],
     kb_tools_offered: tuple[str, ...],
@@ -980,16 +977,7 @@ __all__ = [
     "JudgeStatus",
     "JudgeUsage",
     "JudgeCallLog",
-    "JudgeMetricsSink",
-    "SubmitReportTermination",
-    "answer_terminating_submit_report",
-    "build_opening_message",
-    "build_rubric_brief",
     "format_transcript",
-    "build_judge_registry",
-    "serialize_judge_transcript",
-    "build_errored_judge_result",
-    "build_judge_reasons",
     "LLMJudge",
     "InMemoryJudge",
     "effective_judge_system_prompt",

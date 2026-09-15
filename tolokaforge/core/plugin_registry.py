@@ -570,13 +570,11 @@ def load_judge_kind(name: str) -> type[JudgeKind]:
     Returns the class object itself, matching :func:`load_grader_kind`.
     The runner-side composite dispatch resolves this loader to reach the
     LLM-judge implementation named by ``grading.llm_judge.judge_kind``.
-    Three built-ins ship under this group: ``single_shot_rubric`` (wraps
-    :class:`LLMJudge` byte-identically — the default), ``chunked_rubric``
+    Two built-ins ship under this group: ``single_shot_rubric`` (wraps
+    :class:`LLMJudge` byte-identically — the default) and ``chunked_rubric``
     (one :class:`LLMJudge` invocation per fixed-K chunk of the rubric's
-    criteria), and ``agentic_rubric`` (a draft/critique/submit episode
-    over a directly-constructed :class:`ToolCallingLoop`). Downstream
-    packages register alternative kinds (jury, downstream-specific)
-    under this group.
+    criteria). Downstream packages register alternative kinds (jury,
+    agentic, downstream-specific) under this group.
 
     Fail-loud on unknown names via :class:`UnknownImplementationError`,
     matching every other loader in this module.

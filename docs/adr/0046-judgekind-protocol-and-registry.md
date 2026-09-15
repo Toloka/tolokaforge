@@ -1,10 +1,10 @@
-# 0046. Agentic LLM-as-Judge and the `JudgeKind` Registry
+# 0046. The `JudgeKind` Protocol and Entry-Point Registry
 
 - **Status:** Accepted
 - **Date:** 2026-09-10
 - **Accepted-on:** 2026-09-10
 - **Deciders:** @CiroGamboa
-- **Consulted:** UK AISI Inspect AI (custom scorers), Meta Agent-as-a-Judge, RAGAS judge-alignment workflow, Harbor / Terminal-Bench llm-as-a-judge, "Catching One in Five" (2026) multi-turn judge evidence
+- **Consulted:** UK AISI Inspect AI (custom scorers), Harbor / Terminal-Bench llm-as-a-judge
 - **Milestone:** 49
 - **Supersedes:** none
 - **Extends:** [0043 — Detached-Mode Grader, Typed Grader Kinds, Adapter Grading Contract](0043-detached-mode-grader-and-typed-grader-kinds.md)
@@ -13,27 +13,21 @@
 
 ADR-0043 shipped the typed `GraderKind` registry but left the LLM-judge
 sub-component itself single-shot: one `LLMJudge.run` call produced one
-`submit_report` verdict per trial, with no self-critique pass and no
-plug-in seam above it. §Alternatives considered explicitly deferred a
-model-graded kind — "the model-judge shape is a follow-up milestone; this
-milestone shipped the seam so registration is a one-line entry-point" —
-to a later milestone.
+`submit_report` verdict per trial, with no plug-in seam above it. §Alternatives
+considered explicitly deferred a model-graded kind — "the model-judge shape is
+a follow-up milestone; this milestone shipped the seam so registration is a
+one-line entry-point" — to a later milestone.
 
-That single-shot judge had two capability caps. First, large rubrics
-(30+ criteria) could overflow the judge model's output-token ceiling in
-one `submit_report` payload, forcing a whole-trial `UNGRADEABLE` with no
-recourse. Second, a judge given only one pass at the transcript had no
-mechanism to reconsider its own draft verdicts against the evidence
-before committing — the same single-turn-judge weakness the "Catching One
-in Five" multi-turn evidence and Meta's Agent-as-a-Judge work both
-motivate: a judge that can act like an agent (re-read evidence, critique
-its own draft) catches errors a one-shot judge cannot.
+That single-shot judge had one capability cap: large rubrics (30+ criteria)
+could overflow the judge model's output-token ceiling in one `submit_report`
+payload, forcing a whole-trial `UNGRADEABLE` with no recourse.
 
-Milestone 49 ("Judge integrity v2", umbrella #1562) closed both caps by
+Milestone 49 ("Judge integrity v2", umbrella #1562) closes that cap by
 generalising the single-shot judge into a typed, pluggable seam — mirroring
 ADR-0043's own pattern of turning a hardcoded branch into a registry — and
-adding two new kinds behind it, one of which is agentic in the
-`ToolCallingLoop` sense already established elsewhere in the engine.
+adding a chunking kind behind it. This is Phase A of a larger Grader v3 seam:
+the Protocol and registry are designed so a downstream package can register
+its own kind (jury, sub-agent verifier, or otherwise) without a framework PR.
 
 ## Decision
 
@@ -54,23 +48,16 @@ same registry shape ADR-0043 established for `tolokaforge.grader_kinds`.
 A task selects its kind via `grading.llm_judge.judge_kind`; unknown kinds
 are refused at parse time, never at judge time.
 
-**Ship three built-in kinds.** `single_shot_rubric` (byte-identical with
+**Ship two built-in kinds.** `single_shot_rubric` (byte-identical with
 the pre-seam `LLMJudgeRubricEvaluator`; the default) wraps `LLMJudge` in
 one call. `chunked_rubric` splits the rubric's criteria into fixed-K
 contiguous chunks and runs one `LLMJudge` invocation per chunk against a
 scoped sub-rubric, closing the output-token-ceiling cap — any chunk that
 errors or returns partial verdicts fails the whole trial loud, never a
 silent partial verdict, and `JudgeResult.chunk_boundaries` records every
-chunk attempted. `agentic_rubric` drives a draft → critique → submit
-episode over a directly-constructed `ToolCallingLoop` (the same loop
-machinery the coding-agent side of the engine already uses, not a new
-engine): the judge calls `draft_report`, receives one engine-injected
-critique prompt echoing its own draft verdicts back at it, may re-examine
-evidence with its read tools and a real `critique(verdict_draft)` tool
-(read-only, gated on `kind_config.enable_critique_tool`), then calls
-`submit_report` for the final verdict. Both non-default kinds opt in via
-`grading.llm_judge.judge_kind`; `single_shot_rubric` stays the default so
-every existing task pack and run config grades identically.
+chunk attempted. `chunked_rubric` opts in via `grading.llm_judge.judge_kind`;
+`single_shot_rubric` stays the default so every existing task pack and run
+config grades identically.
 
 **Ship a κ-based parity gate, not a byte-parity gate.** Because a judge
 model's stochastic output can never be byte-identical to another kind's
@@ -82,9 +69,9 @@ agree with the reference kind at `block: κ ≥ 0.8` per criterion
 (cross-kind); a kind must agree with itself across replays at the
 stricter `self_consistency_block: κ ≥ 0.7` (self-consistency); and `warn:
 κ < 0.6` surfaces criteria that pass the block bar but are close enough
-that future drift could push them under. Both new kinds pass this gate
-against `single_shot_rubric` on the 20-fixture canonical parity corpus
-before being default-eligible for a task pack.
+that future drift could push them under. `chunked_rubric` passes this
+gate against `single_shot_rubric` on the 20-fixture canonical parity
+corpus before being default-eligible for a task pack.
 
 **Ship bundle recording of the kind and its config.** `Grade` and the
 grade bundle both record `judge_kind` + `kind_config` (and
@@ -95,39 +82,34 @@ config that may have since changed.
 
 ## What ships and what stays follow-up
 
-**Ships this milestone (#1562, Phases A–C):**
+**Ships this milestone (#1562, Phase A):**
 
 - `JudgeKind` Protocol + `tolokaforge.judge_kinds` entry-point registry + `single_shot_rubric` (#1566).
 - `grading.llm_judge.judge_kind` config field + `kind_config` plumbing, refused at parse time when unknown (#1567).
 - κ-based parity harness (`measure_cross_kind_agreement`, `measure_self_consistency`, `decide_parity_gate`) + canonical parity lane over the 20-fixture corpus (#1568).
 - `chunked_rubric` `JudgeKind` (#1524).
 - Bundle recording of `judge_kind` + `kind_config` + `chunk_boundaries`; offline replay dispatches through the `JudgeKind` seam (#1569).
-- `agentic_rubric` `JudgeKind` — draft → critique → submit over `ToolCallingLoop` (#1570).
-- The `critique(verdict_draft)` read-only tool, gated on `kind_config.enable_critique_tool` (#1571).
 - This ADR, `docs/JUDGE_KINDS.md`'s Protocol contract + authoring guide + worked examples, and the `tools/judge-kind-ab` live cross-kind κ/cost framework (#1572).
 
 **Stays follow-up:**
 
-- A sub-agent or external-verifier judge kind (a kind that itself dispatches to another model or tool-using agent to adjudicate the primary judge's verdict) — cited as future work, not scoped to this milestone.
+- A self-critique, jury, or sub-agent / external-verifier judge kind — the
+  Protocol and registry are shaped to accept one without a framework PR, but
+  none ships in this milestone.
 - `JudgeKind.evaluate`'s `explicit_system_prompt` widening for the bundle-branch `prompts.yaml.judge_prompt` escape hatch — follow-up #1583.
 - Retiring the offline-replay `LLMJudge`-direct escape hatch once every consumer routes through a named kind.
-- A human-labelled calibration corpus and a multi-judge jury kind — explicitly out of scope for this milestone (non-goals of #1572's own plan).
+- A human-labelled calibration corpus — explicitly out of scope for this milestone.
 
 ## Consequences
 
 **Positive**
 
-- Judge dispatch is a plug-in seam — a fourth kind (jury, sub-agent
-  verifier, or a downstream package's own kind) adds one entry-point line
-  and one class implementing `JudgeKind`, no framework PR.
+- Judge dispatch is a plug-in seam — a new kind (self-critique, jury,
+  sub-agent verifier, or a downstream package's own kind) adds one
+  entry-point line and one class implementing `JudgeKind`, no framework PR.
 - Per-criterion κ gives per-criterion accountability: a new kind's
   agreement (or disagreement) with the reference is visible criterion by
   criterion, not collapsed into one pass/fail trial-level signal.
-- `agentic_rubric` reuses the engine's existing `ToolCallingLoop`
-  machinery instead of introducing a second agent-loop implementation —
-  the same invariant ADR-0043 leaned on ("grading is a pure function of a
-  substrate") extends cleanly to "a judge kind is a pure function of the
-  evidence surface", regardless of how many internal turns it takes.
 - Bundle-recorded `judge_kind` + `kind_config` makes offline regrade
   (`tolokaforge grade`) deterministic across the kind axis, not just the
   substrate axis ADR-0043 already covered.
@@ -138,11 +120,6 @@ config that may have since changed.
   new kind, and every prompt change to an existing kind, needs cassette
   fixtures re-authored or re-recorded (`--live-parity`, wired by #1572)
   before the gate can run.
-- `agentic_rubric`'s draft → critique → submit episode costs strictly
-  more latency and LLM spend per trial than `single_shot_rubric` — three
-  model calls minimum instead of one, widened turn/timeout budgets
-  (50 turns / 480s vs. 14/240s) to cover the extra turns. Task packs
-  should opt into it deliberately, not by default.
 - `chunked_rubric` costs one `LLMJudge` invocation per chunk instead of
   one per trial, so its per-trial spend scales with rubric size divided
   by chunk size, not with a single flat call.
@@ -160,25 +137,17 @@ config that may have since changed.
   stochastic past the reference wrap (deterministic in the reference
   `single_shot_rubric` cassette lane, but not for a live LLM call, and
   never for a kind whose internal reasoning path genuinely differs from
-  the reference, such as `agentic_rubric`'s multi-turn critique).
-  Byte-parity is the right bar for grading *substrates* re-reading the
-  same recorded state; it is the wrong bar for judge *models* forming
-  independent judgements. A κ-agreement bar measures "do these two
-  independently-formed verdicts agree", which is the actual question.
-- **One monolithic agentic judge, no kind registry.** Ship only the
-  agentic draft → critique → submit judge and retire single-shot
-  entirely. Reject: single-shot's determinism and low cost remain the
-  right default for the common case (small rubrics, no need for
-  self-critique); forcing every task pack onto the agentic kind's extra
-  latency and spend with no opt-out would regress every existing task
-  pack's grading cost for no benefit on rubrics that do not need it.
+  the reference). Byte-parity is the right bar for grading *substrates*
+  re-reading the same recorded state; it is the wrong bar for judge
+  *models* forming independent judgements. A κ-agreement bar measures "do
+  these two independently-formed verdicts agree", which is the actual
+  question.
 - **Sub-agent / external-verifier judge kind in this milestone.** Extend
-  the built-ins with a fourth kind that itself calls out to another model
-  or tool-using agent to adjudicate. Reject: this milestone's scope
-  (#1562) is the seam plus the chunking and self-critique kinds; a
-  verifier-of-a-verifier kind is real future work but was not needed to
-  close either of ADR-0043's deferred caps, and adding it now would widen
-  this milestone's already-large surface (Phases A through C) rather than
+  the built-ins with a kind that itself calls out to another model or
+  tool-using agent to adjudicate. Reject: this milestone's scope (#1562)
+  is the seam plus the chunking kind; a verifier-of-a-verifier kind is
+  real future work but was not needed to close ADR-0043's deferred cap,
+  and adding it now would widen this milestone's surface rather than
   close it.
 
 ## Follow-ups

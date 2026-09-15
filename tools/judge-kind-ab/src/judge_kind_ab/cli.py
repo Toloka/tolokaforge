@@ -41,7 +41,7 @@ console = Console()
 
 #: Cheap, tool-calling-capable default judge model (the calibrator's choice).
 DEFAULT_MODEL_REF = "openrouter/openai/gpt-4.1-mini"
-DEFAULT_KINDS = "single_shot_rubric,chunked_rubric,agentic_rubric"
+DEFAULT_KINDS = "single_shot_rubric,chunked_rubric"
 
 #: Provider keys litellm looks up via os.environ; mirrored once at startup.
 _PROVIDER_KEYS = (

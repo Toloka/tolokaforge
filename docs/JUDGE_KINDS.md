@@ -13,20 +13,17 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-Three kinds ship in the reference distribution: `single_shot_rubric`
+Two kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
-`LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
+`LLMJudgeRubricEvaluator`) and `chunked_rubric` (one `LLMJudge`
 invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
 for large rubrics where a single `submit_report` payload would exceed
-the judge model's output-token ceiling), and `agentic_rubric` (a
-draft → critique → submit episode over a directly-constructed
-`ToolCallingLoop` — the opt-in kind for rubrics that benefit from a
-self-critique pass before the final verdict). Downstream packages
-register further alternatives (e.g. jury) alongside without a
+the judge model's output-token ceiling). Downstream packages
+register further alternatives (e.g. jury, agentic) alongside without a
 framework PR.
 
-The agentic-judge and registry decision is recorded in
-[`docs/adr/0046-agentic-llm-judge-and-judgekind-registry.md`](adr/0046-agentic-llm-judge-and-judgekind-registry.md).
+The `JudgeKind` Protocol and registry seam decision is recorded in
+[`docs/adr/0046-judgekind-protocol-and-registry.md`](adr/0046-judgekind-protocol-and-registry.md).
 
 ## Protocol contract
 
@@ -75,7 +72,7 @@ customization every kind must honor identically to `LLMJudge`.
 
 **`kind_config: Mapping[str, Any] | None`** is an opaque bag the Protocol
 itself does not interpret — each kind owns its own schema and validation.
-The shipping pattern (`chunked_rubric`, `agentic_rubric`) is a
+The shipping pattern (`chunked_rubric`) is a
 module-level `frozenset` of accepted keys, a `frozen @dataclass` holding
 the resolved, typed config, and a `_resolve_kind_config` function that
 raises `ValueError` naming the kind, the bad key, and the accepted set on
@@ -87,15 +84,14 @@ kind that takes no options (`single_shot_rubric`) still receives
 rather than silently ignoring an unused parameter.
 
 **Return contract.** `evaluate` MUST produce a `JudgeResult`. A judge
-malfunction — a malformed `submit_report`/`draft_report` past its retry
-budget, turn or wall-clock budget exhaustion, or any loop-terminal
-exception — surfaces as `JudgeStatus.ERRORED` with `score=None` and
-`criterion_results=()`, never a `0.0`/`0.5` fallback and never a partial
-verdict for a subset of criteria. Every shipped kind reuses the same
-`parse_submit_report` / `aggregate_rubric` validation, so this contract
-holds identically across kinds — see § Fail-loud contract under
-§ Agentic kind and the fail-loud paragraphs under § Chunked kind for the
-two non-trivial cases (a bad chunk, an exhausted episode).
+malfunction — a malformed `submit_report` past its retry budget, turn or
+wall-clock budget exhaustion, or any loop-terminal exception — surfaces
+as `JudgeStatus.ERRORED` with `score=None` and `criterion_results=()`,
+never a `0.0`/`0.5` fallback and never a partial verdict for a subset of
+criteria. Every shipped kind reuses the same `parse_submit_report` /
+`aggregate_rubric` validation, so this contract holds identically across
+kinds — see the fail-loud paragraphs under § Chunked kind for the
+non-trivial case (a bad chunk).
 
 ## Authoring a new judge kind
 
@@ -123,9 +119,9 @@ two non-trivial cases (a bad chunk, an exhausted episode).
    self-consistency (§ Three-level thresholds) before the kind is
    default-eligible for any task pack.
 5. **Document the kind.** Add a `## <Your kind> kind` section to this
-   file, in the shape of § Chunked kind / § Agentic kind (config schema,
-   fail-loud behaviour, any state machine or persistence notes), and a
-   short entry under § Worked examples.
+   file, in the shape of § Chunked kind (config schema, fail-loud
+   behaviour, any state machine or persistence notes), and a short entry
+   under § Worked examples.
 
 ## Worked examples
 
@@ -162,24 +158,6 @@ per-criterion results through `aggregate_rubric` on the original rubric.
 Opt in for rubrics whose single `submit_report` payload would overflow
 the judge model's output-token ceiling — see § Chunked kind for the
 fail-loud and persistence contract.
-
-### `agentic_rubric`
-
-```yaml
-grading:
-  llm_judge:
-    judge_kind: agentic_rubric
-    kind_config:
-      critique_turn_budget: 3
-      enable_critique_tool: true
-```
-
-Runs a draft → critique → submit episode over the same `ToolCallingLoop`
-machinery every other kind uses, with a wider turn/timeout budget (50
-turns / 480s) than `LLMJudge`'s own defaults to cover the extra phases.
-Opt in for rubrics that benefit from a self-critique pass before the
-final verdict — see § Agentic kind for the state machine, the critique
-tool, and the `ModelCapabilities` opt-in.
 
 ## Chunked kind
 
@@ -275,155 +253,6 @@ Cost note: a rubric split into N chunks consumes up to `N ×` the
 single-shot per-trial wall-clock and system-prompt tokens. This is the
 acknowledged cost of removing the truncation failure class; the trade
 between chunk size and reliability is measured in follow-up #1581.
-
-## Agentic kind
-
-`agentic_rubric` drives a draft → critique → submit episode over the
-same `ToolCallingLoop` machinery every other kind uses, instead of the
-single opinionated `submit_report` call `single_shot_rubric` and
-`chunked_rubric` both make: the judge calls its read tools zero or
-more times, calls `draft_report` with an initial verdict, receives one
-engine-injected critique prompt echoing that draft's per-criterion
-verdicts back at it, may call its read tools again, then calls
-`submit_report` with its final verdict — aggregated via the same
-`aggregate_rubric` every other kind uses. Both `draft_report` and
-`submit_report` are registered and visible from turn 0
-(`tolokaforge/core/grading/judge_kinds/agentic.py`, alongside
-`judge.py`'s unconditional `submit_report` registration at
-`judge.py:427`); ordering is enforced entirely by the injected
-corrective messages below, not by hiding either tool per turn — dynamic
-tool-list rebuilding is out of bounds for a single caller per AGENTS.md
-Core Rule 7. Opt in via `grading.llm_judge.judge_kind: agentic_rubric`;
-the default remains `single_shot_rubric`.
-
-`kind_config` schema: `{"critique_turn_budget": int, "enable_critique_tool":
-bool}`. Missing key or a `None` config → `DEFAULT_CRITIQUE_TURN_BUDGET = 3`
-and `enable_critique_tool = True`. Any unknown key, a `critique_turn_budget
-< 1`, or a non-`bool` `enable_critique_tool` raises `ValueError` inside
-`evaluate`, before `judge_model_provider.build()` is ever called — the same
-eager-validation contract `chunked_rubric`'s `chunk_size` follows.
-
-### State machine
-
-`_DraftReportTermination` is a stateful `TerminationPolicy` with two
-states, `awaiting_draft` and `critiquing`, and six transitions:
-
-1. `draft_report` while `awaiting_draft`, valid args → capture the
-   draft, inject one critique `role=user` message echoing every
-   captured criterion verdict plus the resolved `critique_turn_budget`,
-   transition to `critiquing`, resume the loop.
-2. `draft_report` while `awaiting_draft`, invalid args → reject and
-   re-prompt (bounded retries, same contract as
-   `SubmitReportTermination`'s `submit_report` rejection path); stay in
-   `awaiting_draft`. Exhausting the retry budget yields `ERRORED`.
-3. `draft_report` while already `critiquing` → inject a corrective
-   message ("draft already submitted, continue critiquing, then call
-   `submit_report`"); stay in `critiquing`.
-4. `submit_report` while still `awaiting_draft` → inject a corrective
-   message instructing `draft_report` first; no termination.
-5. `submit_report` while `critiquing`, valid args → delegate to
-   `SubmitReportTermination`'s validation and capture; the episode ends
-   `COMPLETED`. Invalid args follow the same bounded rejection/retry
-   contract as transition 2; exhaustion yields `ERRORED`.
-6. No `draft_report`/`submit_report` call in the turn (pure text, or a
-   read-tool call — including `critique(verdict_draft=...)`, an
-   ordinary `Tool` the termination policy never matches on) in either
-   state → no injected message, no state change, loop continues. This
-   mirrors `SubmitReportTermination`'s own silent-continue behaviour for
-   a turn without a `submit_report` call.
-
-`critique_turn_budget` is advisory only, stated in the injected critique
-message text — there is no new `TerminationReason` for exhausting it.
-`AGENTIC_JUDGE_MAX_TURNS` (below) is the only hard backstop for a judge
-that never progresses past the critique phase.
-
-### Turn and timeout budget
-
-`AGENTIC_JUDGE_MAX_TURNS = 50` and `AGENTIC_JUDGE_EPISODE_TIMEOUT_S =
-480` are hardcoded kind constants, not `kind_config` fields — wider
-than `LLMJudge`'s own defaults (`DEFAULT_JUDGE_MAX_TURNS = 14`,
-`DEFAULT_JUDGE_EPISODE_TIMEOUT_S = 240`, `judge.py`) because one
-agentic episode spans three phases (pre-draft reads, critique-phase
-reads, final submit) against the same rubric, where a single-shot judge
-spans one. `ToolCallingLoop.run` resets its own `max_turns` on every
-call, but one agentic episode may call `.run` more than once (once per
-draft/critique/submit pause); the kind enforces the 50-turn budget
-*across* those resumptions by counting assistant turns already recorded
-in the episode's `messages` and shrinking each resumption's
-`LoopConfig.max_turns` by that count, so the effective backstop holds
-for the whole episode rather than resetting on every pause. The
-episode's wall-clock start time is likewise captured once before the
-first `.run()` call and threaded through every resumption, so
-`episode_timeout_s` also holds across the whole episode.
-
-### `ModelCapabilities` opt-in
-
-The kind automatically opts the judge model into `ModelCapabilities`
-retry and summarization behaviour — there is no `kind_config` flag for
-this, unlike every other tunable on this kind. `evaluate()` reads
-`judge_model.capabilities` off the built `JudgeModel` and threads all
-six of `empty_retry_count`, `output_length_retry_count`,
-`parser_error_retry_count`, `tool_output_max_chars`,
-`max_context_tokens`, and `context_watermark` into its own
-`LoopConfig`, mirroring `tolokaforge/core/runner.py`'s
-capability-threading pattern for agent loops — a first for any judge
-kind (`single_shot_rubric` and `chunked_rubric` both delegate to
-`LLMJudge`, which does not thread capabilities). When both
-`max_context_tokens` and `context_watermark` are set on the model's
-capabilities, the kind also constructs an `LLMSummarizer` and threads it
-into the loop as `summarize_policy`. A `JudgeModelProvider` whose built
-client lacks `.capabilities` raises `AttributeError` under this kind —
-see the `JudgeModel` Protocol note in
-[`docs/GRADER_SERVICE.md`](GRADER_SERVICE.md#sub-component-plug-in-seams).
-
-### Fail-loud contract
-
-`parse_submit_report` and `aggregate_rubric` — reused unchanged from
-the other two kinds — validate every `draft_report`/`submit_report`
-payload the same way `single_shot_rubric` and `chunked_rubric` do,
-raising on a missing criterion verdict, an unknown/extra criterion id,
-a wrong field type, or a verdict/justification-marker mismatch. Retry
-exhaustion on either call (invalid args past the bounded retry count)
-yields a whole-trial `JudgeResult` with `status=ERRORED`, `score=None`,
-`criterion_results=()`, and a `reasons` naming the exhausted call and
-the underlying validation error. A judge that ends its episode without
-ever calling `submit_report` (turn budget or wall-clock exhausted
-first) errors the same way. There is never a silent partial or
-fabricated verdict.
-
-### Critique tool
-
-Alongside the injected critique prompt, the judge may call
-`critique(verdict_draft: JudgeDraft) -> CritiqueContext`
-(`tolokaforge/core/grading/judge_kinds/critique.py`) — an ordinary,
-read-only `Tool` registered only for `agentic_rubric`, gated on
-`kind_config.enable_critique_tool` (default `True`). Its schema wraps
-the exact `submit_report`/`draft_report` argument shape inside a single
-top-level `verdict_draft` object, so a flat, `submit_report`-shaped
-call is rejected by `ToolExecutor`'s `jsonschema` validation before
-`critique.execute` ever runs; `execute` re-validates with
-`parse_submit_report`, inheriting every one of `submit_report`'s
-fail-loud checks (missing verdict, unknown criterion id, wrong type,
-verdict/justification-marker mismatch) for free.
-
-`critique` never gathers new information — it deterministically
-resolves evidence the episode already collected, case-insensitive
-substring-matching each criterion's description/expected tokens
-against three sources: the formatted transcript, the state diff's
-lines when one was recorded, and a *replay* of any prior `search_kb`
-results already present in the judge's own in-progress transcript (no
-new `KnowledgeSearch` call). A criterion with no matching text
-contributes zero pointers, never a fabricated placeholder. Because
-`critique` is an ordinary `Tool` the termination policy never matches
-on, calling it exercises transition 6 above like any other read-tool
-call — no state-machine change was needed to add it.
-
-Registration happens inside `agentic.py`'s own `_build_episode_setup`,
-strictly before that function's `tool_schemas` snapshot — the only call
-site `AgenticRubricJudgeKind.evaluate` uses. `single_shot_rubric` and
-`chunked_rubric` both go through `LLMJudge.run` -> `build_judge_registry`
-directly and never execute `_build_episode_setup`, so `critique` cannot
-leak into either kind's registry by construction.
 
 ## Parity gate
 
@@ -548,11 +377,11 @@ change is needed: pop the N scripts as N `ScriptedLLMClient` instances
 for that fixture. See the `chunked_rubric` cassettes under
 `tests/data/judge_kind_parity_corpus/large_rubrics/` for the multi-chunk
 authoring shape (three `-` levels: per-chunk scripts list → the script's
-single turn → the turn's single tool call). See the `agentic_rubric`
-cassettes (any fixture under `tests/data/judge_kind_parity_corpus/`) for
-the single-client, multi-turn authoring shape instead — one script with
-two turns (`draft_report`, then `submit_report`) under
-`judge_scripts.agentic_rubric`.
+single turn → the turn's single tool call). A kind that calls
+`judge_model_provider.build(...)` exactly once per `evaluate` (the
+shipping example: `single_shot_rubric`) authors its cassette under
+`judge_scripts.<your_kind_name>` instead — a single-client,
+possibly-multi-turn script.
 
 ### Corpus authoring rules
 
@@ -595,13 +424,6 @@ fixtures (8–15 criteria) ship 2–3 scripts. Per-criterion verdicts
 across the chunk scripts MUST match the single-shot cassette's for
 identical cross-kind κ.
 
-Every fixture MUST also ship a `judge_scripts.agentic_rubric` block of
-exactly two turns — a `draft_report` call, then a `submit_report`
-call (the critique prompt between them is engine-injected, not a
-scripted turn) — with the `submit_report` turn's per-criterion verdicts
-matching the fixture's `single_shot_rubric` cassette for identical
-cross-kind κ.
-
 ## Live A/B: cross-kind κ and cost on real trials
 
 The 20-fixture corpus above proves a candidate kind agrees with the
@@ -629,7 +451,7 @@ CLI:
 ```
 judge-kind-ab run <bundles-dir> \
   --model-ref <provider/model> \
-  --kinds single_shot_rubric,chunked_rubric,agentic_rubric \
+  --kinds single_shot_rubric,chunked_rubric \
   --replays 5 \
   --out-dir <dir>
 ```
