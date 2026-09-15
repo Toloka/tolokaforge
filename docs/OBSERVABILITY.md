@@ -62,6 +62,9 @@ Spans go through a bounded queue exported by a background thread (`queue_size`,
 loop never waits. At run end the queue is flushed within `flush_timeout_s` and
 `tracing_receipt.json` in the run directory reports `spans_queued`, `spans_exported`,
 `spans_dropped`, `export_failures`, `flushed`; the same counts go to the log (a warning when
-anything was dropped). Tool arguments and results pass through the engine's
-`SensitiveKeyRedaction`; base64 image blocks never leave through spans; every string attribute is
-capped at `attribute_max_chars`.
+anything was dropped). If the receiver is unreachable the flush gives up after `flush_timeout_s`
+and counts the rest as dropped, so a run never waits on its traces. Tool-call **arguments** (a
+mapping) pass through the engine's `SensitiveKeyRedaction`; tool outputs and message text are free
+text, which key-based redaction cannot cover, so they are capped at `attribute_max_chars` but not
+redacted; base64 image blocks never leave through spans. The receiver's headers are read through
+the `SecretManager` (`OTEL_EXPORTER_OTLP_HEADERS`) so their value is redacted from the engine's logs.

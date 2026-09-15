@@ -402,6 +402,7 @@ def _synthesize_provision_failure_result(spec: TrialSpec, error: ProvisionError)
     trajectory = Trajectory(
         task_id=task_id,
         trial_index=trial_idx,
+        attempt_id=spec.attempt_id,
         start_ts=now,
         end_ts=now,
         status=TrialStatus.ERROR,

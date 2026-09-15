@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -120,15 +121,17 @@ class SpanQueue:
         except Exception as exc:  # noqa: BLE001 - never propagate into the run
             _log.warning("span export raised: %s", exc)
             result = SpanExportResult.FAILURE
-        if result is SpanExportResult.SUCCESS:
-            self.exported += len(batch)
-        else:
-            self.failures += 1
-            self.dropped += len(batch)
+        with self._lock:
+            if result is SpanExportResult.SUCCESS:
+                self.exported += len(batch)
+            else:
+                self.failures += 1
+                self.dropped += len(batch)
 
-    def _drain(self) -> None:
+    def _drain(self, deadline: float | None = None) -> None:
+        """Export batches until the queue is empty or ``deadline`` (``time.monotonic``) passes."""
         with self._drain_lock:
-            while True:
+            while deadline is None or time.monotonic() < deadline:
                 batch = self._take_batch()
                 if not batch:
                     return
@@ -141,17 +144,26 @@ class SpanQueue:
             self._drain()
         self._drain()
 
-    def flush(self) -> bool:
-        """Export everything queued so far, in the caller's thread; True when the queue is empty."""
-        self._drain()
+    def flush(self, timeout_s: float | None = None) -> bool:
+        """Export what is queued, in the caller's thread, within ``timeout_s``; whatever the budget
+        did not cover is dropped and counted, so a receiver that is down cannot hold the run
+        open. True when everything left."""
+        deadline = None if timeout_s is None else time.monotonic() + max(0.0, timeout_s)
+        self._drain(deadline)
         with self._lock:
-            return not self._items
+            left = len(self._items)
+            if left:
+                self._items.clear()
+                self.dropped += left
+        return left == 0
 
     def shutdown(self, timeout_s: float = 30.0) -> bool:
-        flushed = self.flush()
+        """Flush within the budget, stop the worker, close the exporter; True when nothing was lost."""
+        started = time.monotonic()
+        flushed = self.flush(timeout_s)
         self._stop.set()
         self._wake.set()
-        self._thread.join(timeout=max(0.0, timeout_s))
+        self._thread.join(timeout=max(0.1, timeout_s - (time.monotonic() - started)))
         try:
             self._exporter.shutdown()
         except Exception as exc:  # noqa: BLE001
@@ -234,6 +246,29 @@ class OTelTrialObserver:
         )
         with self._states_lock:
             self._states[identity.trace_id] = state
+        # The root span goes out now, open-ended (end = start) and marked running, and again at
+        # the end with everything it knows: the receiver dates the trace from the first span it
+        # sees, which would otherwise be the first generation, seconds after the trial started.
+        attributes = {
+            **self._trace_attributes(state),
+            "langfuse.observation.type": "span",
+            "langfuse.trace.metadata.task_id": identity.task_id,
+            "langfuse.trace.metadata.trial_index": identity.trial_index,
+            "langfuse.trace.metadata.attempt": identity.attempt_id,
+            "langfuse.trace.metadata.run_id": identity.run_id,
+            "langfuse.trace.metadata.run_tag": identity.run_tag,
+            "langfuse.trace.metadata.status": "running",
+            "langfuse.trace.metadata.trace_time_source": TRACE_TIME_SOURCE,
+        }
+        self._emit(
+            name=f"trial {identity.task_id}/{identity.trial_index}",
+            identity=identity,
+            span_id=identity.observation_id("root", 0),
+            parent_id=None,
+            attributes=attributes,
+            start=started_at,
+            end=started_at,
+        )
 
     def generation(
         self,
@@ -372,7 +407,11 @@ class OTelTrialObserver:
             error=not success,
         )
 
-    def trial_finished(self, identity: TrialIdentity, *, trajectory: Any) -> None:
+    def trial_finished(
+        self, identity: TrialIdentity, *, trajectory: Any, error: str | None = None
+    ) -> None:
+        """Close the trace with the root span. ``trajectory`` is ``None`` when the trial died
+        before producing one; ``error`` names the exception that ended it, if any."""
         with self._states_lock:
             state = self._states.pop(identity.trace_id, None)
         if state is None:
@@ -388,6 +427,7 @@ class OTelTrialObserver:
         status = getattr(trajectory, "status", None)
         termination = getattr(trajectory, "termination_reason", None)
         metadata: dict[str, Any] = {
+            **self._metadata,  # caller keys first: the exporter's own keys win on a clash
             "task_id": identity.task_id,
             "trial_index": identity.trial_index,
             "attempt": identity.attempt_id,
@@ -396,8 +436,9 @@ class OTelTrialObserver:
             "label": self._label,
             "harness": "tolokaforge",
             "trace_time_source": TRACE_TIME_SOURCE,
-            "status": _enum_value(status),
+            "status": _enum_value(status) if trajectory is not None else "error",
             "termination_reason": _enum_value(termination),
+            "error": error or NONE,
             "grading_error": str(getattr(trajectory, "grading_error", None) or NONE),
             "pass": getattr(grade, "binary_pass", None) if grade is not None else NONE,
             "score": getattr(grade, "score", None) if grade is not None else NONE,
@@ -422,7 +463,6 @@ class OTelTrialObserver:
                 metadata[f"{role}_model"] = (
                     ref.name if "/" in ref.name else f"{ref.provider}/{ref.name}"
                 )
-        metadata.update(self._metadata)
         first_user = next((m for m in messages if _role_of(m) == "user"), None)
         last_assistant = next(
             (m for m in reversed(messages) if _role_of(m) == "assistant" and _content(m)),
@@ -438,7 +478,7 @@ class OTelTrialObserver:
             attributes[f"langfuse.trace.metadata.{key}"] = _attribute_value(value)
         start = state.started_at or _as_utc(getattr(trajectory, "start_ts", None))
         end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=timezone.utc)
-        status_value = _enum_value(status)
+        status_value = _enum_value(status) if trajectory is not None else "error"
         self._emit(
             name=f"trial {identity.task_id}/{identity.trial_index}",
             identity=identity,
@@ -447,7 +487,7 @@ class OTelTrialObserver:
             attributes=attributes,
             start=start,
             end=end,
-            error=status_value in {"error", "failed", "timeout"},
+            error=error is not None or status_value in {"error", "failed", "timeout"},
         )
 
     def run_finished(self) -> ExportReceipt:

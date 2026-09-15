@@ -112,7 +112,12 @@ class TrialObserver(Protocol):
         ended_at: datetime,
     ) -> None: ...
 
-    def trial_finished(self, identity: TrialIdentity, *, trajectory: Trajectory) -> None: ...
+    def trial_finished(
+        self, identity: TrialIdentity, *, trajectory: Trajectory | None, error: str | None = None
+    ) -> None:
+        """The trial is over: ``trajectory`` carries status, grade and messages (``None`` when
+        the trial died before producing one), ``error`` the exception that ended it, if any."""
+        ...
 
     def run_finished(self) -> ExportReceipt: ...
 
@@ -131,7 +136,9 @@ class NullTrialObserver:
     def tool_call(self, identity: TrialIdentity, **_: Any) -> None:
         return None
 
-    def trial_finished(self, identity: TrialIdentity, *, trajectory: Trajectory) -> None:
+    def trial_finished(
+        self, identity: TrialIdentity, *, trajectory: Trajectory | None, error: str | None = None
+    ) -> None:
         return None
 
     def run_finished(self) -> ExportReceipt:

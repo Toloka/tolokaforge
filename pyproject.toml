@@ -698,6 +698,9 @@ pre_bump_hooks = [
 
 [dependency-groups]
 dev = [
+    # The live-tracing exporter (ADR-0046) is an optional extra; its tests need the SDK in CI.
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",

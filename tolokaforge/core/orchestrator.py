@@ -2466,6 +2466,11 @@ class Orchestrator:
             )
         if run_id is None:
             run_id, output_dir = resolve_run_directory(self.config.evaluation.output_dir)
+        # Live tracing (ADR-0046) is built from the config before any service starts, so a
+        # missing extra or an unreadable rules file fails here, with nothing to tear down.
+        self._trial_observer, self._run_identity = build_trial_observer(
+            getattr(self.config, "observability", None), engine_run_id=run_id, output_dir=output_dir
+        )
         assert output_dir is not None
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2806,9 +2811,6 @@ class Orchestrator:
                 runner_url=env_endpoints.runner_url,
             )
 
-        self._trial_observer, self._run_identity = build_trial_observer(
-            self.config.observability, engine_run_id=run_id, output_dir=output_dir
-        )
         conductor = self._build_conductor(
             agent_client=agent_client,
             runtime_backend=runtime_backend,
@@ -3140,10 +3142,12 @@ class Orchestrator:
                 self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()
-            self._finish_tracing(output_dir)
             self._events.run_finished(output_dir=resolved_output_dir)
             return resolved_output_dir
         finally:
+            # Flush the live traces on every exit path (an exception or Ctrl-C included): the
+            # export thread is a daemon and would otherwise die with the last batch unsent.
+            self._finish_tracing(output_dir)
             self._close_trial_graders()
 
     def _finish_tracing(self, output_dir: Path) -> None:
@@ -3226,6 +3230,10 @@ class Orchestrator:
                 f"Worker requires an engine_run_state.json with a run_id in {output_dir}. "
                 "Run `tolokaforge prepare` first."
             )
+        # Live tracing (ADR-0046): a worker traces under the run it joins.
+        self._trial_observer, self._run_identity = build_trial_observer(
+            getattr(self.config, "observability", None), engine_run_id=run_id, output_dir=output_dir
+        )
 
         # Log model configuration for all roles
         self.logger.info(
@@ -3420,6 +3428,7 @@ class Orchestrator:
             # the leased-work loop above. Sequential with the runtime
             # teardown; each failure is logged rather than raised so the
             # outer flow still surfaces the original exception.
+            self._finish_tracing(output_dir)
             self._close_trial_graders()
 
         self._publish_grading_completeness()

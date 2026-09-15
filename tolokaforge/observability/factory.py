@@ -69,13 +69,13 @@ def build_trial_observer(
     output_dir: Path | None = None,
 ) -> tuple[TrialObserver, RunIdentity]:
     """The observer for this run and the identity its trials trace under."""
-    tracing = observability.tracing if observability is not None else None
-    run_id = (getattr(tracing, "run_id", None) or engine_run_id) if tracing else engine_run_id
-    run_tag = (
-        (getattr(tracing, "run_tag", None) or ids.DEFAULT_RUN_TAG)
-        if tracing
-        else ids.DEFAULT_RUN_TAG
-    )
+    from tolokaforge.core.models import TracingConfig
+
+    tracing = getattr(observability, "tracing", None)
+    if not isinstance(tracing, TracingConfig):  # absent, or a caller's stub config
+        tracing = None
+    run_id = (tracing.run_id or engine_run_id) if tracing else engine_run_id
+    run_tag = (tracing.run_tag or ids.DEFAULT_RUN_TAG) if tracing else ids.DEFAULT_RUN_TAG
     try:
         ids.check_component("run_id", run_id)
         ids.check_component("run_tag", run_tag)
@@ -101,7 +101,7 @@ def build_trial_observer(
     except ModelNameResolverError as exc:
         raise TracingConfigError(str(exc)) from exc
     queue = SpanQueue(
-        make_otlp_exporter(tracing.endpoint),
+        make_otlp_exporter(tracing.endpoint, headers=otlp_headers()),
         max_size=tracing.queue_size,
         batch_size=tracing.export_batch_size,
         interval_s=tracing.export_interval_s,
@@ -121,6 +121,29 @@ def build_trial_observer(
     if output_dir is not None:
         write_run_identity(Path(output_dir), identity)
     return observer, identity
+
+
+OTLP_HEADERS_SECRET = "OTEL_EXPORTER_OTLP_HEADERS"
+
+
+def otlp_headers() -> dict[str, str] | None:
+    """The receiver's request headers from the ``SecretManager`` (so the value sits in the
+    log-redaction set), parsed from the OTLP ``key=value,key2=value2`` form; ``None`` when unset,
+    in which case the SDK's own environment lookup applies."""
+    try:
+        from tolokaforge.secrets import get_default_or_none
+    except ImportError:  # pragma: no cover - the secrets package is part of core
+        return None
+    manager = get_default_or_none()
+    raw = manager.get_secret(OTLP_HEADERS_SECRET) if manager is not None else None
+    if not raw:
+        return None
+    headers: dict[str, str] = {}
+    for item in raw.split(","):
+        key, sep, value = item.partition("=")
+        if sep and key.strip():
+            headers[key.strip()] = value.strip()
+    return headers or None
 
 
 def write_run_identity(output_dir: Path, identity: RunIdentity) -> Path:

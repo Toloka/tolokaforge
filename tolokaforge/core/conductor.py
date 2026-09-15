@@ -523,13 +523,30 @@ class InProcessConductor:
             models=self._model_refs(spec),
             started_at=datetime.now(tz=timezone.utc),
         )
-        trajectory, runner, system_prompt = self._run_agent_loop(spec, task_config, setup, identity)
-        self._capture_final_state(spec, setup, trajectory)
-        self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
-        self._produce_grade_bundle(spec, setup, trajectory)
-        # The bundle records the attempt it describes (ADR-0046), so the offline uploader derives
-        # the trace id the live exporter used.
-        trajectory.attempt_id = spec.attempt_id
+        trajectory: Trajectory | None = None
+        try:
+            trajectory, runner, system_prompt = self._run_agent_loop(
+                spec, task_config, setup, identity
+            )
+            self._capture_final_state(spec, setup, trajectory)
+            self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
+            self._produce_grade_bundle(spec, setup, trajectory)
+            # The bundle records the attempt it describes (ADR-0046), so the offline uploader
+            # derives the trace id the live exporter used.
+            trajectory.attempt_id = spec.attempt_id
+        except BaseException as exc:
+            # A trial that dies here (a hard raise, strict mode, a lost registration) still
+            # closes its trace, or its live spans would hang without a root; the orchestrator's
+            # retry then opens a new trace under the next attempt id.
+            if trajectory is not None:
+                trajectory.attempt_id = spec.attempt_id
+            safely(
+                self.trial_observer.trial_finished,
+                identity,
+                trajectory=trajectory,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
         safely(self.trial_observer.trial_finished, identity, trajectory=trajectory)
         self._write_artifacts(spec, task_config, setup, trajectory, runner)
         return TrialResult.from_trajectory(

@@ -106,9 +106,15 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     observer.trial_finished(IDENTITY, trajectory=_Trajectory(messages, grade=_Grade()))
     receipt = observer.run_finished()
 
-    spans = {s.name: s for s in exporter.get_finished_spans()}
+    finished = exporter.get_finished_spans()
+    assert [s.name for s in finished][:1] == ["trial T-1/0"]  # the provisional root goes first
+    spans = {s.name: s for s in finished}  # the final root replaces the provisional one by name
     assert set(spans) == {"assistant turn 1", "tool: shell", "trial T-1/0"}
-    assert receipt.spans_exported == 3 and receipt.spans_dropped == 0 and receipt.flushed
+    assert receipt.spans_exported == 4 and receipt.spans_dropped == 0 and receipt.flushed
+    provisional = finished[0]
+    assert format(provisional.context.span_id, "016x") == IDENTITY.observation_id("root", 0)
+    assert _attrs(provisional)["langfuse.trace.metadata.status"] == "running"
+    assert provisional.start_time == provisional.end_time == int(T0.timestamp() * 1e9)
 
     trace_int = int(IDENTITY.trace_id, 16)
     root = spans["trial T-1/0"]
@@ -184,12 +190,6 @@ def test_failed_tool_call_is_an_error_span() -> None:
 
 
 def test_full_queue_drops_and_counts_instead_of_blocking() -> None:
-    class _Stuck(InMemorySpanExporter):
-        def export(
-            self, spans
-        ):  # never called before shutdown: the worker is starved by the tiny interval
-            return super().export(spans)
-
     exporter = InMemorySpanExporter()
     queue = SpanQueue(exporter, max_size=2, batch_size=100, interval_s=60)
     observer = OTelTrialObserver(queue=queue, label="l", session_id="s")
@@ -205,6 +205,66 @@ def test_full_queue_drops_and_counts_instead_of_blocking() -> None:
         )
     receipt = observer.run_finished()
     assert receipt.spans_queued == 2 and receipt.spans_dropped == 3 and receipt.spans_exported == 2
+
+
+def test_shutdown_gives_up_after_the_flush_budget() -> None:
+    """A receiver that answers slowly cannot hold the run open: the budget passes, the rest is
+    counted as dropped and the receipt says so."""
+    import time
+
+    class _Slow(InMemorySpanExporter):
+        def export(self, spans):
+            time.sleep(0.25)
+            return super().export(spans)
+
+    queue = SpanQueue(_Slow(), max_size=100, batch_size=1, interval_s=60)
+    observer = OTelTrialObserver(queue=queue, label="l", session_id="s", flush_timeout_s=0.6)
+    for index in range(10):
+        observer.tool_call(
+            IDENTITY,
+            role="agent",
+            index=index,
+            call=ToolCall(id=str(index), name="t", arguments={}),
+            result=ToolResult(success=True, output="x"),
+            started_at=T0,
+            ended_at=T0,
+        )
+    started = time.monotonic()
+    receipt = observer.run_finished()
+    assert time.monotonic() - started < 3.0
+    assert receipt.flushed is False
+    assert receipt.spans_exported + receipt.spans_dropped == 10 and receipt.spans_dropped > 0
+
+
+def test_trial_that_dies_before_a_trajectory_still_closes_its_trace() -> None:
+    exporter = InMemorySpanExporter()
+    observer, _ = _observer(exporter)
+    observer.trial_started(
+        IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
+    )
+    observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: boom")
+    observer.run_finished()
+    provisional, root = exporter.get_finished_spans()
+    assert _attrs(provisional)["langfuse.trace.metadata.status"] == "running"
+    attrs = _attrs(root)
+    assert root.name == "trial T-1/0" and root.status.status_code.name == "ERROR"
+    assert attrs["langfuse.trace.metadata.error"] == "RuntimeError: boom"
+    assert attrs["langfuse.trace.metadata.status"] == "error"
+    assert attrs["langfuse.trace.metadata.pass"] == "none"
+
+
+def test_exporter_keys_win_over_caller_metadata() -> None:
+    exporter = InMemorySpanExporter()
+    queue = SpanQueue(exporter, max_size=10, batch_size=1, interval_s=60)
+    observer = OTelTrialObserver(
+        queue=queue, label="l", session_id="s", metadata={"status": "prod", "team": "arena"}
+    )
+    observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+    observer.run_finished()
+    (root,) = exporter.get_finished_spans()
+    attrs = _attrs(root)
+    assert attrs["langfuse.trace.metadata.status"] == "completed"  # the trial's, not the caller's
+    assert attrs["langfuse.trace.metadata.team"] == "arena"
 
 
 def test_export_failure_is_counted_not_raised() -> None:

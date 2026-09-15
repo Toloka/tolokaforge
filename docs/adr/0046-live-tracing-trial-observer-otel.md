@@ -97,9 +97,11 @@ We will adopt **Option 1**.
 - The bundle starts carrying the trial's final `attempt_id` in `trajectory.yaml`, and a run with
   tracing on writes `run_identity.json` (`run_id`, `run_tag`) into the run directory, so the
   offline uploader derives the same trace ids from the bundle.
-- Redaction: tool arguments and results go through `SensitiveKeyRedaction`; base64 image blocks
-  are dropped from span attributes (media stays a receiver-specific step outside the engine);
-  every string attribute is capped.
+- Redaction: tool-call arguments go through `SensitiveKeyRedaction`; tool outputs and message
+  text are free text (key-based redaction does not apply) and are capped, not redacted; base64
+  image blocks are dropped from span attributes (media stays a receiver-specific step outside the
+  engine). The receiver's headers are read through the `SecretManager`, so their value is in the
+  log-redaction set.
 - Scores stay outside the engine: the grade rides as root-span attributes (`pass`, `score`,
   component values in metadata); Langfuse scores are posted by the uploader's `attach-grades`
   or a receiver-side step.
