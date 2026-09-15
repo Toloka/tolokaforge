@@ -12,6 +12,7 @@ pytestmark = pytest.mark.unit
 from tolokaforge.core.grading.state_checks import state_digest
 from tolokaforge.core.hash import (
     ColumnCompareRule,
+    apply_compare_columns_equivalences,
     apply_compare_columns_extras,
     canonical_number,
     compute_stable_hash,
@@ -203,6 +204,175 @@ class TestApplyCompareColumnsExtras:
         rules = {"config": {"params": self._rule("param_case_number")}}
         filtered = apply_compare_columns_extras(actual, expected, rules)
         assert state_digest(filtered) == state_digest(expected)
+
+
+# ---------------------------------------------------------------------------
+# apply_compare_columns_equivalences: per-(table, column) scalar folds
+# ---------------------------------------------------------------------------
+
+
+def _hashes_agree(a: dict, b: dict) -> bool:
+    return state_digest(a) == state_digest(b)
+
+
+class TestTreatNullAsEmptyCollection:
+    """H1 — a column may be ``null`` in one state and ``[]`` (or ``{}``) in the other
+    without failing the hash when the pack declares that equivalence."""
+
+    def test_default_off_still_fails_on_mismatch(self):
+        """Baseline: without the flag, null vs [] disagree at the hash."""
+        actual = {"d365_cases": [{"id": "c1", "custom_tags": None}]}
+        expected = {"d365_cases": [{"id": "c1", "custom_tags": []}]}
+        assert not _hashes_agree(actual, expected)
+
+    def test_declared_flag_folds_null_and_empty_list(self):
+        actual = {"d365_cases": [{"id": "c1", "custom_tags": None}]}
+        expected = {"d365_cases": [{"id": "c1", "custom_tags": []}]}
+        rules = {
+            "d365_cases": {"custom_tags": ColumnCompareRule(treat_null_as_empty_collection=True)}
+        }
+        folded_actual = apply_compare_columns_equivalences(actual, rules)
+        folded_expected = apply_compare_columns_equivalences(expected, rules)
+        assert _hashes_agree(folded_actual, folded_expected)
+
+    def test_declared_flag_folds_null_and_empty_dict(self):
+        actual = {"d365_cases": [{"id": "c1", "custom_tags": None}]}
+        expected = {"d365_cases": [{"id": "c1", "custom_tags": {}}]}
+        rules = {
+            "d365_cases": {"custom_tags": ColumnCompareRule(treat_null_as_empty_collection=True)}
+        }
+        assert _hashes_agree(
+            apply_compare_columns_equivalences(actual, rules),
+            apply_compare_columns_equivalences(expected, rules),
+        )
+
+    def test_declared_flag_still_fails_on_non_empty_diff(self):
+        """The fold only equates empties with null — a real value still fails."""
+        actual = {"d365_cases": [{"id": "c1", "custom_tags": ["urgent"]}]}
+        expected = {"d365_cases": [{"id": "c1", "custom_tags": None}]}
+        rules = {
+            "d365_cases": {"custom_tags": ColumnCompareRule(treat_null_as_empty_collection=True)}
+        }
+        assert not _hashes_agree(
+            apply_compare_columns_equivalences(actual, rules),
+            apply_compare_columns_equivalences(expected, rules),
+        )
+
+
+class TestNormalizeTimezoneSuffix:
+    """H2 — a datetime column may carry ``Z`` on one side and naive on the other."""
+
+    def test_default_off_still_fails_on_mismatch(self):
+        actual = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T12:00:00Z"}]}
+        expected = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T12:00:00"}]}
+        assert not _hashes_agree(actual, expected)
+
+    def test_declared_flag_folds_trailing_Z(self):
+        actual = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T12:00:00Z"}]}
+        expected = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T12:00:00"}]}
+        rules = {
+            "orders": {"approx_delivery_date": ColumnCompareRule(normalize_timezone_suffix=True)}
+        }
+        assert _hashes_agree(
+            apply_compare_columns_equivalences(actual, rules),
+            apply_compare_columns_equivalences(expected, rules),
+        )
+
+    def test_declared_flag_folds_trailing_utc_offset(self):
+        actual = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T12:00:00+00:00"}]}
+        expected = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T12:00:00"}]}
+        rules = {
+            "orders": {"approx_delivery_date": ColumnCompareRule(normalize_timezone_suffix=True)}
+        }
+        assert _hashes_agree(
+            apply_compare_columns_equivalences(actual, rules),
+            apply_compare_columns_equivalences(expected, rules),
+        )
+
+    def test_declared_flag_still_fails_on_genuine_time_diff(self):
+        """The fold only strips a trailing UTC marker — a different instant still fails."""
+        actual = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T13:00:00Z"}]}
+        expected = {"orders": [{"id": "o1", "approx_delivery_date": "2026-09-15T12:00:00"}]}
+        rules = {
+            "orders": {"approx_delivery_date": ColumnCompareRule(normalize_timezone_suffix=True)}
+        }
+        assert not _hashes_agree(
+            apply_compare_columns_equivalences(actual, rules),
+            apply_compare_columns_equivalences(expected, rules),
+        )
+
+
+class TestTreatEmptyStringAsNull:
+    """H7 — a nullable-string column may be ``""`` in one state and ``null`` in the other."""
+
+    def test_default_off_still_fails_on_mismatch(self):
+        actual = {"cases": [{"id": "c1", "custom_corporate_account_id": ""}]}
+        expected = {"cases": [{"id": "c1", "custom_corporate_account_id": None}]}
+        assert not _hashes_agree(actual, expected)
+
+    def test_declared_flag_folds_empty_and_null(self):
+        actual = {"cases": [{"id": "c1", "custom_corporate_account_id": ""}]}
+        expected = {"cases": [{"id": "c1", "custom_corporate_account_id": None}]}
+        rules = {
+            "cases": {
+                "custom_corporate_account_id": ColumnCompareRule(treat_empty_string_as_null=True)
+            }
+        }
+        assert _hashes_agree(
+            apply_compare_columns_equivalences(actual, rules),
+            apply_compare_columns_equivalences(expected, rules),
+        )
+
+    def test_declared_flag_still_fails_on_real_value_diff(self):
+        actual = {"cases": [{"id": "c1", "custom_corporate_account_id": "ACC-1"}]}
+        expected = {"cases": [{"id": "c1", "custom_corporate_account_id": None}]}
+        rules = {
+            "cases": {
+                "custom_corporate_account_id": ColumnCompareRule(treat_empty_string_as_null=True)
+            }
+        }
+        assert not _hashes_agree(
+            apply_compare_columns_equivalences(actual, rules),
+            apply_compare_columns_equivalences(expected, rules),
+        )
+
+
+class TestEquivalenceFoldsCompose:
+    """A rule setting multiple equivalence flags folds every declared shape to one."""
+
+    def test_null_empty_collection_and_empty_string_share_a_bucket(self):
+        """When both flags are set, None ≡ [] ≡ {} ≡ "" all compare equal."""
+        rule = ColumnCompareRule(
+            treat_null_as_empty_collection=True,
+            treat_empty_string_as_null=True,
+        )
+        rules = {"t": {"col": rule}}
+        variants = [
+            {"t": [{"col": None}]},
+            {"t": [{"col": []}]},
+            {"t": [{"col": {}}]},
+            {"t": [{"col": ""}]},
+        ]
+        folded = [apply_compare_columns_equivalences(v, rules) for v in variants]
+        base = folded[0]
+        for other in folded[1:]:
+            assert _hashes_agree(base, other)
+
+    def test_subset_mode_still_works_alongside_equivalence_flags(self):
+        """Legacy ``mode: subset`` rule remains intact when equivalence flags are also set
+        on a sibling column — they are separate concerns wired through separate helpers."""
+        actual = {"t": [{"id": "1", "params": {"body": "hi", "case_no": "C-1"}, "tag": None}]}
+        expected = {"t": [{"id": "1", "params": {"body": "hi"}, "tag": []}]}
+        rules = {
+            "t": {
+                "params": ColumnCompareRule(mode="subset", extras_allowed_for=["case_no"]),
+                "tag": ColumnCompareRule(treat_null_as_empty_collection=True),
+            }
+        }
+        filtered = apply_compare_columns_extras(actual, expected, rules)
+        folded_actual = apply_compare_columns_equivalences(filtered, rules)
+        folded_expected = apply_compare_columns_equivalences(expected, rules)
+        assert _hashes_agree(folded_actual, folded_expected)
 
 
 # ---------------------------------------------------------------------------

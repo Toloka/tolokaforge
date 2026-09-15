@@ -476,6 +476,24 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 since=_UNRELEASED,
                 breadth="a pack declaring per-column permitted-extra tool-call params",
             ),
+            _DocLock(
+                doc_key="state_checks.compare_columns.<table>.<column>.treat_null_as_empty_collection",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack folding null and empty-collection on a column",
+            ),
+            _DocLock(
+                doc_key="state_checks.compare_columns.<table>.<column>.normalize_timezone_suffix",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack folding trailing-Z / naive datetime strings on a column",
+            ),
+            _DocLock(
+                doc_key="state_checks.compare_columns.<table>.<column>.treat_empty_string_as_null",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack folding empty-string and null on a column",
+            ),
         ),
     ),
     _WireKey(

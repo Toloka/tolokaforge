@@ -72,7 +72,11 @@ from tolokaforge.core.grading.trace_timeline import (
     build_timeline_from_wire,
 )
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
-from tolokaforge.core.hash import apply_compare_columns_extras, compute_stable_hash
+from tolokaforge.core.hash import (
+    apply_compare_columns_equivalences,
+    apply_compare_columns_extras,
+    compute_stable_hash,
+)
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -2817,11 +2821,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_state_filtered = apply_compare_columns_extras(
                 trial_state_raw, golden_state_raw, compare_columns
             )
+            # Fold column-level equivalences symmetrically on both sides at
+            # hash time only. The state_diff below reads trial_state_filtered
+            # (subset-filtered, un-folded) against golden_state_raw so the
+            # author sees the actual disagreeing values, not internal fold
+            # tokens.
+            trial_state_folded = apply_compare_columns_equivalences(
+                trial_state_filtered, compare_columns
+            )
+            golden_state_folded = apply_compare_columns_equivalences(
+                golden_state_raw, compare_columns
+            )
             trial_hash = compute_stable_hash(
-                trial_state_filtered, numeric_string_fields=numeric_string_fields
+                trial_state_folded, numeric_string_fields=numeric_string_fields
             )
             golden_hash = compute_stable_hash(
-                golden_state_raw, numeric_string_fields=numeric_string_fields
+                golden_state_folded, numeric_string_fields=numeric_string_fields
             )
             logger.debug(
                 f"GradeTrial: Client-side hashes computed (compare_columns applied) "

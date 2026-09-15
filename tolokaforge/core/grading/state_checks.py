@@ -18,7 +18,12 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.predicates import contains
-from tolokaforge.core.hash import ColumnCompareRule, apply_compare_columns_extras, canonical_number
+from tolokaforge.core.hash import (
+    ColumnCompareRule,
+    apply_compare_columns_equivalences,
+    apply_compare_columns_extras,
+    canonical_number,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
 
@@ -522,9 +527,18 @@ class StateChecker:
         # so pass through unconditionally.
         db_state = apply_compare_columns_extras(db_state, expected_state, compare_columns)
 
+        # Fold column-level equivalences symmetrically on both sides at hash
+        # time only. Downstream diff reporting reads db_state and
+        # expected_state as they stand, so the author sees the actual
+        # disagreeing values rather than internal fold tokens.
+        db_state_folded = apply_compare_columns_equivalences(db_state, compare_columns)
+        expected_state_folded = apply_compare_columns_equivalences(expected_state, compare_columns)
+
         # Compute hashes
-        expected_hash = state_digest(expected_state, numeric_string_fields=numeric_string_fields)
-        actual_hash = state_digest(db_state, numeric_string_fields=numeric_string_fields)
+        expected_hash = state_digest(
+            expected_state_folded, numeric_string_fields=numeric_string_fields
+        )
+        actual_hash = state_digest(db_state_folded, numeric_string_fields=numeric_string_fields)
 
         # Calculate diff if states don't match
         diff_result = None

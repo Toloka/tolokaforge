@@ -40,16 +40,38 @@ logger = logging.getLogger(__name__)
 class ColumnCompareRule(BaseModel):
     """Per-(table, column) rule for the state-hash comparator.
 
-    ``mode: subset`` means the model may include keys in ``column`` beyond what
-    the golden's version of ``column`` carries — for exactly the keys named in
-    ``extras_allowed_for`` — without failing the hash. Extras not named there
-    still fail; keys the golden declares are still compared value-for-value.
+    Two independent families of loosening the pack can opt into per column:
 
-    Mirrors the trace comparator's ``compare_args`` shape on ``RequiredAction``:
-    the trace side declares a subset of arguments to compare, the state side
-    declares a subset of column-dict keys the model may add. Room for future
-    modes (case-insensitive, numeric-tolerant) is why this is a typed struct
-    rather than a bare ``list``.
+    **Structural** (``mode: subset``): the model may include keys in ``column``
+    beyond what the golden's version of ``column`` carries — for exactly the keys
+    named in ``extras_allowed_for`` — without failing the hash. Extras not named
+    there still fail; keys the golden declares are still compared
+    value-for-value. Mirrors the trace comparator's ``compare_args`` shape on
+    ``RequiredAction``.
+
+    **Scalar equivalences** (``treat_null_as_empty_collection``,
+    ``normalize_timezone_suffix``, ``treat_empty_string_as_null``): the
+    column's scalar value is canonicalized to a single form before hashing on
+    both sides. Each flag opts in one equivalence relation:
+
+    - ``treat_null_as_empty_collection`` — ``None`` ≡ ``[]`` ≡ ``{}``. For
+      collection columns the domain treats "no items" and "field absent" as
+      the same state (H1: pharma ``d365_cases.custom_tags``).
+    - ``normalize_timezone_suffix`` — strings ending in ``Z``, ``+00:00``, or
+      ``+0000`` compare equal to the same string without that trailing UTC
+      marker. For datetime columns where the prompt does not require an
+      explicit ``Z`` and the storage layer round-trips it inconsistently
+      (H2: pharma ``sap_api_orders.approx_delivery_date``).
+    - ``treat_empty_string_as_null`` — ``None`` ≡ ``""``. For nullable-string
+      columns whose prompt says "leave empty" and DB storage folds one form
+      into the other (H7: marketplace ``d365_api_cases.custom_corporate_account_id``).
+
+    When more than one flag is set on the same column the folds compose to a
+    single "nullish" bucket, so ``None``, ``[]``, ``{}`` and ``""`` all
+    compare equal.
+
+    Room for future modes (case-insensitive, numeric-tolerant) is why this is
+    a typed struct rather than a bare ``list``.
 
     Declared as a per-table, per-column map in ``state_checks.compare_columns``:
 
@@ -61,12 +83,24 @@ class ColumnCompareRule(BaseModel):
               params:
                 mode: subset
                 extras_allowed_for: [param_case_number]
+            d365_cases:
+              custom_tags:
+                treat_null_as_empty_collection: true
+            sap_api_orders:
+              approx_delivery_date:
+                normalize_timezone_suffix: true
+            d365_api_cases:
+              custom_corporate_account_id:
+                treat_empty_string_as_null: true
     """
 
     model_config = {"extra": "forbid"}
 
-    mode: Literal["subset"]
-    extras_allowed_for: list[str]
+    mode: Literal["subset"] | None = None
+    extras_allowed_for: list[str] = []
+    treat_null_as_empty_collection: bool = False
+    normalize_timezone_suffix: bool = False
+    treat_empty_string_as_null: bool = False
 
 
 def apply_compare_columns_extras(
@@ -166,6 +200,105 @@ _NUMERIC_TAG = "\x00tf-num:"
 # Escape prefix for a genuine string that itself begins with the reserved NUL,
 # so a crafted value like "\x00tf-num:130" can never collide with a numeric token.
 _ESCAPE_TAG = "\x00tf-esc:"
+
+# Shared canonical token for column-level nullish equivalences. Distinct from
+# every legitimate value under a folded column: ``None`` cannot collide with a
+# string of any content, and no state ever stores a value with this leading NUL.
+_NULLISH_TOKEN = "\x00tf-nullish"
+
+# Trailing markers a timezone-normalized string treats as interchangeable with a
+# suffix-free form. ``Z`` first because it is the shape H2 was raised over; the
+# other two collapse the same equivalence when the DB layer round-trips one
+# form as another.
+_TIMEZONE_UTC_SUFFIXES: tuple[str, ...] = ("Z", "+00:00", "+0000")
+
+
+def _is_empty_collection(value: Any) -> bool:
+    """A value the ``treat_null_as_empty_collection`` fold treats as ``None``."""
+    if value is None:
+        return True
+    if isinstance(value, list) and not value:
+        return True
+    if isinstance(value, dict) and not value:
+        return True
+    return False
+
+
+def _fold_column_value(value: Any, rule: "ColumnCompareRule") -> Any:
+    """Canonicalize one column's scalar value under the rule's equivalence flags.
+
+    Symmetric: applied to both trial and golden before hashing, so any two
+    values the rule declares equivalent collapse to a single token
+    representation on both sides. The subset-mode ``extras_allowed_for``
+    filter is applied separately by :func:`apply_compare_columns_extras`
+    and does not run here.
+    """
+    if rule.treat_null_as_empty_collection and _is_empty_collection(value):
+        return _NULLISH_TOKEN
+    if rule.treat_empty_string_as_null and (value is None or value == ""):
+        return _NULLISH_TOKEN
+    if rule.normalize_timezone_suffix and isinstance(value, str):
+        for suffix in _TIMEZONE_UTC_SUFFIXES:
+            if value.endswith(suffix):
+                return value[: -len(suffix)]
+    return value
+
+
+def apply_compare_columns_equivalences(
+    state: dict[str, Any],
+    compare_columns: dict[str, dict[str, "ColumnCompareRule"]] | None,
+) -> dict[str, Any]:
+    """Return ``state`` with column-level equivalence folds applied.
+
+    For each ``(table, column)`` in ``compare_columns`` whose rule sets any of
+    ``treat_null_as_empty_collection``, ``normalize_timezone_suffix`` or
+    ``treat_empty_string_as_null``, canonicalizes the column's value in every
+    row of the table via :func:`_fold_column_value`. The fold is symmetric:
+    every caller runs it on both trial and golden states before hashing, so
+    two values the pack declared equivalent collapse to the same token on
+    both sides.
+
+    The returned dict is a shallow copy — tables absent from
+    ``compare_columns`` share list / dict references with the input rather
+    than being deep-copied. Callers that hash the result (``compute_stable_hash``)
+    and discard it — the only supported use — are unaffected.
+
+    A rule with only structural mode (``mode: subset`` and no equivalence
+    flags set) is a no-op here — its behaviour lives in
+    :func:`apply_compare_columns_extras`.
+    """
+    if not compare_columns:
+        return state
+
+    def _rule_has_equivalence(rule: "ColumnCompareRule") -> bool:
+        return (
+            rule.treat_null_as_empty_collection
+            or rule.normalize_timezone_suffix
+            or rule.treat_empty_string_as_null
+        )
+
+    def _fold_row(row: Any, rules: list[tuple[str, "ColumnCompareRule"]]) -> Any:
+        if not isinstance(row, dict):
+            return row
+        folded = dict(row)
+        for column, rule in rules:
+            if column in folded:
+                folded[column] = _fold_column_value(folded[column], rule)
+        return folded
+
+    result = dict(state)
+    for table, column_rules in compare_columns.items():
+        rules_with_equivalence: list[tuple[str, ColumnCompareRule]] = [
+            (column, rule) for column, rule in column_rules.items() if _rule_has_equivalence(rule)
+        ]
+        if not rules_with_equivalence:
+            continue
+        table_data = result.get(table)
+        if isinstance(table_data, list):
+            result[table] = [_fold_row(row, rules_with_equivalence) for row in table_data]
+        elif isinstance(table_data, dict):
+            result[table] = _fold_row(table_data, rules_with_equivalence)
+    return result
 
 
 def _numeric_token(d: Decimal) -> str:
