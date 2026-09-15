@@ -1091,21 +1091,62 @@ class GraderConfig(BaseModel):
 
 
 class TracingConfig(BaseModel):
-    """Tracing exporter selection.
+    """Live tracing of trials (ADR-0046).
 
-    A non-default ``exporter`` requires an ``endpoint``; ``none`` (the
-    default) does not.
+    ``exporter: otlp`` with an ``endpoint`` (the receiver's OTLP/HTTP traces URL) switches the
+    engine's ``TrialObserver`` on: every generation and tool call of a trial leaves as a span while
+    the trial runs, the graded trial closes the trace. Needs the ``otel`` extra. ``none`` (the
+    default) observes nothing. Receiver credentials travel in the standard
+    ``OTEL_EXPORTER_OTLP_HEADERS`` variable, never in this file.
+
+    Identity: ``run_id`` is the external execution identity a workflow hands in (default: the
+    engine's own run id) and ``run_tag`` the id namespace; both enter every trace id, so the
+    offline bundle uploader reaches the same traces (``docs/OBSERVABILITY.md``).
     """
 
     model_config = {"extra": "ignore"}
 
     exporter: Literal["none", "otlp"] = "none"
     endpoint: str | None = None
+    run_id: str | None = None
+    run_tag: str = "v1"
+    session_id: str | None = None
+    """Session every trace of the run joins (default: ``run_id``)."""
+    label: str | None = None
+    """Trace-name prefix, ``<label>/<task_id>`` (default: the run directory's name)."""
+    service_name: str = "tolokaforge"
+    tags: list[str] = Field(default_factory=list)
+    """Extra trace tags, each ``<prefix>:<value>``; ``harness:`` and ``model*:`` are set by the
+    exporter and refused here."""
+    metadata: dict[str, str] = Field(default_factory=dict)
+    """Extra trace metadata; the exporter's own keys win on a clash."""
+    model_name_normalizer: Literal["none", "toloka"] = "none"
+    """``toloka``: identity, ``model_vendor`` / ``model_family`` tags and facet metadata from
+    ``toloka-model-name-normalizer`` (must be installed); ``none``: the raw provider/name pair."""
+    model_name_rules: str | None = None
+    """Override rules file for the normalizer (a deployment's stems, aliases, abbreviations)."""
+    queue_size: int = Field(default=4096, ge=1)
+    export_batch_size: int = Field(default=64, ge=1)
+    export_interval_s: float = Field(default=1.0, gt=0)
+    flush_timeout_s: float = Field(default=30.0, ge=0)
+    attribute_max_chars: int = Field(default=20_000, ge=64)
+    context_messages: int = Field(default=6, ge=1)
+    """How many preceding messages a generation span carries as its input."""
 
     @model_validator(mode="after")
     def _require_endpoint_when_active(self) -> Self:
         if self.exporter != "none" and not self.endpoint:
             raise ValueError(f"TracingConfig.exporter={self.exporter!r} requires endpoint.")
+        if self.model_name_rules and self.model_name_normalizer == "none":
+            raise ValueError(
+                "TracingConfig.model_name_rules requires model_name_normalizer='toloka'."
+            )
+        for component, value in (("run_id", self.run_id), ("run_tag", self.run_tag)):
+            if value is not None and (not value.strip() or value != value.strip() or "|" in value):
+                raise ValueError(
+                    f"TracingConfig.{component}={value!r} must be non-empty without surrounding "
+                    "whitespace or '|'."
+                )
         return self
 
 

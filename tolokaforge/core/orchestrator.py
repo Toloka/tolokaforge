@@ -105,6 +105,12 @@ from tolokaforge.core.trial import (
 )
 from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
+from tolokaforge.observability.factory import (
+    RunIdentity,
+    build_trial_observer,
+    write_tracing_receipt,
+)
+from tolokaforge.observability.observer import NullTrialObserver, TrialObserver, safely
 from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
 
@@ -691,6 +697,9 @@ class Orchestrator:
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
+        # Live tracing (ADR-0046): built per run from ``observability.tracing`` in :meth:`run`.
+        self._trial_observer: TrialObserver = NullTrialObserver()
+        self._run_identity: RunIdentity | None = None
         self._events: RunDisplayEvents = resolved_deps.events
         # Budget composite driving the graceful-shutdown path. ``None``
         # means "no CLI budget flag AND no legacy ``compute.max_budget_usd``";
@@ -1014,6 +1023,8 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
             events=self._events,
+            trial_observer=self._trial_observer,
+            run_identity=self._run_identity,
         )
         factory = self._conductor_factory or load_conductor("in_process")
         conductor = factory(ctx)
@@ -2795,6 +2806,9 @@ class Orchestrator:
                 runner_url=env_endpoints.runner_url,
             )
 
+        self._trial_observer, self._run_identity = build_trial_observer(
+            self.config.observability, engine_run_id=run_id, output_dir=output_dir
+        )
         conductor = self._build_conductor(
             agent_client=agent_client,
             runtime_backend=runtime_backend,
@@ -3126,10 +3140,31 @@ class Orchestrator:
                 self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()
+            self._finish_tracing(output_dir)
             self._events.run_finished(output_dir=resolved_output_dir)
             return resolved_output_dir
         finally:
             self._close_trial_graders()
+
+    def _finish_tracing(self, output_dir: Path) -> None:
+        """Flush and close the run's trial observer; the export receipt lands in the run
+        directory and the log. Never raises: the observability layer only warns (ADR-0046)."""
+        observer, self._trial_observer = self._trial_observer, NullTrialObserver()
+        if isinstance(observer, NullTrialObserver):
+            return
+        receipt = safely(observer.run_finished)
+        if receipt is None:
+            self.logger.warning("Trial observer did not report an export receipt")
+            return
+        summary = receipt.to_dict()
+        try:
+            write_tracing_receipt(output_dir, summary)
+        except OSError as exc:
+            self.logger.warning("Could not write the tracing receipt", error=str(exc))
+        if receipt.spans_dropped or receipt.export_failures or not receipt.flushed:
+            self.logger.warning("Live tracing export incomplete", **summary)
+        else:
+            self.logger.info("Live tracing export complete", **summary)
 
     def _close_trial_graders(self) -> None:
         """Release every ``TrialGrader`` built during this orchestrator's

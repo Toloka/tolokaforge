@@ -4,7 +4,7 @@ import shlex
 import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tolokaforge_coding_harnesses.stdout_telemetry import (
     HarnessStdoutTelemetry,
@@ -81,6 +81,8 @@ _USAGE_READ_DETAIL_CHARS = 200
 
 Enough to name the cause (``cat``'s "No such file or directory" is the expected
 one) without spilling an unbounded container stream into the trial log."""
+if TYPE_CHECKING:
+    from tolokaforge.observability.observer import LoopObserver
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -163,6 +165,7 @@ class TrialRunner:
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
+        loop_observer: "LoopObserver | None" = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -185,6 +188,8 @@ class TrialRunner:
         # user observations so both roles' 429s land in one per-trial total, and
         # copied onto ``Metrics`` when the trial finalises.
         self._probe_stats = probe_stats
+        # Live tracing (ADR-0046): the trial's observer bound to the agent role, or None.
+        self._loop_observer = loop_observer
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
@@ -422,6 +427,7 @@ class TrialRunner:
                         role="agent",
                         probe_stats=self._probe_stats,
                     ),
+                    observer=self._loop_observer,
                 ).run(system_prompt, self.messages, self.start_time)
 
                 status = outcome.status

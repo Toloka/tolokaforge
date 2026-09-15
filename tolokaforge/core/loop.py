@@ -64,8 +64,8 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Protocol
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, Protocol
 
 import litellm.exceptions
 
@@ -92,6 +92,9 @@ from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
+
+if TYPE_CHECKING:
+    from tolokaforge.observability.observer import LoopObserver
 
 
 class LoopLLMClient(Protocol):
@@ -395,6 +398,10 @@ class ToolCallingLoop:
         None
     )
     call_observation: LLMCallObservation | None = None
+    # Live tracing seam (ADR-0046): told about every recorded assistant turn and tool result with
+    # the message's position in ``messages``, so a live span and the bundle uploader's observation
+    # share one id. ``None`` observes nothing; a raising observer never reaches the loop.
+    observer: LoopObserver | None = None
     # Per-tool ``parameters`` schema the model was shown for this loop's tools,
     # keyed by tool name. Wired at construction from
     # :meth:`LLMClient.sanitize_tools_for_execution`. When present, the executor
@@ -666,6 +673,16 @@ class ToolCallingLoop:
             )
 
         self._append_both(messages, self._assistant_message(result))
+        if self.observer is not None:
+            ended_at = messages[-1].ts or _now()
+            self.observer.generation(
+                index=len(messages) - 1,
+                turn=turn,
+                request=messages[:-1],
+                result=result,
+                started_at=ended_at - timedelta(seconds=max(0.0, result.latency_s or 0.0)),
+                ended_at=ended_at,
+            )
 
         decision = self.should_terminate(result, turn, messages)
         if decision is not None:
@@ -885,6 +902,15 @@ class ToolCallingLoop:
                     ts=_now(),
                 ),
             )
+            if self.observer is not None:
+                ended_at = messages[-1].ts or _now()
+                self.observer.tool_call(
+                    index=len(messages) - 1,
+                    call=tc,
+                    result=tool_result,
+                    started_at=ended_at - timedelta(seconds=max(0.0, tool_duration)),
+                    ended_at=ended_at,
+                )
 
     def _cap_tool_message_content(self, tool_name: str, raw: str) -> str:
         """Apply the tighter tool-output cap to a ``role=tool`` message content.

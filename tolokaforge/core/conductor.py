@@ -25,7 +25,7 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -68,6 +68,15 @@ from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, TrialGrader
+from tolokaforge.observability.factory import RunIdentity
+from tolokaforge.observability.observer import (
+    LoopObserverBinding,
+    ModelRef,
+    NullTrialObserver,
+    TrialIdentity,
+    TrialObserver,
+    safely,
+)
 from tolokaforge.runner.models import provisions_database
 
 if TYPE_CHECKING:
@@ -152,6 +161,9 @@ class ConductorContext:
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
+    # Live tracing seam (ADR-0046): the run's observer and the identity its trials trace under.
+    trial_observer: TrialObserver = field(default_factory=NullTrialObserver)
+    run_identity: RunIdentity | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +479,8 @@ class InProcessConductor:
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
         events: RunDisplayEvents = _NULL_EVENTS,
+        trial_observer: TrialObserver | None = None,
+        run_identity: RunIdentity | None = None,
     ) -> None:
         self.adapter = adapter
         self._artifact_writer = artifact_writer
@@ -480,6 +494,8 @@ class InProcessConductor:
         self.output_dir = output_dir
         self.request_limiter = request_limiter
         self.events = events
+        self.trial_observer: TrialObserver = trial_observer or NullTrialObserver()
+        self.run_identity = run_identity
 
     def run(
         self,
@@ -500,10 +516,21 @@ class InProcessConductor:
         this method is the thin coordinator.
         """
         setup = self._setup_trial(spec, task_config)
-        trajectory, runner, system_prompt = self._run_agent_loop(spec, task_config, setup)
+        identity = self._trial_identity(spec, setup)
+        safely(
+            self.trial_observer.trial_started,
+            identity,
+            models=self._model_refs(spec),
+            started_at=datetime.now(tz=timezone.utc),
+        )
+        trajectory, runner, system_prompt = self._run_agent_loop(spec, task_config, setup, identity)
         self._capture_final_state(spec, setup, trajectory)
         self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
         self._produce_grade_bundle(spec, setup, trajectory)
+        # The bundle records the attempt it describes (ADR-0046), so the offline uploader derives
+        # the trace id the live exporter used.
+        trajectory.attempt_id = spec.attempt_id
+        safely(self.trial_observer.trial_finished, identity, trajectory=trajectory)
         self._write_artifacts(spec, task_config, setup, trajectory, runner)
         return TrialResult.from_trajectory(
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
@@ -702,11 +729,36 @@ class InProcessConductor:
             tool_output_max_chars_by_tool=tool_output_max_chars_by_tool,
         )
 
+    def _trial_identity(self, spec: TrialSpec, setup: _TrialSetup) -> TrialIdentity:
+        """The id-contract identity of this trial: the run's tracing identity (or the engine run
+        id when tracing is off) plus task, trial index and the attempt being executed."""
+        run = self.run_identity or RunIdentity(run_id=spec.run_id)
+        task_id = setup.trial_id.rsplit(":", 1)[0]
+        return run.trial(task_id=task_id, trial_index=setup.trial_idx, attempt_id=spec.attempt_id)
+
+    @staticmethod
+    def _model_refs(spec: TrialSpec) -> dict[str, ModelRef]:
+        refs = {
+            "agent": ModelRef(
+                provider=spec.agent_model_config.provider, name=spec.agent_model_config.name
+            )
+        }
+        if spec.user_model_config is not None:
+            refs["user"] = ModelRef(
+                provider=spec.user_model_config.provider, name=spec.user_model_config.name
+            )
+        if spec.judge_model_config is not None:
+            refs["judge"] = ModelRef(
+                provider=spec.judge_model_config.provider, name=spec.judge_model_config.name
+            )
+        return refs
+
     def _run_agent_loop(
         self,
         spec: TrialSpec,
         task_config: TaskConfig,
         setup: _TrialSetup,
+        identity: TrialIdentity | None = None,
     ) -> tuple[Trajectory, TrialRunner, str]:
         """Build the user simulator, stuck detector, system prompt, and
         :class:`TrialRunner`, then execute the agent ↔ user-simulator loop.
@@ -837,6 +889,11 @@ class InProcessConductor:
             probe_stats=_build_probe_stats(rate_limit_probe),
             interaction_mode=task.interaction_mode,
             tool_output_max_chars_by_tool=setup.tool_output_max_chars_by_tool or None,
+            loop_observer=(
+                LoopObserverBinding(self.trial_observer, identity, role="agent")
+                if identity is not None and not isinstance(self.trial_observer, NullTrialObserver)
+                else None
+            ),
         )
 
         # "" is the runner's "caller supplied nothing" seed: turn 0 is routed

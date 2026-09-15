@@ -749,6 +749,9 @@ class Trajectory(BaseModel):
 
     task_id: str
     trial_index: int
+    # The final attempt this bundle describes (0-based retry counter of the trial spec); None
+    # in bundles written before ADR-0046. Enters the live trace id and the uploader's derivation.
+    attempt_id: int | None = None
     start_ts: datetime
     end_ts: datetime
     status: TrialStatus = TrialStatus.COMPLETED
