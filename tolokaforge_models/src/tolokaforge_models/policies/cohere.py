@@ -1,5 +1,9 @@
 """Per-model policies for the Cohere Command family.
 
+:class:`CohereMarkerAssistantText` strips the chat-template markers the Command-A+
+route wraps around every reply (``<|START_TEXT|>...<|END_TEXT|>``), the case the
+``assistant_text_policy`` slot was opened for (#934).
+
 :class:`CohereRecursiveSchema` is the schema sanitiser: the *cyclic* ``$ref``
 tolerance that :class:`GeminiRecursiveSchema` introduced, with none of the three
 presentational relaxations that class carries for Gemini — one of which (keeping
@@ -21,9 +25,15 @@ group (see :mod:`tolokaforge.core.model_data.load_policy_registrations`).
 
 from __future__ import annotations
 
+import re
+from typing import TYPE_CHECKING
+
 from tolokaforge_models.policies.gemini import GeminiRecursiveSchema
 
-__all__ = ["CohereRecursiveSchema"]
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from tolokaforge.core.models.model_config import ModelConfig
+
+__all__ = ["CohereMarkerAssistantText", "CohereRecursiveSchema"]
 
 
 class CohereRecursiveSchema(GeminiRecursiveSchema):
@@ -94,3 +104,55 @@ class CohereRecursiveSchema(GeminiRecursiveSchema):
     flatten_oneof_discriminator = False
     strip_parameters_root_description = True
     strip_re2_incompatible_patterns = True
+
+
+_START_TEXT = "<|START_TEXT|>"
+_END_TEXT = "<|END_TEXT|>"
+
+# One reply region per marker pair; DOTALL so a multi-line reply is one region.
+_MARKED_REGION = re.compile(re.escape(_START_TEXT) + r"(.*?)" + re.escape(_END_TEXT), re.DOTALL)
+
+
+class CohereMarkerAssistantText:
+    """Strip Cohere's ``<|START_TEXT|>...<|END_TEXT|>`` reply markers.
+
+    Observed live on ``azure_ai/cohere-command-a-plus-05-2026`` on 2026-08-01:
+    every completion arrived as ``<|START_TEXT|>pong<|END_TEXT|>`` for a prompt
+    asking for exactly ``pong``, with and without a preset on our side - the
+    serving stack was not stripping its own chat template. ``ResponsePolicy``
+    cannot reach that text (it post-processes tool-call arguments only), so
+    without this slot the delimiters land in ``trajectory.yaml`` and in front of
+    every transcript grader and LLM judge, depressing scores for a reason that is
+    not the model's task performance. ``BASIC_COMPLETION`` stays honest either
+    way: that probe asserts non-empty text, and wrapped text is non-empty.
+
+    The gateway serving this route strips the markers itself since 2026-09-08,
+    so in normal operation this class is a **no-op**. It stays bound to the
+    Cohere presets as defence in depth: it costs nothing when the markers are
+    absent (the text is returned unchanged), and it fails safe if the gateway
+    hook is ever rolled back or the model is reached by another path. Do not
+    cite it as the fix.
+
+    Behaviour, in the order the cases are checked:
+
+    1. **No markers** - return ``text`` unchanged, so binding the class to a
+       preset can never alter a clean reply.
+    2. **One or more paired regions** - keep the contents of every pair, joined
+       by a single space (Cohere emits one pair per reply; a model that emits
+       several must not lose the later regions). Text outside the pairs is
+       template residue and is dropped only when at least one pair matched.
+    3. **Unpaired leftovers** - a stray ``<|START_TEXT|>`` or ``<|END_TEXT|>``
+       (a reply truncated at ``max_tokens``) is removed, so a partial response
+       still grades on its prose rather than on a dangling delimiter.
+
+    The result is stripped of surrounding whitespace; an empty string comes back
+    as ``""``, never ``None``, because the caller assigns it straight to
+    ``GenerationResult.text``.
+    """
+
+    def parse_assistant_text(self, text: str, *, model_config: ModelConfig) -> str:  # noqa: ARG002
+        if not text or (_START_TEXT not in text and _END_TEXT not in text):
+            return text
+        regions = _MARKED_REGION.findall(text)
+        out = " ".join(region.strip() for region in regions) if regions else text
+        return out.replace(_START_TEXT, "").replace(_END_TEXT, "").strip()

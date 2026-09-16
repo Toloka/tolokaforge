@@ -49,6 +49,18 @@ EXPECTED_REGISTRATIONS: tuple[tuple[str, str, str, str], ...] = (
         "XaiGrokRecursiveSchema",
     ),
     (
+        "schema_sanitizer",
+        "cohere_recursive",
+        "tolokaforge_models.policies.cohere",
+        "CohereRecursiveSchema",
+    ),
+    (
+        "assistant_text_policy",
+        "cohere_markers",
+        "tolokaforge_models.policies.cohere",
+        "CohereMarkerAssistantText",
+    ),
+    (
         "prompt_policy",
         "dict_map_hints_ref",
         "tolokaforge_models.policies.inkling",

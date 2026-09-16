@@ -32,6 +32,7 @@ _RATCHET_MODULES = (
 # target set than expected — investigate before regenerating.
 _RATCHET_TARGETS_BASELINE: dict[str, list[str]] = {
     "tolokaforge.testing.certify.suite.test_implicit_prompt_caching_unsupported_ratchet": [
+        "openrouter__azure_ai_cohere-command-a-plus-05-2026",
         "openrouter__deepseek_deepseek-v3.2-exp",
         "openrouter__deepseek_deepseek-v4-flash",
         "openrouter__deepseek_deepseek-v4-pro",
@@ -57,6 +58,7 @@ _RATCHET_TARGETS_BASELINE: dict[str, list[str]] = {
         "openrouter__x-ai_grok-4.6",
     ],
     "tolokaforge.testing.certify.suite.test_re2_pattern_tolerance_unsupported_ratchet": [
+        "openrouter__azure_ai_cohere-command-a-plus-05-2026",
         "openrouter__openai_gpt-5.6-sol",
         "openrouter__openai_gpt-5.6-terra",
         "openrouter__openai_gpt-6-astra",

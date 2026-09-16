@@ -50,7 +50,9 @@ pytestmark = pytest.mark.unit
 # NOT shipped in tolokaforge/core/llm/assistant_text_policy.py. Lives here so
 # the seam-proof test can exercise the exact strip logic Cohere Command-A+
 # needs (``<|START_TEXT|>…<|END_TEXT|>`` markers around the reply). The
-# shipped subclass lands with the Cohere preset in #929.
+# shipped subclass is tolokaforge_models.policies.cohere.CohereMarkerAssistantText
+# (models wheel, entry point ``assistant_text_policy.cohere_markers``); this copy
+# stays engine-side so the seam is proven without the wheel.
 
 
 _COHERE_MARKER_RE = re.compile(
@@ -273,7 +275,22 @@ def test_model_capabilities_default_is_passthrough() -> None:
     assert isinstance(caps.assistant_text_policy, PassthroughAssistantText)
 
 
-def test_registry_ships_passthrough_as_only_entry() -> None:
-    # #929's Cohere policy lands in a follow-up PR. This assertion is the
-    # canary that flips when a Cohere-marker subclass ships in the engine.
-    assert set(_ASSISTANT_TEXT_POLICIES) == {"passthrough"}
+def test_engine_ships_passthrough_and_every_other_entry_comes_from_a_wheel() -> None:
+    # The engine itself registers exactly one policy for this slot. Anything
+    # else in the merged registry must have arrived through the
+    # ``tolokaforge.policies`` entry-point group (the Cohere marker stripper
+    # ships in the models wheel that way), never from an engine-side edit.
+    import importlib.metadata
+
+    wheel_names = {
+        ep.name.partition(".")[2]
+        for ep in importlib.metadata.entry_points(group="tolokaforge.policies")
+        if ep.name.startswith("assistant_text_policy.")
+    }
+    assert "passthrough" in _ASSISTANT_TEXT_POLICIES
+    assert _ASSISTANT_TEXT_POLICIES["passthrough"] is PassthroughAssistantText
+    extras = set(_ASSISTANT_TEXT_POLICIES) - {"passthrough"}
+    assert extras <= wheel_names, (
+        f"assistant_text_policy entries {sorted(extras - wheel_names)} are not "
+        "declared by any models wheel entry point: the engine must ship only passthrough"
+    )

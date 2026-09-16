@@ -92,7 +92,20 @@ presets:
     schema_sanitizer: cohere_recursive
     response_policy: scalar_array_dict_map
     reasoning_codec: openai_summary_replay
+    # The deployment gateway that serves this route returns the reply wrapped in
+    # the model's chat-template markers (``<|START_TEXT|>...<|END_TEXT|>``, observed
+    # 2026-08-01). The gateway strips them since 2026-09-08; the policy stays bound
+    # as defence in depth - a no-op when the markers are absent, and the only thing
+    # standing between a rolled-back gateway hook and every judge transcript.
+    assistant_text_policy: cohere_markers
     params:
+      # Measured under the ``providers.openrouter`` overlay (2026-08-13 observe
+      # run), i.e. with reasoning carried in ``extra_body.reasoning``. Pinned on
+      # the preset so the wire format does not change when the agent binds a
+      # different provider name (``openai`` is the documented binding for an
+      # OpenAI-shaped gateway route, and it carries no such overlay); the route
+      # refuses ``reasoning_effort`` the same way it refuses ``tool_choice``.
+      reasoning_via_extra_body: true
       param_value_rules:
         tool_choice:
           auto:
@@ -123,7 +136,20 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+    # The deployment gateway that serves this route returns the reply wrapped in
+    # the model's chat-template markers (``<|START_TEXT|>...<|END_TEXT|>``, observed
+    # 2026-08-01). The gateway strips them since 2026-09-08; the policy stays bound
+    # as defence in depth - a no-op when the markers are absent, and the only thing
+    # standing between a rolled-back gateway hook and every judge transcript.
+    assistant_text_policy: cohere_markers
     params:
+      # Measured under the ``providers.openrouter`` overlay (2026-08-13 observe
+      # run), i.e. with reasoning carried in ``extra_body.reasoning``. Pinned on
+      # the preset so the wire format does not change when the agent binds a
+      # different provider name (``openai`` is the documented binding for an
+      # OpenAI-shaped gateway route, and it carries no such overlay); the route
+      # refuses ``reasoning_effort`` the same way it refuses ``tool_choice``.
+      reasoning_via_extra_body: true
       param_value_rules:
         tool_choice:
           auto:
