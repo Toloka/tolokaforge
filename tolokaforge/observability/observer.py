@@ -200,7 +200,9 @@ class CompositeTrialObserver:
 
     def trial_persisted(self, identity: TrialIdentity, **kwargs: Any) -> None:
         for observer in self.observers:
-            safely(observer.trial_persisted, identity, **kwargs)
+            hook = getattr(observer, "trial_persisted", None)
+            if callable(hook):
+                safely(hook, identity, **kwargs)
 
     def run_finished(self) -> ExportReceipt:
         receipts = [safely(observer.run_finished) or ExportReceipt() for observer in self.observers]

@@ -74,8 +74,12 @@ SECRET_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     ),
     ("pem-private-key", re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     (
+        # the scheme is anchored and bounded: a free `[a-z][a-z0-9+.-]*` before `://` scans a
+        # long lowercase run quadratically (tool outputs can be hundreds of kilobytes)
         "url-credentials",
-        re.compile(rb"[a-z][a-z0-9+.\-]*://[^/\s:@]+:(?![*]+@)[^@\s/]{3,}@[^\s/]+"),
+        re.compile(
+            rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?![*]+@)[^@\s/]{3,}@[^\s/]+"
+        ),
     ),
     (
         "langfuse-key",
@@ -103,6 +107,28 @@ SECRET_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
         ),
     ),
 )
+
+
+@dataclass
+class AttachCounts:
+    """What one trial's attachment step did (summed into the tracing receipt)."""
+
+    registered: int = 0
+    uploaded: int = 0
+    deduplicated: int = 0
+    skipped: int = 0
+    failed: int = 0
+    manifests_sent: int = 0
+    manifests_failed: int = 0
+
+    def add(self, other: AttachCounts) -> None:
+        self.registered += other.registered
+        self.uploaded += other.uploaded
+        self.deduplicated += other.deduplicated
+        self.skipped += other.skipped
+        self.failed += other.failed
+        self.manifests_sent += other.manifests_sent
+        self.manifests_failed += other.manifests_failed
 
 
 @dataclass(frozen=True)
@@ -230,7 +256,9 @@ class SecretScan:
         findings: list[str] = []
         for value in self._known:
             if value in payload:
-                findings.append(f"known-secret-value ({_mask(value)})")
+                # no leading characters for a credential the process holds: the head of an
+                # arbitrary password is secret material, unlike a provider key prefix
+                findings.append(f"known-secret-value (**** ({len(value)} chars))")
         for rule, pattern in SECRET_SHAPES:
             match = pattern.search(payload)
             if match:

@@ -1142,6 +1142,10 @@ class TracingConfig(BaseModel):
     (``https://host/api/public/otel/v1/traces`` -> ``https://host``)."""
     attach_timeout_s: float = Field(default=60.0, gt=0)
     """Per-request timeout of the attachment step."""
+    attach_budget_s: float = Field(default=120.0, gt=0)
+    """Whole-trial budget of the attachment step: requests get the smaller of the timeout and
+    what is left of it, files beyond it are counted as failed; after three trials in a row that
+    reached nothing the step switches itself off for the rest of the run."""
 
     @model_validator(mode="after")
     def _require_endpoint_when_active(self) -> Self:

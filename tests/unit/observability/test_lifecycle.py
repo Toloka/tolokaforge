@@ -166,21 +166,48 @@ class TestConductorLifecycle:
         assert finished["trajectory"] is None and finished["error"] == "RuntimeError: lost"
         conductor._write_artifacts.assert_not_called()
 
-    def test_a_bundle_left_behind_by_a_failing_trial_is_still_announced(
+    def test_a_failing_trial_announces_nothing_even_when_a_stale_bundle_exists(
         self, tmp_path: Path
     ) -> None:
+        """trajectory.yaml is only written after the trial body succeeded, so a bundle found on
+        the error path belongs to an earlier attempt (same directory, no cleanup between
+        attempts): announcing it would attach attempt 0's files to attempt 1's trace."""
         observer = _Recording()
         trial_dir = tmp_path / "trials" / "T-1" / "0"
         trial_dir.mkdir(parents=True)
-        (trial_dir / "trajectory.yaml").write_text("task_id: T-1\n")
+        (trial_dir / "trajectory.yaml").write_text("task_id: T-1\nattempt_id: 0\n")
         conductor = _conductor(observer, trial_dir=trial_dir)
         conductor.output_dir = tmp_path
         conductor._run_agent_loop = MagicMock(side_effect=RuntimeError("lost"))
         with pytest.raises(RuntimeError):
-            conductor.run(_spec(), MagicMock())
+            conductor.run(_spec(attempt=1), MagicMock())
         names = [name for name, _ in observer.events]
-        assert names == ["trial_started", "trial_finished", "trial_persisted"]
-        assert observer.events[2][1]["trial_dir"] == trial_dir
+        assert names == ["trial_started", "trial_finished"]
+
+    def test_an_observer_without_the_hook_or_a_raising_one_never_reaches_the_caller(
+        self, tmp_path: Path
+    ) -> None:
+        class _Legacy:  # an observer written before the amendment: no trial_persisted
+            def trial_started(self, identity, **kwargs):
+                pass
+
+            def trial_finished(self, identity, **kwargs):
+                pass
+
+            def run_finished(self):
+                return ExportReceipt()
+
+        conductor = _conductor(_Legacy())
+        conductor.output_dir = tmp_path
+        trial_dir = tmp_path / "trials" / "T-1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "trajectory.yaml").write_text("task_id: T-1\n")
+        conductor.trial_persisted(_spec())  # no AttributeError
+        raising = _Recording()
+        raising.trial_persisted = MagicMock(side_effect=RuntimeError("receiver down"))
+        conductor = _conductor(raising)
+        conductor.output_dir = tmp_path
+        conductor.trial_persisted(_spec())  # swallowed by safely
 
     def test_a_trial_that_raises_after_the_loop_closes_with_its_trajectory(self) -> None:
         observer = _Recording()

@@ -153,6 +153,7 @@ def build_attachments(tracing: Any) -> Any:
         mode=tracing.attach,
         scan=SecretScan(secret_values()),
         timeout_s=tracing.attach_timeout_s,
+        budget_s=tracing.attach_budget_s,
     )
 
 

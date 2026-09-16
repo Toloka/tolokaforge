@@ -131,16 +131,33 @@ class TestBundleAnnouncedLast:
                 super().trial_persisted(spec)
                 trial_dir = tmp_path / "trials" / spec.trial_id.replace(":", "/")
                 self.metrics_at_announce = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+                self.torn_down_at_announce = list(backend.call_log.torn_down_trials)
 
         conductor = _Conductor()
-        executor, backend, _, _ = _make_executor(conductor=conductor, output_dir=tmp_path)
+        backend = InMemoryRuntimeBackend()
+        executor, backend, _, _ = _make_executor(
+            backend=backend, conductor=conductor, output_dir=tmp_path
+        )
         spec = make_trial_spec()
-        executor.execute(spec, make_task_config())
+        result = executor.execute(spec, make_task_config())
         assert conductor.call_log.persisted == [spec.trial_id]
         assert conductor.metrics_at_announce is not None
         assert "provisioning_duration_s" in conductor.metrics_at_announce
-        # torn down after the announcement, not before
-        assert backend.call_log.torn_down_trials == [spec.trial_id]
+        # the substrate is torn down first: the upload never holds the containers
+        assert conductor.torn_down_at_announce == [spec.trial_id]
+        assert result.trajectory.status == TrialStatus.COMPLETED
+
+    def test_a_raising_announcement_never_fails_the_finished_trial(self, tmp_path: Path) -> None:
+        class _Conductor(InMemoryConductor):
+            def trial_persisted(self, spec):
+                raise RuntimeError("receiver down")
+
+        executor, _, _, logger = _make_executor(conductor=_Conductor(), output_dir=tmp_path)
+        result = executor.execute(make_trial_spec(), make_task_config())
+        assert result.trajectory.status == TrialStatus.COMPLETED
+        assert (
+            logger.warning.call_args.args[0] == "Announcing the persisted bundle failed; continuing"
+        )
 
     def test_no_announcement_when_provisioning_fails(self) -> None:
         backend = InMemoryRuntimeBackend(await_ready_times_out=True)

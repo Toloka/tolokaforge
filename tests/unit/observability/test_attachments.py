@@ -118,12 +118,24 @@ class TestSecretScan:
 
     def test_known_values_and_clean_payloads(self) -> None:
         scan = SecretScan(known_values=["process-held-secret-value-123", "short"])
-        assert scan.scan(b"the config says process-held-secret-value-123 here")[0].startswith(
-            "known-secret-value (proc****"
-        )
+        (finding,) = scan.scan(b"the config says process-held-secret-value-123 here")
+        assert finding == "known-secret-value (**** (29 chars))"  # never a head of a credential
         assert scan.scan(b"short is too short to count") == []
         assert scan.scan(b"postgresql://app:***@db:5432/x api_key: null token: <redacted>") == []
         assert scan.scan(b"messages:\n- role: user\n  content: please book seat 12A\n") == []
+
+    def test_long_lowercase_runs_scan_in_linear_time(self) -> None:
+        import time
+
+        payload = b"a" * 200_000 + b" fine"
+        started = time.perf_counter()
+        assert SecretScan().scan(payload) == []
+        assert time.perf_counter() - started < 0.5
+        assert (
+            SecretScan()
+            .scan(b"see postgresql://app:s3cretpass@db:5432/x")[0]
+            .startswith("url-credentials")
+        )
 
 
 class TestManifest:
@@ -304,6 +316,101 @@ class TestLangfuseAttachments:
         assert "x-amz-checksum-sha256" in put[2] and "x-ms-blob-type" not in put[2]
         digest = base64.b64decode(put[2]["x-amz-checksum-sha256"])
         assert digest == hashlib.sha256(put[3]).digest()
+
+    def test_failed_files_are_named_and_the_budget_bounds_the_trial(self, tmp_path: Path) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        fake = _FakeLangfuse(fail_put=True)
+        counts = _attachments(fake).attach("a" * 32, trial)
+        manifest = json.loads(
+            [c for c in fake.calls if c[1].endswith("/api/public/ingestion")][0][3]
+        )["batch"][0]["body"]["metadata"]
+        # every failed file is named, so a download can say what is missing
+        assert [s["name"] for s in manifest["attachments_skipped"]] == sorted(V1_FILES)
+        assert all(s["rule"].startswith("upload-failed: ") for s in manifest["attachments_skipped"])
+        assert counts.failed == 8 and counts.skipped == 0
+        # a stalled receiver: the clock jumps past the budget on the first request, the rest of
+        # the files are counted without another request, the manifest still goes out
+        ticks = iter([0.0, 0.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0])
+        slow = _FakeLangfuse()
+        step = LangfuseAttachments(
+            api_base="https://langfuse.example",
+            opener=slow,
+            budget_s=5.0,
+            clock=lambda: next(ticks, 1000.0),
+        )
+        counts = step.attach("b" * 32, trial)
+        posts = [c for c in slow.calls if c[0] == "POST" and c[1].endswith("/api/public/media")]
+        assert len(posts) <= 2 and counts.failed >= 7
+        assert counts.registered + counts.failed == 8
+
+    def test_the_breaker_switches_the_step_off_after_three_dead_trials(
+        self, tmp_path: Path
+    ) -> None:
+        def down(method, url, headers, body, timeout):
+            raise OSError("connect: no route to host")
+
+        step = LangfuseAttachments(api_base="https://langfuse.example", opener=down)
+        for index in range(3):
+            trial = write_trial(tmp_path / "trials" / "T" / str(index), V1_FILES)
+            counts = step.attach(f"{index}" * 32, trial)
+            assert counts.failed == 8 and counts.manifests_failed == 1
+        assert step.tripped
+        calls_before = len(step.__dict__)  # no new attribute, just the flag
+        trial = write_trial(tmp_path / "trials" / "T" / "9", V1_FILES)
+        counts = step.attach("9" * 32, trial)
+        assert counts.failed == 8 and counts.manifests_failed == 1 and counts.registered == 0
+        assert len(step.__dict__) == calls_before
+
+    def test_a_malformed_presigned_url_never_reaches_a_log_line(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", ("task.yaml",))
+
+        def odd(method, url, headers, body, timeout):
+            if method == "POST" and url.endswith("/api/public/media"):
+                return (
+                    201,
+                    json.dumps({"mediaId": "m1", "uploadUrl": "/upload/m1?sig=SECRETSIG"}).encode(),
+                )
+            return 207, b'{"errors": []}'
+
+        step = LangfuseAttachments(api_base="https://langfuse.example", opener=odd)
+        with caplog.at_level("WARNING"):
+            counts = step.attach("a" * 32, trial)
+        assert counts.failed == 1
+        assert "SECRETSIG" not in caplog.text
+
+    def test_urllib_opener_returns_status_and_body_for_success_and_http_errors(self) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from tolokaforge.observability.langfuse_media import urllib_opener
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length)
+                status = 201 if self.path == "/ok" else 404
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}"
+            assert urllib_opener("POST", base + "/ok", {"X": "y"}, b"payload", 5) == (
+                201,
+                b"payload",
+            )
+            assert urllib_opener("POST", base + "/missing", {}, b"x", 5) == (404, b"x")
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_api_base_derives_from_the_otlp_endpoint(self) -> None:
         assert (

@@ -30,7 +30,7 @@ from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, Trace
 
 from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
-from tolokaforge.observability.langfuse_media import AttachCounts
+from tolokaforge.observability.attachments import AttachCounts
 from tolokaforge.observability.model_names import (
     NONE,
     ModelIdentity,
@@ -549,6 +549,8 @@ class OTelTrialObserver:
 
     def run_finished(self) -> ExportReceipt:
         flushed = self._queue.shutdown(self._flush_timeout_s)
+        with self._states_lock:
+            self._persist_clock.clear()  # trials that were never announced (attach: none, ...)
         counts = self._attach_counts
         return replace(
             self._queue.receipt(flushed=flushed),

@@ -19,18 +19,19 @@ import base64
 import hashlib
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from tolokaforge.observability.attachments import (
     ATTACH_ALL,
+    AttachCounts,
     AttachedFile,
     SecretScan,
     TrialFile,
@@ -75,30 +76,19 @@ class LangfuseApiError(RuntimeError):
     credential)."""
 
 
-@dataclass
-class AttachCounts:
-    """What one trial's attachment step did (summed into the tracing receipt)."""
-
-    registered: int = 0
-    uploaded: int = 0
-    deduplicated: int = 0
-    skipped: int = 0
-    failed: int = 0
-    manifests_sent: int = 0
-    manifests_failed: int = 0
-
-    def add(self, other: AttachCounts) -> None:
-        self.registered += other.registered
-        self.uploaded += other.uploaded
-        self.deduplicated += other.deduplicated
-        self.skipped += other.skipped
-        self.failed += other.failed
-        self.manifests_sent += other.manifests_sent
-        self.manifests_failed += other.manifests_failed
+class AttachBudgetExceeded(RuntimeError):
+    """The trial's attachment budget is spent; the remaining files are counted as failed."""
 
 
 class LangfuseAttachments:
-    """Attach a persisted trial's files to its trace and write manifest v2 to the trace."""
+    """Attach a persisted trial's files to its trace and write manifest v2 to the trace.
+
+    Two limits keep the step from holding a run hostage (ADR-0046: never slow a trial
+    materially): every request gets the smaller of ``timeout_s`` and what is left of the
+    trial's ``budget_s``, and after ``breaker_failures`` consecutive trials whose step failed
+    entirely (a receiver that is down or blackholed) the step switches itself off for the rest
+    of the run and only counts.
+    """
 
     def __init__(
         self,
@@ -108,16 +98,36 @@ class LangfuseAttachments:
         mode: str = ATTACH_ALL,
         scan: SecretScan | None = None,
         timeout_s: float = 60.0,
-        put_timeout_s: float = 300.0,
+        budget_s: float = 120.0,
+        breaker_failures: int = 3,
         opener: Opener | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
         self._mode = mode
         self._scan = scan or SecretScan()
-        self._timeout_s = timeout_s
-        self._put_timeout_s = put_timeout_s
+        self._timeout_s = max(1.0, timeout_s)
+        self._budget_s = max(1.0, budget_s)
+        self._breaker_failures = max(1, breaker_failures)
         self._open: Opener = opener or urllib_opener
+        self._clock = clock or time.monotonic
+        self._deadline: float | None = None  # the current trial's budget end
+        self._consecutive_failures = 0
+        self._tripped = False
+
+    @property
+    def tripped(self) -> bool:
+        """True once the breaker switched the step off for the rest of the run."""
+        return self._tripped
+
+    def _remaining(self) -> float:
+        if self._deadline is None:
+            return self._timeout_s
+        left = self._deadline - self._clock()
+        if left <= 0:
+            raise AttachBudgetExceeded("attachment budget spent")
+        return min(self._timeout_s, left)
 
     # -- the step -------------------------------------------------------------------------------
 
@@ -140,6 +150,13 @@ class LangfuseAttachments:
         except OSError as exc:
             _log.warning("attachments: cannot read %s: %s", trial_dir, exc)
             files = []
+        if self._tripped:
+            # the receiver gave up on earlier trials: count, do not wait again
+            counts.failed = len(files)
+            counts.manifests_failed = 1
+            return counts
+        self._deadline = self._clock() + self._budget_s
+        budget_spent = False
         for file in files:
             if not allowed_attachment(file.name):
                 skipped.append({"name": file.name, "rule": "file-type"})
@@ -148,14 +165,31 @@ class LangfuseAttachments:
             if findings:
                 skipped.append({"name": file.name, "rule": ", ".join(findings)})
                 continue
+            if budget_spent:
+                counts.failed += 1
+                skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
+                continue
             try:
                 registered = self._register_and_upload(trace_id, file)
-            except Exception as exc:  # noqa: BLE001 - the observability layer only warns
-                _log.warning("attachments: %s of trace %s failed: %s", file.name, trace_id, exc)
+            except AttachBudgetExceeded:
+                budget_spent = True
                 counts.failed += 1
+                skipped.append({"name": file.name, "rule": "upload-failed: budget spent"})
+                _log.warning(
+                    "attachments: budget of %.0fs spent on trace %s", self._budget_s, trace_id
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001 - the observability layer only warns
+                # only the class of a foreign exception is logged: a malformed presigned URL
+                # would otherwise print its signature
+                reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
+                _log.warning("attachments: %s of trace %s failed: %s", file.name, trace_id, reason)
+                counts.failed += 1
+                skipped.append({"name": file.name, "rule": f"upload-failed: {reason[:80]}"})
                 continue
             if registered is None:
                 counts.failed += 1
+                skipped.append({"name": file.name, "rule": "no-media-id"})
                 continue
             media_id, uploaded = registered
             counts.registered += 1
@@ -170,7 +204,7 @@ class LangfuseAttachments:
                     token=f"@@@langfuseMedia:type={file.content_type}|id={media_id}|source=bytes@@@",
                 )
             )
-        counts.skipped = len(skipped)
+        counts.skipped = len(skipped) - counts.failed  # failures are listed by name, not skips
         manifest = build_manifest(trial_dir, attached, skipped)
         if counts.failed:
             manifest["attachments_complete"] = False
@@ -178,8 +212,24 @@ class LangfuseAttachments:
             self._send_manifest(trace_id, {**dict(metadata or {}), **manifest}, trace_timestamp)
             counts.manifests_sent += 1
         except Exception as exc:  # noqa: BLE001
-            _log.warning("attachments: manifest of trace %s not sent: %s", trace_id, exc)
+            reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
+            _log.warning("attachments: manifest of trace %s not sent: %s", trace_id, reason)
             counts.manifests_failed += 1
+        self._deadline = None
+        # the breaker: a trial whose every attempt failed (nothing registered, nothing sent)
+        # counts against the receiver; a trial that got anything through resets the count
+        if files and counts.registered == 0 and counts.manifests_sent == 0:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._breaker_failures and not self._tripped:
+                self._tripped = True
+                _log.warning(
+                    "attachments: %d trial(s) in a row reached nothing at %s; the step is off for"
+                    " the rest of the run",
+                    self._consecutive_failures,
+                    self._api_base,
+                )
+        elif counts.registered or counts.manifests_sent:
+            self._consecutive_failures = 0
         return counts
 
     # -- Langfuse calls -------------------------------------------------------------------------
@@ -190,7 +240,7 @@ class LangfuseAttachments:
         if body is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body).encode("utf-8")
-        return self._open(method, f"{self._api_base}{path}", headers, data, self._timeout_s)
+        return self._open(method, f"{self._api_base}{path}", headers, data, self._remaining())
 
     def _register_and_upload(self, trace_id: str, file: TrialFile) -> tuple[str, bool] | None:
         """Register (link) the file's bytes on the trace; PUT them only when Langfuse asks.
@@ -234,7 +284,11 @@ class LangfuseAttachments:
         return str(media_id), True
 
     def _put_presigned(self, url: str, file: TrialFile) -> int:
-        host = urllib.parse.urlparse(url).hostname or ""
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or ""
+        if parsed.scheme not in ("http", "https") or not host:
+            # never let a malformed URL (and the signature in it) reach a log line
+            raise LangfuseApiError("presigned upload URL is not an http(s) URL")
         headers = {"Content-Type": file.content_type}
         if host.endswith(".blob.core.windows.net"):
             headers["x-ms-blob-type"] = "BlockBlob"
@@ -242,9 +296,23 @@ class LangfuseAttachments:
             headers["x-amz-checksum-sha256"] = base64.b64encode(
                 hashlib.sha256(file.payload).digest()
             ).decode()
-        # no credential header: the URL carries its own signature
-        status, _ = self._open("PUT", url, headers, file.payload, self._put_timeout_s)
+        # no credential header: the URL carries its own signature; the PUT gets the remaining
+        # budget (a large trajectory needs more than one API timeout, never more than the trial)
+        try:
+            status, _ = self._open("PUT", url, headers, file.payload, self._remaining_put())
+        except AttachBudgetExceeded:
+            raise
+        except (OSError, ValueError) as exc:
+            raise LangfuseApiError(f"presigned PUT to {host} failed: {type(exc).__name__}") from exc
         return status
+
+    def _remaining_put(self) -> float:
+        if self._deadline is None:
+            return self._timeout_s * 5
+        left = self._deadline - self._clock()
+        if left <= 0:
+            raise AttachBudgetExceeded("attachment budget spent")
+        return left
 
     def _send_manifest(
         self, trace_id: str, manifest: dict[str, Any], trace_timestamp: datetime | None

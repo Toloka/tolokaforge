@@ -158,6 +158,7 @@ class ProvisioningTrialExecutor:
             self._write_provision_failure_bundle(result.trajectory, e)
             return result
 
+        persisted_spec: TrialSpec | None = None
         try:
             real_endpoints = self.runtime_backend.endpoints(handle)
             provisioning_duration_s = time.monotonic() - provision_start
@@ -203,14 +204,29 @@ class ProvisioningTrialExecutor:
             self._capture_service_logs(handle, result, task_id, trial_idx)
             # Nothing writes into the trial directory after this point: the bundle is what a
             # live-tracing observer may attach to the trace (ADR-0046 amendment). Announced
-            # here and not from conductor.run, whose bundle the two writes above still amend;
-            # an optional capability, so a conductor without it announces nothing.
-            announce = getattr(self.conductor, "trial_persisted", None)
-            if callable(announce):
-                announce(final_spec)
+            # after the teardown below, not from conductor.run, whose bundle the two writes
+            # above still amend; an optional capability, so a conductor without it announces
+            # nothing, and a raising one never turns a finished trial into a retry.
+            persisted_spec = final_spec
             return result
         finally:
             self._safe_teardown(handle, task_id, trial_idx)
+            if persisted_spec is not None:
+                self._announce_persisted(persisted_spec, task_id, trial_idx)
+
+    def _announce_persisted(self, spec: TrialSpec, task_id: str, trial_idx: int) -> None:
+        announce = getattr(self.conductor, "trial_persisted", None)
+        if not callable(announce):
+            return
+        try:
+            announce(spec)
+        except Exception as exc:  # noqa: BLE001 - observability only warns
+            self.logger.warning(
+                "Announcing the persisted bundle failed; continuing",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(exc),
+            )
 
     def _capture_service_logs(
         self, handle: EnvHandle, result: TrialResult, task_id: str, trial_idx: int
