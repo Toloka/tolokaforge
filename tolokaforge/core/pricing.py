@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -378,6 +379,66 @@ def get_pricing_info(model: str) -> dict[str, float] | None:
     """
     model_key = normalize_model_name(model)
     return MODEL_PRICING.get(model_key)
+
+
+CACHE_RATE_FIELDS: tuple[str, ...] = ("cache_read", "cache_write")
+"""Per-cache-kind rate fields :func:`_compute_cost` reads before falling back
+to the input rate."""
+
+
+@dataclass(frozen=True)
+class PricingResolution:
+    """Where one configured model name lands in the pricing table.
+
+    The whole point of carrying :attr:`resolved_key` is that it can differ
+    from what the operator typed: :func:`normalize_model_name` strips a
+    leading ``openrouter/`` and infers a vendor namespace for a bare name,
+    so the row that decides the bill is not necessarily the one the config
+    appears to name.
+    """
+
+    model: str
+    """The name as configured."""
+
+    resolved_key: str
+    """:func:`normalize_model_name` of :attr:`model` — the key looked up."""
+
+    priced: bool
+    """Whether the table carries a row under :attr:`resolved_key`."""
+
+    missing_cache_rates: tuple[str, ...]
+    """Which of :data:`CACHE_RATE_FIELDS` the row omits; empty when it
+    carries both, and empty when there is no row (an unpriced model is a
+    different failure, not an incomplete one).
+
+    An omission is not by itself a data defect — a provider without prompt
+    caching publishes no cache rate, and ``pricing-updater`` omits a zero
+    rather than writing a literal ``0`` that would claim cached reads are
+    free. It becomes one once a trial reports cache tokens, because
+    :func:`_compute_cost` then bills them at the input rate.
+    """
+
+
+def resolve_pricing(model: str) -> PricingResolution:
+    """Report how ``model`` resolves against the live pricing table.
+
+    Read against the live table rather than the shipped file, so an
+    operator overlay (``observability.pricing_overlay_path``, applied by
+    :func:`reload_pricing` before the orchestrator is constructed) is
+    reflected.
+    """
+    resolved_key = normalize_model_name(model)
+    pricing = MODEL_PRICING.get(resolved_key)
+    return PricingResolution(
+        model=model,
+        resolved_key=resolved_key,
+        priced=pricing is not None,
+        missing_cache_rates=(
+            ()
+            if pricing is None
+            else tuple(field for field in CACHE_RATE_FIELDS if field not in pricing)
+        ),
+    )
 
 
 def list_supported_models() -> dict[str, dict[str, float]]:

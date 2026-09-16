@@ -4,12 +4,12 @@
 models:
   agent:
     provider: "anthropic"
-    name: "claude-sonnet-4-6"
+    name: "claude-sonnet-4.6"
     temperature: 0.0
     max_tokens: 4096
   user:
     provider: "anthropic"
-    name: "claude-sonnet-4-6"
+    name: "claude-sonnet-4.6"
     temperature: 0.0
 
 orchestrator:

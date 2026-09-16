@@ -11,16 +11,16 @@
 models:
   agent:
     provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
+    name: "anthropic/claude-sonnet-4.6"
     temperature: 0.0
     max_tokens: 4096
   user:
     provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
+    name: "anthropic/claude-sonnet-4.6"
     temperature: 0.2
   judge:
     provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
+    name: "anthropic/claude-sonnet-4.6"
     temperature: 0.0
 
 # ── Evaluation ──────────────────────────────────────────────────
