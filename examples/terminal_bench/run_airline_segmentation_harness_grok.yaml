@@ -10,7 +10,7 @@ models:
 
   user:
     provider: "openrouter"
-    name: "openrouter/anthropic/claude-sonnet-4-6"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
     temperature: 0.0
 compute:
   workers: 1

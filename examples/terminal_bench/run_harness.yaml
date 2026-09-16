@@ -14,13 +14,13 @@ models:
   # model the *agent* uses is `harness_adapter.params.agent_model` below.
   agent:
     provider: "openrouter"
-    name: "openrouter/anthropic/claude-sonnet-4-6"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
     temperature: 0.0
     max_tokens: 4096
 
   user:
     provider: "openrouter"
-    name: "openrouter/anthropic/claude-sonnet-4-6"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
     temperature: 0.0
 compute:
   workers: 1
@@ -55,7 +55,7 @@ evaluation:
       # Passed to the CLI with any `openrouter/` prefix stripped: the CLI
       # reaches OpenRouter through ANTHROPIC_BASE_URL, not through litellm,
       # and the prefix would make it pick its direct-vendor handler.
-      agent_model: "openrouter/anthropic/claude-sonnet-4-6"
+      agent_model: "openrouter/anthropic/claude-sonnet-4.6"
       # `agent_provider_env` is deliberately absent. The shipped
       # `HarnessSpec.provider_env` for `claude-code` (see
       # ../../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)

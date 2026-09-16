@@ -75,7 +75,7 @@ from tolokaforge.core.models import (
     ReplyDefect,
     ToolCall,
 )
-from tolokaforge.core.pricing import estimate_cost
+from tolokaforge.core.pricing import estimate_cost, resolve_pricing
 from tolokaforge.core.run_display_events import LLMCallObservation
 
 # Silence litellm's stdout banners ("Provider List: https://docs.litellm.ai/docs/providers",
@@ -606,6 +606,13 @@ class GenerationResult:
         # bootstrap seed the agent is graded against) refuse on this flag
         # instead of accepting the engine's own words as the turn.
         self.filler_substituted: bool = False
+        # True iff this call was priced off the bundled table, reported
+        # non-zero cache tokens, and the resolved pricing row carried no rate
+        # for them — so ``_compute_cost`` billed those tokens at the input
+        # rate and ``cost_usd`` above is an overestimate of unknown size.
+        # Stamped by ``LLMClient._assemble_result``; ORed onto
+        # ``Metrics.cost_cache_rate_fallback`` by the trial's metrics sink.
+        self.cost_cache_rate_fallback: bool = False
 
 
 class LLMClient:
@@ -2297,6 +2304,7 @@ class LLMClient:
         # resolved cost + source into the per-call ProviderRawCall record.
         cost_source: CostSource = "unknown"
         cost_usd: float | None = _litellm_response_cost(response)
+        cost_cache_rate_fallback = False
         if cost_usd is not None:
             cost_source = "litellm"
         else:
@@ -2312,6 +2320,16 @@ class LLMClient:
                 )
                 if cost_usd is not None:
                     cost_source = "local"
+                    # The unambiguous case, and only knowable after the fact:
+                    # the provider reported cache tokens and the row priced
+                    # them at the input rate because it carries no cache rate.
+                    cache_tokens = (
+                        tokens_only.cache_read_input_tokens
+                        + tokens_only.cache_creation_input_tokens
+                    )
+                    cost_cache_rate_fallback = bool(cache_tokens) and bool(
+                        resolve_pricing(self.model_name).missing_cache_rates
+                    )
 
         usage = UsageExtractor().extract(
             response,
@@ -2346,6 +2364,7 @@ class LLMClient:
         # (mock generator, inline test constructions) inherits the ``()``
         # default and the seam is inert.
         result.parser_errors = tuple(parser_errors_list)
+        result.cost_cache_rate_fallback = cost_cache_rate_fallback
         return result
 
     # ------------------------------------------------------------------

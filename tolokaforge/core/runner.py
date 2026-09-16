@@ -1069,6 +1069,11 @@ class _AgentMetricsSink(MetricsSink):
                 self._metrics.cost_usd = result.cost_usd
             else:
                 self._metrics.cost_usd += result.cost_usd
+        # Sticky: one call priced without the cache rate it needed makes the
+        # trial's summed ``cost_usd`` an overestimate, whatever the other
+        # calls did.
+        if result.cost_cache_rate_fallback:
+            self._metrics.cost_cache_rate_fallback = True
         self._last_prompt_tokens = result.usage.prompt_tokens
         self._events.trial_progress(
             trial_id=self._trial_id,

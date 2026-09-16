@@ -745,6 +745,17 @@ observability:
   pricing_overlay_path: prices.yaml
 ```
 
+### When to reach for one: incomplete cache rates
+
+`estimate_cost` bills `cache_read_input_tokens` / `cache_creation_input_tokens` at a row's `cache_read` / `cache_write` rate, and falls back to its `input` rate for whichever of the two the row omits. Roughly half the shipped rows omit both — correctly, for a model with no prompt caching, since a literal `0` would claim cached reads are free. The failure case is a *caching* model whose row is incomplete: cache reads then cost up to 10x their real rate, and on a cache-read-dominated run (a coding-harness trial routinely reads 75 % of its prompt from cache) the reported cost is a multiple of the real bill.
+
+Two signals name it, neither of which refuses the run — the table cannot distinguish "no caching" from "incomplete row":
+
+- At run start, `Orchestrator.load_tasks` logs a warning per configured role whose `models.<role>.name` resolves to an incomplete row, or to no row at all. It names the config key, the **resolved** pricing key (which differs from the configured name whenever normalisation strips `openrouter/` or infers a vendor namespace), and the missing rates.
+- Per trial, `metrics.yaml` carries [`cost_cache_rate_fallback: true`](OUTPUT_FORMAT.md#trialstask_idtrial_indexmetricsyaml) when a call actually hit that fallback with non-zero cache tokens.
+
+Supplying the real rates in an overlay clears both. The same model is sometimes spelled two ways in the table with only one spelling complete, so pinning the complete spelling in the run config is the other fix; `tests/unit/test_pricing_known_duplicate_spellings.py` is the current inventory of those pairs.
+
 ## stdout / stderr contract
 
 `tolokaforge` splits streams by purpose: **stdout** carries the machine-parseable artifact identifier; **stderr** carries everything a human reads (progress, banners, log records, error text).

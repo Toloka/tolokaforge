@@ -484,6 +484,22 @@ class Metrics(BaseModel):
     reach OpenRouter at all" read this list."""
 
     cost_usd: float | None = None
+    cost_cache_rate_fallback: bool = False
+    """``cost_usd`` is an overestimate: at least one call was priced off the
+    bundled table, reported cache tokens, and resolved to a row carrying no
+    rate for them, so those tokens were billed at the row's input rate.
+
+    The after-the-fact half of the cache-rate signal, and the unambiguous
+    one — the preflight warning can only say a row has no cache rate, which
+    is expected for a model without prompt caching; this fires only once a
+    provider actually reported cache tokens against such a row. How large
+    the overestimate is depends on the run's cache-read share, so the flag
+    marks the number unreliable rather than correcting it: the correction is
+    the real rate, supplied via ``observability.pricing_overlay_path``.
+
+    ``False`` on every litellm-priced call (provider-authoritative, already
+    cache-aware) and on every model whose row carries its cache rates."""
+
     tool_calls: int = 0
     tool_success_rate: float = 0.0
     stuck_detected: bool = False

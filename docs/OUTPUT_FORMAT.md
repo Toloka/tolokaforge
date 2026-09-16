@@ -620,6 +620,24 @@ too. Consumers that need per-call attribution read `usage.calls`; consumers that
 need "did this trial reach OpenRouter at all" read the flat list. See
 [LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter generation ids.
 
+`cost_cache_rate_fallback` is `true` when at least one of this trial's calls
+was priced off the bundled table (`cost_source: local`), reported non-zero
+`cache_read_input_tokens` / `cache_creation_input_tokens`, and resolved to a
+pricing row carrying no rate for them — those tokens were then billed at the
+row's `input` rate, so `cost_usd` is an **overestimate of unknown size**
+(the size depends on the trial's cache-read share, which for a coding-harness
+trial is routinely 75 % of the prompt). Consumers comparing spend across
+models must exclude or re-price such trials rather than averaging them in.
+`false` for every litellm-priced call (provider-authoritative, already
+cache-aware) and for every model whose row carries its cache rates. The
+same-model-two-spellings inventory behind this is recorded in
+[`tests/unit/test_pricing_known_duplicate_spellings.py`](../tests/unit/test_pricing_known_duplicate_spellings.py);
+the run-start half of the signal is the warning `Orchestrator.load_tasks`
+emits per configured role. Supplying the real rates through
+[`observability.pricing_overlay_path`](CLI.md#custom-pricing-overlay) clears
+both. The field is optional and absent-by-default, so it carries no bundle
+stamp bump: a bundle written before it reads `false`.
+
 To help analytics consumers detect schema evolution, a trial-level metrics file
 written by `write_metrics` includes a root-level `schema_version: 4` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
@@ -661,6 +679,7 @@ usage:
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
+cost_cache_rate_fallback: false
 tool_calls: 7
 tool_success_rate: 1.0
 stuck_detected: false
