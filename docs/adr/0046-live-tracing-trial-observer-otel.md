@@ -181,8 +181,10 @@ receiver (Langfuse `GET /api/public/projects` through the OTLP headers, REST bas
 endpoint); a mismatch refuses to trace with a `TracingConfigError` before any service starts, an
 unreachable receiver leaves the run `unverified`, and `tracing_receipt.json` records both
 `expect_project` and `project_verified`. This gives the live path the same fail-closed guard the
-offline connector runs, so a key pair that opens another project than a launcher claims (the
-duplicated `ARENA_LANGFUSE_*` pair found in a `.env` on 2026-09-16) can no longer trace into it.
+offline connector runs, so a key pair that opens another project than a launcher claims (a
+misnamed pair in an environment file is the everyday way this happens) can no longer trace into
+it; a 401 (credentials that open no project) refuses as well, while a receiver that cannot list
+projects from where the run happens (a WAF alias answering 403) leaves the run `unverified`.
 
 ## Links
 

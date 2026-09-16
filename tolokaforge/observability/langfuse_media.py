@@ -64,11 +64,15 @@ def urllib_opener(
 
 def api_base_from_endpoint(endpoint: str) -> str:
     """``https://host/api/public/otel/v1/traces`` -> ``https://host`` (a path prefix before
-    ``/api/public/otel`` is kept, e.g. a reverse proxy mount)."""
+    ``/api/public/otel`` is kept, e.g. a reverse proxy mount). Userinfo in the URL is dropped:
+    the base is logged, credentials never are."""
     parsed = urllib.parse.urlparse(endpoint)
     path = parsed.path or ""
     prefix = path[: path.index(OTEL_PATH_MARKER)] if OTEL_PATH_MARKER in path else ""
-    return f"{parsed.scheme}://{parsed.netloc}{prefix}".rstrip("/")
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return f"{parsed.scheme}://{host}{prefix}".rstrip("/")
 
 
 def list_projects(
@@ -86,17 +90,28 @@ def list_projects(
         "GET", f"{api_base.rstrip('/')}/api/public/projects", dict(headers), None, timeout_s
     )
     if not 200 <= status < 300:
-        raise LangfuseApiError(f"GET /api/public/projects: HTTP {status}")
-    answer = json.loads(raw or b"{}")
+        raise LangfuseApiError(f"GET /api/public/projects: HTTP {status}", status=status)
+    try:
+        answer = json.loads(raw or b"{}")
+    except ValueError as exc:
+        raise LangfuseApiError(
+            "GET /api/public/projects: answer is not JSON", status=status
+        ) from exc
     listed = answer.get("data") if isinstance(answer, dict) else None
     if not isinstance(listed, list):
-        raise LangfuseApiError("GET /api/public/projects: answer without a project list")
+        raise LangfuseApiError(
+            "GET /api/public/projects: answer without a project list", status=status
+        )
     return [str(p["name"]) for p in listed if isinstance(p, dict) and p.get("name")]
 
 
 class LangfuseApiError(RuntimeError):
     """A Langfuse API call answered outside 2xx (the message names status and path, never a
-    credential)."""
+    credential); ``status`` carries the HTTP status (None for a malformed answer)."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class AttachBudgetExceeded(RuntimeError):

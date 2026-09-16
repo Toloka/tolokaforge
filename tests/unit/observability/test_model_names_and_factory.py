@@ -228,18 +228,21 @@ class TestReceiverFromTheEnvironment:
         with pytest.raises(TracingConfigError):
             merge_tags([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
 
-    def _projects(self, monkeypatch, answer) -> list[tuple[str, str]]:
+    def _projects(self, monkeypatch, answer) -> list[tuple[str, str, dict]]:
         from tolokaforge.observability import langfuse_media
 
-        calls: list[tuple[str, str]] = []
+        calls: list[tuple[str, str, dict]] = []
 
         def opener(method, url, headers, body, timeout):
-            calls.append((method, url))
+            calls.append((method, url, dict(headers)))
             if isinstance(answer, Exception):
                 raise answer
             return answer
 
         monkeypatch.setattr(langfuse_media, "urllib_opener", opener)
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_TAGS", raising=False)
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic dGVzdDpzZWNyZXQ=")
         return calls
 
     def test_expect_project_verified_lands_in_the_receipt(
@@ -257,7 +260,11 @@ class TestReceiverFromTheEnvironment:
         config = ObservabilityConfig(tracing=TracingConfig(exporter="otlp", attach="none"))
         observer, _ = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
         try:
-            assert calls == [("GET", "http://127.0.0.1:9/api/public/projects")]
+            assert [(m, u) for m, u, _ in calls] == [
+                ("GET", "http://127.0.0.1:9/api/public/projects")
+            ]
+            # the check authenticates with the exporter's own header
+            assert calls[0][2]["Authorization"] == "Basic dGVzdDpzZWNyZXQ="
             assert observer._tags == ("project:test-arena",)
         finally:
             receipt = observer.run_finished()
@@ -296,6 +303,47 @@ class TestReceiverFromTheEnvironment:
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
         receipt = observer.run_finished()
         assert receipt.project_verified == "unverified" and receipt.expect_project == "arena"
+
+    def test_a_401_refuses_and_a_non_json_200_is_unverified(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+                expect_project="test-arena",
+                attach="none",
+            )
+        )
+        self._projects(monkeypatch, (401, b'{"message":"Unauthorized"}'))
+        with pytest.raises(TracingConfigError, match="HTTP 401.*open no project"):
+            build_trial_observer(config, engine_run_id="run-1")
+        self._projects(monkeypatch, (200, b"<html>not json</html>"))
+        observer, _ = build_trial_observer(config, engine_run_id="run-1")
+        assert observer.run_finished().project_verified == "unverified"
+
+    def test_expect_project_without_any_headers_refuses(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        self._projects(monkeypatch, (200, b"{}"))
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
+        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: None)
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+                expect_project="test-arena",
+                attach="none",
+            )
+        )
+        with pytest.raises(TracingConfigError, match="needs the receiver credentials"):
+            build_trial_observer(config, engine_run_id="run-1")
+
+    def test_api_base_drops_userinfo(self) -> None:
+        from tolokaforge.observability.langfuse_media import api_base_from_endpoint
+
+        assert (
+            api_base_from_endpoint("https://pk:sk@lf.example:8443/api/public/otel/v1/traces")
+            == "https://lf.example:8443"
+        )
 
     def test_without_expect_project_nothing_is_checked(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")

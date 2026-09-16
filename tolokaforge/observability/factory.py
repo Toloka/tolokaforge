@@ -196,14 +196,38 @@ def check_expected_project(
     tracing: Any, endpoint: str, headers: dict[str, str] | None, expected: str
 ) -> str:
     """The fail-closed project check of the live path: the credentials in the headers must open
-    ``expected`` on the receiver (Langfuse ``GET /api/public/projects``). A mismatch refuses to
-    trace (TracingConfigError, before any service starts); an unreachable check logs a warning
-    and returns ``unverified``, a match ``verified``."""
-    from tolokaforge.observability.langfuse_media import api_base_from_endpoint, list_projects
+    ``expected`` on the receiver (Langfuse ``GET /api/public/projects``). A mismatch, a 401 (the
+    credentials open no project at all) and missing headers refuse to trace (TracingConfigError,
+    before any service starts); a receiver that does not answer, or answers 403 (the external
+    ingest alias) or without a project list, logs a warning and returns ``unverified``; a match
+    ``verified``."""
+    from tolokaforge.observability.langfuse_media import (
+        LangfuseApiError,
+        api_base_from_endpoint,
+        list_projects,
+    )
 
+    if not headers:
+        raise TracingConfigError(
+            f"observability.tracing.expect_project={expected!r} needs the receiver credentials in "
+            f"{OTLP_HEADERS_SECRET} to check the project; none were found"
+        )
     api_base = tracing.attach_api_base or api_base_from_endpoint(endpoint)
     try:
-        names = list_projects(api_base, headers or {}, timeout_s=tracing.attach_timeout_s)
+        names = list_projects(api_base, headers, timeout_s=tracing.attach_timeout_s)
+    except LangfuseApiError as exc:
+        if exc.status == 401:
+            raise TracingConfigError(
+                f"observability.tracing.expect_project={expected!r} but the receiver rejected the "
+                "credentials (HTTP 401): they open no project; tracing refused"
+            ) from exc
+        _log.warning(
+            "expect_project=%s not verified: %s did not confirm a project (%s)",
+            expected,
+            api_base,
+            exc,
+        )
+        return PROJECT_UNVERIFIED
     except Exception as exc:  # noqa: BLE001 - the receiver is not reachable: unverified, not fatal
         _log.warning(
             "expect_project=%s not verified: the projects endpoint of %s did not answer (%s)",
@@ -276,15 +300,21 @@ def secret_values() -> list[str]:
 
 
 def otlp_headers() -> dict[str, str] | None:
-    """The receiver's request headers from the ``SecretManager`` (so the value sits in the
-    log-redaction set), parsed from the OTLP ``key=value,key2=value2`` form; ``None`` when unset,
-    in which case the SDK's own environment lookup applies."""
+    """The receiver's request headers, parsed from the OTLP ``key=value,key2=value2`` form: from
+    the ``SecretManager`` when one is initialised (so the value sits in the log-redaction set),
+    else from the process environment, the same place the SDK's own lookup reads; ``None`` when
+    unset anywhere."""
+    raw: str | None = None
     try:
         from tolokaforge.secrets import get_default_or_none
     except ImportError:  # pragma: no cover - the secrets package is part of core
-        return None
-    manager = get_default_or_none()
-    raw = manager.get_secret(OTLP_HEADERS_SECRET) if manager is not None else None
+        manager = None
+    else:
+        manager = get_default_or_none()
+    if manager is not None:
+        raw = manager.get_secret(OTLP_HEADERS_SECRET)
+    if not raw:
+        raw = os.environ.get(OTLP_HEADERS_SECRET)
     if not raw:
         return None
     headers: dict[str, str] = {}
