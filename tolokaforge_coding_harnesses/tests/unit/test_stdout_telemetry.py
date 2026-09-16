@@ -1,9 +1,17 @@
 """What a harness CLI's own stdout totals parse to.
 
-The ``claude-code`` fixtures below carry the key set a real
-``--output-format=stream-json`` run terminates with, captured from live trial
-bundles; the other harnesses are represented by the shapes they actually print,
-which carry no totals at all.
+Each fixture reproduces the key set and value shape of a stream a live trial
+produced — the ``claude-code`` terminating ``result`` event, ``codex``'s
+per-turn ``turn.completed`` usage, and ``kimi-code``'s usage-free message
+transcript. They are hand-written rather than captured verbatim, because a
+real stream is hundreds of kilobytes of transcript around a few token fields;
+the parsers were separately run against the full captures end to end, and the
+commit that added each dialect records which trial it was checked against.
+
+The three dialects agree on nothing but being JSON lines, and on what they
+*omit*: codex reports no cost, kimi-code no tokens. That asymmetry is the
+whole reason the dialect table and the ``None``-versus-zero distinction exist,
+so most of what follows is about absence rather than arithmetic.
 """
 
 from __future__ import annotations
@@ -13,6 +21,8 @@ import json
 import pytest
 from tolokaforge_coding_harnesses.stdout_telemetry import (
     CLAUDE_CODE_STREAM_JSON,
+    CODEX_JSON,
+    KIMI_CODE_STREAM_JSON,
     STDOUT_TELEMETRY_DIALECTS,
     parse_harness_stdout,
 )
@@ -34,6 +44,39 @@ _RESULT_EVENT = {
 }
 
 
+_CODEX_TURN_COMPLETED: dict[str, object] = {
+    "type": "turn.completed",
+    "usage": {
+        "input_tokens": 63345,
+        "cached_input_tokens": 53760,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 396,
+        "reasoning_output_tokens": 0,
+    },
+}
+
+_CODEX_STREAM: tuple[dict[str, object], ...] = (
+    {"type": "thread.started"},
+    {"type": "turn.started"},
+    {"type": "item.started"},
+    {"type": "item.completed", "item": {"item_type": "command_execution"}},
+    {"type": "item.completed", "item": {"item_type": "agent_message"}},
+    _CODEX_TURN_COMPLETED,
+)
+
+_KIMI_STREAM: tuple[dict[str, object], ...] = (
+    {"role": "assistant", "content": "Reading the module.", "tool_calls": [{"id": "Read_0"}]},
+    {"role": "tool", "tool_call_id": "Read_0", "content": "def factorial(n): ..."},
+    {"role": "assistant", "content": "Fixed the recursion."},
+    {
+        "role": "meta",
+        "type": "session.resume_hint",
+        "session_id": "session_89c15dd0",
+        "command": "kimi -r session_89c15dd0",
+    },
+)
+
+
 def _stream(*events: dict[str, object]) -> str:
     return "\n".join(json.dumps(event) for event in events) + "\n"
 
@@ -50,10 +93,26 @@ class TestTheResultEventBecomesARecord:
         assert telemetry.turns == 19
         assert telemetry.cost_usd == pytest.approx(0.6474657)
         assert telemetry.duration_s == pytest.approx(171.012)
-        assert telemetry.prompt_tokens == 129
+        assert telemetry.prompt_tokens == 129 + 705404 + 55182
         assert telemetry.completion_tokens == 15235
         assert telemetry.cache_read_input_tokens == 705404
         assert telemetry.cache_creation_input_tokens == 55182
+
+    def test_the_prompt_total_includes_the_cache_counters(self) -> None:
+        """Anthropic's ``input_tokens`` is the non-cached remainder — 129 of a
+        760k prompt here — so a consumer deriving fresh input as
+        ``prompt - cache_read - cache_write`` would go negative on the raw
+        figure. The record carries the inclusive total instead."""
+        telemetry = parse_harness_stdout("claude-code", _stream(_RESULT_EVENT))
+
+        assert telemetry is not None
+        assert telemetry.prompt_tokens is not None
+        fresh = (
+            telemetry.prompt_tokens
+            - (telemetry.cache_read_input_tokens or 0)
+            - (telemetry.cache_creation_input_tokens or 0)
+        )
+        assert fresh == 129
 
     def test_the_last_result_event_wins(self) -> None:
         """A resumed session prints a result per segment; the totals are the final one."""
@@ -92,8 +151,9 @@ class TestTheResultEventBecomesARecord:
 class TestAbsentTelemetryStaysAbsent:
     """``None`` is the only way to say "the CLI did not report its own totals"."""
 
-    def test_a_harness_with_no_dialect_reports_nothing(self) -> None:
-        assert parse_harness_stdout("codex", _stream(_RESULT_EVENT)) is None
+    @pytest.mark.parametrize("harness", ["grok-build", "opencode", "gemini-cli"])
+    def test_a_harness_with_no_dialect_reports_nothing(self, harness: str) -> None:
+        assert parse_harness_stdout(harness, _stream(_RESULT_EVENT)) is None
 
     def test_an_unknown_harness_reports_nothing(self) -> None:
         assert parse_harness_stdout("not-a-harness", _stream(_RESULT_EVENT)) is None
@@ -113,11 +173,12 @@ class TestAbsentTelemetryStaysAbsent:
         assert parse_harness_stdout("claude-code", '{"type":"result","num_turns":3,') is None
 
     def test_prose_output_reports_nothing(self) -> None:
-        """What ``codex`` and ``kimi-code`` actually print — a summary, no JSON."""
+        """What ``codex`` prints when its ``--json`` flag is absent — a plain
+        final message. The parser must not mistake that for a finished run."""
         assert parse_harness_stdout("claude-code", "Implemented the ingest path.\n") is None
 
     def test_an_event_stream_without_totals_reports_nothing(self) -> None:
-        """What ``grok-build`` and ``opencode`` print — events, no usage block."""
+        """What ``grok-build`` prints — events whose terminal one has no usage."""
         stdout = _stream(
             {"type": "text", "data": "done"},
             {"type": "end", "stopReason": "EndTurn", "sessionId": "s1"},
@@ -173,8 +234,100 @@ class TestAMalformedResultEventDegradesField:
         assert telemetry.turns == 0
 
 
+class TestCodexSumsItsPerTurnUsage:
+    """``codex exec --json`` reports usage on each ``turn.completed``, so the
+    totals are a sum across turns rather than a single terminal event. Fixture
+    values are from a live trial."""
+
+    def test_a_single_turn_run_reports_its_usage(self) -> None:
+        telemetry = parse_harness_stdout("codex", _stream(*_CODEX_STREAM))
+
+        assert telemetry is not None
+        assert telemetry.dialect == CODEX_JSON
+        assert telemetry.turns == 1
+        assert telemetry.prompt_tokens == 63345
+        assert telemetry.completion_tokens == 396
+        assert telemetry.cache_read_input_tokens == 53760
+        assert telemetry.cache_creation_input_tokens == 0
+        assert telemetry.reasoning_tokens == 0
+
+    def test_usage_sums_across_turns(self) -> None:
+        telemetry = parse_harness_stdout("codex", _stream(*_CODEX_STREAM, _CODEX_TURN_COMPLETED))
+
+        assert telemetry is not None
+        assert telemetry.turns == 2
+        assert telemetry.prompt_tokens == 63345 * 2
+        assert telemetry.completion_tokens == 396 * 2
+
+    def test_codex_reports_no_cost_so_the_caller_prices_the_tokens(self) -> None:
+        telemetry = parse_harness_stdout("codex", _stream(*_CODEX_STREAM))
+
+        assert telemetry is not None
+        assert telemetry.cost_usd is None
+        assert telemetry.has_token_counts is True
+
+    def test_a_turn_that_reported_no_usage_still_counts_as_a_turn(self) -> None:
+        telemetry = parse_harness_stdout("codex", _stream({"type": "turn.completed"}))
+
+        assert telemetry is not None
+        assert telemetry.turns == 1
+        assert telemetry.prompt_tokens == 0
+
+    def test_a_run_that_never_completed_a_turn_reports_nothing(self) -> None:
+        telemetry = parse_harness_stdout(
+            "codex", _stream({"type": "thread.started"}, {"type": "turn.started"})
+        )
+
+        assert telemetry is None
+
+
+class TestKimiCodeReportsTurnsAndNoUsage:
+    """``kimi-code --output-format stream-json`` prints a message transcript
+    with no token or cost fields anywhere. Turns are countable; usage is not,
+    and must read as absent rather than zero."""
+
+    def test_assistant_messages_are_the_turn_count(self) -> None:
+        telemetry = parse_harness_stdout("kimi-code", _stream(*_KIMI_STREAM))
+
+        assert telemetry is not None
+        assert telemetry.dialect == KIMI_CODE_STREAM_JSON
+        assert telemetry.turns == 2
+
+    def test_every_token_field_is_none_not_zero(self) -> None:
+        """A zero here would read as a trial that spent nothing, which is a
+        different and false claim."""
+        telemetry = parse_harness_stdout("kimi-code", _stream(*_KIMI_STREAM))
+
+        assert telemetry is not None
+        assert telemetry.has_token_counts is False
+        assert telemetry.prompt_tokens is None
+        assert telemetry.completion_tokens is None
+        assert telemetry.cache_read_input_tokens is None
+        assert telemetry.cache_creation_input_tokens is None
+        assert telemetry.reasoning_tokens is None
+        assert telemetry.cost_usd is None
+
+    def test_tool_and_meta_lines_are_not_turns(self) -> None:
+        telemetry = parse_harness_stdout(
+            "kimi-code",
+            _stream(
+                {"role": "tool", "tool_call_id": "t1", "content": "out"},
+                {"role": "meta", "type": "session.resume_hint", "session_id": "s1"},
+            ),
+        )
+
+        assert telemetry is None
+
+
 class TestTheDialectTableIsTheWholeSurface:
-    def test_only_claude_code_declares_a_dialect(self) -> None:
-        """Every other shipped harness prints prose or a usage-free event
-        stream; adding one here means adding a parser branch with it."""
-        assert set(STDOUT_TELEMETRY_DIALECTS) == {"claude-code"}
+    def test_the_table_names_exactly_the_cls_that_report_something(self) -> None:
+        """`grok-build` and `opencode` are absent deliberately — the first
+        prints a usage-free event stream, the second needs an accumulating
+        parser that is not written yet. Adding a name here means adding a
+        parser branch with it."""
+        assert set(STDOUT_TELEMETRY_DIALECTS) == {"claude-code", "codex", "kimi-code"}
+
+    def test_every_declared_dialect_has_a_parser(self) -> None:
+        for harness in STDOUT_TELEMETRY_DIALECTS:
+            # An unparseable stream is fine; an AssertionError is not.
+            parse_harness_stdout(harness, '{"type":"nothing"}\n')

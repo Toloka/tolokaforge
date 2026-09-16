@@ -78,6 +78,17 @@ from tolokaforge_coding_harnesses import (
 AGENT_SERVICE_DEFAULT = "main"
 PROJECT_PREFIX = "tbench_"
 
+CONTAINER_LOGS_DIR = "/logs"
+"""Where the agent service sees its log directory, matching the
+``T_BENCH_CONTAINER_LOGS_PATH`` a terminal-bench pack authors against."""
+
+STAGING_LOGS_DIRNAME = "_logs"
+"""Directory inside the staging tree the agent service's ``/logs`` mounts from.
+
+Relative, so the mount resolves against whichever copy of the compose context
+is actually brought up — the engine copies the staging tree per trial, which is
+what keeps one trial's logs out of the next one's."""
+
 _SYNTHESISED_COMPOSE_FILENAME = "docker-compose.tolokaforge.yaml"
 _ENGINE_COMPOSE_FILENAME = "docker-compose.engine.yaml"
 _ENGINE_STAGING_DIRNAME = "engine"
@@ -455,8 +466,8 @@ def _write_staging(task_dir: Path, staging_dir: Path) -> None:
         root_script = staging_dir / "run-tests.sh"
         if root_script.exists():
             shutil.copy2(root_script, tests_dir / "test.sh")
-    (staging_dir / "_logs" / "verifier").mkdir(parents=True, exist_ok=True)
-    (staging_dir / "_logs" / "agent").mkdir(parents=True, exist_ok=True)
+    (staging_dir / STAGING_LOGS_DIRNAME / "verifier").mkdir(parents=True, exist_ok=True)
+    (staging_dir / STAGING_LOGS_DIRNAME / "agent").mkdir(parents=True, exist_ok=True)
 
 
 def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: HarnessSpec) -> None:
@@ -585,10 +596,10 @@ def _build_synthesised_compose(
     resolved_vars = {
         "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": agent_image,
         "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": agent_container_name,
-        "T_BENCH_CONTAINER_LOGS_PATH": "/logs",
-        "T_BENCH_TASK_LOGS_PATH": "./_logs",
-        "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/logs/agent",
-        "T_BENCH_TASK_AGENT_LOGS_PATH": "./_logs/agent",
+        "T_BENCH_CONTAINER_LOGS_PATH": CONTAINER_LOGS_DIR,
+        "T_BENCH_TASK_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}",
+        "T_BENCH_CONTAINER_AGENT_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/agent",
+        "T_BENCH_TASK_AGENT_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/agent",
         "T_BENCH_TEST_DIR": "/tests",
         "CPUS": str(meta.cpus),
         "MEMORY": f"{meta.memory_mb}M",
@@ -602,7 +613,10 @@ def _build_synthesised_compose(
     if image_registry:
         agent_body.pop("build", None)
     agent_body["container_name"] = agent_container_name
-    agent_body["volumes"] = ["./tests:/tests", "./_logs:/logs"]
+    agent_body["volumes"] = [
+        "./tests:/tests",
+        f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}",
+    ]
     agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
     for key in sorted(provider_env_keys):
         agent_body["environment"] = _set_env_key(

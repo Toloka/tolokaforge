@@ -26,6 +26,7 @@ from ._registry import (
     INSTALL_SCRIPT,
     MIDDLEWARE_PROXY_CONTAINER_PATH,
     MIDDLEWARE_PROXY_SCRIPT,
+    MIDDLEWARE_USAGE_LOG_CONTAINER_PATH,
     OPENROUTER_PREFIX,
     PLUGIN_REGISTRY_RESOURCE,
     PROVIDER_ENV_INPUT_PREFIX,
@@ -51,7 +52,7 @@ from ._registry import (
     validate_harness,
     validate_provider_env_keys,
 )
-from .adapter_support import CodingHarnessAdapterMixin
+from .adapter_support import HARNESS_USAGE_LOG_METADATA_KEY, CodingHarnessAdapterMixin
 from .container_injection import (
     ContainerFileInjector,
     ContainerInjectionError,
@@ -66,6 +67,11 @@ from .stdout_telemetry import (
     HarnessStdoutTelemetry,
     parse_harness_stdout,
 )
+from .usage_log import (
+    MIDDLEWARE_PROXY_USAGE_SOURCE,
+    HarnessWireUsage,
+    sum_harness_usage_records,
+)
 
 __all__ = [
     "ALTERNATIVE_GATEWAYS",
@@ -74,9 +80,12 @@ __all__ = [
     "ENGINE_LOOP",
     "HARNESSES",
     "HARNESS_REGISTRY_ENTRY_POINT_GROUP",
+    "HARNESS_USAGE_LOG_METADATA_KEY",
     "INSTALL_SCRIPT",
     "MIDDLEWARE_PROXY_CONTAINER_PATH",
+    "MIDDLEWARE_PROXY_USAGE_SOURCE",
     "MIDDLEWARE_PROXY_SCRIPT",
+    "MIDDLEWARE_USAGE_LOG_CONTAINER_PATH",
     "OPENROUTER_PREFIX",
     "PATH_CONSTRUCT_PATTERN",
     "PLUGIN_REGISTRY_RESOURCE",
@@ -96,6 +105,7 @@ __all__ = [
     "HarnessFingerprint",
     "HarnessSpec",
     "HarnessStdoutTelemetry",
+    "HarnessWireUsage",
     "LinuxRootResolver",
     "PathResolver",
     "PluginBundle",
@@ -114,6 +124,7 @@ __all__ = [
     "parse_harness_stdout",
     "provider_env_input",
     "resolve_effective_registry",
+    "sum_harness_usage_records",
     "validate_harness",
     "validate_provider_env_keys",
 ]

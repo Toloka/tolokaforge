@@ -1,5 +1,6 @@
 """Trial runner with agent-user loop"""
 
+import shlex
 import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -8,6 +9,10 @@ from typing import Any
 from tolokaforge_coding_harnesses.stdout_telemetry import (
     HarnessStdoutTelemetry,
     parse_harness_stdout,
+)
+from tolokaforge_coding_harnesses.usage_log import (
+    MIDDLEWARE_PROXY_USAGE_SOURCE,
+    sum_harness_usage_records,
 )
 
 from tolokaforge.core.actors.actor import Actor
@@ -50,6 +55,7 @@ from tolokaforge.core.models import (
     UserReplyOutcome,
 )
 from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
+from tolokaforge.core.pricing import estimate_cost
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -62,6 +68,19 @@ from tolokaforge.core.summarize_policy import LLMSummarizer, SummarizePolicy
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
+
+_HARNESS_USAGE_READ_CALL_ID_PREFIX = "harness-usage:"
+"""Call-id prefix for the engine's own read of a harness trial's usage records.
+
+Distinct from the ``harness:`` id the CLI's own exec carries, so the runner-side
+execution record the read unavoidably leaves is attributable to the engine
+rather than readable as a second thing the agent did."""
+
+_USAGE_READ_DETAIL_CHARS = 200
+"""How much of a failed usage read's output the log carries.
+
+Enough to name the cause (``cat``'s "No such file or directory" is the expected
+one) without spilling an unbounded container stream into the trial log."""
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -174,10 +193,13 @@ class TrialRunner:
         # used is disambiguated for the other rather than recorded twice.
         self._call_ids = EpisodeUniqueCallIds()
         self.metrics = Metrics()
-        # Staged by :meth:`run_harness` when the CLI reported its own totals,
-        # applied at trial end by :meth:`_apply_harness_stdout_telemetry`.
-        # Stays ``None`` on every other way a trial can be driven.
+        # Both staged by :meth:`run_harness` and applied at trial end by
+        # :meth:`_apply_harness_telemetry`; ``None`` on every other way a
+        # trial can be driven. The first is what the CLI printed, the second
+        # the usage records a middleware proxy wrote for a CLI that printed
+        # nothing, read back out of the trial container while it was still up.
         self._harness_stdout_telemetry: HarnessStdoutTelemetry | None = None
+        self._harness_usage_records: str | None = None
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
         self._effective_system_prompt: str | None = None
@@ -458,6 +480,7 @@ class TrialRunner:
         instruction: str,
         timeout_s: float,
         harness: str = "",
+        usage_log_container_path: str | None = None,
     ) -> Trajectory:
         """Run the trial as a single invocation of a coding-harness CLI.
 
@@ -483,6 +506,13 @@ class TrialRunner:
                 parser for the totals it prints. Empty, unrecognised, or a CLI
                 that prints no totals all leave the trial's turn / token / cost
                 accounting exactly as a single tool call produces it.
+            usage_log_container_path: Path *inside the trial container* of the
+                NDJSON usage records a request middleware wrote for this trial,
+                for a CLI that prints no token counts of its own. Read back
+                through *tool_name* the moment the CLI's exec returns, while
+                the container is still up. ``None`` — and a file the proxy
+                never wrote — leave the token accounting to what the CLI
+                printed.
         """
         trial_id = f"{self.task_id}:{self.trial_index}"
         with trial_id_scope(trial_id):
@@ -529,6 +559,12 @@ class TrialRunner:
                 output=output,
                 latency_seconds=time.time() - call_started,
             )
+            # After the agent's call is recorded, so the recorded latency is
+            # the CLI's alone, and before anything can tear the stack down.
+            if usage_log_container_path is not None:
+                self._harness_usage_records = self._read_container_usage_records(
+                    tool_name, usage_log_container_path
+                )
             self.messages.append(
                 Message(
                     role=MessageRole.ASSISTANT,
@@ -569,7 +605,7 @@ class TrialRunner:
         self.metrics.latency_total_s = time.time() - self.start_time
         self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
         self._apply_probe_stats()
-        self._apply_harness_stdout_telemetry()
+        self._apply_harness_telemetry()
 
         recorded_calls = self.tool_call_recorder.recorded
         # Both describe the agent's tool use — the scoping stuck detection
@@ -618,6 +654,26 @@ class TrialRunner:
             tool_log=list(recorded_calls),
         )
 
+    def _apply_harness_telemetry(self) -> None:
+        """Replace the single-tool-call accounting with the harness's own.
+
+        Two taps can report a harness trial's tokens, and **the CLI's printed
+        totals win**: the wire records fill in only where the CLI reported no
+        token counts at all.
+
+        The other order is defensible — arguably better — for *spend*. A
+        request middleware sits on the traffic, so it counts the retries a
+        CLI's end-of-run summary may quietly fold away, which makes it the
+        truer figure for what a run cost. It is not preferred here because the
+        two sources cannot both appear: ``kimi-code`` is the only shipped
+        harness routed through a proxy, and it is also the only one that prints
+        no usage. So the precedence below never actually arbitrates, and
+        reversing it would change nothing observable while a merge policy for
+        an impossible overlap would be untestable code.
+        """
+        self._apply_harness_stdout_telemetry()
+        self._apply_harness_wire_usage()
+
     def _apply_harness_stdout_telemetry(self) -> None:
         """Replace the single-tool-call accounting with what the CLI reported.
 
@@ -633,18 +689,180 @@ class TrialRunner:
         engine's count: one ``docker exec`` is what the engine executed, and
         the CLI's own tool use is a different quantity this record does not
         carry.
+
+        Each field is applied only where the CLI actually reported it, because
+        the CLIs report different subsets: ``claude-code`` gives turns, tokens
+        and cost; ``codex`` gives turns and tokens but no cost; ``kimi-code``
+        gives turns alone. Writing an unreported field would turn "the CLI
+        never said" into "the CLI said zero".
+
+        ``cost_usd`` is the engine's own price for the tokens the CLI reported
+        — see :meth:`_price_harness_tokens` — so a cross-mode comparison
+        prices every arm by one authority rather than one vendor's billing
+        against another's. The CLI's own figure is preserved beside it as
+        ``harness_reported_cost_usd``, and is used as ``cost_usd`` only where
+        our own table cannot price the model. Precedence, highest first:
+
+        1. our price for the reported tokens,
+        2. the cost the CLI reported,
+        3. whatever ``cost_usd`` already held — ``None`` on this path, since
+           the engine issued no request to cost anything.
         """
         telemetry = self._harness_stdout_telemetry
         if telemetry is None:
             return
         self.metrics.harness_stdout_dialect = telemetry.dialect
         self.metrics.turns = telemetry.turns
-        self.metrics.cost_usd = telemetry.cost_usd
+        # Recorded wherever the CLI said anything, as the cross-check on our
+        # own figure below. ``None`` where it said nothing.
+        self.metrics.harness_reported_cost_usd = telemetry.cost_usd
+        cost_usd = telemetry.cost_usd
+        if telemetry.has_token_counts:
+            self.metrics.usage = Usage(
+                prompt_tokens=telemetry.prompt_tokens or 0,
+                completion_tokens=telemetry.completion_tokens or 0,
+                reasoning_tokens=telemetry.reasoning_tokens or 0,
+                cache_read_input_tokens=telemetry.cache_read_input_tokens or 0,
+                cache_creation_input_tokens=telemetry.cache_creation_input_tokens or 0,
+            )
+            priced = self._price_harness_tokens(self.metrics.usage)
+            if priced is not None:
+                cost_usd = priced
+        if cost_usd is not None:
+            self.metrics.cost_usd = cost_usd
+
+    def _read_container_usage_records(self, tool_name: str, container_path: str) -> str | None:
+        """Read the wire-usage records out of the trial container via *tool_name*.
+
+        The container is the only place those records exist. The runtime
+        bind-mounts the agent service's log directory from the per-trial
+        compose context — a temporary copy it deletes at teardown — so there
+        is no host path to open instead, and the read has to happen while the
+        container the CLI just ran in is still up.
+
+        This is engine instrumentation, not agent action, so it stays out of
+        the trial's own account of itself: nothing reaches
+        :attr:`tool_call_recorder`, no message is appended, and ``tool_calls``
+        remains the single ``exec`` the engine ran on the agent's behalf. The
+        executor does forward it to the runner, which records every tool
+        execution on its own side of the wire; a harness trial grades on the
+        pack's verifier rather than on that record, and the trajectory the
+        bundle is written from is the host-side one, so the extra entry
+        reaches nothing a reader sees.
+
+        Every way this can fail returns ``None`` and leaves the trial exactly
+        as it would have been: records the proxy never wrote (``cat`` exits
+        non-zero), an executor that raised, a container already gone. A
+        telemetry read may not cost a trial its result, which is why the
+        blanket ``except`` is right here and nowhere else in this class — but
+        an absence that is never reported is an absence nobody can debug, so
+        both arms log what happened.
+        """
+        try:
+            result = self.tool_executor.execute(
+                tool_name,
+                {"command": f"cat -- {shlex.quote(container_path)}"},
+                call_id=f"{_HARNESS_USAGE_READ_CALL_ID_PREFIX}{self.task_id}:{self.trial_index}",
+            )
+        except Exception as exc:  # noqa: BLE001 — telemetry never fails a trial
+            self.logger.info(
+                "Harness usage records could not be read from the container",
+                path=container_path,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        if resolve_tool_status(result) is not ToolExecutionStatus.SUCCESS:
+            self.logger.info(
+                "Harness usage records are absent from the container",
+                path=container_path,
+                detail=resolve_tool_output(result)[:_USAGE_READ_DETAIL_CHARS],
+            )
+            return None
+        return result.output or None
+
+    def _apply_harness_wire_usage(self) -> None:
+        """Fold in the token usage a request middleware measured on the wire.
+
+        No-op unless :meth:`run_harness` read records back out of the trial
+        container, which it only attempts for a harness whose adapter named a
+        usage-log path — and only a harness declaring request middleware boots
+        the proxy that writes one. Also a no-op when the CLI already reported
+        token counts itself: see :meth:`_apply_harness_telemetry` for why
+        stdout wins.
+
+        The records are the provider's own ``usage`` blocks, so the totals go
+        in on the same inclusive basis and through the same
+        :meth:`_price_harness_tokens` the stdout path prices with — one
+        pricing authority across every arm of a comparison. ``turns`` is left
+        alone: a request is not a turn, and the CLI that prints no usage does
+        print a transcript the turn count already came from.
+
+        Absence is normal and silent — no proxy, no provider call, or a read
+        that came back empty all leave the trial exactly as it was, and a
+        zeroed usage block would instead claim it spent nothing. Damage is
+        not silent: a proxy killed mid-append leaves a partial line, which
+        makes the total a lower bound worth reporting, though never worth
+        failing a trial over.
+        """
+        records = self._harness_usage_records
+        if records is None:
+            return
+        stdout_telemetry = self._harness_stdout_telemetry
+        if stdout_telemetry is not None and stdout_telemetry.has_token_counts:
+            return
+
+        wire = sum_harness_usage_records(records)
+        if wire is None:
+            return
+        if wire.skipped_lines:
+            self.logger.warning(
+                "Skipped unreadable harness usage records",
+                skipped_lines=wire.skipped_lines,
+                records=wire.requests,
+            )
+
+        self.metrics.harness_usage_source = MIDDLEWARE_PROXY_USAGE_SOURCE
         self.metrics.usage = Usage(
-            prompt_tokens=telemetry.prompt_tokens,
-            completion_tokens=telemetry.completion_tokens,
-            cache_read_input_tokens=telemetry.cache_read_input_tokens,
-            cache_creation_input_tokens=telemetry.cache_creation_input_tokens,
+            prompt_tokens=wire.prompt_tokens,
+            completion_tokens=wire.completion_tokens,
+            reasoning_tokens=wire.reasoning_tokens,
+            cache_read_input_tokens=wire.cache_read_input_tokens,
+        )
+        priced = self._price_harness_tokens(self.metrics.usage)
+        if priced is not None:
+            self.metrics.cost_usd = priced
+
+    def _price_harness_tokens(self, usage: Usage) -> float | None:
+        """Our own price for *usage*, or ``None`` when the model is unpriceable.
+
+        The agent model is read off :attr:`agent_client` — the same
+        ``model_name`` the engine's own cost ladder prices its calls with
+        (``LLMClient.generate``), so the two arms of a cross-mode comparison
+        resolve to one pricing row and cannot diverge on how the key was
+        spelled. The client itself is never called on this path: a harness CLI
+        owns its planning loop, and only its model identity is needed here.
+
+        ``None`` means the pricing table carries no row for the model, which
+        the caller must not turn into a zero — :func:`estimate_cost` returns
+        ``None`` for exactly that reason, and the caller leaves ``cost_usd``
+        alone: the CLI's own figure where it printed one, and nothing where
+        neither the table nor the CLI can price the trial.
+
+        ``prompt_tokens`` is passed as-is: it is already the litellm-normalised
+        prompt total that :func:`estimate_cost` documents, cache reads and
+        writes included (each stdout parser converts to that basis), and
+        adding the cache counters to it here would bill them twice.
+        ``reasoning_tokens`` is deliberately **not** passed for the same
+        reason: every shipped dialect counts reasoning inside its output
+        total, while :func:`estimate_cost` adds the argument to
+        ``output_tokens``.
+        """
+        return estimate_cost(
+            model=self.agent_client.model_name,
+            input_tokens=usage.prompt_tokens,
+            output_tokens=usage.completion_tokens,
+            cache_read_input_tokens=usage.cache_read_input_tokens,
+            cache_creation_input_tokens=usage.cache_creation_input_tokens,
         )
 
     def _apply_probe_stats(self) -> None:

@@ -605,17 +605,62 @@ the serving-path provenance when the call went through an LLM gateway, else
 null), and `openrouter_generation_id` — the trial-level `cost_usd` is the
 sum of those entries.
 
-`harness_stdout_dialect` names the coding-harness stdout dialect `turns`,
-`cost_usd` and `usage` were read from, and is `null` whenever they are the
-engine's own measurements. A harness trial runs the CLI as one tool call, so
-the engine issues no LLM request and measures no usage of its own; where the
-CLI prints its own totals they are parsed from the captured stream and replace
-the single-tool-call artefacts a reader would otherwise see (`turns: 1`, a null
+`harness_stdout_dialect` names the coding-harness stdout dialect `turns` and
+`usage` were read from, and is `null` whenever they are the engine's own
+measurements. A harness trial runs the CLI as one tool call, so the engine
+issues no LLM request and measures no usage of its own; where the CLI prints
+its own totals they are parsed from the captured stream and replace the
+single-tool-call artefacts a reader would otherwise see (`turns: 1`, a null
 cost, an empty usage block). Those counts are then the CLI's accounting — its
-internal turn count, and the cost it billed itself — which is why the dialect
-travels with them. `api_calls` stays `0` on that path, because the engine made
-none. A harness whose CLI prints no totals keeps the artefact shape and a
+internal turn count, and its own token totals — which is why the dialect
+travels with them. `usage.prompt_tokens` is the prompt total with cache reads
+and writes included, on the same basis as an engine-loop trial's, because the
+parsers normalise the CLIs' differing conventions (`claude-code` prints the
+non-cached remainder beside its cache counters; `codex`'s `input_tokens`
+already includes them). `api_calls` stays `0` on that path, because the engine
+made none. A harness whose CLI prints no totals keeps the artefact shape and a
 `null` dialect, so "not measured" is never reported as a measured zero.
+
+`harness_usage_source` names the **non-stdout tap** `usage` and `cost_usd` were
+measured at — `"middleware_proxy"` today — and is `null` everywhere else. Some
+CLIs print no token counts at all (`kimi-code` prints none), so their tokens
+are recovered from the provider traffic: the request middleware the harness
+routes through records one usage block per provider response, and those records
+sum to one per-trial total, priced through the same table. **The CLI's printed
+totals win where both exist**, and the wire records fill in only where the CLI
+reported no token counts. The other order is defensible for spend — a proxy on
+the wire counts retries a CLI's end-of-run summary may fold away — but the two
+cannot both appear today: `kimi-code` is both the only proxied harness and the
+only one that prints no usage, so the precedence never arbitrates. This field is
+complementary to `harness_stdout_dialect`, not parallel: that one names which
+CLI grammar was parsed and is non-null whenever a CLI printed anything at all
+(turns included), while this one names which tap measured the tokens when no CLI
+did. So a stdout-sourced usage block leaves it `null`. Read together: dialect
+set and this `null` means the tokens (if any) are the CLI's own; this set means
+they are the wire's; both `null` means they are the engine's own. Absence is
+routine and silent — a harness with no middleware, or a CLI that made no
+provider call, leave the trial's accounting exactly as it was, and a malformed
+record is skipped rather than failing the trial. The records are read back out
+of the trial container while it is still up, because the runtime mounts the
+directory they are written into from a per-trial context copy it deletes at
+teardown; that read is engine instrumentation and is never part of `tool_calls`
+or [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
+
+`cost_usd` on a harness trial is **the engine's price for those tokens**, from
+the same bundled pricing table the engine-loop cost ladder falls back to — not
+the figure the CLI printed. The CLIs report different subsets (`claude-code`
+reports a cost, `codex` reports tokens and no cost, `kimi-code` reports
+neither), so taking each vendor's own number would compare one vendor's
+billing against another's inside a single cross-mode comparison. Pricing the
+tokens ourselves gives every arm one pricing authority.
+`harness_reported_cost_usd` carries what the CLI said it billed wherever it
+said anything, as the cross-check: a material divergence from `cost_usd` means
+either a wrong row in the pricing table or a vendor billing surprise, and a
+reader of `cost_usd` alone could tell neither. Both are `null` on every
+engine-loop trial. A model absent from the pricing table leaves the CLI's own
+figure in `cost_usd` (and repeats it in `harness_reported_cost_usd`) rather
+than zeroing it; a CLI that reported no tokens at all leaves `cost_usd`
+untouched, because there is nothing to price.
 
 `openrouter_generation_ids` lists every OpenRouter generation id the trial's
 agent calls returned, in call order; `usage.calls[*].openrouter_generation_id`
@@ -638,12 +683,17 @@ one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
 such a bundle is refused offline anyway. Generation 5 bundles report a
-coding-harness trial's `turns`, `cost_usd` and `usage` from the CLI's own
-totals wherever the CLI prints them, instead of the single-tool-call artefacts
-(`turns: 1`, a null cost, an empty usage block) every such trial carried
-through generation 4; `harness_stdout_dialect` names where those numbers came
-from and is `null` whenever they are the engine's own. Generation 4 and later
-bundles carry the trial's tool-call record as
+coding-harness trial's `turns` and `usage` from the CLI's own totals wherever
+the CLI prints them, instead of the single-tool-call artefacts (`turns: 1`, a
+null cost, an empty usage block) every such trial carried through generation 4;
+`harness_stdout_dialect` names where those numbers came from and is `null`
+whenever they are the engine's own. Their `cost_usd` on that path is the
+engine's own price for those tokens rather than the CLI's figure, which
+generation 5 records beside it as `harness_reported_cost_usd`. Where the CLI
+printed no token counts at all, generation 5 recovers them from the request
+middleware's per-response usage records and stamps `harness_usage_source` with
+the tap that measured them. Generation 4
+and later bundles carry the trial's tool-call record as
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml). They carry no
 `grade.yaml` in two cases — the trial was aborted by infrastructure before the
 agent ran, or grading ran and refused to produce a verdict — so a reader must
@@ -678,7 +728,9 @@ usage:
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
-harness_stdout_dialect: null   # non-null only when a coding-harness CLI reported its own totals
+harness_stdout_dialect: null       # non-null only when a coding-harness CLI reported its own totals
+harness_usage_source: null         # non-null only when the tokens were measured on the wire, not printed by the CLI
+harness_reported_cost_usd: null    # what that CLI said it billed, where it said anything
 tool_calls: 7
 tool_success_rate: 1.0
 stuck_detected: false

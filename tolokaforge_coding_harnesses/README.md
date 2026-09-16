@@ -116,6 +116,35 @@ The proxy is stdlib only (~200 LOC), boots inside the harness-command preamble
 and is unaware to the CLI. Nothing to configure — it applies automatically
 when `agent_harness: kimi-code`.
 
+The same boot arms the proxy's usage tap: every response that reports token
+counts appends one NDJSON record (model, token counts, status, path, UTC
+timestamp) to `MIDDLEWARE_USAGE_LOG_CONTAINER_PATH`
+(`/logs/agent/tolokaforge_usage.ndjson`). A harness trial spends its budget
+inside a single tool call, so the wire is the only place the counts exist for a
+CLI that prints no totals of its own — which is exactly the `kimi-code` case.
+A response reporting no usage writes no record, keeping "not measured" distinct
+from "measured zero".
+
+**The records are read out of the running container, not off the host.** The
+synthesised trial compose mounts `/logs` from its context *relatively*, and the
+context a trial is brought up from is a per-trial copy the stack deletes at
+teardown — so the staging tree's `_logs` is a template that never receives the
+container's writes and no host path names the file. The consumer reads it
+through the same exec tool the CLI ran under, the moment the CLI's single
+invocation returns.
+
+`sum_harness_usage_records(text)` sums those bytes into one `HarnessWireUsage`
+total on the same inclusive basis `HarnessStdoutTelemetry` declares
+(`prompt_tokens` includes the cached prompt, `completion_tokens` includes
+reasoning). Every record counts whatever its status — a refused request that
+came back with a usage block was still billed — and a malformed line is skipped
+and counted in `skipped_lines` rather than failing the sum. It returns `None`
+for every ordinary absence (no proxy, no provider call, nothing parseable), so
+a consumer can treat missing as "change nothing". An adapter tells the trial
+which container path to read via `HARNESS_USAGE_LOG_METADATA_KEY` on its task
+metadata — published only for a harness that declares middleware, since nothing
+else writes the file.
+
 ## Gateway routing — the two paths, one recipe
 
 The shipped defaults route each CLI at OpenRouter (or, for `gemini-cli`,

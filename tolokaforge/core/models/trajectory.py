@@ -411,7 +411,11 @@ class Metrics(BaseModel):
     ``cost_usd`` is the trial-level sum of every API call's ``cost_usd``;
     walk ``usage.calls`` to find which calls were litellm- vs locally-priced
     (each :class:`ProviderRawCall` carries its own ``cost_source``). The
-    earlier ``cost_usd_est`` / ``cost_usd_provider`` split is gone.
+    earlier ``cost_usd_est`` / ``cost_usd_provider`` split is gone. On a
+    coding-harness trial there are no API calls to sum — the engine issues
+    none — so it is instead the engine's price for the tokens the CLI
+    reported, with the CLI's own figure kept beside it as
+    ``harness_reported_cost_usd``.
 
     The ``rate_limit_*`` and ``probe_*`` counters are populated only while
     :class:`RateLimitProbeConfig` is enabled; on every other run they stay at
@@ -499,6 +503,48 @@ class Metrics(BaseModel):
     on a harness trial whose CLI reported nothing, where the counts stay at
     the defaults a single tool call produces. So it reads as "these numbers
     are the CLI's, parsed from *this* dialect", never as a quality claim."""
+
+    harness_usage_source: str | None = None
+    """The non-stdout tap ``usage`` and ``cost_usd`` on this trial were
+    measured at — ``"middleware_proxy"`` today.
+
+    Some harness CLIs print no usage at all (``kimi-code`` prints none), so
+    their tokens are recovered from the provider traffic instead: the request
+    middleware the harness routes through records one usage block per response,
+    and those records sum to the counts above.
+
+    Complementary to ``harness_stdout_dialect``, not parallel to it. That field
+    names *which CLI grammar* was parsed and is non-``None`` whenever a CLI
+    printed anything at all, turns included; this one names *which tap measured
+    the tokens* on the trials where no CLI did. So a stdout-sourced usage block
+    leaves this ``None`` — restating it here would let the two disagree about
+    the same fact — and the three states read:
+
+    * dialect set, this ``None`` — the tokens (if any) are the CLI's own;
+    * this set — the tokens are the wire's, whatever the CLI printed;
+    * both ``None`` — the counts are the engine's own measurements.
+
+    A name rather than a boolean so a second tap is a new value here instead of
+    a second flag nobody's reader knows to check."""
+
+    harness_reported_cost_usd: float | None = None
+    """What a coding-harness CLI said it billed for this trial — the
+    cross-check on ``cost_usd``, not the reported cost.
+
+    ``cost_usd`` on a harness trial is the engine's own price for the tokens
+    the CLI reported, so that every arm of a cross-mode comparison is priced
+    by one authority instead of one vendor's billing against another's. This
+    field keeps the vendor's figure beside it wherever the CLI printed one.
+
+    A material divergence between the two is worth catching before a large
+    run, and it says which of two things happened: a wrong row in the pricing
+    table (our figure is wrong), or a vendor billing surprise (theirs is). A
+    reader of ``cost_usd`` alone can tell neither, which is why the vendor
+    figure is preserved rather than discarded.
+
+    ``None`` on every engine-loop trial and on a harness trial whose CLI
+    reported no cost of its own — ``codex`` and ``kimi-code`` print none, so
+    only their priced ``cost_usd`` exists to compare across arms."""
 
     tool_calls: int = 0
     tool_success_rate: float = 0.0

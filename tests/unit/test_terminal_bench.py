@@ -1,7 +1,7 @@
 """Unit tests for terminal-bench adapter and Docker Compose exec wrapper."""
 
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2369,3 +2369,66 @@ class TestTerminalBenchAdapterCodingHarnessOptIn:
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
         assert TerminalBenchAdapter.supports_coding_harness is True
+
+
+class TestTheWireUsageLogPathOnTaskMetadata:
+    """Where a harness's request middleware writes its per-request token usage.
+
+    Published only for a harness that declares middleware, because the
+    middleware is the only thing that writes those records — naming the path
+    for a harness that boots no proxy would promise a file nothing creates.
+
+    The path is the container's. The synthesised compose mounts ``/logs`` from
+    the staging tree *relatively*, so the directory a trial actually writes
+    into is the per-trial context copy the stack deletes at teardown; a host
+    path would name a file that never gains the container's writes.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _metadata(self, fixture_dir: Path, tmp_path: Path, harness: str) -> dict:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "agent_harness": harness,
+                "agent_model": "openrouter/moonshotai/kimi-k2",
+            }
+        )
+        return adapter.to_task_description("echo-hello").metadata
+
+    def test_a_middleware_harness_publishes_the_container_path(self, fixture_dir, tmp_path) -> None:
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import CONTAINER_LOGS_DIR
+
+        from tolokaforge_coding_harnesses import (
+            HARNESS_USAGE_LOG_METADATA_KEY,
+            MIDDLEWARE_USAGE_LOG_CONTAINER_PATH,
+        )
+
+        metadata = self._metadata(fixture_dir, tmp_path, "kimi-code")
+
+        published = metadata[HARNESS_USAGE_LOG_METADATA_KEY]
+        assert published == MIDDLEWARE_USAGE_LOG_CONTAINER_PATH
+        # Inside the directory the agent service mounts, or the proxy's writes
+        # land somewhere the trial's own exec cannot reach.
+        assert PurePosixPath(published).is_relative_to(CONTAINER_LOGS_DIR)
+
+    def test_a_harness_with_no_middleware_publishes_no_path(self, fixture_dir, tmp_path) -> None:
+        """``claude-code`` routes through no proxy, so nothing would ever
+        write the file the key would name."""
+        from tolokaforge_coding_harnesses import HARNESS_USAGE_LOG_METADATA_KEY
+
+        metadata = self._metadata(fixture_dir, tmp_path, "claude-code")
+
+        assert HARNESS_USAGE_LOG_METADATA_KEY not in metadata
+
+    def test_engine_loop_mode_publishes_no_path(self, fixture_dir, tmp_path) -> None:
+        from tolokaforge_coding_harnesses import ENGINE_LOOP, HARNESS_USAGE_LOG_METADATA_KEY
+
+        metadata = self._metadata(fixture_dir, tmp_path, ENGINE_LOOP)
+
+        assert HARNESS_USAGE_LOG_METADATA_KEY not in metadata

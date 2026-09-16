@@ -1,0 +1,166 @@
+"""Token usage the middleware proxy measured on the wire.
+
+:mod:`~tolokaforge_coding_harnesses.stdout_telemetry` recovers what a coding
+harness CLI *prints* about itself. ``kimi-code`` prints nothing — no token
+counts and no cost appear anywhere in its stream — so for that CLI the only
+place the numbers exist is the provider traffic itself. It is also the only
+shipped harness declaring :attr:`HarnessSpec.request_middleware`, so every one
+of its requests passes through
+:mod:`~tolokaforge_coding_harnesses.middleware_proxy`, which appends one NDJSON
+record per provider response to
+:data:`~tolokaforge_coding_harnesses.MIDDLEWARE_USAGE_LOG_CONTAINER_PATH`.
+
+This module sums those records into one per-trial total. It takes the records
+as text rather than as a path because they are only ever reachable inside the
+container: the shipped runtime bind-mounts the container's log directory from
+the per-trial compose context, which is a temporary copy teardown deletes, so
+the file has no host path a consumer could open. A consumer reads it out of
+the live container and hands the bytes here.
+
+The records are OpenAI Chat Completions ``usage`` blocks, so ``prompt_tokens``
+already includes the cached prompt the record carries separately as
+``cache_read_input_tokens``, and ``completion_tokens`` already includes
+``reasoning_tokens`` — the same inclusive basis
+:class:`~tolokaforge_coding_harnesses.HarnessStdoutTelemetry` declares, so a
+consumer prices either source the same way.
+
+**Every record counts, whatever its status.** A provider that answered 429 or
+500 and still returned a usage block still billed for the attempt, and the
+proxy writes a record only when a usage block was actually present. That also
+makes this tap the *broader* measurement of the two: it sees retries a CLI's
+own summary may quietly exclude.
+
+Lives beside the registry because the record format is the shipped proxy's own
+output, in the same way the stdout dialects are the shipped CLIs' output.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+
+__all__ = [
+    "MIDDLEWARE_PROXY_USAGE_SOURCE",
+    "HarnessWireUsage",
+    "sum_harness_usage_records",
+]
+
+MIDDLEWARE_PROXY_USAGE_SOURCE = "middleware_proxy"
+"""Name of this tap, for a consumer stamping where a trial's tokens came from.
+
+A single value today because one shipped harness routes through one proxy. It
+is a name rather than a boolean so a second tap — a different middleware, or a
+gateway-side accounting feed — is a new value here instead of a second flag
+nobody's reader knows to check.
+"""
+
+_COUNT_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "cache_read_input_tokens",
+    "reasoning_tokens",
+)
+
+
+@dataclass(frozen=True)
+class HarnessWireUsage:
+    """Per-trial totals summed from the proxy's per-request records.
+
+    Counts are inclusive on the same basis the proxy's source blocks use:
+    :attr:`prompt_tokens` includes :attr:`cache_read_input_tokens`, and
+    :attr:`completion_tokens` includes :attr:`reasoning_tokens`. Both are
+    subsets, not addends.
+
+    There is no cache-*write* counter: an OpenAI-shaped ``usage`` block has no
+    field for one, so the proxy records none and a consumer must not infer one.
+
+    Zero is a real answer here, unlike in :class:`HarnessStdoutTelemetry` —
+    :func:`sum_harness_usage_records` returns ``None`` rather than a zeroed
+    record when there was nothing to read, so every instance of this class
+    stands for at least one request whose usage the provider reported.
+    """
+
+    requests: int
+    """Records summed. At least ``1``."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_input_tokens: int
+    reasoning_tokens: int
+
+    skipped_lines: int
+    """Lines that were not a JSON object carrying at least one count.
+
+    Non-zero means this total is a lower bound. Worth reporting — a proxy
+    killed mid-append writes a partial last line — but never worth failing a
+    trial over: the records that did parse are still what the provider billed.
+    """
+
+
+def sum_harness_usage_records(records: str) -> HarnessWireUsage | None:
+    """Sum the NDJSON usage *records*, or ``None`` when they carry none.
+
+    ``None`` covers the ordinary absences, which are not errors: the harness
+    booted no proxy, the CLI made no provider call, the read came back empty,
+    or every line was unreadable. All of them mean "the wire measured
+    nothing", and a zeroed total would instead claim the trial spent nothing.
+
+    A malformed line is skipped and counted in
+    :attr:`HarnessWireUsage.skipped_lines`; the rest of the records still
+    count.
+    """
+    totals = dict.fromkeys(_COUNT_FIELDS, 0)
+    requests = 0
+    skipped = 0
+    for line in records.splitlines():
+        counts = _record_counts(line)
+        if counts is None:
+            if line.strip():
+                skipped += 1
+            continue
+        requests += 1
+        for field, value in counts.items():
+            totals[field] += value
+
+    if requests == 0:
+        return None
+    return HarnessWireUsage(requests=requests, skipped_lines=skipped, **totals)
+
+
+def _record_counts(line: str) -> dict[str, int] | None:
+    """The counts one NDJSON *line* carries, or ``None`` when it carries none.
+
+    ``None`` for a line that is not a JSON object, and for one that is but
+    reports no count in any field — the proxy writes a record only when the
+    response reported usage, so such a line is a shape this reader does not
+    recognise rather than a request that spent nothing.
+
+    A field the proxy wrote as ``null`` (the provider reported that counter but
+    not this one) contributes ``0`` to the sum, which is the arithmetic
+    identity and not a claim about what was reported.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        record = json.loads(stripped)
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    counts = {field: _as_count(record.get(field)) for field in _COUNT_FIELDS}
+    if all(count is None for count in counts.values()):
+        return None
+    return {field: count or 0 for field, count in counts.items()}
+
+
+def _as_count(value: object) -> int | None:
+    """*value* when it is a plain integer token count, else ``None``.
+
+    ``bool`` is an ``int`` subclass and is never a token count, so it is
+    rejected rather than counted as 0 / 1 — the same rule the proxy applies
+    when it writes the record.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value

@@ -1300,6 +1300,19 @@ MIDDLEWARE_PROXY_CONTAINER_PATH = "/opt/tolokaforge/middleware_proxy.py"
 every image whose harness declares :attr:`HarnessSpec.request_middleware`."""
 
 
+MIDDLEWARE_USAGE_LOG_CONTAINER_PATH = "/logs/agent/tolokaforge_usage.ndjson"
+"""Where the middleware proxy appends its per-request token-usage NDJSON
+inside the trial container.
+
+Under ``/logs/agent`` because that is the directory a harness-mode trial
+already publishes to the host: the synthesised compose bind-mounts the
+trial's agent-log directory onto ``/logs``, so a consumer reads the records
+as an ordinary run artifact. A runtime that mounts nothing there gets a
+container-local file instead — the proxy creates the parent directory, so
+the tap still runs and the records are simply discarded with the container.
+"""
+
+
 def _middleware_preamble(middleware: RequestMiddleware) -> list[str]:
     """Preamble steps that boot the middleware proxy and redirect the CLI to it.
 
@@ -1312,6 +1325,12 @@ def _middleware_preamble(middleware: RequestMiddleware) -> list[str]:
     The proxy's ``--daemon`` mode double-forks and only returns when the
     listener is bound, so the CLI's first request cannot race the proxy's
     startup.
+
+    The usage tap is always armed, at the fixed
+    :data:`MIDDLEWARE_USAGE_LOG_CONTAINER_PATH`. A harness trial spends its
+    whole budget inside one tool call, so every middleware-bearing harness
+    wants the counts, and a per-spec path would be a configuration knob with
+    one correct value.
     """
     # The upstream URL is an ``${ENV_VAR}`` reference that MUST expand at
     # shell time — the CLI process's provider_env supplies its value; the
@@ -1332,6 +1351,8 @@ def _middleware_preamble(middleware: RequestMiddleware) -> list[str]:
         shlex.quote(json.dumps(middleware.body_injections)),
         "--header-inject",
         shlex.quote(json.dumps(middleware.header_injections)),
+        "--usage-log",
+        shlex.quote(MIDDLEWARE_USAGE_LOG_CONTAINER_PATH),
     ]
     if middleware.path_filter is not None:
         boot_args += ["--path-filter", shlex.quote(middleware.path_filter)]

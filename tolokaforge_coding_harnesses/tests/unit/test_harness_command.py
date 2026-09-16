@@ -221,6 +221,30 @@ class TestHarnessRequestMiddleware:
         assert boot_idx < rewrite_idx < cli_idx
         assert steps[rewrite_idx] == "export KIMI_MODEL_BASE_URL=http://127.0.0.1:8899"
 
+    def test_middleware_preamble_arms_the_usage_tap(self):
+        """A harness trial spends its budget inside one tool call, so the
+        engine measures no tokens; a CLI that prints no totals of its own
+        leaves the proxy as the only place they exist. Without this flag the
+        proxy forwards silently and the trial reports no usage at all."""
+        from tolokaforge_coding_harnesses import (
+            MIDDLEWARE_USAGE_LOG_CONTAINER_PATH,
+            harness_command,
+        )
+
+        steps = harness_command("kimi-code", "do it", "openrouter/moonshotai/kimi-k2.7-code").split(
+            " && "
+        )
+        boot = next(s for s in steps if "middleware_proxy.py" in s)
+        assert f"--usage-log {MIDDLEWARE_USAGE_LOG_CONTAINER_PATH}" in boot
+
+    def test_usage_log_lands_under_the_published_agent_log_directory(self):
+        """``/logs/agent`` is the directory the synthesised compose bind-mounts
+        to the host, which is what makes the records collectable rather than
+        container-local."""
+        from tolokaforge_coding_harnesses import MIDDLEWARE_USAGE_LOG_CONTAINER_PATH
+
+        assert MIDDLEWARE_USAGE_LOG_CONTAINER_PATH.startswith("/logs/agent/")
+
     def test_a_spec_that_declares_both_middleware_and_config_files_is_refused(self):
         """The two features do not compose today: ``config_files`` templates
         interpolate provider_env at Python-assembly time, while the middleware

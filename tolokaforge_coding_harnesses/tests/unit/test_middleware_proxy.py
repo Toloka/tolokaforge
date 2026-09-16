@@ -3,7 +3,9 @@
 Drives the proxy handler against an in-process ``ThreadingHTTPServer`` acting
 as the upstream so we can assert body/header rewrites without any network
 call. Also covers the ``_deep_merge`` helper directly since it's the load-
-bearing invariant behind every configured body injection.
+bearing invariant behind every configured body injection, and the
+``--usage-log`` token tap, whose invariant is that a request whose response
+reports no usage records nothing at all.
 """
 
 from __future__ import annotations
@@ -15,7 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from tolokaforge_coding_harnesses.middleware_proxy import (
+    _build_parser,
     _deep_merge,
+    _extract_token_counts,
     _make_handler,
 )
 
@@ -78,6 +82,7 @@ def _serve_proxy(upstream_url: str, **middleware_kwargs) -> tuple[ThreadingHTTPS
         body_inject=middleware_kwargs.get("body_inject", {}),
         header_inject=middleware_kwargs.get("header_inject", {}),
         path_filter=middleware_kwargs.get("path_filter"),
+        usage_log=middleware_kwargs.get("usage_log"),
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -233,3 +238,284 @@ class TestProxyErrorHandling:
             finally:
                 server.shutdown()
                 server.server_close()
+
+
+_STREAMED_RESPONSE = b"""data: {"choices":[{"delta":{"content":"hi"}}],"usage":null}
+
+data: {"choices":[{"delta":{"content":" there"}}],"usage":null}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,\
+"completion_tokens":34,"total_tokens":1234,"prompt_tokens_details":{"cached_tokens":1024},\
+"completion_tokens_details":{"reasoning_tokens":8}}}
+
+data: [DONE]
+
+"""
+
+_NON_STREAMED_RESPONSE = b"""{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant",
+"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":900,"completion_tokens":21,
+"total_tokens":921,"prompt_tokens_details":{"cached_tokens":768},
+"completion_tokens_details":{"reasoning_tokens":5}}}"""
+
+
+def _records(usage_log) -> list[dict]:
+    """The NDJSON records written to *usage_log*, oldest first."""
+    return [json.loads(line) for line in usage_log.read_text().splitlines() if line.strip()]
+
+
+class TestExtractTokenCounts:
+    """The usage shape the tap reads, straight from a response body.
+
+    Every case here is a claim about what the record says: reported counts,
+    reported zero, or nothing recorded at all.
+    """
+
+    def test_non_streamed_usage_block_is_read_field_by_field(self):
+        assert _extract_token_counts(_NON_STREAMED_RESPONSE) == {
+            "prompt_tokens": 900,
+            "completion_tokens": 21,
+            "total_tokens": 921,
+            "cache_read_input_tokens": 768,
+            "reasoning_tokens": 5,
+        }
+
+    def test_streamed_usage_comes_from_the_last_chunk_that_carries_it(self):
+        """Every SSE chunk repeats ``usage`` as ``null`` until the final one."""
+        assert _extract_token_counts(_STREAMED_RESPONSE) == {
+            "prompt_tokens": 1200,
+            "completion_tokens": 34,
+            "total_tokens": 1234,
+            "cache_read_input_tokens": 1024,
+            "reasoning_tokens": 8,
+        }
+
+    def test_absent_detail_sub_objects_read_as_not_reported(self):
+        body = b'{"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}'
+        counts = _extract_token_counts(body)
+        assert counts is not None
+        assert counts["cache_read_input_tokens"] is None
+        assert counts["reasoning_tokens"] is None
+
+    def test_response_without_a_usage_block_reports_nothing(self):
+        assert _extract_token_counts(b'{"choices":[{"message":{"content":"hi"}}]}') is None
+
+    def test_usage_block_with_no_integer_counts_reports_nothing(self):
+        """A usage block of nulls is as unreported as a missing one — a
+        zero-filled record would claim the request spent nothing."""
+        assert (
+            _extract_token_counts(
+                b'{"usage":{"prompt_tokens":null,"completion_tokens":"?","total_tokens":null}}'
+            )
+            is None
+        )
+
+    def test_boolean_counts_are_not_token_counts(self):
+        assert _extract_token_counts(b'{"usage":{"prompt_tokens":true}}') is None
+
+    def test_reported_zero_is_recorded_as_zero(self):
+        counts = _extract_token_counts(
+            b'{"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}'
+        )
+        assert counts is not None
+        assert counts["prompt_tokens"] == 0
+
+    def test_truncated_body_reports_nothing(self):
+        assert _extract_token_counts(b'{"choices":[{"message":') is None
+
+    def test_non_utf8_body_reports_nothing(self):
+        assert _extract_token_counts(b"\xff\xfe\x00binary") is None
+
+
+class TestUsageLogFlag:
+    def test_flag_is_absent_by_default(self):
+        args = _build_parser().parse_args(["--port", "1", "--upstream", "http://u"])
+        assert args.usage_log is None
+
+    def test_flag_carries_the_configured_path(self):
+        args = _build_parser().parse_args(
+            ["--port", "1", "--upstream", "http://u", "--usage-log", "/tmp/usage.ndjson"]
+        )
+        assert args.usage_log == "/tmp/usage.ndjson"
+
+
+class TestProxyUsageLog:
+    """The tap as the trial sees it: one NDJSON record per priced request.
+
+    A harness trial runs its CLI as one tool call, so nothing but the wire
+    knows what the trial spent when the CLI does not print its own totals.
+    """
+
+    def test_non_streamed_response_appends_one_record(self, tmp_path):
+        usage_log = tmp_path / "usage.ndjson"
+        with _RecordingUpstream(response_body=_NON_STREAMED_RESPONSE) as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                status, _ = _post_json(
+                    f"http://127.0.0.1:{port}/chat/completions",
+                    {"model": "moonshotai/kimi-k2.7-code", "messages": []},
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert status == 200
+        records = _records(usage_log)
+        assert len(records) == 1
+        record = records[0]
+        # The model comes from the request: this response body omits it.
+        assert record["model"] == "moonshotai/kimi-k2.7-code"
+        assert record["status"] == 200
+        assert record["path"] == "/chat/completions"
+        assert record["prompt_tokens"] == 900
+        assert record["completion_tokens"] == 21
+        assert record["total_tokens"] == 921
+        assert record["cache_read_input_tokens"] == 768
+        assert record["reasoning_tokens"] == 5
+        assert record["timestamp"].endswith("+00:00")
+
+    def test_streamed_response_records_the_final_chunks_usage(self, tmp_path):
+        usage_log = tmp_path / "usage.ndjson"
+        with _RecordingUpstream(response_body=_STREAMED_RESPONSE) as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                _post_json(
+                    f"http://127.0.0.1:{port}/chat/completions",
+                    {"model": "k", "messages": [], "stream": True},
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+        records = _records(usage_log)
+        assert len(records) == 1
+        record = records[0]
+        record.pop("timestamp")
+        assert record == {
+            "path": "/chat/completions",
+            "status": 200,
+            "model": "k",
+            "prompt_tokens": 1200,
+            "completion_tokens": 34,
+            "total_tokens": 1234,
+            "cache_read_input_tokens": 1024,
+            "reasoning_tokens": 8,
+        }
+
+    def test_each_request_appends_its_own_record(self, tmp_path):
+        usage_log = tmp_path / "usage.ndjson"
+        with _RecordingUpstream(response_body=_NON_STREAMED_RESPONSE) as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                for _ in range(3):
+                    _post_json(
+                        f"http://127.0.0.1:{port}/chat/completions", {"model": "k", "messages": []}
+                    )
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert len(_records(usage_log)) == 3
+
+    def test_missing_parent_directories_are_created(self, tmp_path):
+        usage_log = tmp_path / "telemetry" / "run-1" / "usage.ndjson"
+        with _RecordingUpstream(response_body=_NON_STREAMED_RESPONSE) as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                _post_json(f"http://127.0.0.1:{port}/chat/completions", {"model": "k"})
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert len(_records(usage_log)) == 1
+
+    def test_response_without_usage_records_nothing(self, tmp_path):
+        """Not even an empty file: a zero-filled record would read as a
+        request that spent nothing, which is a different claim from
+        "this request's usage was never reported"."""
+        usage_log = tmp_path / "usage.ndjson"
+        with _RecordingUpstream(response_body=b'{"choices":[{"message":{"content":"hi"}}]}') as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                status, body = _post_json(
+                    f"http://127.0.0.1:{port}/chat/completions", {"model": "k"}
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert status == 200
+        assert body == b'{"choices":[{"message":{"content":"hi"}}]}'
+        assert not usage_log.exists()
+
+    def test_malformed_response_body_records_nothing_and_still_relays(self, tmp_path):
+        usage_log = tmp_path / "usage.ndjson"
+        malformed = b'{"choices":[{"message":'
+        with _RecordingUpstream(response_body=malformed) as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                status, body = _post_json(
+                    f"http://127.0.0.1:{port}/chat/completions", {"model": "k"}
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert (status, body) == (200, malformed)
+        assert not usage_log.exists()
+
+    def test_unwritable_usage_log_does_not_break_the_relay(self, tmp_path):
+        """The tap is wrapped, the relay is not: a trial losing a usage
+        record is an accounting gap, a trial losing its response is a lost
+        trial."""
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("")
+        usage_log = blocker / "usage.ndjson"
+        with _RecordingUpstream(response_body=_NON_STREAMED_RESPONSE) as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                status, body = _post_json(
+                    f"http://127.0.0.1:{port}/chat/completions", {"model": "k"}
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert (status, body) == (200, _NON_STREAMED_RESPONSE)
+        assert not usage_log.exists()
+
+    def test_no_flag_writes_no_file_anywhere(self, tmp_path):
+        with _RecordingUpstream(response_body=_NON_STREAMED_RESPONSE) as up:
+            server, port = _serve_proxy(up.base_url)
+            try:
+                status, body = _post_json(
+                    f"http://127.0.0.1:{port}/chat/completions", {"model": "k"}
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert (status, body) == (200, _NON_STREAMED_RESPONSE)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_relayed_status_and_bytes_are_identical_with_the_tap_on(self, tmp_path):
+        """The tap reads a buffer the proxy already holds; it must not change
+        one byte of what the CLI receives."""
+        request = {"model": "k", "messages": [{"role": "user", "content": "hi"}]}
+        relayed = []
+        for usage_log in (None, str(tmp_path / "usage.ndjson")):
+            with _RecordingUpstream(response_body=_STREAMED_RESPONSE) as up:
+                server, port = _serve_proxy(up.base_url, usage_log=usage_log)
+                try:
+                    relayed.append(_post_json(f"http://127.0.0.1:{port}/chat/completions", request))
+                finally:
+                    server.shutdown()
+                    server.server_close()
+        assert relayed[0] == relayed[1]
+        assert relayed[1][1] == _STREAMED_RESPONSE
+        assert len(_records(tmp_path / "usage.ndjson")) == 1
+
+    def test_upstream_error_status_travels_with_the_record(self, tmp_path):
+        """A 429 that still reports usage was still paid for; the status rides
+        along so a consumer can tell it from a clean call."""
+        usage_log = tmp_path / "usage.ndjson"
+        with _RecordingUpstream(response_status=429, response_body=_NON_STREAMED_RESPONSE) as up:
+            server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
+            try:
+                status, _ = _post_json(f"http://127.0.0.1:{port}/chat/completions", {"model": "k"})
+            finally:
+                server.shutdown()
+                server.server_close()
+        assert status == 429
+        assert _records(usage_log)[0]["status"] == 429
