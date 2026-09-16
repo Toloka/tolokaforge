@@ -217,7 +217,9 @@ class TestLangfuseAttachments:
     ) -> None:
         trial = write_trial(tmp_path / "trials" / "T" / "0", V3_FILES)
         fake = _FakeLangfuse()
-        counts = _attachments(fake).attach("a" * 32, trial, trace_timestamp=T0)
+        counts = _attachments(fake).attach(
+            "a" * 32, trial, trace_timestamp=T0, metadata={"status": "completed"}
+        )
         assert counts == AttachCounts(
             registered=11, uploaded=11, deduplicated=0, skipped=0, failed=0, manifests_sent=1
         )
@@ -240,6 +242,7 @@ class TestLangfuseAttachments:
         assert event["body"]["id"] == "a" * 32
         assert event["body"]["timestamp"] == T0.isoformat()
         manifest = event["body"]["metadata"]
+        assert manifest["status"] == "completed"  # the trial's final status rides along
         assert manifest["attachments_schema"] == 2 and manifest["attachments_complete"] is True
         assert set(manifest["attachments"]) == set(V3_FILES)
         # the stored bytes are what the media object holds; env.yaml decodes to the file

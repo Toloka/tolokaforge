@@ -122,10 +122,16 @@ class LangfuseAttachments:
     # -- the step -------------------------------------------------------------------------------
 
     def attach(
-        self, trace_id: str, trial_dir: Path, *, trace_timestamp: datetime | None = None
+        self,
+        trace_id: str,
+        trial_dir: Path,
+        *,
+        trace_timestamp: datetime | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> AttachCounts:
         """Register and upload every file of the trial directory (``mode``), then send the
-        manifest; returns the counts. Never raises."""
+        manifest together with ``metadata`` (the trial's final status, so the trace ends with it
+        whatever order the receiver merged the spans in); returns the counts. Never raises."""
         counts = AttachCounts()
         attached: list[AttachedFile] = []
         skipped: list[dict[str, str]] = []
@@ -169,7 +175,7 @@ class LangfuseAttachments:
         if counts.failed:
             manifest["attachments_complete"] = False
         try:
-            self._send_manifest(trace_id, manifest, trace_timestamp)
+            self._send_manifest(trace_id, {**dict(metadata or {}), **manifest}, trace_timestamp)
             counts.manifests_sent += 1
         except Exception as exc:  # noqa: BLE001
             _log.warning("attachments: manifest of trace %s not sent: %s", trace_id, exc)

@@ -188,7 +188,12 @@ class TrialAttachments(Protocol):
     """The post-trial attachment step a receiver provides (``langfuse_media.LangfuseAttachments``)."""
 
     def attach(
-        self, trace_id: str, trial_dir: Path, *, trace_timestamp: datetime | None = None
+        self,
+        trace_id: str,
+        trial_dir: Path,
+        *,
+        trace_timestamp: datetime | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> AttachCounts: ...
 
 
@@ -224,9 +229,10 @@ class OTelTrialObserver:
         self._queue = queue
         self._attachments = attachments
         self._attach_counts = AttachCounts()
-        # trial start by trace id, kept from trial_finished to trial_persisted so the manifest
-        # update re-sends the trace's own timestamp
-        self._persist_clock: dict[str, datetime] = {}
+        # trial start and final status by trace id, kept from trial_finished to trial_persisted:
+        # the manifest update re-sends both, so the trace keeps its own timestamp and ends with
+        # the trial's status even when the receiver merged the provisional root's "running" last
+        self._persist_clock: dict[str, tuple[datetime | None, str]] = {}
         self._resolver: ModelNameResolver = resolver or RawModelNameResolver()
         self._label = label
         self._session_id = session_id
@@ -511,9 +517,8 @@ class OTelTrialObserver:
         start = state.started_at or _as_utc(getattr(trajectory, "start_ts", None))
         end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=timezone.utc)
         status_value = _enum_value(status) if trajectory is not None else "error"
-        if start is not None:
-            with self._states_lock:
-                self._persist_clock[identity.trace_id] = start
+        with self._states_lock:
+            self._persist_clock[identity.trace_id] = (start, status_value)
         self._emit(
             name=f"trial {identity.task_id}/{identity.trial_index}",
             identity=identity,
@@ -530,11 +535,14 @@ class OTelTrialObserver:
         when a receiver-side attachment step is configured). Runs in the trial's own thread,
         bounded by the step's timeouts; the counts land in the receipt."""
         with self._states_lock:
-            started = self._persist_clock.pop(identity.trace_id, None)
+            started, status = self._persist_clock.pop(identity.trace_id, (None, None))
         if self._attachments is None:
             return
         counts = self._attachments.attach(
-            identity.trace_id, Path(trial_dir), trace_timestamp=started
+            identity.trace_id,
+            Path(trial_dir),
+            trace_timestamp=started,
+            metadata={"status": status} if status else None,
         )
         with self._states_lock:
             self._attach_counts.add(counts)

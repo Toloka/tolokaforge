@@ -311,10 +311,10 @@ class _FakeAttachments:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, object]] = []
 
-    def attach(self, trace_id, trial_dir, *, trace_timestamp=None):
+    def attach(self, trace_id, trial_dir, *, trace_timestamp=None, metadata=None):
         from tolokaforge.observability.langfuse_media import AttachCounts
 
-        self.calls.append((trace_id, trial_dir, trace_timestamp))
+        self.calls.append((trace_id, trial_dir, trace_timestamp, metadata))
         return AttachCounts(registered=8, uploaded=3, deduplicated=5, skipped=1, manifests_sent=1)
 
 
@@ -330,7 +330,9 @@ def test_trial_persisted_attaches_the_bundle_with_the_trial_start_and_counts_in_
     observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
     observer.trial_persisted(IDENTITY, trial_dir=tmp_path)
     receipt = observer.run_finished()
-    assert step.calls == [(IDENTITY.trace_id, tmp_path, T0)]
+    # the manifest update carries the trial start and the final status: the receiver merges
+    # trace metadata in arrival order and the provisional root's "running" may land last
+    assert step.calls == [(IDENTITY.trace_id, tmp_path, T0, {"status": "completed"})]
     assert (
         receipt.attachments_registered,
         receipt.attachments_uploaded,
