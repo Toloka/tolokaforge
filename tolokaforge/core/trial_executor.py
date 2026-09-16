@@ -203,8 +203,11 @@ class ProvisioningTrialExecutor:
             self._capture_service_logs(handle, result, task_id, trial_idx)
             # Nothing writes into the trial directory after this point: the bundle is what a
             # live-tracing observer may attach to the trace (ADR-0046 amendment). Announced
-            # here and not from conductor.run, whose bundle the two writes above still amend.
-            self.conductor.trial_persisted(final_spec)
+            # here and not from conductor.run, whose bundle the two writes above still amend;
+            # an optional capability, so a conductor without it announces nothing.
+            announce = getattr(self.conductor, "trial_persisted", None)
+            if callable(announce):
+                announce(final_spec)
             return result
         finally:
             self._safe_teardown(handle, task_id, trial_idx)

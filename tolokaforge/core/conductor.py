@@ -225,16 +225,15 @@ class Conductor(Protocol):
     absorb 429s. Deliberately *not* a declared Protocol member: the Protocol is
     ``@runtime_checkable`` and adding a data member would break ``isinstance``
     for every implementation that predates it.
+
+    **Optional capability:** ``trial_persisted(spec) -> None`` (ADR-0046 amendment). The trial
+    executor calls it, when present, once nothing writes into the trial directory any more, so
+    a live-tracing observer can attach the bundle's files to the trace. Not a declared member
+    for the same ``isinstance`` reason; a conductor without it simply announces nothing.
     """
 
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         """Execute one trial end-to-end."""
-        ...
-
-    def trial_persisted(self, spec: TrialSpec) -> None:
-        """The trial's bundle is final on disk (ADR-0046 amendment): called by the trial
-        executor after its own writes into the trial directory, so a live-tracing observer can
-        attach the files to the trace. Never affects the trial's result."""
         ...
 
 
