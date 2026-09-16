@@ -167,7 +167,7 @@ def materialise_harness_environment(
     staging_dir = (root / f"{task_id}-{digest}").resolve()
     _copy_task_dir(task_dir, staging_dir)
 
-    base_image = _base_image_tag(task_id)
+    base_image = _base_image_tag(task_id, _task_content_digest(task_dir))
     base_service = f"{agent_service}{BASE_SERVICE_SUFFIX}"
     middleware_proxy = harness_spec.request_middleware is not None
 
@@ -345,6 +345,30 @@ def _set_env(existing: Any, key: str, value: str) -> Any:
     return {key: value}
 
 
+def _hash_task_tree(hasher: hashlib._Hash, task_dir: Path) -> None:
+    """Fold every file under *task_dir* into *hasher*, path then bytes."""
+    for path in sorted(task_dir.rglob("*")):
+        if "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(task_dir).as_posix()
+        hasher.update(b"P|" + rel.encode() + b"\n")
+        if path.is_file():
+            hasher.update(b"C|")
+            hasher.update(path.read_bytes())
+            hasher.update(b"\n")
+
+
+def _task_content_digest(task_dir: Path) -> str:
+    """Content digest of the pack's own files — the base image's build inputs.
+
+    The base service builds the pack's own compose ``build:`` context, so
+    these bytes are exactly what that image bakes in.
+    """
+    hasher = hashlib.sha256()
+    _hash_task_tree(hasher, task_dir)
+    return hasher.hexdigest()[:16]
+
+
 def _content_digest(
     task_dir: Path,
     *,
@@ -360,15 +384,7 @@ def _content_digest(
     been written *into* the directory this digest names.
     """
     hasher = hashlib.sha256()
-    for path in sorted(task_dir.rglob("*")):
-        if "__pycache__" in path.parts:
-            continue
-        rel = path.relative_to(task_dir).as_posix()
-        hasher.update(b"P|" + rel.encode() + b"\n")
-        if path.is_file():
-            hasher.update(b"C|")
-            hasher.update(path.read_bytes())
-            hasher.update(b"\n")
+    _hash_task_tree(hasher, task_dir)
     hasher.update(b"|harness|\n")
     hasher.update(f"agent_harness={agent_harness}\n".encode())
     hasher.update(f"harness_version={harness_version}\n".encode())
@@ -395,8 +411,14 @@ def _harness_layer_digest(
     return harness_image_content_digest(parts)
 
 
-def _base_image_tag(task_id: str) -> str:
-    return f"tolokaforge-native-{task_id}-base:local"
+def _base_image_tag(task_id: str, content_digest: str) -> str:
+    """The base image's ref, keyed on the pack files it bakes in.
+
+    *content_digest* is :func:`_task_content_digest`'s answer. The harness
+    layer names this ref in its ``FROM`` line, so a moved base digest moves
+    the layered ref too and neither is served from a previous build.
+    """
+    return f"tolokaforge-native-{task_id}-base:local-{content_digest}"
 
 
 def _layered_image_tag(

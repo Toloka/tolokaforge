@@ -12,6 +12,7 @@ asserted (``toolset``, image tags, and compose synthesis differ).
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -211,6 +212,47 @@ class TestLayeredImageIsContentAddressed:
         """Untouched inputs must land on the same ref, or the skip never fires
         and every run pays a rebuild."""
         refs = {self._materialise(tmp_path, f"run-{n}").agent_image for n in range(2)}
+        assert len(refs) == 1
+
+    @staticmethod
+    def _materialise_pack(pack: Path, tmp_path: Path, name: str):
+        from tolokaforge.adapters.native_harness_synthesis import (
+            materialise_harness_environment,
+        )
+
+        adapter = NativeAdapter(
+            _params(
+                agent_harness="claude-code",
+                agent_model="openrouter/anthropic/claude-sonnet-4-6",
+            )
+        )
+        return materialise_harness_environment(
+            task_id="fix_factorial",
+            task_dir=pack,
+            compose_file=pack / "docker-compose.yaml",
+            harness_spec=adapter.harness_spec,
+            agent_harness="claude-code",
+            layer_writer=adapter.write_install_script_layer,
+            staging_root=tmp_path / name,
+        )
+
+    def test_editing_a_pack_file_moves_the_base_and_the_layered_ref(self, tmp_path: Path) -> None:
+        """The base image bakes in the pack's own build context, and the layer
+        builds ``FROM`` it — so a pack edit that left either ref standing would
+        be served from the previous build."""
+        pack = tmp_path / "pack"
+        shutil.copytree(_PACK_ROOT, pack)
+        before = self._materialise_pack(pack, tmp_path, "before")
+
+        dockerfile = pack / "environment" / "Dockerfile"
+        dockerfile.write_text(dockerfile.read_text() + "\n# one more line\n")
+
+        after = self._materialise_pack(pack, tmp_path, "after")
+        assert after.base_image != before.base_image
+        assert after.agent_image != before.agent_image
+
+    def test_the_base_image_ref_is_reproducible(self, tmp_path: Path) -> None:
+        refs = {self._materialise(tmp_path, f"run-{n}").base_image for n in range(2)}
         assert len(refs) == 1
 
 
