@@ -116,6 +116,13 @@ _RUNNER_SOURCE_CONTEXT_FILES: list[str] = [
     # bit-for-bit source of truth (docker installs the freshly-built wheel
     # from the checked-out tree, not whatever PyPI currently ships).
     "tolokaforge_models/",
+    # ``tolokaforge_coding_harnesses`` follows the same in-container-build
+    # pattern but never publishes to PyPI: the base wheel bundles it directly
+    # (see ``[tool.hatch.build.targets.wheel]`` in the workspace pyproject).
+    # The runner subset wheel still needs the source tree in its build
+    # context so the wheel-builder stage can produce a companion wheel
+    # installed alongside the subset wheel.
+    "tolokaforge_coding_harnesses/",
 ]
 
 #: Where the base wheel's ``force-include`` table lands the repo-root files
@@ -313,6 +320,10 @@ def _runner_definition() -> dict[str, Any]:
         # `COPY tolokaforge_models/ /src/tolokaforge_models/`, so a plain
         # absolute-path entry lands the directory under the right name.
         packaged / "tolokaforge_models",
+        # Same shape for tolokaforge_coding_harnesses — force-included by the
+        # base wheel and landed here so the Dockerfile's `COPY
+        # tolokaforge_coding_harnesses/` succeeds on a wheel install too.
+        packaged / "tolokaforge_coding_harnesses",
     ]
     missing = [
         str(e[0] if isinstance(e, tuple) else e)

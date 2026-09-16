@@ -321,6 +321,109 @@ class GatewayRoute(BaseModel):
         return self
 
 
+class CredentialGateway(BaseModel):
+    """How a harness's real provider credential is kept out of the trial container.
+
+    Consumed by ``tolokaforge.runner.llm_gateway`` (the reverse-proxy
+    HTTP server the coding-harness driver adds as a sidecar service to
+    each shielded trial's compose stack) through
+    ``CredentialGatewayConfig`` — a structural ``Protocol`` in that
+    module, not an import of this class, so this package stays free of
+    an engine-side dependency. Field names ``upstream_url``,
+    ``upstream_token_env_var``, ``upstream_auth_header``,
+    ``upstream_auth_template`` and ``path_allowlist`` must keep matching that
+    Protocol exactly for the structural fit to hold — a rename here without a
+    matching rename there breaks the endpoint's construction silently, since
+    Protocol conformance is checked structurally, not at import time.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    upstream_url: str
+    """Real provider endpoint the gateway forwards allow-listed requests to.
+    Ground truth is this harness's own :attr:`HarnessSpec.provider_env`
+    ``*_BASE_URL`` entry — or, for a harness with no such entry (a CLI that
+    talks to its vendor's built-in default with no override), the vendor's
+    actual default API base."""
+
+    upstream_token_env_var: str
+    """Secret name the gateway resolves via
+    ``SecretManager.get_secret_or_raise`` for the real credential — never the
+    same as :attr:`dummy_token_env_var`'s *value*, though the two names may
+    coincide when a CLI's own env-var convention already matches the secret
+    name (e.g. Grok's ``OPENROUTER_API_KEY``)."""
+
+    upstream_auth_header: str = "Authorization"
+    """Header the gateway sets on the outgoing (upstream) request, replacing
+    whatever header name/value the trial container sent. Every
+    OpenRouter-routed harness in this registry authenticates the same way
+    OpenRouter's own docs specify: ``Authorization: Bearer <key>``, on both
+    its OpenAI-compat and Anthropic-compat surfaces. A harness that talks to
+    a vendor-native endpoint instead (gemini-cli) overrides this."""
+
+    upstream_auth_template: str = "Bearer {token}"
+    """Format string producing the outgoing header's value; ``{token}`` is
+    the resolved real credential."""
+
+    dummy_token_env_var: str
+    """Container env var the CLI reads its credential from. The driver bakes
+    :attr:`dummy_token_value` here instead of resolving the real secret —
+    this is usually the same env var :attr:`HarnessSpec.provider_env` already
+    names for the harness's API-key entry."""
+
+    dummy_token_value: str
+    """Placeholder credential value baked into the trial container's
+    environment (and, for a harness with an on-disk credential file, into
+    that file). Never a real secret — the CLI never receives one."""
+
+    base_url_env_var: str
+    """Container env var the driver points at the gateway's own
+    ``http://tolokaforge-llm-gateway:<port>`` address instead of
+    :attr:`upstream_url` — usually the same env var
+    :attr:`HarnessSpec.provider_env` already names for the harness's base-URL
+    entry."""
+
+    path_allowlist: tuple[str, ...] = (
+        "/v1/messages",
+        "/v1/chat/completions",
+        "/v1/responses",
+        "/v1/models",
+    )
+    """Request paths the gateway forwards; anything else gets a 405. The
+    default covers the Anthropic Messages, OpenAI Chat Completions, OpenAI
+    Responses and shared ``/v1/models`` REST surfaces every OpenRouter-routed
+    harness in this registry uses. A harness whose CLI speaks a categorically
+    different wire shape (gemini-cli's Google-native REST surface) overrides
+    this."""
+
+    @model_validator(mode="after")
+    def _every_name_is_non_blank_and_allowlist_has_no_duplicates(self) -> CredentialGateway:
+        for field, value in (
+            ("upstream_url", self.upstream_url),
+            ("upstream_token_env_var", self.upstream_token_env_var),
+            ("upstream_auth_header", self.upstream_auth_header),
+            ("dummy_token_env_var", self.dummy_token_env_var),
+            ("dummy_token_value", self.dummy_token_value),
+            ("base_url_env_var", self.base_url_env_var),
+        ):
+            if not value or value.strip() != value:
+                raise ValueError(
+                    f"CredentialGateway.{field} {value!r} must be a non-blank string "
+                    "without leading/trailing whitespace."
+                )
+        for path in self.path_allowlist:
+            if not path.startswith("/"):
+                raise ValueError(
+                    f"CredentialGateway.path_allowlist entry {path!r} must start with `/`."
+                )
+        if len(self.path_allowlist) != len(set(self.path_allowlist)):
+            raise ValueError(
+                f"CredentialGateway.path_allowlist {list(self.path_allowlist)!r} "
+                "contains duplicates."
+            )
+        return self
+
+
 class HarnessSpec(BaseModel):
     """One coding-harness CLI: how to install it, how to drive it.
 
@@ -521,6 +624,17 @@ class HarnessSpec(BaseModel):
     a second runtime, which provisions an already-running trial container from
     the same spec that drives compose synthesis here. See :class:`GatewayRoute`
     and ADR-0037."""
+
+    credential_gateway: CredentialGateway | None = None
+    """How this harness's real provider credential is shielded from the
+    trial container, or ``None`` for a harness carrying no such recipe.
+
+    Unlike :attr:`gateway_route`, this field IS read in-repo:
+    ``CodingHarnessDriver`` uses it to configure the
+    ``tolokaforge-llm-gateway`` sidecar service it adds to every
+    shielded trial's compose stack, and every shipped harness in
+    :data:`HARNESSES` declares one — the trial container never sees a
+    real provider credential. See ADR-0041."""
 
     @model_validator(mode="after")
     def _gateway_route_names_a_declared_gateway(self) -> HarnessSpec:
@@ -1278,6 +1392,7 @@ def harness_command(
     provider_env: Mapping[str, str] | None = None,
     *,
     path_resolver: PathResolver | None = None,
+    extra_config_files: Mapping[str, str] | None = None,
 ) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
@@ -1335,6 +1450,21 @@ def harness_command(
                 resolver.resolve(path), _TEMPLATES.from_string(template).render(variables)
             )
             for path, template in spec.config_files.items()
+        )
+    # ``extra_config_files`` carries literal content (no Jinja) a consuming
+    # runtime resolved outside this package — the shape ``GatewayRoute``
+    # documents. Written verbatim after the CLI's own ``spec.config_files``
+    # so a gateway-route pin (e.g. gemini-cli's ``settings.json``
+    # ``selectedType: gateway``) lands before the CLI reads it. The path is
+    # emitted through the same resolver so ``${HOME}`` / ``${CONFIG_HOME}``
+    # substitute the same way. No expansion runs on the *content*: the
+    # ``GatewayRoute`` validator refuses ``{{ … }}`` markers there, so a
+    # value reaches this line with every token already resolved.
+    if extra_config_files:
+        resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
+        preamble_parts.extend(
+            _config_file_write(resolver.resolve(path), content)
+            for path, content in extra_config_files.items()
         )
     for var in spec.env_model_vars:
         preamble_parts.append(f"export {var}={shlex.quote(resolved_model)}")

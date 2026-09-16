@@ -44,12 +44,12 @@ _UNGRADEABLE = TrialOutcomeClass.UNGRADEABLE
 # the handful of pairs a reader expects, any default looks like any other, so a
 # test restricted to them proves the table's scope and never its truth.
 #
-# The two columns disagree in six reachable cells — ``(error, api_error)``,
-# ``(error, error)``, ``(error, trial_lost)``, ``(timeout, timeout)``,
-# ``(timeout, empty_completion)`` and ``(error, empty_completion)`` are retried
-# *and* counted — and that is the design, not a defect: whether an attempt is
-# worth repeating and whether it measured the agent are different questions.
-# Deriving either column from the other is what this table exists to prevent.
+# The two columns disagree in four reachable cells — ``(error, api_error)``,
+# ``(error, error)``, ``(error, trial_lost)`` and ``(timeout, timeout)`` are
+# retried *and* counted — and that is the design, not a defect: whether an
+# attempt is worth repeating and whether it measured the agent are different
+# questions. Deriving either column from the other is what this table exists to
+# prevent.
 _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool], ...] = (
     (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.USER_STOP, _MEASURED, False),
@@ -60,7 +60,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
-    (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
@@ -74,7 +74,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
-    (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
@@ -88,7 +88,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
-    (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
@@ -102,7 +102,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
-    (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS, True),
@@ -221,15 +221,16 @@ class TestOutcomeClassificationCrossProduct:
         }
         assert counted == set(TerminationReason) - EXCLUDED_TYPED_REASONS
 
-    def test_empty_completion_stays_in_the_measured_denominator(self) -> None:
-        """A trial whose provider returned nothing is a measurement of the
-        model, not evidence the substrate broke, so it stays in the denominator.
-        The guard names the mechanism: adding ``EMPTY_COMPLETION`` to the
-        excluded set here would silently drop it from
-        ``measured_trials`` without failing
-        ``test_an_unrecognised_reason_would_be_counted`` (which locks the shape
-        of the derivation, not which reasons appear on either side)."""
-        assert TerminationReason.EMPTY_COMPLETION not in EXCLUDED_TYPED_REASONS
+    def test_empty_completion_is_excluded_from_the_measured_denominator(self) -> None:
+        """A trial whose provider returned no text and no tool calls after
+        retries is a transport-side failure the agent never got to act on —
+        the same shape as ``RATE_LIMIT`` / ``API_TIMEOUT`` / ``PROVISION_ERROR``.
+        Excluding it from the denominator keeps benchmark rates honest, and the
+        typed-evidence lock in
+        ``tests/canonical/test_termination_reason_reachability.py`` prevents an
+        exception whose message merely names "empty completion" from buying its
+        way in from prose."""
+        assert TerminationReason.EMPTY_COMPLETION in EXCLUDED_TYPED_REASONS
 
     def test_context_window_exceeded_stays_in_the_measured_denominator(self) -> None:
         """A trial that hit the provider's max input tokens measured the model
@@ -680,16 +681,17 @@ def test_a_stuck_detected_synth_grade_is_attributed_to_harness_autofail() -> Non
 
 def test_a_synth_grade_over_an_enumerated_termination_reason_keeps_its_class() -> None:
     """A synth grade whose ``TerminationReason`` is in the ``timeout_or_resource``
-    branch (EMPTY_COMPLETION, ERROR, TIMEOUT) keeps that class — the marker
-    fields ride alongside without changing the failure_class the enumerated
-    branch already catches. Otherwise a downstream consumer aggregating on
-    ``failure_class`` would see EMPTY_COMPLETION migrate from
-    ``timeout_or_resource`` to ``harness_autofail`` under a synth grade,
-    which is a wire shift the ``harness_autofail`` extension does not intend.
+    branch (``ERROR`` / ``TIMEOUT`` / ``API_ERROR`` /
+    ``CONTEXT_WINDOW_EXCEEDED``) keeps that class — the marker fields ride
+    alongside without changing the ``failure_class`` the enumerated branch
+    already catches. Otherwise a downstream consumer aggregating on
+    ``failure_class`` would see the reason migrate to ``harness_autofail``
+    under a synth grade, which is a wire shift the ``harness_autofail``
+    extension does not intend.
     """
     traj = _synth_trajectory(
-        marker=TerminationReason.EMPTY_COMPLETION,
-        termination=TerminationReason.EMPTY_COMPLETION,
+        marker=TerminationReason.TIMEOUT,
+        termination=TerminationReason.TIMEOUT,
     )
 
     attribution = attribute_failure(traj)
@@ -697,7 +699,7 @@ def test_a_synth_grade_over_an_enumerated_termination_reason_keeps_its_class() -
     assert attribution["failure_class"] == "timeout_or_resource"
     assert attribution["deterministic"] is True
     assert attribution["synthesized"] is True
-    assert attribution["synthesized_by_termination_reason"] == "empty_completion"
+    assert attribution["synthesized_by_termination_reason"] == "timeout"
 
 
 def test_a_real_measured_grade_is_not_marked_synthesized() -> None:

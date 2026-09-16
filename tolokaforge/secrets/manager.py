@@ -421,7 +421,9 @@ def compose_escaped(value: str) -> str:
     return value.replace("$", "$$")
 
 
-def container_secrets_env() -> dict[str, str]:
+def container_secrets_env(
+    stripped: frozenset[str] = frozenset(),
+) -> dict[str, str]:
     """Return the host→container credential entry for a runner container.
 
     ``{CONTAINER_SECRETS_ENV_VAR: <json payload>}``, or an empty mapping when
@@ -429,8 +431,16 @@ def container_secrets_env() -> dict[str, str]:
     not cosmetic: an unset variable makes the runner lazy-init its own
     manager from its own environment, while an empty payload would bootstrap
     an empty manager and suppress that.
+
+    ``stripped`` names credential keys the caller has already delivered to
+    the trial through a narrower path (a coding-harness gateway sidecar,
+    for example) and does not want duplicated into the runner's env. Those
+    keys are removed from the payload before serialisation; a resulting
+    empty payload behaves the same as an empty resolve above.
     """
     payload = get_default().serialize()
+    if stripped:
+        payload = {key: value for key, value in payload.items() if key not in stripped}
     if not payload:
         return {}
     return {CONTAINER_SECRETS_ENV_VAR: json.dumps(payload)}

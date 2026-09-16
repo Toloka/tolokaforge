@@ -525,6 +525,13 @@ class StateChecksConfig(BaseModel):
     # value-for-value; extras outside the allowlist still fail. Mirrors the runner
     # wire's field of the same name (see :class:`ColumnCompareRule`).
     compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
+    # Opt-in: drop conventional write-time clock columns (``updated_at``,
+    # ``last_modified_date``, ``modified_at``, ``last_modified``,
+    # ``updated_on``, ``modified_on``) from every table row before hashing.
+    # Composes with pack-declared ``unstable_fields`` — the pack's mask still
+    # applies; this covers the clock columns it forgot. See
+    # :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
+    auto_mask_clock_columns: bool = False
 
     @model_validator(mode="before")
     @classmethod

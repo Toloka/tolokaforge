@@ -481,7 +481,8 @@ class TestTheShippedGatewayRecipes:
         assert route.passthrough_path == "/gemini"
         assert route.config_files == {
             "${HOME}/.gemini/settings.json": (
-                '{"security":{"auth":{"selectedType":"gateway","useExternal":true}}}'
+                '{"security":{"auth":{"selectedType":"gateway","useExternal":true}},'
+                '"tools":{"exclude":["google_web_search","web_fetch"]}}'
             )
         }
         assert route.container_env == {"GEMINI_CLI_TRUST_WORKSPACE": "true"}

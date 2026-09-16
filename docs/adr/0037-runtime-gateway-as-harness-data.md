@@ -165,12 +165,20 @@ different owners and are not expected to converge.
 
 ### Every rule is checked at load, because there is no later
 
-No caller in this repo reads `gateway_route`. The default path can afford to
-check `provider_env` keys downstream — the adapter does, over the effective
-envelope, as it resolves a trial. The gateway path has no downstream in this
-repo at all, so a value accepted here is a value nothing questions until a trial
-fails somewhere else. These rules therefore fire at registry-load time, each
-naming the offending key or path:
+`CodingHarnessDriver` (`tolokaforge/core/drivers/coding_harness.py`) reads
+`gateway_route` when a run config's `models.agent.gateway_route` names one of
+`ALTERNATIVE_GATEWAYS`: the driver resolves the four ADR-0037 token classes
+against the operator's secrets, writes `config_files` into the trial container
+verbatim, applies `model_alias_pattern` to the effective model, and skips the
+shielded sidecar (the two paths are mutually exclusive). Absent that field —
+the default across the shipped example configs — the driver stays on the
+`credential_gateway` path, and this section's premise still holds: nothing
+downstream of the registry re-checks the route. The default path can afford
+to check `provider_env` keys downstream — the adapter does, over the effective
+envelope, as it resolves a trial. The gateway path's driver consumption is
+seam-anchored at trial attach time, so a rule that is not checked at load
+becomes a runtime error the operator sees from far away. These rules
+therefore fire at registry-load time, each naming the offending key or path:
 
 | Rule | Model |
 |---|---|

@@ -1,0 +1,20 @@
+# Placeholder grading block. The native adapter's harness-mode branch overrides
+# grading with `test_execution` at dispatch (the pack's `tests/test.sh` writes
+# `/logs/verifier/reward.txt` — see `docs/CODING_HARNESSES.md` § Grading
+# composability). This file exists to satisfy the pre-run "task must declare
+# grading" gate; its content is unused in a run where
+# `models.agent.coding_harness` is set.
+#
+# Under a hypothetical engine-loop run of this pack (no CLI), the block below
+# is the fallback — a `state_checks` on the fixed-code file. Never exercised
+# today because this pack is harness-only.
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+  pass_threshold: 1.0
+
+state_checks:
+  jsonpaths:
+    - path: "$.filesystem['/work/factorial.py']"
+      required: true

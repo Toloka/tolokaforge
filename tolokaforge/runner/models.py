@@ -498,6 +498,14 @@ class RunnerStateChecksConfig(BaseModel):
     # hash so the asymmetric filter has both sides.
     compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
 
+    # Opt-in: drop conventional write-time clock columns (``updated_at``,
+    # ``last_modified_date``, ``modified_at``, ``last_modified``,
+    # ``updated_on``, ``modified_on``) from every table row before hashing.
+    # Composes with pack-declared ``unstable_fields``; the pack's explicit
+    # mask still wins on additive fields. See
+    # :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
+    auto_mask_clock_columns: bool = False
+
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -3034,6 +3042,42 @@ class EnvironmentManifest(BaseModel):
     (``*.openai.com``); entries are lowercase-normalised. Required
     (non-empty) under ``limited_internet`` and forbidden under the other
     policies — see :meth:`_check_allowlist_matches_policy`."""
+
+    bridged_services: frozenset[str] = frozenset()
+    """Compose service names that must be attached to BOTH the injected
+    internal (isolated) network and the edge (has egress) network under
+    ``no_internet`` and ``limited_internet``.
+
+    Same treatment as :attr:`runner_service`: the service can reach both
+    other trial services (via the internal network) AND the outside world
+    (via the edge network). No proxy-env injection under
+    ``limited_internet`` — the service is trusted to make its own choices
+    about egress destinations.
+
+    Consumed by the coding-harness :class:`CodingHarnessDriver` for the
+    LLM-gateway sidecar: the sidecar bridges the trial container (on the
+    internal network) to the LLM provider (via the edge network), and
+    exchanges the trial container's dummy credential for the real one
+    that never touches the CLI's env or the pack's image."""
+
+    stripped_container_secrets: frozenset[str] = frozenset()
+    """Secret keys the runner container must NOT receive from the host's
+    ``TOLOKAFORGE_SECRETS_JSON`` payload.
+
+    Every host secret :class:`SecretManager` knows about lands in the
+    runner's env by default (that is what the injected
+    ``TOLOKAFORGE_SECRETS_JSON`` carries). A caller that knows a specific
+    key is served to the trial through a different, narrower path lists
+    it here and the runtime strips it from the payload before writing the
+    compose file. Absent (default empty), the runner keeps the full
+    payload — unchanged behaviour.
+
+    Consumed by the coding-harness :class:`CodingHarnessDriver` for the
+    provider credential its gateway sidecar already carries. Under the
+    shield the runner has no reason to reach the provider itself
+    (grading runs against the CLI's output, not the LLM), and duplicating
+    the credential into the runner's env would leave a second copy of the
+    real value in the trial's compose file. This field narrows that."""
 
     security_context_defaults: SecurityContext | None = None
     """Applied by the provisioner to every service that does not override

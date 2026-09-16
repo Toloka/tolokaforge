@@ -73,7 +73,10 @@ from tolokaforge.core.grading.trace_timeline import (
     build_timeline_from_wire,
 )
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
-from tolokaforge.core.hash import apply_compare_columns_extras, compute_stable_hash
+from tolokaforge.core.hash import (
+    apply_compare_columns_pipeline,
+    compute_stable_hash,
+)
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -2671,13 +2674,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
         numeric_string_fields = state_checks.numeric_string_fields
         compare_columns = state_checks.compare_columns
-        # When the pack declared per-column subset rules we defer hashing until
-        # after the golden replay so both raw states are in hand and the
-        # asymmetric filter has both sides. Fast server-side get_stable_hash is
-        # preserved for the common empty-compare_columns case AND for the
-        # inert-declaration case (``{table: {}}``) — an outer dict with no rules
-        # inside is behaviourally identical to no config at all.
-        client_side_hash = any(column_rules for column_rules in compare_columns.values())
+        auto_mask_clock_columns = state_checks.auto_mask_clock_columns
+        # Client-side hashing is required whenever the state comparator
+        # needs both raw states in hand — either because the pack declared
+        # any per-column rule (folds, ordering, or subset extras) or
+        # because the auto clock-column mask is on. Empty compare_columns
+        # AND no auto-mask falls to the fast server-side get_stable_hash
+        # path; a compare_columns config with only empty inner dicts
+        # (``{table: {}}``) is inert and also stays on the fast path.
+        client_side_hash = auto_mask_clock_columns or any(
+            column_rules for column_rules in compare_columns.values()
+        )
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
             candidates=trial_context.agent_tools.keys(),
@@ -2807,25 +2814,34 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.create_snapshot(trial_id, "golden_result")
         logger.debug("GradeTrial: Created snapshot 'golden_result'")
 
-        # 6. Get golden stable hash.
-        # Slow path (compare_columns): fetch the golden raw state, apply the
-        # asymmetric filter to trial_state_raw against it, then hash both
-        # client-side so a model-added key the pack declared permitted-extra
-        # does not fail an otherwise-matching state. Fast path unchanged.
-        trial_state_filtered: dict[str, Any] | None = None
+        # 6. Get golden stable hash. Client-side path runs both raw states
+        # through the compare_columns pipeline (equivalence folds, ordering,
+        # subset-extras) then hashes both. Diff reporting keeps the raw
+        # states so authors see actual disagreeing values, not internal
+        # fold tokens. Fast path fetches the server-side digest directly.
+        trial_state_processed: dict[str, Any] | None = None
         golden_state_raw: dict[str, Any] | None = None
         if client_side_hash:
             golden_state_response = await self.db_client.get_stable_state(trial_id)
             golden_state_raw = golden_state_response.data
             assert trial_state_raw is not None  # set in step 1 slow-path branch
-            trial_state_filtered = apply_compare_columns_extras(
-                trial_state_raw, golden_state_raw, compare_columns
+            trial_state_processed, golden_state_processed = apply_compare_columns_pipeline(
+                trial_state_raw,
+                golden_state_raw,
+                compare_columns,
+                numeric_string_fields=(
+                    frozenset(numeric_string_fields) if numeric_string_fields else None
+                ),
             )
             trial_hash = compute_stable_hash(
-                trial_state_filtered, numeric_string_fields=numeric_string_fields
+                trial_state_processed,
+                numeric_string_fields=numeric_string_fields,
+                auto_mask_clock_columns=auto_mask_clock_columns,
             )
             golden_hash = compute_stable_hash(
-                golden_state_raw, numeric_string_fields=numeric_string_fields
+                golden_state_processed,
+                numeric_string_fields=numeric_string_fields,
+                auto_mask_clock_columns=auto_mask_clock_columns,
             )
             logger.debug(
                 f"GradeTrial: Client-side hashes computed (compare_columns applied) "
@@ -2852,9 +2868,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.info("GradeTrial: Hash mismatch, computing state diff")
 
             if client_side_hash:
-                assert trial_state_filtered is not None
+                assert trial_state_raw is not None
                 assert golden_state_raw is not None
-                trial_state = trial_state_filtered
+                trial_state = trial_state_raw
                 golden_state = golden_state_raw
             else:
                 trial_state_response = await self.db_client.get_stable_state(trial_id)

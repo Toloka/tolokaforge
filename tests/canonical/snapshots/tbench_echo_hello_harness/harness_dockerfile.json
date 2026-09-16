@@ -1,3 +1,0 @@
-{
-  "dockerfile": "FROM tbench-echo-hello:local\nCOPY _harness/install-harness.sh /opt/tolokaforge/install-harness.sh\nRUN sh /opt/tolokaforge/install-harness.sh npm @anthropic-ai/claude-code 2.1.233\n"
-}

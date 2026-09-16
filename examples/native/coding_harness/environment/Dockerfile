@@ -9,4 +9,10 @@ WORKDIR /work
 COPY app/factorial.py /work/factorial.py
 COPY app/tests /work/tests
 
+# The verifier the runner execs at grade time (`cd /tests && bash test.sh`).
+# CodingHarnessDriver bakes TEST_DIR=/tests into the agent service's
+# environment; nothing bind-mounts it for the native adapter, so it has to
+# be baked into the image here.
+COPY tests /tests
+
 RUN mkdir -p /logs/verifier

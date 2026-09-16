@@ -303,7 +303,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         # under every task.yaml at load time so shared task-level defaults
         # don't have to be repeated in each task file. Empty when the
         # caller (typically the Orchestrator) has no project context.
-        self._project_task_defaults: dict[str, Any] = params.get("project_task_defaults", {})
+        self._project_task_defaults: dict[str, Any] = params.get("project_task_defaults") or {}
         # project.default_environment patch from the enclosing project.
         # Bound to each task's own environment patch by
         # :func:`resolve_environment` in :meth:`to_task_description`.
@@ -948,6 +948,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     id_fields=id_fields_declared,
                     relaxed_validation=relaxed_validation,
                     compare_columns=state_checks_data.get("compare_columns", {}),
+                    auto_mask_clock_columns=state_checks_data.get("auto_mask_clock_columns", False),
                 )
 
             # Build transcript rules. One model serves the authored block and the

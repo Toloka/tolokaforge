@@ -19,7 +19,7 @@ file pins:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -50,13 +50,15 @@ def _wrapper() -> DockerComposeExecToolWrapper:
     )
 
 
-class _StubCompletedProcess:
-    """Enough of :class:`subprocess.CompletedProcess` for ``_exec_sync``."""
-
-    def __init__(self) -> None:
-        self.returncode = 0
-        self.stdout = ""
-        self.stderr = ""
+def _fake_popen(stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
+    """Enough of :class:`subprocess.Popen` for ``_exec_sync``. The wrapper
+    now streams output through ``Popen.communicate`` so a slow CLI still
+    surfaces its partial stdout on TimeoutExpired — ``subprocess.run`` is
+    no longer on the exec path."""
+    fake = MagicMock()
+    fake.communicate.return_value = (stdout, stderr)
+    fake.returncode = returncode
+    return fake
 
 
 def test_exec_argv_pins_docker_exec_shape():
@@ -66,11 +68,11 @@ def test_exec_argv_pins_docker_exec_shape():
     wrapper = _wrapper()
     wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
 
-    with patch("subprocess.run", return_value=_StubCompletedProcess()) as run_mock:
+    with patch("subprocess.Popen", return_value=_fake_popen()) as popen_mock:
         wrapper._exec_sync("echo hi", 30.0)
 
-    assert run_mock.call_count == 1
-    argv = run_mock.call_args.args[0]
+    assert popen_mock.call_count == 1
+    argv = popen_mock.call_args.args[0]
     assert argv == [
         "docker",
         "exec",

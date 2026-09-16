@@ -1,0 +1,17 @@
+# Project spec for the coding-harness example.
+#
+# One task at the pack root (no dataset/ layout): a vendor coding-harness
+# CLI fixes a buggy factorial implementation inside its own per-trial
+# container. See docs/PROJECTS.md for the full Project model.
+
+name: "coding-harness"
+version: 1
+description: >
+  Coding-harness exemplar: models.agent.coding_harness drives the trial
+  through a vendor CLI (claude-code by default) instead of the engine's
+  own LLM turn loop, proving the adapter-agnostic AgentDriver Strategy
+  end-to-end on the native adapter.
+
+tasks:
+  discovery:
+    glob: "task.yaml"

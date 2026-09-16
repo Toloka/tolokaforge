@@ -134,7 +134,8 @@ def test_a_harness_example_exists_and_is_fully_specified() -> None:
     harness_configs = []
     for config_path in _example_run_configs():
         config = RunConfig(**yaml.safe_load(config_path.read_text()))
-        # Canonical home post-lift is ``models.agent.harness``; the parse-time
+        # Canonical home post-lift is ``models.agent.harness`` (renamed from
+        # ``coding_harness`` in the Grader v3 refactor); the parse-time
         # alias validator on ``RunConfig`` moves the legacy
         # ``evaluation.harness_adapter.params.agent_harness`` value here and
         # deletes the legacy key, so this single read covers both shipped

@@ -55,6 +55,12 @@ COPY tolokaforge/ /src/tolokaforge/
 # the freshly-built wheel from the checked-out tree, not whatever PyPI
 # currently ships).
 COPY tolokaforge_models/ /src/tolokaforge_models/
+# tolokaforge_coding_harnesses is a workspace sibling that ships INSIDE the
+# base tolokaforge wheel on PyPI (see ``[tool.hatch.build.targets.wheel]``
+# in the workspace pyproject) — never as its own PyPI distribution. The
+# runner subset wheel uses a separate companion wheel built here in-container,
+# so the source tree ships in this build context alongside tolokaforge_models.
+COPY tolokaforge_coding_harnesses/ /src/tolokaforge_coding_harnesses/
 
 # Build the subset wheel. Output lands in ``/src/dist/`` as
 # ``tolokaforge_runner_subset-<version>-py3-none-any.whl``.
@@ -64,6 +70,11 @@ RUN python -m hatchling build --target custom
 # ``/src/tolokaforge_models/dist/`` as
 # ``tolokaforge_models-<version>-py3-none-any.whl``.
 RUN cd /src/tolokaforge_models && python -m hatchling build
+
+# Same for the coding-harnesses wheel. Output under
+# ``/src/tolokaforge_coding_harnesses/dist/`` as
+# ``tolokaforge_coding_harnesses-<version>-py3-none-any.whl``.
+RUN cd /src/tolokaforge_coding_harnesses && python -m hatchling build
 
 # ---------------------------------------------------------------------------
 # builder — install the subset wheel into /opt/venv
@@ -81,19 +92,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=wheel-builder /src/dist/tolokaforge_runner_subset-*.whl /tmp/
 COPY --from=wheel-builder /src/tolokaforge_models/dist/tolokaforge_models-*.whl /tmp/
+COPY --from=wheel-builder /src/tolokaforge_coding_harnesses/dist/tolokaforge_coding_harnesses-*.whl /tmp/
 
 # Install into an isolated venv. The subset wheel's METADATA carries every
 # runtime dep (the base wheel deps the runner reaches + the former
 # ``[runner]`` extra) plus ``tolokaforge-models>=1.0.0,<2.0.0``; the
 # freshly-built models wheel from the wheel-builder stage satisfies that pin
-# without touching PyPI. --no-compile keeps *.pyc bytecode out of
-# site-packages; PYTHONDONTWRITEBYTECODE in the runtime stage keeps it that
-# way.
+# without touching PyPI. tolokaforge-coding-harnesses is installed alongside
+# from its own freshly-built wheel because the runner subset imports
+# ``tolokaforge_coding_harnesses`` at boot and it never ships on PyPI (bundled
+# INTO the base tolokaforge wheel for PyPI users). --no-compile keeps *.pyc
+# bytecode out of site-packages; PYTHONDONTWRITEBYTECODE in the runtime stage
+# keeps it that way.
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --no-compile \
         /tmp/tolokaforge_models-*.whl \
+        /tmp/tolokaforge_coding_harnesses-*.whl \
         /tmp/tolokaforge_runner_subset-*.whl \
-    && rm -f /tmp/tolokaforge_runner_subset-*.whl /tmp/tolokaforge_models-*.whl
+    && rm -f /tmp/tolokaforge_runner_subset-*.whl \
+              /tmp/tolokaforge_models-*.whl \
+              /tmp/tolokaforge_coding_harnesses-*.whl
 
 # ---------------------------------------------------------------------------
 # runtime — copy only the venv; no build toolchain

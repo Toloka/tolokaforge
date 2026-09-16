@@ -68,6 +68,16 @@ harnesses:
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api"
+    # Shields the resolved OPENROUTER_API_KEY from ever landing in the
+    # container: the driver bakes ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
+    # above with the dummy value and the gateway's own URL instead. See
+    # ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "ANTHROPIC_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "ANTHROPIC_BASE_URL"
 
   codex:
     install_method: "npm"
@@ -88,6 +98,12 @@ harnesses:
     argv_suffix:
       - "--dangerously-bypass-approvals-and-sandbox"
       - "--skip-git-repo-check"
+      # --json prints every event to stdout as JSONL: reasoning frames,
+      # shell / apply_patch tool calls, and the final assistant message.
+      # Without it ``codex exec`` writes only the final message to stdout,
+      # so the runner's ``tool_log.output`` cannot count tool_uses or turns
+      # and a real multi-turn run looks indistinguishable from a fast-fail.
+      - "--json"
       - "-c"
       - "model_reasoning_effort=high"
     # Two on-disk files — codex reads both and honours neither the env var
@@ -110,6 +126,29 @@ harnesses:
     config_files:
       "${CODEX_HOME:-$HOME/.codex}/config.toml": |
         openai_base_url = "{{ base_url }}"
+
+        # Codex 0.147's built-in ``openai`` provider defaults to
+        # ``wire_api = "responses_websockets"`` for gpt-4o-mini and newer,
+        # which opens ``ws://<base>/responses`` to the gateway sidecar.
+        # The sidecar's ``_GatewayHTTPServer`` is a plain HTTP reverse
+        # proxy and answers 404 to every websocket upgrade; codex then
+        # retries the WS 5 times (~30 s of dead time) before falling
+        # back to HTTP. Codex refuses to override its built-in ``openai``
+        # provider directly, so declare a custom ``openai-openrouter``
+        # provider pinned to ``wire_api = "responses"`` (HTTP SSE) and
+        # elect it as the run's default via ``model_provider``. This
+        # matches how codex documents the ``model_providers`` schema:
+        # ``name``, ``base_url``, ``env_key``, and ``wire_api`` are the
+        # required fields; ``base_url`` inherits ``openai_base_url``
+        # above but codex still requires the explicit field on a custom
+        # entry.
+        model_provider = "openai-openrouter"
+
+        [model_providers.openai-openrouter]
+        name = "openai-openrouter"
+        base_url = "{{ base_url }}"
+        env_key = "{{ api_key_env }}"
+        wire_api = "responses"
       "${CODEX_HOME:-$HOME/.codex}/auth.json": |
         {"{{ api_key_env }}": "${{ api_key_env }}"}
     # codex 0.147's model catalog refuses the OpenRouter namespaced form.
@@ -119,6 +158,29 @@ harnesses:
     provider_env:
       OPENAI_API_KEY: "${secret:OPENROUTER_API_KEY}"
       OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+    # Same shield as claude-code, over codex's OpenAI-compat OpenRouter
+    # surface (note the /v1 suffix codex's base URL carries but claude-code's
+    # doesn't). The auth.json config_files write above renders through the
+    # generic `${VAR}` expansion machinery in _registry.py, which reads
+    # `container_env` at container-runtime — under the shield, `container_env`
+    # carries the dummy value, so the auth.json on disk carries the dummy
+    # too. See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "OPENAI_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "OPENAI_BASE_URL"
+      # OpenAI-flavored CLI: emits paths relative to a base ending in
+      # ``/v1``, so the outbound path shapes drop the ``/v1/`` prefix
+      # (``/chat/completions``, ``/responses``, ``/models``) — the
+      # gateway's default allowlist assumes the with-prefix shape and
+      # would 405 every request otherwise. codex reaches ``/responses``
+      # (Responses API) as well as ``/chat/completions``.
+      path_allowlist:
+        - "/chat/completions"
+        - "/responses"
+        - "/models"
 
   gemini-cli:
     install_method: "npm"
@@ -182,9 +244,18 @@ harnesses:
       # "Invalid auth method selected" without a pre-pinned ``selectedType``:
       # gemini-cli 0.55.1's ``validateAuthMethod()`` has not been taught about
       # GATEWAY, so the env vars alone are not enough.
+      #
+      # ``tools.exclude`` names ``google_web_search`` and ``web_fetch``
+      # (see ``packages/core/src/tools/definitions/base-declarations.ts``): a
+      # tbench container's ``no_internet`` policy blocks their egress, and
+      # gemini-cli retries a blocked fetch on backoff before yielding a turn
+      # — 26 retries observed on one billing-holds run, consuming the turn
+      # budget past useful work. Excluding them is a scoped fix for the
+      # containerized gateway path; the direct-API path (full internet) is
+      # untouched.
       config_files:
         "${HOME}/.gemini/settings.json": |-
-          {"security":{"auth":{"selectedType":"gateway","useExternal":true}}}
+          {"security":{"auth":{"selectedType":"gateway","useExternal":true}},"tools":{"exclude":["google_web_search","web_fetch"]}}
       container_env:
         GEMINI_CLI_TRUST_WORKSPACE: "true"
       # ``GOOGLE_GEMINI_BASE_URL``'s mere presence flips the CLI to GATEWAY
@@ -193,6 +264,47 @@ harnesses:
       provider_env:
         GOOGLE_GEMINI_BASE_URL: "${gateway.base_url}${gateway.passthrough_path}"
         GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
+    # Shielded default path. The sidecar keeps the real ``GEMINI_API_KEY``
+    # out of the trial container: the CLI sees only the dummy value, sends
+    # its requests to ``GOOGLE_GEMINI_BASE_URL`` (which points at the
+    # sidecar), and the sidecar rewrites the ``x-goog-api-key`` header on
+    # every allow-listed request before forwarding to Google's real
+    # Generative Language API. Closes #1311.
+    #
+    # ``path_allowlist`` uses the glob shape the gateway proxy grew for
+    # this exact reason: Google's REST endpoints embed the model name in
+    # the path (``/v1beta/models/<model>:generateContent``), which an
+    # exact-match allowlist cannot enumerate ahead of a trial's model
+    # selection. The four listed shapes cover every request the CLI makes
+    # today; ``countTokens`` is on the list because gemini-cli sends one
+    # per turn to price the next request against the context window.
+    credential_gateway:
+      upstream_url: "https://generativelanguage.googleapis.com"
+      upstream_token_env_var: "GEMINI_API_KEY"
+      upstream_auth_header: "x-goog-api-key"
+      # Google's API auth is the header value itself, not a
+      # ``Bearer``-prefixed token.
+      upstream_auth_template: "{token}"
+      dummy_token_env_var: "GEMINI_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "GOOGLE_GEMINI_BASE_URL"
+      path_allowlist:
+        - "/v1beta/models"
+        - "/v1beta/models/*:generateContent"
+        - "/v1beta/models/*:streamGenerateContent"
+        - "/v1beta/models/*:countTokens"
+    # Shielded ``settings.json``. ``GOOGLE_GEMINI_BASE_URL``'s mere
+    # presence flips gemini-cli 0.55.1 into GATEWAY auth mode, which 400s
+    # ("Invalid auth method selected") without a pre-pinned
+    # ``selectedType``: ``validateAuthMethod()`` has not been taught about
+    # GATEWAY, so the sidecar's ``base_url`` override alone is not enough.
+    # Same ``tools.exclude`` list as the ``gateway_route`` recipe below —
+    # a tbench container's netpolicy blocks ``google_web_search`` /
+    # ``web_fetch`` egress, and gemini-cli retries on backoff before
+    # yielding a turn.
+    config_files:
+      "${HOME}/.gemini/settings.json": |-
+        {"security":{"auth":{"selectedType":"gateway","useExternal":true}},"tools":{"exclude":["google_web_search","web_fetch"]}}
 
   kimi-code:
     install_method: "npm"
@@ -302,6 +414,24 @@ harnesses:
       provider_env:
         KIMI_MODEL_BASE_URL: "${gateway.base_url}"
         KIMI_MODEL_API_KEY: "${secret:LITELLM_API_KEY}"
+    # Same shield shape as claude-code/codex, over kimi-code's OpenRouter
+    # envelope. Coexists with request_middleware above: that preamble step
+    # runs first and rewrites KIMI_MODEL_BASE_URL to its own local proxy,
+    # capturing whatever value the var holds at boot — once the driver wires
+    # this gateway in, that becomes the gateway's own URL, so the chain
+    # becomes CLI -> middleware (provider pinning) -> gateway (real
+    # credential) -> OpenRouter. See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "KIMI_MODEL_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "KIMI_MODEL_BASE_URL"
+      # OpenAI-compat CLI: emits paths relative to a base ending in
+      # ``/v1``, so paths drop the ``/v1/`` prefix. Same shape as codex.
+      path_allowlist:
+        - "/chat/completions"
+        - "/models"
 
   opencode:
     install_method: "npm"
@@ -445,6 +575,26 @@ harnesses:
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
+    # Same shield shape, over opencode's OpenRouter envelope (note the /v1
+    # suffix, same reason as codex). The opencode.json config_files write
+    # above references `$ANTHROPIC_API_KEY` and `{{ base_url }}` — both
+    # resolve at container-runtime from `container_env`, which under the
+    # shield carries the dummy value + gateway URL, so opencode.json on
+    # disk carries the dummy too. See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "ANTHROPIC_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "ANTHROPIC_BASE_URL"
+      # OpenAI-compat over an Anthropic-shaped base — opencode's provider
+      # routes through the ai-sdk's openai-compatible module against a
+      # base ending in ``/v1``, so paths drop the ``/v1/`` prefix. Same
+      # shape as codex.
+      path_allowlist:
+        - "/chat/completions"
+        - "/messages"
+        - "/models"
 
   grok-build:
     # Grok Build's installer is a curl-piped shell script from x.ai — the
@@ -527,3 +677,23 @@ harnesses:
         base_url = "{{ base_url }}"
         env_key = "{{ api_key_env }}"
         api_backend = "chat_completions"
+    # Same shield shape, over Grok's own OpenRouter envelope — its dummy and
+    # upstream token env vars are the SAME name (OPENROUTER_API_KEY) since
+    # Grok's own convention already names the secret directly, unlike the
+    # vendor-namespaced *_API_KEY names the other harnesses use. The
+    # config.toml write above uses `{{ api_key_env }}` + `{{ base_url }}`,
+    # both resolved at container-runtime from `container_env` — under the
+    # shield, that dict carries the dummy value + gateway URL, so
+    # config.toml on disk carries the dummy too. See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "OPENROUTER_BASE_URL"
+      # ``api_backend = "chat_completions"`` in the config above pins
+      # Grok Build to OpenAI-compat over a base ending in ``/v1``, so
+      # paths drop the ``/v1/`` prefix. Same shape as codex.
+      path_allowlist:
+        - "/chat/completions"
+        - "/models"
