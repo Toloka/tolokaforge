@@ -60,16 +60,23 @@ class TestTrialIdentity:
         inputs: the two producers must agree byte for byte."""
         identity = TrialIdentity(run_id="run-1", task_id="T-1", trial_index=0, attempt_id=0)
         assert identity.trace_id == "3ddefa60b55e55f7b3255f309d34312e"
-        assert identity.observation_id("root", 0) == "09ac39b1d55c5c43"
+        # contract v2 (2026-09-16): root key "-", tool keyed by call id, judge under its grading
+        assert identity.root_id == "574ae02e216d5956"
+        assert identity.observation_id("gen", 1) == "0be013edd7d55929"
+        assert identity.observation_id("tool", "call-1") == "72c8cce8a7315c35"
+        assert identity.observation_id("tool", ids.tool_key(None, 2)) == "b3f52d400f745ba5"
+        assert identity.observation_id("grading", "live:run-1") == "a73db1b441495f84"
+        assert identity.observation_id("jgen", "live:run-1", 1) == "25da0f923e335e95"
+        assert identity.observation_id("event", "log:0") == "453d10c7f96753eb"
 
     def test_trace_and_observation_ids_derive_from_the_identity(self) -> None:
         identity = TrialIdentity(run_id="run-1", task_id="T-1", trial_index=0, attempt_id=0)
         assert identity.trace_id == ids.trace_id(
             run_tag="v1", run_id="run-1", task_id="T-1", trial_index=0, attempt=0
         )
-        assert identity.observation_id("root", 0) == ids.observation_id(
-            identity.trace_id, "root", 0
-        )
+        assert identity.root_id == ids.observation_id(identity.trace_id, "root", "-")
+        with pytest.raises(ValueError, match="needs a stable key"):
+            ids.observation_id(identity.trace_id, "root")
 
 
 class _Recording:

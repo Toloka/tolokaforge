@@ -28,6 +28,7 @@ from opentelemetry.sdk.util.instrumentation import InstrumentationScope
 from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, TraceFlags
 
 from tolokaforge.core.redaction import SensitiveKeyRedaction
+from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.model_names import (
     NONE,
     ModelIdentity,
@@ -265,7 +266,7 @@ class OTelTrialObserver:
         self._emit(
             name=f"trial {identity.task_id}/{identity.trial_index}",
             identity=identity,
-            span_id=identity.observation_id("root", 0),
+            span_id=identity.root_id,
             parent_id=None,
             attributes=attributes,
             start=started_at,
@@ -286,8 +287,10 @@ class OTelTrialObserver:
     ) -> None:
         state = self._state(identity)
         state.generations += 1
-        kind = "gen" if role == "agent" else "judge"
-        name = f"assistant turn {index}" if role == "agent" else f"judge turn {index}"
+        # a non-agent generation is a judge turn of the run's own grading (contract v2: kind
+        # ``jgen`` under the grading id ``live:<run_id>``)
+        agent_role = role == "agent"
+        name = f"assistant turn {index}" if agent_role else f"judge turn {index}"
         usage = getattr(result, "usage", None)
         prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
         completion = int(getattr(usage, "completion_tokens", 0) or 0)
@@ -347,8 +350,12 @@ class OTelTrialObserver:
         self._emit(
             name=name,
             identity=identity,
-            span_id=identity.observation_id(kind, index),
-            parent_id=identity.observation_id("root", 0),
+            span_id=(
+                identity.observation_id("gen", index)
+                if agent_role
+                else identity.observation_id("jgen", f"live:{identity.run_id}", index)
+            ),
+            parent_id=identity.root_id,
             attributes=attributes,
             start=started_at,
             end=ended_at,
@@ -367,8 +374,15 @@ class OTelTrialObserver:
     ) -> None:
         state = self._state(identity)
         state.tool_calls += 1
-        kind = "tool" if role == "agent" else "judge_tool"
         tool_name = str(getattr(call, "name", "tool"))
+        # contract v2: a tool execution is keyed by the episode-unique call id the loop assigned
+        # (the same value the bundle's tool_log.yaml and tool message carry), never by position
+        key = _ids.tool_key(getattr(call, "id", None), index)
+        span_id = (
+            identity.observation_id("tool", key)
+            if role == "agent"
+            else identity.observation_id("jtool", f"live:{identity.run_id}", key)
+        )
         name = f"tool: {tool_name}" if role == "agent" else f"judge tool: {tool_name}"
         success = bool(getattr(result, "success", True))
         output = (
@@ -401,8 +415,8 @@ class OTelTrialObserver:
         self._emit(
             name=name,
             identity=identity,
-            span_id=identity.observation_id(kind, index),
-            parent_id=identity.observation_id("root", 0),
+            span_id=span_id,
+            parent_id=identity.root_id,
             attributes=attributes,
             start=started_at,
             end=ended_at,
@@ -484,7 +498,7 @@ class OTelTrialObserver:
         self._emit(
             name=f"trial {identity.task_id}/{identity.trial_index}",
             identity=identity,
-            span_id=identity.observation_id("root", 0),
+            span_id=identity.root_id,
             parent_id=None,
             attributes=attributes,
             start=start,

@@ -112,19 +112,20 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert set(spans) == {"assistant turn 1", "tool: shell", "trial T-1/0"}
     assert receipt.spans_exported == 4 and receipt.spans_dropped == 0 and receipt.flushed
     provisional = finished[0]
-    assert format(provisional.context.span_id, "016x") == IDENTITY.observation_id("root", 0)
+    assert format(provisional.context.span_id, "016x") == IDENTITY.root_id
     assert _attrs(provisional)["langfuse.trace.metadata.status"] == "running"
     assert provisional.start_time == provisional.end_time == int(T0.timestamp() * 1e9)
 
     trace_int = int(IDENTITY.trace_id, 16)
     root = spans["trial T-1/0"]
     assert root.context.trace_id == trace_int and root.parent is None
-    assert format(root.context.span_id, "016x") == IDENTITY.observation_id("root", 0)
+    assert format(root.context.span_id, "016x") == IDENTITY.root_id
     gen = spans["assistant turn 1"]
     assert format(gen.context.span_id, "016x") == IDENTITY.observation_id("gen", 1)
-    assert format(gen.parent.span_id, "016x") == IDENTITY.observation_id("root", 0)
+    assert format(gen.parent.span_id, "016x") == IDENTITY.root_id
     tool = spans["tool: shell"]
-    assert format(tool.context.span_id, "016x") == IDENTITY.observation_id("tool", 2)
+    # contract v2: the tool span is keyed by the loop's call id, not by the message position
+    assert format(tool.context.span_id, "016x") == IDENTITY.observation_id("tool", "c1")
 
     gen_attrs = _attrs(gen)
     assert gen_attrs["langfuse.observation.type"] == "generation"

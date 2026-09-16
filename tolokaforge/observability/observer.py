@@ -53,8 +53,13 @@ class TrialIdentity:
             attempt=self.attempt_id,
         )
 
-    def observation_id(self, kind: str, index: int) -> str:
-        return ids.observation_id(self.trace_id, kind, index)
+    def observation_id(self, kind: str, *key: object) -> str:
+        return ids.observation_id(self.trace_id, kind, *key)
+
+    @property
+    def root_id(self) -> str:
+        """The trial's root span (contract v2: kind ``root``, key ``-``)."""
+        return ids.observation_id(self.trace_id, "root", ids.ROOT_KEY)
 
 
 @dataclass(frozen=True)
