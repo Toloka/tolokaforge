@@ -151,9 +151,18 @@ class TestObservabilityConfig:
         assert t.exporter == "otlp"
         assert t.endpoint == "http://collector:4317"
 
-    def test_tracing_otlp_requires_endpoint(self) -> None:
-        with pytest.raises(ValidationError, match="endpoint"):
-            TracingConfig(exporter="otlp")
+    def test_tracing_otlp_accepts_a_missing_endpoint_for_the_environment(self, monkeypatch) -> None:
+        # ADR-0046 destinations amendment: the endpoint may come from the standard OTel variables,
+        # so the config accepts the field's absence and the factory decides at run start
+        from tolokaforge.observability.factory import TracingConfigError, build_trial_observer
+
+        assert TracingConfig(exporter="otlp").endpoint is None
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+        with pytest.raises(TracingConfigError, match="requires an endpoint"):
+            build_trial_observer(
+                ObservabilityConfig(tracing=TracingConfig(exporter="otlp")), engine_run_id="r"
+            )
 
     def test_metrics_prometheus(self) -> None:
         m = MetricsConfig(exporter="prometheus", endpoint="http://prom:9090")
