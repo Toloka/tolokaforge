@@ -60,6 +60,7 @@ from .container_injection import (
     FileSpec,
 )
 from .fingerprint import HarnessFingerprint, compute_harness_fingerprint
+from .image_identity import harness_image_content_digest
 from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
 from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
 from .stdout_telemetry import (
@@ -119,6 +120,7 @@ __all__ = [
     "compute_harness_fingerprint",
     "discover_plugin_harness_registries",
     "harness_command",
+    "harness_image_content_digest",
     "harness_model",
     "load_harness_registry",
     "parse_harness_stdout",

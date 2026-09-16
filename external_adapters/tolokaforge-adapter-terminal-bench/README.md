@@ -142,12 +142,17 @@ That script is the single place a harness's install steps live; an
 unrecognised harness name aborts the image build rather than producing an
 image whose missing CLI would surface as a trial-time "command not found".
 
-Because the layered image tag carries the harness name and its pinned version,
-switching harnesses or bumping a CLI can never reuse a stale cached image — and
-the harness is part of the staging digest, so each gets its own staging
+The layered image tag carries the harness name, its pinned version, and an
+eight-character digest of the layer's whole build context — the generated
+Dockerfile, the install script, the middleware proxy, the `.dockerignore`, and
+the skills bundle when one is delivered. So no change to what the layer bakes
+in can reuse a stale cached image: a caller that skips the build because the
+tag already resolves is skipping it because that tag *is* the content. The
+harness is also part of the staging digest, so each gets its own staging
 directory. A `.dockerignore` in the staging dir keeps the task sources, tests,
 and log mountpoints out of the layer's build context; everything the layer
-copies is re-included there by name.
+copies is re-included there by name, and the digest covers exactly that
+re-included set.
 
 Nothing else is in that Dockerfile by default. A task pack's skills bundle
 reaches it only because the adapter's shipped `SkillDelivery` —
