@@ -94,7 +94,8 @@ class TestConductorLifecycle:
         conductor.run(_spec(attempt=1), MagicMock())
 
         names = [name for name, _ in observer.events]
-        assert names == ["trial_started", "trial_finished", "trial_persisted"]
+        # the bundle is announced by the trial executor after its own writes, not by run()
+        assert names == ["trial_started", "trial_finished"]
         started, finished = observer.events[0][1], observer.events[1][1]
         identity = started["identity"]
         assert (
@@ -115,11 +116,31 @@ class TestConductorLifecycle:
         assert trajectory.attempt_id == 1
         # the loop received a binding for the agent role
         assert conductor._run_agent_loop.call_args.args[3] is identity
-        # the bundle is written after the trace closed, and only then is it announced
+        # the bundle is written after the trace closed
         conductor._write_artifacts.assert_called_once()
-        persisted = observer.events[2][1]
-        assert persisted["identity"] is identity
-        assert persisted["trial_dir"] == conductor._setup_trial.return_value.trial_dir
+
+    def test_trial_persisted_announces_an_existing_bundle_under_the_contract_identity(
+        self, tmp_path: Path
+    ) -> None:
+        observer = _Recording()
+        conductor = _conductor(observer, RunIdentity(run_id="toloka-arena/v1/1/1", run_tag="v2"))
+        conductor.output_dir = tmp_path
+        conductor.trial_persisted(_spec(attempt=1))  # no bundle yet: nothing announced
+        assert observer.events == []
+        trial_dir = tmp_path / "trials" / "T-1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "trajectory.yaml").write_text("task_id: T-1\n")
+        conductor.trial_persisted(_spec(attempt=1))
+        ((name, payload),) = observer.events
+        assert name == "trial_persisted" and payload["trial_dir"] == trial_dir
+        identity = payload["identity"]
+        assert (identity.run_id, identity.run_tag, identity.task_id, identity.trial_index) == (
+            "toloka-arena/v1/1/1",
+            "v2",
+            "T-1",
+            0,
+        )
+        assert identity.attempt_id == 1
 
     def test_without_tracing_the_engine_run_id_is_the_identity_and_no_binding_is_built(
         self,
@@ -153,6 +174,7 @@ class TestConductorLifecycle:
         trial_dir.mkdir(parents=True)
         (trial_dir / "trajectory.yaml").write_text("task_id: T-1\n")
         conductor = _conductor(observer, trial_dir=trial_dir)
+        conductor.output_dir = tmp_path
         conductor._run_agent_loop = MagicMock(side_effect=RuntimeError("lost"))
         with pytest.raises(RuntimeError):
             conductor.run(_spec(), MagicMock())

@@ -231,6 +231,12 @@ class Conductor(Protocol):
         """Execute one trial end-to-end."""
         ...
 
+    def trial_persisted(self, spec: TrialSpec) -> None:
+        """The trial's bundle is final on disk (ADR-0046 amendment): called by the trial
+        executor after its own writes into the trial directory, so a live-tracing observer can
+        attach the files to the trace. Never affects the trial's result."""
+        ...
+
 
 SUPPORTS_RATE_LIMIT_PROBE_ATTR = "supports_rate_limit_probe"
 """Name of the optional :class:`Conductor` capability flag for probe mode.
@@ -343,6 +349,8 @@ class ConductorCallLog:
     """
 
     runs: list[dict[str, Any]] = field(default_factory=list)
+    # trial ids whose bundle was announced as final (``trial_persisted``)
+    persisted: list[str] = field(default_factory=list)
 
 
 def _build_probe_stats(probe: RateLimitProbeConfig) -> RateLimitProbeStats | None:
@@ -420,6 +428,9 @@ class InMemoryConductor:
         return TrialResult.from_trajectory(
             trial_id=spec.trial_id, trajectory=trajectory, worker_id=spec.worker_id
         )
+
+    def trial_persisted(self, spec: TrialSpec) -> None:
+        self.call_log.persisted.append(spec.trial_id)
 
 
 def _bundle_dir_size_bytes(bundle_dir: Path) -> int:
@@ -546,15 +557,12 @@ class InProcessConductor:
                 trajectory=trajectory,
                 error=f"{type(exc).__name__}: {exc}",
             )
-            if (setup.trial_dir / "trajectory.yaml").exists():
-                # a bundle written before the failure is still worth attaching to the trace
-                safely(self.trial_observer.trial_persisted, identity, trial_dir=setup.trial_dir)
+            # a bundle written before the failure is still worth attaching to the trace; on the
+            # success path the trial executor announces it after its own amendments
+            self.trial_persisted(spec)
             raise
         safely(self.trial_observer.trial_finished, identity, trajectory=trajectory)
         self._write_artifacts(spec, task_config, setup, trajectory, runner)
-        # The bundle exists now: a receiver may attach its files to the trace (ADR-0046
-        # amendment); the trace itself closed at trial_finished, its end time stays the trial end.
-        safely(self.trial_observer.trial_persisted, identity, trial_dir=setup.trial_dir)
         return TrialResult.from_trajectory(
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
         )
@@ -751,6 +759,19 @@ class InProcessConductor:
             user_tool_executor=user_tool_executor,
             tool_output_max_chars_by_tool=tool_output_max_chars_by_tool,
         )
+
+    def trial_persisted(self, spec: TrialSpec) -> None:
+        """Announce the trial's bundle to the observer (ADR-0046 amendment), once nothing writes
+        into the trial directory any more: the trial executor calls this after its own
+        ``metrics.yaml`` amendment and service-log capture, the error path of :meth:`run` when a
+        bundle was left behind. Silent when there is no bundle."""
+        task_id, _, index = spec.trial_id.rpartition(":")
+        trial_dir = self.output_dir / "trials" / task_id / index
+        if not (trial_dir / "trajectory.yaml").exists():
+            return
+        run = self.run_identity or RunIdentity(run_id=spec.run_id)
+        identity = run.trial(task_id=task_id, trial_index=int(index), attempt_id=spec.attempt_id)
+        safely(self.trial_observer.trial_persisted, identity, trial_dir=trial_dir)
 
     def _trial_identity(self, spec: TrialSpec, setup: _TrialSetup) -> TrialIdentity:
         """The id-contract identity of this trial: the run's tracing identity (or the engine run

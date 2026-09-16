@@ -66,8 +66,9 @@ configuration error at run start, never a silent fallback.
 
 ## Attachments: the trial's files on its trace
 
-After the bundle is written the conductor calls `trial_persisted`, and the exporter attaches the
-regular top-level files of the trial directory to the trace through the receiver's media API
+Once the trial executor has finished writing into the trial directory (the bundle, its
+`metrics.yaml` amendment, the service-log capture) it calls the conductor's `trial_persisted`,
+and the exporter attaches the regular top-level files of the trial directory to the trace through the receiver's media API
 (Langfuse: register, presigned PUT, confirmation; the receiver deduplicates by sha256 per
 project, so a `prompts.yaml` shared by every trial of a task is stored once). `env.yaml` and
 `trajectory.yaml` travel gzipped (`mtime 0`), the rest as written; hidden files and

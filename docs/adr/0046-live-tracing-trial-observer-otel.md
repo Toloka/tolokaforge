@@ -141,9 +141,12 @@ We will adopt **Option 1**.
 
 ## Amendment 2026-09-16: the persisted bundle is attached to the trace
 
-The seam gains a fourth trial hook, `trial_persisted(identity, trial_dir)`, called by the
-conductor after the bundle is written (and, on the error path, when a bundle exists), so a
-receiver can attach the files a trial directory holds. The OTLP observer, when
+The seam gains a fourth trial hook, `trial_persisted(identity, trial_dir)`, called through the
+conductor's `trial_persisted(spec)` by the trial executor once nothing writes into the trial
+directory any more (after its `metrics.yaml` amendment and service-log capture; the first live
+round trip caught a `provisioning_duration_s` line the conductor-time announcement missed) and, on
+the conductor's error path, when a bundle was left behind, so a receiver can attach the files a
+trial directory holds. The OTLP observer, when
 `observability.tracing.attach` is `all` (the default) or `core`, then registers and uploads every
 regular top-level file of the trial directory through the receiver's media REST API (Langfuse:
 `POST /api/public/media`, the presigned `PUT` with `x-ms-blob-type: BlockBlob` on Azure Blob, the

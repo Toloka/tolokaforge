@@ -201,6 +201,10 @@ class ProvisioningTrialExecutor:
             )
             self._maybe_flag_missing_judge_verdict(result.trajectory, task_id, trial_idx)
             self._capture_service_logs(handle, result, task_id, trial_idx)
+            # Nothing writes into the trial directory after this point: the bundle is what a
+            # live-tracing observer may attach to the trace (ADR-0046 amendment). Announced
+            # here and not from conductor.run, whose bundle the two writes above still amend.
+            self.conductor.trial_persisted(final_spec)
             return result
         finally:
             self._safe_teardown(handle, task_id, trial_idx)
