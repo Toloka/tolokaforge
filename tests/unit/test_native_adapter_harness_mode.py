@@ -256,6 +256,37 @@ class TestLayeredImageIsContentAddressed:
         assert len(refs) == 1
 
 
+class TestNativeUsageLogPathIsPublished:
+    """The middleware proxy is the only source of token counts for a harness
+    whose CLI prints none, and the runner reads those records out of the trial
+    container by the path this key names. Without the key the run still passes
+    and still reports zero tokens, which reads as a trial that spent nothing."""
+
+    @staticmethod
+    def _metadata(harness: str) -> dict:
+        adapter = NativeAdapter(
+            _params(agent_harness=harness, agent_model="openrouter/moonshotai/kimi-k2")
+        )
+        return adapter.to_task_description("fix_factorial").metadata
+
+    def test_a_middleware_harness_publishes_the_container_path(self) -> None:
+        from tolokaforge_coding_harnesses import (
+            HARNESS_USAGE_LOG_METADATA_KEY,
+            MIDDLEWARE_USAGE_LOG_CONTAINER_PATH,
+        )
+
+        metadata = self._metadata("kimi-code")
+
+        assert metadata[HARNESS_USAGE_LOG_METADATA_KEY] == MIDDLEWARE_USAGE_LOG_CONTAINER_PATH
+
+    def test_a_harness_with_no_middleware_publishes_no_path(self) -> None:
+        """``claude-code`` routes through no proxy, so nothing would ever write
+        the file the key would name."""
+        from tolokaforge_coding_harnesses import HARNESS_USAGE_LOG_METADATA_KEY
+
+        assert HARNESS_USAGE_LOG_METADATA_KEY not in self._metadata("claude-code")
+
+
 class TestHarnessSpecValidation:
     def test_empty_agent_model_is_refused(self) -> None:
         # Same refusal terminal-bench emits: the CLI's own default would drive
