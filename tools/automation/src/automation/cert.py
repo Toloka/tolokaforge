@@ -26,8 +26,6 @@ gates a curated certificate's live probes. See ``docs/AUTO_INTEGRATION.md``
 from __future__ import annotations
 
 import json
-import os
-import pathlib
 import sys
 
 HARD_PASS = 0.9
@@ -139,19 +137,26 @@ def env_gate(model_id: str) -> int:
 
     Prints nothing when no certificate names one, when the certificate is the
     synthesised candidate (whose gate is the provider key the run already sets),
-    or when the variable already carries a value. Exit code is 0 either way: a
-    model with no curated certificate is the normal case, not a failure.
+    or when the variable already carries a value as the certify ``live_client``
+    fixture would see it (``SecretManager``: ``.env`` counts, not only the
+    process environment). Exit code is 0 either way: a model with no curated
+    certificate is the normal case, not a failure.
     """
     try:
-        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
-        from tests.integration.llm.registry import ALL_MODELS
+        from tolokaforge.testing.certify import ALL_MODELS
     except Exception as exc:  # fail loud - a silent empty answer reads as "no gate"
-        print(f"::error::cert_env_gate could not import the registry: {exc}")
+        # stderr: the workflow captures stdout AS the gate name, so an error printed
+        # there would be swallowed into the variable instead of reaching the log.
+        print(f"::error::cert_env_gate could not import the registry: {exc}", file=sys.stderr)
         return 1
+    from tolokaforge.secrets import get_default
+
     for mc in ALL_MODELS:
-        if mc.model_id == model_id and mc.env_key and not os.environ.get(mc.env_key):
+        if mc.model_id != model_id or not mc.env_key:
+            continue
+        if not get_default().get_secret(mc.env_key):
             print(mc.env_key)
-            break
+        break
     return 0
 
 

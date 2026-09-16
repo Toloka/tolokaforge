@@ -141,9 +141,9 @@ class TestTheCertificateGate:
         import sys
         import types
 
-        module = types.ModuleType("tests.integration.llm.registry")
+        module = types.ModuleType("tolokaforge.testing.certify")
         module.ALL_MODELS = certs
-        monkeypatch.setitem(sys.modules, "tests.integration.llm.registry", module)
+        monkeypatch.setitem(sys.modules, "tolokaforge.testing.certify", module)
 
     def test_it_names_the_gate_when_the_variable_is_unset(self, monkeypatch, capsys):
         self._registry(monkeypatch, [_Cert("m", "TF_SOME_GATEWAY_LIVE")])
@@ -169,9 +169,11 @@ class TestTheCertificateGate:
         """Silence means "no gate", so a broken import must not look like one."""
         import sys
 
-        monkeypatch.setitem(sys.modules, "tests.integration.llm.registry", None)
+        monkeypatch.setitem(sys.modules, "tolokaforge.testing.certify", None)
         assert cert.env_gate("m") == 1
-        assert "::error::" in capsys.readouterr().out
+        out, err = capsys.readouterr()
+        assert "::error::" in err
+        assert out == "", "stdout is the gate name the workflow captures; keep the error off it"
 
 
 class _Cert:
