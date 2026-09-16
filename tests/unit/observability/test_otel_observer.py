@@ -140,6 +140,7 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert list(gen_attrs["langfuse.trace.tags"]) == [
         HARNESS_TAG,
         "model:openai/gpt-6-astra",
+        "task:T-1",
         "config:gpt6_astra",
         "domain:ots_19_airlines",
     ]

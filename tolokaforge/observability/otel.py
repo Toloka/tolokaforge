@@ -234,6 +234,8 @@ class OTelTrialObserver:
         tags: list[str] = [HARNESS_TAG]
         if agent is not None:
             tags.extend(agent.tags)
+        # the task is a fact of the trial the producer owns (tag vocabulary v2, core `task:`)
+        tags.append(f"task:{identity.task_id}")
         for tag in self._tags:
             if tag not in tags:
                 tags.append(tag)

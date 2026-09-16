@@ -121,7 +121,9 @@ class TestFactory:
         finally:
             observer.run_finished()
 
-    @pytest.mark.parametrize("tag", ["demo", "model:x/y", "harness:other", "Config:stem", "a:b c"])
+    @pytest.mark.parametrize(
+        "tag", ["demo", "model:x/y", "harness:other", "task:T-1", "Config:stem", "a:b c"]
+    )
     def test_tags_are_validated(self, tag: str) -> None:
         with pytest.raises(TracingConfigError):
             validate_tag(tag)

@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 NONE = "none"
-RESERVED_TAG_PREFIXES = frozenset({"harness", "model", "model_vendor", "model_family"})
+# prefixes the exporter sets from what it knows (the harness, the model, the trial's task id);
+# every other tag is the run config's and only its syntax is checked (PLAN 3.11, R12)
+RESERVED_TAG_PREFIXES = frozenset({"harness", "model", "model_vendor", "model_family", "task"})
 
 
 @dataclass(frozen=True)

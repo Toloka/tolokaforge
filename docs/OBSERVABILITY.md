@@ -10,11 +10,14 @@ observability:
   tracing:
     exporter: otlp                                  # default: none
     endpoint: https://langfuse.example/api/public/otel/v1/traces
-    run_id: toloka-arena/v1/34390073272/1           # external run identity; default: the engine run id
-    run_tag: v1                                     # id namespace (contract v1)
-    session_id: toloka-arena/v1/gpt6_astra/gpt6_astra/34390073272   # default: run_id
+    run_id: arena/v1/34390073272/1                  # external run identity; default: the engine run id
+    run_tag: v1                                     # id namespace
+    session_id: arena/v1/gpt6_astra/gpt6_astra/34390073272   # default: run_id
     label: gpt6_astra                               # trace name <label>/<task_id>; default: run dir name
-    tags: [source:arena-trial, benchmark:toloka-arena, arena_version:v1, config:gpt6_astra, domain:ots_19_airlines]
+    # the deployment's own tags, <prefix>:<value>; the engine checks the syntax only. The values
+    # below are the Toloka arena's vocabulary (team, project, dataset, source, run_kind, scope,
+    # config, domain, ci_*); harness:, model*: and task: are set by the exporter itself
+    tags: [team:delivery, project:arena, dataset:v1, source:trial, run_kind:eval, scope:full, config:gpt6_astra, domain:ots_19_airlines]
     metadata: {model_stem: gpt6_astra}
     model_name_normalizer: toloka                   # default: none (raw provider/name)
     model_name_rules: tools/benchmark-results-collector/data/model_name_rules.toml
@@ -38,9 +41,14 @@ engine never logs them.
 bundle records `trajectory.attempt_id`, and a run with tracing on writes `run_identity.json`
 (`run_id`, `run_tag`) into the run directory; the uploader reads both.
 
-Tags: `harness:tolokaforge` and the model tags (`model:<canonical>`, plus `model_vendor:` and
-`model_family:` under the normalizer) are set by the exporter; `tags:` adds `<prefix>:<value>`
-entries and may not use those prefixes. Judge generations are not exported live in this version
+Tags: `harness:tolokaforge`, the model tags (`model:<canonical>`, plus `model_vendor:` and
+`model_family:` under the normalizer) and `task:<task_id>` are set by the exporter; `tags:` adds
+`<prefix>:<value>` entries and may not use those prefixes. The engine validates only the syntax
+(`prefix:value`, lowercase prefix, no whitespace) and the reserved prefixes; which prefixes and
+values a deployment allows is the deployment's business (the arena keeps its vocabulary and a
+profile file in `tolokaforge-tasks`, and the offline uploader that shares the trace with this
+exporter enforces it), so the run-config generator of the private integration writes finished,
+validated tags here. Judge generations are not exported live in this version
 (the judge may run in the runner service); the uploader's `attach-grades` adds them and the
 Langfuse scores after the run.
 
