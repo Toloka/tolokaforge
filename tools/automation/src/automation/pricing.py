@@ -23,6 +23,7 @@ returns an exit code.
 from __future__ import annotations
 
 import json
+import math
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +83,21 @@ def entry_for(models: list[dict], name: str) -> dict | None:
     return None
 
 
+def declared_entry(declared: tuple[float, float]) -> dict:
+    """The ``pricing.json`` entry for an operator-declared ``(input, output)`` price.
+
+    The discipline :func:`entry_for` applies to the catalog applies here too: each
+    number is a finite, non-negative USD-per-1M figure, and an all-zero pair is a
+    MISSING price rather than a free model - writing it would launder exactly the gap
+    ``cost_usd_populated`` exists to catch. Raises :class:`ValueError` otherwise.
+    """
+    if not all(math.isfinite(v) and v >= 0 for v in declared):
+        raise ValueError(f"a declared price is two finite non-negative numbers, got {declared}")
+    if declared == (0, 0):
+        raise ValueError("a declared price of 0,0 is a missing price, not a free model")
+    return {"input": declared[0], "output": declared[1]}
+
+
 def _insert(pricing_file: Path, name: str, entry: dict) -> None:
     data = json.loads(pricing_file.read_text())
     data.setdefault("models", {})[name] = entry
@@ -117,7 +133,11 @@ def run(
         print(f"ensure_pricing: '{name}' already priced - no change")
         return 0
     if declared is not None:
-        entry = {"input": declared[0], "output": declared[1]}
+        try:
+            entry = declared_entry(declared)
+        except ValueError as exc:
+            print(f"::error::ensure_pricing: {exc}")
+            return 1
         _insert(pf, name, entry)
         print(f"ensure_pricing: added '{name}' = {entry} (operator-declared)")
         return 0

@@ -198,7 +198,8 @@ in the reply rather than being discovered mid-run:
 
 - `automation ensure-pricing` resolves a price by exact id against the OpenRouter catalog, so a
   gateway-only id never matches. Without a `pricing.json` entry, `COST_USD_POPULATED` (a
-  non-opt-out CORE capability) fails in observe.
+  non-opt-out CORE capability) fails in observe. The operator declares the price at dispatch
+  instead - see [Integrating a model only the gateway serves](#integrating-a-model-only-the-gateway-serves).
 - the run's gateway `.env` is job-wide, so the gateway must also serve the wire probes' user
   simulator (`anthropic/claude-sonnet-4.6`). The poller checks it and downgrades an explicit
   `via litellm` when it is missing; a gateway-only model has no route to downgrade to, so it is
@@ -297,8 +298,10 @@ Two things do not follow from the route alone, and both would surface late.
 gateway-only id never matches, and nothing else can fetch one. `COST_USD_POPULATED` is a CORE
 capability that can never be a `known_unsupported` ceiling, so the run cannot finish clean
 without a price. Supply it at dispatch as the `pricing` input, `"<input>,<output>"` in USD per
-million tokens; it is written verbatim. Nothing invents a price: without the input the miss is
-reported and left for a human.
+million tokens, exactly two numbers; it is written verbatim and never overwrites an existing
+entry. An all-zero pair is refused as a missing price rather than a free model, the rule the
+catalog path already applies. Nothing invents a price: without the input the miss is reported
+and left for a human.
 
 **The certificate gate.** A certificate's `env_key` names what must be set before its live
 probes run; absent, they skip. The first onboarding of a model has no certificate, so the
@@ -308,12 +311,16 @@ serves the route, which no workflow sets. Every probe would then skip and the cl
 would read "capability suite did not run", which is a transport fact wearing a capability mask.
 
 So the run opens that gate itself: `automation cert-env-gate --model-id <slug>` reports the
-variable a curated certificate declares and the workflow sets it, but only on the gateway route,
-because that route is the claim the gate encodes. On the OpenRouter route an unset gate is a
-warning instead, since nothing there can vouch for it.
+variable a curated certificate declares (unset as the certify `live_client` fixture would see it,
+through `SecretManager`) and the workflow sets it, but only on the gateway route, because that
+route is the claim the gate encodes. "Gateway route" means the **effective** one the `.env` step
+recorded in `observation/cost/route.txt`: a requested `litellm` that fell back to OpenRouter for
+lack of proxy secrets does not open a gate the run cannot honour. On the OpenRouter route an
+unset gate is a warning instead, since nothing there can vouch for it.
 
-New certificates the finalize agent writes get a derived gate name on the gateway route
-(`TF_<MODEL_ID>_GATEWAY_LIVE`) rather than an invented one, so a later re-onboarding finds it.
+New certificates the finalize agent writes get a derived gate name on the (effective) gateway
+route (`TF_<MODEL_ID>_GATEWAY_LIVE`) rather than an invented one, so a later re-onboarding finds
+it.
 
 ## Slack notifications (optional)
 
@@ -451,8 +458,14 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 - `automation greencheck` - fix-target convergence check.
 - `automation ensure-pricing` - best-effort, run before observe: if the candidate's
   litellm name is missing from `pricing.json`, fetch its OpenRouter pricing and insert one key
-  (minimal diff), so `COST_USD_POPULATED` can pass. `--check` mode (exit 1 if unpriced) is the
+  (minimal diff), so `COST_USD_POPULATED` can pass. `--input-usd` / `--output-usd` (the run's
+  `pricing` input) write an operator-declared price verbatim for a model OpenRouter does not
+  carry; an existing entry is never overwritten. `--check` mode (exit 1 if unpriced) is the
   auto-merge price gate.
+- `automation cert-env-gate` - prints the variable a curated certificate gates its live probes on
+  when that variable is unset (nothing for a first onboarding's synthesised cert or a satisfied
+  gate); the workflow opens it on the gateway route only. See "Integrating a model only the
+  gateway serves" above.
 - `automation reconcile-cert` - reconciles the finalized cert against the observe
   `findings.json`: fails if any probed capability is undeclared, if a capability the baseline shows
   passing (>= 0.9) is marked `known_unsupported`, or if any CORE capability (e.g.

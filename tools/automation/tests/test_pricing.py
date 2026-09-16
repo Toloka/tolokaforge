@@ -96,6 +96,23 @@ class TestADeclaredPrice:
         assert pricing.run(name="azure_ai/m", pricing_file=str(pf), declared=(9.9, 9.9)) == 0
         assert json.loads(pf.read_text())["models"]["azure_ai/m"] == {"input": 1.0}
 
+    @pytest.mark.parametrize(
+        "declared",
+        [(0.0, 0.0), (-0.8, 3.2), (0.8, -3.2), (float("nan"), 3.2), (0.8, float("inf"))],
+    )
+    def test_a_number_that_is_no_price_is_refused(self, tmp_path, monkeypatch, capsys, declared):
+        """An all-zero pair is the catalog path's own definition of unpriced (``entry_for``);
+        accepting it here would launder the very gap the declared price exists to close."""
+
+        def explode():
+            raise AssertionError("a refused declaration must not fall back to the network")
+
+        monkeypatch.setattr(pricing, "_fetch_openrouter", explode)
+        pf = self._file(tmp_path)
+        assert pricing.run(name="azure_ai/m", pricing_file=str(pf), declared=declared) == 1
+        assert "::error::" in capsys.readouterr().out
+        assert json.loads(pf.read_text())["models"] == {}
+
     def test_without_a_declaration_the_miss_is_reported_not_invented(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pricing, "_fetch_openrouter", lambda: [])
         pf = self._file(tmp_path)
