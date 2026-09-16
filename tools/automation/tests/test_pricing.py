@@ -66,3 +66,55 @@ def test_check_mode_exit_codes(tmp_path):
     )
     assert pricing.run(name="vendor/known", pricing_file=str(pf), check=True) == 0
     assert pricing.run(name="vendor/unknown", pricing_file=str(pf), check=True) == 1
+
+
+class TestADeclaredPrice:
+    """The only way a gateway-only model can satisfy ``cost_usd_populated``.
+
+    OpenRouter is the sole price source here, so a model it does not carry can never
+    be priced by fetching, and that capability is CORE: it can never be declared
+    unsupported, so the run cannot finish clean without this path.
+    """
+
+    def _file(self, tmp_path):
+        pf = tmp_path / "pricing.json"
+        pf.write_text(json.dumps({"_meta": {}, "models": {}}))
+        return pf
+
+    def test_it_is_written_without_any_fetch(self, tmp_path, monkeypatch):
+        def explode():
+            raise AssertionError("a declared price must not reach the network")
+
+        monkeypatch.setattr(pricing, "_fetch_openrouter", explode)
+        pf = self._file(tmp_path)
+        assert pricing.run(name="azure_ai/m", pricing_file=str(pf), declared=(0.8, 3.2)) == 0
+        assert json.loads(pf.read_text())["models"]["azure_ai/m"] == {"input": 0.8, "output": 3.2}
+
+    def test_an_existing_entry_is_not_overwritten(self, tmp_path):
+        pf = tmp_path / "pricing.json"
+        pf.write_text(json.dumps({"_meta": {}, "models": {"azure_ai/m": {"input": 1.0}}}))
+        assert pricing.run(name="azure_ai/m", pricing_file=str(pf), declared=(9.9, 9.9)) == 0
+        assert json.loads(pf.read_text())["models"]["azure_ai/m"] == {"input": 1.0}
+
+    @pytest.mark.parametrize(
+        "declared",
+        [(0.0, 0.0), (-0.8, 3.2), (0.8, -3.2), (float("nan"), 3.2), (0.8, float("inf"))],
+    )
+    def test_a_number_that_is_no_price_is_refused(self, tmp_path, monkeypatch, capsys, declared):
+        """An all-zero pair is the catalog path's own definition of unpriced (``entry_for``);
+        accepting it here would launder the very gap the declared price exists to close."""
+
+        def explode():
+            raise AssertionError("a refused declaration must not fall back to the network")
+
+        monkeypatch.setattr(pricing, "_fetch_openrouter", explode)
+        pf = self._file(tmp_path)
+        assert pricing.run(name="azure_ai/m", pricing_file=str(pf), declared=declared) == 1
+        assert "::error::" in capsys.readouterr().out
+        assert json.loads(pf.read_text())["models"] == {}
+
+    def test_without_a_declaration_the_miss_is_reported_not_invented(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pricing, "_fetch_openrouter", lambda: [])
+        pf = self._file(tmp_path)
+        assert pricing.run(name="azure_ai/m", pricing_file=str(pf)) == 0
+        assert json.loads(pf.read_text())["models"] == {}
