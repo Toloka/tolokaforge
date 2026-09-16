@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.25.3 (2026-09-15)
+
+### Feat
+
+- **grading**: arena v3 batch 2 — comparator equivalence + order + auto-clock-mask + termination/judge routing (#1594)
+
 ## v0.25.2 (2026-09-12)
 
 ### Fix

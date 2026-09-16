@@ -32,7 +32,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +40,51 @@ logger = logging.getLogger(__name__)
 class ColumnCompareRule(BaseModel):
     """Per-(table, column) rule for the state-hash comparator.
 
-    ``mode: subset`` means the model may include keys in ``column`` beyond what
-    the golden's version of ``column`` carries — for exactly the keys named in
-    ``extras_allowed_for`` — without failing the hash. Extras not named there
-    still fail; keys the golden declares are still compared value-for-value.
+    Two independent families of loosening the pack can opt into per column:
 
-    Mirrors the trace comparator's ``compare_args`` shape on ``RequiredAction``:
-    the trace side declares a subset of arguments to compare, the state side
-    declares a subset of column-dict keys the model may add. Room for future
-    modes (case-insensitive, numeric-tolerant) is why this is a typed struct
-    rather than a bare ``list``.
+    **Structural** (``mode: subset``): the model may include keys in ``column``
+    beyond what the golden's version of ``column`` carries — for exactly the keys
+    named in ``extras_allowed_for`` — without failing the hash. Extras not named
+    there still fail; keys the golden declares are still compared
+    value-for-value. Mirrors the trace comparator's ``compare_args`` shape on
+    ``RequiredAction``.
+
+    **Collection order** (``order: unordered``): the enclosing table's row
+    list is treated as a set — the comparator sorts rows on both sides by
+    canonical JSON before hashing so a pure row-permutation stops failing
+    the hash. Set on any one column-rule of the table; the ordering effect
+    is table-wide, since row order is the property of the row list, not of
+    a single column. Default ``ordered`` keeps positional-list semantics —
+    the same shape every unmigrated column has today.
+
+    **Scalar equivalences** (``treat_null_as_empty_collection``,
+    ``normalize_timezone_suffix``, ``treat_empty_string_as_null``): the
+    column's scalar value is canonicalized to a single form before hashing on
+    both sides. Each flag opts in one equivalence relation:
+
+    - ``treat_null_as_empty_collection`` — ``None`` ≡ ``[]`` ≡ ``{}``. For
+      collection columns the domain treats "no items" and "field absent" as
+      the same state.
+    - ``normalize_timezone_suffix`` — strings ending in ``Z``, ``+00:00``, or
+      ``+0000`` compare equal to the same string without that trailing UTC
+      marker. For datetime columns where the prompt does not require an
+      explicit ``Z`` and the storage layer round-trips it inconsistently.
+    - ``treat_empty_string_as_null`` — ``None`` ≡ ``""``. For nullable-string
+      columns whose prompt says "leave empty" and DB storage folds one form
+      into the other.
+
+    When more than one flag is set on the same column the folds compose to a
+    single "nullish" bucket, so ``None``, ``[]``, ``{}`` and ``""`` all
+    compare equal.
+
+    Room for future modes (case-insensitive, numeric-tolerant) is why this is
+    a typed struct rather than a bare ``list``.
+
+    Declaring ``extras_allowed_for`` requires ``mode: subset``; a rule with a
+    non-empty ``extras_allowed_for`` and no ``mode`` is refused at load time
+    rather than silently ignored — the extras filter only runs under subset
+    mode, and a filter that authors expected to fire is worse than a load-time
+    error naming the missing declaration.
 
     Declared as a per-table, per-column map in ``state_checks.compare_columns``:
 
@@ -58,15 +93,39 @@ class ColumnCompareRule(BaseModel):
         state_checks:
           compare_columns:
             send_notification_notifications:
+              notification_id:
+                order: unordered
               params:
                 mode: subset
                 extras_allowed_for: [param_case_number]
+            d365_cases:
+              custom_tags:
+                treat_null_as_empty_collection: true
+            sap_api_orders:
+              approx_delivery_date:
+                normalize_timezone_suffix: true
+            d365_api_cases:
+              custom_corporate_account_id:
+                treat_empty_string_as_null: true
     """
 
     model_config = {"extra": "forbid"}
 
-    mode: Literal["subset"]
-    extras_allowed_for: list[str]
+    mode: Literal["subset"] | None = None
+    extras_allowed_for: list[str] = Field(default_factory=list)
+    order: Literal["ordered", "unordered"] = "ordered"
+    treat_null_as_empty_collection: bool = False
+    normalize_timezone_suffix: bool = False
+    treat_empty_string_as_null: bool = False
+
+    @model_validator(mode="after")
+    def _extras_require_subset_mode(self) -> "ColumnCompareRule":
+        if self.extras_allowed_for and self.mode is None:
+            raise ValueError(
+                "extras_allowed_for is only consulted under mode: subset — declare "
+                "mode: subset alongside, or remove extras_allowed_for."
+            )
+        return self
 
 
 def apply_compare_columns_extras(
@@ -166,6 +225,207 @@ _NUMERIC_TAG = "\x00tf-num:"
 # Escape prefix for a genuine string that itself begins with the reserved NUL,
 # so a crafted value like "\x00tf-num:130" can never collide with a numeric token.
 _ESCAPE_TAG = "\x00tf-esc:"
+
+# Shared canonical token for column-level nullish equivalences. Distinct from
+# every legitimate value under a folded column: ``None`` cannot collide with a
+# string of any content, and no state ever stores a value with this leading NUL.
+_NULLISH_TOKEN = "\x00tf-nullish"
+
+# Trailing UTC markers a timezone-normalized string treats as interchangeable
+# with the suffix-free form. All three collapse the same equivalence when the
+# DB layer round-trips one form as another.
+_TIMEZONE_UTC_SUFFIXES: tuple[str, ...] = ("Z", "+00:00", "+0000")
+
+
+def _is_empty_collection(value: Any) -> bool:
+    """A value the ``treat_null_as_empty_collection`` fold treats as ``None``."""
+    if value is None:
+        return True
+    if isinstance(value, list) and not value:
+        return True
+    if isinstance(value, dict) and not value:
+        return True
+    return False
+
+
+def _fold_column_value(value: Any, rule: "ColumnCompareRule") -> Any:
+    """Canonicalize one column's scalar value under the rule's equivalence flags.
+
+    Symmetric: applied to both trial and golden before hashing, so any two
+    values the rule declares equivalent collapse to a single token
+    representation on both sides. The subset-mode ``extras_allowed_for``
+    filter is applied separately by :func:`apply_compare_columns_extras`
+    and does not run here.
+    """
+    if rule.treat_null_as_empty_collection and _is_empty_collection(value):
+        return _NULLISH_TOKEN
+    if rule.treat_empty_string_as_null and (
+        value is None or (isinstance(value, str) and not value)
+    ):
+        return _NULLISH_TOKEN
+    if rule.normalize_timezone_suffix and isinstance(value, str):
+        for suffix in _TIMEZONE_UTC_SUFFIXES:
+            if value.endswith(suffix):
+                return value[: -len(suffix)]
+    return value
+
+
+def apply_compare_columns_equivalences(
+    state: dict[str, Any],
+    compare_columns: dict[str, dict[str, "ColumnCompareRule"]] | None,
+) -> dict[str, Any]:
+    """Return ``state`` with column-level equivalence folds applied.
+
+    For each ``(table, column)`` in ``compare_columns`` whose rule sets any of
+    ``treat_null_as_empty_collection``, ``normalize_timezone_suffix`` or
+    ``treat_empty_string_as_null``, canonicalizes the column's value in every
+    row of the table via :func:`_fold_column_value`. The fold is symmetric:
+    every caller runs it on both trial and golden states before hashing, so
+    two values the pack declared equivalent collapse to the same token on
+    both sides.
+
+    The returned dict is a shallow copy — tables absent from
+    ``compare_columns`` share list / dict references with the input rather
+    than being deep-copied. Callers that hash the result (``compute_stable_hash``)
+    and discard it — the only supported use — are unaffected.
+
+    A rule with only structural mode (``mode: subset`` and no equivalence
+    flags set) is a no-op here — its behaviour lives in
+    :func:`apply_compare_columns_extras`.
+    """
+    if not compare_columns:
+        return state
+
+    def _rule_has_equivalence(rule: "ColumnCompareRule") -> bool:
+        return (
+            rule.treat_null_as_empty_collection
+            or rule.normalize_timezone_suffix
+            or rule.treat_empty_string_as_null
+        )
+
+    def _fold_row(row: Any, rules: list[tuple[str, "ColumnCompareRule"]]) -> Any:
+        if not isinstance(row, dict):
+            return row
+        folded = dict(row)
+        for column, rule in rules:
+            if column in folded:
+                folded[column] = _fold_column_value(folded[column], rule)
+        return folded
+
+    result = dict(state)
+    for table, column_rules in compare_columns.items():
+        rules_with_equivalence: list[tuple[str, ColumnCompareRule]] = [
+            (column, rule) for column, rule in column_rules.items() if _rule_has_equivalence(rule)
+        ]
+        if not rules_with_equivalence:
+            continue
+        table_data = result.get(table)
+        if isinstance(table_data, list):
+            result[table] = [_fold_row(row, rules_with_equivalence) for row in table_data]
+        elif isinstance(table_data, dict):
+            result[table] = _fold_row(table_data, rules_with_equivalence)
+    return result
+
+
+def apply_compare_columns_ordering(
+    state: dict[str, Any],
+    compare_columns: dict[str, dict[str, "ColumnCompareRule"]] | None,
+    *,
+    numeric_string_fields: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Return ``state`` with each row list sorted for tables the pack declares unordered.
+
+    Row order matters to :func:`compute_stable_hash` by default — a
+    permutation on the same rows hashes differently. For tables whose
+    domain semantics are set-of-rows, the pack opts in via ``order:
+    unordered`` on any one column-rule of the table; this pass then sorts
+    the table's row list on both sides so a pure permutation stops
+    failing the hash.
+
+    Sort key is the canonical JSON serialization of a numeric-canonicalized
+    view of the row. ``numeric_string_fields`` (the same per-field opt-in
+    :func:`compute_stable_hash` consumes) folds "1" ≡ "1.0" ≡ 1 before the
+    sort so IDs the pack declared numeric sort together on both sides. Order
+    is stable, hash-safe, and does not depend on which column carries the
+    ``order`` declaration. A row that cannot be canonically serialized is
+    itself unhashable downstream — surfaced as :class:`TypeError` here so
+    the failure names the row rather than deferring to a later hash step.
+
+    The returned dict is a shallow copy — tables absent from
+    ``compare_columns`` share list references with the input rather than
+    being deep-copied. Callers that hash the result
+    (:func:`compute_stable_hash`) and discard it — the only supported
+    use — are unaffected.
+
+    Prefer :func:`apply_compare_columns_pipeline` over calling this
+    directly — the pipeline runs equivalence folds, ordering, and extras
+    in the order the state-hash comparator requires.
+    """
+    if not compare_columns:
+        return state
+
+    def _row_sort_key(row: Any) -> str:
+        canonical = _canonicalize_numbers(row, numeric_string_fields)
+        try:
+            return json.dumps(canonical, sort_keys=True, default=str)
+        except TypeError as exc:
+            raise TypeError(
+                f"cannot canonicalize row for order: unordered — row is not JSON-serializable: {row!r}"
+            ) from exc
+
+    result = dict(state)
+    for table, column_rules in compare_columns.items():
+        if not any(rule.order == "unordered" for rule in column_rules.values()):
+            continue
+        table_data = result.get(table)
+        if isinstance(table_data, list):
+            result[table] = sorted(table_data, key=_row_sort_key)
+    return result
+
+
+def apply_compare_columns_pipeline(
+    actual: dict[str, Any],
+    expected: dict[str, Any],
+    compare_columns: dict[str, dict[str, "ColumnCompareRule"]] | None,
+    *,
+    numeric_string_fields: frozenset[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply the state-hash comparator's per-column pipeline to both sides.
+
+    Order matters and this function owns it:
+
+    1. Equivalence folds (:func:`apply_compare_columns_equivalences`) run
+       first on both sides — two values a rule declared equivalent collapse
+       to one token before anything else sees them.
+    2. Ordering (:func:`apply_compare_columns_ordering`) then sorts the
+       row list of any table a rule declared ``unordered`` on both sides.
+       Extras filtering pairs rows positionally, so the sort must happen
+       before extras run or the wrong pair of rows drives the drop.
+    3. Extras (:func:`apply_compare_columns_extras`) drops keys the pack
+       declared permitted-extra from ``actual`` where ``expected`` does
+       not carry them, on the sorted pairing.
+
+    Two-sided by design: the actual and expected states must go through
+    the same pipeline for their hashes to agree, and calling site
+    ordering has been a load-bearing invariant. Callers pass both raw
+    states and receive both processed states in one step.
+
+    ``numeric_string_fields``, when provided, is threaded into the
+    ordering step so an ID column the pack declared numeric folds
+    ``"1"`` and ``"1.0"`` into the same sort position on both sides.
+    """
+    if not compare_columns:
+        return actual, expected
+    actual_folded = apply_compare_columns_equivalences(actual, compare_columns)
+    expected_folded = apply_compare_columns_equivalences(expected, compare_columns)
+    actual_sorted = apply_compare_columns_ordering(
+        actual_folded, compare_columns, numeric_string_fields=numeric_string_fields
+    )
+    expected_sorted = apply_compare_columns_ordering(
+        expected_folded, compare_columns, numeric_string_fields=numeric_string_fields
+    )
+    actual_final = apply_compare_columns_extras(actual_sorted, expected_sorted, compare_columns)
+    return actual_final, expected_sorted
 
 
 def _numeric_token(d: Decimal) -> str:
@@ -318,6 +578,65 @@ def _convert_datetime_to_str(data: Any) -> Any:
         return data
 
 
+#: Column names whose values are auto-generated write-time clocks — dropped
+#: everywhere they appear as record keys when
+#: ``state_checks.auto_mask_clock_columns`` is enabled. The six names cover
+#: the Salesforce / D365 / Zendesk conventions typical of the CRM-shaped
+#: packs the flag targets. All matched case-sensitively at the exact
+#: record-key level; a nested field named ``updated_at`` inside a JSON
+#: payload is not touched (record keys sit at the table row's top level,
+#: one nesting layer inside the state dict). Extending the set is a
+#: wire-lock change.
+AUTO_MASKED_CLOCK_COLUMNS: frozenset[str] = frozenset(
+    {
+        "updated_at",
+        "updated_on",
+        "last_modified",
+        "last_modified_date",
+        "modified_at",
+        "modified_on",
+    }
+)
+
+
+def apply_auto_clock_mask(state: dict[str, Any]) -> dict[str, Any]:
+    """Return ``state`` with every :data:`AUTO_MASKED_CLOCK_COLUMNS` key
+    dropped from every table row.
+
+    Only ``list``-valued top-level entries are treated as tables — the
+    row-list shape :func:`apply_compare_columns_extras` and
+    :func:`apply_compare_columns_ordering` also assume. Dict-valued
+    top-level entries (e.g. a ``metadata`` block carrying a schema
+    ``updated_at`` stamp) are left untouched: they are not table rows and
+    their clock keys are not the write-time clocks the flag targets.
+
+    Symmetric — every caller runs it on both trial and golden sides before
+    hashing, so a clock column present on one side but not the other, or
+    holding two different timestamps for the same content, folds to the
+    same absent-column state on both. Composes with ``unstable_fields``:
+    a pack-declared mask still drops what it drops, this one drops the
+    clock columns the pack forgot.
+
+    Returned dict is a shallow copy; row dicts that carried none of the
+    masked columns share references with the input.
+    """
+    if not isinstance(state, dict):
+        return state
+    result: dict[str, Any] = dict(state)
+    for table, table_data in state.items():
+        if isinstance(table_data, list):
+            result[table] = [_drop_clock_columns_from_row(row) for row in table_data]
+    return result
+
+
+def _drop_clock_columns_from_row(row: Any) -> Any:
+    if not isinstance(row, dict):
+        return row
+    if not AUTO_MASKED_CLOCK_COLUMNS.intersection(row.keys()):
+        return row
+    return {key: value for key, value in row.items() if key not in AUTO_MASKED_CLOCK_COLUMNS}
+
+
 def filter_unstable_fields(
     state: dict[str, Any],
     unstable_fields: list[str] | None = None,
@@ -398,6 +717,7 @@ def compute_stable_hash(
     *,
     canonicalize_numbers: bool = True,
     numeric_string_fields: Iterable[str] | None = None,
+    auto_mask_clock_columns: bool = False,
 ) -> str:
     """
     Compute a stable SHA-256 hash of the state dictionary.
@@ -439,6 +759,11 @@ def compute_stable_hash(
             quantity fields a task declares here (grading config
             ``state_checks.numeric_string_fields``). Matched by the immediate
             record key at any depth. Ignored when canonicalize_numbers is False.
+        auto_mask_clock_columns: When True, drop every column named in
+            :data:`AUTO_MASKED_CLOCK_COLUMNS` from every table row before
+            hashing. Composes with ``unstable_fields`` — pack-declared masks
+            still apply on top of this one. Grading config
+            ``state_checks.auto_mask_clock_columns``.
 
     Returns:
         Hexadecimal string of the SHA-256 hash
@@ -455,6 +780,10 @@ def compute_stable_hash(
     if unstable_fields:
         logger.debug("Filtering unstable fields: %s", unstable_fields)
         state = filter_unstable_fields(state, unstable_fields)
+
+    # Auto-mask conventional write-time clock columns (opt-in).
+    if auto_mask_clock_columns:
+        state = apply_auto_clock_mask(state)
 
     # Convert datetime objects to strings
     serializable_state = _convert_datetime_to_str(state)

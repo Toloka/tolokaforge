@@ -440,6 +440,17 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         wire_shape="list[str]",
     ),
     _WireKey(
+        path="grading.state_checks.auto_mask_clock_columns",
+        emitted_for="grading.state_checks",
+        wire_shape="bool",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="state_checks.auto_mask_clock_columns",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `state_checks.auto_mask_clock_columns: true`",
+        ),
+    ),
+    _WireKey(
         path="grading.state_checks.id_fields",
         emitted_for="grading.state_checks",
         wire_shape="dict[str, str | list[str]]",
@@ -475,6 +486,30 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 direction=_Direction.NEW_ENGINE_OLD_IMAGE,
                 since=_UNRELEASED,
                 breadth="a pack declaring per-column permitted-extra tool-call params",
+            ),
+            _DocLock(
+                doc_key="state_checks.compare_columns.<table>.<column>.treat_null_as_empty_collection",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack folding null and empty-collection on a column",
+            ),
+            _DocLock(
+                doc_key="state_checks.compare_columns.<table>.<column>.normalize_timezone_suffix",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack folding trailing-Z / naive datetime strings on a column",
+            ),
+            _DocLock(
+                doc_key="state_checks.compare_columns.<table>.<column>.treat_empty_string_as_null",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack folding empty-string and null on a column",
+            ),
+            _DocLock(
+                doc_key='state_checks.compare_columns.<table>.<column>.order == "unordered"',
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring a table's rows are a set (row-permutation-insensitive)",
             ),
         ),
     ),

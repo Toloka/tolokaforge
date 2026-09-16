@@ -20,19 +20,22 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
      positive.
   3. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
      even if the state hash happens to match the golden.
-  4. ``TerminationReason.EMPTY_COMPLETION`` — auto-fail. The model returned
-     no text and no tool calls, so there is nothing to grade: dispatching to
-     the runner would score empty content against the golden.
-  5. ``TerminationReason.CONTEXT_WINDOW_EXCEEDED`` — auto-fail. The wire
+  4. ``TerminationReason.CONTEXT_WINDOW_EXCEEDED`` — auto-fail. The wire
      history exceeded the provider's max input tokens and no summarize
      recovery was possible; the transcript is truncated by definition, so
      dispatching to the runner would score a mid-trial cutoff against the
      golden.
-  6. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
+  5. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
      is parsed into :class:`Grade`. A grading run that could not produce a
      verdict raises :class:`GradingFailedError`; the verdict is the runner's
      to compute, so the host has none to substitute.
+
+  ``TerminationReason.EMPTY_COMPLETION`` reaches case 1 by way of
+  :func:`classify_trial_outcome`: the provider returning no text and no
+  tool calls after retries is a transport-side failure the agent never got
+  to act on, so the trial leaves no grade and drops out of the measured
+  denominator alongside ``API_TIMEOUT`` / ``PROVISION_ERROR`` / ``RATE_LIMIT``.
 
 The Protocol is deliberately narrow. A future :class:`TrialGrader`
 implementation may live inside the runner sandbox (per §6.4), speak to a
@@ -291,21 +294,6 @@ class RunnerRPCTrialGrader:
                 components=GradeComponents(),
                 reasons="Agent got stuck (repeated actions without progress)",
                 synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
-            )
-
-        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
-            self.logger.info(
-                "Trial ended with an empty completion - automatic fail",
-                task_id=task_id,
-                trial_index=trial_idx,
-                termination_reason=trajectory.termination_reason.value,
-            )
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(),
-                reasons="Model returned an empty completion (no text, no tool calls)",
-                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
         if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:
@@ -672,21 +660,6 @@ class JudgeBackedTrialGrader:
                 synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
             )
 
-        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
-            self.logger.info(
-                "Trial ended with an empty completion - automatic fail",
-                task_id=task_id,
-                trial_index=trial_idx,
-                termination_reason=trajectory.termination_reason.value,
-            )
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(),
-                reasons="Model returned an empty completion (no text, no tool calls)",
-                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
-            )
-
         if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:
             self.logger.info(
                 "Trial ended with a context-window overflow - automatic fail",
@@ -820,21 +793,6 @@ class GraderRPCTrialGrader:
                 components=GradeComponents(),
                 reasons="Agent got stuck (repeated actions without progress)",
                 synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
-            )
-
-        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
-            self.logger.info(
-                "Trial ended with an empty completion - automatic fail",
-                task_id=task_id,
-                trial_index=trial_idx,
-                termination_reason=trajectory.termination_reason.value,
-            )
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(),
-                reasons="Model returned an empty completion (no text, no tool calls)",
-                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
         if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:
@@ -1044,21 +1002,6 @@ class QueueTrialGrader:
                 components=GradeComponents(),
                 reasons="Agent got stuck (repeated actions without progress)",
                 synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
-            )
-
-        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
-            self.logger.info(
-                "Trial ended with an empty completion - automatic fail",
-                task_id=task_id,
-                trial_index=trial_idx,
-                termination_reason=trajectory.termination_reason.value,
-            )
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(),
-                reasons="Model returned an empty completion (no text, no tool calls)",
-                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
         if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:

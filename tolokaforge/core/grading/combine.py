@@ -58,6 +58,7 @@ from tolokaforge.core.grading.transcript import (
     evaluate_transcript_rules,
     scored_transcript_rules,
 )
+from tolokaforge.core.hash import apply_compare_columns_pipeline
 from tolokaforge.core.models import (
     CustomCheckDetail,
     Grade,
@@ -386,10 +387,31 @@ class GradingEngine:
                     self.task_initial_state.json_db if self.task_initial_state else None
                 ),
             )
+            # The pipeline needs both sides raw so it can pair rows for the
+            # extras filter; the expected-side digest is taken over the
+            # pipeline-processed initial state so both sides land in the
+            # same canonical shape before hashing.
+            _, expected_initial = apply_compare_columns_pipeline(
+                db_state,
+                initial_state,
+                checks.compare_columns,
+                numeric_string_fields=(
+                    frozenset(checks.numeric_string_fields)
+                    if checks.numeric_string_fields
+                    else None
+                ),
+            )
             score, reason = self.state_checker.check_hash(
                 db_state,
-                state_digest(initial_state, numeric_string_fields=checks.numeric_string_fields),
+                state_digest(
+                    expected_initial,
+                    numeric_string_fields=checks.numeric_string_fields,
+                    auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                ),
                 numeric_string_fields=checks.numeric_string_fields,
+                auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                compare_columns=checks.compare_columns,
+                expected_state_for_pipeline=initial_state,
             )
             reasons = [reason]
         elif not hash_config.golden_actions:
@@ -414,6 +436,7 @@ class GradingEngine:
                     task_domain=self.task_domain,
                     numeric_string_fields=checks.numeric_string_fields,
                     compare_columns=checks.compare_columns,
+                    auto_mask_clock_columns=checks.auto_mask_clock_columns,
                 )
             )
             reasons = [reason]

@@ -99,6 +99,7 @@ UNGRADED_REASONS = frozenset(
     {
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_TIMEOUT,
+        TerminationReason.EMPTY_COMPLETION,
         TerminationReason.PROVISION_ERROR,
         TerminationReason.TRIAL_LOST,
     }
@@ -113,6 +114,10 @@ PROSE_IMPOSTORS: dict[TerminationReason, Exception] = {
     ),
     TerminationReason.API_TIMEOUT: RuntimeError(
         "LLM API call failed: the API request timed out after 120s"
+    ),
+    TerminationReason.EMPTY_COMPLETION: RuntimeError(
+        "LLM API call failed: the provider returned an empty completion "
+        "(no text, no tool calls) — this trial should be excluded"
     ),
     TerminationReason.PROVISION_ERROR: RuntimeError(
         "provisioning failed: the substrate never came up (provision_error)"

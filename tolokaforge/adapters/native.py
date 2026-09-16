@@ -956,6 +956,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     id_fields=id_fields_declared,
                     relaxed_validation=relaxed_validation,
                     compare_columns=state_checks_data.get("compare_columns", {}),
+                    auto_mask_clock_columns=state_checks_data.get("auto_mask_clock_columns", False),
                 )
 
             # Build transcript rules. One model serves the authored block and the
