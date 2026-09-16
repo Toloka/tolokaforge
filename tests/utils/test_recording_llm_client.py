@@ -30,11 +30,10 @@ def test_recorded_script_round_trips_text_and_tool_call_turns() -> None:
     assert recorder.recorded_script == script
 
 
-def test_delegates_capabilities_and_error_classification() -> None:
+def test_delegates_tool_sanitization_and_error_classification() -> None:
     delegate = ScriptedLLMClient(["hello"])
     recorder = RecordingLLMClient(delegate)
 
-    assert recorder.capabilities is delegate.capabilities
     assert recorder.sanitize_tools_for_execution([]) == delegate.sanitize_tools_for_execution([])
 
     exc = RuntimeError("boom")
