@@ -165,6 +165,25 @@ deduplicated, skipped and failed. The offline `langfuse-connector download` rebu
 directory from either producer's manifest. Media remains receiver-specific, which is why the
 step lives next to the OTLP observer behind the `otel` extra and not in core.
 
+## Amendment 2026-09-16: the receiver comes from the environment, the project is checked
+
+A live run's destination (which Langfuse project, under which keys) is the deployment's
+configuration, not the engine's: the connector in tolokaforge-tools keeps a registry of named
+destinations and launches the engine under one of them (`with-destination`). To make that
+possible without any Toloka concept in this repository, the exporter reads the endpoint from the
+standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` when
+`observability.tracing.endpoint` is absent (the config validator no longer requires the field; the
+factory does, at run start), merges `TOLOKAFORGE_TRACING_TAGS` into the config's tags (a prefix
+carrying two different values is a configuration error), and gains one setting,
+`observability.tracing.expect_project` (or `TOLOKAFORGE_TRACING_EXPECT_PROJECT`): the
+receiver-side project the credentials must open. Before the first export the factory asks the
+receiver (Langfuse `GET /api/public/projects` through the OTLP headers, REST base derived from the
+endpoint); a mismatch refuses to trace with a `TracingConfigError` before any service starts, an
+unreachable receiver leaves the run `unverified`, and `tracing_receipt.json` records both
+`expect_project` and `project_verified`. This gives the live path the same fail-closed guard the
+offline connector runs, so a key pair that opens another project than a launcher claims (the
+duplicated `ARENA_LANGFUSE_*` pair found in a `.env` on 2026-09-16) can no longer trace into it.
+
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern)

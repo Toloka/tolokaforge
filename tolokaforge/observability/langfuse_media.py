@@ -71,6 +71,29 @@ def api_base_from_endpoint(endpoint: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}{prefix}".rstrip("/")
 
 
+def list_projects(
+    api_base: str,
+    headers: Mapping[str, str],
+    *,
+    timeout_s: float = 30.0,
+    opener: Opener | None = None,
+) -> list[str]:
+    """The names of the projects the credentials in ``headers`` open (``GET
+    /api/public/projects``; a project key lists exactly one). Raises ``LangfuseApiError`` on a
+    non-2xx answer and lets connection errors propagate: the caller decides what an unreachable
+    receiver means."""
+    status, raw = (opener or urllib_opener)(
+        "GET", f"{api_base.rstrip('/')}/api/public/projects", dict(headers), None, timeout_s
+    )
+    if not 200 <= status < 300:
+        raise LangfuseApiError(f"GET /api/public/projects: HTTP {status}")
+    answer = json.loads(raw or b"{}")
+    listed = answer.get("data") if isinstance(answer, dict) else None
+    if not isinstance(listed, list):
+        raise LangfuseApiError("GET /api/public/projects: answer without a project list")
+    return [str(p["name"]) for p in listed if isinstance(p, dict) and p.get("name")]
+
+
 class LangfuseApiError(RuntimeError):
     """A Langfuse API call answered outside 2xx (the message names status and path, never a
     credential)."""

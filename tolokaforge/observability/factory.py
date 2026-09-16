@@ -1,15 +1,24 @@
 """Build the run's ``TrialObserver`` from ``observability.tracing`` (ADR-0046).
 
 ``exporter: none`` (the default) gives the no-op observer; ``exporter: otlp`` needs the ``otel``
-extra and an ``endpoint`` and produces the OTLP observer. The run's tracing identity (the external
-``run_id`` a workflow hands in, else the engine's run id, plus the ``run_tag`` namespace) is
-returned alongside so the conductor derives the same trace ids the offline bundle uploader will,
-and is written to ``run_identity.json`` in the run directory for that uploader to read.
+extra and an endpoint (the config's, else the standard ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` /
+``OTEL_EXPORTER_OTLP_ENDPOINT``) and produces the OTLP observer. The run's tracing identity (the
+external ``run_id`` a workflow hands in, else the engine's run id, plus the ``run_tag`` namespace)
+is returned alongside so the conductor derives the same trace ids the offline bundle uploader
+will, and is written to ``run_identity.json`` in the run directory for that uploader to read.
+
+A launcher that owns the receiver (the Langfuse connector's ``with-destination``) injects the
+endpoint, the headers, extra tags (``TOLOKAFORGE_TRACING_TAGS``) and the project the credentials
+must open (``TOLOKAFORGE_TRACING_EXPECT_PROJECT``); ``expect_project`` is checked against the
+receiver before the first export and a mismatch refuses to trace (ADR-0046, destinations
+amendment).
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +39,17 @@ if TYPE_CHECKING:
 RUN_IDENTITY_FILE = "run_identity.json"
 TRACING_RECEIPT_FILE = "tracing_receipt.json"
 _TAG_SHAPE = re.compile(r"^[a-z][a-z0-9_]*:\S+$")
+# the standard OTel receiver variables (the SDK's own names) and the engine's launcher variables
+OTLP_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
+TRACING_TAGS_ENV = "TOLOKAFORGE_TRACING_TAGS"
+TRACING_EXPECT_PROJECT_ENV = "TOLOKAFORGE_TRACING_EXPECT_PROJECT"
+PROJECT_VERIFIED = "verified"
+PROJECT_UNVERIFIED = "unverified"
+PROJECT_UNCHECKED = "none"
+
+
+_log = logging.getLogger(__name__)
 
 
 class TracingConfigError(ValueError):
@@ -84,10 +104,8 @@ def build_trial_observer(
     identity = RunIdentity(run_id=run_id, run_tag=run_tag)
     if tracing is None or tracing.exporter == "none":
         return NullTrialObserver(), identity
-    if not tracing.endpoint:
-        raise TracingConfigError("observability.tracing.exporter='otlp' requires an endpoint")
-    for tag in tracing.tags:
-        validate_tag(tag)
+    endpoint = resolve_endpoint(tracing.endpoint)
+    tags = merge_tags(tracing.tags, environment_tags())
     try:
         from tolokaforge.observability.otel import OTelTrialObserver, SpanQueue, make_otlp_exporter
     except ImportError as exc:
@@ -100,8 +118,13 @@ def build_trial_observer(
         )
     except ModelNameResolverError as exc:
         raise TracingConfigError(str(exc)) from exc
+    headers = otlp_headers()
+    expect_project = tracing.expect_project or os.environ.get(TRACING_EXPECT_PROJECT_ENV) or None
+    project_verified = PROJECT_UNCHECKED
+    if expect_project:
+        project_verified = check_expected_project(tracing, endpoint, headers, expect_project)
     queue = SpanQueue(
-        make_otlp_exporter(tracing.endpoint, headers=otlp_headers()),
+        make_otlp_exporter(endpoint, headers=headers),
         max_size=tracing.queue_size,
         batch_size=tracing.export_batch_size,
         interval_s=tracing.export_interval_s,
@@ -111,17 +134,90 @@ def build_trial_observer(
         resolver=resolver,
         label=tracing.label or (Path(output_dir).name if output_dir else engine_run_id),
         session_id=tracing.session_id or run_id,
-        tags=tracing.tags,
+        tags=tags,
         metadata=dict(tracing.metadata),
         service_name=tracing.service_name,
         attribute_max_chars=tracing.attribute_max_chars,
         context_messages=tracing.context_messages,
         flush_timeout_s=tracing.flush_timeout_s,
-        attachments=build_attachments(tracing),
+        attachments=build_attachments(tracing, endpoint=endpoint, headers=headers),
+        expect_project=expect_project,
+        project_verified=project_verified,
     )
     if output_dir is not None:
         write_run_identity(Path(output_dir), identity)
     return observer, identity
+
+
+def resolve_endpoint(configured: str | None) -> str:
+    """The receiver's traces URL: the config's ``endpoint``, else the standard OTel variables
+    (``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` as is, ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``/v1/traces``).
+    """
+    if configured:
+        return configured
+    traces = os.environ.get(OTLP_TRACES_ENDPOINT_ENV, "").strip()
+    if traces:
+        return traces
+    base = os.environ.get(OTLP_ENDPOINT_ENV, "").strip()
+    if base:
+        return f"{base.rstrip('/')}/v1/traces"
+    raise TracingConfigError(
+        "observability.tracing.exporter='otlp' requires an endpoint: set "
+        f"observability.tracing.endpoint or {OTLP_TRACES_ENDPOINT_ENV} / {OTLP_ENDPOINT_ENV}"
+    )
+
+
+def environment_tags() -> list[str]:
+    """``TOLOKAFORGE_TRACING_TAGS``: comma-separated ``<prefix>:<value>`` tags a launcher adds."""
+    raw = os.environ.get(TRACING_TAGS_ENV, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def merge_tags(configured: list[str], extra: list[str]) -> list[str]:
+    """Config tags plus environment tags, validated; a prefix carrying two different values is a
+    configuration error (a trace never carries two values under one prefix)."""
+    merged: list[str] = []
+    values: dict[str, str] = {}
+    for tag in [*configured, *extra]:
+        validate_tag(tag)
+        prefix, _, value = tag.partition(":")
+        if prefix in values and values[prefix] != value:
+            raise TracingConfigError(
+                f"tracing tag prefix {prefix!r} given twice with different values: "
+                f"{values[prefix]!r} and {value!r}"
+            )
+        values[prefix] = value
+        if tag not in merged:
+            merged.append(tag)
+    return merged
+
+
+def check_expected_project(
+    tracing: Any, endpoint: str, headers: dict[str, str] | None, expected: str
+) -> str:
+    """The fail-closed project check of the live path: the credentials in the headers must open
+    ``expected`` on the receiver (Langfuse ``GET /api/public/projects``). A mismatch refuses to
+    trace (TracingConfigError, before any service starts); an unreachable check logs a warning
+    and returns ``unverified``, a match ``verified``."""
+    from tolokaforge.observability.langfuse_media import api_base_from_endpoint, list_projects
+
+    api_base = tracing.attach_api_base or api_base_from_endpoint(endpoint)
+    try:
+        names = list_projects(api_base, headers or {}, timeout_s=tracing.attach_timeout_s)
+    except Exception as exc:  # noqa: BLE001 - the receiver is not reachable: unverified, not fatal
+        _log.warning(
+            "expect_project=%s not verified: the projects endpoint of %s did not answer (%s)",
+            expected,
+            api_base,
+            type(exc).__name__,
+        )
+        return PROJECT_UNVERIFIED
+    if expected in names:
+        return PROJECT_VERIFIED
+    raise TracingConfigError(
+        f"observability.tracing.expect_project={expected!r} but the receiver credentials open "
+        f"{names!r}; tracing refused (fix the credentials, never the expectation)"
+    )
 
 
 OTLP_HEADERS_SECRET = "OTEL_EXPORTER_OTLP_HEADERS"
@@ -133,7 +229,9 @@ _NOT_SECRET_NAME = re.compile(
 )
 
 
-def build_attachments(tracing: Any) -> Any:
+def build_attachments(
+    tracing: Any, *, endpoint: str | None = None, headers: dict[str, str] | None = None
+) -> Any:
     """The post-trial attachment step for ``observability.tracing.attach`` (``None`` for
     ``none``): the receiver's REST base derives from the OTLP endpoint unless given, the headers
     are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s credential
@@ -147,9 +245,10 @@ def build_attachments(tracing: Any) -> Any:
 
     if getattr(tracing, "attach", ATTACH_NONE) == ATTACH_NONE:
         return None
+    resolved = endpoint or resolve_endpoint(tracing.endpoint)
     return LangfuseAttachments(
-        api_base=tracing.attach_api_base or api_base_from_endpoint(tracing.endpoint),
-        headers=otlp_headers() or {},
+        api_base=tracing.attach_api_base or api_base_from_endpoint(resolved),
+        headers=(headers if headers is not None else otlp_headers()) or {},
         mode=tracing.attach,
         scan=SecretScan(secret_values()),
         timeout_s=tracing.attach_timeout_s,

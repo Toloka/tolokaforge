@@ -83,6 +83,10 @@ class ExportReceipt:
     attachments_failed: int = 0
     manifests_sent: int = 0
     manifests_failed: int = 0
+    # the receiver-side project the credentials had to open, and the outcome of the check
+    # (verified | unverified | none) run before the first export (destinations amendment)
+    expect_project: str | None = None
+    project_verified: str = "none"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +103,8 @@ class ExportReceipt:
             "attachments_failed": self.attachments_failed,
             "manifests_sent": self.manifests_sent,
             "manifests_failed": self.manifests_failed,
+            "expect_project": self.expect_project,
+            "project_verified": self.project_verified,
         }
 
 

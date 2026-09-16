@@ -225,9 +225,13 @@ class OTelTrialObserver:
         context_messages: int = 6,
         flush_timeout_s: float = 30.0,
         attachments: TrialAttachments | None = None,
+        expect_project: str | None = None,
+        project_verified: str = "none",
     ) -> None:
         self._queue = queue
         self._attachments = attachments
+        self._expect_project = expect_project
+        self._project_verified = project_verified
         self._attach_counts = AttachCounts()
         # trial start and final status by trace id, kept from trial_finished to trial_persisted:
         # the manifest update re-sends both, so the trace keeps its own timestamp and ends with
@@ -561,6 +565,8 @@ class OTelTrialObserver:
             attachments_failed=counts.failed,
             manifests_sent=counts.manifests_sent,
             manifests_failed=counts.manifests_failed,
+            expect_project=self._expect_project,
+            project_verified=self._project_verified,
         )
 
     # -- helpers ------------------------------------------------------------------------------------

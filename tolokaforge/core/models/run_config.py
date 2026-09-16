@@ -1093,11 +1093,15 @@ class GraderConfig(BaseModel):
 class TracingConfig(BaseModel):
     """Live tracing of trials (ADR-0046).
 
-    ``exporter: otlp`` with an ``endpoint`` (the receiver's OTLP/HTTP traces URL) switches the
-    engine's ``TrialObserver`` on: every generation and tool call of a trial leaves as a span while
-    the trial runs, the graded trial closes the trace. Needs the ``otel`` extra. ``none`` (the
-    default) observes nothing. Receiver credentials travel in the standard
-    ``OTEL_EXPORTER_OTLP_HEADERS`` variable, never in this file.
+    ``exporter: otlp`` switches the engine's ``TrialObserver`` on: every generation and tool call
+    of a trial leaves as a span while the trial runs, the graded trial closes the trace. Needs the
+    ``otel`` extra. ``none`` (the default) observes nothing. The receiver is ``endpoint`` (the
+    OTLP/HTTP traces URL) or, when the field is absent, the standard
+    ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_ENDPOINT`` variables, so a
+    launcher can inject the receiver without touching the config; credentials travel in the
+    standard ``OTEL_EXPORTER_OTLP_HEADERS`` variable, never in this file. ``expect_project``
+    (or ``TOLOKAFORGE_TRACING_EXPECT_PROJECT``) names the receiver-side project the credentials
+    must open; the exporter checks it before the first export and refuses to trace on a mismatch.
 
     Identity: ``run_id`` is the external execution identity a workflow hands in (default: the
     engine's own run id) and ``run_tag`` the id namespace; both enter every trace id, so the
@@ -1108,6 +1112,12 @@ class TracingConfig(BaseModel):
 
     exporter: Literal["none", "otlp"] = "none"
     endpoint: str | None = None
+    """The receiver's OTLP/HTTP traces URL; default: ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` or
+    ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``/v1/traces`` from the environment (checked at run start)."""
+    expect_project: str | None = None
+    """The receiver's project the credentials must open (Langfuse: the name listed by
+    ``GET /api/public/projects``); default: ``TOLOKAFORGE_TRACING_EXPECT_PROJECT``. A mismatch
+    refuses to trace before the first export; an unreachable check proceeds ``unverified``."""
     run_id: str | None = None
     run_tag: str = "v1"
     session_id: str | None = None
@@ -1117,7 +1127,8 @@ class TracingConfig(BaseModel):
     service_name: str = "tolokaforge"
     tags: list[str] = Field(default_factory=list)
     """Extra trace tags, each ``<prefix>:<value>``; ``harness:`` and ``model*:`` are set by the
-    exporter and refused here."""
+    exporter and refused here. ``TOLOKAFORGE_TRACING_TAGS`` (comma-separated) adds tags from the
+    environment; one prefix may not carry two values."""
     metadata: dict[str, str] = Field(default_factory=dict)
     """Extra trace metadata; the exporter's own keys win on a clash."""
     model_name_normalizer: Literal["none", "toloka"] = "none"
@@ -1148,9 +1159,8 @@ class TracingConfig(BaseModel):
     reached nothing the step switches itself off for the rest of the run."""
 
     @model_validator(mode="after")
-    def _require_endpoint_when_active(self) -> Self:
-        if self.exporter != "none" and not self.endpoint:
-            raise ValueError(f"TracingConfig.exporter={self.exporter!r} requires endpoint.")
+    def _check_fields(self) -> Self:
+        # the endpoint may come from the standard OTel variables: the factory checks at run start
         if self.model_name_rules and self.model_name_normalizer == "none":
             raise ValueError(
                 "TracingConfig.model_name_rules requires model_name_normalizer='toloka'."

@@ -9,7 +9,8 @@ renders the traces like the offline bundle uploader's, any collector receives va
 observability:
   tracing:
     exporter: otlp                                  # default: none
-    endpoint: https://langfuse.example/api/public/otel/v1/traces
+    endpoint: https://langfuse.example/api/public/otel/v1/traces   # or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+    expect_project: arena                           # the receiver-side project the credentials must open
     run_id: arena/v1/34390073272/1                  # external run identity; default: the engine run id
     run_tag: v1                                     # id namespace
     session_id: arena/v1/gpt6_astra/gpt6_astra/34390073272   # default: run_id
@@ -28,6 +29,25 @@ Install the extra: `pip install 'tolokaforge[otel]'`. The receiver's credentials
 standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable (for Langfuse:
 `Authorization=Basic <base64 public:secret>`, plus `X-GitHub-Runner-Key=...` behind the WAF); the
 engine never logs them.
+
+## The receiver as environment: a launcher owns the destination
+
+The config may stay vendor-neutral and endpoint-free. When `endpoint` is absent the exporter
+reads the standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (as is) or `OTEL_EXPORTER_OTLP_ENDPOINT`
+(+ `/v1/traces`); `TOLOKAFORGE_TRACING_TAGS` (comma-separated `<prefix>:<value>`) adds tags to the
+config's, and one prefix may never carry two different values; `expect_project` (or
+`TOLOKAFORGE_TRACING_EXPECT_PROJECT`) names the receiver-side project the credentials must open.
+Before the first export the exporter asks the receiver (Langfuse: `GET /api/public/projects`, the
+REST base derived from the endpoint, the OTLP headers as credentials): a mismatch is a
+configuration error at run start, with nothing to tear down; a receiver that does not answer
+(the external ingest alias returns 403) leaves the run `unverified`; `tracing_receipt.json`
+records `expect_project` and `project_verified`.
+
+This is how a deployment keeps its project names out of the engine: the Langfuse connector
+(tolokaforge-tools, `langfuse-connector with-destination <name> -- tolokaforge run ...`) resolves
+a named destination from its own registry file, checks the keys, and injects the endpoint, the
+header, the attachment API base, the `project:<name>` tag and the expected project into the
+engine's environment, printing nothing. A config that names its own `endpoint` keeps it.
 
 ## What a trace looks like
 

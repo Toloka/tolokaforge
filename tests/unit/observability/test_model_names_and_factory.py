@@ -13,6 +13,8 @@ from tolokaforge.observability.factory import (
     RunIdentity,
     TracingConfigError,
     build_trial_observer,
+    merge_tags,
+    resolve_endpoint,
     validate_tag,
 )
 from tolokaforge.observability.model_names import (
@@ -67,9 +69,17 @@ class TestTracingConfig:
         assert tracing.model_name_normalizer == "none" and tracing.model_name_rules is None
         assert tracing.tags == [] and tracing.metadata == {}
 
-    def test_otlp_requires_an_endpoint(self) -> None:
-        with pytest.raises(ValueError):
-            TracingConfig(exporter="otlp")
+    def test_otlp_without_an_endpoint_anywhere_is_a_run_start_error(self, monkeypatch) -> None:
+        # the endpoint may come from the standard OTel variables, so the config alone accepts it
+        # and the factory decides (destinations amendment of ADR-0046)
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+        config = ObservabilityConfig(tracing=TracingConfig(exporter="otlp"))
+        with pytest.raises(TracingConfigError, match="requires an endpoint"):
+            build_trial_observer(config, engine_run_id="run-1")
+
+    def test_expect_project_defaults_to_none(self) -> None:
+        assert TracingConfig().expect_project is None
 
     def test_rules_need_the_normalizer(self) -> None:
         with pytest.raises(ValueError):
@@ -190,3 +200,113 @@ class TestAttachmentStep:
 
         monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
         assert sorted(factory.secret_values()) == ["sk-lf-xyz", "sk-or-v1-abc"]
+
+
+class TestReceiverFromTheEnvironment:
+    """A launcher (the connector's with-destination) injects the receiver; the config may stay
+    vendor-neutral and endpoint-free."""
+
+    def test_endpoint_resolution_order(self, monkeypatch) -> None:
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://lf.example/api/public/otel/")
+        assert resolve_endpoint(None) == "https://lf.example/api/public/otel/v1/traces"
+        monkeypatch.setenv(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://lf.example/api/public/otel/v1/traces"
+        )
+        assert resolve_endpoint(None) == "https://lf.example/api/public/otel/v1/traces"
+        assert (
+            resolve_endpoint("https://other.example/v1/traces") == "https://other.example/v1/traces"
+        )
+
+    def test_environment_tags_merge_and_a_prefix_never_carries_two_values(self) -> None:
+        assert merge_tags(["team:delivery"], ["project:test-arena", "team:delivery"]) == [
+            "team:delivery",
+            "project:test-arena",
+        ]
+        with pytest.raises(TracingConfigError, match="given twice"):
+            merge_tags(["project:arena"], ["project:test-arena"])
+        with pytest.raises(TracingConfigError):
+            merge_tags([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
+
+    def _projects(self, monkeypatch, answer) -> list[tuple[str, str]]:
+        from tolokaforge.observability import langfuse_media
+
+        calls: list[tuple[str, str]] = []
+
+        def opener(method, url, headers, body, timeout):
+            calls.append((method, url))
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(langfuse_media, "urllib_opener", opener)
+        return calls
+
+    def test_expect_project_verified_lands_in_the_receipt(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        calls = self._projects(
+            monkeypatch, (200, json.dumps({"data": [{"id": "p1", "name": "test-arena"}]}).encode())
+        )
+        monkeypatch.setenv(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:9/api/public/otel/v1/traces"
+        )
+        monkeypatch.setenv("TOLOKAFORGE_TRACING_TAGS", "project:test-arena")
+        monkeypatch.setenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", "test-arena")
+        config = ObservabilityConfig(tracing=TracingConfig(exporter="otlp", attach="none"))
+        observer, _ = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
+        try:
+            assert calls == [("GET", "http://127.0.0.1:9/api/public/projects")]
+            assert observer._tags == ("project:test-arena",)
+        finally:
+            receipt = observer.run_finished()
+        assert receipt.expect_project == "test-arena" and receipt.project_verified == "verified"
+        assert receipt.to_dict()["project_verified"] == "verified"
+
+    def test_expect_project_mismatch_refuses_to_trace_before_anything_starts(
+        self, monkeypatch
+    ) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        self._projects(
+            monkeypatch, (200, json.dumps({"data": [{"id": "p2", "name": "test-arena"}]}).encode())
+        )
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+                expect_project="arena",
+                attach="none",
+            )
+        )
+        with pytest.raises(TracingConfigError, match="expect_project='arena'.*\\['test-arena'\\]"):
+            build_trial_observer(config, engine_run_id="run-1")
+
+    def test_unreachable_check_is_unverified_not_fatal(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        self._projects(monkeypatch, (403, b"forbidden"))
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+                expect_project="arena",
+                attach="none",
+            )
+        )
+        observer, _ = build_trial_observer(config, engine_run_id="run-1")
+        receipt = observer.run_finished()
+        assert receipt.project_verified == "unverified" and receipt.expect_project == "arena"
+
+    def test_without_expect_project_nothing_is_checked(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        calls = self._projects(monkeypatch, (200, b"{}"))
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", raising=False)
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_TAGS", raising=False)
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp", endpoint="http://127.0.0.1:9/v1/traces", attach="none"
+            )
+        )
+        observer, _ = build_trial_observer(config, engine_run_id="run-1")
+        receipt = observer.run_finished()
+        assert calls == [] and receipt.project_verified == "none"
