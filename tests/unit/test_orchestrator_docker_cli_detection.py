@@ -368,7 +368,11 @@ class TestDockerStackRequirementsImageBuildsCarveOut:
         compose.write_text("services:\n  main:\n    image: example:local\n")
 
         requirements = DockerStackRequirements(
-            image_builds=[ComposeImageBuild(compose_file=compose, service="main")],
+            image_builds=[
+                ComposeImageBuild(
+                    compose_file=compose, service="main", expected_image_ref="example:local"
+                )
+            ],
         )
 
         assert requirements.to_core_stack_kwargs() == {}
@@ -419,6 +423,29 @@ class TestPerformDeclaredComposeImageBuilds:
 
         assert calls == []
 
+    @staticmethod
+    def _fake_docker(calls: list[list[str]], *, present_after_build: bool, present: bool = False):
+        """Stand-in for the two ``docker`` shell-outs the helper makes.
+
+        ``docker image inspect`` answers ``present`` until a ``docker compose
+        build`` has run and ``present_after_build``; the build itself always
+        exits 0. Modelling the transition is what makes the skip branch and
+        the post-build verification both reachable.
+        """
+        built: list[bool] = []
+
+        def _run(cmd: list[str], **kwargs: Any) -> Any:
+            calls.append(list(cmd))
+            if cmd[:3] == ["docker", "image", "inspect"]:
+                resolves = present_after_build if built else present
+                return MagicMock(returncode=0 if resolves else 1)
+            if cmd[:2] == ["docker", "compose"] and "build" in cmd:
+                built.append(True)
+                return MagicMock(returncode=0)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        return _run
+
     def test_one_declared_build_invokes_docker_compose_build_exactly_once(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -428,24 +455,109 @@ class TestPerformDeclaredComposeImageBuilds:
         compose.write_text("services:\n  main:\n    image: missing-image:local\n")
 
         calls: list[list[str]] = []
-
-        def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
-            calls.append(list(cmd))
-            # ``docker image inspect`` for the pinned image reports "not present"
-            # so the pre-build helper does not short-circuit; the ``docker compose
-            # build`` call then succeeds. Any other command is unexpected.
-            if cmd[:3] == ["docker", "image", "inspect"]:
-                return MagicMock(returncode=1)
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr("subprocess.run", self._fake_docker(calls, present_after_build=True))
 
         orch = Orchestrator(_run_config(adapter_type=None))
         orch._perform_declared_compose_image_builds(
             DockerStackRequirements(
-                image_builds=[ComposeImageBuild(compose_file=compose, service="main")],
+                image_builds=[
+                    ComposeImageBuild(
+                        compose_file=compose,
+                        service="main",
+                        expected_image_ref="missing-image:local",
+                    )
+                ],
             )
         )
 
         build_calls = [cmd for cmd in calls if cmd[:2] == ["docker", "compose"] and "build" in cmd]
         assert build_calls == [["docker", "compose", "-f", str(compose), "build", "main"]]
+
+    def test_present_image_skips_the_build(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The skip is the whole cache win, and it is only sound because the
+        declared ref is content-addressed — a resolvable ref is a fresh one."""
+        from tolokaforge.adapters.base import ComposeImageBuild, DockerStackRequirements
+
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text("services:\n  main:\n    image: cached:local-a1b2c3d4\n")
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "subprocess.run",
+            self._fake_docker(calls, present=True, present_after_build=True),
+        )
+
+        orch = Orchestrator(_run_config(adapter_type=None))
+        orch._perform_declared_compose_image_builds(
+            DockerStackRequirements(
+                image_builds=[
+                    ComposeImageBuild(
+                        compose_file=compose,
+                        service="main",
+                        expected_image_ref="cached:local-a1b2c3d4",
+                    )
+                ],
+            )
+        )
+
+        assert calls == [["docker", "image", "inspect", "cached:local-a1b2c3d4"]]
+
+    def test_compose_pinning_another_ref_than_the_adapter_declared_raises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A second, divergent reconstruction of the ref must not reach a build."""
+        from tolokaforge.adapters.base import ComposeImageBuild, DockerStackRequirements
+
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text("services:\n  main:\n    image: cached:local-stale000\n")
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "subprocess.run",
+            self._fake_docker(calls, present=True, present_after_build=True),
+        )
+
+        orch = Orchestrator(_run_config(adapter_type=None))
+        with pytest.raises(RuntimeError, match="image ref mismatch"):
+            orch._perform_declared_compose_image_builds(
+                DockerStackRequirements(
+                    image_builds=[
+                        ComposeImageBuild(
+                            compose_file=compose,
+                            service="main",
+                            expected_image_ref="cached:local-a1b2c3d4",
+                        )
+                    ],
+                )
+            )
+
+        assert calls == []
+
+    def test_build_that_leaves_no_such_image_raises(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``docker compose build`` exiting 0 without producing the declared
+        tag must abort the run, not hand the trial an image that is not there."""
+        from tolokaforge.adapters.base import ComposeImageBuild, DockerStackRequirements
+
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text("services:\n  main:\n    image: unloaded:local-a1b2c3d4\n")
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr("subprocess.run", self._fake_docker(calls, present_after_build=False))
+
+        orch = Orchestrator(_run_config(adapter_type=None))
+        with pytest.raises(RuntimeError, match="exited 0 but the declared image is absent"):
+            orch._perform_declared_compose_image_builds(
+                DockerStackRequirements(
+                    image_builds=[
+                        ComposeImageBuild(
+                            compose_file=compose,
+                            service="main",
+                            expected_image_ref="unloaded:local-a1b2c3d4",
+                        )
+                    ],
+                )
+            )

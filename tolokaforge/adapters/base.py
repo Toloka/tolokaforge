@@ -39,10 +39,18 @@ class ComposeImageBuild:
         compose_file: Absolute path to the compose file that defines
             ``service``. Passed as ``docker compose -f <compose_file>``.
         service: Compose service name to build.
+        expected_image_ref: The image ref the adapter pinned on ``service``
+            in ``compose_file``. The orchestrator refuses the build when the
+            compose file declares a different one, so a second, divergent
+            reconstruction of an image ref cannot silently reuse or build an
+            image nobody predicted. Same guarantee
+            :meth:`tolokaforge.docker.image.Image.expected_ref` gives the
+            engine's own images.
     """
 
     compose_file: Path
     service: str
+    expected_image_ref: str
 
 
 @dataclass
@@ -82,7 +90,9 @@ class DockerStackRequirements:
             ``PROVISION_ERROR`` (naming compose, not the Dockerfile) on
             failure. Each entry becomes ``docker compose -f <compose_file>
             build <service>``, skipped when the service's pinned image
-            already resolves locally.
+            already resolves locally — which is only sound because
+            ``expected_image_ref`` is content-addressed, so a resolvable ref
+            is also a fresh one.
     """
 
     task_pack_mounts: list[Path] = field(default_factory=list)

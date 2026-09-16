@@ -1,5 +1,6 @@
 """Unit tests for terminal-bench adapter and Docker Compose exec wrapper."""
 
+import re
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -377,6 +378,27 @@ class TestTerminalBenchAdapterDockerStackRequirements:
             adapter._environment(tid).compose_file for tid in task_ids
         ]
 
+    def test_declared_image_refs_match_what_the_compose_file_pins(self, fixture_dir, tmp_path):
+        """What the adapter hands the orchestrator's pre-build seam and what
+        compose will actually build have to be the same string — the
+        orchestrator refuses the build when they differ."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+            }
+        )
+        builds = adapter.docker_stack_requirements().image_builds
+        assert [b.service for b in builds] == ["main-base", "main", "main-base", "main"]
+        for build in builds:
+            with build.compose_file.open() as handle:
+                doc = yaml.safe_load(handle)
+            assert doc["services"][build.service]["image"] == build.expected_image_ref
+
     def test_prebuild_images_false_returns_no_builds(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
@@ -403,7 +425,11 @@ class TestTerminalBenchAdapterDockerStackRequirements:
         compose = tmp_path / "docker-compose.yaml"
         compose.write_text("services: {}\n")
         with_builds = DockerStackRequirements(
-            image_builds=[ComposeImageBuild(compose_file=compose, service="main")]
+            image_builds=[
+                ComposeImageBuild(
+                    compose_file=compose, service="main", expected_image_ref="x:local"
+                )
+            ]
         ).to_core_stack_kwargs()
         assert with_builds == {}
 
@@ -1253,6 +1279,20 @@ class TestHarnessModelPrefix:
         assert "agent_harness_model" not in metadata
 
 
+_CONTENT_DIGEST = re.compile(r"^[0-9a-f]{8}$")
+
+
+def _assert_layered_image(image: str, expected_prefix: str) -> None:
+    """The layered ref is ``<base>-<harness>-<version>-<content digest>``.
+
+    Asserted as prefix + digest shape rather than one literal: the digest
+    moves whenever the layer's build context does, which is the point of it.
+    """
+    prefix, _, digest = image.rpartition("-")
+    assert prefix == expected_prefix, image
+    assert _CONTENT_DIGEST.match(digest), image
+
+
 def _harness_task(tmp_path: Path, task_id: str, *, with_build: bool):
     main: dict = {"image": "${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}"}
     if with_build:
@@ -1301,7 +1341,7 @@ class TestComposeSynthesisHarnessLayer:
         assert base["profiles"] == ["tolokaforge-build"]
 
         main = compose["services"]["main"]
-        assert main["image"] == "tbench-layered:local-claude-code-2.1.233"
+        _assert_layered_image(main["image"], "tbench-layered:local-claude-code-2.1.233")
         assert main["build"] == {
             "context": ".",
             "dockerfile": "_harness/harness.Dockerfile",
@@ -1351,7 +1391,9 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.233"
+        _assert_layered_image(
+            compose["services"]["main"]["image"], "tbench-prebuilt:local-claude-code-2.1.233"
+        )
 
     def test_registry_base_is_pulled_not_built(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -1370,11 +1412,74 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert (
-            compose["services"]["main"]["image"] == "reg.example/tbench/registry:v1-codex-0.147.0"
+        _assert_layered_image(
+            compose["services"]["main"]["image"], "reg.example/tbench/registry:v1-codex-0.147.0"
         )
         dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
         assert dockerfile.startswith("FROM reg.example/tbench/registry:v1\n")
+
+    def test_editing_an_injected_script_moves_the_layered_image_ref(self, tmp_path, monkeypatch):
+        """The regression this class exists for: an edit to a file the layer
+        bakes in must reach the container. It only can if the image ref moves
+        — a caller that reuses an image because its ref resolves otherwise
+        runs the previous build, and a dead agent reads back as a trial."""
+        from tolokaforge_adapter_terminal_bench import compose_synthesis
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "edited", with_build=True)
+        before = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+
+        edited = tmp_path / "install-harness.sh"
+        edited.write_text((compose_synthesis.INSTALL_SCRIPT).read_text() + "\n# one more line\n")
+        monkeypatch.setattr(compose_synthesis, "INSTALL_SCRIPT", edited)
+
+        after = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        assert after.agent_image != before.agent_image
+
+    def test_editing_a_skill_moves_the_layered_image_ref(self, tmp_path):
+        """The bundle is baked in by the shipped ``SkillDelivery``'s ``COPY``,
+        so its bytes are part of the image's identity too."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "skilled", with_build=True)
+        skill = meta.task_dir / "skills" / "a" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("before\n")
+        object.__setattr__(meta, "harness_skills_dir", "skills")
+
+        before = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        skill.write_text("after\n")
+        after = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        assert after.agent_image != before.agent_image
+
+    def test_the_layered_image_ref_is_reproducible(self, tmp_path):
+        """Two materialisations of untouched inputs must land on the same ref,
+        or the skip never fires and every run rebuilds (and the canonical
+        snapshots holding the ref would be machine-dependent)."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "stable", with_build=True)
+        refs = {
+            materialise_task_environment(
+                meta, staging_root=tmp_path / f"staging-{n}", agent_harness="claude-code"
+            ).agent_image
+            for n in range(2)
+        }
+        assert len(refs) == 1
 
     def test_switching_harness_changes_the_staging_digest(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -2101,7 +2206,10 @@ class TestHarnessPresetsFileOverlay:
         assert td.metadata["agent_harness_version"] == "0.0.0-overlay"
         assert " --model " in td.metadata["agent_harness_command"]
         compose = _load_synthesised(adapter._environment("echo-hello"))
-        assert compose["services"]["main"]["image"].endswith("claude-code-0.0.0-overlay")
+        _assert_layered_image(
+            compose["services"]["main"]["image"],
+            "tbench-echo-hello:local-claude-code-0.0.0-overlay",
+        )
 
     def test_shipped_entries_the_overlay_leaves_alone_are_untouched(self, fixture_dir, tmp_path):
         from tolokaforge_coding_harnesses import HARNESSES

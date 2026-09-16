@@ -71,6 +71,7 @@ from tolokaforge_coding_harnesses import (
     PathResolver,
     SkillDelivery,
     SkillsBundle,
+    harness_image_content_digest,
     provider_env_input,
     validate_harness,
 )
@@ -131,6 +132,16 @@ class MaterialisedEnvironment:
     staging_dir: Path
     """Absolute path to the staging directory the task compose file lives in."""
 
+    base_image: str
+    """Image ref of the un-layered task image — what ``base_build_service``
+    builds, and what the harness layer's Dockerfile is ``FROM``."""
+
+    agent_image: str
+    """Image ref pinned on ``agent_service``. Under harness mode it carries a
+    digest of the layer's build context, so it moves when the baked-in bytes
+    move; equal to ``base_image`` under the engine loop. Read straight off the
+    synthesised compose doc, so no second construction can drift from it."""
+
     base_build_service: str | None = None
     """Compose service that builds the un-layered task image, when the
     environment is harness-layered and the base is built rather than pulled.
@@ -178,9 +189,9 @@ def materialise_task_environment(
             Any other accepted harness splits the agent image in two: the
             task's own build becomes the ``-base`` image, and the agent
             service builds a thin layer on top of it that installs the CLI.
-            The layered image carries the harness in its tag, so switching
-            harnesses (or bumping a pinned CLI version) can never reuse a
-            stale cached image.
+            The layered image's tag carries the harness, its pinned version
+            and a digest of the layer's whole build context, so no change to
+            what the layer bakes in can reuse a stale cached image.
         harness_registry: Specs ``agent_harness`` resolves against. Defaults
             to the shipped registry; the adapter passes its own when an
             operator overlay replaced or added an entry.
@@ -266,19 +277,11 @@ def materialise_task_environment(
     staging_dir = (staging_root / f"{meta.task_id}-{digest}").resolve()
     _write_staging(meta.task_dir, staging_dir)
 
-    task_doc, engine_doc, base_build_service = _build_synthesised_compose(
-        original=original,
-        meta=meta,
-        agent_service=agent_service,
-        base_service=base_service,
-        image_registry=image_registry,
-        image_tag=image_tag,
-        agent_harness=agent_harness,
-        harness_spec=harness_spec,
-        provider_env_keys=provider_env_keys,
-        runner_image=runner_image,
-        db_service_image=db_service_image,
-    )
+    # The harness layer's build context is written before the compose file is
+    # synthesised, because the agent service's image ref carries a digest of
+    # that context — and the context is only final once every writer has had
+    # its say, the pluggable `SkillDelivery` included.
+    harness_content_digest: str | None = None
     if harness_spec is not None:
         skills_dir = installable_skills_dir(meta, harness_spec)
         if meta.harness_skills_dir is not None and skills_dir is None:
@@ -306,6 +309,22 @@ def materialise_task_environment(
                     staging_dir=staging_dir,
                 )
             )
+        harness_content_digest = _harness_layer_digest(staging_dir, skills_dir=skills_dir)
+
+    task_doc, engine_doc, base_build_service = _build_synthesised_compose(
+        original=original,
+        meta=meta,
+        agent_service=agent_service,
+        base_service=base_service,
+        image_registry=image_registry,
+        image_tag=image_tag,
+        agent_harness=agent_harness,
+        harness_spec=harness_spec,
+        harness_content_digest=harness_content_digest,
+        provider_env_keys=provider_env_keys,
+        runner_image=runner_image,
+        db_service_image=db_service_image,
+    )
     compose_file = staging_dir / _SYNTHESISED_COMPOSE_FILENAME
     compose_file.write_text(yaml.safe_dump(task_doc, sort_keys=False))
 
@@ -317,6 +336,8 @@ def materialise_task_environment(
         agent_service=agent_service,
         staging_dir=staging_dir,
         base_build_service=base_build_service,
+        base_image=_agent_image(meta.task_id, image_registry, image_tag),
+        agent_image=task_doc["services"][agent_service]["image"],
     )
 
 
@@ -545,10 +566,45 @@ DEFAULT_SKILL_DELIVERY: Final[SkillDelivery] = ImageLayerSkillDelivery()
 """The delivery every adapter surface falls back to when a caller names none."""
 
 
+def _harness_layer_digest(staging_dir: Path, *, skills_dir: str | None) -> str:
+    """Content digest of what the harness image layer bakes in.
+
+    Read back from the materialised staging tree rather than re-rendered, so
+    the digest describes the bytes ``docker compose build`` will read —
+    including anything a :class:`~tolokaforge_coding_harnesses.SkillDelivery`
+    appended, which no re-render could reproduce.
+
+    The parts are exactly what the generated ``.dockerignore`` re-admits: the
+    ``_harness/`` directory (dockerfile, install script, middleware proxy) and
+    the task's skills bundle when one was delivered. ``.dockerignore`` itself
+    is in, because it decides the context.
+    """
+    parts = {
+        ".dockerignore": staging_dir / ".dockerignore",
+        _HARNESS_STAGING_DIR: staging_dir / _HARNESS_STAGING_DIR,
+    }
+    if skills_dir is not None:
+        parts[skills_dir] = staging_dir / skills_dir
+    return harness_image_content_digest(parts)
+
+
 def _agent_image(task_id: str, image_registry: str | None, image_tag: str) -> str:
     if image_registry:
         return f"{image_registry}/{task_id}:{image_tag}"
     return f"tbench-{task_id}:{image_tag}"
+
+
+def _layered_agent_image(
+    base_image: str, agent_harness: str, harness_version: str, content_digest: str
+) -> str:
+    """The harness-layered image's ref, keyed on what the layer bakes in.
+
+    *content_digest* is :func:`_harness_layer_digest`'s answer. Without it two
+    layers built from different install-script, proxy or skills bytes would
+    share a ref, and a caller that reuses an image because its ref resolves
+    would run the previous build.
+    """
+    return f"{base_image}-{agent_harness}-{harness_version}-{content_digest}"
 
 
 def _build_synthesised_compose(
@@ -561,6 +617,7 @@ def _build_synthesised_compose(
     image_tag: str,
     agent_harness: str,
     harness_spec: HarnessSpec | None,
+    harness_content_digest: str | None,
     provider_env_keys: Sequence[str],
     runner_image: str,
     db_service_image: str,
@@ -579,7 +636,16 @@ def _build_synthesised_compose(
     if harness_spec is None:
         agent_image = base_image
     else:
-        agent_image = f"{base_image}-{agent_harness}-{harness_spec.version}"
+        if harness_content_digest is None:
+            raise ValueError(
+                f"terminal-bench task {meta.task_id!r}: harness {agent_harness!r} was "
+                "resolved but no harness_content_digest was supplied. The layered image "
+                "ref must carry a digest of the layer's build context, so the context "
+                "has to be written before the compose file is synthesised."
+            )
+        agent_image = _layered_agent_image(
+            base_image, agent_harness, harness_spec.version, harness_content_digest
+        )
     agent_container_name = _trial_scoped_container_name(agent_service)
 
     resolved_vars = {

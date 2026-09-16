@@ -249,8 +249,9 @@ def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
     Read straight from the file — no ``docker compose config`` shell-out — so
     the skip-when-already-present check the pre-build helper does works
     without touching the daemon. Missing service, missing file, missing
-    ``image:`` entry, or unreadable YAML all return ``None``; the caller
-    treats that as "cannot determine, build unconditionally".
+    ``image:`` entry, or unreadable YAML all return ``None``, which never
+    matches the ref the adapter declared, so the caller refuses the build
+    rather than guessing which image it would have produced.
     """
     import yaml
 
@@ -1544,11 +1545,28 @@ class Orchestrator:
 
     def _perform_one_compose_image_build(self, build: Any) -> None:
         """Build one adapter-declared compose service image, skipping the
-        subprocess when the pinned image already resolves locally."""
+        subprocess when the pinned image already resolves locally.
+
+        The skip is only safe while the declared ref names the content it was
+        built from, so both ends of that claim are checked here: the compose
+        file must pin the ref the adapter predicted, and the build must leave
+        that ref resolvable. Either mismatch raises rather than letting the
+        run proceed on an image nobody predicted — the failure mode that made
+        a dead agent read back as a passing trial.
+        """
         import subprocess
 
         image_ref = _compose_service_image_ref(build.compose_file, build.service)
-        if image_ref is not None and _local_image_exists(image_ref):
+        if image_ref != build.expected_image_ref:
+            raise RuntimeError(
+                f"compose service {build.service!r}: image ref mismatch in "
+                f"{build.compose_file!s}. Declared: {build.expected_image_ref}. "
+                f"Actual: {image_ref}. The adapter predicted one ref to the pre-build "
+                "seam and pinned another in the compose file, so the run would build "
+                "or reuse an image nobody predicted. Derive both from the adapter's "
+                "own image-ref helper."
+            )
+        if _local_image_exists(image_ref):
             self.logger.info(
                 "compose image already resolves locally; skipping declared build",
                 compose_file=str(build.compose_file),
@@ -1565,6 +1583,14 @@ class Orchestrator:
             ["docker", "compose", "-f", str(build.compose_file), "build", build.service],
             check=True,
         )
+        if not _local_image_exists(image_ref):
+            raise RuntimeError(
+                f"compose service {build.service!r}: `docker compose build` exited 0 but "
+                f"the declared image is absent from the local Docker image store. "
+                f"Declared: {image_ref}. Actual: not present. A builder that does not "
+                "load its result into the daemon (buildx without `--load`) produces "
+                "this; point DOCKER_BUILDKIT / the compose builder at the local store."
+            )
 
     def _build_trial_executor(
         self,

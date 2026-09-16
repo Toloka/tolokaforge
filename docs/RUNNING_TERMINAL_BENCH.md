@@ -303,7 +303,13 @@ Every trial produces the same bundle:
   died mid-session. The task now runs uvicorn under supervisord with
   `autorestart=true` so this shouldn't happen. If you see it, verify your
   cached tbench-fix-billing-holds image was rebuilt against the current
-  Dockerfile (`docker rmi tbench-fix-billing-holds:*` and rerun).
+  Dockerfile (`docker rmi tbench-fix-billing-holds:local` and rerun). This
+  applies to the **task's own** `-base` image, whose tag is the one you
+  supplied (`--image-tag`, default `local`): editing a task's Dockerfile does
+  not move it. The harness layer on top needs no such workaround — its tag
+  carries a digest of everything the layer bakes in, so editing an injected
+  script, the middleware proxy or a skills bundle moves the tag and forces the
+  rebuild.
 - **Deterministic baseline scores across n=3 trials** — the model isn't
   responding at all. Check the trajectory for `APIEmptyResponseError` (Kimi
   K2.7 needs the middleware — see recipe above) or `UnknownError` (opencode

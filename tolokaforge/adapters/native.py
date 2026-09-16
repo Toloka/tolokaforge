@@ -733,10 +733,18 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             if env is None:
                 continue
             builds.append(
-                ComposeImageBuild(compose_file=env.compose_file, service=env.base_build_service)
+                ComposeImageBuild(
+                    compose_file=env.compose_file,
+                    service=env.base_build_service,
+                    expected_image_ref=env.base_image,
+                )
             )
             builds.append(
-                ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
+                ComposeImageBuild(
+                    compose_file=env.compose_file,
+                    service=env.agent_service,
+                    expected_image_ref=env.agent_image,
+                )
             )
         return DockerStackRequirements(image_builds=builds)
 
