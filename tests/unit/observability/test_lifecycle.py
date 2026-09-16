@@ -34,6 +34,9 @@ class _Recording:
     def trial_finished(self, identity, **kwargs):
         self.events.append(("trial_finished", {"identity": identity, **kwargs}))
 
+    def trial_persisted(self, identity, **kwargs):
+        self.events.append(("trial_persisted", {"identity": identity, **kwargs}))
+
     def run_finished(self):
         return ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
 
@@ -56,7 +59,7 @@ def _trajectory() -> Trajectory:
     return Trajectory(task_id="T-1", trial_index=0, start_ts=now, end_ts=now, messages=[])
 
 
-def _conductor(observer, run_identity=None) -> InProcessConductor:
+def _conductor(observer, run_identity=None, trial_dir: Path | None = None) -> InProcessConductor:
     conductor = InProcessConductor(
         adapter=MagicMock(),
         artifact_writer=MagicMock(),
@@ -72,6 +75,8 @@ def _conductor(observer, run_identity=None) -> InProcessConductor:
     setup = MagicMock()
     setup.trial_id = "T-1:0"
     setup.trial_idx = 0
+    # a real path: the error path asks whether a bundle exists under it
+    setup.trial_dir = trial_dir or Path("/nonexistent/tolokaforge-trial")
     conductor._setup_trial = MagicMock(return_value=setup)
     conductor._capture_final_state = MagicMock()
     conductor._grade = MagicMock()
@@ -89,7 +94,7 @@ class TestConductorLifecycle:
         conductor.run(_spec(attempt=1), MagicMock())
 
         names = [name for name, _ in observer.events]
-        assert names == ["trial_started", "trial_finished"]
+        assert names == ["trial_started", "trial_finished", "trial_persisted"]
         started, finished = observer.events[0][1], observer.events[1][1]
         identity = started["identity"]
         assert (
@@ -110,8 +115,11 @@ class TestConductorLifecycle:
         assert trajectory.attempt_id == 1
         # the loop received a binding for the agent role
         assert conductor._run_agent_loop.call_args.args[3] is identity
-        # the bundle is written after the trace closed
+        # the bundle is written after the trace closed, and only then is it announced
         conductor._write_artifacts.assert_called_once()
+        persisted = observer.events[2][1]
+        assert persisted["identity"] is identity
+        assert persisted["trial_dir"] == conductor._setup_trial.return_value.trial_dir
 
     def test_without_tracing_the_engine_run_id_is_the_identity_and_no_binding_is_built(
         self,
@@ -131,10 +139,26 @@ class TestConductorLifecycle:
         with pytest.raises(RuntimeError):
             conductor.run(_spec(), MagicMock())
         names = [name for name, _ in observer.events]
+        # no bundle exists on this path, so nothing is announced as persisted
         assert names == ["trial_started", "trial_finished"]
         finished = observer.events[1][1]
         assert finished["trajectory"] is None and finished["error"] == "RuntimeError: lost"
         conductor._write_artifacts.assert_not_called()
+
+    def test_a_bundle_left_behind_by_a_failing_trial_is_still_announced(
+        self, tmp_path: Path
+    ) -> None:
+        observer = _Recording()
+        trial_dir = tmp_path / "trials" / "T-1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "trajectory.yaml").write_text("task_id: T-1\n")
+        conductor = _conductor(observer, trial_dir=trial_dir)
+        conductor._run_agent_loop = MagicMock(side_effect=RuntimeError("lost"))
+        with pytest.raises(RuntimeError):
+            conductor.run(_spec(), MagicMock())
+        names = [name for name, _ in observer.events]
+        assert names == ["trial_started", "trial_finished", "trial_persisted"]
+        assert observer.events[2][1]["trial_dir"] == trial_dir
 
     def test_a_trial_that_raises_after_the_loop_closes_with_its_trajectory(self) -> None:
         observer = _Recording()

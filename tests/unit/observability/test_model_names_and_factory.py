@@ -134,3 +134,59 @@ class TestFactory:
     def test_rules_without_normalizer_is_a_config_error(self) -> None:
         with pytest.raises(ValueError):
             TracingConfig(exporter="otlp", endpoint="http://x/v1/traces", model_name_rules="r.toml")
+
+
+class TestAttachmentStep:
+    def test_attach_defaults_to_all_and_none_builds_no_step(self) -> None:
+        from tolokaforge.core.models import TracingConfig
+        from tolokaforge.observability.factory import build_attachments
+
+        config = TracingConfig(
+            exporter="otlp", endpoint="https://lf.example/api/public/otel/v1/traces"
+        )
+        assert config.attach == "all" and config.attach_api_base is None
+        assert build_attachments(TracingConfig(exporter="none", attach="none")) is None
+        pytest.importorskip("opentelemetry.sdk")
+        step = build_attachments(config)
+        assert step is not None and step._api_base == "https://lf.example"
+        assert step._mode == "all"
+        explicit = build_attachments(
+            TracingConfig(
+                exporter="otlp",
+                endpoint="https://lf.example/api/public/otel/v1/traces",
+                attach="core",
+                attach_api_base="https://proxy.example/lf/",
+            )
+        )
+        assert explicit._api_base == "https://proxy.example/lf" and explicit._mode == "core"
+
+    def test_attach_values_are_validated(self) -> None:
+        from pydantic import ValidationError
+
+        from tolokaforge.core.models import TracingConfig
+
+        with pytest.raises(ValidationError):
+            TracingConfig(exporter="none", attach="everything")
+
+    def test_secret_values_take_credential_names_only(self, monkeypatch) -> None:
+        from tolokaforge.observability import factory
+
+        class _Manager:
+            def list_all_keys(self):
+                return [
+                    "OPENROUTER_API_KEY",
+                    "LANGFUSE_BASE_URL",
+                    "TEST_ARENA_LANGFUSE_SECRET_KEY",
+                    "HOME_DIR",
+                ]
+
+            def get_secret(self, key):
+                return {
+                    "OPENROUTER_API_KEY": "sk-or-v1-abc",
+                    "LANGFUSE_BASE_URL": "https://lf.example",
+                    "TEST_ARENA_LANGFUSE_SECRET_KEY": "sk-lf-xyz",
+                    "HOME_DIR": "/Users/x",
+                }[key]
+
+        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
+        assert sorted(factory.secret_values()) == ["sk-lf-xyz", "sk-or-v1-abc"]

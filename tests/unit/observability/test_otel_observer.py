@@ -305,3 +305,47 @@ def test_long_attributes_are_capped() -> None:
     observer.run_finished()
     (span,) = exporter.get_finished_spans()
     assert len(_attrs(span)["langfuse.observation.output"]) <= 200
+
+
+class _FakeAttachments:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object, object]] = []
+
+    def attach(self, trace_id, trial_dir, *, trace_timestamp=None):
+        from tolokaforge.observability.langfuse_media import AttachCounts
+
+        self.calls.append((trace_id, trial_dir, trace_timestamp))
+        return AttachCounts(registered=8, uploaded=3, deduplicated=5, skipped=1, manifests_sent=1)
+
+
+def test_trial_persisted_attaches_the_bundle_with_the_trial_start_and_counts_in_the_receipt(
+    tmp_path,
+) -> None:
+    exporter = InMemorySpanExporter()
+    step = _FakeAttachments()
+    observer, _ = _observer(exporter, attachments=step)
+    observer.trial_started(
+        IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
+    )
+    observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+    observer.trial_persisted(IDENTITY, trial_dir=tmp_path)
+    receipt = observer.run_finished()
+    assert step.calls == [(IDENTITY.trace_id, tmp_path, T0)]
+    assert (
+        receipt.attachments_registered,
+        receipt.attachments_uploaded,
+        receipt.attachments_deduplicated,
+        receipt.attachments_skipped,
+        receipt.manifests_sent,
+    ) == (8, 3, 5, 1, 1)
+    assert receipt.to_dict()["attachments_registered"] == 8
+    # the root span was not re-emitted: the trace's end time stays the trial end
+    assert [s.name for s in exporter.get_finished_spans()].count("trial T-1/0") == 2
+
+
+def test_without_an_attachment_step_trial_persisted_is_a_no_op(tmp_path) -> None:
+    exporter = InMemorySpanExporter()
+    observer, _ = _observer(exporter)
+    observer.trial_persisted(IDENTITY, trial_dir=tmp_path)
+    receipt = observer.run_finished()
+    assert receipt.attachments_registered == 0 and receipt.manifests_sent == 0

@@ -139,6 +139,29 @@ We will adopt **Option 1**.
 - Later increments: judge spans when the judge runs in-process; per-call ids and roles in
   `metrics.usage.calls`; an external run id on the CLI.
 
+## Amendment 2026-09-16: the persisted bundle is attached to the trace
+
+The seam gains a fourth trial hook, `trial_persisted(identity, trial_dir)`, called by the
+conductor after the bundle is written (and, on the error path, when a bundle exists), so a
+receiver can attach the files a trial directory holds. The OTLP observer, when
+`observability.tracing.attach` is `all` (the default) or `core`, then registers and uploads every
+regular top-level file of the trial directory through the receiver's media REST API (Langfuse:
+`POST /api/public/media`, the presigned `PUT` with `x-ms-blob-type: BlockBlob` on Azure Blob, the
+confirmation `PATCH` reported as 200 so the receiver's sha256 dedup works), `env.yaml` and
+`trajectory.yaml` gzipped with `mtime 0`, and writes **manifest v2** to the trace-level metadata
+(`attachments_schema: 2`, `attachments` keyed by the file name with media id, token, both hashes,
+both sizes, content type and encoding, `attachments_complete`, `attachments_skipped`) through a
+`trace-create` update under the same trace id on the legacy ingestion API: metadata keys merge,
+so nothing the spans wrote changes and the root span's end time stays the trial end. The base URL
+derives from the OTLP endpoint and the headers are the exporter's own. Every file is scanned
+first against the `SecretManager`'s credential values and the key-shaped patterns the offline
+connector uses; a hit skips the file and lands in `attachments_skipped`, bytes are never
+rewritten. The step runs in the trial's thread after the trial is over, bounded by per-request
+timeouts, and never raises; `tracing_receipt.json` counts attachments registered, uploaded,
+deduplicated, skipped and failed. The offline `langfuse-connector download` rebuilds a trial
+directory from either producer's manifest. Media remains receiver-specific, which is why the
+step lives next to the OTLP observer behind the `otel` extra and not in core.
+
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern)

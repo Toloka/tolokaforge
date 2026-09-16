@@ -546,9 +546,15 @@ class InProcessConductor:
                 trajectory=trajectory,
                 error=f"{type(exc).__name__}: {exc}",
             )
+            if (setup.trial_dir / "trajectory.yaml").exists():
+                # a bundle written before the failure is still worth attaching to the trace
+                safely(self.trial_observer.trial_persisted, identity, trial_dir=setup.trial_dir)
             raise
         safely(self.trial_observer.trial_finished, identity, trajectory=trajectory)
         self._write_artifacts(spec, task_config, setup, trajectory, runner)
+        # The bundle exists now: a receiver may attach its files to the trace (ADR-0046
+        # amendment); the trace itself closed at trial_finished, its end time stays the trial end.
+        safely(self.trial_observer.trial_persisted, identity, trial_dir=setup.trial_dir)
         return TrialResult.from_trajectory(
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
         )

@@ -1132,6 +1132,16 @@ class TracingConfig(BaseModel):
     attribute_max_chars: int = Field(default=20_000, ge=64)
     context_messages: int = Field(default=6, ge=1)
     """How many preceding messages a generation span carries as its input."""
+    attach: Literal["all", "core", "none"] = "all"
+    """Which files of a persisted trial the exporter attaches to its trace through the
+    receiver's media API (Langfuse), after the bundle is written: ``all`` = every top-level file
+    of the trial directory, ``core`` = task, prompts, tools schemas, logs and grade, ``none`` = no
+    attachments. The manifest lands in the trace metadata (``docs/OBSERVABILITY.md``)."""
+    attach_api_base: str | None = None
+    """Base URL of the receiver's REST API for the attachments; default: derived from ``endpoint``
+    (``https://host/api/public/otel/v1/traces`` -> ``https://host``)."""
+    attach_timeout_s: float = Field(default=60.0, gt=0)
+    """Per-request timeout of the attachment step."""
 
     @model_validator(mode="after")
     def _require_endpoint_when_active(self) -> Self:

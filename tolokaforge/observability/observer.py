@@ -13,6 +13,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.observability import ids
@@ -72,6 +73,16 @@ class ExportReceipt:
     export_failures: int = 0
     flushed: bool = True
     exporter: str = "none"
+    # the post-trial attachment step (ADR-0046 amendment): files registered on their trace,
+    # bytes uploaded by this run, registrations the receiver answered from bytes it already
+    # held, files kept back by the data-safety scan, files that failed, manifests written
+    attachments_registered: int = 0
+    attachments_uploaded: int = 0
+    attachments_deduplicated: int = 0
+    attachments_skipped: int = 0
+    attachments_failed: int = 0
+    manifests_sent: int = 0
+    manifests_failed: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +92,13 @@ class ExportReceipt:
             "export_failures": self.export_failures,
             "flushed": self.flushed,
             "exporter": self.exporter,
+            "attachments_registered": self.attachments_registered,
+            "attachments_uploaded": self.attachments_uploaded,
+            "attachments_deduplicated": self.attachments_deduplicated,
+            "attachments_skipped": self.attachments_skipped,
+            "attachments_failed": self.attachments_failed,
+            "manifests_sent": self.manifests_sent,
+            "manifests_failed": self.manifests_failed,
         }
 
 
@@ -124,6 +142,11 @@ class TrialObserver(Protocol):
         the trial died before producing one), ``error`` the exception that ended it, if any."""
         ...
 
+    def trial_persisted(self, identity: TrialIdentity, *, trial_dir: Path) -> None:
+        """The trial's bundle is on disk under ``trial_dir`` (after ``trial_finished``): a
+        receiver-specific observer may attach the files to the trace (ADR-0046 amendment)."""
+        ...
+
     def run_finished(self) -> ExportReceipt: ...
 
 
@@ -144,6 +167,9 @@ class NullTrialObserver:
     def trial_finished(
         self, identity: TrialIdentity, *, trajectory: Trajectory | None, error: str | None = None
     ) -> None:
+        return None
+
+    def trial_persisted(self, identity: TrialIdentity, *, trial_dir: Path) -> None:
         return None
 
     def run_finished(self) -> ExportReceipt:
@@ -172,6 +198,10 @@ class CompositeTrialObserver:
         for observer in self.observers:
             safely(observer.trial_finished, identity, **kwargs)
 
+    def trial_persisted(self, identity: TrialIdentity, **kwargs: Any) -> None:
+        for observer in self.observers:
+            safely(observer.trial_persisted, identity, **kwargs)
+
     def run_finished(self) -> ExportReceipt:
         receipts = [safely(observer.run_finished) or ExportReceipt() for observer in self.observers]
         return ExportReceipt(
@@ -181,6 +211,13 @@ class CompositeTrialObserver:
             export_failures=sum(r.export_failures for r in receipts),
             flushed=all(r.flushed for r in receipts),
             exporter=", ".join(r.exporter for r in receipts if r.exporter != "none") or "none",
+            attachments_registered=sum(r.attachments_registered for r in receipts),
+            attachments_uploaded=sum(r.attachments_uploaded for r in receipts),
+            attachments_deduplicated=sum(r.attachments_deduplicated for r in receipts),
+            attachments_skipped=sum(r.attachments_skipped for r in receipts),
+            attachments_failed=sum(r.attachments_failed for r in receipts),
+            manifests_sent=sum(r.manifests_sent for r in receipts),
+            manifests_failed=sum(r.manifests_failed for r in receipts),
         )
 
 

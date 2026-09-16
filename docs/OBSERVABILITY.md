@@ -21,6 +21,7 @@ observability:
     metadata: {model_stem: gpt6_astra}
     model_name_normalizer: toloka                   # default: none (raw provider/name)
     model_name_rules: tools/benchmark-results-collector/data/model_name_rules.toml
+    attach: all                                     # all | core | none: the trial's files as media (below)
 ```
 
 Install the extra: `pip install 'tolokaforge[otel]'`. The receiver's credentials travel in the
@@ -62,6 +63,40 @@ it. `model_name_rules` layers a deployment's rules file over the library's defau
 its config stems, vendor spellings and abbreviated ids there (`tencent/hy3` is family `hunyuan`).
 Selecting the normalizer without the package installed, or a rules file that does not load, is a
 configuration error at run start, never a silent fallback.
+
+## Attachments: the trial's files on its trace
+
+After the bundle is written the conductor calls `trial_persisted`, and the exporter attaches the
+regular top-level files of the trial directory to the trace through the receiver's media API
+(Langfuse: register, presigned PUT, confirmation; the receiver deduplicates by sha256 per
+project, so a `prompts.yaml` shared by every trial of a task is stored once). `env.yaml` and
+`trajectory.yaml` travel gzipped (`mtime 0`), the rest as written; hidden files and
+subdirectories (video, `services/`) are not attachments. `attach: all` (default) sends every file,
+`core` only `task.yaml`, `prompts.yaml`, `tools_schemas.yaml`, `logs.yaml`, `grade.yaml`, `none`
+nothing. The trace metadata then carries **manifest v2**, the same document the offline
+`langfuse-connector` writes, so `langfuse-connector download` rebuilds the directory byte-exact
+from either producer:
+
+```
+attachments_schema: 2
+attachments: {<file name>: {media_id, media, sha256, stored_sha256, bytes, stored_bytes,
+                            content_type, encoding: none | gzip}}
+attachments_complete: true | false
+attachments_skipped: [{name, rule}]
+```
+
+Before a file leaves, its bytes are scanned against the `SecretManager`'s credential values
+(keys with secret-like names) and the key-shaped patterns of the connector's data-safety gate
+(dotenv secrets, `Authorization` headers, PEM blocks, URL credentials, provider key prefixes,
+JWTs, secret-named fields); a hit skips the file, names it in `attachments_skipped` and leaves
+`attachments_complete: false`. Bytes are never rewritten. The REST base URL derives from the OTLP
+endpoint (`attach_api_base` overrides it), the headers are `OTEL_EXPORTER_OTLP_HEADERS`, each
+request has `attach_timeout_s`; the step runs in the trial's thread once the trial is over and
+never raises. `tracing_receipt.json` reports `attachments_registered`, `attachments_uploaded`,
+`attachments_deduplicated`, `attachments_skipped`, `attachments_failed`, `manifests_sent`,
+`manifests_failed`. What the live trace still lacks against an offline upload of the same bundle
+(judge turns, user-simulator turns, scores, INFO log events) the connector adds on a later pass;
+the files themselves are complete.
 
 ## Delivery
 

@@ -117,6 +117,7 @@ def build_trial_observer(
         attribute_max_chars=tracing.attribute_max_chars,
         context_messages=tracing.context_messages,
         flush_timeout_s=tracing.flush_timeout_s,
+        attachments=build_attachments(tracing),
     )
     if output_dir is not None:
         write_run_identity(Path(output_dir), identity)
@@ -124,6 +125,54 @@ def build_trial_observer(
 
 
 OTLP_HEADERS_SECRET = "OTEL_EXPORTER_OTLP_HEADERS"
+_SECRET_NAME = re.compile(
+    r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
+)
+_NOT_SECRET_NAME = re.compile(
+    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_BASE$|_NAME$|_HEADER$)", re.I
+)
+
+
+def build_attachments(tracing: Any) -> Any:
+    """The post-trial attachment step for ``observability.tracing.attach`` (``None`` for
+    ``none``): the receiver's REST base derives from the OTLP endpoint unless given, the headers
+    are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s credential
+    values (keys with secret-like names; URL, path and name values are not credentials and a
+    bundle may legitimately quote them)."""
+    from tolokaforge.observability.attachments import ATTACH_NONE, SecretScan
+    from tolokaforge.observability.langfuse_media import (
+        LangfuseAttachments,
+        api_base_from_endpoint,
+    )
+
+    if getattr(tracing, "attach", ATTACH_NONE) == ATTACH_NONE:
+        return None
+    return LangfuseAttachments(
+        api_base=tracing.attach_api_base or api_base_from_endpoint(tracing.endpoint),
+        headers=otlp_headers() or {},
+        mode=tracing.attach,
+        scan=SecretScan(secret_values()),
+        timeout_s=tracing.attach_timeout_s,
+    )
+
+
+def secret_values() -> list[str]:
+    """The credential values the ``SecretManager`` resolves under secret-like key names."""
+    try:
+        from tolokaforge.secrets import get_default_or_none
+    except ImportError:  # pragma: no cover - the secrets package is part of core
+        return []
+    manager = get_default_or_none()
+    if manager is None:
+        return []
+    values: list[str] = []
+    for key in manager.list_all_keys():
+        if not _SECRET_NAME.search(key) or _NOT_SECRET_NAME.search(key):
+            continue
+        value = manager.get_secret(key)
+        if value:
+            values.append(value)
+    return values
 
 
 def otlp_headers() -> dict[str, str] | None:
