@@ -10,18 +10,18 @@ observability:
   tracing:
     exporter: otlp                                  # default: none
     endpoint: https://langfuse.example/api/public/otel/v1/traces   # or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-    expect_project: arena                           # the receiver-side project the credentials must open
-    run_id: arena/v1/34390073272/1                  # external run identity; default: the engine run id
+    expect_project: pilot                           # the receiver-side project the credentials must open
+    run_id: acme/pilot/34390073272/1                # external run identity; default: the engine run id
     run_tag: v1                                     # id namespace
-    session_id: arena/v1/gpt6_astra/gpt6_astra/34390073272   # default: run_id
-    label: gpt6_astra                               # trace name <label>/<task_id>; default: run dir name
+    session_id: acme/pilot/pilot_agent/34390073272  # default: run_id
+    label: pilot_agent                              # trace name <label>/<task_id>; default: run dir name
     # the deployment's own tags, <prefix>:<value>; the engine checks the syntax only. The values
-    # below are the Toloka arena's vocabulary (team, project, dataset, source, run_kind, scope,
+    # below are one deployment's vocabulary (team, project, dataset, source, run_kind, scope,
     # config, domain, ci_*); harness:, model*: and task: are set by the exporter itself
-    tags: [team:delivery, project:arena, dataset:v1, source:trial, run_kind:eval, scope:full, config:gpt6_astra, domain:ots_19_airlines]
-    metadata: {model_stem: gpt6_astra}
+    tags: [team:pilot, project:pilot, dataset:v1, source:trial, run_kind:eval, scope:full, config:pilot_agent, domain:pilot-domain]
+    metadata: {model_stem: pilot_agent}
     model_name_normalizer: toloka                   # default: none (raw provider/name)
-    model_name_rules: tools/benchmark-results-collector/data/model_name_rules.toml
+    model_name_rules: deploy/model_name_rules.toml   # the deployment's rules file for the normalizer
     attach: all                                     # all | core | none: the trial's files as media (below)
     projection: full                                # full | gradings | none: what the trial-end pass sends (below)
     profile: deploy/langfuse_tracing.toml           # the deployment profile (below); or TOLOKAFORGE_TRACING_PROFILE
@@ -84,9 +84,9 @@ Tags: `harness:tolokaforge`, the model tags (`model:<canonical>`, plus `model_ve
 launcher's `TOLOKAFORGE_TRACING_TAGS` and the profile's fixed tags add `<prefix>:<value>` entries
 and may not use those prefixes. The engine validates only the syntax (`prefix:value`, lowercase
 prefix, no whitespace) and the reserved prefixes; which prefixes and values a deployment allows is
-the deployment's business (the arena keeps its vocabulary and a profile file in
-`tolokaforge-tasks`, and the offline uploader that shares the trace with this exporter enforces
-it), so the run-config generator of the private integration writes finished, validated tags here.
+the deployment's business (a deployment keeps its vocabulary and a profile file in its own
+repository, and the offline uploader that shares the trace with this exporter enforces it), so
+the run-config generator of the private integration writes finished, validated tags here.
 Judge generations are not exported live (the judge may run in the runner service); the trial-end
 pass adds them from the bundle together with the Langfuse scores.
 
@@ -96,8 +96,8 @@ pass adds them from the bundle together with the Langfuse scores.
 `provider/name` for a bare name). `toloka` uses `toloka-model-name-normalizer`: one identity for
 every route spelling, `model_vendor` / `model_family` tags and facet metadata (generation, tier,
 variant, snapshot, ...) plus the rules version and fingerprints, so a trace says which rules named
-it. `model_name_rules` layers a deployment's rules file over the library's default; the arena keeps
-its config stems, vendor spellings and abbreviated ids there (`tencent/hy3` is family `hunyuan`).
+it. `model_name_rules` layers a deployment's rules file over the library's default; a deployment
+keeps its config stems, vendor spellings and abbreviated ids there (`tencent/hy3` is family `hunyuan`).
 Selecting the normalizer without the package installed, or a rules file that does not load, is a
 configuration error at run start, never a silent fallback.
 

@@ -114,19 +114,19 @@ class TestFactory:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/v1/traces",
-                run_id="toloka-arena/v1/123/1",
+                run_id="acme/pilot/v1/123/1",
                 run_tag="v2",
-                tags=["config:gpt6_astra"],
+                tags=["config:pilot_agent"],
             )
         )
         observer, identity = build_trial_observer(
             config, engine_run_id="engine-run", output_dir=tmp_path
         )
         try:
-            assert identity == RunIdentity(run_id="toloka-arena/v1/123/1", run_tag="v2")
+            assert identity == RunIdentity(run_id="acme/pilot/v1/123/1", run_tag="v2")
             sidecar = json.loads((tmp_path / RUN_IDENTITY_FILE).read_text())
             assert (sidecar["run_id"], sidecar["run_tag"], sidecar["written_by"]) == (
-                "toloka-arena/v1/123/1",
+                "acme/pilot/v1/123/1",
                 "v2",
                 "tolokaforge",
             )
@@ -141,7 +141,7 @@ class TestFactory:
             validate_tag(tag)
 
     def test_good_tags_pass(self) -> None:
-        assert validate_tag("config:gpt6_astra") == "config:gpt6_astra"
+        assert validate_tag("config:pilot_agent") == "config:pilot_agent"
 
     def test_rules_without_normalizer_is_a_config_error(self) -> None:
         with pytest.raises(ValueError):
@@ -252,12 +252,12 @@ class TestReceiverFromTheEnvironment:
         )
 
     def test_environment_tags_merge_and_a_prefix_never_carries_two_values(self) -> None:
-        assert merge_tags(["team:delivery"], ["project:test-arena", "team:delivery"]) == [
-            "team:delivery",
-            "project:test-arena",
+        assert merge_tags(["team:pilot"], ["project:pilot-dev", "team:pilot"]) == [
+            "team:pilot",
+            "project:pilot-dev",
         ]
         with pytest.raises(TracingConfigError, match="given twice"):
-            merge_tags(["project:arena"], ["project:test-arena"])
+            merge_tags(["project:pilot"], ["project:pilot-dev"])
         with pytest.raises(TracingConfigError):
             merge_tags([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
 
@@ -283,13 +283,13 @@ class TestReceiverFromTheEnvironment:
     ) -> None:
         pytest.importorskip("opentelemetry.sdk")
         calls = self._projects(
-            monkeypatch, (200, json.dumps({"data": [{"id": "p1", "name": "test-arena"}]}).encode())
+            monkeypatch, (200, json.dumps({"data": [{"id": "p1", "name": "pilot-dev"}]}).encode())
         )
         monkeypatch.setenv(
             "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:9/api/public/otel/v1/traces"
         )
-        monkeypatch.setenv("TOLOKAFORGE_TRACING_TAGS", "project:test-arena")
-        monkeypatch.setenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", "test-arena")
+        monkeypatch.setenv("TOLOKAFORGE_TRACING_TAGS", "project:pilot-dev")
+        monkeypatch.setenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", "pilot-dev")
         config = ObservabilityConfig(tracing=TracingConfig(exporter="otlp", attach="none"))
         observer, _ = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
         try:
@@ -298,10 +298,10 @@ class TestReceiverFromTheEnvironment:
             ]
             # the check authenticates with the exporter's own header
             assert calls[0][2]["Authorization"] == "Basic dGVzdDpzZWNyZXQ="
-            assert observer._tags == ("project:test-arena",)
+            assert observer._tags == ("project:pilot-dev",)
         finally:
             receipt = observer.run_finished()
-        assert receipt.expect_project == "test-arena" and receipt.project_verified == "verified"
+        assert receipt.expect_project == "pilot-dev" and receipt.project_verified == "verified"
         assert receipt.to_dict()["project_verified"] == "verified"
 
     def test_expect_project_mismatch_refuses_to_trace_before_anything_starts(
@@ -309,17 +309,17 @@ class TestReceiverFromTheEnvironment:
     ) -> None:
         pytest.importorskip("opentelemetry.sdk")
         self._projects(
-            monkeypatch, (200, json.dumps({"data": [{"id": "p2", "name": "test-arena"}]}).encode())
+            monkeypatch, (200, json.dumps({"data": [{"id": "p2", "name": "pilot-dev"}]}).encode())
         )
         config = ObservabilityConfig(
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="arena",
+                expect_project="pilot",
                 attach="none",
             )
         )
-        with pytest.raises(TracingConfigError, match="expect_project='arena'.*\\['test-arena'\\]"):
+        with pytest.raises(TracingConfigError, match="expect_project='pilot'.*\\['pilot-dev'\\]"):
             build_trial_observer(config, engine_run_id="run-1")
 
     def test_unreachable_check_is_unverified_not_fatal(self, monkeypatch) -> None:
@@ -329,13 +329,13 @@ class TestReceiverFromTheEnvironment:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="arena",
+                expect_project="pilot",
                 attach="none",
             )
         )
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
         receipt = observer.run_finished()
-        assert receipt.project_verified == "unverified" and receipt.expect_project == "arena"
+        assert receipt.project_verified == "unverified" and receipt.expect_project == "pilot"
 
     def test_a_401_refuses_and_a_non_json_200_is_unverified(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
@@ -343,7 +343,7 @@ class TestReceiverFromTheEnvironment:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="test-arena",
+                expect_project="pilot-dev",
                 attach="none",
             )
         )
@@ -363,7 +363,7 @@ class TestReceiverFromTheEnvironment:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="test-arena",
+                expect_project="pilot-dev",
                 attach="none",
             )
         )

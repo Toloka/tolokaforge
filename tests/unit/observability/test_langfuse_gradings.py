@@ -20,7 +20,7 @@ from tolokaforge.observability.langfuse_gradings import (
 from tolokaforge.observability.langfuse_media import LangfuseApiError, LangfuseAttachments
 
 TRACE = "b" * 32
-RUN_ID = "test-arena/v3/live/gemini/20260916T195039Z"
+RUN_ID = "pilot-dev/v3/live/gemini/20260916T195039Z"
 GRADE = {
     "binary_pass": True,
     "score": 0.875,
@@ -515,21 +515,21 @@ class TestLangfuseSwitch:
         from tolokaforge.core.models import ObservabilityConfig
         from tolokaforge.observability.factory import build_trial_observer
 
-        calls = self._projects(clean_env, ["test-arena"])
+        calls = self._projects(clean_env, ["pilot-dev"])
         clean_env.setenv("LANGFUSE_TRACING_ENABLED", "true")
         clean_env.setenv("LANGFUSE_BASE_URL", "https://lf.example/")
         clean_env.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
         clean_env.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-        clean_env.setenv("LANGFUSE_PROJECT", "test-arena")
+        clean_env.setenv("LANGFUSE_PROJECT", "pilot-dev")
         clean_env.setenv("LANGFUSE_EXTRA_HEADERS", "X-GitHub-Runner-Key=abc")
-        clean_env.setenv("TOLOKAFORGE_TRACING_RUN_ID", "toloka-arena/v1/123/1")
-        clean_env.setenv("TOLOKAFORGE_TRACING_SESSION_ID", "toloka-arena/v1/m/cfg/123")
+        clean_env.setenv("TOLOKAFORGE_TRACING_RUN_ID", "acme/pilot/v1/123/1")
+        clean_env.setenv("TOLOKAFORGE_TRACING_SESSION_ID", "acme/pilot/v1/m/cfg/123")
         clean_env.setenv("TOLOKAFORGE_TRACING_LABEL", "cfg")
         observer, identity = build_trial_observer(
             ObservabilityConfig(), engine_run_id="run-1", output_dir=tmp_path
         )
         try:
-            assert identity.run_id == "toloka-arena/v1/123/1" and identity.run_tag == "v1"
+            assert identity.run_id == "acme/pilot/v1/123/1" and identity.run_tag == "v1"
             expected = "Basic " + base64.b64encode(b"pk-lf-test:sk-lf-test").decode()
             assert calls == [
                 (
@@ -538,14 +538,14 @@ class TestLangfuseSwitch:
                     {"Authorization": expected, "X-GitHub-Runner-Key": "abc"},
                 )
             ]
-            assert observer._tags == ("project:test-arena",)
-            assert observer._label == "cfg" and observer._session_id == "toloka-arena/v1/m/cfg/123"
+            assert observer._tags == ("project:pilot-dev",)
+            assert observer._label == "cfg" and observer._session_id == "acme/pilot/v1/m/cfg/123"
             assert observer._attachments is not None
             assert observer._attachments._api_base == "https://lf.example"
             assert observer._queue._exporter._endpoint.endswith("/api/public/otel/v1/traces")
         finally:
             receipt = observer.run_finished()
-        assert receipt.expect_project == "test-arena" and receipt.project_verified == "verified"
+        assert receipt.expect_project == "pilot-dev" and receipt.project_verified == "verified"
         assert (tmp_path / "run_identity.json").exists()
 
     def test_the_switch_without_credentials_or_with_half_a_pair_refuses(self, clean_env) -> None:
@@ -577,13 +577,13 @@ class TestLangfuseSwitch:
         from tolokaforge.core.models import ObservabilityConfig
         from tolokaforge.observability.factory import TracingConfigError, build_trial_observer
 
-        calls = self._projects(clean_env, ["test-arena"])
+        calls = self._projects(clean_env, ["pilot-dev"])
         clean_env.setenv("LANGFUSE_TRACING_ENABLED", "true")
         clean_env.setenv("LANGFUSE_BASE_URL", "https://lf.example")
         clean_env.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic bGF1bmNoZXI=")
         clean_env.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
         clean_env.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-        clean_env.setenv("LANGFUSE_PROJECT", "arena")
-        with pytest.raises(TracingConfigError, match="expect_project='arena'"):
+        clean_env.setenv("LANGFUSE_PROJECT", "pilot")
+        with pytest.raises(TracingConfigError, match="expect_project='pilot'"):
             build_trial_observer(ObservabilityConfig(), engine_run_id="run-1")
         assert calls[0][2]["Authorization"] == "Basic bGF1bmNoZXI="

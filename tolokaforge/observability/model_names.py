@@ -3,7 +3,7 @@
 The engine knows a model as the ``(provider, name)`` pair of its ``ModelConfig``. What a trace
 should call it is a deployment's choice: by default the raw pair (``vendor/model`` when the name
 carries a slash, else ``provider/name``), or, when configured, the identity and descriptive
-fields of ``toloka-model-name-normalizer`` under a rules file the deployment owns (the arena keeps
+fields of ``toloka-model-name-normalizer`` under a rules file the deployment owns (a deployment keeps
 its stems, abbreviations and vendor spellings there). The library is imported lazily and only when
 selected, so core carries no dependency on it; selecting it without the package installed is a
 configuration error, never a silent fallback.

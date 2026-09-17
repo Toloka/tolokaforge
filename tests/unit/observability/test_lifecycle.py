@@ -88,7 +88,7 @@ def _conductor(observer, run_identity=None, trial_dir: Path | None = None) -> In
 class TestConductorLifecycle:
     def test_started_then_finished_with_the_attempt_recorded_before_the_bundle(self) -> None:
         observer = _Recording()
-        conductor = _conductor(observer, RunIdentity(run_id="toloka-arena/v1/1/1", run_tag="v2"))
+        conductor = _conductor(observer, RunIdentity(run_id="acme/pilot/v1/1/1", run_tag="v2"))
         trajectory = _trajectory()
         conductor._run_agent_loop = MagicMock(return_value=(trajectory, MagicMock(), "sys"))
         conductor.run(_spec(attempt=1), MagicMock())
@@ -105,7 +105,7 @@ class TestConductorLifecycle:
             identity.trial_index,
             identity.attempt_id,
         ) == (
-            "toloka-arena/v1/1/1",
+            "acme/pilot/v1/1/1",
             "v2",
             "T-1",
             0,
@@ -123,7 +123,7 @@ class TestConductorLifecycle:
         self, tmp_path: Path
     ) -> None:
         observer = _Recording()
-        conductor = _conductor(observer, RunIdentity(run_id="toloka-arena/v1/1/1", run_tag="v2"))
+        conductor = _conductor(observer, RunIdentity(run_id="acme/pilot/v1/1/1", run_tag="v2"))
         conductor.output_dir = tmp_path
         conductor.trial_persisted(_spec(attempt=1))  # no bundle yet: nothing announced
         assert observer.events == []
@@ -135,7 +135,7 @@ class TestConductorLifecycle:
         assert name == "trial_persisted" and payload["trial_dir"] == trial_dir
         identity = payload["identity"]
         assert (identity.run_id, identity.run_tag, identity.task_id, identity.trial_index) == (
-            "toloka-arena/v1/1/1",
+            "acme/pilot/v1/1/1",
             "v2",
             "T-1",
             0,

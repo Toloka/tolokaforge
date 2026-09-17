@@ -23,17 +23,17 @@ from tolokaforge.tools.registry import ToolResult  # noqa: E402
 pytestmark = pytest.mark.unit
 
 T0 = datetime(2026, 9, 15, 10, 0, 0, tzinfo=timezone.utc)
-IDENTITY = TrialIdentity(run_id="toloka-arena/v1/123/1", task_id="T-1", trial_index=0, attempt_id=0)
+IDENTITY = TrialIdentity(run_id="acme/pilot/v1/123/1", task_id="T-1", trial_index=0, attempt_id=0)
 
 
 def _observer(exporter: InMemorySpanExporter, **kwargs) -> tuple[OTelTrialObserver, SpanQueue]:
     queue = SpanQueue(exporter, max_size=kwargs.pop("max_size", 100), batch_size=4, interval_s=0.05)
     observer = OTelTrialObserver(
         queue=queue,
-        label="gpt6_astra",
-        session_id="toloka-arena/v1/gpt6_astra/gpt6_astra/123",
-        tags=("config:gpt6_astra", "domain:ots_19_airlines"),
-        metadata={"model_stem": "gpt6_astra"},
+        label="pilot_agent",
+        session_id="acme/pilot/v1/pilot_agent/pilot_agent/123",
+        tags=("config:pilot_agent", "domain:pilot-domain"),
+        metadata={"model_stem": "pilot_agent"},
         **kwargs,
     )
     return observer, queue
@@ -136,14 +136,14 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
         "total": 120,
     }
     assert json.loads(gen_attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
-    assert gen_attrs["langfuse.trace.name"] == "gpt6_astra/T-1"
-    assert gen_attrs["langfuse.session.id"] == "toloka-arena/v1/gpt6_astra/gpt6_astra/123"
+    assert gen_attrs["langfuse.trace.name"] == "pilot_agent/T-1"
+    assert gen_attrs["langfuse.session.id"] == "acme/pilot/v1/pilot_agent/pilot_agent/123"
     assert list(gen_attrs["langfuse.trace.tags"]) == [
         HARNESS_TAG,
         "model:openai/gpt-6-astra",
         "task:T-1",
-        "config:gpt6_astra",
-        "domain:ots_19_airlines",
+        "config:pilot_agent",
+        "domain:pilot-domain",
     ]
     assert "sk-secret" not in gen_attrs["langfuse.observation.output"]  # redacted tool arguments
 
@@ -157,7 +157,7 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert root_attrs["langfuse.trace.metadata.score"] == 1.0
     assert root_attrs["langfuse.trace.metadata.trace_time_source"] == "live"
     assert root_attrs["langfuse.trace.metadata.model_name"] == "openai/gpt-6-astra"
-    assert root_attrs["langfuse.trace.metadata.model_stem"] == "gpt6_astra"
+    assert root_attrs["langfuse.trace.metadata.model_stem"] == "pilot_agent"
     assert root_attrs["langfuse.trace.metadata.attempt"] == 0
     assert (
         root_attrs["langfuse.trace.input"] == "hello"
@@ -259,14 +259,14 @@ def test_exporter_keys_win_over_caller_metadata() -> None:
     exporter = InMemorySpanExporter()
     queue = SpanQueue(exporter, max_size=10, batch_size=1, interval_s=60)
     observer = OTelTrialObserver(
-        queue=queue, label="l", session_id="s", metadata={"status": "prod", "team": "arena"}
+        queue=queue, label="l", session_id="s", metadata={"status": "prod", "team": "pilot"}
     )
     observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
     observer.run_finished()
     (root,) = exporter.get_finished_spans()
     attrs = _attrs(root)
     assert attrs["langfuse.trace.metadata.status"] == "completed"  # the trial's, not the caller's
-    assert attrs["langfuse.trace.metadata.team"] == "arena"
+    assert attrs["langfuse.trace.metadata.team"] == "pilot"
 
 
 def test_export_failure_is_counted_not_raised() -> None:
