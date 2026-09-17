@@ -15,10 +15,11 @@ observability:
     run_tag: v1                                     # id namespace
     session_id: acme/pilot/pilot_agent/34390073272  # default: run_id
     label: pilot_agent                              # trace name <label>/<task_id>; default: run dir name
-    # the deployment's own tags, <prefix>:<value>; the engine checks the syntax only. The values
-    # below are one deployment's vocabulary (team, project, dataset, source, run_kind, scope,
-    # config, domain, ci_*); harness:, model*: and task: are set by the exporter itself
-    tags: [team:pilot, project:pilot, dataset:v1, source:trial, run_kind:eval, scope:full, config:pilot_agent, domain:pilot-domain]
+    # the caller's tags, <prefix>:<value>, under the vocabulary's caller prefixes (team, dataset,
+    # run_kind, scope, config, domain, ci_run, ci_chain; "The trace vocabulary" below); the
+    # producer sets harness:, source:, task:, model*:, reasoning_*: and route: itself and the
+    # launcher that owns the receiver adds project:
+    tags: [team:pilot, dataset:v1, run_kind:eval, scope:full, config:pilot_agent, domain:pilot-domain]
     metadata: {model_stem: pilot_agent}
     model_name_normalizer: toloka                   # default: none (raw provider/name)
     model_name_rules: deploy/model_name_rules.toml   # the deployment's rules file for the normalizer
@@ -198,26 +199,58 @@ top-level keys and shows nothing above that (3.205.1, verified 2026-09-17), so t
 well under it with room for the caller's keys, and a caller key that names a schema key is a
 configuration error.
 
+## The trace vocabulary
+
+What a trace can be filtered by is fixed once, for both producers, in
+`tolokaforge_langfuse/vocabulary.py` (the offline uploader imports the same module): a closed list
+of tag prefixes with a producer / caller split, the value lists the engine's own output format
+defines, and the tags the producer derives from the bundle and from the model-name normalizer.
+
+| Who sets it | Prefixes |
+|---|---|
+| the producer, from the bundle and the resolver | `harness:tolokaforge`, `source:trial`, `task:<task id>`, `model:<vendor/model>`, `model_vendor`, `model_family`, and when the normalizer's rules derive them `model_generation`, `model_tier`, `model_variant`, `model_size`, `model_stage`, `model_snapshot`; from `task.yaml` `model_config.agent.reasoning` `reasoning_mode`, `reasoning_effort`, `reasoning_budget`; `route` (the configured provider, or `litellm` when every call's `cost_source` in `metrics.yaml` names the gateway) |
+| the launcher that owns the receiver | `project:<the verified project>` |
+| the caller (config `tags`, `TOLOKAFORGE_TRACING_TAGS`, the profile's fixed tags) | `team`, `dataset`, `run_kind` (`eval`, `smoke`, `canary`, `test`, `probe`), `scope` (`full`, `sample`), `config`, `domain`, `ci_run`, `ci_chain` |
+
+A caller tag under a producer prefix, an unknown prefix or a value outside a closed list is a
+configuration error at run start: the receiver merges tags as a set and never removes one, so a
+tag nobody can query by would be permanent. Nothing is invented: a facet the rules did not derive,
+a reasoning setting the config did not make, yields no tag. The receiver's native `environment`
+follows the vocabulary's rule unless a profile or `LANGFUSE_ENVIRONMENT` says otherwise:
+`production` for `run_kind:eval`, `development` for everything else.
+
 ## The deployment profile
 
-Everything a deployment decides about its traces and the engine must not know as a value arrives
-at run time in one TOML file, `observability.tracing.profile` or `TOLOKAFORGE_TRACING_PROFILE`
-(`tolokaforge_langfuse/src/tolokaforge_langfuse/profile.py`; `python -m tolokaforge_langfuse.profile <file>`
-validates one). Neutral example:
+Everything a deployment decides about its traces, and neither producer may know as a value,
+arrives at run time in one TOML file: the live observer reads it through
+`observability.tracing.profile` or `TOLOKAFORGE_TRACING_PROFILE`, the offline uploader through its
+`--tag-profile` flag (`tolokaforge_langfuse/src/tolokaforge_langfuse/profile.py`;
+`python -m tolokaforge_langfuse.profile <file> [--tags a:b,...] [--metadata k=v,...]` validates one,
+and a launcher's inputs against it). Neutral example:
 
 ```toml
-schema = 1
+schema = 2
 version = "acme-2026.09.17.1"              # joins the native `version` field
 
-[environment]                              # the receiver's native environment
+[environment]                              # the receiver's native environment (default: the vocabulary's rule)
 from_tag = "run_kind"                      # or: literal = "development"
 default = "development"
 [environment.values]
 eval = "production"
 
 [tags]
-fixed = ["team:pilot"]                     # tags every trace of the deployment carries
+fixed = ["team:pilot"]                     # tags every trace of the deployment carries; a caller may not contradict them
+# derived = ["model_facets", "reasoning", "route"]   # the bundle-derived groups the producers emit (default: all)
+[tags.values]                              # closed lists for caller prefixes (narrow the engine's, or list a free-form one)
+dataset = ["v1", "v3"]
+[tags.required]                            # what a source's traces must carry beyond the vocabulary's required set
+trial = ["domain", "config"]
 
+[derive.dataset]                           # the offline command's --derive: launcher input -> tag (fnmatch, first match)
+"eval/pilot-v3*" = "v3"
+
+[metadata]
+keys = ["campaign"]                        # the per-run metadata keys a caller may set (--metadata, TOLOKAFORGE_TRACING_METADATA)
 [metadata.fixed]                           # metadata every trace carries
 deployment = "pilot"
 
@@ -225,27 +258,32 @@ deployment = "pilot"
 rules = "model_name_rules.toml"            # selects the toloka normalizer with these rules (relative to this file)
 ```
 
-The engine validates the shape and applies it mechanically. A profile that does not load, an
-environment outside the receiver's alphabet (lowercase letters, digits, `-`, `_`, at most 40
-characters, never starting with `langfuse`), a fixed tag under a prefix the exporter sets itself,
-two values under one prefix, or a metadata key the projection writes itself is a configuration
-error at run start.
+The producers validate the shape and apply the profile mechanically. A profile that does not
+load, an environment outside the receiver's alphabet (lowercase letters, digits, `-`, `_`, at most
+40 characters, never starting with `langfuse`), a fixed tag under a producer prefix, two values
+under one prefix, a value outside a closed list or a metadata key the projection writes itself is a
+configuration error at run start. Under a profile the required set is enforced at run start too
+(the vocabulary's `team`, `run_kind`, `dataset`, `scope` plus the profile's), the same rule the
+offline uploader applies before it uploads; a CI launcher pre-checks its inputs with the module
+entry and degrades to an offline upload rather than failing the run. Schema 1 files (environment,
+fixed tags and metadata, models) still load.
 
 **Per-run values from the launcher.** `LANGFUSE_ENVIRONMENT` (a literal) overrides the profile's
 rule and the config's `environment`; `TOLOKAFORGE_TRACING_METADATA` (`key=value,...`) carries the
 per-run metadata the offline command receives as `--metadata` (profile fixed keys < config
-`metadata` < the variable; a key of the fixed schema is refused). The Langfuse connector's
-`with-destination` speaks this dialect (`--tracing-profile`, `--metadata`, the registry entry's
-`environment`), so one launcher serves a local run and the CI.
+`metadata` < the variable; a key of the fixed schema, or outside the profile's `keys`, is refused).
+The Langfuse connector's `with-destination` speaks this dialect (`--tag-profile`, `--metadata`,
+the registry entry's `environment`), so one launcher serves a local run and the CI.
 
 **Native fields.** `environment` rides on every span (the receiver fixes a trace's environment at
 the first write it sees, verified on Langfuse 3.205.1 on 2026-09-17: a trace written without it
 reads `default` and no later update repairs it) and on every ingestion body of the trial-end pass
 (observations and scores are filed under `default` otherwise, whatever the trace says);
-`release` is this engine's own version (`tolokaforge-<version>`, also written into
+`release` is the engine's own version (`tolokaforge-<version>`, also written into
 `run_identity.json` as `engine_version` for the offline uploader); `version` is the producer's
 identity plus the model-name rules and the profile it ran under
-(`tolokaforge-<version>+<rules version>+<profile version>`).
+(`tolokaforge-langfuse-<version>+<rules version>+<profile version>`; the offline uploader writes
+`langfuse-connector-<version>+...`).
 
 ## Packaging: the seam in the engine, the observer in its own wheel
 

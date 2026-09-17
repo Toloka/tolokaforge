@@ -49,6 +49,21 @@ the identity over. A deployment's values (its tags, project names, environment r
 rules) never appear in this package: they arrive in the profile and the variables above.
 Validate a profile with `python -m tolokaforge_langfuse.profile <file>`.
 
+## The vocabulary and the profile
+
+`vocabulary.py` is the default trace vocabulary, shared with the offline uploader (it imports this
+module): the tag prefixes and their producer / caller split, the closed value lists the engine's
+output format defines (`run_kind`, `scope`), the tags derived from the bundle and the model-name
+normalizer (`model_generation`, `model_tier`, `model_variant`, `model_size`, `model_stage`,
+`model_snapshot`, `reasoning_mode`, `reasoning_effort`, `reasoning_budget`, `route`), the tag
+order and the default environment rule. `profile.py` reads a deployment's schema-2 profile (the
+environment rule, fixed tags, derived-tag groups, value lists, required prefixes, derivations,
+metadata keys, fixed metadata, model rules) and validates a launcher's tags and metadata against
+it; `vocabulary.py`, `profile.py` and `model_names.py` import no engine module, so the offline
+uploader can use them next to any engine pin. Details and a full example:
+[`docs/OBSERVABILITY.md`](../docs/OBSERVABILITY.md), "The trace vocabulary" and "The deployment
+profile".
+
 ## Layout
 
 | Module | What it does |
@@ -59,7 +74,8 @@ Validate a profile with `python -m tolokaforge_langfuse.profile <file>`.
 | `gradings.py` | the grading observation, its judge transcript and scores |
 | `media.py` | the ingestion and media REST calls, the budget and the breaker |
 | `attachments.py` | attachment manifest v2 and the data-safety scan |
-| `profile.py` | the deployment profile (schema 1) |
+| `vocabulary.py` | the default trace vocabulary: prefixes, derived tags, the environment rule (shared with the offline uploader) |
+| `profile.py` | the deployment profile (schema 2; schema 1 still loads) and the launcher-input check |
 | `model_names.py` | model identity as configuration (raw, or `toloka-model-name-normalizer`) |
 
 ## Tests

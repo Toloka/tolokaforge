@@ -46,10 +46,13 @@ from tolokaforge_langfuse.projection import (
     ProjectionContext,
     build_projection,
 )
+from tolokaforge_langfuse.vocabulary import ALL_DERIVED_GROUPS, SOURCE_TRIAL
 
 _log = logging.getLogger(__name__)
 
 HARNESS_TAG = "harness:tolokaforge"
+# a trial observer traces trials: the source is the producer's fact (vocabulary.SOURCE_TRIAL)
+SOURCE_TAG = f"source:{SOURCE_TRIAL}"
 TRACE_TIME_SOURCE = "live"
 
 
@@ -64,6 +67,8 @@ class ProjectionSettings:
     release: str | None = None
     version: str | None = None
     producer: str = "tolokaforge"  # the ``uploader_version`` metadata value
+    # the groups of bundle-derived tags the trial-end pass adds (vocabulary.DERIVED_GROUPS)
+    derived_groups: frozenset[str] = ALL_DERIVED_GROUPS
 
 
 def _scope() -> InstrumentationScope:
@@ -313,7 +318,7 @@ class OTelTrialObserver:
     ) -> None:
         agent_ref = models.get("agent")
         agent = self._resolve(agent_ref) if agent_ref is not None else None
-        tags: list[str] = [HARNESS_TAG]
+        tags: list[str] = [HARNESS_TAG, SOURCE_TAG]
         if agent is not None:
             tags.extend(agent.tags)
         # the task is a fact of the trial the producer owns (tag vocabulary v2, core `task:`)
@@ -640,7 +645,7 @@ class OTelTrialObserver:
         from what the observer knows (a trial persisted without a recorded start)."""
         if persist.tags:
             return persist.tags
-        tags: list[str] = [HARNESS_TAG, f"task:{identity.task_id}"]
+        tags: list[str] = [HARNESS_TAG, SOURCE_TAG, f"task:{identity.task_id}"]
         for tag in self._tags:
             if tag not in tags:
                 tags.append(tag)
@@ -675,6 +680,7 @@ class OTelTrialObserver:
             producer=settings.producer,
             attach_mode=str(getattr(step, "mode", "all")),
             grades=self._gradings,
+            derived_groups=settings.derived_groups,
         )
         media = getattr(step, "register_media", None)
         try:
@@ -830,7 +836,7 @@ class OTelTrialObserver:
                 state = _TrialState(
                     identity=identity,
                     started_at=datetime.now(tz=timezone.utc),
-                    tags=(HARNESS_TAG, *self._tags),
+                    tags=(HARNESS_TAG, SOURCE_TAG, *self._tags),
                 )
                 self._states[identity.trace_id] = state
             return state

@@ -14,10 +14,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from tolokaforge_langfuse.vocabulary import PRODUCER_PREFIXES, facet_tags
+
 NONE = "none"
-# prefixes the exporter sets from what it knows (the harness, the model, the trial's task id);
-# every other tag is the run config's and only its syntax is checked (PLAN 3.11, R12)
-RESERVED_TAG_PREFIXES = frozenset({"harness", "model", "model_vendor", "model_family", "task"})
+# the prefixes the producers set from what they know (the receiver's project, the harness, the
+# source, the task, the model identity and its facets, the agent's reasoning and route); a caller
+# tag under one of them is refused (tolokaforge_langfuse.vocabulary)
+RESERVED_TAG_PREFIXES = PRODUCER_PREFIXES
 
 
 @dataclass(frozen=True)
@@ -96,7 +99,11 @@ class NormalizerModelNameResolver:
             raise ModelNameResolverError(
                 f"model reference ({provider!r}, {name!r}) cannot be read: {exc}"
             ) from exc
-        return ModelIdentity(canonical=parsed.canonical, tags=tuple(parsed.tags()))
+        # the normalizer's own tags (model, vendor, family) plus the facets its rules derived
+        return ModelIdentity(
+            canonical=parsed.canonical,
+            tags=(*parsed.tags(), *facet_tags(parsed.fields())),
+        )
 
 
 class ModelNameResolverError(ValueError):

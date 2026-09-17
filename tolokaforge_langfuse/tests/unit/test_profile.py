@@ -67,9 +67,12 @@ class TestLoading:
         assert profile.fixed_metadata == {"deployment": "pilot"}
         assert profile.model_name_rules is None
 
-    def test_a_bare_profile_leaves_the_environment_to_the_receiver(self) -> None:
+    def test_a_bare_profile_uses_the_default_environment_rule(self) -> None:
         profile = profile_from_mapping({"schema": 1, "version": "p-1"})
-        assert profile.version == "p-1" and profile.environment.resolve([]) is None
+        assert profile.version == "p-1"
+        # the vocabulary's rule: production for an evaluation, development for everything else
+        assert profile.environment.resolve([]) == "development"
+        assert profile.environment.resolve(["run_kind:eval"]) == "production"
 
     def test_a_literal_environment(self) -> None:
         profile = profile_from_mapping(
@@ -101,7 +104,7 @@ class TestLoading:
     @pytest.mark.parametrize(
         ("text", "match"),
         [
-            ("version = 'p'\n", "'schema' must be 1"),
+            ("version = 'p'\n", "'schema' must be one of"),
             ("schema = 1\n", "'version' must be"),
             ("schema = 1\nversion = 'a+b'\n", "without '\\+'"),
             ("schema = 1\nversion = 'p'\nextra = 1\n", "unknown top-level keys"),
@@ -185,7 +188,9 @@ class TestEnvironmentPrecedence:
         with pytest.raises(TracingConfigError, match="not a valid environment"):
             resolve_environment(None, profile, [])
         monkeypatch.delenv("LANGFUSE_ENVIRONMENT")
-        assert resolve_environment(None, NO_PROFILE, ["run_kind:eval"]) is None
+        # without a profile the vocabulary's default rule decides
+        assert resolve_environment(None, NO_PROFILE, ["run_kind:eval"]) == "production"
+        assert resolve_environment(None, NO_PROFILE, []) == "development"
 
 
 class TestTagSources:
@@ -245,7 +250,7 @@ class TestFactory:
 
     def test_the_profile_shapes_the_observer(self, clean_env, tmp_path: Path) -> None:
         path = write_profile(tmp_path)
-        clean_env.setenv("TOLOKAFORGE_TRACING_TAGS", "run_kind:eval,dataset:pilot")
+        clean_env.setenv("TOLOKAFORGE_TRACING_TAGS", "run_kind:eval,dataset:pilot,scope:sample")
         clean_env.setenv("TOLOKAFORGE_TRACING_METADATA", "run_label=nightly")
         observer, _ = self._build(tmp_path, profile=str(path), tags=["config:stem"])
         try:
@@ -253,8 +258,16 @@ class TestFactory:
             assert settings.environment == "production"
             assert settings.release.startswith("tolokaforge-")
             assert settings.version.endswith("+acme-2026.09.17.1")
-            assert settings.producer == settings.release
-            assert observer._tags == ("config:stem", "run_kind:eval", "dataset:pilot", "team:pilot")
+            # the producer is this package, the release the engine (the native fields differ)
+            assert settings.producer.startswith("tolokaforge-langfuse-")
+            assert settings.version.startswith(settings.producer)
+            assert observer._tags == (
+                "config:stem",
+                "run_kind:eval",
+                "dataset:pilot",
+                "scope:sample",
+                "team:pilot",
+            )
             assert observer._metadata == {"deployment": "pilot", "run_label": "nightly"}
         finally:
             observer.run_finished()
@@ -266,25 +279,65 @@ class TestFactory:
     ) -> None:
         clean_env.setenv("TOLOKAFORGE_TRACING_PROFILE", str(write_profile(tmp_path)))
         clean_env.setenv("LANGFUSE_ENVIRONMENT", "development")
-        clean_env.setenv("TOLOKAFORGE_TRACING_TAGS", "run_kind:eval")
+        clean_env.setenv("TOLOKAFORGE_TRACING_TAGS", "run_kind:eval,dataset:pilot,scope:sample")
         observer, _ = self._build(tmp_path)
         try:
             assert observer._projection.environment == "development"
         finally:
             observer.run_finished()
 
-    def test_no_profile_leaves_the_environment_unset(self, clean_env, tmp_path: Path) -> None:
+    def test_no_profile_uses_the_default_environment_rule(self, clean_env, tmp_path: Path) -> None:
         observer, _ = self._build(tmp_path)
         try:
-            assert observer._projection.environment is None
-            assert observer._projection.version == observer._projection.release
+            # no run_kind tag: development (the vocabulary's rule); the version names this package
+            assert observer._projection.environment == "development"
+            assert observer._projection.version.startswith("tolokaforge-langfuse-")
+            assert observer._projection.release.startswith("tolokaforge-")
         finally:
             observer.run_finished()
+
+    def test_a_profile_requires_the_vocabularys_tags_and_its_own(
+        self, clean_env, tmp_path: Path
+    ) -> None:
+        # under a profile the required set is enforced at run start (the offline uploader
+        # refuses the same upload), values must sit inside the closed lists, and the caller's
+        # metadata keys must be the profile's; without a profile only the vocabulary applies
+        path = write_profile(
+            tmp_path,
+            'schema = 2\nversion = "p"\n[tags]\nfixed = ["team:pilot"]\n'
+            '[tags.values]\ndataset = ["v1"]\n[tags.required]\ntrial = ["domain"]\n'
+            "[metadata]\nkeys = ['campaign']\n",
+        )
+        clean_env.setenv("TOLOKAFORGE_TRACING_TAGS", "run_kind:eval,dataset:v1,scope:sample")
+        with pytest.raises(TracingConfigError, match="missing required tag.*domain"):
+            self._build(tmp_path, profile=str(path))
+        clean_env.setenv(
+            "TOLOKAFORGE_TRACING_TAGS", "run_kind:eval,dataset:v9,scope:sample,domain:d"
+        )
+        with pytest.raises(TracingConfigError, match="dataset:v9.*must be one of"):
+            self._build(tmp_path, profile=str(path))
+        clean_env.setenv(
+            "TOLOKAFORGE_TRACING_TAGS", "run_kind:eval,dataset:v1,scope:sample,domain:d"
+        )
+        clean_env.setenv("TOLOKAFORGE_TRACING_METADATA", "owner=x")
+        with pytest.raises(TracingConfigError, match="owner.*not in the profile"):
+            self._build(tmp_path, profile=str(path))
+        clean_env.setenv("TOLOKAFORGE_TRACING_METADATA", "campaign=x")
+        observer, _ = self._build(tmp_path, profile=str(path))
+        try:
+            assert observer._projection.derived_groups == frozenset(
+                {"model_facets", "reasoning", "route"}
+            )
+        finally:
+            observer.run_finished()
+        clean_env.setenv("TOLOKAFORGE_TRACING_TAGS", "campaign:x")
+        with pytest.raises(TracingConfigError, match="not a core prefix"):
+            self._build(tmp_path)
 
     def test_a_broken_profile_a_clash_and_a_bad_environment_are_run_start_errors(
         self, clean_env, tmp_path: Path
     ) -> None:
-        with pytest.raises(TracingConfigError, match="'schema' must be 1"):
+        with pytest.raises(TracingConfigError, match="'schema' must be one of"):
             self._build(tmp_path, profile=str(write_profile(tmp_path, "schema = 9\n", "bad.toml")))
         with pytest.raises(TracingConfigError, match="no such file|cannot be read"):
             self._build(tmp_path, profile=str(tmp_path / "missing.toml"))
@@ -336,6 +389,9 @@ class TestFactory:
         )
         path = write_profile(
             tmp_path, 'schema = 1\nversion = "p"\n[models]\nrules = "rules.toml"\n'
+        )
+        clean_env.setenv(
+            "TOLOKAFORGE_TRACING_TAGS", "team:pilot,run_kind:eval,dataset:pilot,scope:sample"
         )
         observer, _ = self._build(tmp_path, profile=str(path))
         try:

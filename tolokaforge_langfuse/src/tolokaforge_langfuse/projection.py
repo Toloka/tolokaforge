@@ -61,6 +61,12 @@ from tolokaforge_langfuse.model_names import (
     ModelNameResolver,
     ModelNameResolverError,
 )
+from tolokaforge_langfuse.vocabulary import (
+    ALL_DERIVED_GROUPS,
+    SOURCE_TRIAL,
+    derived_tags,
+    order_tags,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -113,6 +119,8 @@ class ProjectionContext:
     producer: str = HARNESS  # the ``uploader_version`` value: this producer's identity
     attach_mode: str = "all"
     grades: bool = True  # send the run's own grading (grade.yaml) with its scores
+    # the groups of bundle-derived tags (vocabulary.DERIVED_GROUPS; a profile may switch one off)
+    derived_groups: frozenset[str] = ALL_DERIVED_GROUPS
 
 
 @dataclass
@@ -1167,7 +1175,19 @@ def build_projection(
             ),
             None,
         ),
-        "tags": list(ctx.tags),
+        # the run's tags, the model identity's (the resolver's tags, facets included) and the
+        # bundle-derived ones (vocabulary.derived_tags), deduplicated in core order: the same set
+        # the offline uploader writes, whatever the live spans started with
+        "tags": order_tags(
+            [
+                f"harness:{HARNESS}",
+                f"source:{SOURCE_TRIAL}",
+                f"task:{task_id}",
+                *ctx.tags,
+                *(agent.tags if agent is not None else ()),
+                *derived_tags(bundle.task, bundle.metrics, groups=ctx.derived_groups),
+            ]
+        ),
         "metadata": metadata,
         "environment": ctx.environment,
         "release": ctx.release,

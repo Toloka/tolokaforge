@@ -53,7 +53,6 @@ from tolokaforge.observability.observer import TrialObserver
 from tolokaforge_langfuse import __api_version__, __version__
 from tolokaforge_langfuse.model_names import (
     NONE,
-    RESERVED_TAG_PREFIXES,
     ModelNameResolverError,
     build_model_name_resolver,
 )
@@ -64,15 +63,16 @@ from tolokaforge_langfuse.profile import (
     PROFILE_ENV,
     TracingProfile,
     TracingProfileError,
+    check_caller_inputs,
     check_environment,
     load_tracing_profile,
     parse_metadata_variable,
 )
+from tolokaforge_langfuse.vocabulary import VocabularyError, validate_caller_tag
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import TracingConfig
 
-_TAG_SHAPE = re.compile(r"^[a-z][a-z0-9_]*:\S+$")
 # the standard OTel receiver variables (the SDK's own names) and the engine's launcher variables
 OTLP_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -109,13 +109,14 @@ def check_engine_api() -> None:
         )
 
 
-def validate_tag(tag: str) -> str:
-    """A caller tag is ``<prefix>:<value>``; the prefixes the exporter derives itself are refused."""
-    if not _TAG_SHAPE.match(tag):
-        raise TracingConfigError(f"tracing tag {tag!r} must look like <prefix>:<value>")
-    if tag.partition(":")[0] in RESERVED_TAG_PREFIXES:
-        raise TracingConfigError(f"tracing tag {tag!r}: its prefix is set by the exporter itself")
-    return tag
+def validate_tag(tag: str, profile: TracingProfile = NO_PROFILE) -> str:
+    """A caller tag: ``<prefix>:<value>`` under a caller prefix of the vocabulary (the launcher's
+    ``project`` admitted), the value inside the closed list when the prefix has one; the
+    prefixes the producers derive themselves are refused."""
+    try:
+        return validate_caller_tag(tag, profile_values=profile.values, launcher=True)
+    except VocabularyError as exc:
+        raise TracingConfigError(f"tracing tag: {exc}") from exc
 
 
 def build(
@@ -139,7 +140,10 @@ def build(
     endpoint = resolve_endpoint(tracing.endpoint)
     profile = load_profile(tracing.profile)
     tags, origins = merge_tag_sources(
-        ("config", tracing.tags), ("launcher", environment_tags()), ("profile", profile.fixed_tags)
+        ("config", tracing.tags),
+        ("launcher", environment_tags()),
+        ("profile", profile.fixed_tags),
+        profile=profile,
     )
     try:
         from tolokaforge_langfuse.otel import (
@@ -179,8 +183,14 @@ def build(
             )
     environment = resolve_environment(tracing.environment, profile, tags)
     metadata = merge_metadata(tracing.metadata, profile)
+    # the vocabulary's and the profile's discipline over the launcher's inputs, at run start
+    try:
+        check_caller_inputs(profile, tags, metadata=metadata.keys(), launcher=True)
+    except TracingProfileError as exc:
+        raise TracingConfigError(str(exc)) from exc
     release = engine_release()
-    version = producer_version(release, resolver.rules_version, profile)
+    producer = producer_identity()
+    version = producer_version(producer, resolver.rules_version, profile)
     attachments = build_attachments(
         tracing, endpoint=endpoint, headers=headers, environment=environment
     )
@@ -212,7 +222,8 @@ def build(
             environment=environment,
             release=release,
             version=version,
-            producer=release,
+            producer=producer,
+            derived_groups=profile.derived_groups,
         ),
     )
     return observer
@@ -272,10 +283,16 @@ def engine_release() -> str:
     return f"tolokaforge-{engine_version()}"
 
 
-def producer_version(release: str, rules_version: str, profile: TracingProfile) -> str:
+def producer_identity() -> str:
+    """The ``uploader_version`` metadata value and the head of the native ``version`` field: this
+    package, the code that projects the bundle (the engine's own version is ``release``)."""
+    return f"tolokaforge-langfuse-{__version__}"
+
+
+def producer_version(producer: str, rules_version: str, profile: TracingProfile) -> str:
     """The native ``version`` field: the producer's identity plus the model-name rules and the
     deployment profile it ran under (differs by producer, by design)."""
-    text = release
+    text = producer
     if rules_version and rules_version != NONE:
         text += f"+{rules_version}"
     if profile.version != NONE:
@@ -377,14 +394,18 @@ def environment_tags() -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def merge_tags(configured: Sequence[str], extra: Sequence[str]) -> list[str]:
+def merge_tags(
+    configured: Sequence[str], extra: Sequence[str], profile: TracingProfile = NO_PROFILE
+) -> list[str]:
     """Config tags plus environment tags, validated; a prefix carrying two different values is a
     configuration error (a trace never carries two values under one prefix)."""
-    merged, _ = merge_tag_sources(("config", configured), ("launcher", extra))
+    merged, _ = merge_tag_sources(("config", configured), ("launcher", extra), profile=profile)
     return merged
 
 
-def merge_tag_sources(*sources: tuple[str, Sequence[str]]) -> tuple[list[str], dict[str, str]]:
+def merge_tag_sources(
+    *sources: tuple[str, Sequence[str]], profile: TracingProfile = NO_PROFILE
+) -> tuple[list[str], dict[str, str]]:
     """Tags from several sources (``(origin, tags)`` pairs, in precedence order), validated and
     deduplicated, plus where each prefix's value came from (the origin ranks a later source
     against the receiver's project tag); a prefix carrying two different values is a
@@ -394,7 +415,7 @@ def merge_tag_sources(*sources: tuple[str, Sequence[str]]) -> tuple[list[str], d
     origins: dict[str, str] = {}
     for origin, tags in sources:
         for tag in tags:
-            validate_tag(tag)
+            validate_tag(tag, profile)
             prefix, _, value = tag.partition(":")
             if prefix in values and values[prefix] != value:
                 raise TracingConfigError(

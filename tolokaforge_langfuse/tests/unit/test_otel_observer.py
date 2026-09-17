@@ -140,6 +140,7 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert gen_attrs["langfuse.session.id"] == "acme/pilot/v1/pilot_agent/pilot_agent/123"
     assert list(gen_attrs["langfuse.trace.tags"]) == [
         HARNESS_TAG,
+        "source:trial",  # the producer's fact: a trial observer traces trials
         "model:openai/gpt-6-astra",
         "task:T-1",
         "config:pilot_agent",

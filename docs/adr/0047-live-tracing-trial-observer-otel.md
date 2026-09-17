@@ -39,10 +39,11 @@ them in date order. Read together they leave the decision here:
 - **The trace metadata** is a fixed 34-key schema plus the caller's keys (the receiver's table
   view renders nothing above 100 keys); everything else lives in the attached files, the
   observations, the scores, the tags and the native `environment` / `release` / `version` fields.
-- **Open, not decided:** facet and run-variant tags for receiver-side filtering
-  (`model_generation`, `model_tier`, `reasoning_effort`, ...), and a run-level object for the
-  run's aggregate files; both would land in the plugin and the connector, the engine's
-  reserved-prefix list following.
+- **One vocabulary, one profile (vocabulary amendment):** the tag prefixes, the producer's
+  derived tags (model facets, reasoning settings, route) and the default environment rule live
+  in the plugin wheel and are imported by the offline uploader; a deployment's values arrive in
+  one schema-2 profile both producers read. **Open, not decided:** a run-level object for the
+  run's aggregate files, a curated / board marker, a task-version tag.
 
 ## Context and Problem Statement
 
@@ -354,6 +355,33 @@ with both versions in the message, when the contract moved. `TracingConfig` stay
 plugin settings the engine has no field for. The import-linter contract `trial-observer-seam`
 keeps the engine from importing the plugin statically; the golden parity test moved with the
 plugin (`tolokaforge_langfuse/tests/unit/parity_bundle.py`, still byte-identical in the connector).
+
+## Amendment 2026-09-17: one vocabulary in the wheel, one profile for both producers
+
+Users of the receiver want to select trials by what a model is (its generation, tier, variant,
+size, stage, snapshot) and by how it was run (reasoning mode, effort, budget, the route the calls
+took), across evaluations; the receiver groups and filters by tags and native fields, and filters
+but never groups by metadata. The two producers had two vocabularies: a closed core in the
+offline uploader's code with a deployment profile for its defaults and lists, and a syntax-only
+rule in the live observer with a second profile file for the environment and fixed tags; the
+model facets the normalizer derives reached neither. The default vocabulary now lives once, in
+the wheel (`tolokaforge_langfuse/vocabulary.py`), and the offline uploader imports it: the
+prefixes with their producer / caller split, the value lists the engine's output format defines
+(`run_kind`, `scope`), the tags derived from the bundle and the normalizer (`model_<facet>`,
+`reasoning_mode`, `reasoning_effort`, `reasoning_budget`, `route`, all producer-owned, none
+invented when the fact is absent), the ordering, and the environment rule (`production` for an
+evaluation, `development` otherwise), which is now the default without a profile as well. The
+deployment's values arrive in **one** profile file both producers read (`profile.py`, schema 2:
+environment, fixed tags, derived-tag groups, value lists, required prefixes, the offline
+command's derivations, the caller's metadata keys, fixed metadata, model rules; schema 1 still
+loads). Both producers enforce the same discipline at run start or before upload: a closed prefix
+list, closed values, one value per prefix, no contradiction of a fixed tag, the required set when
+a profile is in force, the profile's metadata keys; a CI launcher pre-checks its inputs with the
+module entry and degrades to an offline upload rather than failing a run. The live producer sets
+`source:trial` itself, like `harness` and `task`. The native `version` of a live trace names the
+wheel (`tolokaforge-langfuse-<version>+<rules>+<profile>`), `release` the engine. The golden
+parity test carries the derived tags; the shared modules import no engine module, which a test
+pins, so the offline uploader can depend on the wheel next to any engine pin.
 
 ## Links
 

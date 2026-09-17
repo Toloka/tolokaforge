@@ -96,6 +96,7 @@ class TestGoldenParity:
             assert set(event["body"]["tags"]) ^ set(expected["tags"]) <= {
                 "model_family:pilot",
                 "model_vendor:acme",
+                "model_generation:1",  # the facets are the normalizer's too
             }
 
     def test_every_metadata_key_is_explicit_and_the_producer_keys_are_the_documented_ones(
