@@ -20,10 +20,9 @@ So what a CLI reports is a *subset*, and the record below distinguishes "not
 reported" (``None``) from "reported as zero". A caller that needs the tokens
 ``kimi-code`` withholds has to measure them at the wire instead.
 
-``grok-build`` declares no dialect: its terminal ``end`` event carries only a
-stop reason. ``opencode`` is not wired up here yet, though it does report
-per-step ``tokens`` and ``cost`` that this module's shape could carry.
-:func:`parse_harness_stdout` returns ``None`` for both, and the caller keeps
+``grok-build`` declares no dialect: its stream is ``text`` events closing on
+an ``end`` event that carries only a stop reason, so there is nothing to read.
+:func:`parse_harness_stdout` returns ``None`` for it and the caller keeps
 whatever accounting it already had.
 
 Lives beside the registry because a stdout dialect is a property of the CLI,
@@ -38,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "OPENCODE_JSON",
     "STDOUT_TELEMETRY_DIALECTS",
     "HarnessStdoutTelemetry",
     "parse_harness_stdout",
@@ -53,6 +53,11 @@ CODEX_JSON = "codex/json"
 ``{"type": "turn.completed", "usage": {…}}`` per turn. Usage is per-turn, so a
 reader sums across them. Reports tokens but no cost."""
 
+OPENCODE_JSON = "opencode/json"
+"""Dialect of ``opencode run --format=json``: one JSON object per line, with a
+``step_finish`` per step carrying that step's ``tokens`` and ``cost``. Usage is
+per-step, so a reader sums across them. Reports both tokens and cost."""
+
 KIMI_CODE_STREAM_JSON = "kimi-code/stream-json"
 """Dialect of ``kimi-code --output-format stream-json``: an OpenAI-shaped
 message transcript (``{"role": "assistant", …}`` / ``{"role": "tool", …}``)
@@ -63,6 +68,7 @@ STDOUT_TELEMETRY_DIALECTS: dict[str, str] = {
     "claude-code": CLAUDE_CODE_STREAM_JSON,
     "codex": CODEX_JSON,
     "kimi-code": KIMI_CODE_STREAM_JSON,
+    "opencode": OPENCODE_JSON,
 }
 """Harness name → the stdout dialect it prints. A harness absent from this
 mapping prints nothing a parser can read; see the module docstring."""
@@ -133,6 +139,8 @@ def parse_harness_stdout(harness: str, stdout: str) -> HarnessStdoutTelemetry | 
         return _parse_codex_json(stdout)
     if dialect == KIMI_CODE_STREAM_JSON:
         return _parse_kimi_code_stream_json(stdout)
+    if dialect == OPENCODE_JSON:
+        return _parse_opencode_json(stdout)
     # The mapping and the branches above are edited together; a dialect with
     # no branch is a programming error, not a runtime condition.
     raise AssertionError(f"no parser for stdout dialect {dialect!r}")
@@ -202,6 +210,59 @@ def _parse_codex_json(stdout: str) -> HarnessStdoutTelemetry | None:
         dialect=CODEX_JSON,
         turns=turns,
         cost_usd=None,
+        duration_s=None,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_write,
+        reasoning_tokens=reasoning,
+    )
+
+
+def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
+    """Sum the per-step usage ``opencode run --format=json`` reports.
+
+    The stream runs ``step_start`` → ``tool_use`` → ``step_finish`` per step,
+    and each ``step_finish`` carries **that step's** tokens and cost under
+    ``part`` — so totals are a sum across them, not the last one.
+
+    Its ``tokens.input`` is the non-cached remainder, the way ``claude-code``
+    reports: on a recorded step, ``input=1``, ``cache.write=387``,
+    ``cache.read=15623``, ``output=304`` and ``total=16315``, which is their
+    sum. The record declares an inclusive prompt basis, so the cache counters
+    are folded back in rather than passed through beside it.
+
+    ``reasoning`` is already inside ``output``, matching what the record
+    declares and what the caller's pricing expects.
+    """
+    turns = 0
+    prompt = completion = cache_read = cache_write = reasoning = 0
+    cost = 0.0
+    for event in _json_lines(stdout):
+        if event.get("type") != "step_finish":
+            continue
+        part = event.get("part")
+        if not isinstance(part, Mapping):
+            continue
+        turns += 1
+        cost += _as_float(part.get("cost"))
+        tokens = part.get("tokens")
+        if not isinstance(tokens, Mapping):
+            continue
+        cache = tokens.get("cache")
+        read = _as_int(cache.get("read")) if isinstance(cache, Mapping) else 0
+        write = _as_int(cache.get("write")) if isinstance(cache, Mapping) else 0
+        prompt += _as_int(tokens.get("input")) + read + write
+        completion += _as_int(tokens.get("output"))
+        reasoning += _as_int(tokens.get("reasoning"))
+        cache_read += read
+        cache_write += write
+    if turns == 0:
+        return None
+    return HarnessStdoutTelemetry(
+        dialect=OPENCODE_JSON,
+        turns=turns,
+        cost_usd=cost,
         duration_s=None,
         prompt_tokens=prompt,
         completion_tokens=completion,
