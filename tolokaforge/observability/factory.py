@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,12 +105,17 @@ def build_trial_observer(
         tracing, identity, engine_run_id=engine_run_id, output_dir=output_dir
     )
     if not observers:
+        asked = None
         if tracing is not None and tracing.exporter != "none":
+            asked = f"observability.tracing.exporter={tracing.exporter!r}"
+        elif switches := tracing_switches():
+            asked = " / ".join(f"{name}={value}" for name, value in switches)
+        if asked:
             raise TracingConfigError(
-                f"observability.tracing.exporter={tracing.exporter!r} but no trial-observer plugin "
-                f"produced an observer (installed under {TRIAL_OBSERVERS_GROUP!r}: "
-                f"{', '.join(installed_plugins()) or 'none'}); the Langfuse observer is the "
-                "tolokaforge-langfuse package: pip install 'tolokaforge[otel]'"
+                f"{asked} but no trial-observer plugin produced an observer (installed under "
+                f"{TRIAL_OBSERVERS_GROUP!r}: {', '.join(installed_plugins()) or 'none'}); the "
+                "Langfuse observer is the tolokaforge-langfuse package: pip install "
+                "'tolokaforge[otel]'"
             )
         return NullTrialObserver(), identity
     observer: TrialObserver = (
@@ -121,11 +126,36 @@ def build_trial_observer(
     return observer, identity
 
 
+TRACING_SWITCH_SUFFIX = "_TRACING_ENABLED"
+"""A plugin's one-switch variable ends in this suffix (``LANGFUSE_TRACING_ENABLED``): the engine
+knows no receiver's name, but a switch that is on while no plugin produced an observer is a
+misconfiguration it refuses at run start rather than a run silently without traces."""
+_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def tracing_switches() -> list[tuple[str, str]]:
+    """The ``*_TRACING_ENABLED`` variables that are on, sorted by name."""
+    return sorted(
+        (name, value.strip())
+        for name, value in os.environ.items()
+        if name.endswith(TRACING_SWITCH_SUFFIX) and value.strip().lower() in _TRUE
+    )
+
+
 def installed_plugins() -> list[str]:
     """The names registered under the trial-observer group, sorted."""
-    from tolokaforge.core.plugin_registry import discover_entry_points
+    return sorted(_discover())
 
-    return sorted(discover_entry_points(TRIAL_OBSERVERS_GROUP))
+
+def _discover() -> Mapping[str, Any]:
+    """The trial-observer entry points; a duplicate name across two distributions is the same
+    configuration error as every other tracing misconfiguration."""
+    from tolokaforge.core.plugin_registry import RegistryError, discover_entry_points
+
+    try:
+        return discover_entry_points(TRIAL_OBSERVERS_GROUP)
+    except RegistryError as exc:
+        raise TracingConfigError(str(exc)) from exc
 
 
 def build_plugin_observers(
@@ -138,10 +168,8 @@ def build_plugin_observers(
     """Every installed plugin's answer, in name order, ``None`` answers dropped. A plugin that
     cannot be imported is a configuration error: an installed observer the run cannot use is
     a broken environment, not a run without tracing."""
-    from tolokaforge.core.plugin_registry import discover_entry_points
-
     built: list[TrialObserver] = []
-    for name, entry_point in sorted(discover_entry_points(TRIAL_OBSERVERS_GROUP).items()):
+    for name, entry_point in sorted(_discover().items()):
         try:
             build = cast("Callable[..., TrialObserver | None]", entry_point.load())
         except Exception as exc:  # noqa: BLE001 - any import failure is the same finding

@@ -216,7 +216,7 @@ class TestAttachmentStep:
                 return [
                     "OPENROUTER_API_KEY",
                     "LANGFUSE_BASE_URL",
-                    "TEST_ARENA_LANGFUSE_SECRET_KEY",
+                    "TEST_PILOT_LANGFUSE_SECRET_KEY",
                     "HOME_DIR",
                 ]
 
@@ -224,7 +224,7 @@ class TestAttachmentStep:
                 return {
                     "OPENROUTER_API_KEY": "sk-or-v1-abc",
                     "LANGFUSE_BASE_URL": "https://lf.example",
-                    "TEST_ARENA_LANGFUSE_SECRET_KEY": "sk-lf-xyz",
+                    "TEST_PILOT_LANGFUSE_SECRET_KEY": "sk-lf-xyz",
                     "HOME_DIR": "/Users/x",
                 }[key]
 

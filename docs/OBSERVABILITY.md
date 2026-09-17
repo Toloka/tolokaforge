@@ -202,7 +202,7 @@ configuration error.
 
 Everything a deployment decides about its traces and the engine must not know as a value arrives
 at run time in one TOML file, `observability.tracing.profile` or `TOLOKAFORGE_TRACING_PROFILE`
-(`tolokaforge_langfuse/profile.py`; `python -m tolokaforge_langfuse.profile <file>`
+(`tolokaforge_langfuse/src/tolokaforge_langfuse/profile.py`; `python -m tolokaforge_langfuse.profile <file>`
 validates one). Neutral example:
 
 ```toml
@@ -263,7 +263,10 @@ signature `build(tracing, identity, *, engine_run_id, output_dir) -> TrialObserv
 start the engine resolves the identity, asks every installed plugin in name order and composes the
 answers; `None` means "nothing asks for me in this run" (the Langfuse plugin answers `None` unless
 `exporter: otlp` or `LANGFUSE_TRACING_ENABLED` asks). `exporter: otlp` with no plugin answering,
-or a plugin that cannot be imported, is a configuration error at run start. The pairing is checked
+or a plugin that cannot be imported, is a configuration error at run start; so is a plugin's switch
+(a variable ending in `_TRACING_ENABLED`, such as `LANGFUSE_TRACING_ENABLED`) that is on while no
+plugin produced an observer, so a run never proceeds silently without the traces it asked for. The
+pairing is checked
 by the plugin: the engine's `PLUGIN_API_VERSION` (the `build` signature, the observer hooks and the
 id contract) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
 fix to the projection, the profile or the attachment step reaches a deployment by moving the

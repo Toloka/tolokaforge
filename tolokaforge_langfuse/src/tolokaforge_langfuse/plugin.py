@@ -127,7 +127,6 @@ def build(
 ) -> TrialObserver | None:
     """The ``tolokaforge.trial_observers`` entry point: the Langfuse observer of this run, or
     ``None`` when nothing asks for it (``exporter: none`` without ``LANGFUSE_TRACING_ENABLED``)."""
-    check_engine_api()
     if langfuse_enabled():
         from tolokaforge.core.models import TracingConfig as _TracingConfig
 
@@ -135,6 +134,7 @@ def build(
         tracing = (tracing or _TracingConfig()).model_copy(update={"exporter": "otlp"})
     if tracing is None or tracing.exporter != "otlp":
         return None
+    check_engine_api()  # only a run that traces needs the contract to hold
     run_id = identity.run_id
     endpoint = resolve_endpoint(tracing.endpoint)
     profile = load_profile(tracing.profile)

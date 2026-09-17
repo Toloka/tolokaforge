@@ -205,7 +205,7 @@ class SpanQueue:
 
 
 class TrialAttachments(Protocol):
-    """The post-trial step a receiver provides (``langfuse_media.LangfuseAttachments``): the
+    """The post-trial step a receiver provides (``media.LangfuseAttachments``): the
     file attachments, the ingestion route the trial-end events take, inline media, and the
     budget and breaker both share. ``attach_with_manifest``, ``register_media``, ``budget``,
     ``scan_events``, ``note_trial_outcome`` and ``tripped`` are optional capabilities looked up
@@ -748,7 +748,7 @@ class OTelTrialObserver:
         user_name: str | None,
     ) -> None:
         """The bundle's grading, judge transcript, scores and simulated user turns as ingestion
-        events under the shared id contract (``langfuse_gradings``; the ``gradings`` projection
+        events under the shared id contract (``gradings``; the ``gradings`` projection
         mode). Never raises."""
         from tolokaforge_langfuse.gradings import build_grading_events
 

@@ -5,6 +5,7 @@ the plugin's business (``tolokaforge_langfuse/tests``)."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,8 @@ def plugins(monkeypatch) -> dict[str, _EntryPoint]:
     monkeypatch.setattr(plugin_registry, "discover_entry_points", discover)
     monkeypatch.delenv("TOLOKAFORGE_TRACING_RUN_ID", raising=False)
     monkeypatch.delenv("TOLOKAFORGE_TRACING_RUN_TAG", raising=False)
+    for name in [n for n in os.environ if n.endswith("_TRACING_ENABLED")]:
+        monkeypatch.delenv(name, raising=False)
     return registry
 
 
@@ -115,6 +118,31 @@ class TestWithoutAnObserver:
             TracingConfigError, match="no trial-observer plugin.*tolokaforge-langfuse"
         ):
             build_trial_observer(config, engine_run_id="run-1")
+
+    def test_a_switch_that_is_on_without_an_observer_refuses_the_run(
+        self, plugins, monkeypatch
+    ) -> None:
+        # the engine knows no receiver's name, but a *_TRACING_ENABLED switch that is on while no
+        # plugin answered is a run that would silently lose its traces (the reviewer's scenario:
+        # the image was built without the extra)
+        monkeypatch.setenv("ACME_TRACING_ENABLED", "true")
+        with pytest.raises(
+            TracingConfigError, match="ACME_TRACING_ENABLED=true but no trial-observer"
+        ):
+            build_trial_observer(None, engine_run_id="run-1")
+        monkeypatch.setenv("ACME_TRACING_ENABLED", "false")
+        observer, _ = build_trial_observer(None, engine_run_id="run-1")
+        assert isinstance(observer, NullTrialObserver)
+
+    def test_a_duplicate_plugin_name_is_a_configuration_error(self, monkeypatch) -> None:
+        from tolokaforge.core.plugin_registry import DuplicateRegistrationError
+
+        def explode(group):
+            raise DuplicateRegistrationError("langfuse", group, ("a", "b"))
+
+        monkeypatch.setattr(plugin_registry, "discover_entry_points", explode)
+        with pytest.raises(TracingConfigError, match="langfuse"):
+            build_trial_observer(None, engine_run_id="run-1")
 
     def test_otlp_that_no_plugin_takes_is_the_same_error(self, plugins) -> None:
         plugins["a"] = _EntryPoint("a", _recording(None, []))

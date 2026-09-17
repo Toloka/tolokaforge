@@ -82,7 +82,14 @@ PRODUCER_KEYS = frozenset({"upload_mode", "uploader_version", "trace_time_source
 # writes into the metadata of a trace that arrived over OTLP (the trace-level span's raw
 # attributes and the resource attributes); a caller may not use these names either
 LIVE_ONLY_KEYS = frozenset(
-    {"generations_observed", "tool_calls_observed", "error", "attributes", "resourceAttributes", "scope"}
+    {
+        "generations_observed",
+        "tool_calls_observed",
+        "error",
+        "attributes",
+        "resourceAttributes",
+        "scope",
+    }
 )
 # the part of the primary grading's summary a trace mirrors (the connector's list; the full
 # summary stays on the grading observation and every detail is a score)

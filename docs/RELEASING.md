@@ -200,7 +200,9 @@ contract. They are not maintained by `cz bump`. Bump both, in the same PR, only 
 changes; cut the engine release first, then the plugin's, so a deployment that moves one pin at a
 time sees a clear run-start error naming both versions rather than a mid-run failure. The engine's
 `otel` extra pins `tolokaforge-langfuse>=0.1.0,<1.0.0`: raise the lower bound in the engine
-release that changes the contract.
+release that changes the contract. The very first release is the exception to "engine first": an
+engine whose `otel` extra names `tolokaforge-langfuse` cannot resolve that extra until
+`langfuse-v0.1.0` is on PyPI, so publish the plugin first (or the two together).
 
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
