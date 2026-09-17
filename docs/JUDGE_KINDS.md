@@ -13,12 +13,15 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-Two kinds ship in the reference distribution: `single_shot_rubric`
+Three kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
-`LLMJudgeRubricEvaluator`) and `chunked_rubric` (one `LLMJudge`
+`LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
 invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
 for large rubrics where a single `submit_report` payload would exceed
-the judge model's output-token ceiling). Downstream packages
+the judge model's output-token ceiling), and `voted_rubric` (wraps any
+registered kind and samples it K times, folding the per-criterion
+verdicts through a robust aggregator to reduce judge-model
+self-variance — see § Voted kind). Downstream packages
 register further alternatives (e.g. jury, agentic) alongside without a
 framework PR.
 
@@ -159,6 +162,25 @@ Opt in for rubrics whose single `submit_report` payload would overflow
 the judge model's output-token ceiling — see § Chunked kind for the
 fail-loud and persistence contract.
 
+### `voted_rubric`
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: voted_rubric
+    kind_config:
+      n_samples: 3
+      aggregator: geometric_median
+      wrapped_kind: single_shot_rubric
+```
+
+Runs `single_shot_rubric` (or any other registered kind named by
+`wrapped_kind`) three times against the same rubric evidence and folds
+the three per-criterion verdicts through the geometric-median
+aggregator. Opt in to reduce judge-model self-variance on
+subjective/graded criteria — see § Voted kind for the config schema,
+the fail-loud contract, and the aggregator trade-offs.
+
 ## Chunked kind
 
 `chunked_rubric` splits the rubric's criteria into fixed-K contiguous
@@ -253,6 +275,75 @@ Cost note: a rubric split into N chunks consumes up to `N ×` the
 single-shot per-trial wall-clock and system-prompt tokens. This is the
 acknowledged cost of removing the truncation failure class; the trade
 between chunk size and reliability is measured in follow-up #1581.
+
+## Voted kind
+
+`voted_rubric` wraps any other registered `JudgeKind` (default
+`single_shot_rubric`), calls its `evaluate` `n_samples` times (default
+3) against the SAME rubric evidence — the wrapped kind always receives
+`kind_config=None`, so a nested config on the wrapped kind (e.g. a
+non-default `chunk_size` on a wrapped `chunked_rubric`) is not
+supported — and folds the K per-criterion verdicts through a robust
+aggregator (`tolokaforge.core.grading.judge_kinds.aggregators`) before
+re-folding the merged results through `aggregate_rubric` on the
+original rubric, exactly as every other kind does. Opt in via
+`grading.llm_judge.judge_kind: voted_rubric`; the default remains
+`single_shot_rubric`.
+
+`kind_config` schema: `{"n_samples": int, "aggregator": "majority" |
+"median" | "geometric_median", "wrapped_kind": str}`. All three keys
+are optional — `n_samples` defaults to 3, `aggregator` defaults to
+`geometric_median`, `wrapped_kind` defaults to `single_shot_rubric`.
+`n_samples` must be a non-`bool` `int` `>= 2` (K<2 makes voting
+undefined). `aggregator="majority"` additionally requires an odd
+`n_samples` (no implicit tie-break) and an all-`binary` rubric (a
+majority vote over a graded 0–1 criterion has no defined threshold).
+`wrapped_kind` must resolve via `load_judge_kind` — an unknown name
+raises the registry's own `UnknownImplementationError` naming the
+registered set. Any unknown `kind_config` key, or a violation of the
+above, raises `ValueError` before any judge dispatch runs.
+
+**Aggregators:**
+
+- `"median"` — per-criterion `statistics.median` over the K samples'
+  scores for that criterion, independently per criterion.
+- `"majority"` — per-criterion boolean vote at the 0.5 threshold
+  (requires an odd `n_samples` and an all-binary rubric, enforced
+  above).
+- `"geometric_median"` (default) — treats each sample as ONE point in
+  R^n_criteria (a full per-sample verdict vector) and returns the point
+  minimizing the sum of Euclidean distances to the K sample points
+  (Weiszfeld/Vardi-Zhang, `MAX_ITERATIONS = 100`,
+  `CONVERGENCE_TOLERANCE = 1e-8`). This is what makes it distinct from
+  `"median"`: a sample whose ENTIRE verdict set is contaminated
+  (sycophancy, mode collapse) is down-weighted as a unit rather than
+  diluted criterion-by-criterion. Fails loud with `RuntimeError` naming
+  the iteration cap, the tolerance, and the last iterate if the
+  algorithm does not converge — never a silent stale midpoint.
+
+Per-sample fail-loud (mirrors `chunked_rubric`'s per-chunk contract,
+renamed to per-sample): any sample whose `JudgeResult.status` is not
+`COMPLETED` — or whose `criterion_results` is missing one of the
+rubric's criterion ids — yields a whole-trial `JudgeResult` with
+`status=ERRORED`, `score=None`, `criterion_results=()`, and a `reasons`
+naming the failing sample index and the underlying reason. Iteration
+stops at the first failing sample (later samples are never dispatched);
+`usage` is still summed across every sample that DID dispatch.
+
+**Justification audit trail.** Each merged `CriterionResult.justification`
+records the aggregator name, K, the raw per-sample scores for that
+criterion, the resulting aggregate, and then every sample's own
+justification labelled by index — so a reviewer can see exactly which
+sample(s) drove (or were down-weighted out of) the final verdict.
+
+`chunk_boundaries` is always `()` — `voted_rubric` never chunks, so
+persistence and replay treat it exactly like `single_shot_rubric` for
+that field.
+
+Cost note: K samples consume up to `K ×` the wrapped kind's per-trial
+wall-clock, tokens, and cost. This is the acknowledged cost of reducing
+judge-model self-variance; the K vs. reliability trade is measured in
+the umbrella issue's live A/B report (see § Live A/B below).
 
 ## Parity gate
 

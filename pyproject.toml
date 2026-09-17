@@ -252,6 +252,7 @@ test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGra
 [project.entry-points."tolokaforge.judge_kinds"]
 chunked_rubric = "tolokaforge.core.grading.judge_kinds.chunked:ChunkedRubricJudgeKind"
 single_shot_rubric = "tolokaforge.core.grading.judge_kinds.single_shot:SingleShotRubricJudgeKind"
+voted_rubric = "tolokaforge.core.grading.judge_kinds.voted:VotedRubricJudgeKind"
 
 # ADR-0044 composition-plan adapter Protocols
 # (``tolokaforge/core/composition_runtime.py``). Each entry point resolves

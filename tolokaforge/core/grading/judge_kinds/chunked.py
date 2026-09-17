@@ -33,7 +33,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge import LLMJudge
-from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_kinds._shared import sum_usage
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.rubric import aggregate_rubric
 from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
 
@@ -196,7 +197,7 @@ def _errored_trial(
     """
     return JudgeResult(
         status=JudgeStatus.ERRORED,
-        usage=_sum_usage(chunk_results),
+        usage=sum_usage(chunk_results),
         reasons=(
             f"chunked_rubric failed on chunk {failing_index} "
             f"(criterion ids {list(failing_ids)}): {reason}"
@@ -243,7 +244,7 @@ def _merge_chunk_results(
     head = chunk_results[0]
     return JudgeResult(
         status=JudgeStatus.COMPLETED,
-        usage=_sum_usage(chunk_results),
+        usage=sum_usage(chunk_results),
         reasons="\n\n".join(cr.reasons for cr in chunk_results),
         score=aggregate.score,
         binary_pass=aggregate.binary_pass,
@@ -259,17 +260,4 @@ def _merge_chunk_results(
         state_diff=head.state_diff,
         transcript=tuple(turn for cr in chunk_results for turn in cr.transcript),
         chunk_boundaries=chunk_boundaries,
-    )
-
-
-def _sum_usage(chunk_results: list[JudgeResult]) -> JudgeUsage:
-    """Field-wise sum of per-chunk :class:`JudgeUsage`."""
-    return JudgeUsage(
-        calls=sum(cr.usage.calls for cr in chunk_results),
-        prompt_tokens=sum(cr.usage.prompt_tokens for cr in chunk_results),
-        completion_tokens=sum(cr.usage.completion_tokens for cr in chunk_results),
-        reasoning_tokens=sum(cr.usage.reasoning_tokens for cr in chunk_results),
-        cost_usd=sum(cr.usage.cost_usd for cr in chunk_results),
-        tool_calls=sum(cr.usage.tool_calls for cr in chunk_results),
-        consistency_rejections=sum(cr.usage.consistency_rejections for cr in chunk_results),
     )

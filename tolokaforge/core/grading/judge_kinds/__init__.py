@@ -1,11 +1,14 @@
 """``tolokaforge.judge_kinds`` — typed judge-kind package.
 
 Every entry in ``[project.entry-points."tolokaforge.judge_kinds"]``
-resolves to a class satisfying :class:`JudgeKind`. Two built-ins ship:
+resolves to a class satisfying :class:`JudgeKind`. Three built-ins ship:
 :class:`SingleShotRubricJudgeKind` (wraps today's :class:`LLMJudge`
-invocation byte-identically) and :class:`ChunkedRubricJudgeKind` (one
+invocation byte-identically), :class:`ChunkedRubricJudgeKind` (one
 :class:`LLMJudge` invocation per fixed-K chunk of the rubric's criteria,
-removing the truncation failure class on 30+ criterion rubrics).
+removing the truncation failure class on 30+ criterion rubrics), and
+:class:`VotedRubricJudgeKind` (wraps any registered kind and samples it
+K times, folding the per-criterion verdicts through a robust aggregator
+to reduce judge-model self-variance).
 
 Downstream packages register alternative kinds (jury, agentic, downstream-specific)
 alongside the shipping reference impls without a framework PR — see
@@ -27,10 +30,20 @@ from tolokaforge.core.grading.judge_kinds.chunked import (
     ChunkedRubricJudgeKind,
 )
 from tolokaforge.core.grading.judge_kinds.single_shot import SingleShotRubricJudgeKind
+from tolokaforge.core.grading.judge_kinds.voted import (
+    DEFAULT_AGGREGATOR,
+    DEFAULT_N_SAMPLES,
+    DEFAULT_WRAPPED_KIND,
+    VotedRubricJudgeKind,
+)
 
 __all__ = [
+    "DEFAULT_AGGREGATOR",
     "DEFAULT_CHUNK_SIZE",
+    "DEFAULT_N_SAMPLES",
+    "DEFAULT_WRAPPED_KIND",
     "ChunkedRubricJudgeKind",
     "JudgeKind",
     "SingleShotRubricJudgeKind",
+    "VotedRubricJudgeKind",
 ]
