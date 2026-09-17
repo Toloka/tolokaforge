@@ -28,7 +28,8 @@ observability:
     # environment: development                      # a literal native environment; LANGFUSE_ENVIRONMENT wins
 ```
 
-Install the extra: `pip install 'tolokaforge[otel]'`. The receiver's credentials travel in the
+Install the observer: `pip install 'tolokaforge[otel]'` (the extra resolves to the `tolokaforge-langfuse`
+package, a separate wheel released on its own cadence; "Packaging" below). The receiver's credentials travel in the
 standard `OTEL_EXPORTER_OTLP_HEADERS` environment variable (for Langfuse:
 `Authorization=Basic <base64 public:secret>`, plus `X-GitHub-Runner-Key=...` behind the WAF); the
 engine never logs them.
@@ -162,7 +163,7 @@ files (a hit sends nothing and counts), and nothing raises into the trial. The r
 `gradings_sent`, `user_generations_sent`, `media_uploaded`, `media_failed`.
 
 Parity with the offline uploader is guarded by a golden test that lives in both repositories: a
-synthetic bundle (`tests/unit/observability/parity_bundle.py`, byte-identical in the connector)
+synthetic bundle (`tolokaforge_langfuse/tests/unit/parity_bundle.py`, byte-identical in the connector)
 projected by each side and compared as normalised event lists modulo envelope ids, timestamps,
 tag order and the documented **producer keys**, whose values differ by producer by design:
 `upload_mode` (`live`), `uploader_version` (this engine's `tolokaforge-<version>`),
@@ -174,7 +175,7 @@ receiver adds two more to a trace that arrived over OTLP, `attributes` and `reso
 ## The trace metadata
 
 A trace's metadata is a fixed, flat schema of 34 keys plus the caller's per-run keys, identical
-from the trial-end pass and from the offline uploader (`langfuse_projection.schema_keys()`):
+from the trial-end pass and from the offline uploader (`tolokaforge_langfuse.projection.schema_keys()`):
 
 | Group | Keys |
 |---|---|
@@ -200,7 +201,7 @@ configuration error.
 
 Everything a deployment decides about its traces and the engine must not know as a value arrives
 at run time in one TOML file, `observability.tracing.profile` or `TOLOKAFORGE_TRACING_PROFILE`
-(`tolokaforge/observability/profile.py`; `python -m tolokaforge.observability.profile <file>`
+(`tolokaforge_langfuse/profile.py`; `python -m tolokaforge_langfuse.profile <file>`
 validates one). Neutral example:
 
 ```toml
@@ -244,6 +245,29 @@ reads `default` and no later update repairs it) and on every ingestion body of t
 `run_identity.json` as `engine_version` for the offline uploader); `version` is the producer's
 identity plus the model-name rules and the profile it ran under
 (`tolokaforge-<version>+<rules version>+<profile version>`).
+
+## Packaging: the seam in the engine, the observer in its own wheel
+
+The engine owns the seam and nothing receiver-shaped: `tolokaforge/observability/observer.py`
+(the `TrialObserver` hooks, the null and composite observers, the receipt), `ids.py` (the id
+contract shared with the offline uploader) and `factory.py` (the run identity, `run_identity.json`,
+`tracing_receipt.json`, and the discovery of the installed **trial-observer plugins**). Everything
+Langfuse-shaped is the `tolokaforge-langfuse` distribution (`tolokaforge_langfuse/` in this
+repository, a workspace member released on its own `langfuse-vX.Y.Z` cadence, `docs/RELEASING.md`):
+the OTLP observer, the trial-end projection, the gradings pass, the media and ingestion calls, the
+attachment manifest, the deployment profile and the model-name resolution.
+
+A plugin is a callable registered under the `tolokaforge.trial_observers` entry-point group with the
+signature `build(tracing, identity, *, engine_run_id, output_dir) -> TrialObserver | None`. At run
+start the engine resolves the identity, asks every installed plugin in name order and composes the
+answers; `None` means "nothing asks for me in this run" (the Langfuse plugin answers `None` unless
+`exporter: otlp` or `LANGFUSE_TRACING_ENABLED` asks). `exporter: otlp` with no plugin answering,
+or a plugin that cannot be imported, is a configuration error at run start. The pairing is checked
+by the plugin: the engine's `PLUGIN_API_VERSION` (the `build` signature, the observer hooks and the
+id contract) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
+fix to the projection, the profile or the attachment step reaches a deployment by moving the
+`tolokaforge-langfuse` pin while the engine pin stays; a change to the hooks or the ids moves both,
+engine first. `observability.tracing.options` carries plugin settings the engine has no field for.
 
 ## Delivery
 

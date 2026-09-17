@@ -31,21 +31,21 @@ from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, Trace
 
 from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
-from tolokaforge.observability.attachments import AttachCounts
-from tolokaforge.observability.langfuse_projection import (
-    PROJECTION_FULL,
-    PROJECTION_GRADINGS,
-    ProjectionContext,
-    build_projection,
-)
-from tolokaforge.observability.model_names import (
+from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
+from tolokaforge_langfuse.attachments import AttachCounts
+from tolokaforge_langfuse.model_names import (
     NONE,
     ModelIdentity,
     ModelNameResolver,
     ModelNameResolverError,
     RawModelNameResolver,
 )
-from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
+from tolokaforge_langfuse.projection import (
+    PROJECTION_FULL,
+    PROJECTION_GRADINGS,
+    ProjectionContext,
+    build_projection,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -653,7 +653,7 @@ class OTelTrialObserver:
         persist: _PersistContext,
         manifest: Mapping[str, Any] | None,
     ) -> None:
-        """The persisted bundle's default projection (``langfuse_projection``): the same
+        """The persisted bundle's default projection (``projection``): the same
         records the offline connector writes, under the contract ids, through the ingestion
         API. A bundle that cannot be projected, a data-safety hit over the serialised events
         or a refused batch is a counted failure, never an exception."""
@@ -750,7 +750,7 @@ class OTelTrialObserver:
         """The bundle's grading, judge transcript, scores and simulated user turns as ingestion
         events under the shared id contract (``langfuse_gradings``; the ``gradings`` projection
         mode). Never raises."""
-        from tolokaforge.observability.langfuse_gradings import build_grading_events
+        from tolokaforge_langfuse.gradings import build_grading_events
 
         try:
             built = build_grading_events(

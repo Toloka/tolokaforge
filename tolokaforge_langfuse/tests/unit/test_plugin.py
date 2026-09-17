@@ -1,4 +1,5 @@
-"""Model-name resolution as configuration and the observer factory (ADR-0047)."""
+"""The Langfuse plugin: model-name resolution as configuration, the receiver from the
+environment, the project check and the attachment step (ADR-0047)."""
 
 from __future__ import annotations
 
@@ -6,6 +7,12 @@ import json
 from pathlib import Path
 
 import pytest
+from tolokaforge_langfuse.model_names import (
+    ModelNameResolverError,
+    RawModelNameResolver,
+    build_model_name_resolver,
+)
+from tolokaforge_langfuse.plugin import merge_tags, resolve_endpoint, validate_tag
 
 from tolokaforge.core.models import ObservabilityConfig, TracingConfig
 from tolokaforge.observability.factory import (
@@ -13,14 +20,6 @@ from tolokaforge.observability.factory import (
     RunIdentity,
     TracingConfigError,
     build_trial_observer,
-    merge_tags,
-    resolve_endpoint,
-    validate_tag,
-)
-from tolokaforge.observability.model_names import (
-    ModelNameResolverError,
-    RawModelNameResolver,
-    build_model_name_resolver,
 )
 from tolokaforge.observability.observer import NullTrialObserver
 
@@ -147,8 +146,9 @@ class TestFactory:
 
 class TestAttachmentStep:
     def test_attach_defaults_to_all_and_none_builds_no_step(self) -> None:
+        from tolokaforge_langfuse.plugin import build_attachments
+
         from tolokaforge.core.models import TracingConfig
-        from tolokaforge.observability.factory import build_attachments
 
         config = TracingConfig(
             exporter="otlp", endpoint="https://lf.example/api/public/otel/v1/traces"
@@ -209,7 +209,7 @@ class TestAttachmentStep:
             TracingConfig(exporter="none", attach="everything")
 
     def test_secret_values_take_credential_names_only(self, monkeypatch) -> None:
-        from tolokaforge.observability import factory
+        from tolokaforge_langfuse import plugin
 
         class _Manager:
             def list_all_keys(self):
@@ -229,7 +229,7 @@ class TestAttachmentStep:
                 }[key]
 
         monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
-        assert sorted(factory.secret_values()) == ["sk-lf-xyz", "sk-or-v1-abc"]
+        assert sorted(plugin.secret_values()) == ["sk-lf-xyz", "sk-or-v1-abc"]
 
 
 class TestReceiverFromTheEnvironment:
@@ -259,7 +259,7 @@ class TestReceiverFromTheEnvironment:
             merge_tags([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
 
     def _projects(self, monkeypatch, answer) -> list[tuple[str, str, dict]]:
-        from tolokaforge.observability import langfuse_media
+        from tolokaforge_langfuse import media
 
         calls: list[tuple[str, str, dict]] = []
 
@@ -269,7 +269,7 @@ class TestReceiverFromTheEnvironment:
                 raise answer
             return answer
 
-        monkeypatch.setattr(langfuse_media, "urllib_opener", opener)
+        monkeypatch.setattr(media, "urllib_opener", opener)
         monkeypatch.delenv("TOLOKAFORGE_TRACING_TAGS", raising=False)
         monkeypatch.delenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", raising=False)
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic dGVzdDpzZWNyZXQ=")
@@ -368,7 +368,7 @@ class TestReceiverFromTheEnvironment:
             build_trial_observer(config, engine_run_id="run-1")
 
     def test_api_base_drops_userinfo(self) -> None:
-        from tolokaforge.observability.langfuse_media import api_base_from_endpoint
+        from tolokaforge_langfuse.media import api_base_from_endpoint
 
         assert (
             api_base_from_endpoint("https://pk:sk@lf.example:8443/api/public/otel/v1/traces")

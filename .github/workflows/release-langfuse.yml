@@ -1,0 +1,140 @@
+name: Release tolokaforge-langfuse (cz bump)
+
+# Release for the `tolokaforge-langfuse` wheel (the Langfuse trial observer, ADR-0047
+# packaging amendment) — orthogonal to the engine's `Release (cz bump)` and to the
+# models wheel's `Release tolokaforge-models (cz bump)`. Runs `cz bump` against the
+# per-project commitizen config in `tolokaforge_langfuse/pyproject.toml`, regenerates
+# `tolokaforge_langfuse/CHANGELOG.md` from the Conventional Commit history scoped to
+# that project, commits, and pushes a `langfuse-vX.Y.Z` annotated tag. That tag then
+# triggers `publish-tolokaforge-langfuse.yml` (PyPI trusted publishing + GitHub
+# Release). No engine files are touched — the engine's `pyproject.toml`,
+# `CHANGELOG.md`, and `vX.Y.Z` tag axis are all independent, which is what lets a
+# receiver-side fix reach a deployment without moving its engine pin.
+#
+# One entry point: a human cuts a release by hand (`workflow_dispatch`). Nothing
+# releases this wheel automatically.
+#
+# See `docs/RELEASING.md` ("Cutting a tolokaforge-langfuse release").
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version increment"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto      # derive from commits: fix->patch, feat->minor, feat!/BREAKING CHANGE->major
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (compute the bump + changelog, do not commit/tag/push)"
+        required: false
+        default: false
+        type: boolean
+
+# Independent of the engine's and the models wheel's release groups — the wheels
+# release on separate cadences and must be free to run in parallel.
+concurrency:
+  group: release-langfuse
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # push the bump commit + tag back to main
+
+jobs:
+  release-langfuse:
+    name: Bump langfuse version, changelog, tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0      # full history + tags so commitizen can derive the bump
+          ref: main           # always release from main
+          # The `main` branch ruleset requires a PR + 1 approval for every push and
+          # only allows a *deploy key* to bypass it. `ssh-key` makes actions/checkout
+          # set `origin` to the SSH URL and authenticate as the deploy key, so the
+          # bump commit + tag can be pushed straight to main.
+          ssh-key: ${{ secrets.RELEASE_SSH_KEY }}
+
+      - name: Guard — main must be clean
+        run: |
+          test -z "$(git status --porcelain)" || { echo "Working tree not clean"; exit 1; }
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python
+        run: uv python install "$(cat .python-version)"
+
+      - name: Install commitizen
+        run: uv sync --group dev
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute increment argument
+        id: incr
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          case "$BUMP" in
+            auto)                 echo "arg=" >> "$GITHUB_OUTPUT" ;;
+            patch|minor|major)    echo "arg=--increment $BUMP" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::unknown bump increment '$BUMP' (expected auto|patch|minor|major)"
+              exit 1
+              ;;
+          esac
+
+      # Working directory is `tolokaforge_langfuse/` so commitizen reads the
+      # per-project `[tool.commitizen]` block and its relative paths
+      # (`CHANGELOG.md`, `src/tolokaforge_langfuse/__init__.py`, the local
+      # `pyproject.toml` via `version_provider = "pep621"`). `uv run` from
+      # inside a workspace member still resolves the workspace root's
+      # dependency closure, so `commitizen` is present.
+      - name: Dry run (preview only)
+        if: ${{ inputs.dry_run }}
+        working-directory: tolokaforge_langfuse
+        run: |
+          uv run cz bump --dry-run --yes ${{ steps.incr.outputs.arg }}
+
+      # `update_changelog_on_bump = true` in the per-project cz config
+      # regenerates `tolokaforge_langfuse/CHANGELOG.md` as part of the bump. If
+      # `auto` finds nothing to release (NO_COMMITS_FOUND=3 / NO_INCREMENT=21),
+      # exit cleanly instead of failing the run.
+      - name: Bump langfuse version + changelog, commit + tag
+        id: bump
+        if: ${{ !inputs.dry_run }}
+        working-directory: tolokaforge_langfuse
+        run: |
+          set +e
+          uv run cz bump --yes ${{ steps.incr.outputs.arg }}
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
+            echo "::notice::No releasable commits since the last langfuse tag — nothing to release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$code" -eq 0 ] || exit "$code"
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "new_tag=langfuse-v$(uv run cz version -p)" >> "$GITHUB_OUTPUT"
+
+      # The per-project cz `pre_bump_hooks` relock the workspace root
+      # `uv.lock` and stage it into the bump commit. Assert there's no leftover
+      # drift before we publish the tag.
+      - name: Assert uv.lock is consistent with the bump
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
+        run: uv lock --check
+
+      # Push the bump commit and its tag in a single atomic update: both refs
+      # land or neither does.
+      - name: Push commit + tag
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
+        run: |
+          git push --atomic origin HEAD:main "refs/tags/${{ steps.bump.outputs.new_tag }}"

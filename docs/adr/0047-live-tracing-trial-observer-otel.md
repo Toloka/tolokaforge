@@ -291,6 +291,32 @@ it (schema 1 refuses both as unknown keys), the model-name resolvers report an i
 tags only, and the golden parity test in both repositories was regenerated over the new schema
 with the bound (fewer than 100 keys) as one of its assertions.
 
+## Amendment 2026-09-17: the observer is a plugin in its own wheel
+
+The first cut placed the OTLP observer behind the `otel` extra inside the engine
+(`tolokaforge.observability.otel` and its siblings), so every fix to the projection, the profile or
+the attachment step needed an engine release, and a deployment pinned to an engine version could
+not take a Langfuse fix without moving that pin. The engine now owns the seam only:
+`tolokaforge.observability.observer` (the hooks, the null and composite observers, the receipt),
+`ids` (the id contract) and `factory` (the run identity, the sidecar files, and the discovery of
+**trial-observer plugins** under the `tolokaforge.trial_observers` entry-point group with the
+signature `build(tracing, identity, *, engine_run_id, output_dir) -> TrialObserver | None`). The
+Langfuse observer is the `tolokaforge-langfuse` distribution, a workspace member released on its
+own `langfuse-vX.Y.Z` cadence (`tolokaforge_langfuse/`: `otel.py`, `projection.py`,
+`gradings.py`, `media.py`, `attachments.py`, `profile.py`, `model_names.py`, `plugin.py`; the
+former `tolokaforge/observability/{otel,langfuse_projection,langfuse_gradings,langfuse_media,
+attachments,profile,model_names}.py` named in the amendments above); the engine's `otel` extra
+resolves to it. The plugin decides enablement (`exporter: otlp` or `LANGFUSE_TRACING_ENABLED`),
+the engine composes what the plugins return and refuses a run that asks for an exporter no plugin
+provides. The pairing is a versioned contract (`PLUGIN_API_VERSION` = `__api_version__` = 1)
+checked at run start, not a pip dependency: like the models wheel (ADR-0030) the plugin declares
+no `tolokaforge` requirement, so the same wheel installs next to any engine pin and fails loud,
+with both versions in the message, when the contract moved. `TracingConfig` stays in the engine
+(its fields are the seam's public configuration) and gains `options`, a pass-through mapping for
+plugin settings the engine has no field for. The import-linter contract `trial-observer-seam`
+keeps the engine from importing the plugin statically; the golden parity test moved with the
+plugin (`tolokaforge_langfuse/tests/unit/parity_bundle.py`, still byte-identical in the connector).
+
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern)

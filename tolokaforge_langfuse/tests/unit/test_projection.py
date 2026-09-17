@@ -8,21 +8,20 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import parity_bundle as pb
 import pytest
-
-from tolokaforge.observability import ids
-from tolokaforge.observability.langfuse_media import LangfuseApiError, iter_batches
-from tolokaforge.observability.langfuse_projection import (
+from tolokaforge_langfuse.media import LangfuseApiError, iter_batches
+from tolokaforge_langfuse.model_names import RawModelNameResolver, build_model_name_resolver
+from tolokaforge_langfuse.projection import (
     LIVE_ONLY_KEYS,
     PRODUCER_KEYS,
     ProjectionContext,
     build_projection,
     schema_keys,
 )
-from tolokaforge.observability.model_names import RawModelNameResolver, build_model_name_resolver
-from tolokaforge.observability.observer import ModelRef, TrialIdentity
 
-from . import parity_bundle as pb
+from tolokaforge.observability import ids
+from tolokaforge.observability.observer import ModelRef, TrialIdentity
 
 pytestmark = pytest.mark.unit
 
@@ -245,7 +244,7 @@ class _Step:
         return scope()
 
     def attach_with_manifest(self, trace_id, trial_dir, *, trace_timestamp=None, metadata=None):
-        from tolokaforge.observability.attachments import AttachCounts
+        from tolokaforge_langfuse.attachments import AttachCounts
 
         self.attached.append(trace_id)
         manifest = {
@@ -274,8 +273,7 @@ class TestObserverProjection:
     def _observer(self, step, **kwargs):
         pytest.importorskip("opentelemetry.sdk")
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-        from tolokaforge.observability.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
+        from tolokaforge_langfuse.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
 
         queue = SpanQueue(InMemorySpanExporter(), max_size=100, batch_size=4, interval_s=0.05)
         settings = kwargs.pop(
@@ -344,8 +342,7 @@ class TestObserverProjection:
     def test_the_provisional_root_span_carries_the_native_fields(self, tmp_path: Path) -> None:
         pytest.importorskip("opentelemetry.sdk")
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-        from tolokaforge.observability.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
+        from tolokaforge_langfuse.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
 
         exporter = InMemorySpanExporter()
         queue = SpanQueue(exporter, max_size=10, batch_size=1, interval_s=0.05)
@@ -394,7 +391,7 @@ class TestObserverProjection:
         assert step.batches == [] and receipt.projections_failed == 1
 
     def test_projection_none_sends_only_the_attachments(self, tmp_path: Path) -> None:
-        from tolokaforge.observability.otel import ProjectionSettings
+        from tolokaforge_langfuse.otel import ProjectionSettings
 
         step = _Step()
         observer = self._observer(step, projection=ProjectionSettings(mode="none"))

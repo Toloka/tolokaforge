@@ -24,6 +24,7 @@ members = [
     "tolokaforge",
     "tolokaforge-adapter-terminal-bench",
     "tolokaforge-coding-harnesses",
+    "tolokaforge-langfuse",
     "tolokaforge-models",
 ]
 
@@ -5003,8 +5004,7 @@ office = [
     { name = "python-pptx" },
 ]
 otel = [
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
+    { name = "tolokaforge-langfuse" },
 ]
 rag = [
     { name = "rank-bm25" },
@@ -5046,8 +5046,6 @@ dev = [
     { name = "import-linter" },
     { name = "mcp" },
     { name = "mypy" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pre-commit" },
@@ -5063,6 +5061,7 @@ dev = [
     { name = "rich" },
     { name = "ruff" },
     { name = "tolokaforge-adapter-terminal-bench" },
+    { name = "tolokaforge-langfuse" },
     { name = "uvicorn" },
 ]
 
@@ -5090,8 +5089,6 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.0,<2" },
     { name = "odata-query", marker = "extra == 'runner'", specifier = ">=0.10.0" },
     { name = "openpyxl", marker = "extra == 'office'", specifier = ">=3.1.0" },
-    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.27" },
-    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pillow", marker = "extra == 'browser'", specifier = ">=12.1.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.40.0" },
@@ -5115,6 +5112,7 @@ requires-dist = [
     { name = "tolokaforge", extras = ["dx", "browser", "server", "rag", "office", "adapters", "runner"], marker = "extra == 'all'", editable = "." },
     { name = "tolokaforge", extras = ["terminal-bench"], marker = "extra == 'adapters'", editable = "." },
     { name = "tolokaforge-adapter-terminal-bench", marker = "extra == 'terminal-bench'", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
+    { name = "tolokaforge-langfuse", marker = "extra == 'otel'", editable = "tolokaforge_langfuse" },
     { name = "tolokaforge-models", editable = "tolokaforge_models" },
     { name = "toml", specifier = ">=0.10.0" },
     { name = "typesense", specifier = ">=2.0.0" },
@@ -5142,8 +5140,6 @@ dev = [
     { name = "import-linter", specifier = ">=2.0" },
     { name = "mcp", specifier = ">=1.0,<2" },
     { name = "mypy", specifier = ">=1.7.0" },
-    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
-    { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "playwright", specifier = ">=1.40.0" },
     { name = "pre-commit", specifier = ">=3.6.0" },
@@ -5159,6 +5155,7 @@ dev = [
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", specifier = "==0.14.4" },
     { name = "tolokaforge-adapter-terminal-bench", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
+    { name = "tolokaforge-langfuse", editable = "tolokaforge_langfuse" },
     { name = "uvicorn", specifier = ">=0.25.0" },
 ]
 
@@ -5196,6 +5193,25 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.1" },
+]
+
+[[package]]
+name = "tolokaforge-langfuse"
+version = "0.1.0"
+source = { editable = "tolokaforge_langfuse" }
+dependencies = [
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "pyyaml" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
+    { name = "opentelemetry-sdk", specifier = ">=1.27" },
+    { name = "pyyaml", specifier = ">=6.0.1" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
 ]
 
 [[package]]

@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-from tolokaforge.observability import ids
-from tolokaforge.observability.langfuse_gradings import (
+from tolokaforge_langfuse.gradings import (
     build_grading_events,
     content_fingerprint,
     grade_summary,
 )
-from tolokaforge.observability.langfuse_media import LangfuseApiError, LangfuseAttachments
+from tolokaforge_langfuse.media import LangfuseApiError, LangfuseAttachments
+
+from tolokaforge.observability import ids
 
 TRACE = "b" * 32
 RUN_ID = "pilot-dev/v3/live/gemini/20260916T195039Z"
@@ -332,8 +332,7 @@ class TestObserverGradings:
     def _observer(self, attachments, **kwargs):
         pytest.importorskip("opentelemetry.sdk")
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-        from tolokaforge.observability.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
+        from tolokaforge_langfuse.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
 
         queue = SpanQueue(InMemorySpanExporter(), max_size=100, batch_size=4, interval_s=0.05)
         return OTelTrialObserver(
@@ -346,7 +345,8 @@ class TestObserverGradings:
         )
 
     def test_the_grading_leaves_after_the_attachments_and_is_counted(self, tmp_path: Path) -> None:
-        from tolokaforge.observability.attachments import AttachCounts
+        from tolokaforge_langfuse.attachments import AttachCounts
+
         from tolokaforge.observability.observer import ModelRef, TrialIdentity
 
         class Step:
@@ -481,7 +481,7 @@ class TestLangfuseSwitch:
         return monkeypatch
 
     def _projects(self, monkeypatch, names):
-        from tolokaforge.observability import langfuse_media
+        from tolokaforge_langfuse import media
 
         calls: list[tuple[str, str, dict]] = []
 
@@ -494,7 +494,7 @@ class TestLangfuseSwitch:
                 ).encode(),
             )
 
-        monkeypatch.setattr(langfuse_media, "urllib_opener", opener)
+        monkeypatch.setattr(media, "urllib_opener", opener)
         return calls
 
     def test_off_by_default_and_a_false_value_is_off(self, clean_env) -> None:

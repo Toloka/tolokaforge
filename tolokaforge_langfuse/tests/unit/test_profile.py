@@ -8,24 +8,26 @@ import json
 from pathlib import Path
 
 import pytest
-
-from tolokaforge.core.models import ObservabilityConfig, TracingConfig
-from tolokaforge.observability.factory import (
-    RUN_IDENTITY_FILE,
-    TracingConfigError,
-    build_trial_observer,
+from tolokaforge_langfuse.plugin import (
     merge_metadata,
     merge_tag_sources,
     producer_version,
     resolve_environment,
 )
-from tolokaforge.observability.profile import (
+from tolokaforge_langfuse.profile import (
     NO_PROFILE,
     TracingProfileError,
     load_tracing_profile,
     main,
     parse_metadata_variable,
     profile_from_mapping,
+)
+
+from tolokaforge.core.models import ObservabilityConfig, TracingConfig
+from tolokaforge.observability.factory import (
+    RUN_IDENTITY_FILE,
+    TracingConfigError,
+    build_trial_observer,
 )
 
 pytestmark = pytest.mark.unit

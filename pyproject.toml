@@ -176,8 +176,7 @@ bundle-store-s3 = [
     "boto3>=1.34,<2",
 ]
 otel = [
-    "opentelemetry-exporter-otlp-proto-http>=1.27",
-    "opentelemetry-sdk>=1.27",
+    "tolokaforge-langfuse>=0.1.0,<1.0.0",
 ]
 
 [project.urls]
@@ -576,7 +575,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "tolokaforge_models/tests", "tolokaforge_coding_harnesses/tests"]
+testpaths = ["tests", "tolokaforge_models/tests", "tolokaforge_coding_harnesses/tests", "tolokaforge_langfuse/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -617,7 +616,7 @@ markers = [
 [tool.coverage.run]
 # Every package the workspace ships. `--cov` with no value reads this list, so a
 # `--cov=<pkg>` on a command line would replace it with a narrower one.
-source = ["tolokaforge", "tolokaforge_models", "tolokaforge_coding_harnesses"]
+source = ["tolokaforge", "tolokaforge_models", "tolokaforge_coding_harnesses", "tolokaforge_langfuse"]
 omit = [
     "tolokaforge/*/tests/*",
     "*/test_*",
@@ -698,9 +697,9 @@ pre_bump_hooks = [
 
 [dependency-groups]
 dev = [
-    # The live-tracing exporter (ADR-0047) is an optional extra; its tests need the SDK in CI.
-    "opentelemetry-sdk>=1.27",
-    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    # The Langfuse trial observer (ADR-0047) is the workspace member tolokaforge_langfuse,
+    # released on its own cadence; its tests run with the engine's, so the dev closure installs it.
+    "tolokaforge-langfuse",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
@@ -770,6 +769,7 @@ required-version = ">=0.9.5,<0.10"
 [tool.uv.workspace]
 members = [
     "tolokaforge_models",
+    "tolokaforge_langfuse",
     "tolokaforge_coding_harnesses",
     "tools/automation",
     "tools/dev-mcp",
@@ -788,6 +788,7 @@ tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
 tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }
+tolokaforge-langfuse = { workspace = true }
 
 # PyPI as primary index for cross-platform compatibility
 [[tool.uv.index]]

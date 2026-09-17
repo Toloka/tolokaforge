@@ -12,8 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-
-from tolokaforge.observability.attachments import (
+from tolokaforge_langfuse.attachments import (
     ATTACH_ALL,
     ATTACH_CORE,
     ATTACH_NONE,
@@ -25,7 +24,7 @@ from tolokaforge.observability.attachments import (
     list_trial_files,
     plan_attachments,
 )
-from tolokaforge.observability.langfuse_media import (
+from tolokaforge_langfuse.media import (
     AttachCounts,
     LangfuseAttachments,
     api_base_from_endpoint,
@@ -142,7 +141,7 @@ class TestManifest:
     def test_manifest_v2_shape_and_completeness(self, tmp_path: Path) -> None:
         trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
         attached = []
-        from tolokaforge.observability.attachments import AttachedFile
+        from tolokaforge_langfuse.attachments import AttachedFile
 
         for file in plan_attachments(trial, ATTACH_ALL):
             attached.append(
@@ -384,7 +383,7 @@ class TestLangfuseAttachments:
         import threading
         from http.server import BaseHTTPRequestHandler, HTTPServer
 
-        from tolokaforge.observability.langfuse_media import urllib_opener
+        from tolokaforge_langfuse.media import urllib_opener
 
         class _Handler(BaseHTTPRequestHandler):
             def do_POST(self):

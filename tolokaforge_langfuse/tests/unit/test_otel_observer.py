@@ -12,12 +12,12 @@ from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,  # noqa: E402
 )
+from tolokaforge_langfuse.otel import HARNESS_TAG, OTelTrialObserver, SpanQueue  # noqa: E402
 
 from tolokaforge.core.llm.client import GenerationResult  # noqa: E402
 from tolokaforge.core.llm.usage import Usage  # noqa: E402
 from tolokaforge.core.models import Message, MessageRole, ToolCall  # noqa: E402
 from tolokaforge.observability.observer import ModelRef, TrialIdentity  # noqa: E402
-from tolokaforge.observability.otel import HARNESS_TAG, OTelTrialObserver, SpanQueue  # noqa: E402
 from tolokaforge.tools.registry import ToolResult  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -312,7 +312,7 @@ class _FakeAttachments:
         self.calls: list[tuple[str, object, object]] = []
 
     def attach(self, trace_id, trial_dir, *, trace_timestamp=None, metadata=None):
-        from tolokaforge.observability.langfuse_media import AttachCounts
+        from tolokaforge_langfuse.media import AttachCounts
 
         self.calls.append((trace_id, trial_dir, trace_timestamp, metadata))
         return AttachCounts(registered=8, uploaded=3, deduplicated=5, skipped=1, manifests_sent=1)

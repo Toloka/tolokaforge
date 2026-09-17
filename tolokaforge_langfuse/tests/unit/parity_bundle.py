@@ -2,7 +2,7 @@
 D29).
 
 This file is committed **byte-identical** in two repositories (the public engine's
-``tests/unit/observability/`` and the private connector's ``tests/``): each side projects the
+``tolokaforge_langfuse/tests/unit/`` and the private connector's ``tests/``): each side projects the
 bundle it writes here with its own module and compares the normalised event list against the
 shared ``parity_golden.json``. Nothing here is real task content; every value is a neutral
 placeholder. Change it on both sides at once and regenerate the golden with the connector

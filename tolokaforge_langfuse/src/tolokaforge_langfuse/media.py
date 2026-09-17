@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.observability.attachments import (
+from tolokaforge_langfuse.attachments import (
     ATTACH_ALL,
     AttachCounts,
     AttachedFile,

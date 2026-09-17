@@ -1167,6 +1167,10 @@ class TracingConfig(BaseModel):
     environment: str | None = None
     """The receiver's native ``environment`` as a literal, overriding the profile's rule;
     ``LANGFUSE_ENVIRONMENT`` overrides both. Default: the profile decides, else unset."""
+    options: dict[str, Any] = Field(default_factory=dict)
+    """Settings of the trial-observer plugin the engine has no field for, passed through
+    untouched (the Langfuse observer documents its keys in ``tolokaforge_langfuse/README.md``),
+    so a receiver-side setting needs no engine release (ADR-0047, packaging amendment)."""
     attach_api_base: str | None = None
     """Base URL of the receiver's REST API for the attachments; default: derived from ``endpoint``
     (``https://host/api/public/otel/v1/traces`` -> ``https://host``)."""

@@ -35,7 +35,7 @@ Example (neutral values; a deployment's file lives in its own repository)::
     [models]
     rules = "model_name_rules.toml"
 
-``python -m tolokaforge.observability.profile <file>`` validates a file and prints what it
+``python -m tolokaforge_langfuse.profile <file>`` validates a file and prints what it
 carries (exit 2 on the first error).
 """
 
@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.observability.model_names import RESERVED_TAG_PREFIXES
+from tolokaforge_langfuse.model_names import RESERVED_TAG_PREFIXES
 
 SCHEMA_VERSION = 1
 PROFILE_ENV = "TOLOKAFORGE_TRACING_PROFILE"
@@ -318,10 +318,10 @@ def describe(profile: TracingProfile) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """``python -m tolokaforge.observability.profile <file>``: validate and describe a profile."""
+    """``python -m tolokaforge_langfuse.profile <file>``: validate and describe a profile."""
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
-        print("usage: python -m tolokaforge.observability.profile <profile.toml>", file=sys.stderr)
+        print("usage: python -m tolokaforge_langfuse.profile <profile.toml>", file=sys.stderr)
         return 2
     try:
         profile = load_tracing_profile(args[0])

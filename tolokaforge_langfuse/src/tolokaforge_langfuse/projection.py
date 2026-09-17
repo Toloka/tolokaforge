@@ -38,8 +38,9 @@ from typing import Any
 import yaml
 
 from tolokaforge.observability import ids
-from tolokaforge.observability.attachments import ATTACHMENTS_SCHEMA
-from tolokaforge.observability.langfuse_gradings import (
+from tolokaforge.observability.observer import TrialIdentity
+from tolokaforge_langfuse.attachments import ATTACHMENTS_SCHEMA
+from tolokaforge_langfuse.gradings import (
     CONTEXT_CHARS,
     CONTEXT_MESSAGES,
     NONE,
@@ -55,12 +56,11 @@ from tolokaforge.observability.langfuse_gradings import (
     content_fingerprint,
     grade_summary,
 )
-from tolokaforge.observability.model_names import (
+from tolokaforge_langfuse.model_names import (
     ModelIdentity,
     ModelNameResolver,
     ModelNameResolverError,
 )
-from tolokaforge.observability.observer import TrialIdentity
 
 _log = logging.getLogger(__name__)
 
@@ -941,7 +941,7 @@ def trace_metadata(
 
 def schema_keys() -> frozenset[str]:
     """Every key the projection writes itself; caller and profile metadata may not use them."""
-    from tolokaforge.observability.model_names import RawModelNameResolver
+    from tolokaforge_langfuse.model_names import RawModelNameResolver
 
     identity = TrialIdentity(run_id="r", task_id="t", trial_index=0, attempt_id=0)
     probe = trace_metadata(
