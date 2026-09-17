@@ -358,7 +358,7 @@ plugin (`tolokaforge_langfuse/tests/unit/parity_bundle.py`, still byte-identical
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern),
-  [ADR-0030](0030-models-wheel-split.md) (a sibling wheel without a pip dependency on the engine,
+  [ADR-0030](0030-tolokaforge-models-split.md) (a sibling wheel without a pip dependency on the engine,
   paired by a run-time check: the pattern the packaging amendment follows)
 - Related code: `tolokaforge/observability/` (the seam), `tolokaforge_langfuse/` (the plugin
   wheel), `tolokaforge/core/loop.py`, `tolokaforge/core/conductor.py`,
