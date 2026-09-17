@@ -34,9 +34,12 @@ ships in-engine:
   ``message.content``.
 * A per-provider marker-stripping subclass — expressible via the seam
   without engine edits. The Cohere ``<|START_TEXT|>…<|END_TEXT|>`` case
-  is covered by a fixture-scope subclass in the unit test
-  ``tests/unit/llm/test_assistant_text_policy_seam.py``; a shipped
-  Cohere policy ships alongside the Cohere preset when the family lands.
+  ships in the models wheel as
+  ``tolokaforge_models.policies.cohere.CohereMarkerAssistantText``
+  (entry point ``assistant_text_policy.cohere_markers``, bound by the
+  Cohere presets); the unit test
+  ``tests/unit/llm/test_assistant_text_policy_seam.py`` keeps a
+  fixture-scope copy as the seam proof.
 """
 
 from __future__ import annotations

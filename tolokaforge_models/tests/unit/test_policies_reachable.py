@@ -27,6 +27,8 @@ MOVED_CLASSES: Final[tuple[tuple[str, str], ...]] = (
     ("tolokaforge_models.policies.minimax", "MinimaxM3TagRecoveryResponse"),
     ("tolokaforge_models.policies.deepseek", "OpenAISummaryReplayReasoningCodec"),
     ("tolokaforge_models.policies.xai", "XaiGrokRecursiveSchema"),
+    ("tolokaforge_models.policies.cohere", "CohereRecursiveSchema"),
+    ("tolokaforge_models.policies.cohere", "CohereMarkerAssistantText"),
 )
 
 

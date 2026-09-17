@@ -47,6 +47,120 @@ default:
     reasoning_via_extra_body: false
 
 presets:
+  # Cohere Command A+ 05-2026 (the gateway ``azure_ai`` route) — landed via
+  # auto-resolve (Slack-requested integration, PR #1124). Declared BEFORE the
+  # generic ``cohere_command_a_plus`` preset so first-match-wins routing picks
+  # it up; its match globs name this dated route only, so no sibling
+  # cohere-command-* route is affected.
+  #
+  # This entry is a strict SUPERSET of the shared preset below — each axis is a
+  # subclass of the axis it replaces, and the ``tool_choice``/``auto`` drop rule
+  # is carried over verbatim (without it litellm refuses the request on this
+  # route and every tool probe fails at once). Three observed 0/15 failures on
+  # the ``default`` observe baseline, each fixed and reprobed 5/5:
+  #
+  #   * ``schema_sanitizer: cohere_recursive`` (``CohereRecursiveSchema``) —
+  #     ``strict`` raised "$ref resolution exceeded depth 16" IN-ENGINE on the
+  #     recursive ``_TreeNode``, so the model never saw ``submit_tree``:
+  #     ``recursive_ref_tool_call`` 0/15 on all four shapes. The subclass adds
+  #     cycle-tolerant ``$ref`` inlining plus ``carry_scalar_dict_map_value``
+  #     (which took ``dict_map__scalar_values``, ``dict_map__nested_in_object``
+  #     and ``discriminated_union__union_in_dict_map`` from 0/15 to 5/5), and
+  #     keeps ``strip_re2_incompatible_patterns`` — load-bearing here, since
+  #     this route compiles lookaround patterns and returns HTTP 500
+  #     ("regex_converter.cc:75: Lookahead is not supported yet").
+  #   * ``response_policy: scalar_array_dict_map`` — reverses the sanitiser's
+  #     ``{key, value}`` carriage (as ``array_dict_map`` did). A root-key rename
+  #     sat here too and was removed on review: this route does sometimes emit the
+  #     parameter key with the tool's own name glued on (``{"submit_treeroot": …}``
+  #     for ``submit_tree({"root": …})``), but ``parse_arguments`` never receives
+  #     the tool name, so the gate degraded to "ends with the declared parameter
+  #     name" and would also rename ``line_items`` to ``items``. Crediting a wrong
+  #     parameter name is a scoring change, so ``recursive_ref_tool_call`` is
+  #     recorded as a genuine ceiling instead.
+  #   * ``reasoning_codec: openai_summary_replay``
+  #     (``OpenAISummaryReplayReasoningCodec``) — ``openai`` extracts the flat
+  #     reasoning summary but emits nothing on replay, so the outgoing assistant
+  #     dict carried no ``reasoning_details``: ``unsigned_thinking_replay``
+  #     0/15. The subclass keeps ``extract`` verbatim and rebuilds the unsigned
+  #     OpenRouter envelope. It synthesises no signature, so
+  #     THINKING_REPLAY_ROUNDTRIP remains a declared ceiling.
+  cohere_command_a_plus_05_2026:
+    match:
+      - "azure_ai/cohere-command-a-plus-05-2026"
+      - "*cohere-command-a-plus-05-2026*"
+    schema_sanitizer: cohere_recursive
+    response_policy: scalar_array_dict_map
+    reasoning_codec: openai_summary_replay
+    # The deployment gateway that serves this route returns the reply wrapped in
+    # the model's chat-template markers (``<|START_TEXT|>...<|END_TEXT|>``, observed
+    # 2026-08-01). The gateway strips them since 2026-09-08; the policy stays bound
+    # as defence in depth - a no-op when the markers are absent, and the only thing
+    # standing between a rolled-back gateway hook and every judge transcript.
+    assistant_text_policy: cohere_markers
+    params:
+      # Measured under the ``providers.openrouter`` overlay (2026-08-13 observe
+      # run), i.e. with reasoning carried in ``extra_body.reasoning``. Pinned on
+      # the preset so the wire format does not change when the agent binds a
+      # different provider name (``openai`` is the documented binding for an
+      # OpenAI-shaped gateway route, and it carries no such overlay); the route
+      # refuses ``reasoning_effort`` the same way it refuses ``tool_choice``.
+      reasoning_via_extra_body: true
+      param_value_rules:
+        tool_choice:
+          auto:
+            action: drop
+            evidence: >-
+              2026-08-01, verified live: identical client, prompt and tools,
+              WITHOUT tool_choice the model returns a correct tool call; WITH
+              tool_choice='auto' the call never leaves litellm
+              (UnsupportedParamsError on the azure_ai route). Cohere's Chat API
+              has no AUTO: https://docs.cohere.com/reference/chat
+
+  # Cohere Command A+ (reached through a LiteLLM gateway's ``azure_ai`` route).
+  #
+  # Cohere's Chat API accepts only REQUIRED and NONE for tool_choice — there is
+  # no AUTO — and its documented behaviour when the parameter is OMITTED is
+  # "the model is free to choose whether to use the specified tools or not".
+  # That is what auto means, so dropping it reproduces the intended semantics
+  # natively rather than working around anything.
+  #
+  # What surfaces the problem is litellm refusing the parameter first
+  # (UnsupportedParamsError: azure_ai does not support parameters:
+  # ['tool_choice']), which reads as "this model cannot call tools" when every
+  # tool probe fails at once.
+  cohere_command_a_plus:
+    match:
+      - "azure_ai/cohere-command-a-plus*"
+      - "*cohere-command-a-plus*"
+    schema_sanitizer: strict
+    response_policy: array_dict_map
+    reasoning_codec: openai
+    # The deployment gateway that serves this route returns the reply wrapped in
+    # the model's chat-template markers (``<|START_TEXT|>...<|END_TEXT|>``, observed
+    # 2026-08-01). The gateway strips them since 2026-09-08; the policy stays bound
+    # as defence in depth - a no-op when the markers are absent, and the only thing
+    # standing between a rolled-back gateway hook and every judge transcript.
+    assistant_text_policy: cohere_markers
+    params:
+      # Measured under the ``providers.openrouter`` overlay (2026-08-13 observe
+      # run), i.e. with reasoning carried in ``extra_body.reasoning``. Pinned on
+      # the preset so the wire format does not change when the agent binds a
+      # different provider name (``openai`` is the documented binding for an
+      # OpenAI-shaped gateway route, and it carries no such overlay); the route
+      # refuses ``reasoning_effort`` the same way it refuses ``tool_choice``.
+      reasoning_via_extra_body: true
+      param_value_rules:
+        tool_choice:
+          auto:
+            action: drop
+            evidence: >-
+              2026-08-01, verified live: identical client, prompt and tools,
+              WITHOUT tool_choice the model returns a correct tool call; WITH
+              tool_choice='auto' the call never leaves litellm
+              (UnsupportedParamsError on the azure_ai route). Cohere's Chat API
+              has no AUTO: https://docs.cohere.com/reference/chat
+
   # Claude 4.8 (Opus + Sonnet) — same adaptive-thinker contract as 4.7:
   # ignores ``reasoning_effort``, requires the canonical litellm ``thinking=``
   # kwarg + explicit ``budget_tokens``. Listed FIRST so first-match-wins
