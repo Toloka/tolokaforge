@@ -55,7 +55,7 @@ Validate a profile with `python -m tolokaforge_langfuse.profile <file>`.
 module): the tag prefixes and their producer / caller split, the closed value lists the engine's
 output format defines (`run_kind`, `scope`), the tags derived from the bundle and the model-name
 normalizer (`model_generation`, `model_tier`, `model_variant`, `model_size`, `model_stage`,
-`model_snapshot`, `reasoning_mode`, `reasoning_effort`, `reasoning_budget`, `route`), the tag
+`model_snapshot`, `reasoning_mode`, `reasoning_effort`, `reasoning_budget`, `route` = the configured provider), the tag
 order and the default environment rule. `profile.py` reads a deployment's schema-2 profile (the
 environment rule, fixed tags, derived-tag groups, value lists, required prefixes, derivations,
 metadata keys, fixed metadata, model rules) and validates a launcher's tags and metadata against

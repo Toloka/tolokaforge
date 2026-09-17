@@ -104,7 +104,7 @@ class TestDerivedTags:
             "route:openrouter",
         ]
 
-    def test_a_budget_and_the_gateway_route(self) -> None:
+    def test_a_budget_and_the_route_is_the_configured_provider(self) -> None:
         task = {
             "model_config": {
                 "agent": {
@@ -114,15 +114,15 @@ class TestDerivedTags:
                 }
             }
         }
-        gateway = {"usage": {"calls": [{"cost_source": "litellm"}, {"cost_source": "litellm"}]}}
-        assert v.derived_tags(task, gateway) == [
+        # cost_source names the engine's cost calculator, not a transport: a gateway in front of
+        # the provider leaves no mark in the bundle, so the route stays the configured provider
+        # (a live run of 2026-09-17 direct to the provider recorded cost_source litellm)
+        calculator = {"usage": {"calls": [{"cost_source": "litellm"}, {"cost_source": "litellm"}]}}
+        assert v.derived_tags(task, calculator) == [
             "reasoning_mode:budget",
             "reasoning_budget:8000",
-            "route:litellm",
+            "route:openrouter",
         ]
-        # one direct call among the gateway's: the configured provider stays the route
-        mixed = {"usage": {"calls": [{"cost_source": "litellm"}, {"cost_source": "local"}]}}
-        assert v.derived_tags(task, mixed)[-1] == "route:openrouter"
 
     def test_groups_switch_off_and_nothing_is_invented(self) -> None:
         assert v.derived_tags(self.TASK, {}, groups=("route",)) == ["route:openrouter"]

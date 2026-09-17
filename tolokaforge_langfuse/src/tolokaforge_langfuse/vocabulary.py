@@ -110,10 +110,10 @@ DERIVED_GROUPS: tuple[str, ...] = (
     DERIVED_GROUP_ROUTE,
 )
 ALL_DERIVED_GROUPS: frozenset[str] = frozenset(DERIVED_GROUPS)
-# the route value when every model call of the trial went through the LiteLLM gateway (the
-# bundle records it per call as ``cost_source``); the config's provider otherwise
-ROUTE_GATEWAY = "litellm"
-COST_SOURCE_GATEWAY = "litellm"
+# ``route`` is the provider the run config named for the agent (``openrouter``, a vendor's own
+# API); a gateway in front of it leaves no mark in the bundle (``metrics.yaml`` ``cost_source``
+# names the cost calculator, the engine's litellm library, whichever transport carried the call),
+# so nothing here guesses one
 
 _PREFIX_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
 _VALUE_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+@:-]*$")
@@ -234,9 +234,9 @@ def derived_tags(
     groups: Iterable[str] = DERIVED_GROUPS,
 ) -> list[str]:
     """The tags a trial's bundle implies beyond the model identity: the agent's reasoning
-    settings (``reasoning_mode``, ``reasoning_effort``, ``reasoning_budget``) and the route the
-    calls took (``route``: the configured provider, or the gateway when every call's
-    ``cost_source`` names it). Nothing is invented: an absent or malformed fact yields no tag."""
+    settings (``reasoning_mode``, ``reasoning_effort``, ``reasoning_budget``) and the provider the
+    config routed the agent's calls to (``route``). Nothing is invented: an absent or malformed
+    fact yields no tag. ``metrics`` is accepted for the callers that hold it; no tag reads it."""
     wanted = set(groups)
     agent = agent_config(task)
     tags: list[str] = []
@@ -256,16 +256,6 @@ def derived_tags(
                     tags.append(f"{prefix}:{text}")
     if DERIVED_GROUP_ROUTE in wanted:
         route = agent.get("provider")
-        calls = ((metrics or {}).get("usage") or {}).get("calls")
-        if (
-            isinstance(calls, list)
-            and calls
-            and all(
-                isinstance(c, Mapping) and c.get("cost_source") == COST_SOURCE_GATEWAY
-                for c in calls
-            )
-        ):
-            route = ROUTE_GATEWAY
         if route not in (None, "") and is_valid_value(str(route)):
             tags.append(f"route:{route}")
     return tags

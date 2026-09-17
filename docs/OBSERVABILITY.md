@@ -208,7 +208,7 @@ defines, and the tags the producer derives from the bundle and from the model-na
 
 | Who sets it | Prefixes |
 |---|---|
-| the producer, from the bundle and the resolver | `harness:tolokaforge`, `source:trial`, `task:<task id>`, `model:<vendor/model>`, `model_vendor`, `model_family`, and when the normalizer's rules derive them `model_generation`, `model_tier`, `model_variant`, `model_size`, `model_stage`, `model_snapshot`; from `task.yaml` `model_config.agent.reasoning` `reasoning_mode`, `reasoning_effort`, `reasoning_budget`; `route` (the configured provider, or `litellm` when every call's `cost_source` in `metrics.yaml` names the gateway) |
+| the producer, from the bundle and the resolver | `harness:tolokaforge`, `source:trial`, `task:<task id>`, `model:<vendor/model>`, `model_vendor`, `model_family`, and when the normalizer's rules derive them `model_generation`, `model_tier`, `model_variant`, `model_size`, `model_stage`, `model_snapshot`; from `task.yaml` `model_config.agent.reasoning` `reasoning_mode`, `reasoning_effort`, `reasoning_budget`; `route` (the provider the run config routed the agent's calls to) |
 | the launcher that owns the receiver | `project:<the verified project>` |
 | the caller (config `tags`, `TOLOKAFORGE_TRACING_TAGS`, the profile's fixed tags) | `team`, `dataset`, `run_kind` (`eval`, `smoke`, `canary`, `test`, `probe`), `scope` (`full`, `sample`), `config`, `domain`, `ci_run`, `ci_chain` |
 

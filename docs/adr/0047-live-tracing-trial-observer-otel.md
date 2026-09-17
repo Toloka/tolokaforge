@@ -359,8 +359,8 @@ plugin (`tolokaforge_langfuse/tests/unit/parity_bundle.py`, still byte-identical
 ## Amendment 2026-09-17: one vocabulary in the wheel, one profile for both producers
 
 Users of the receiver want to select trials by what a model is (its generation, tier, variant,
-size, stage, snapshot) and by how it was run (reasoning mode, effort, budget, the route the calls
-took), across evaluations; the receiver groups and filters by tags and native fields, and filters
+size, stage, snapshot) and by how it was run (reasoning mode, effort, budget, the provider the
+calls were routed to), across evaluations; the receiver groups and filters by tags and native fields, and filters
 but never groups by metadata. The two producers had two vocabularies: a closed core in the
 offline uploader's code with a deployment profile for its defaults and lists, and a syntax-only
 rule in the live observer with a second profile file for the environment and fixed tags; the
