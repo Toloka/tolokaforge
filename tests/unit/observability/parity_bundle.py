@@ -37,21 +37,7 @@ CALLER_TAGS = (
     "domain:pilot-domain",
     "ci_run:100",
 )
-# the tag prefixes the deployment mirrors into trace metadata (the connector writes them always)
-MIRROR_PREFIXES = (
-    "team",
-    "project",
-    "dataset",
-    "source",
-    "run_kind",
-    "scope",
-    "config",
-    "domain",
-    "ci_run",
-    "ci_chain",
-)
 CALLER_METADATA = {"model_stem": "pilot_agent", "campaign": "parity"}
-TAG_PROFILE_VERSION = "pilot-tags-2026.09.16.1"
 AGENT_MODEL = ("openrouter", "acme/pilot-1")
 USER_MODEL = ("openrouter", "acme/sim-2")
 JUDGE_MODEL = ("openrouter", "acme/judge-3")
@@ -61,17 +47,8 @@ PNG = base64.b64decode(
 )
 
 # the metadata keys whose values differ by producer by design (PLAN 3.12), replaced by a
-# placeholder before the comparison; ``tag_origins`` names where each tag came from
-PRODUCER_KEYS = frozenset(
-    {
-        "upload_mode",
-        "uploader_version",
-        "trace_time_source",
-        "tag_origins",
-        "attach_mode",
-        "project_verified",
-    }
-)
+# placeholder before the comparison
+PRODUCER_KEYS = frozenset({"upload_mode", "uploader_version", "trace_time_source", "attach_mode"})
 # the native fields that differ by producer (``version``) or by installation (``release``)
 PRODUCER_TRACE_FIELDS = frozenset({"version", "release"})
 PLACEHOLDER = "<producer>"

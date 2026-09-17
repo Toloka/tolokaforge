@@ -34,26 +34,6 @@ IDENTITY = TrialIdentity(
     attempt_id=pb.ATTEMPT_ID,
     run_tag=pb.RUN_TAG,
 )
-# the facet values only the normalizer's rules derive; the raw resolver reports ``none``
-FACET_KEYS = frozenset(
-    {
-        "model_family",
-        "model_generation",
-        "model_tier",
-        "model_variant",
-        "model_snapshot",
-        "model_size",
-        "model_stage",
-        "model_capability",
-        "model_api_version",
-        "model_rules_version",
-        "model_identity_fingerprint",
-        "model_fields_fingerprint",
-        "model_resolver_fingerprint",
-        "model_lookup",
-        "model_routes",
-    }
-)
 
 
 def _context(**overrides) -> ProjectionContext:
@@ -62,12 +42,10 @@ def _context(**overrides) -> ProjectionContext:
         "session_id": pb.SESSION_ID,
         "tags": (),
         "metadata": dict(pb.CALLER_METADATA),
-        "mirror_prefixes": pb.MIRROR_PREFIXES,
         "environment": pb.ENVIRONMENT,
         "release": "tolokaforge-0.0.0",
         "version": "tolokaforge-0.0.0+parity",
         "producer": "tolokaforge-0.0.0",
-        "tag_profile_version": pb.TAG_PROFILE_VERSION,
         "attach_mode": "all",
     }
     params.update(overrides)
@@ -104,10 +82,9 @@ class TestGoldenParity:
         projection = _project(tmp_path, build_model_name_resolver("toloka", None))
         assert pb.normalise_events(projection.events) == golden
 
-    def test_without_the_normalizer_only_the_rule_derived_facets_differ(
-        self, tmp_path: Path
-    ) -> None:
-        # the key set of a trace never depends on the resolver; the values the rules derive do
+    def test_without_the_normalizer_only_the_model_tags_differ(self, tmp_path: Path) -> None:
+        # the slim schema carries no rule-derived facet: the trace differs from the golden only
+        # in the vendor and family tags the normalizer adds
         golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
         mine = pb.normalise_events(_project(tmp_path, RawModelNameResolver()).events)
         by_key = {(e["type"], e["body"]["id"]): e["body"] for e in golden}
@@ -116,12 +93,7 @@ class TestGoldenParity:
             if event["type"] != "trace-create":
                 assert event["body"] == expected
                 continue
-            assert set(event["body"]["metadata"]) == set(expected["metadata"])
-            differing = {
-                k for k, v in event["body"]["metadata"].items() if expected["metadata"][k] != v
-            }
-            assert differing <= FACET_KEYS, differing
-            # the vendor and family tags are the normalizer's, everything else agrees
+            assert event["body"]["metadata"] == expected["metadata"]
             assert set(event["body"]["tags"]) ^ set(expected["tags"]) <= {
                 "model_family:pilot",
                 "model_vendor:acme",
@@ -136,10 +108,16 @@ class TestGoldenParity:
         assert set(metadata) >= PRODUCER_KEYS
         assert metadata["upload_mode"] == "live" and metadata["trace_time_source"] == "live"
         assert metadata["uploader_version"] == "tolokaforge-0.0.0"
-        assert metadata["tag_profile_version"] == pb.TAG_PROFILE_VERSION
-        assert metadata["project"] == pb.PROJECT and metadata["team"] == "none"
-        assert metadata["ci_run"] == "100" and metadata["ci_chain"] == "none"
         assert (metadata["model_stem"], metadata["campaign"]) == ("pilot_agent", "parity")
+        # the slim schema: the tags are not mirrored, the facets and the task facts stay in the
+        # tags and the attached files, and the whole trace stays under the receiver's 100-key
+        # table limit
+        assert not {"project", "team", "ci_run", "model_vendor", "category", "api_calls"} & set(
+            metadata
+        )
+        assert len(metadata) < 100
+        assert metadata["user_model"] == "acme/sim-2" and metadata["judge_model"] == "acme/judge-3"
+        assert metadata["judge_status"] == "ok" and metadata["pass"] is True
         assert projection.trace_body["environment"] == pb.ENVIRONMENT
         assert projection.trace_body["release"] == "tolokaforge-0.0.0"
         assert projection.trace_body["version"] == "tolokaforge-0.0.0+parity"
@@ -224,9 +202,9 @@ class TestGoldenParity:
         assert metadata["pass"] == "none"
 
     def test_schema_keys_cover_the_projection_and_the_live_keys(self) -> None:
-        keys = schema_keys(pb.MIRROR_PREFIXES)
-        assert {"task_id", "attachments", "pass", "team", "ci_chain", "error"} <= keys
-        assert "model_stem" not in keys
+        keys = schema_keys()
+        assert {"task_id", "attachments", "pass", "judge_status", "user_model", "error"} <= keys
+        assert "model_stem" not in keys and "team" not in keys
 
 
 class TestBatches:
@@ -308,9 +286,6 @@ class TestObserverProjection:
                 release="tolokaforge-0.0.0",
                 version="tolokaforge-0.0.0+parity",
                 producer="tolokaforge-0.0.0",
-                tag_profile_version=pb.TAG_PROFILE_VERSION,
-                mirror_prefixes=pb.MIRROR_PREFIXES,
-                tag_origins={"dataset": "launcher"},
             ),
         )
         return OTelTrialObserver(
@@ -349,8 +324,7 @@ class TestObserverProjection:
         # the manifest of the attachment step is the one the projection carries, complete
         assert metadata["attachments"] == {"task.yaml": {"media_id": "m9"}}
         assert metadata["attachments_complete"] is True
-        assert metadata["tag_origins"] == json.dumps({"dataset": "launcher"})
-        assert metadata["dataset"] == "pilot" and metadata["project"] == pb.PROJECT
+        assert metadata["model_name"] == pb.AGENT_MODEL[1]
         # inline media went through the receiver's media route
         assert step.media == [ids.observation_id(IDENTITY.trace_id, "tool", "call_2")]
         kinds = {e["type"] for e in batch}

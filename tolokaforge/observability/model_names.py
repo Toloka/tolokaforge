@@ -11,9 +11,8 @@ configuration error, never a silent fallback.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Protocol
 
 NONE = "none"
 # prefixes the exporter sets from what it knows (the harness, the model, the trial's task id);
@@ -23,70 +22,22 @@ RESERVED_TAG_PREFIXES = frozenset({"harness", "model", "model_vendor", "model_fa
 
 @dataclass(frozen=True)
 class ModelIdentity:
-    """What a trace says about a model: the identity string, its facet tags and metadata."""
+    """What a trace says about a model: the identity string and its facet tags. The trace
+    metadata names the model once (``model_name``); the facets are tags and the rules version
+    rides in the native ``version`` field (docs/OBSERVABILITY.md, "The trace metadata")."""
 
     canonical: str
     tags: tuple[str, ...]
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class ModelNameResolver(Protocol):
     def resolve(self, provider: str | None, name: str) -> ModelIdentity: ...
-
-    def absent(self) -> dict[str, Any]:
-        """The ``model_*`` metadata of a trial that names no model: the same keys as a resolved
-        identity, ``none`` values, the rules in force still recorded."""
-        ...
 
     @property
     def description(self) -> str: ...
 
     @property
     def rules_version(self) -> str: ...
-
-
-# the descriptive facets every resolver reports as ``model_<facet>`` metadata, in the order
-# ``toloka-model-name-normalizer`` names them; the key set is the same whichever resolver runs,
-# so a trace's metadata schema never depends on the deployment's choice (the values do)
-FACETS = (
-    "vendor",
-    "family",
-    "generation",
-    "tier",
-    "variant",
-    "snapshot",
-    "size",
-    "stage",
-    "capability",
-    "api_version",
-)
-
-
-def identity_metadata(
-    fields: Mapping[str, Any] | None,
-    *,
-    route: str | None,
-    routes: Sequence[str] | None,
-    rules_version: str,
-    identity_fingerprint: str,
-    fields_fingerprint: str,
-    resolver_fingerprint: str | None,
-    lookup: bool,
-) -> dict[str, Any]:
-    """The model's descriptive facets, route and rule provenance, every key with an explicit
-    value (``none`` when absent), the same shape the offline bundle uploader writes."""
-    metadata: dict[str, Any] = {}
-    for facet in FACETS:
-        value = (fields or {}).get(facet)
-        metadata[f"model_{facet}"] = value if value not in (None, "") else NONE
-    metadata["model_route"] = route or NONE
-    metadata["model_routes"] = "/".join(routes) if routes else NONE
-    metadata["model_rules_version"] = rules_version
-    metadata["model_identity_fingerprint"] = identity_fingerprint
-    metadata["model_fields_fingerprint"] = fields_fingerprint
-    metadata["model_resolver_fingerprint"] = resolver_fingerprint or NONE
-    metadata["model_lookup"] = lookup
-    return metadata
 
 
 class RawModelNameResolver:
@@ -97,34 +48,7 @@ class RawModelNameResolver:
 
     def resolve(self, provider: str | None, name: str) -> ModelIdentity:
         canonical = name if "/" in name else (f"{provider}/{name}" if provider else name)
-        vendor = canonical.split("/", 1)[0] if "/" in canonical else NONE
-        return ModelIdentity(
-            canonical=canonical,
-            tags=(f"model:{canonical}",),
-            metadata=identity_metadata(
-                {"vendor": vendor},
-                route=provider,
-                routes=(provider,) if provider else None,
-                rules_version=NONE,
-                identity_fingerprint=NONE,
-                fields_fingerprint=NONE,
-                resolver_fingerprint=None,
-                lookup=False,
-            ),
-        )
-
-    def absent(self) -> dict[str, Any]:
-        """The metadata of a trial whose bundle names no model (every key explicit)."""
-        return identity_metadata(
-            None,
-            route=None,
-            routes=None,
-            rules_version=NONE,
-            identity_fingerprint=NONE,
-            fields_fingerprint=NONE,
-            resolver_fingerprint=None,
-            lookup=False,
-        )
+        return ModelIdentity(canonical=canonical, tags=(f"model:{canonical}",))
 
 
 class NormalizerModelNameResolver:
@@ -172,34 +96,7 @@ class NormalizerModelNameResolver:
             raise ModelNameResolverError(
                 f"model reference ({provider!r}, {name!r}) cannot be read: {exc}"
             ) from exc
-        rules = self._normalizer.rules
-        provenance = parsed.provenance
-        metadata = identity_metadata(
-            parsed.fields(),
-            route=parsed.route,
-            routes=parsed.routes,
-            rules_version=rules.version,
-            identity_fingerprint=rules.identity_fingerprint,
-            fields_fingerprint=rules.fields_fingerprint,
-            resolver_fingerprint=getattr(provenance, "resolver_fingerprint", None),
-            lookup=bool(getattr(provenance, "lookup", False)),
-        )
-        return ModelIdentity(
-            canonical=parsed.canonical, tags=tuple(parsed.tags()), metadata=metadata
-        )
-
-    def absent(self) -> dict[str, Any]:
-        rules = self._normalizer.rules
-        return identity_metadata(
-            None,
-            route=None,
-            routes=None,
-            rules_version=rules.version,
-            identity_fingerprint=rules.identity_fingerprint,
-            fields_fingerprint=rules.fields_fingerprint,
-            resolver_fingerprint=None,
-            lookup=False,
-        )
+        return ModelIdentity(canonical=parsed.canonical, tags=tuple(parsed.tags()))
 
 
 class ModelNameResolverError(ValueError):

@@ -77,24 +77,16 @@ PROJECTION_NONE = "none"
 PROJECTION_MODES = (PROJECTION_FULL, PROJECTION_GRADINGS, PROJECTION_NONE)
 # the metadata keys whose values differ by producer by design (the connector's exclusion list,
 # PLAN 3.12): each producer writes them, a parity check compares them by name only
-PRODUCER_KEYS = frozenset(
-    {
-        "upload_mode",
-        "uploader_version",
-        "trace_time_source",
-        "tag_origins",
-        "attach_mode",
-        "project_verified",
-    }
-)
+PRODUCER_KEYS = frozenset({"upload_mode", "uploader_version", "trace_time_source", "attach_mode"})
 # what the live root span adds and the bundle cannot know, plus the two keys a Langfuse receiver
 # writes into the metadata of a trace that arrived over OTLP (the trace-level span's raw
 # attributes and the resource attributes); a caller may not use these names either
 LIVE_ONLY_KEYS = frozenset(
     {"generations_observed", "tool_calls_observed", "error", "attributes", "resourceAttributes"}
 )
-# the grade summary keys a trace mirrors from its primary grading (the connector's list)
-GRADE_METADATA_KEYS = frozenset(grade_summary({}))
+# the part of the primary grading's summary a trace mirrors (the connector's list; the full
+# summary stays on the grading observation and every detail is a score)
+TRACE_GRADE_SUMMARY_KEYS: tuple[str, ...] = ("pass", "score", "judge_status")
 
 # (trace_id, observation_id, field, content_type, raw bytes) -> media token, or None
 MediaHandler = Callable[[str, str, str, str, bytes], "str | None"]
@@ -107,15 +99,11 @@ class ProjectionContext:
     label: str
     session_id: str
     tags: tuple[str, ...]  # the trace's final tag list (producer and launcher tags)
-    tag_origins: Mapping[str, str] = field(default_factory=dict)  # prefix -> where it came from
     metadata: Mapping[str, Any] = field(default_factory=dict)  # caller + profile fixed metadata
-    mirror_prefixes: tuple[str, ...] = ()  # tag prefixes mirrored into metadata (profile)
     environment: str | None = None
     release: str | None = None
     version: str | None = None
     producer: str = HARNESS  # the ``uploader_version`` value: this producer's identity
-    tag_profile_version: str = NONE
-    project_verified: str = NONE
     attach_mode: str = "all"
     grades: bool = True  # send the run's own grading (grade.yaml) with its scores
 
@@ -157,7 +145,6 @@ class Bundle:
     limit_hit: dict[str, Any] = field(default_factory=dict)
     captures: dict[str, Any] = field(default_factory=dict)
     models_fingerprint: dict[str, Any] = field(default_factory=dict)
-    env_identity: dict[str, Any] = field(default_factory=dict)
     env_sha256: str | None = None
 
 
@@ -189,22 +176,6 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def env_identity_of(doc: Any) -> dict[str, Any]:
-    """The ``environment`` identity block of ``env.yaml`` (manifest-driven trials only)."""
-    block = doc.get("environment") if isinstance(doc, Mapping) else None
-    if not isinstance(block, Mapping):
-        return {}
-    services = _mapping(block.get("services"))
-    return {
-        "network_policy": block.get("network_policy"),
-        "runner_service": block.get("runner_service"),
-        "services_pinned": (
-            all(bool((s or {}).get("pinned")) for s in services.values()) if services else NONE
-        ),
-        "service_images": sorted(str((s or {}).get("image")) for s in services.values()),
-    }
-
-
 def load_bundle(trial_dir: Path) -> Bundle:
     """Every document the projection reads; a missing or unreadable file loads as empty."""
     trajectory = _mapping(_read_yaml(trial_dir / "trajectory.yaml"))
@@ -222,12 +193,6 @@ def load_bundle(trial_dir: Path) -> Bundle:
     engine_state = _read_json(run_dir / "engine_run_state.json") if run_dir else {}
     env_path = trial_dir / "env.yaml"
     env_raw = env_path.read_bytes() if env_path.exists() else None
-    env_doc: Any = None
-    if env_raw is not None:
-        try:
-            env_doc = yaml.safe_load(env_raw)
-        except yaml.YAMLError:
-            env_doc = None
     return Bundle(
         trajectory=trajectory,
         metrics=_mapping(_read_yaml(trial_dir / "metrics.yaml")),
@@ -243,7 +208,6 @@ def load_bundle(trial_dir: Path) -> Bundle:
         limit_hit=_read_json(run_dir / "LIMIT_HIT.json") if run_dir else {},
         captures=_mapping(_read_yaml(trial_dir / "services" / "_capture.yaml")),
         models_fingerprint=_mapping(engine_state.get("models_fingerprint")),
-        env_identity=env_identity_of(env_doc),
         env_sha256=hashlib.sha256(env_raw).hexdigest() if env_raw is not None else None,
     )
 
@@ -896,20 +860,6 @@ def _events(
 # -- trace metadata ---------------------------------------------------------------------------------
 
 
-def _resolved(model_config: Mapping[str, Any], role: str, key: str | None) -> Any:
-    block = _mapping(model_config.get(role))
-    resolved = _mapping(block.get("resolved"))
-    return resolved.get(key) if key else resolved
-
-
-def _tag_value(tags: Sequence[str], prefix: str) -> str | None:
-    for tag in tags:
-        head, sep, value = tag.partition(":")
-        if sep and head == prefix:
-            return value
-    return None
-
-
 def trace_metadata(
     bundle: Bundle,
     ctx: ProjectionContext,
@@ -928,29 +878,21 @@ def trace_metadata(
     ``_trace_metadata``; the deployment's vocabulary enters through ``ctx``)."""
     trajectory, metrics, task = bundle.trajectory, bundle.metrics, bundle.task
     usage = _mapping(metrics.get("usage"))
-    snapshot = trajectory.get("snapshot_status")
-    snapshot_outcome = snapshot.get("outcome") if isinstance(snapshot, Mapping) else snapshot
     tokens_input = metrics.get("tokens_input")
     if tokens_input is None:
         tokens_input = usage.get("prompt_tokens")
     tokens_output = metrics.get("tokens_output")
     if tokens_output is None:
         tokens_output = usage.get("completion_tokens")
-    model_config = _mapping(task.get("model_config"))
-    redaction = _mapping(metrics.get("redaction"))
-    user_actor = _mapping(task.get("user_actor"))
-    grading_config = _mapping(task.get("grading_config"))
-    tools = _mapping(task.get("tools"))
-    agent_tools = (
-        (tools.get("agent") or {}).get("enabled")
-        if isinstance(tools.get("agent"), Mapping)
-        else None
-    )
-    fingerprint = bundle.models_fingerprint
-    agent_name, agent_provider = agent_model(task)
     manifest = dict(manifest or {})
+    # The slim schema of the offline uploader's ``_trace_metadata`` (PLAN 3.10, revised
+    # 2026-09-17): what a reader of the trace page needs and what the uploader's own commands
+    # read back. Everything else about the trial lives in the attached files, in the scores and
+    # on the grading observation, and the tags carry the deployment's vocabulary. Every key is
+    # always present with an explicit value: the receiver merges metadata and an omitted key
+    # would persist.
     metadata: dict[str, Any] = {
-        # identity and provenance
+        # identity
         "task_id": identity.task_id,
         "trial_index": identity.trial_index,
         "run_id": identity.run_id,
@@ -958,98 +900,38 @@ def trace_metadata(
         "attempt": str(identity.attempt_id),
         "label": ctx.label,
         "harness": HARNESS,
-        "project_verified": ctx.project_verified,
+        "id_contract": ids.CONTRACT_VERSION,
+        # the files on the trace (manifest v2, complete)
+        "attach_mode": ctx.attach_mode,
+        "attachments_schema": ATTACHMENTS_SCHEMA,
+        "attachments": dict(manifest.get("attachments") or {}),
+        "attachments_complete": bool(manifest.get("attachments_complete", False)),
+        "attachments_skipped": list(manifest.get("attachments_skipped") or []),
+        # outcome (mutable across regrades, hence metadata and not tags)
+        "status": _text(trajectory.get("status")),
+        "termination_reason": _text(trajectory.get("termination_reason")),
+        "grading_error": _text(trajectory.get("grading_error")),
+        # the verdict: the gradings of the trace and the primary's headline
+        "primary_grading": primary if primary else NONE,
+        "gradings": json.dumps(list(grading_ids), ensure_ascii=False),
+        "grading_count": len(grading_ids),
+        **{key: primary_summary[key] for key in TRACE_GRADE_SUMMARY_KEYS},
+        # size and spend
+        "cost_usd": _number(metrics.get("cost_usd"), 0.0),
+        "tokens_input": _number(tokens_input),
+        "tokens_output": _number(tokens_output),
+        "turns": _number(metrics.get("turns")),
+        "tool_calls": _number(metrics.get("tool_calls")),
+        "latency_total_s": _number(metrics.get("latency_total_s"), 0.0),
+        # the three models, canonical
+        "model_name": _text(agent.canonical if agent is not None else None),
+        "user_model": _text(_role_canonical(task, "user", resolver)),
+        "judge_model": _text(_role_canonical(task, "judge", resolver)),
+        # producer bookkeeping
+        "upload_mode": UPLOAD_MODE_LIVE,
+        "uploader_version": ctx.producer,
+        "trace_time_source": TRACE_TIME_SOURCE_LIVE,
     }
-    for prefix in ctx.mirror_prefixes:
-        metadata[prefix] = _text(_tag_value(ctx.tags, prefix))
-    metadata.update(
-        {
-            "tag_origins": json.dumps(dict(sorted(ctx.tag_origins.items())), sort_keys=True),
-            "tag_profile_version": ctx.tag_profile_version,
-            "upload_mode": UPLOAD_MODE_LIVE,
-            "uploader_version": ctx.producer,
-            "id_contract": ids.CONTRACT_VERSION,
-            "model_name": _text(agent.canonical if agent is not None else None),
-            "model_provider": _text(agent_provider),
-            "model_source": "bundle" if agent is not None else NONE,
-            **(agent.metadata if agent is not None else resolver.absent()),
-            "trace_time_source": TRACE_TIME_SOURCE_LIVE,
-            # task facts (task.yaml)
-            "category": _text(task.get("category")),
-            "interaction_mode": _text(task.get("interaction_mode")),
-            "first_user_message_source": _text(trajectory.get("first_user_message_source")),
-            "user_actor_mode": _text(user_actor.get("mode")),
-            "user_actor_persona": _text(user_actor.get("persona")),
-            "grading_kinds": json.dumps(sorted(k for k in grading_config if k != "combine")),
-            "agent_tools": json.dumps(sorted(agent_tools) if isinstance(agent_tools, list) else []),
-            # the three model configurations with their resolved presets and policy names
-            "user_model": _text(_role_canonical(task, "user", resolver)),
-            "judge_model": _text(_role_canonical(task, "judge", resolver)),
-            "agent_effective_preset": _text(_resolved(model_config, "agent", "effective_preset")),
-            "user_effective_preset": _text(_resolved(model_config, "user", "effective_preset")),
-            "judge_effective_preset": _text(_resolved(model_config, "judge", "effective_preset")),
-            "agent_policies": json.dumps(
-                _resolved(model_config, "agent", None) or {}, sort_keys=True
-            ),
-            "agent_reasoning": json.dumps(
-                (
-                    (model_config.get("agent") or {}).get("reasoning")
-                    if isinstance(model_config.get("agent"), Mapping)
-                    else None
-                ),
-                sort_keys=True,
-            ),
-            # environment identity (env.yaml `environment`, manifest-driven trials only)
-            "network_policy": _text(bundle.env_identity.get("network_policy")),
-            "runner_service": _text(bundle.env_identity.get("runner_service")),
-            "services_pinned": bundle.env_identity.get("services_pinned", NONE),
-            "service_images": json.dumps(bundle.env_identity.get("service_images") or []),
-            # what a redacting policy rewrote (metrics.yaml `redaction`)
-            "redaction_policy": _text(redaction.get("policy")) if redaction else NONE,
-            "redaction_artifacts": json.dumps(sorted(redaction.get("artifacts") or [])),
-            "redaction_omitted": json.dumps(sorted(redaction.get("omitted") or [])),
-            # engine_run_state.json models_fingerprint, when the run directory carries it
-            "models_package_version": _text(fingerprint.get("package_version")),
-            "models_content_sha256": _text(fingerprint.get("content_sha256")),
-            # what rides along (complete lists, sent by the writer that owns them)
-            "attach_mode": ctx.attach_mode,
-            "attachments_schema": ATTACHMENTS_SCHEMA,
-            "attachments": dict(manifest.get("attachments") or {}),
-            "attachments_complete": bool(manifest.get("attachments_complete", False)),
-            "attachments_skipped": list(manifest.get("attachments_skipped") or []),
-            # outcome (mutable across regrades, hence metadata and not tags)
-            "status": _text(trajectory.get("status")),
-            "termination_reason": _text(trajectory.get("termination_reason")),
-            "grading_error": _text(trajectory.get("grading_error")),
-            "snapshot_outcome": _text(snapshot_outcome),
-            # the gradings of the trace and the primary's summary
-            "primary_grading": primary if primary else NONE,
-            "gradings": json.dumps(list(grading_ids), ensure_ascii=False),
-            "grading_count": len(grading_ids),
-            **{key: primary_summary[key] for key in sorted(GRADE_METADATA_KEYS)},
-            # usage
-            "usage_match": usage_match,
-            "usage_calls_unpaired": unpaired_calls,
-            "tokens_input": _number(tokens_input),
-            "tokens_output": _number(tokens_output),
-            "reasoning_tokens": _number(usage.get("reasoning_tokens")),
-            "cached_tokens": _number(usage.get("cached_tokens")),
-            "cache_read_input_tokens": _number(usage.get("cache_read_input_tokens")),
-            "cache_creation_input_tokens": _number(usage.get("cache_creation_input_tokens")),
-            # run metrics
-            "turns": _number(metrics.get("turns")),
-            "api_calls": _number(metrics.get("api_calls")),
-            "tool_calls": _number(metrics.get("tool_calls")),
-            "tool_success_rate": _number(metrics.get("tool_success_rate"), 0.0),
-            "cost_usd": _number(metrics.get("cost_usd"), 0.0),
-            "latency_total_s": _number(metrics.get("latency_total_s"), 0.0),
-            "rate_limit_retries": _number(metrics.get("rate_limit_retries")),
-            "rate_limit_wait_s": _number(metrics.get("rate_limit_wait_s"), 0.0),
-            "stuck_detected": bool(metrics.get("stuck_detected")),
-            "provisioning_duration_s": _number(metrics.get("provisioning_duration_s"), 0.0),
-            "schema_version": _text(metrics.get("schema_version")),
-        }
-    )
     # the caller's keys never override the schema (checked at run start; guarded again here)
     for key, value in ctx.metadata.items():
         if key not in metadata and value is not None:
@@ -1057,16 +939,14 @@ def trace_metadata(
     return metadata
 
 
-def schema_keys(mirror_prefixes: Sequence[str] = ()) -> frozenset[str]:
+def schema_keys() -> frozenset[str]:
     """Every key the projection writes itself; caller and profile metadata may not use them."""
     from tolokaforge.observability.model_names import RawModelNameResolver
 
     identity = TrialIdentity(run_id="r", task_id="t", trial_index=0, attempt_id=0)
     probe = trace_metadata(
         Bundle(trajectory={}),
-        ProjectionContext(
-            label="l", session_id="s", tags=(), mirror_prefixes=tuple(mirror_prefixes)
-        ),
+        ProjectionContext(label="l", session_id="s", tags=()),
         identity=identity,
         resolver=RawModelNameResolver(),
         agent=None,

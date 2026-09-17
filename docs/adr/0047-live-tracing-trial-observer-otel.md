@@ -243,7 +243,7 @@ selects `full` (default), `gradings` (the previous amendment's behaviour) or `no
 `tracing_receipt.json` counts projections, observations, events, scores and media. Drift between
 the two implementations is caught by a golden parity test committed in both repositories over a
 synthetic bundle; the metadata keys whose values differ by producer by design (`upload_mode`,
-`uploader_version`, `trace_time_source`, `tag_origins`, `attach_mode`, `project_verified`) and
+`uploader_version`, `trace_time_source`, `attach_mode`) and
 the live root span's own keys (`generations_observed`, `tool_calls_observed`, `error`) are the
 documented exclusions.
 
@@ -251,8 +251,7 @@ documented exclusions.
 run time, in one TOML file named by `observability.tracing.profile` or
 `TOLOKAFORGE_TRACING_PROFILE` (`tolokaforge/observability/profile.py`): the receiver's native
 `environment` as a literal or as a rule over one tag prefix's value with a default, the tags every
-trace carries, the tag prefixes mirrored into trace metadata (so the key set of a trace never
-depends on which tags a run happened to carry), fixed metadata, the profile version that joins
+trace carries, fixed metadata, the profile version that joins
 the native `version` field, and optionally the model-name rules file (which selects the `toloka`
 normalizer). The engine validates the shape and applies the profile mechanically; a profile that
 does not load, an environment outside the receiver's alphabet, a fixed tag under a
@@ -270,6 +269,27 @@ into `run_identity.json` as `engine_version` for the offline uploader; `version`
 producer's identity plus the model-name rules and the profile it ran under, so it differs by
 producer by design. The `ModelNameResolver` Protocol gained `absent()` and `rules_version` so the
 `model_*` metadata keys are the same set whichever resolver runs.
+
+## Amendment 2026-09-17: the trace metadata is a fixed slim schema
+
+The first projection wrote every fact it could read into the trace's metadata: the task facts, the
+three model configurations, the model facets with their rule provenance, the environment identity,
+the usage detail, the grade detail, the launcher's tags mirrored under their prefixes, the tag
+profile's version. A trace carried 122 to 126 top-level keys, and the receiver's trace page renders
+its metadata table only up to 100 (Langfuse 3.205.1, `PrettyJsonView`, `DEFAULT_MAX_ROWS_IF_ROOT`),
+so the table under "Metadata" showed nothing for either producer, the attachment manifest included.
+
+The trace metadata is now the fixed 34-key schema of `docs/OBSERVABILITY.md` ("The trace
+metadata") plus the caller's per-run keys, the same from the trial-end pass and from the offline
+uploader, with the producer keys reduced to `upload_mode`, `uploader_version`, `trace_time_source`,
+`attach_mode`. What left the metadata is reachable where a reader looks for it: the attached
+files (task facts, model configurations, environment identity, redaction stamp), the generations
+(per-call usage), the grading observation and its scores (criteria and trace-check detail), the
+tags (model facets, the launcher's tags) and the native `version` field (rules and profile
+versions). The deployment profile lost `tag_profile_version` and `[tags] mirror_to_metadata` with
+it (schema 1 refuses both as unknown keys), the model-name resolvers report an identity and its
+tags only, and the golden parity test in both repositories was regenerated over the new schema
+with the bound (fewer than 100 keys) as one of its assertions.
 
 ## Links
 

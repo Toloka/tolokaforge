@@ -200,8 +200,7 @@ def build_trial_observer(
                 ("receiver", [f"project:{expect_project}"]),
             )
     environment = resolve_environment(tracing.environment, profile, tags)
-    check_mirror_prefixes(profile)
-    metadata = merge_metadata(tracing.metadata, profile, mirror_prefixes=profile.mirror_to_metadata)
+    metadata = merge_metadata(tracing.metadata, profile)
     release = engine_release()
     version = producer_version(release, resolver.rules_version, profile)
     attachments = build_attachments(
@@ -236,9 +235,6 @@ def build_trial_observer(
             release=release,
             version=version,
             producer=release,
-            tag_profile_version=profile.tag_profile_version,
-            mirror_prefixes=profile.mirror_to_metadata,
-            tag_origins=origins,
         ),
     )
     if output_dir is not None:
@@ -274,22 +270,7 @@ def resolve_environment(
         raise TracingConfigError(str(exc)) from exc
 
 
-def check_mirror_prefixes(profile: TracingProfile) -> None:
-    """A mirrored tag prefix may not be a key the projection writes itself (``status``,
-    ``label``, ...): the mirrored value would silently overwrite a fact of the trial."""
-    from tolokaforge.observability.langfuse_projection import schema_keys
-
-    clashes = sorted(set(profile.mirror_to_metadata) & schema_keys(()))
-    if clashes:
-        raise TracingConfigError(
-            "the tracing profile mirrors tag prefixes the projection writes itself: "
-            + ", ".join(clashes)
-        )
-
-
-def merge_metadata(
-    configured: Mapping[str, Any], profile: TracingProfile, *, mirror_prefixes: Sequence[str] = ()
-) -> dict[str, Any]:
+def merge_metadata(configured: Mapping[str, Any], profile: TracingProfile) -> dict[str, Any]:
     """The caller's trace metadata: the profile's fixed keys, the config's, then
     ``TOLOKAFORGE_TRACING_METADATA`` (the launcher's per-run values, which win). A key the
     projection writes itself is a configuration error: it would silently be overwritten or
@@ -301,7 +282,7 @@ def merge_metadata(
     except TracingProfileError as exc:
         raise TracingConfigError(str(exc)) from exc
     merged: dict[str, Any] = {**profile.fixed_metadata, **configured, **launcher}
-    clashes = sorted(set(merged) & schema_keys(mirror_prefixes))
+    clashes = sorted(set(merged) & schema_keys())
     if clashes:
         raise TracingConfigError(
             "tracing metadata may not use the keys the projection writes itself: "
@@ -438,8 +419,9 @@ def merge_tags(configured: Sequence[str], extra: Sequence[str]) -> list[str]:
 
 def merge_tag_sources(*sources: tuple[str, Sequence[str]]) -> tuple[list[str], dict[str, str]]:
     """Tags from several sources (``(origin, tags)`` pairs, in precedence order), validated and
-    deduplicated, plus where each prefix's value came from (the ``tag_origins`` metadata); a
-    prefix carrying two different values is a configuration error."""
+    deduplicated, plus where each prefix's value came from (the origin ranks a later source
+    against the receiver's project tag); a prefix carrying two different values is a
+    configuration error."""
     merged: list[str] = []
     values: dict[str, str] = {}
     origins: dict[str, str] = {}

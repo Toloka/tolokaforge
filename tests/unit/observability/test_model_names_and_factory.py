@@ -32,9 +32,7 @@ class TestRawResolver:
         identity = RawModelNameResolver().resolve("openrouter", "openai/gpt-6-astra")
         assert identity.canonical == "openai/gpt-6-astra"
         assert identity.tags == ("model:openai/gpt-6-astra",)
-        assert identity.metadata["model_vendor"] == "openai"
-        assert identity.metadata["model_route"] == "openrouter"
-        assert identity.metadata["model_family"] == "none"
+        assert RawModelNameResolver().rules_version == "none"
 
     def test_bare_name_takes_the_provider_as_vendor(self) -> None:
         assert (
@@ -58,8 +56,7 @@ class TestNormalizerResolver:
         identity = resolver.resolve("openrouter", "tencent/hy3")
         assert identity.canonical == "tencent/hy3"
         assert "model_family:hunyuan" in identity.tags
-        assert identity.metadata["model_rules_version"] == "test"
-        assert identity.metadata["model_lookup"] is True
+        assert resolver.rules_version == "test"  # rides in the native `version` field
 
 
 class TestTracingConfig:

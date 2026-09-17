@@ -5,13 +5,9 @@ at run time in one TOML file (``observability.tracing.profile`` or ``TOLOKAFORGE
 
 - the receiver's native ``environment``: a literal, or a rule over one tag prefix (the value of
   that tag picks the environment from a map, with a default);
-- the tags every trace of the deployment carries (``[tags] fixed``) and the tag prefixes whose
-  values are mirrored into the trace metadata (``[tags] mirror_to_metadata``; ``none`` when the
-  tag is absent, because a metadata key is always sent with a value);
+- the tags every trace of the deployment carries (``[tags] fixed``);
 - the metadata every trace carries (``[metadata.fixed]``);
-- the profile ``version`` that joins the native ``version`` field, and optionally the version of
-  the tag vocabulary the launcher validated the tags against (``tag_profile_version``, the
-  ``tag_profile_version`` metadata key);
+- the profile ``version`` that joins the native ``version`` field;
 - optionally the model-name rules file the ``toloka`` normalizer runs under (``[models] rules``,
   relative to the profile file).
 
@@ -23,7 +19,6 @@ Example (neutral values; a deployment's file lives in its own repository)::
 
     schema = 1
     version = "acme-2026.09.17.1"
-    tag_profile_version = "acme-tags-2026.09.16.1"
 
     [environment]
     from_tag = "run_kind"
@@ -33,8 +28,6 @@ Example (neutral values; a deployment's file lives in its own repository)::
 
     [tags]
     fixed = ["team:pilot"]
-    mirror_to_metadata = ["team", "project", "dataset", "source", "run_kind", "scope", "config",
-                          "domain", "ci_run", "ci_chain"]
 
     [metadata.fixed]
     deployment = "pilot"
@@ -66,11 +59,9 @@ METADATA_ENV = "TOLOKAFORGE_TRACING_METADATA"
 _ENVIRONMENT_SHAPE = re.compile(r"^(?!langfuse)[a-z0-9_-]{1,40}$")
 _PREFIX_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
 _TAG_SHAPE = re.compile(r"^[a-z][a-z0-9_]*:\S+$")
-_TOP_KEYS = frozenset(
-    {"schema", "version", "tag_profile_version", "environment", "tags", "metadata", "models"}
-)
+_TOP_KEYS = frozenset({"schema", "version", "environment", "tags", "metadata", "models"})
 _ENVIRONMENT_KEYS = frozenset({"literal", "from_tag", "default", "values"})
-_TAGS_KEYS = frozenset({"fixed", "mirror_to_metadata"})
+_TAGS_KEYS = frozenset({"fixed"})
 _METADATA_KEYS = frozenset({"fixed"})
 _MODELS_KEYS = frozenset({"rules"})
 _SCALARS = (str, int, float, bool)
@@ -106,16 +97,14 @@ class EnvironmentRule:
 @dataclass(frozen=True)
 class TracingProfile:
     version: str
-    tag_profile_version: str
     environment: EnvironmentRule = field(default_factory=EnvironmentRule)
     fixed_tags: tuple[str, ...] = ()
-    mirror_to_metadata: tuple[str, ...] = ()
     fixed_metadata: Mapping[str, Any] = field(default_factory=dict)
     model_name_rules: str | None = None
     path: str | None = None
 
 
-NO_PROFILE = TracingProfile(version="none", tag_profile_version="none")
+NO_PROFILE = TracingProfile(version="none")
 
 
 def check_environment(value: object, *, where: str = "environment") -> str:
@@ -204,10 +193,6 @@ def profile_from_mapping(data: Mapping[str, Any], *, path: str | None = None) ->
     version = data.get("version")
     if not isinstance(version, str) or not version.strip() or "+" in version:
         raise TracingProfileError(f"{where}: 'version' must be a non-empty string without '+'")
-    tag_profile_version = data.get("tag_profile_version", version)
-    if not isinstance(tag_profile_version, str) or not tag_profile_version.strip():
-        raise TracingProfileError(f"{where}: 'tag_profile_version' must be a non-empty string")
-
     env_table = _table(
         data.get("environment"), where=f"{where}: [environment]", allowed=_ENVIRONMENT_KEYS
     )
@@ -257,13 +242,6 @@ def profile_from_mapping(data: Mapping[str, Any], *, path: str | None = None) ->
                 f"{where}: [tags] fixed carries two values under the prefix {prefix!r}"
             )
         seen[prefix] = value
-    mirror = [
-        _prefix(prefix, where=f"{where}: [tags] mirror_to_metadata")
-        for prefix in _string_list(
-            tags_table.get("mirror_to_metadata"), where=f"{where}: [tags] mirror_to_metadata"
-        )
-    ]
-
     metadata_table = _table(
         data.get("metadata"), where=f"{where}: [metadata]", allowed=_METADATA_KEYS
     )
@@ -282,12 +260,6 @@ def profile_from_mapping(data: Mapping[str, Any], *, path: str | None = None) ->
                     f"{where}: [metadata.fixed] {key} must be a string, number or boolean"
                 )
             fixed_metadata[key] = value
-    clashes = sorted(set(fixed_metadata) & set(mirror))
-    if clashes:
-        raise TracingProfileError(
-            f"{where}: [metadata.fixed] keys {clashes} are also mirrored tag prefixes"
-        )
-
     models_table = _table(data.get("models"), where=f"{where}: [models]", allowed=_MODELS_KEYS)
     rules: str | None = None
     if models_table.get("rules") is not None:
@@ -302,10 +274,8 @@ def profile_from_mapping(data: Mapping[str, Any], *, path: str | None = None) ->
         rules = str(rules_path)
     return TracingProfile(
         version=version,
-        tag_profile_version=tag_profile_version,
         environment=rule,
         fixed_tags=tuple(fixed_tags),
-        mirror_to_metadata=tuple(mirror),
         fixed_metadata=fixed_metadata,
         model_name_rules=rules,
         path=path,
@@ -341,9 +311,8 @@ def describe(profile: TracingProfile) -> str:
         )
     )
     return (
-        f"version {profile.version}, tag profile version {profile.tag_profile_version}, "
-        f"environment {environment}, fixed tags {list(profile.fixed_tags)}, mirrored prefixes "
-        f"{list(profile.mirror_to_metadata)}, fixed metadata {dict(profile.fixed_metadata)}, "
+        f"version {profile.version}, environment {environment}, fixed tags "
+        f"{list(profile.fixed_tags)}, fixed metadata {dict(profile.fixed_metadata)}, "
         f"model rules {profile.model_name_rules or 'none'}"
     )
 

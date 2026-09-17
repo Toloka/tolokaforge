@@ -166,11 +166,35 @@ synthetic bundle (`tests/unit/observability/parity_bundle.py`, byte-identical in
 projected by each side and compared as normalised event lists modulo envelope ids, timestamps,
 tag order and the documented **producer keys**, whose values differ by producer by design:
 `upload_mode` (`live`), `uploader_version` (this engine's `tolokaforge-<version>`),
-`trace_time_source` (`live`), `tag_origins` (where each tag came from: `config`, `launcher`,
-`profile`, `receiver`), `attach_mode`, `project_verified`. The live root span adds three keys no
+`trace_time_source` (`live`), `attach_mode`. The live root span adds three keys no
 bundle projection carries: `generations_observed`, `tool_calls_observed`, `error`; a Langfuse
 receiver adds two more to a trace that arrived over OTLP, `attributes` and `resourceAttributes`
 (the trace-level span's raw attributes and the SDK's resource attributes).
+
+## The trace metadata
+
+A trace's metadata is a fixed, flat schema of 34 keys plus the caller's per-run keys, identical
+from the trial-end pass and from the offline uploader (`langfuse_projection.schema_keys()`):
+
+| Group | Keys |
+|---|---|
+| identity | `task_id`, `trial_index`, `run_id`, `run_tag`, `attempt`, `label`, `harness`, `id_contract` |
+| attachments | `attach_mode`, `attachments_schema`, `attachments`, `attachments_complete`, `attachments_skipped` |
+| outcome | `status`, `termination_reason`, `grading_error` |
+| verdict | `primary_grading`, `gradings`, `grading_count`, `pass`, `score`, `judge_status` |
+| usage | `cost_usd`, `tokens_input`, `tokens_output`, `turns`, `tool_calls`, `latency_total_s` |
+| models | `model_name`, `user_model`, `judge_model` |
+| bookkeeping | `upload_mode`, `uploader_version`, `trace_time_source` |
+
+Everything else a bundle says lives where a reader looks for it, not in the trace's metadata: the
+task facts, the model configurations, the environment identity and the redaction stamp in the
+attached `task.yaml`, `env.yaml` and `metrics.yaml`; the per-generation usage on the generations;
+the criteria and trace-check detail on the grading observation and its scores; the model facets
+and the launcher's tags as tags; the rules and profile versions in the native `version` field.
+The bound is the receiver's: Langfuse's trace page renders its metadata table only up to 100
+top-level keys and shows nothing above that (3.205.1, verified 2026-09-17), so the schema stays
+well under it with room for the caller's keys, and a caller key that names a schema key is a
+configuration error.
 
 ## The deployment profile
 
@@ -182,7 +206,6 @@ validates one). Neutral example:
 ```toml
 schema = 1
 version = "acme-2026.09.17.1"              # joins the native `version` field
-tag_profile_version = "acme-tags-2026.09.16.1"   # the `tag_profile_version` metadata key (default: version)
 
 [environment]                              # the receiver's native environment
 from_tag = "run_kind"                      # or: literal = "development"
@@ -192,8 +215,6 @@ eval = "production"
 
 [tags]
 fixed = ["team:pilot"]                     # tags every trace of the deployment carries
-mirror_to_metadata = ["team", "project", "dataset", "source", "run_kind", "scope", "config",
-                      "domain", "ci_run", "ci_chain"]   # tag prefixes written into trace metadata (`none` when absent)
 
 [metadata.fixed]                           # metadata every trace carries
 deployment = "pilot"

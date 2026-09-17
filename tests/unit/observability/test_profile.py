@@ -33,7 +33,6 @@ pytestmark = pytest.mark.unit
 PROFILE = """
 schema = 1
 version = "acme-2026.09.17.1"
-tag_profile_version = "acme-tags-2026.09.16.1"
 
 [environment]
 from_tag = "run_kind"
@@ -43,7 +42,6 @@ eval = "production"
 
 [tags]
 fixed = ["team:pilot"]
-mirror_to_metadata = ["team", "project", "dataset", "run_kind", "ci_chain"]
 
 [metadata.fixed]
 deployment = "pilot"
@@ -60,18 +58,16 @@ class TestLoading:
     def test_a_full_profile_loads(self, tmp_path: Path) -> None:
         profile = load_tracing_profile(write_profile(tmp_path))
         assert profile.version == "acme-2026.09.17.1"
-        assert profile.tag_profile_version == "acme-tags-2026.09.16.1"
         assert profile.environment.from_tag == "run_kind"
         assert profile.environment.values == {"eval": "production"}
         assert profile.environment.default == "development"
         assert profile.fixed_tags == ("team:pilot",)
-        assert profile.mirror_to_metadata == ("team", "project", "dataset", "run_kind", "ci_chain")
         assert profile.fixed_metadata == {"deployment": "pilot"}
         assert profile.model_name_rules is None
 
-    def test_the_tag_profile_version_defaults_to_the_version(self) -> None:
+    def test_a_bare_profile_leaves_the_environment_to_the_receiver(self) -> None:
         profile = profile_from_mapping({"schema": 1, "version": "p-1"})
-        assert profile.tag_profile_version == "p-1" and profile.environment.resolve([]) is None
+        assert profile.version == "p-1" and profile.environment.resolve([]) is None
 
     def test_a_literal_environment(self) -> None:
         profile = profile_from_mapping(
@@ -131,14 +127,10 @@ class TestLoading:
             ("schema = 1\nversion = 'p'\n[tags]\nfixed = ['team:a', 'team:b']\n", "two values"),
             ("schema = 1\nversion = 'p'\n[tags]\nfixed = ['nocolon']\n", "must look like"),
             (
-                "schema = 1\nversion = 'p'\n[tags]\nmirror_to_metadata = ['Bad']\n",
-                "not a tag prefix",
+                "schema = 1\nversion = 'p'\n[tags]\nmirror_to_metadata = ['team']\n",
+                "unknown keys",
             ),
             ("schema = 1\nversion = 'p'\n[metadata.fixed]\nk = [1]\n", "string, number or boolean"),
-            (
-                "schema = 1\nversion = 'p'\n[tags]\nmirror_to_metadata = ['team']\n[metadata.fixed]\nteam = 'x'\n",
-                "also mirrored",
-            ),
             ("schema = 1\nversion = 'p'\n[models]\nrules = 3\n", "non-empty path"),
             ("not toml [[[", "not valid TOML"),
         ],
@@ -174,9 +166,9 @@ class TestMetadataVariable:
         with pytest.raises(TracingConfigError, match="task_id"):
             merge_metadata({}, profile)
         monkeypatch.delenv("TOLOKAFORGE_TRACING_METADATA")
-        # a mirrored prefix is a schema key too
-        with pytest.raises(TracingConfigError, match="dataset"):
-            merge_metadata({"dataset": "v9"}, profile, mirror_prefixes=("dataset",))
+        # the verdict keys are the projection's
+        with pytest.raises(TracingConfigError, match="score"):
+            merge_metadata({"score": 1}, profile)
 
 
 class TestEnvironmentPrecedence:
@@ -260,20 +252,6 @@ class TestFactory:
             assert settings.release.startswith("tolokaforge-")
             assert settings.version.endswith("+acme-2026.09.17.1")
             assert settings.producer == settings.release
-            assert settings.tag_profile_version == "acme-tags-2026.09.16.1"
-            assert settings.mirror_prefixes == (
-                "team",
-                "project",
-                "dataset",
-                "run_kind",
-                "ci_chain",
-            )
-            assert settings.tag_origins == {
-                "config": "config",
-                "run_kind": "launcher",
-                "dataset": "launcher",
-                "team": "profile",
-            }
             assert observer._tags == ("config:stem", "run_kind:eval", "dataset:pilot", "team:pilot")
             assert observer._metadata == {"deployment": "pilot", "run_label": "nightly"}
         finally:
@@ -298,7 +276,6 @@ class TestFactory:
         try:
             assert observer._projection.environment is None
             assert observer._projection.version == observer._projection.release
-            assert observer._projection.mirror_prefixes == ()
         finally:
             observer.run_finished()
 
@@ -315,16 +292,6 @@ class TestFactory:
         clean_env.delenv("TOLOKAFORGE_TRACING_METADATA")
         with pytest.raises(TracingConfigError, match="not a valid environment"):
             self._build(tmp_path, environment="Prod")
-
-    def test_a_mirrored_prefix_that_is_a_schema_key_refuses(
-        self, clean_env, tmp_path: Path
-    ) -> None:
-        path = write_profile(
-            tmp_path,
-            'schema = 1\nversion = "p"\n[tags]\nmirror_to_metadata = ["dataset", "status"]\n',
-        )
-        with pytest.raises(TracingConfigError, match="status"):
-            self._build(tmp_path, profile=str(path))
 
     def test_attach_none_with_gradings_off_still_sends_the_full_projection(
         self, clean_env, tmp_path: Path

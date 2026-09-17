@@ -64,9 +64,6 @@ class ProjectionSettings:
     release: str | None = None
     version: str | None = None
     producer: str = "tolokaforge"  # the ``uploader_version`` metadata value
-    tag_profile_version: str = NONE
-    mirror_prefixes: tuple[str, ...] = ()
-    tag_origins: Mapping[str, str] = field(default_factory=dict)
 
 
 def _scope() -> InstrumentationScope:
@@ -543,7 +540,6 @@ class OTelTrialObserver:
             "pass": getattr(grade, "binary_pass", None) if grade is not None else NONE,
             "score": getattr(grade, "score", None) if grade is not None else NONE,
             "turns": int(getattr(metrics, "turns", 0) or 0),
-            "api_calls": int(getattr(metrics, "api_calls", 0) or 0),
             "tool_calls": int(getattr(metrics, "tool_calls", 0) or 0),
             "tokens_input": int(getattr(usage, "prompt_tokens", 0) or 0),
             "tokens_output": int(getattr(usage, "completion_tokens", 0) or 0),
@@ -551,13 +547,9 @@ class OTelTrialObserver:
             "generations_observed": state.generations,
             "tool_calls_observed": state.tool_calls,
         }
-        agent_ref = state.models.get("agent")
+        # the slim schema of the trial-end pass (the model facets are tags, the rest of the
+        # trial is in the attached files); the pass overwrites these keys from the bundle
         metadata["model_name"] = state.agent.canonical if state.agent else NONE
-        metadata["model_provider"] = (
-            agent_ref.provider if agent_ref and agent_ref.provider else NONE
-        )
-        if state.agent is not None:
-            metadata.update(state.agent.metadata)
         for role, ref in state.models.items():
             if role != "agent":
                 metadata[f"{role}_model"] = (
@@ -676,15 +668,11 @@ class OTelTrialObserver:
             label=self._label,
             session_id=self._session_id,
             tags=self._trial_tags(identity, persist),
-            tag_origins=dict(settings.tag_origins),
             metadata=dict(self._metadata),
-            mirror_prefixes=settings.mirror_prefixes,
             environment=settings.environment,
             release=settings.release,
             version=settings.version,
             producer=settings.producer,
-            tag_profile_version=settings.tag_profile_version,
-            project_verified=self._project_verified,
             attach_mode=str(getattr(step, "mode", "all")),
             grades=self._gradings,
         )
