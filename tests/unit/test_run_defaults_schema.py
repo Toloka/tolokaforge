@@ -152,7 +152,7 @@ class TestObservabilityConfig:
         assert t.endpoint == "http://collector:4317"
 
     def test_tracing_otlp_accepts_a_missing_endpoint_for_the_environment(self, monkeypatch) -> None:
-        # ADR-0046 destinations amendment: the endpoint may come from the standard OTel variables,
+        # ADR-0047 destinations amendment: the endpoint may come from the standard OTel variables,
         # so the config accepts the field's absence and the factory decides at run start
         from tolokaforge.observability.factory import TracingConfigError, build_trial_observer
 

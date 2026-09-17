@@ -1,4 +1,4 @@
-"""The grading of a persisted trial as Langfuse events (ADR-0046, gradings amendment).
+"""The grading of a persisted trial as Langfuse events (ADR-0047, gradings amendment).
 
 The live exporter binds the agent loop, so a live trace ends with the agent's generations and
 tool calls. What the bundle knows on top of that, the run's own grading (``grade.yaml``), its

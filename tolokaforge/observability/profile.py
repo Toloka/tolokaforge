@@ -1,4 +1,4 @@
-"""The deployment profile of the live trace export (ADR-0046, parity amendment).
+"""The deployment profile of the live trace export (ADR-0047, parity amendment).
 
 Everything a deployment decides about its traces and the engine must not know as a value arrives
 at run time in one TOML file (``observability.tracing.profile`` or ``TOLOKAFORGE_TRACING_PROFILE``):

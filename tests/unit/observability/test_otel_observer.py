@@ -1,4 +1,4 @@
-"""The OTLP observer synthesises deterministic spans and never blocks (ADR-0046)."""
+"""The OTLP observer synthesises deterministic spans and never blocks (ADR-0047)."""
 
 from __future__ import annotations
 

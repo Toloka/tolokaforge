@@ -1,4 +1,4 @@
-"""Model identity for traces as configuration (ADR-0046).
+"""Model identity for traces as configuration (ADR-0047).
 
 The engine knows a model as the ``(provider, name)`` pair of its ``ModelConfig``. What a trace
 should call it is a deployment's choice: by default the raw pair (``vendor/model`` when the name

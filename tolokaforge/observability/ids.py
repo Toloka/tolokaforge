@@ -1,4 +1,4 @@
-"""Id contract v2, shared with the offline bundle uploader (ADR-0046).
+"""Id contract v2, shared with the offline bundle uploader (ADR-0047).
 
     trace_id       = uuid5(NS, "trace|{run_tag}|{run_id}|{task_id}|{trial_index}|{attempt}").hex
     observation_id = uuid5(NS, "obs|{trace_id}|{kind}|{key...}").hex[:16]

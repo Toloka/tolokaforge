@@ -1,4 +1,4 @@
-"""The post-trial attachment step (ADR-0046 amendment): the attachment set, the compression rule,
+"""The post-trial attachment step (ADR-0047 amendment): the attachment set, the compression rule,
 the data-safety scan, manifest v2, and the Langfuse media / ingestion calls against a fake
 transport."""
 

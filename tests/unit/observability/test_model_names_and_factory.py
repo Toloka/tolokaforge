@@ -1,4 +1,4 @@
-"""Model-name resolution as configuration and the observer factory (ADR-0046)."""
+"""Model-name resolution as configuration and the observer factory (ADR-0047)."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ class TestTracingConfig:
 
     def test_otlp_without_an_endpoint_anywhere_is_a_run_start_error(self, monkeypatch) -> None:
         # the endpoint may come from the standard OTel variables, so the config alone accepts it
-        # and the factory decides (destinations amendment of ADR-0046)
+        # and the factory decides (destinations amendment of ADR-0047)
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
         monkeypatch.delenv("LANGFUSE_BASE_URL", raising=False)  # the switch's own source

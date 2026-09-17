@@ -1,4 +1,4 @@
-"""The synthetic trial bundle of the golden parity test (ADR-0046, parity amendment; PLAN 3.12,
+"""The synthetic trial bundle of the golden parity test (ADR-0047, parity amendment; PLAN 3.12,
 D29).
 
 This file is committed **byte-identical** in two repositories (the public engine's

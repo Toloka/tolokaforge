@@ -1,4 +1,4 @@
-"""Id contract v1 and the observer seam (ADR-0046)."""
+"""Id contract v1 and the observer seam (ADR-0047)."""
 
 from __future__ import annotations
 

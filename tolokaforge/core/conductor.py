@@ -161,7 +161,7 @@ class ConductorContext:
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
-    # Live tracing seam (ADR-0046): the run's observer and the identity its trials trace under.
+    # Live tracing seam (ADR-0047): the run's observer and the identity its trials trace under.
     trial_observer: TrialObserver = field(default_factory=NullTrialObserver)
     run_identity: RunIdentity | None = None
 
@@ -226,7 +226,7 @@ class Conductor(Protocol):
     ``@runtime_checkable`` and adding a data member would break ``isinstance``
     for every implementation that predates it.
 
-    **Optional capability:** ``trial_persisted(spec) -> None`` (ADR-0046 amendment). The trial
+    **Optional capability:** ``trial_persisted(spec) -> None`` (ADR-0047 amendment). The trial
     executor calls it, when present, once nothing writes into the trial directory any more, so
     a live-tracing observer can attach the bundle's files to the trace. Not a declared member
     for the same ``isinstance`` reason; a conductor without it simply announces nothing.
@@ -541,7 +541,7 @@ class InProcessConductor:
             self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
-            # The bundle records the attempt it describes (ADR-0046), so the offline uploader
+            # The bundle records the attempt it describes (ADR-0047), so the offline uploader
             # derives the trace id the live exporter used.
             trajectory.attempt_id = spec.attempt_id
         except BaseException as exc:
@@ -757,7 +757,7 @@ class InProcessConductor:
         )
 
     def trial_persisted(self, spec: TrialSpec) -> None:
-        """Announce the trial's bundle to the observer (ADR-0046 amendment), once nothing writes
+        """Announce the trial's bundle to the observer (ADR-0047 amendment), once nothing writes
         into the trial directory any more: the trial executor calls this after its own
         ``metrics.yaml`` amendment and service-log capture. Silent when there is no bundle; a
         failed trial announces nothing (a bundle found on that path belongs to an earlier

@@ -697,7 +697,7 @@ class Orchestrator:
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
-        # Live tracing (ADR-0046): built per run from ``observability.tracing`` in :meth:`run`.
+        # Live tracing (ADR-0047): built per run from ``observability.tracing`` in :meth:`run`.
         self._trial_observer: TrialObserver = NullTrialObserver()
         self._run_identity: RunIdentity | None = None
         self._events: RunDisplayEvents = resolved_deps.events
@@ -2466,7 +2466,7 @@ class Orchestrator:
             )
         if run_id is None:
             run_id, output_dir = resolve_run_directory(self.config.evaluation.output_dir)
-        # Live tracing (ADR-0046) is built from the config before any service starts, so a
+        # Live tracing (ADR-0047) is built from the config before any service starts, so a
         # missing extra or an unreadable rules file fails here, with nothing to tear down.
         self._trial_observer, self._run_identity = build_trial_observer(
             getattr(self.config, "observability", None), engine_run_id=run_id, output_dir=output_dir
@@ -3152,7 +3152,7 @@ class Orchestrator:
 
     def _finish_tracing(self, output_dir: Path) -> None:
         """Flush and close the run's trial observer; the export receipt lands in the run
-        directory and the log. Never raises: the observability layer only warns (ADR-0046)."""
+        directory and the log. Never raises: the observability layer only warns (ADR-0047)."""
         observer, self._trial_observer = self._trial_observer, NullTrialObserver()
         if isinstance(observer, NullTrialObserver):
             return
@@ -3230,7 +3230,7 @@ class Orchestrator:
                 f"Worker requires an engine_run_state.json with a run_id in {output_dir}. "
                 "Run `tolokaforge prepare` first."
             )
-        # Live tracing (ADR-0046): a worker traces under the run it joins.
+        # Live tracing (ADR-0047): a worker traces under the run it joins.
         self._trial_observer, self._run_identity = build_trial_observer(
             getattr(self.config, "observability", None), engine_run_id=run_id, output_dir=output_dir
         )

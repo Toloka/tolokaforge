@@ -398,7 +398,7 @@ class ToolCallingLoop:
         None
     )
     call_observation: LLMCallObservation | None = None
-    # Live tracing seam (ADR-0046): told about every recorded assistant turn and tool result with
+    # Live tracing seam (ADR-0047): told about every recorded assistant turn and tool result with
     # the message's position in ``messages``, so a live span and the bundle uploader's observation
     # share one id. ``None`` observes nothing; a raising observer never reaches the loop.
     observer: LoopObserver | None = None

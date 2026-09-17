@@ -1,4 +1,4 @@
-"""Trial bundle files as receiver-side attachments (ADR-0046, amendment of 2026-09-16).
+"""Trial bundle files as receiver-side attachments (ADR-0047, amendment of 2026-09-16).
 
 Once the conductor has persisted a trial's bundle it calls the observer's ``trial_persisted``
 hook, and a receiver-specific exporter may attach the files of the trial directory to the trace.

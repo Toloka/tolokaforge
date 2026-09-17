@@ -1,4 +1,4 @@
-"""The ``TrialObserver`` seam (ADR-0046).
+"""The ``TrialObserver`` seam (ADR-0047).
 
 The conductor opens and closes a trial, the tool-calling loop reports each generation and tool
 call with its content, the orchestrator closes the run. Every implementation is called through
@@ -65,7 +65,7 @@ class TrialIdentity:
 
 @dataclass(frozen=True)
 class ExportReceipt:
-    """What left the process: the counts a run summary reports (ADR-0046, delivery contract)."""
+    """What left the process: the counts a run summary reports (ADR-0047, delivery contract)."""
 
     spans_queued: int = 0
     spans_exported: int = 0
@@ -73,7 +73,7 @@ class ExportReceipt:
     export_failures: int = 0
     flushed: bool = True
     exporter: str = "none"
-    # the post-trial attachment step (ADR-0046 amendment): files registered on their trace,
+    # the post-trial attachment step (ADR-0047 amendment): files registered on their trace,
     # bytes uploaded by this run, registrations the receiver answered from bytes it already
     # held, files kept back by the data-safety scan, files that failed, manifests written
     attachments_registered: int = 0
@@ -174,7 +174,7 @@ class TrialObserver(Protocol):
 
     def trial_persisted(self, identity: TrialIdentity, *, trial_dir: Path) -> None:
         """The trial's bundle is on disk under ``trial_dir`` (after ``trial_finished``): a
-        receiver-specific observer may attach the files to the trace (ADR-0046 amendment)."""
+        receiver-specific observer may attach the files to the trace (ADR-0047 amendment)."""
         ...
 
     def run_finished(self) -> ExportReceipt: ...

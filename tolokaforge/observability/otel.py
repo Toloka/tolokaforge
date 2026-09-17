@@ -1,4 +1,4 @@
-"""OTLP exporter for the ``TrialObserver`` seam (ADR-0046). Needs the ``otel`` extra.
+"""OTLP exporter for the ``TrialObserver`` seam (ADR-0047). Needs the ``otel`` extra.
 
 Spans are not opened through the SDK's tracer: each one is *synthesised* when its source event is
 complete (a generation, a tool call, the graded trial) as a finished ``ReadableSpan`` with the id
@@ -55,7 +55,7 @@ TRACE_TIME_SOURCE = "live"
 
 @dataclass(frozen=True)
 class ProjectionSettings:
-    """What the trial-end pass adds to a bundle (ADR-0046, parity amendment): the projection
+    """What the trial-end pass adds to a bundle (ADR-0047, parity amendment): the projection
     mode, the receiver's native fields, the deployment profile's mirrored prefixes and version,
     where each tag came from, and this producer's identity."""
 
@@ -88,7 +88,7 @@ def make_otlp_exporter(endpoint: str, headers: Mapping[str, str] | None = None) 
 
 
 class SpanQueue:
-    """Bounded, counted, background-exported span queue (ADR-0046 delivery contract).
+    """Bounded, counted, background-exported span queue (ADR-0047 delivery contract).
 
     ``put`` never blocks: a full queue drops the span and counts it. The worker exports batches
     as they fill or every ``interval_s``; :meth:`flush` drains synchronously in the caller's

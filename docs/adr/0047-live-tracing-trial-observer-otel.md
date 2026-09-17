@@ -1,4 +1,4 @@
-# 0046. Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra
+# 0047. Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra
 
 - **Status:** Proposed
 - **Date:** 2026-09-15

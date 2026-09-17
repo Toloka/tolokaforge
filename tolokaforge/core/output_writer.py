@@ -263,7 +263,7 @@ class OutputWriter:
         traj_data = {
             "task_id": trajectory.task_id,
             "trial_index": trajectory.trial_index,
-            # the attempt this bundle describes (ADR-0046); None for pre-ADR bundles
+            # the attempt this bundle describes (ADR-0047); None for pre-ADR bundles
             "attempt_id": trajectory.attempt_id,
             "simulator_schema_version": trajectory.simulator_schema_version,
             "start_ts": trajectory.start_ts.isoformat(),

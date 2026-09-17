@@ -1,4 +1,4 @@
-# Live tracing (ADR-0046)
+# Live tracing (ADR-0047)
 
 `observability.tracing` in the run config switches the engine's live trace export on. Every
 generation and tool call of a trial leaves the process as an OpenTelemetry span while the trial

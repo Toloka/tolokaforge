@@ -1091,7 +1091,7 @@ class GraderConfig(BaseModel):
 
 
 class TracingConfig(BaseModel):
-    """Live tracing of trials (ADR-0046).
+    """Live tracing of trials (ADR-0047).
 
     ``exporter: otlp`` switches the engine's ``TrialObserver`` on: every generation and tool call
     of a trial leaves as a span while the trial runs, the graded trial closes the trace. Needs the

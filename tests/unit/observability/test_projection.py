@@ -1,4 +1,4 @@
-"""The default projection of a persisted trial (ADR-0046, parity amendment): the golden parity
+"""The default projection of a persisted trial (ADR-0047, parity amendment): the golden parity
 test shared with the offline connector, and the trial-end pass of the OTLP observer."""
 
 from __future__ import annotations

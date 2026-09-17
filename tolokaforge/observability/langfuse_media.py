@@ -1,4 +1,4 @@
-"""Langfuse-side attachment upload for the live exporter (ADR-0046, amendment of 2026-09-16).
+"""Langfuse-side attachment upload for the live exporter (ADR-0047, amendment of 2026-09-16).
 
 Receiver-specific by nature, hence next to the OTLP observer behind the ``otel`` extra: the files
 of a persisted trial reach the trace through Langfuse's media REST API (``POST /api/public/media``
@@ -144,7 +144,7 @@ class AttachBudgetExceeded(RuntimeError):
 class LangfuseAttachments:
     """Attach a persisted trial's files to its trace and write manifest v2 to the trace.
 
-    Two limits keep the step from holding a run hostage (ADR-0046: never slow a trial
+    Two limits keep the step from holding a run hostage (ADR-0047: never slow a trial
     materially): every request gets the smaller of ``timeout_s`` and what is left of the
     trial's ``budget_s``, and after ``breaker_failures`` consecutive trials whose step failed
     entirely (a receiver that is down or blackholed) the step switches itself off for the rest

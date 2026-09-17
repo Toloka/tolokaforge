@@ -1,4 +1,4 @@
-"""Build the run's ``TrialObserver`` from ``observability.tracing`` (ADR-0046).
+"""Build the run's ``TrialObserver`` from ``observability.tracing`` (ADR-0047).
 
 ``exporter: none`` (the default) gives the no-op observer; ``exporter: otlp`` needs the ``otel``
 extra and an endpoint (the config's, else the standard ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` /
@@ -10,10 +10,10 @@ will, and is written to ``run_identity.json`` in the run directory for that uplo
 A launcher that owns the receiver (the Langfuse connector's ``with-destination``) injects the
 endpoint, the headers, extra tags (``TOLOKAFORGE_TRACING_TAGS``) and the project the credentials
 must open (``TOLOKAFORGE_TRACING_EXPECT_PROJECT``); ``expect_project`` is checked against the
-receiver before the first export and a mismatch refuses to trace (ADR-0046, destinations
+receiver before the first export and a mismatch refuses to trace (ADR-0047, destinations
 amendment).
 
-One switch (ADR-0046, Langfuse switch amendment): ``LANGFUSE_TRACING_ENABLED=true`` turns the
+One switch (ADR-0047, Langfuse switch amendment): ``LANGFUSE_TRACING_ENABLED=true`` turns the
 exporter on without a config block. The receiver then comes from the plain Langfuse variables:
 ``LANGFUSE_BASE_URL`` (the traces endpoint is ``<base>/api/public/otel/v1/traces``, the REST base
 for attachments and gradings is ``<base>``), ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUSE_SECRET_KEY``
@@ -23,7 +23,7 @@ for attachments and gradings is ``<base>``), ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUS
 identity may come from the environment too (``TOLOKAFORGE_TRACING_RUN_ID``, ``_RUN_TAG``,
 ``_SESSION_ID``, ``_LABEL``), so a workflow needs no config edit to trace a run.
 
-The deployment profile (ADR-0046, parity amendment; ``profile``): ``observability.tracing.profile``
+The deployment profile (ADR-0047, parity amendment; ``profile``): ``observability.tracing.profile``
 or ``TOLOKAFORGE_TRACING_PROFILE`` names a TOML the engine validates and applies without knowing
 any value: the native ``environment`` rule (``LANGFUSE_ENVIRONMENT`` or the config's
 ``environment`` literal override it), fixed tags and metadata, the profile version that joins

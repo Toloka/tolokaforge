@@ -1,4 +1,4 @@
-"""The deployment profile (ADR-0046, parity amendment): loading and validation without any
+"""The deployment profile (ADR-0047, parity amendment): loading and validation without any
 deployment value in the engine, the environment rule and its overrides, the per-run metadata
 variable and the clash check, the native fields the factory derives."""
 

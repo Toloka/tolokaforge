@@ -203,7 +203,7 @@ class ProvisioningTrialExecutor:
             self._maybe_flag_missing_judge_verdict(result.trajectory, task_id, trial_idx)
             self._capture_service_logs(handle, result, task_id, trial_idx)
             # Nothing writes into the trial directory after this point: the bundle is what a
-            # live-tracing observer may attach to the trace (ADR-0046 amendment). Announced
+            # live-tracing observer may attach to the trace (ADR-0047 amendment). Announced
             # after the teardown below, not from conductor.run, whose bundle the two writes
             # above still amend; an optional capability, so a conductor without it announces
             # nothing, and a raising one never turns a finished trial into a retry.

@@ -108,7 +108,7 @@ class TestHappyPathBracket:
 
 class TestBundleAnnouncedLast:
     """The observer hears about the bundle only once the executor's own writes into the trial
-    directory (the ``metrics.yaml`` amendment, the service-log capture) are done (ADR-0046
+    directory (the ``metrics.yaml`` amendment, the service-log capture) are done (ADR-0047
     amendment), so what it attaches is what stays on disk."""
 
     def test_trial_persisted_fires_after_the_metrics_amendment(self, tmp_path: Path) -> None:

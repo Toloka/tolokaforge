@@ -1,4 +1,4 @@
-"""The default Langfuse projection of a persisted trial (ADR-0046, parity amendment).
+"""The default Langfuse projection of a persisted trial (ADR-0047, parity amendment).
 
 Once a trial's bundle is on disk (``trial_persisted``) the live trace is completed from the
 files, so that the trace the engine leaves behind is the same trace the offline bundle uploader

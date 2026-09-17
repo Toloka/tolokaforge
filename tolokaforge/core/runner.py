@@ -69,6 +69,9 @@ from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
+if TYPE_CHECKING:
+    from tolokaforge.observability.observer import LoopObserver
+
 _HARNESS_USAGE_READ_CALL_ID_PREFIX = "harness-usage:"
 """Call-id prefix for the engine's own read of a harness trial's usage records.
 
@@ -81,8 +84,6 @@ _USAGE_READ_DETAIL_CHARS = 200
 
 Enough to name the cause (``cat``'s "No such file or directory" is the expected
 one) without spilling an unbounded container stream into the trial log."""
-if TYPE_CHECKING:
-    from tolokaforge.observability.observer import LoopObserver
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -188,7 +189,7 @@ class TrialRunner:
         # user observations so both roles' 429s land in one per-trial total, and
         # copied onto ``Metrics`` when the trial finalises.
         self._probe_stats = probe_stats
-        # Live tracing (ADR-0046): the trial's observer bound to the agent role, or None.
+        # Live tracing (ADR-0047): the trial's observer bound to the agent role, or None.
         self._loop_observer = loop_observer
 
         self.messages: list[Message] = []
