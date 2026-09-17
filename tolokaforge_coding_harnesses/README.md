@@ -14,7 +14,7 @@ version pin. `tests/unit/test_package_boundary.py` holds the line.
 
 ## Shipped harnesses
 
-Six vendor coding-agent CLIs are shipped in
+Seven vendor coding-agent CLIs are shipped in
 [`src/tolokaforge_coding_harnesses/data/harnesses.yaml`](src/tolokaforge_coding_harnesses/data/harnesses.yaml).
 Each entry is a `HarnessSpec` — the field list, the semantics and the
 extension policy live in
@@ -28,6 +28,7 @@ extension policy live in
 | `kimi-code` | `@moonshot-ai/kimi-code` | npm | 0.28.1 |
 | `opencode` | `opencode-ai` | npm | 1.18.18 |
 | `grok-build` | `https://x.ai/cli/install.sh` | curl-bash | 0.2.91 |
+| `qwen-code` | `@qwen-code/qwen-code` | npm | 0.24.0 |
 
 Provider envelopes, model-name conventions and per-harness quirks live in the
 YAML alongside each entry. Every version pin is deliberate — bumping one lands

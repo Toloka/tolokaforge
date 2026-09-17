@@ -58,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [claude-code, codex, gemini-cli, kimi-code, opencode, grok-build]
+        harness: [claude-code, codex, gemini-cli, kimi-code, opencode, grok-build, qwen-code]
         pack: [fix-billing-holds, fix-airline-segmentation]
 
     steps:
@@ -108,6 +108,7 @@ jobs:
             # on tbench balanced-10 packs 2026-08-25.
             opencode)    echo "model=anthropic/claude-sonnet-4-6" >> "$GITHUB_OUTPUT" ;;
             grok-build)  echo "model=openrouter/x-ai/grok-4.5"               >> "$GITHUB_OUTPUT" ;;
+            qwen-code)   echo "model=openrouter/qwen/qwen3-coder-plus"      >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Render run config

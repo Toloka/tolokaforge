@@ -45,7 +45,7 @@ Coding-harness mode ([ADR-0039](adr/0039-coding-harness-adapter-agnostic.md)) ha
 
 **Egress restriction:** the netpolicy's isolation still applies — under `no_internet` and `limited_internet` the CLI's service has no direct route to the outside world; only the sidecar bridges the internal→edge boundary, and only for the paths in the harness's `credential_gateway.path_allowlist`. Under `limited_internet` a squid forward proxy is also injected for any other outbound HTTP the pack declares an allowlist for; the CLI's `NO_PROXY` skips squid for the sidecar hop, which travels direct over the shared internal network.
 
-**Unshielded harness:** `gemini-cli` ships `credential_gateway: null` — its REST auth uses `x-goog-api-key` (not `Bearer`) and its request paths are model-dynamic. Tracked as [#1311](https://github.com/Toloka/tolokaforge/issues/1311). The set of unshielded harnesses is documented at [`tests/unit/test_credential_gateway_schema.py`](../tests/unit/test_credential_gateway_schema.py) via an `UNSHIELDED_HARNESSES` set; the tests refuse silent regressions in both directions.
+**Unshielded harnesses:** there are none. Every shipped harness declares a `credential_gateway`, including `gemini-cli`, whose entry overrides `upstream_auth_header` to `x-goog-api-key` and carries a glob `path_allowlist` for its model-dynamic REST paths. The set is enforced at [`tests/unit/test_credential_gateway_schema.py`](../tests/unit/test_credential_gateway_schema.py) via an `UNSHIELDED_HARNESSES` set, currently empty; the tests refuse silent regressions in both directions.
 
 ## Tool-Level Security
 

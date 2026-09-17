@@ -116,9 +116,9 @@ Harness mode composes with **any** grading method. Two paths:
   actually left behind — the same shape a non-harness native task uses
   today.
 
-## The six shipped harnesses
+## The seven shipped harnesses
 
-Six vendor coding-agent CLIs ship in-tree. The catalog lives in
+Seven vendor coding-agent CLIs ship in-tree. The catalog lives in
 [`tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml);
 the package's [`README.md`](../tolokaforge_coding_harnesses/README.md#shipped-harnesses)
 carries the version-pin table.
@@ -131,6 +131,7 @@ carries the version-pin table.
 | `kimi-code` | `@moonshot-ai/kimi-code` | npm |
 | `opencode` | `opencode-ai` | npm |
 | `grok-build` | `x.ai/cli` install script | curl-bash |
+| `qwen-code` | `@qwen-code/qwen-code` | npm |
 
 Provider envelopes, model-name conventions and per-CLI quirks (permission
 flags, root-under-sandbox, config-file precedence) live in the YAML
@@ -174,6 +175,7 @@ live next to each entry in the shipped
 | `kimi-code` | `openrouter/moonshotai/kimi-k3` | Also `kimi-k2.7-code` — the shipped `request_middleware` pins Moonshot AI first-party routing on OpenRouter automatically. |
 | `opencode` | `anthropic/claude-sonnet-4-6` | Routes through opencode's shipped `anthropic` provider block (`baseURL` points at OpenRouter's Anthropic-compat surface). Non-Anthropic vendors need an operator overlay populating the `openrouter` block's `models` dict — see the caveat below. |
 | `grok-build` | `openrouter/x-ai/grok-4.5` | Auto-configures `~/.grok/config.toml` for OpenRouter. |
+| `qwen-code` | `openrouter/qwen/qwen3-coder-plus` | OpenAI-compat via OpenRouter; model arrives in `OPENAI_MODEL`, so no `--model` flag. Prints no usage of its own — token counts are metered off the wire by the shipped `request_middleware`. |
 
 Two things about the `opencode` row are load-bearing on 1.18.x:
 
@@ -187,6 +189,37 @@ Two things about the `opencode` row are load-bearing on 1.18.x:
   `anthropic` provider block instead, whose `baseURL` already points at
   OpenRouter's Anthropic-compat surface. That is why the shipped example
   above names `anthropic/claude-sonnet-4-6`, not `openrouter/anthropic/…`.
+
+## CLIs evaluated and not shipped
+
+Each was tried before being ruled out, most of them against a real task.
+Recorded so the question is answered once rather than re-investigated.
+
+| CLI | Why not |
+|---|---|
+| Aider | Needs the files it may edit named at launch (`--file` or positional). A registry entry is task-agnostic and cannot enumerate them, and given only the task statement the CLI asks for the file contents and exits without editing anything — reproduced 3 of 3 runs. Its own stdout summary is also unusable for cost: `aider.utils.format_tokens` rounds to the nearest thousand. |
+| mini-SWE-agent | Solves the task, but its spend cannot be measured. It reports no machine-readable usage, and its LiteLLM call path ignores `OPENROUTER_API_BASE`, so the middleware proxy never sees the traffic — verified by reaching the same proxy with `curl` (200, one usage record) while the CLI's own calls bypassed it. Shipping it would add a harness whose cost column is empty, which is what the harness-telemetry work exists to prevent. |
+| OpenHands | `openhands-ai` requires Python `>=3.12,<3.14`. The shipped `coding_harness` pack builds on `python:3.11-slim`, so it cannot install without changing the pack's base image. |
+| Goose | Its installer reads the version from a `GOOSE_VERSION` environment variable and needs `CONFIGURE=false` to skip an interactive step. `install-harness.sh` passes the version positionally and exports nothing, so a pin would be silently ignored and the run would install whatever `stable` pointed at that day. Shipping it needs a general way for an entry to pass settings to its own installer. |
+| Cursor CLI | Agent mode cannot be billed to a provider API key; it requires a Cursor subscription, which a benchmark run has no way to attribute per trial. |
+| GitHub Copilot CLI | Requires an active Copilot seat. Bring-your-own-key is Enterprise-preview only, so the shipped path is a subscription. |
+
+`terminus-2` is excluded for a different reason: this repo installs no
+Terminus-2 scaffold, so a trial labelled with it would be claiming a
+comparison it did not run.
+
+### A hazard worth knowing about
+
+A file-editing CLI will rewrite the test suite it is being graded against if
+that suite is reachable from its working directory. Aider did so unprompted on
+its first run of the `coding_harness` pack, deleting two cases and replacing
+them with its own while also fixing the bug correctly.
+
+Nothing is broken today: the shipped packs bake the graded copy into the image
+at a path outside the agent's working directory (`/tests`, not `/work/tests`),
+so the score is computed from tests the agent never saw. The hazard is in pack
+authoring, not in any one CLI — a pack that grades the same files it hands the
+agent can be passed by editing the exam.
 
 ## Adding a harness
 
