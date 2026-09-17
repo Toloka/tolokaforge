@@ -200,9 +200,13 @@ def build_trial_observer(
                 ("receiver", [f"project:{expect_project}"]),
             )
     environment = resolve_environment(tracing.environment, profile, tags)
+    check_mirror_prefixes(profile)
     metadata = merge_metadata(tracing.metadata, profile, mirror_prefixes=profile.mirror_to_metadata)
     release = engine_release()
     version = producer_version(release, resolver.rules_version, profile)
+    attachments = build_attachments(
+        tracing, endpoint=endpoint, headers=headers, environment=environment
+    )
     queue = SpanQueue(
         make_otlp_exporter(endpoint, headers=headers),
         max_size=tracing.queue_size,
@@ -222,7 +226,7 @@ def build_trial_observer(
         attribute_max_chars=tracing.attribute_max_chars,
         context_messages=tracing.context_messages,
         flush_timeout_s=tracing.flush_timeout_s,
-        attachments=build_attachments(tracing, endpoint=endpoint, headers=headers),
+        attachments=attachments,
         gradings=tracing.gradings,
         expect_project=expect_project,
         project_verified=project_verified,
@@ -268,6 +272,19 @@ def resolve_environment(
         return check_environment(value)
     except TracingProfileError as exc:
         raise TracingConfigError(str(exc)) from exc
+
+
+def check_mirror_prefixes(profile: TracingProfile) -> None:
+    """A mirrored tag prefix may not be a key the projection writes itself (``status``,
+    ``label``, ...): the mirrored value would silently overwrite a fact of the trial."""
+    from tolokaforge.observability.langfuse_projection import schema_keys
+
+    clashes = sorted(set(profile.mirror_to_metadata) & schema_keys(()))
+    if clashes:
+        raise TracingConfigError(
+            "the tracing profile mirrors tag prefixes the projection writes itself: "
+            + ", ".join(clashes)
+        )
 
 
 def merge_metadata(
@@ -505,22 +522,31 @@ _NOT_SECRET_NAME = re.compile(
 
 
 def build_attachments(
-    tracing: Any, *, endpoint: str | None = None, headers: dict[str, str] | None = None
+    tracing: Any,
+    *,
+    endpoint: str | None = None,
+    headers: dict[str, str] | None = None,
+    environment: str | None = None,
 ) -> Any:
-    """The post-trial attachment step for ``observability.tracing.attach`` (``None`` for
-    ``none``): the receiver's REST base derives from the OTLP endpoint unless given, the headers
-    are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s credential
-    values (keys with secret-like names; URL, path and name values are not credentials and a
-    bundle may legitimately quote them)."""
+    """The post-trial step (the attachments and the ingestion route of the trial-end pass) for
+    ``observability.tracing.attach`` / ``projection``; ``None`` only when nothing runs at trial
+    end (``attach: none`` and ``projection: none``, or ``projection: gradings`` with
+    ``gradings: false``). The receiver's REST base derives from the OTLP endpoint unless given,
+    the headers are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s
+    credential values (keys with secret-like names; URL, path and name values are not
+    credentials and a bundle may legitimately quote them), and ``environment`` rides on the
+    manifest update too."""
     from tolokaforge.observability.attachments import ATTACH_NONE, SecretScan
     from tolokaforge.observability.langfuse_media import (
         LangfuseAttachments,
         api_base_from_endpoint,
     )
 
-    if getattr(tracing, "attach", ATTACH_NONE) == ATTACH_NONE and not getattr(
-        tracing, "gradings", False
-    ):
+    projection = getattr(tracing, "projection", "full")
+    sends_at_trial_end = projection == "full" or (
+        projection == "gradings" and getattr(tracing, "gradings", False)
+    )
+    if getattr(tracing, "attach", ATTACH_NONE) == ATTACH_NONE and not sends_at_trial_end:
         return None
     resolved = endpoint or resolve_endpoint(tracing.endpoint)
     return LangfuseAttachments(
@@ -530,6 +556,7 @@ def build_attachments(
         scan=SecretScan(secret_values()),
         timeout_s=tracing.attach_timeout_s,
         budget_s=tracing.attach_budget_s,
+        environment=environment,
     )
 
 

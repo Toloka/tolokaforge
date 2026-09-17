@@ -422,3 +422,66 @@ class TestLangfuseAttachments:
             == "http://h:3000/lf"
         )
         assert api_base_from_endpoint("https://h/") == "https://h"
+
+
+class TestTrialEndStepExtras:
+    """The parity amendment's additions to the receiver step: the environment on the manifest
+    update, per-thread budgets, inline media on an observation, the event scan."""
+
+    def test_the_manifest_update_carries_the_environment(self, tmp_path: Path) -> None:
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V3_FILES)
+        fake = _FakeLangfuse()
+        step = _attachments(fake, environment="staging")
+        step.attach("a" * 32, trial)
+        ingestion = [c for c in fake.calls if c[1].endswith("/api/public/ingestion")]
+        (call,) = ingestion
+        body = json.loads(call[3])["batch"][0]["body"]
+        assert body["environment"] == "staging" and body["metadata"]["attachments_schema"] == 2
+        assert _attachments(_FakeLangfuse())._environment is None
+
+    def test_budgets_are_per_thread(self, tmp_path: Path) -> None:
+        import threading
+
+        step = _attachments(_FakeLangfuse(), budget_s=100.0)
+        seen: dict[str, float | None] = {}
+        gate = threading.Event()
+
+        def worker(name: str) -> None:
+            with step.budget():
+                seen[f"{name}-inside"] = step._deadline
+                gate.wait(2.0)
+            seen[f"{name}-after"] = step._deadline
+
+        first = threading.Thread(target=worker, args=("a",))
+        first.start()
+        # the main thread opens and closes its own budget while the worker holds one
+        with step.budget():
+            assert step._deadline is not None
+        assert step._deadline is None
+        gate.set()
+        first.join()
+        assert seen["a-inside"] is not None and seen["a-after"] is None
+
+    def test_inline_media_registers_on_the_observation_and_scans_the_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        fake = _FakeLangfuse()
+        step = _attachments(fake)
+        token = step.register_media("a" * 32, "b" * 16, "output", "image/png", b"\x89PNG fake")
+        assert token == "@@@langfuseMedia:type=image/png|id=m1|source=bytes@@@"
+        registration = json.loads(next(c for c in fake.calls if c[1].endswith("/media"))[3])
+        assert registration["observationId"] == "b" * 16 and registration["field"] == "output"
+        # bytes that carry a key shape never leave
+        assert (
+            step.register_media(
+                "a" * 32, "b" * 16, "output", "text/plain", b"sk-or-v1-" + b"a" * 40
+            )
+            is None
+        )
+
+    def test_scan_events_serialises_foreign_values(self) -> None:
+        import datetime
+
+        step = _attachments(_FakeLangfuse())
+        assert step.scan_events([{"body": {"when": datetime.date(2026, 9, 17)}}]) == []
+        assert step.scan_events([{"body": {"k": "sk-or-v1-" + "a" * 40}}])

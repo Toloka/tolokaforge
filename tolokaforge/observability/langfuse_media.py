@@ -19,6 +19,7 @@ import base64
 import hashlib
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -162,6 +163,7 @@ class LangfuseAttachments:
         breaker_failures: int = 3,
         opener: Opener | None = None,
         clock: Callable[[], float] | None = None,
+        environment: str | None = None,
     ) -> None:
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
@@ -172,9 +174,21 @@ class LangfuseAttachments:
         self._breaker_failures = max(1, breaker_failures)
         self._open: Opener = opener or urllib_opener
         self._clock = clock or time.monotonic
-        self._deadline: float | None = None  # the current trial's budget end
+        # the current trial's budget end, per thread: trials persist from parallel workers
+        self._local = threading.local()
         self._consecutive_failures = 0
         self._tripped = False
+        # the receiver's native environment, on every body this step sends (the receiver fixes
+        # a trace's environment at the first write it sees; the manifest update may be it)
+        self._environment = environment
+
+    @property
+    def _deadline(self) -> float | None:
+        return getattr(self._local, "deadline", None)
+
+    @_deadline.setter
+    def _deadline(self, value: float | None) -> None:
+        self._local.deadline = value
 
     @property
     def tripped(self) -> bool:
@@ -235,7 +249,7 @@ class LangfuseAttachments:
     def scan_events(self, events: list[dict[str, Any]]) -> list[str]:
         """The outbound data-safety gate over the serialised ingestion events: the rules hit
         (empty when the bytes are clean); the caller sends nothing on a hit."""
-        return self._scan.scan(json.dumps(events, ensure_ascii=False).encode("utf-8"))
+        return self._scan.scan(json.dumps(events, ensure_ascii=False, default=str).encode("utf-8"))
 
     @contextmanager
     def budget(self) -> Iterator[None]:
@@ -492,6 +506,8 @@ class LangfuseAttachments:
         body: dict[str, Any] = {"id": trace_id, "metadata": manifest}
         if trace_timestamp is not None:
             body["timestamp"] = trace_timestamp.astimezone(timezone.utc).isoformat()
+        if self._environment is not None:
+            body["environment"] = self._environment
         event = {
             "id": uuid.uuid4().hex,
             "type": "trace-create",

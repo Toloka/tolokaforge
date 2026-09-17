@@ -19,7 +19,7 @@ The engine validates the shape and applies the profile mechanically. A profile t
 load, an environment outside the receiver's alphabet, a fixed tag under a producer-owned prefix,
 or a fixed metadata key the projection itself writes is a configuration error at run start.
 
-Example (neutral values; the arena's file lives in its own repository)::
+Example (neutral values; a deployment's file lives in its own repository)::
 
     schema = 1
     version = "acme-2026.09.17.1"

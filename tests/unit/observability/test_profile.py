@@ -239,15 +239,14 @@ class TestFactory:
 
     def _build(self, tmp_path: Path, **tracing):
         pytest.importorskip("opentelemetry.sdk")
-        config = ObservabilityConfig(
-            tracing=TracingConfig(
-                exporter="otlp",
-                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                run_id="acme/pilot/1",
-                attach="none",
-                **tracing,
-            )
-        )
+        params: dict = {
+            "exporter": "otlp",
+            "endpoint": "http://127.0.0.1:9/api/public/otel/v1/traces",
+            "run_id": "acme/pilot/1",
+            "attach": "none",
+        }
+        params.update(tracing)
+        config = ObservabilityConfig(tracing=TracingConfig(**params))
         return build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
 
     def test_the_profile_shapes_the_observer(self, clean_env, tmp_path: Path) -> None:
@@ -316,6 +315,43 @@ class TestFactory:
         clean_env.delenv("TOLOKAFORGE_TRACING_METADATA")
         with pytest.raises(TracingConfigError, match="not a valid environment"):
             self._build(tmp_path, environment="Prod")
+
+    def test_a_mirrored_prefix_that_is_a_schema_key_refuses(
+        self, clean_env, tmp_path: Path
+    ) -> None:
+        path = write_profile(
+            tmp_path,
+            'schema = 1\nversion = "p"\n[tags]\nmirror_to_metadata = ["dataset", "status"]\n',
+        )
+        with pytest.raises(TracingConfigError, match="status"):
+            self._build(tmp_path, profile=str(path))
+
+    def test_attach_none_with_gradings_off_still_sends_the_full_projection(
+        self, clean_env, tmp_path: Path
+    ) -> None:
+        observer, _ = self._build(tmp_path, gradings=False)
+        try:
+            assert observer._attachments is not None  # the trial-end pass needs its route
+        finally:
+            observer.run_finished()
+        observer, _ = self._build(tmp_path, gradings=False, projection="gradings")
+        try:
+            assert observer._attachments is None  # nothing to send at trial end
+        finally:
+            observer.run_finished()
+        observer, _ = self._build(tmp_path, projection="none")
+        try:
+            assert observer._attachments is None
+        finally:
+            observer.run_finished()
+
+    def test_the_manifest_update_carries_the_environment(self, clean_env, tmp_path: Path) -> None:
+        clean_env.setenv("LANGFUSE_ENVIRONMENT", "staging")
+        observer, _ = self._build(tmp_path, attach="all")
+        try:
+            assert observer._attachments._environment == "staging"
+        finally:
+            observer.run_finished()
 
     def test_a_profile_fixed_tag_clashing_with_the_launcher_refuses(
         self, clean_env, tmp_path: Path

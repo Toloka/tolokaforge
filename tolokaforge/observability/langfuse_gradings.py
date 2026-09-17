@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -94,9 +95,10 @@ def _normalize_ts(value: object) -> str | None:
             .replace("+00:00", "Z")
         )
     text = str(value)
-    return text if text.endswith("Z") or "+" in text else text + "Z"
+    return text if text.endswith("Z") or _ZONE_SUFFIX.search(text) else text + "Z"
 
 
+_ZONE_SUFFIX = re.compile(r"[+-]\d{2}:?\d{2}$")
 _clock = _normalize_ts
 
 

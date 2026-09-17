@@ -157,10 +157,29 @@ class TestAttachmentStep:
             exporter="otlp", endpoint="https://lf.example/api/public/otel/v1/traces"
         )
         assert config.attach == "all" and config.attach_api_base is None
-        # no files and no gradings: no receiver-side step at all; gradings alone still need the
-        # ingestion route, so attach: none by itself builds a step in mode none
+        # nothing to send at trial end (no files, the gradings-only projection without gradings):
+        # no receiver-side step at all; the default full projection, or gradings alone, still
+        # need the ingestion route, so attach: none by itself builds a step in mode none
         assert (
-            build_attachments(TracingConfig(exporter="none", attach="none", gradings=False)) is None
+            build_attachments(
+                TracingConfig(exporter="none", attach="none", gradings=False, projection="gradings")
+            )
+            is None
+        )
+        assert (
+            build_attachments(TracingConfig(exporter="none", attach="none", projection="none"))
+            is None
+        )
+        assert (
+            build_attachments(
+                TracingConfig(
+                    exporter="none",
+                    endpoint="https://lf.example/api/public/otel/v1/traces",
+                    attach="none",
+                    gradings=False,
+                )
+            )
+            is not None
         )
         none_step = build_attachments(
             TracingConfig(

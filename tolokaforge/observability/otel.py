@@ -708,7 +708,15 @@ class OTelTrialObserver:
                 self._projection_counts["failed"] += 1
             return
         scan = getattr(step, "scan_events", None)
-        findings = scan(projection.events) if callable(scan) else []
+        try:
+            findings = scan(projection.events) if callable(scan) else []
+        except Exception as exc:  # noqa: BLE001 - an unserialisable body is a failed pass
+            _log.warning(
+                "projection: trace %s not scanned: %s", identity.trace_id, type(exc).__name__
+            )
+            with self._states_lock:
+                self._projection_counts["failed"] += 1
+            return
         if findings:
             # the outbound data-safety gate: nothing is rewritten, the pass is not sent
             _log.warning(
