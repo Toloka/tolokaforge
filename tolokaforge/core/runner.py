@@ -55,7 +55,7 @@ from tolokaforge.core.models import (
     UserReplyOutcome,
 )
 from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
-from tolokaforge.core.pricing import estimate_cost
+from tolokaforge.core.pricing import estimate_cost, resolve_pricing
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -856,14 +856,27 @@ class TrialRunner:
         reason: every shipped dialect counts reasoning inside its output
         total, while :func:`estimate_cost` adds the argument to
         ``output_tokens``.
+
+        Flags the trial when the row priced observed cache tokens at its
+        input rate. The preflight check warns before the run that a model
+        resolves to a row without cache rates, but it cannot know whether the
+        trial will actually use the cache; this is the after-the-fact half of
+        the same signal, and on a cache-heavy harness trial the difference is
+        a multiple rather than a rounding.
         """
-        return estimate_cost(
-            model=self.agent_client.model_name,
+        model = self.agent_client.model_name
+        cost = estimate_cost(
+            model=model,
             input_tokens=usage.prompt_tokens,
             output_tokens=usage.completion_tokens,
             cache_read_input_tokens=usage.cache_read_input_tokens,
             cache_creation_input_tokens=usage.cache_creation_input_tokens,
         )
+        if cost is not None:
+            cache_tokens = usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+            if cache_tokens and resolve_pricing(model).missing_cache_rates:
+                self.metrics.cost_cache_rate_fallback = True
+        return cost
 
     def _apply_probe_stats(self) -> None:
         """Copy the trial's rate-limit probe accounting onto :class:`Metrics`.

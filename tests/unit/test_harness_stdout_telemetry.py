@@ -742,3 +742,35 @@ class TestTheClisOwnTokensWinOverTheWires:
 
         assert metrics.usage.prompt_tokens == 1_234
         assert metrics.harness_usage_source == MIDDLEWARE_PROXY_USAGE_SOURCE
+
+
+class TestACacheHeavyTrialOnARateLessRowIsFlagged:
+    """The after-the-fact half of the cache-rate signal.
+
+    The preflight check warns that a model resolves to a row carrying no
+    cache rates, but before the run it cannot know whether the trial will use
+    the cache — a model without prompt caching legitimately has no rates. Once
+    a trial reports cache tokens against such a row, `_compute_cost` has
+    billed them at the input rate and the figure is overstated. A harness
+    trial is where this bites hardest: they are cache-dominated, so the gap is
+    a multiple, not a rounding.
+
+    Regression: both harness pricing paths set `cost_usd` without setting the
+    flag, so the one signal that says "this number is wrong" stayed `False` on
+    a live trial that overstated cost 4.6x.
+    """
+
+    def test_cache_tokens_on_a_row_without_cache_rates_flag_the_trial(self) -> None:
+        metrics = _run(_STREAM_JSON, model=_FLAT_MODEL).metrics
+
+        assert metrics.usage.cache_read_input_tokens > 0
+        assert metrics.cost_usd is not None
+        assert metrics.cost_cache_rate_fallback is True
+
+    def test_the_same_trial_on_the_row_that_carries_them_is_not_flagged(self) -> None:
+        """Same tokens, same CLI — only the spelling of the model differs, and
+        with it whether the row can price a cache read."""
+        metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+
+        assert metrics.usage.cache_read_input_tokens > 0
+        assert metrics.cost_cache_rate_fallback is False
