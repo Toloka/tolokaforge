@@ -169,8 +169,9 @@ tag order and the documented **producer keys**, whose values differ by producer 
 `upload_mode` (`live`), `uploader_version` (this engine's `tolokaforge-<version>`),
 `trace_time_source` (`live`), `attach_mode`. The live root span adds three keys no
 bundle projection carries: `generations_observed`, `tool_calls_observed`, `error`; a Langfuse
-receiver adds two more to a trace that arrived over OTLP, `attributes` and `resourceAttributes`
-(the trace-level span's raw attributes and the SDK's resource attributes).
+receiver adds three more to a trace that arrived over OTLP, `attributes`, `resourceAttributes` and `scope`
+(the trace-level span's raw attributes, the SDK's resource attributes and the instrumentation
+scope).
 
 ## The trace metadata
 
