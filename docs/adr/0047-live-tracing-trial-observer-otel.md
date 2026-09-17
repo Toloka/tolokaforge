@@ -1,10 +1,48 @@
 # 0047. Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra
 
-- **Status:** Proposed
-- **Date:** 2026-09-15
+- **Status:** Proposed (amended 2026-09-16 and 2026-09-17; "Where the decision stands" below is the current shape)
+- **Date:** 2026-09-15, last amended 2026-09-17
 - **Deciders:** @bberkes-toloka (proposer), @CiroGamboa (engine owner, review pending)
 - **Supersedes:** —
 - **Superseded by:** —
+
+## Where the decision stands (2026-09-17)
+
+The Decision and Consequences sections record the first cut of 2026-09-15; six amendments follow
+them in date order. Read together they leave the decision here:
+
+- **The engine owns the seam, nothing receiver-shaped.** `tolokaforge/observability/observer.py`
+  (the `TrialObserver` hooks, `trial_persisted` included, the null and composite observers, the
+  receipt), `ids.py` (the id contract, now **version 2**: observation kinds `root`, `gen`, `ugen`,
+  `tool`, `grading`, `jgen`, `jtool`, `event`, and score ids, shared with the offline connector)
+  and `factory.py` (the run identity, `run_identity.json`, `tracing_receipt.json`, and the
+  discovery of trial-observer plugins under the `tolokaforge.trial_observers` entry-point group).
+  `TracingConfig` stays the seam's public configuration.
+- **The Langfuse observer is the `tolokaforge-langfuse` wheel** (`tolokaforge_langfuse/`, a
+  workspace member released on its own cadence): the OTLP exporter, the attachment step, the
+  trial-end projection of the bundle, the gradings, the deployment profile and the model-name
+  resolution. The engine's `otel` extra resolves to it; the pairing is a versioned contract
+  checked at run start, not a pip dependency. The Decision's "`tolokaforge.observability.otel` is
+  the one implementation and lives behind the `otel` extra" is superseded by the packaging
+  amendment.
+- **Enablement and receiver:** `observability.tracing.exporter: otlp`, or the one switch
+  `LANGFUSE_TRACING_ENABLED`; the receiver from the config, the standard `OTEL_EXPORTER_OTLP_*`
+  variables or the plain `LANGFUSE_*` ones; the project checked fail-closed before the first
+  export; the deployment's values in a profile file. A switch that is on while no plugin produced
+  an observer refuses the run start.
+- **What a live trace carries** has grown past the Decision's "scores stay outside the engine" and
+  the Consequences' "judge generations are not exported live" and "media stays outside the
+  engine": at `trial_persisted` the plugin attaches the trial's files and completes the trace from
+  the bundle (grading with judge transcript and scores, user turns, tool executions, events,
+  media), so the live trace and an offline upload of the same bundle are one trace; a golden
+  parity test committed in both repositories guards the two projections.
+- **The trace metadata** is a fixed 34-key schema plus the caller's keys (the receiver's table
+  view renders nothing above 100 keys); everything else lives in the attached files, the
+  observations, the scores, the tags and the native `environment` / `release` / `version` fields.
+- **Open, not decided:** facet and run-variant tags for receiver-side filtering
+  (`model_generation`, `model_tier`, `reasoning_effort`, ...), and a run-level object for the
+  run's aggregate files; both would land in the plugin and the connector, the engine's
+  reserved-prefix list following.
 
 ## Context and Problem Statement
 
@@ -319,9 +357,14 @@ plugin (`tolokaforge_langfuse/tests/unit/parity_bundle.py`, still byte-identical
 
 ## Links
 
-- Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern)
-- Related code: `tolokaforge/observability/`, `tolokaforge/core/loop.py`,
-  `tolokaforge/core/conductor.py`, `tolokaforge/core/orchestrator.py`
+- Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern),
+  [ADR-0030](0030-models-wheel-split.md) (a sibling wheel without a pip dependency on the engine,
+  paired by a run-time check: the pattern the packaging amendment follows)
+- Related code: `tolokaforge/observability/` (the seam), `tolokaforge_langfuse/` (the plugin
+  wheel), `tolokaforge/core/loop.py`, `tolokaforge/core/conductor.py`,
+  `tolokaforge/core/orchestrator.py`, `.importlinter` (contract `trial-observer-seam`),
+  `docs/OBSERVABILITY.md`, `docs/RELEASING.md`
 - External references: Langfuse OpenTelemetry ingestion attribute conventions; the workspace plan
-  `docs/TECHDEL-497-langfuse-integration/PLAN.md` section 8; `tolokaforge-tools/tools/langfuse-uploader`
-  (id contract v1, `ids.py`).
+  `docs/TECHDEL-497-langfuse-integration/PLAN.md` sections 3.10 to 3.12 and 8; the offline
+  connector `tolokaforge-tools/tools/langfuse-connector` (id contract v2 in `ids.py`, the
+  reference projection `mapping.py`, `verify-parity`).
