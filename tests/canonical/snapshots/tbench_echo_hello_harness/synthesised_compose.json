@@ -19,7 +19,7 @@
         "CLAUDE_CONFIG_DIR=/root/.claude",
         "IS_SANDBOX=1"
       ],
-      "image": "tbench-echo-hello:local-claude-code-2.1.233",
+      "image": "tbench-echo-hello:local-claude-code-2.1.233-c6d03927",
       "volumes": [
         "./tests:/tests",
         "./_logs:/logs"

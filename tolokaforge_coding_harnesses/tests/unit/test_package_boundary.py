@@ -29,6 +29,7 @@ _SHIPPED_HARNESS_NAMES = {
     "grok-build",
     "kimi-code",
     "opencode",
+    "qwen-code",
 }
 
 

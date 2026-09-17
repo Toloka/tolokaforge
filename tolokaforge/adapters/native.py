@@ -62,6 +62,8 @@ from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
 from tolokaforge_coding_harnesses import (
     ENGINE_LOOP,
+    HARNESS_USAGE_LOG_METADATA_KEY,
+    MIDDLEWARE_USAGE_LOG_CONTAINER_PATH,
     CodingHarnessAdapterMixin,
     HarnessSpec,
     ResolvedHarnessRegistry,
@@ -733,10 +735,18 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             if env is None:
                 continue
             builds.append(
-                ComposeImageBuild(compose_file=env.compose_file, service=env.base_build_service)
+                ComposeImageBuild(
+                    compose_file=env.compose_file,
+                    service=env.base_build_service,
+                    expected_image_ref=env.base_image,
+                )
             )
             builds.append(
-                ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
+                ComposeImageBuild(
+                    compose_file=env.compose_file,
+                    service=env.agent_service,
+                    expected_image_ref=env.agent_image,
+                )
             )
         return DockerStackRequirements(image_builds=builds)
 
@@ -1193,6 +1203,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 self.agent_harness, self.harness_spec, command, self.agent_model
             )
         )
+        # Only a harness declaring request middleware boots the proxy, and the
+        # proxy is the only thing that writes these records — for any other
+        # harness the key would name a file nothing creates. The value is the
+        # path *inside the trial container*: native packs mount no log
+        # directory, so the engine reads the records out of the running
+        # container before teardown.
+        if self.harness_spec.request_middleware is not None:
+            metadata[HARNESS_USAGE_LOG_METADATA_KEY] = MIDDLEWARE_USAGE_LOG_CONTAINER_PATH
 
         # Point the environment manifest at the synthesised compose file so
         # the per-trial runtime provisions the layered stack. The pack's

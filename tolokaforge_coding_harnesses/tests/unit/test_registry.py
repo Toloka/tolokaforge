@@ -112,12 +112,13 @@ class TestHarnessSpecRegistry:
             "kimi-code",
             "opencode",
             "grok-build",
+            "qwen-code",
         ]
         assert load_harness_registry(SHIPPED_REGISTRY_FILE) == HARNESSES
 
     def test_shipped_entries_install_methods(self):
-        """Five entries install via npm; Grok Build installs via curl-bash
-        (the first non-npm entry, exercising install-harness.sh dispatch)."""
+        """Six entries install via npm; Grok Build installs via curl-bash
+        (the only non-npm entry, exercising install-harness.sh dispatch)."""
         from tolokaforge_coding_harnesses import HARNESSES
 
         assert {
@@ -129,6 +130,7 @@ class TestHarnessSpecRegistry:
             "kimi-code": ("npm", "@moonshot-ai/kimi-code"),
             "opencode": ("npm", "opencode-ai"),
             "grok-build": ("curl-bash", "https://x.ai/cli/install.sh"),
+            "qwen-code": ("npm", "@qwen-code/qwen-code"),
         }
 
     @pytest.mark.parametrize(

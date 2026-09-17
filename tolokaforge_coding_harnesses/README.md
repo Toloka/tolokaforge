@@ -14,7 +14,7 @@ version pin. `tests/unit/test_package_boundary.py` holds the line.
 
 ## Shipped harnesses
 
-Six vendor coding-agent CLIs are shipped in
+Seven vendor coding-agent CLIs are shipped in
 [`src/tolokaforge_coding_harnesses/data/harnesses.yaml`](src/tolokaforge_coding_harnesses/data/harnesses.yaml).
 Each entry is a `HarnessSpec` — the field list, the semantics and the
 extension policy live in
@@ -28,6 +28,7 @@ extension policy live in
 | `kimi-code` | `@moonshot-ai/kimi-code` | npm | 0.28.1 |
 | `opencode` | `opencode-ai` | npm | 1.18.18 |
 | `grok-build` | `https://x.ai/cli/install.sh` | curl-bash | 0.2.91 |
+| `qwen-code` | `@qwen-code/qwen-code` | npm | 0.24.0 |
 
 Provider envelopes, model-name conventions and per-harness quirks live in the
 YAML alongside each entry. Every version pin is deliberate — bumping one lands
@@ -115,6 +116,35 @@ otherwise return empty completions and fall to the CLI's baseline score).
 The proxy is stdlib only (~200 LOC), boots inside the harness-command preamble
 and is unaware to the CLI. Nothing to configure — it applies automatically
 when `agent_harness: kimi-code`.
+
+The same boot arms the proxy's usage tap: every response that reports token
+counts appends one NDJSON record (model, token counts, status, path, UTC
+timestamp) to `MIDDLEWARE_USAGE_LOG_CONTAINER_PATH`
+(`/logs/agent/tolokaforge_usage.ndjson`). A harness trial spends its budget
+inside a single tool call, so the wire is the only place the counts exist for a
+CLI that prints no totals of its own — which is exactly the `kimi-code` case.
+A response reporting no usage writes no record, keeping "not measured" distinct
+from "measured zero".
+
+**The records are read out of the running container, not off the host.** The
+synthesised trial compose mounts `/logs` from its context *relatively*, and the
+context a trial is brought up from is a per-trial copy the stack deletes at
+teardown — so the staging tree's `_logs` is a template that never receives the
+container's writes and no host path names the file. The consumer reads it
+through the same exec tool the CLI ran under, the moment the CLI's single
+invocation returns.
+
+`sum_harness_usage_records(text)` sums those bytes into one `HarnessWireUsage`
+total on the same inclusive basis `HarnessStdoutTelemetry` declares
+(`prompt_tokens` includes the cached prompt, `completion_tokens` includes
+reasoning). Every record counts whatever its status — a refused request that
+came back with a usage block was still billed — and a malformed line is skipped
+and counted in `skipped_lines` rather than failing the sum. It returns `None`
+for every ordinary absence (no proxy, no provider call, nothing parseable), so
+a consumer can treat missing as "change nothing". An adapter tells the trial
+which container path to read via `HARNESS_USAGE_LOG_METADATA_KEY` on its task
+metadata — published only for a harness that declares middleware, since nothing
+else writes the file.
 
 ## Gateway routing — the two paths, one recipe
 

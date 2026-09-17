@@ -725,12 +725,14 @@ def test_what_the_gate_could_not_check_is_logged_beside_the_task(
         orchestrator.run()
 
     warned = [record for record in caplog.records if record.levelno >= logging.WARNING]
-    assert [
-        (record.task_id, record.where)
-        for record in warned
-        if "could not check" in record.getMessage()
-    ] == [("TASK-UNCHECKABLE", "trace_checks.the_agent_called_the_tool.present.match.args.json.q")]
-    assert "first segment only" in warned[0].reason
+    # The gate's own records, not every warning the run emitted — a run warns
+    # about unrelated things too, and this assertion is about what the gate
+    # could not check.
+    uncheckable = [record for record in warned if "could not check" in record.getMessage()]
+    assert [(record.task_id, record.where) for record in uncheckable] == [
+        ("TASK-UNCHECKABLE", "trace_checks.the_agent_called_the_tool.present.match.args.json.q")
+    ]
+    assert "first segment only" in uncheckable[0].reason
     assert len(conductor.call_log.runs) == 1
 
 

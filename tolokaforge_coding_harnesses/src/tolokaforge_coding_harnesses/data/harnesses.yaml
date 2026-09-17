@@ -697,3 +697,52 @@ harnesses:
       path_allowlist:
         - "/chat/completions"
         - "/models"
+
+  qwen-code:
+    install_method: "npm"
+    install_source: "@qwen-code/qwen-code"
+    # Pinned so a bump lands with an explicit re-baseline, the same policy the
+    # other entries follow. The package declares `engines.node >= 22` while
+    # install-harness.sh bootstraps Node 20; claude-code and kimi-code declare
+    # the same floor and run, so the field is advisory for this family. If a
+    # future pin stops running, raise NODE_MAJOR rather than un-pinning.
+    version: "0.24.0"
+    argv_prefix: ["qwen"]
+    # `--yolo` auto-approves every tool call — the CLI otherwise blocks on the
+    # first write and burns the episode budget with no interactive stdin to
+    # answer it. `--output-format stream-json` is the machine-readable stream;
+    # `--prompt` is last because its value is the instruction.
+    argv_suffix: ["--yolo", "--output-format", "stream-json", "--prompt"]
+    instruction_channel: "argv"
+    # The CLI reads its model from the environment, so no `--model` is emitted.
+    # `OPENAI_MODEL` is the OpenAI-compatible provider's variable (the docs also
+    # accept `QWEN_MODEL` as an alias; one name is enough and this one matches
+    # the provider envelope below).
+    env_model_vars:
+      - "OPENAI_MODEL"
+    # OpenRouter's OpenAI-compatible surface addresses models as
+    # `<vendor>/<model>`, so the vendor namespace stays on. Only the
+    # `openrouter/` routing prefix is stripped (the default).
+    strip_vendor_namespace: false
+    provider_env:
+      OPENAI_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+    # The CLI prints no usage block this repo can read, so token counts come
+    # off the wire instead: the proxy tees every provider response's `usage`
+    # into the usage log the runner reads back before teardown. No body or
+    # header injection — this is a meter, not a rewrite.
+    request_middleware:
+      upstream_env_key: "OPENAI_BASE_URL"
+      port: 8899
+      path_filter: "/chat/completions"
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "OPENAI_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "OPENAI_BASE_URL"
+      # OpenAI-compat over a base ending in `/v1`, so paths drop the `/v1/`
+      # prefix. Same shape as codex.
+      path_allowlist:
+        - "/chat/completions"
+        - "/models"

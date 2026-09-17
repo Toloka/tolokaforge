@@ -87,6 +87,7 @@ from tolokaforge.core.plugin_registry import (
     load_runtime_backend,
     load_trial_grader,
 )
+from tolokaforge.core.pricing import resolve_pricing
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -249,8 +250,9 @@ def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
     Read straight from the file — no ``docker compose config`` shell-out — so
     the skip-when-already-present check the pre-build helper does works
     without touching the daemon. Missing service, missing file, missing
-    ``image:`` entry, or unreadable YAML all return ``None``; the caller
-    treats that as "cannot determine, build unconditionally".
+    ``image:`` entry, or unreadable YAML all return ``None``, which never
+    matches the ref the adapter declared, so the caller refuses the build
+    rather than guessing which image it would have produced.
     """
     import yaml
 
@@ -1544,11 +1546,28 @@ class Orchestrator:
 
     def _perform_one_compose_image_build(self, build: Any) -> None:
         """Build one adapter-declared compose service image, skipping the
-        subprocess when the pinned image already resolves locally."""
+        subprocess when the pinned image already resolves locally.
+
+        The skip is only safe while the declared ref names the content it was
+        built from, so both ends of that claim are checked here: the compose
+        file must pin the ref the adapter predicted, and the build must leave
+        that ref resolvable. Either mismatch raises rather than letting the
+        run proceed on an image nobody predicted — the failure mode that made
+        a dead agent read back as a passing trial.
+        """
         import subprocess
 
         image_ref = _compose_service_image_ref(build.compose_file, build.service)
-        if image_ref is not None and _local_image_exists(image_ref):
+        if image_ref != build.expected_image_ref:
+            raise RuntimeError(
+                f"compose service {build.service!r}: image ref mismatch in "
+                f"{build.compose_file!s}. Declared: {build.expected_image_ref}. "
+                f"Actual: {image_ref}. The adapter predicted one ref to the pre-build "
+                "seam and pinned another in the compose file, so the run would build "
+                "or reuse an image nobody predicted. Derive both from the adapter's "
+                "own image-ref helper."
+            )
+        if _local_image_exists(image_ref):
             self.logger.info(
                 "compose image already resolves locally; skipping declared build",
                 compose_file=str(build.compose_file),
@@ -1565,6 +1584,14 @@ class Orchestrator:
             ["docker", "compose", "-f", str(build.compose_file), "build", build.service],
             check=True,
         )
+        if not _local_image_exists(image_ref):
+            raise RuntimeError(
+                f"compose service {build.service!r}: `docker compose build` exited 0 but "
+                f"the declared image is absent from the local Docker image store. "
+                f"Declared: {image_ref}. Actual: not present. A builder that does not "
+                "load its result into the daemon (buildx without `--load`) produces "
+                "this; point DOCKER_BUILDKIT / the compose builder at the local store."
+            )
 
     def _build_trial_executor(
         self,
@@ -2151,6 +2178,8 @@ class Orchestrator:
                     "surface (currently: terminal_bench, native)."
                 )
 
+        self._warn_on_unreliable_pricing()
+
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()
 
@@ -2171,6 +2200,63 @@ class Orchestrator:
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
+
+    def _warn_on_unreliable_pricing(self) -> None:
+        """Warn per configured role whose model prices badly, before any trial runs.
+
+        Two distinct failure modes, both invisible until someone reads a cost
+        column and believes it:
+
+        * the resolved row carries no cache rate — ``_compute_cost`` then bills
+          cache tokens at the *input* rate, which overstates a cache-read-heavy
+          run several-fold (a coding-harness trial routinely reads 75 % of its
+          prompt from cache);
+        * there is no row at all — every locally-priced call reports
+          ``cost_usd=None`` / ``cost_source="unknown"``.
+
+        Neither is a refusal. A model that genuinely has no prompt caching has
+        no cache rate to publish, and an unpriced model still runs; the two
+        cases are indistinguishable from the table alone. What the warning adds
+        over ``estimate_cost``'s per-call ``unknown_model_pricing`` log is the
+        operator's side of the mapping: the config key to edit, and the
+        resolved key that actually decided the lookup — which is the whole
+        defect, since normalisation strips ``openrouter/`` and infers a vendor
+        namespace, so the row billed is not the one the config appears to name.
+
+        Runs here rather than earlier because ``reload_pricing`` applies
+        ``observability.pricing_overlay_path`` before the orchestrator is
+        constructed, so this reads post-overlay rates and does not fire on an
+        operator who already supplied the missing rates.
+        """
+        for role, model_config in (self.config.models or {}).items():
+            resolution = resolve_pricing(model_config.name)
+            if not resolution.priced:
+                self.logger.warning(
+                    f"models.{role}.name={model_config.name!r} resolves to pricing key "
+                    f"{resolution.resolved_key!r}, which the pricing table does not "
+                    "carry, so every locally-priced call on this run reports no cost "
+                    '(cost_source="unknown"). Pin a spelling the table carries, run '
+                    "`uv run pricing-updater update`, or add the row via "
+                    "observability.pricing_overlay_path.",
+                    role=role,
+                    configured_model=model_config.name,
+                    pricing_key=resolution.resolved_key,
+                )
+                continue
+            if resolution.missing_cache_rates:
+                self.logger.warning(
+                    f"models.{role}.name={model_config.name!r} resolves to pricing key "
+                    f"{resolution.resolved_key!r}, whose row carries no "
+                    f"{', '.join(resolution.missing_cache_rates)} rate — cache tokens "
+                    "are billed at that row's input rate, overstating cost on a "
+                    "cache-heavy run. Expected for a model without prompt caching; "
+                    "otherwise pin the spelling whose row carries the cache rates, or "
+                    "supply them via observability.pricing_overlay_path.",
+                    role=role,
+                    configured_model=model_config.name,
+                    pricing_key=resolution.resolved_key,
+                    missing_cache_rates=list(resolution.missing_cache_rates),
+                )
 
     def _resolve_judge_config(self) -> ModelConfig | None:
         """Resolve the run-level judge model and fail loud on the missing-judge case.

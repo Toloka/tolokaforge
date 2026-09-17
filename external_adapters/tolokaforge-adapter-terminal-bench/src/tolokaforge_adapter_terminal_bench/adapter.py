@@ -62,6 +62,8 @@ from tolokaforge_adapter_terminal_bench.task_parser import (
 from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
+    HARNESS_USAGE_LOG_METADATA_KEY,
+    MIDDLEWARE_USAGE_LOG_CONTAINER_PATH,
     HarnessSpec,
     PathResolver,
     ResolvedHarnessRegistry,
@@ -290,29 +292,6 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         self._environments[task_id] = env
         return env
 
-    def stage_task(self, task_id: str) -> "StagedTask | None":
-        """Hand a coding-harness driver the per-task staging root it layers onto.
-
-        Terminal-bench tasks always ship a compose file, so this never
-        returns ``None`` — every task stages. Under engine-loop mode
-        (no ``coding_harness`` on the run config) the driver never calls
-        this method, so the extra materialisation is only paid on the
-        harness path.
-        """
-        from tolokaforge.core.agent_driver import StagedTask
-
-        self._ensure_discovered()
-        env = self._environment(task_id)
-        return StagedTask(
-            task_id=task_id,
-            staging_dir=env.staging_dir,
-            compose_file=env.compose_file,
-            agent_service=env.agent_service,
-            base_image=f"tbench-{task_id}:{self.image_tag}",
-            base_build_service=env.base_build_service or "",
-            compose_project_prefix=PROJECT_PREFIX,
-        )
-
     # -- Docker stack requirements -------------------------------------------
 
     def docker_stack_requirements(self) -> DockerStackRequirements:
@@ -332,10 +311,18 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             env = self._environment(task_id)
             if env.base_build_service is not None:
                 builds.append(
-                    ComposeImageBuild(compose_file=env.compose_file, service=env.base_build_service)
+                    ComposeImageBuild(
+                        compose_file=env.compose_file,
+                        service=env.base_build_service,
+                        expected_image_ref=env.base_image,
+                    )
                 )
             builds.append(
-                ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
+                ComposeImageBuild(
+                    compose_file=env.compose_file,
+                    service=env.agent_service,
+                    expected_image_ref=env.agent_image,
+                )
             )
         return DockerStackRequirements(image_builds=builds)
 
@@ -486,6 +473,16 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         the image — the task shipped one and the harness had somewhere to put
         it. Absent therefore reads as "this agent had no skills", which a
         bundle-shaped placeholder value could not say.
+
+        :data:`HARNESS_USAGE_LOG_METADATA_KEY` appears only for a harness that
+        declares request middleware. That middleware is the proxy every one of
+        the CLI's provider requests passes through, and the only thing that
+        writes the usage records the key points at — for a harness that boots
+        no proxy the key would name a file nothing ever creates. The value is
+        the path *inside the trial container*: the synthesised compose mounts
+        the log directory from the per-trial context copy, which the stack
+        deletes at teardown, so the engine reads the records out of the running
+        container instead of off the host.
         """
         metadata: dict[str, Any] = {
             "difficulty": meta.difficulty,
@@ -515,6 +512,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             # terminal-bench harness path stays on ``test_execution`` and
             # bypasses the read.
             metadata["agent_visible_dir"] = "/app"
+            if self.harness_spec.request_middleware is not None:
+                metadata[HARNESS_USAGE_LOG_METADATA_KEY] = MIDDLEWARE_USAGE_LOG_CONTAINER_PATH
             skills_dir = installable_skills_dir(meta, self.harness_spec)
             if skills_dir is not None:
                 metadata["harness_skills_bundle_sha"] = skills_bundle_digest(

@@ -29,6 +29,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from tolokaforge_coding_harnesses.adapter_support import HARNESS_USAGE_LOG_METADATA_KEY
+
 from tolokaforge.adapters import BaseAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
@@ -913,11 +915,27 @@ class InProcessConductor:
             events=self.events,
             interaction_mode=task_config.interaction_mode,
         )
+        # Names which CLI the command starts, so the runner can pick a parser
+        # for the totals it prints. Not load-bearing: a missing or non-string
+        # value costs the trial its turn / token / cost accounting and nothing
+        # else, so it reads as absent rather than raising the way a malformed
+        # ``agent_harness_command`` does.
+        harness = spec.task.metadata.get("agent_harness")
+        # Where inside the trial container the CLI's request middleware wrote
+        # its per-request token usage, for a CLI that prints none of its own.
+        # Published only by an adapter whose harness declares middleware, so
+        # absent is the common case and reads as "no wire measurement" — same
+        # non-load-bearing treatment as ``agent_harness`` above.
+        usage_log = spec.task.metadata.get(HARNESS_USAGE_LOG_METADATA_KEY)
         trajectory = runner.run_harness(
             tool_name=tool.name,
             command=harness_command,
             instruction=task_config.initial_user_message or task_config.description,
             timeout_s=timeout_s,
+            harness=harness if isinstance(harness, str) else "",
+            usage_log_container_path=(
+                usage_log if isinstance(usage_log, str) and usage_log else None
+            ),
         )
         return trajectory, runner, system_prompt
 

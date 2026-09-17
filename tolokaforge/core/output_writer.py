@@ -18,8 +18,33 @@ from tolokaforge.core.redaction import (
     RedactionStamp,
 )
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 4
+TRIAL_BUNDLE_SCHEMA_VERSION = 5
 """The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 5 bundles report a coding-harness trial's ``turns`` and ``usage`` from
+the CLI's own totals where the CLI prints them, rather than leaving the
+single-tool-call artefacts (``turns: 1``, a null cost, an empty usage block) a
+version-4 reader would see on every such trial. ``harness_stdout_dialect``
+names the parser those numbers came from and is ``null`` whenever they are the
+engine's own, so the two are never conflated. ``api_calls`` stays ``0`` on that
+path — the engine issues no LLM request when a CLI drives the trial.
+
+A CLI that prints no usage at all leaves its ``usage`` to be recovered from
+the provider traffic instead, where the harness routes through a request
+middleware that records one usage block per response. ``harness_usage_source``
+names that tap and is ``null`` on every other path, including the trials whose
+tokens the CLI printed — ``harness_stdout_dialect`` is that answer, and the
+two say different things (which CLI grammar was parsed, versus which tap
+measured the tokens). The CLI's printed totals take precedence where both
+exist.
+
+``cost_usd`` on that path is the engine's own price for those tokens, from the
+same pricing table the engine loop falls back to, so a harness arm and an
+engine-loop arm of one comparison are priced by one authority rather than by
+two vendors' billing. The new ``harness_reported_cost_usd`` carries what the
+CLI said it billed, where it said anything — the cross-check, not the reported
+cost. A model the pricing table cannot price leaves the CLI's own figure in
+``cost_usd`` rather than zeroing it.
 
 Version 4 bundles carry the trial's tool-call record as ``tool_log.yaml`` beside
 the message view in ``trajectory.yaml``, so a bundle re-grades to the verdict its

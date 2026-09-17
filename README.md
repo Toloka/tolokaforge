@@ -5,7 +5,7 @@ A benchmarking harness for evaluating tool-using LLM agents. Multi-turn agent/us
 ## Highlights
 
 - **Agent + User Loop** – Multi-turn conversations where both agent and user models call tools.
-- **Coding-harness mode** – Run any of six vendor coding-agent CLIs (`claude-code`, `codex`, `gemini-cli`, `kimi-code`, `opencode`, `grok-build`) inside the trial container instead of the engine's own loop, so a task pack can measure a CLI's scaffolding, not only a bare model. See [docs/CODING_HARNESSES.md](docs/CODING_HARNESSES.md).
+- **Coding-harness mode** – Run any of seven vendor coding-agent CLIs (`claude-code`, `codex`, `gemini-cli`, `kimi-code`, `opencode`, `grok-build`, `qwen-code`) inside the trial container instead of the engine's own loop, so a task pack can measure a CLI's scaffolding, not only a bare model. See [docs/CODING_HARNESSES.md](docs/CODING_HARNESSES.md).
 - **Sandboxed Execution** – Tool calls proxy into Dockerized services with no external network access.
 - **MCP-Compatible Tooling** – Tasks declare tools via Model Context Protocol or built-ins.
 - **Deterministic Grading** – JSONPath assertions, state hashes, transcript rules, optional LLM judges.
@@ -186,7 +186,7 @@ decides which mode fits your task, see
 ## Coding-harness mode
 
 A trial can hand its LLM turn loop over to a vendor coding-agent CLI installed
-inside the task container. Six harnesses ship in the
+inside the task container. Seven harnesses ship in the
 [`tolokaforge_coding_harnesses`](tolokaforge_coding_harnesses/) registry:
 
 | `agent_harness` | Vendor CLI |

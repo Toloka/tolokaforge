@@ -55,6 +55,35 @@ def tbench_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
     )
 
 
+@pytest.fixture
+def tbench_harness_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
+    """The same adapter under harness mode — Claude Code layered onto the task image."""
+    tbench_tasks_dir = test_data_dir / "terminal_bench_tasks"
+    return TerminalBenchAdapter(
+        {
+            "terminal_bench_dir": str(tbench_tasks_dir),
+            "staging_root": str(tmp_path / "staging"),
+            "agent_harness": "claude-code",
+            "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+        }
+    )
+
+
+@pytest.fixture
+def tbench_skills_harness_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
+    """Harness mode against the fixture task that ships its own skills bundle."""
+    tbench_tasks_dir = test_data_dir / "terminal_bench_tasks"
+    return TerminalBenchAdapter(
+        {
+            "terminal_bench_dir": str(tbench_tasks_dir),
+            "task_ids": ["echo-hello-skills"],
+            "staging_root": str(tmp_path / "staging"),
+            "agent_harness": "claude-code",
+            "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+        }
+    )
+
+
 class TestTerminalBenchAdapterCanon:
     """Canonical tests for TerminalBenchAdapter task loading and serialisation."""
 
@@ -94,6 +123,43 @@ class TestTerminalBenchAdapterCanon:
 
         actual = grading.model_dump(mode="json")
         snap.assert_match(actual, "grading_config.json")
+
+
+class TestTerminalBenchHarnessModeCanon:
+    """Harness mode's synthesised substrate — layered image + two declared builds.
+
+    The agent service's ``image:`` is pinned here because it is the whole
+    freshness contract: it carries a digest of the layer's build context, so a
+    change to what the layer bakes in has to show up as a moved snapshot line
+    rather than as a silently reused image.
+    """
+
+    def test_synthesised_compose(self, tbench_harness_adapter, canon_snapshot):
+        """The layered compose file carries a build-only base service and a CLI layer."""
+        env = tbench_harness_adapter._environment("echo-hello")
+        snap = canon_snapshot("tbench_echo_hello_harness")
+
+        with env.compose_file.open() as f:
+            actual = yaml.safe_load(f)
+        snap.assert_match(actual, "synthesised_compose.json")
+
+
+class TestTerminalBenchSkillsBundleCanon:
+    """The substrate for a task pack that ships its own skills bundle.
+
+    Pinned because the bundle changes what the agent can read: the ``COPY``
+    line, its build-context exception, and the layered image ref that carries
+    the bundle's bytes are the ends that have to agree, and a reward earned
+    with skills installed is not comparable to one earned without them.
+    """
+
+    def test_synthesised_compose(self, tbench_skills_harness_adapter, canon_snapshot):
+        env = tbench_skills_harness_adapter._environment("echo-hello-skills")
+        snap = canon_snapshot("tbench_echo_hello_skills_harness")
+
+        with env.compose_file.open() as f:
+            actual = yaml.safe_load(f)
+        snap.assert_match(actual, "synthesised_compose.json")
 
 
 class TestHarnessSpecWireShape:

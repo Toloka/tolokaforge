@@ -245,6 +245,13 @@ trajectory holds the task instruction as the user message and the CLI's output
 as the agent's single reply; `tool_log` carries the invocation so a post-mortem
 can read back what ran.
 
+A harness whose CLI routes through a request middleware adds one *unrecorded*
+execution after that call — the engine reading the proxy's token-usage records
+out of the container before anything tears it down (see
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `harness_usage_source`). It is
+engine instrumentation, not agent action: it reaches neither `tool_log` nor
+`metrics.tool_calls`, and every way it can fail leaves the trial as it was.
+
 Two properties make this a narrow branch rather than a second execution model:
 
 - **The engine names no CLI.** The command string arrives fully formed on

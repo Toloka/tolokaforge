@@ -33,7 +33,12 @@ from typing import Any
 
 import yaml
 
-from tolokaforge_coding_harnesses import HarnessSpec
+from tolokaforge_coding_harnesses import (
+    INSTALL_SCRIPT,
+    MIDDLEWARE_PROXY_SCRIPT,
+    HarnessSpec,
+    harness_image_content_digest,
+)
 
 PROJECT_PREFIX = "tfnative_"
 """Compose project prefix baked into the synthesised container names.
@@ -73,12 +78,21 @@ class MaterialisedHarnessEnvironment:
             :meth:`~tolokaforge.adapters.native.NativeAdapter.docker_stack_requirements`).
         staging_dir: Root of the per-task build context (also the
             ``build.context`` the layered dockerfile is invoked with).
+        base_image: Image ref the synthesised compose file pins on
+            ``base_build_service``.
+        agent_image: Image ref the synthesised compose file pins on
+            ``agent_service`` — content-addressed, so it moves when the
+            harness layer's baked-in bytes move. Declared to the
+            orchestrator's pre-build seam so it can refuse an image ref
+            nobody predicted.
     """
 
     compose_file: Path
     agent_service: str
     base_build_service: str
     staging_dir: Path
+    base_image: str
+    agent_image: str
 
 
 def resolve_agent_service(compose_file: Path, task_id: str) -> str:
@@ -153,15 +167,23 @@ def materialise_harness_environment(
     staging_dir = (root / f"{task_id}-{digest}").resolve()
     _copy_task_dir(task_dir, staging_dir)
 
-    base_image = _base_image_tag(task_id)
-    layered_image = _layered_image_tag(task_id, agent_harness, harness_spec.version)
+    base_image = _base_image_tag(task_id, _task_content_digest(task_dir))
     base_service = f"{agent_service}{BASE_SERVICE_SUFFIX}"
+    middleware_proxy = harness_spec.request_middleware is not None
 
-    layer_writer(
+    dockerfile_name = layer_writer(
         context_dir=staging_dir,
         base_image=base_image,
         spec=harness_spec,
-        middleware_proxy=harness_spec.request_middleware is not None,
+        middleware_proxy=middleware_proxy,
+    )
+    layered_image = _layered_image_tag(
+        task_id,
+        agent_harness,
+        harness_spec.version,
+        _harness_layer_digest(
+            staging_dir, dockerfile_name=dockerfile_name, middleware_proxy=middleware_proxy
+        ),
     )
 
     synthesised = _synthesise_compose(
@@ -181,6 +203,8 @@ def materialise_harness_environment(
         agent_service=agent_service,
         base_build_service=base_service,
         staging_dir=staging_dir,
+        base_image=base_image,
+        agent_image=layered_image,
     )
 
 
@@ -321,15 +345,8 @@ def _set_env(existing: Any, key: str, value: str) -> Any:
     return {key: value}
 
 
-def _content_digest(
-    task_dir: Path,
-    *,
-    agent_harness: str,
-    harness_version: str,
-    harness_install_source: str,
-) -> str:
-    """Content hash of *task_dir* + the harness parameters the layer bakes in."""
-    hasher = hashlib.sha256()
+def _hash_task_tree(hasher: hashlib._Hash, task_dir: Path) -> None:
+    """Fold every file under *task_dir* into *hasher*, path then bytes."""
     for path in sorted(task_dir.rglob("*")):
         if "__pycache__" in path.parts:
             continue
@@ -339,6 +356,35 @@ def _content_digest(
             hasher.update(b"C|")
             hasher.update(path.read_bytes())
             hasher.update(b"\n")
+
+
+def _task_content_digest(task_dir: Path) -> str:
+    """Content digest of the pack's own files — the base image's build inputs.
+
+    The base service builds the pack's own compose ``build:`` context, so
+    these bytes are exactly what that image bakes in.
+    """
+    hasher = hashlib.sha256()
+    _hash_task_tree(hasher, task_dir)
+    return hasher.hexdigest()[:16]
+
+
+def _content_digest(
+    task_dir: Path,
+    *,
+    agent_harness: str,
+    harness_version: str,
+    harness_install_source: str,
+) -> str:
+    """Content hash naming this task's staging directory.
+
+    Covers the pack's own files and the harness parameters the synthesis
+    reads. What the harness layer bakes into the image is named separately
+    by :func:`_harness_layer_digest`, which can only run once the layer has
+    been written *into* the directory this digest names.
+    """
+    hasher = hashlib.sha256()
+    _hash_task_tree(hasher, task_dir)
     hasher.update(b"|harness|\n")
     hasher.update(f"agent_harness={agent_harness}\n".encode())
     hasher.update(f"harness_version={harness_version}\n".encode())
@@ -346,9 +392,43 @@ def _content_digest(
     return hasher.hexdigest()[:16]
 
 
-def _base_image_tag(task_id: str) -> str:
-    return f"tolokaforge-native-{task_id}-base:local"
+def _harness_layer_digest(
+    staging_dir: Path, *, dockerfile_name: str, middleware_proxy: bool
+) -> str:
+    """Content digest of the harness layer's build inputs in *staging_dir*.
+
+    Read back from the materialised context rather than rendered a second
+    time, so the digest describes the bytes ``docker compose build`` will
+    read. The layer's build context is flat: the generated dockerfile, the
+    install script, and the middleware proxy when the harness declares one.
+    """
+    parts = {
+        dockerfile_name: staging_dir / dockerfile_name,
+        INSTALL_SCRIPT.name: staging_dir / INSTALL_SCRIPT.name,
+    }
+    if middleware_proxy:
+        parts[MIDDLEWARE_PROXY_SCRIPT.name] = staging_dir / MIDDLEWARE_PROXY_SCRIPT.name
+    return harness_image_content_digest(parts)
 
 
-def _layered_image_tag(task_id: str, agent_harness: str, harness_version: str) -> str:
-    return f"tolokaforge-native-{task_id}-{agent_harness}-{harness_version}:local"
+def _base_image_tag(task_id: str, content_digest: str) -> str:
+    """The base image's ref, keyed on the pack files it bakes in.
+
+    *content_digest* is :func:`_task_content_digest`'s answer. The harness
+    layer names this ref in its ``FROM`` line, so a moved base digest moves
+    the layered ref too and neither is served from a previous build.
+    """
+    return f"tolokaforge-native-{task_id}-base:local-{content_digest}"
+
+
+def _layered_image_tag(
+    task_id: str, agent_harness: str, harness_version: str, content_digest: str
+) -> str:
+    """The layered image's ref, keyed on what the layer bakes in.
+
+    *content_digest* is :func:`_harness_layer_digest`'s answer. Without it
+    two layers built from different install-script or proxy bytes would
+    share a ref, and a caller that reuses an image because its ref resolves
+    would run the previous build.
+    """
+    return f"tolokaforge-native-{task_id}-{agent_harness}-{harness_version}:local-{content_digest}"

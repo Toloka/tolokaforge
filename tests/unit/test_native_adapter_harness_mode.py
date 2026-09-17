@@ -12,6 +12,7 @@ asserted (``toolset``, image tags, and compose synthesis differ).
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -147,6 +148,143 @@ class TestHarnessModeDockerStackRequirements:
         for build in req.image_builds:
             assert build.compose_file.name == "docker-compose.yaml"
             assert build.compose_file.exists()
+
+    def test_declared_image_refs_match_what_the_compose_file_pins(self) -> None:
+        """What the adapter hands the orchestrator's pre-build seam and what
+        compose will actually build have to be the same string — the
+        orchestrator refuses the build when they differ."""
+        import yaml
+
+        adapter = NativeAdapter(
+            _params(
+                agent_harness="claude-code",
+                agent_model="openrouter/anthropic/claude-sonnet-4-6",
+            )
+        )
+        for build in adapter.docker_stack_requirements().image_builds:
+            doc = yaml.safe_load(build.compose_file.read_text())
+            assert doc["services"][build.service]["image"] == build.expected_image_ref
+
+
+class TestLayeredImageIsContentAddressed:
+    """An edit to a file the layer bakes in must reach the container. It only
+    can if the image ref moves: the orchestrator skips the build whenever the
+    ref already resolves locally, so a content-blind ref silently reuses the
+    previous image and the trial runs code nobody shipped."""
+
+    @staticmethod
+    def _materialise(tmp_path: Path, name: str):
+        from tolokaforge.adapters.native_harness_synthesis import (
+            materialise_harness_environment,
+        )
+
+        adapter = NativeAdapter(
+            _params(
+                agent_harness="claude-code",
+                agent_model="openrouter/anthropic/claude-sonnet-4-6",
+            )
+        )
+        return materialise_harness_environment(
+            task_id="fix_factorial",
+            task_dir=_PACK_ROOT,
+            compose_file=_PACK_ROOT / "docker-compose.yaml",
+            harness_spec=adapter.harness_spec,
+            agent_harness="claude-code",
+            layer_writer=adapter.write_install_script_layer,
+            staging_root=tmp_path / name,
+        )
+
+    def test_editing_the_install_script_moves_the_layered_image_ref(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tolokaforge_coding_harnesses import INSTALL_SCRIPT
+
+        before = self._materialise(tmp_path, "before")
+
+        edited = tmp_path / INSTALL_SCRIPT.name
+        edited.write_text(INSTALL_SCRIPT.read_text() + "\n# one more line\n")
+        monkeypatch.setattr("tolokaforge_coding_harnesses.adapter_support.INSTALL_SCRIPT", edited)
+
+        after = self._materialise(tmp_path, "after")
+        assert after.agent_image != before.agent_image
+
+    def test_the_layered_image_ref_is_reproducible(self, tmp_path: Path) -> None:
+        """Untouched inputs must land on the same ref, or the skip never fires
+        and every run pays a rebuild."""
+        refs = {self._materialise(tmp_path, f"run-{n}").agent_image for n in range(2)}
+        assert len(refs) == 1
+
+    @staticmethod
+    def _materialise_pack(pack: Path, tmp_path: Path, name: str):
+        from tolokaforge.adapters.native_harness_synthesis import (
+            materialise_harness_environment,
+        )
+
+        adapter = NativeAdapter(
+            _params(
+                agent_harness="claude-code",
+                agent_model="openrouter/anthropic/claude-sonnet-4-6",
+            )
+        )
+        return materialise_harness_environment(
+            task_id="fix_factorial",
+            task_dir=pack,
+            compose_file=pack / "docker-compose.yaml",
+            harness_spec=adapter.harness_spec,
+            agent_harness="claude-code",
+            layer_writer=adapter.write_install_script_layer,
+            staging_root=tmp_path / name,
+        )
+
+    def test_editing_a_pack_file_moves_the_base_and_the_layered_ref(self, tmp_path: Path) -> None:
+        """The base image bakes in the pack's own build context, and the layer
+        builds ``FROM`` it — so a pack edit that left either ref standing would
+        be served from the previous build."""
+        pack = tmp_path / "pack"
+        shutil.copytree(_PACK_ROOT, pack)
+        before = self._materialise_pack(pack, tmp_path, "before")
+
+        dockerfile = pack / "environment" / "Dockerfile"
+        dockerfile.write_text(dockerfile.read_text() + "\n# one more line\n")
+
+        after = self._materialise_pack(pack, tmp_path, "after")
+        assert after.base_image != before.base_image
+        assert after.agent_image != before.agent_image
+
+    def test_the_base_image_ref_is_reproducible(self, tmp_path: Path) -> None:
+        refs = {self._materialise(tmp_path, f"run-{n}").base_image for n in range(2)}
+        assert len(refs) == 1
+
+
+class TestNativeUsageLogPathIsPublished:
+    """The middleware proxy is the only source of token counts for a harness
+    whose CLI prints none, and the runner reads those records out of the trial
+    container by the path this key names. Without the key the run still passes
+    and still reports zero tokens, which reads as a trial that spent nothing."""
+
+    @staticmethod
+    def _metadata(harness: str) -> dict:
+        adapter = NativeAdapter(
+            _params(agent_harness=harness, agent_model="openrouter/moonshotai/kimi-k2")
+        )
+        return adapter.to_task_description("fix_factorial").metadata
+
+    def test_a_middleware_harness_publishes_the_container_path(self) -> None:
+        from tolokaforge_coding_harnesses import (
+            HARNESS_USAGE_LOG_METADATA_KEY,
+            MIDDLEWARE_USAGE_LOG_CONTAINER_PATH,
+        )
+
+        metadata = self._metadata("kimi-code")
+
+        assert metadata[HARNESS_USAGE_LOG_METADATA_KEY] == MIDDLEWARE_USAGE_LOG_CONTAINER_PATH
+
+    def test_a_harness_with_no_middleware_publishes_no_path(self) -> None:
+        """``claude-code`` routes through no proxy, so nothing would ever write
+        the file the key would name."""
+        from tolokaforge_coding_harnesses import HARNESS_USAGE_LOG_METADATA_KEY
+
+        assert HARNESS_USAGE_LOG_METADATA_KEY not in self._metadata("claude-code")
 
 
 class TestHarnessSpecValidation:

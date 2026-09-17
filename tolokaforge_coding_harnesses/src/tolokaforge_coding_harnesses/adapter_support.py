@@ -42,7 +42,32 @@ from ._registry import (
 )
 from .protocols import PathResolver
 
-__all__ = ["CodingHarnessAdapterMixin"]
+__all__ = ["HARNESS_USAGE_LOG_METADATA_KEY", "CodingHarnessAdapterMixin"]
+
+
+HARNESS_USAGE_LOG_METADATA_KEY = "agent_harness_usage_log"
+"""Metadata key carrying the *container* path of a trial's wire usage records.
+
+Sibling of the four keys :meth:`CodingHarnessAdapterMixin.emit_harness_metadata`
+emits, but not one of them: those four describe the CLI itself and every
+harness-mode adapter can answer them, while this one says a file at this path
+inside the trial container holds the records the harness's request middleware
+wrote. The engine reads it out of the still-running container as soon as the
+CLI's single exec returns.
+
+The path is the container's and never the host's, because a runtime is free to
+mount that directory somewhere the host cannot reach afterwards — the shipped
+terminal-bench compose mounts it from a per-trial context copy teardown
+deletes, so a host path would name a file that is gone by the time anything
+reads it.
+
+A harness that declares no middleware boots no proxy and writes no records, so
+an adapter must leave the key absent for one rather than name a file that
+never appears.
+
+A constant rather than a literal on each side because the adapter that writes
+it and the conductor that reads it are in different distributions.
+"""
 
 
 _HARNESS_INSTALL_CONTAINER_PATH = "/opt/tolokaforge/install-harness.sh"

@@ -4,6 +4,12 @@
 models:
   agent:
     provider: "openrouter"
+    # Dash spelling on purpose: this is opencode's own ``anthropic``
+    # provider-block catalog slug, and opencode rejects the dotted form
+    # with ``ProviderModelNotFoundError``. The pricing table's dash row
+    # carries no cache rates, so the run's local cost estimate bills cache
+    # reads at the input rate — the orchestrator warns at load_tasks, and
+    # ``observability.pricing_overlay_path`` is the way to correct it.
     name: "anthropic/claude-sonnet-4-6"
     harness: "opencode"
     temperature: 0.0
@@ -11,7 +17,7 @@ models:
 
   user:
     provider: "openrouter"
-    name: "openrouter/anthropic/claude-sonnet-4-6"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
     temperature: 0.0
 compute:
   workers: 1

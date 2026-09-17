@@ -318,13 +318,6 @@ chmod +x /usr/local/bin/claude
 """
 
 
-def _layered_image_ref() -> str:
-    """The harness-layered image tag, version included."""
-    from tolokaforge_coding_harnesses import HARNESSES
-
-    return f"tbench-{_HARNESS_TASK_ID}:local-{_HARNESS}-{HARNESSES[_HARNESS].version}"
-
-
 @pytest.fixture(scope="module")
 def harness_adapter(tmp_path_factory: pytest.TempPathFactory) -> TerminalBenchAdapter:
     tasks_dir = _REPO_ROOT / "tests" / "data" / "terminal_bench_tasks"
@@ -464,7 +457,7 @@ class TestTerminalBenchHarnessMode:
                 "--no-trunc",
                 "--format",
                 "{{.CreatedBy}}",
-                _layered_image_ref(),
+                env.agent_image,
             ],
             capture_output=True,
             text=True,
