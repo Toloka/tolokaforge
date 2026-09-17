@@ -87,8 +87,12 @@ PRODUCER_KEYS = frozenset(
         "project_verified",
     }
 )
-# what the live root span adds and the bundle cannot know
-LIVE_ONLY_KEYS = frozenset({"generations_observed", "tool_calls_observed", "error"})
+# what the live root span adds and the bundle cannot know, plus the two keys a Langfuse receiver
+# writes into the metadata of a trace that arrived over OTLP (the trace-level span's raw
+# attributes and the resource attributes); a caller may not use these names either
+LIVE_ONLY_KEYS = frozenset(
+    {"generations_observed", "tool_calls_observed", "error", "attributes", "resourceAttributes"}
+)
 # the grade summary keys a trace mirrors from its primary grading (the connector's list)
 GRADE_METADATA_KEYS = frozenset(grade_summary({}))
 
