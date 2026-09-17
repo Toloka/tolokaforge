@@ -116,9 +116,9 @@ Harness mode composes with **any** grading method. Two paths:
   actually left behind — the same shape a non-harness native task uses
   today.
 
-## The six shipped harnesses
+## The seven shipped harnesses
 
-Six vendor coding-agent CLIs ship in-tree. The catalog lives in
+Seven vendor coding-agent CLIs ship in-tree. The catalog lives in
 [`tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml);
 the package's [`README.md`](../tolokaforge_coding_harnesses/README.md#shipped-harnesses)
 carries the version-pin table.
@@ -131,6 +131,7 @@ carries the version-pin table.
 | `kimi-code` | `@moonshot-ai/kimi-code` | npm |
 | `opencode` | `opencode-ai` | npm |
 | `grok-build` | `x.ai/cli` install script | curl-bash |
+| `qwen-code` | `@qwen-code/qwen-code` | npm |
 
 Provider envelopes, model-name conventions and per-CLI quirks (permission
 flags, root-under-sandbox, config-file precedence) live in the YAML
@@ -174,6 +175,7 @@ live next to each entry in the shipped
 | `kimi-code` | `openrouter/moonshotai/kimi-k3` | Also `kimi-k2.7-code` — the shipped `request_middleware` pins Moonshot AI first-party routing on OpenRouter automatically. |
 | `opencode` | `anthropic/claude-sonnet-4-6` | Routes through opencode's shipped `anthropic` provider block (`baseURL` points at OpenRouter's Anthropic-compat surface). Non-Anthropic vendors need an operator overlay populating the `openrouter` block's `models` dict — see the caveat below. |
 | `grok-build` | `openrouter/x-ai/grok-4.5` | Auto-configures `~/.grok/config.toml` for OpenRouter. |
+| `qwen-code` | `openrouter/qwen/qwen3-coder-plus` | OpenAI-compat via OpenRouter; model arrives in `OPENAI_MODEL`, so no `--model` flag. Prints no usage of its own — token counts are metered off the wire by the shipped `request_middleware`. |
 
 Two things about the `opencode` row are load-bearing on 1.18.x:
 
@@ -187,6 +189,20 @@ Two things about the `opencode` row are load-bearing on 1.18.x:
   `anthropic` provider block instead, whose `baseURL` already points at
   OpenRouter's Anthropic-compat surface. That is why the shipped example
   above names `anthropic/claude-sonnet-4-6`, not `openrouter/anthropic/…`.
+
+## CLIs deliberately not shipped
+
+Two are excluded because this repo cannot run them, not because nobody wants
+them. Recorded here so the question is answered once.
+
+| CLI | Why not |
+|---|---|
+| Cursor CLI | Agent mode cannot be billed to a provider API key; it requires a Cursor subscription, which a benchmark run has no way to attribute per trial. |
+| GitHub Copilot CLI | Requires an active Copilot seat. Bring-your-own-key is Enterprise-preview only, so the shipped path is a subscription. |
+
+`terminus-2` is excluded for a different reason: this repo installs no
+Terminus-2 scaffold, so a trial labelled with it would be claiming a
+comparison it did not run.
 
 ## Adding a harness
 

@@ -1,0 +1,43 @@
+# Same native pack + task as run_harness.yaml — different vendor CLI.
+#
+# qwen-code reaches OpenRouter's OpenAI-compatible surface through the
+# `OPENAI_API_KEY` / `OPENAI_BASE_URL` pair and takes its model from
+# `OPENAI_MODEL`, so no `--model` flag is emitted. The CLI prints no usage
+# block, so its token counts come off the wire: the registry entry declares a
+# `request_middleware` that tees every provider response's `usage` into the
+# log the runner reads back before teardown.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/qwen/qwen3-coder-plus"
+    harness: "qwen-code"
+    temperature: 0.0
+    max_tokens: 4096
+
+  user:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
+    temperature: 0.0
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-qwen"
+  harness_adapter:
+    type: "native"

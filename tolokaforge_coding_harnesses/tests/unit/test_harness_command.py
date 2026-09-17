@@ -181,15 +181,32 @@ class TestHarnessRequestMiddleware:
         }
         assert mw.path_filter == "/chat/completions"
 
-    def test_no_other_shipped_harness_declares_a_middleware(self):
+    def test_the_shipped_middleware_scope_is_explicit(self):
         """Middleware boots a proxy inside every trial container it's set on —
-        make the shipped scope explicit so a copy-paste edit is caught."""
+        make the shipped scope explicit so a copy-paste edit is caught.
+
+        A harness earns one by printing no usage of its own: the proxy tees
+        what the provider returned, which is the only token source those CLIs
+        have. ``kimi-code`` also uses it to pin a provider; ``qwen-code`` runs
+        it as a meter with no injections."""
         from tolokaforge_coding_harnesses import HARNESSES
 
         with_middleware = {
             name for name, spec in HARNESSES.items() if spec.request_middleware is not None
         }
-        assert with_middleware == {"kimi-code"}
+        assert with_middleware == {"kimi-code", "qwen-code"}
+
+    def test_the_qwen_middleware_injects_nothing(self):
+        """It is a meter, not a rewrite — an injection here would change what
+        the trial asked the provider for while claiming to only count it."""
+        from tolokaforge_coding_harnesses import HARNESSES
+
+        mw = HARNESSES["qwen-code"].request_middleware
+        assert mw is not None
+        assert mw.upstream_env_key == "OPENAI_BASE_URL"
+        assert mw.body_injections == {}
+        assert mw.header_injections == {}
+        assert mw.path_filter == "/chat/completions"
 
     def test_middleware_preamble_boots_proxy_then_rewrites_env_before_cli(self):
         """The three-step preamble the CLI depends on:

@@ -117,7 +117,7 @@ Use when you want to measure a **coding-harness CLI** (Claude Code, Codex,
 Gemini CLI, etc.) instead of a bare model. The CLI installs into the trial
 image via `install-harness.sh`, and the trial exec invokes it directly.
 
-Six harnesses ship in-tree. Each is a data entry in
+Seven harnesses ship in-tree. Each is a data entry in
 `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`
 — adding one is a YAML edit, not a code change.
 
@@ -178,6 +178,7 @@ same shape as engine-loop.
 | Kimi Code | `kimi-code` | `openrouter/moonshotai/kimi-k3` | Also runs `kimi-k2.7-code` — but see the middleware caveat below. |
 | OpenCode | `opencode` | `anthropic/claude-sonnet-4-6` | Claude family goes via opencode's shipped `anthropic` block. Other vendors: see the routing / auth notes below. |
 | Gemini CLI | `gemini-cli` | `openrouter/google/gemini-3.6-flash` | Shipped default is direct Google; LiteLLM overlay is the practical path (see below). |
+| Qwen Code | `qwen-code` | `openrouter/qwen/qwen3-coder-plus` | OpenAI-compat via OpenRouter. Model arrives in `OPENAI_MODEL`, so no `--model` flag is emitted; token counts come off the wire (see below). |
 
 ### Recipe — Kimi K2.7 Code (`request_middleware`)
 
