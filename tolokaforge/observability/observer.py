@@ -87,6 +87,12 @@ class ExportReceipt:
     # (verified | unverified | none) run before the first export (destinations amendment)
     expect_project: str | None = None
     project_verified: str = "none"
+    # the gradings amendment: per trial, the run's grading with its judge transcript and scores
+    # and the simulated user turns leave from the persisted bundle through the ingestion API
+    gradings_sent: int = 0
+    gradings_failed: int = 0
+    scores_sent: int = 0
+    user_generations_sent: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +111,10 @@ class ExportReceipt:
             "manifests_failed": self.manifests_failed,
             "expect_project": self.expect_project,
             "project_verified": self.project_verified,
+            "gradings_sent": self.gradings_sent,
+            "gradings_failed": self.gradings_failed,
+            "scores_sent": self.scores_sent,
+            "user_generations_sent": self.user_generations_sent,
         }
 
 

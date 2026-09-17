@@ -74,6 +74,8 @@ class TestTracingConfig:
         # and the factory decides (destinations amendment of ADR-0046)
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+        monkeypatch.delenv("LANGFUSE_BASE_URL", raising=False)  # the switch's own source
+        monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
         config = ObservabilityConfig(tracing=TracingConfig(exporter="otlp"))
         with pytest.raises(TracingConfigError, match="requires an endpoint"):
             build_trial_observer(config, engine_run_id="run-1")
@@ -155,7 +157,19 @@ class TestAttachmentStep:
             exporter="otlp", endpoint="https://lf.example/api/public/otel/v1/traces"
         )
         assert config.attach == "all" and config.attach_api_base is None
-        assert build_attachments(TracingConfig(exporter="none", attach="none")) is None
+        # no files and no gradings: no receiver-side step at all; gradings alone still need the
+        # ingestion route, so attach: none by itself builds a step in mode none
+        assert (
+            build_attachments(TracingConfig(exporter="none", attach="none", gradings=False)) is None
+        )
+        none_step = build_attachments(
+            TracingConfig(
+                exporter="otlp",
+                endpoint="https://lf.example/api/public/otel/v1/traces",
+                attach="none",
+            )
+        )
+        assert none_step is not None and none_step.mode == "none"
         pytest.importorskip("opentelemetry.sdk")
         step = build_attachments(config)
         assert step is not None and step._api_base == "https://lf.example"

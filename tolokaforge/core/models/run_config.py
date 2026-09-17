@@ -1148,6 +1148,12 @@ class TracingConfig(BaseModel):
     receiver's media API (Langfuse), after the bundle is written: ``all`` = every top-level file
     of the trial directory, ``core`` = task, prompts, tools schemas, logs and grade, ``none`` = no
     attachments. The manifest lands in the trace metadata (``docs/OBSERVABILITY.md``)."""
+    gradings: bool = True
+    """After the bundle is written, send the run's grading (``grade.yaml``) as a
+    ``grading:live:<run_id>`` observation with its judge transcript and scores, the trace-level
+    mirror of those scores, and the simulated user turns, under the id contract the offline
+    connector shares, so a later connector pass updates instead of duplicating
+    (``docs/OBSERVABILITY.md``). Needs the receiver's REST API like the attachments."""
     attach_api_base: str | None = None
     """Base URL of the receiver's REST API for the attachments; default: derived from ``endpoint``
     (``https://host/api/public/otel/v1/traces`` -> ``https://host``)."""

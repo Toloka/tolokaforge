@@ -77,3 +77,43 @@ def tool_key(call_id: object | None, message_index: object) -> str:
     if call_id not in (None, ""):
         return str(call_id)
     return f"msg:{message_index}"
+
+
+# -- scores and gradings (shared with the connector, PLAN 3.6) --------------------------------
+#
+#     score_id = uuid5(NS, "score|{trace_id}|{scope...}|{name}").hex
+#
+# A score on a grading observation has the scope ("grading", <grading_id>); the trace-level
+# mirror of the primary grading has the scope ("primary",). The grading the run itself wrote is
+# ``live:<run_id>``, shared by every trial of the run.
+
+SCORE_SCOPE_GRADING = "grading"
+SCORE_SCOPE_PRIMARY = "primary"
+GRADING_SOURCE_LIVE = "live"
+
+
+def live_grading_id(run_id: str) -> str:
+    return f"{GRADING_SOURCE_LIVE}:{check_component('run_id', run_id)}"
+
+
+def grading_observation_id(trace: str, grading_id: str) -> str:
+    return observation_id(trace, "grading", grading_id)
+
+
+def score_id(trace: str, name: str, *, scope: tuple[str, ...] = (SCORE_SCOPE_PRIMARY,)) -> str:
+    """32-hex score id under ``scope``."""
+    if not _TRACE_SHAPE.match(trace):
+        raise ValueError(f"trace id must be 32 lowercase hex characters: {trace!r}")
+    if not scope:
+        raise ValueError("a score id needs a scope")
+    parts = ["score", trace, *(check_component("scope", part) for part in scope)]
+    parts.append(check_component("name", name))
+    return uuid.uuid5(NAMESPACE, "|".join(parts)).hex
+
+
+def grading_score_id(trace: str, grading_id: str, name: str) -> str:
+    return score_id(trace, name, scope=(SCORE_SCOPE_GRADING, grading_id))
+
+
+def primary_score_id(trace: str, name: str) -> str:
+    return score_id(trace, name, scope=(SCORE_SCOPE_PRIMARY,))

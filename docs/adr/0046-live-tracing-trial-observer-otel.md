@@ -186,6 +186,39 @@ misnamed pair in an environment file is the everyday way this happens) can no lo
 it; a 401 (credentials that open no project) refuses as well, while a receiver that cannot list
 projects from where the run happens (a WAF alias answering 403) leaves the run `unverified`.
 
+## Amendment 2026-09-17: one switch, and the bundle's grading leaves with the trace
+
+Two things were still missing for the engine to be the only producer of a new run's trace.
+
+**The switch.** `LANGFUSE_TRACING_ENABLED=true` turns the exporter on without a tracing block in
+the run config (or with one that says `exporter: none`). The receiver then comes from the plain
+Langfuse variables: `LANGFUSE_BASE_URL` (traces at `<base>/api/public/otel/v1/traces`, REST at
+`<base>`), `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` as the Basic header (read through the
+`SecretManager` when one is initialised; half a pair is a configuration error), optional
+`LANGFUSE_EXTRA_HEADERS` (`k=v,k2=v2`, a gateway's own header) and optional `LANGFUSE_PROJECT`,
+which is both the expected project of the previous amendment and the trace's `project:` tag once
+the check has run. The run's identity may come from the environment too
+(`TOLOKAFORGE_TRACING_RUN_ID`, `_RUN_TAG`, `_SESSION_ID`, `_LABEL`), so a CI workflow traces a run
+by setting variables, without editing a config. The standard `OTEL_EXPORTER_OTLP_*` variables keep
+precedence: a launcher that owns the receiver still wins. The exporter itself stays OTLP; the
+Langfuse names are the optional layer the attachment step already was.
+
+**The grading.** Once the bundle is on disk (`trial_persisted`), the exporter also sends what the
+live spans could not know: the run's own grading (`grade.yaml`) as a `grading:live:<run_id>`
+observation under the root with its judge transcript (`judge_trajectory.yaml`) nested beneath and
+its scores attached, the trace-level mirror of those scores, the trace's grading keys
+(`primary_grading`, `gradings`, `grading_count` and the grade summary), and the simulated user's
+turns as generations of the user model. The ids are the shared contract (`ids.py`: score ids are
+`uuid5(NS, "score|trace|scope...|name")`, the live grading id is `live:<run_id>`) and the grading
+carries the same content fingerprint the connector computes, so a later connector pass over the
+same bundle updates these records instead of duplicating them, and finds nothing to change when
+the content is equal. The events travel through the receiver's ingestion API under the attachment
+step's budget; `observability.tracing.gradings: false` switches them off;
+`tracing_receipt.json` reports `gradings_sent`, `gradings_failed`, `scores_sent`,
+`user_generations_sent`. What a live trace still lacks against an offline upload is now only what
+the bundle itself lacks: INFO log events under `--attach all` and the connector's extra metadata
+groups.
+
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern)

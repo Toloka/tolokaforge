@@ -12,10 +12,21 @@ endpoint, the headers, extra tags (``TOLOKAFORGE_TRACING_TAGS``) and the project
 must open (``TOLOKAFORGE_TRACING_EXPECT_PROJECT``); ``expect_project`` is checked against the
 receiver before the first export and a mismatch refuses to trace (ADR-0046, destinations
 amendment).
+
+One switch (ADR-0046, Langfuse switch amendment): ``LANGFUSE_TRACING_ENABLED=true`` turns the
+exporter on without a config block. The receiver then comes from the plain Langfuse variables:
+``LANGFUSE_BASE_URL`` (the traces endpoint is ``<base>/api/public/otel/v1/traces``, the REST base
+for attachments and gradings is ``<base>``), ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUSE_SECRET_KEY``
+(the Basic header, read through the ``SecretManager`` when one is initialised), optional
+``LANGFUSE_EXTRA_HEADERS`` (``k=v,k2=v2``, a gateway's own header) and optional
+``LANGFUSE_PROJECT`` (the project the keys must open; also the ``project:`` tag). The run's
+identity may come from the environment too (``TOLOKAFORGE_TRACING_RUN_ID``, ``_RUN_TAG``,
+``_SESSION_ID``, ``_LABEL``), so a workflow needs no config edit to trace a run.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -44,6 +55,19 @@ OTLP_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 TRACING_TAGS_ENV = "TOLOKAFORGE_TRACING_TAGS"
 TRACING_EXPECT_PROJECT_ENV = "TOLOKAFORGE_TRACING_EXPECT_PROJECT"
+TRACING_RUN_ID_ENV = "TOLOKAFORGE_TRACING_RUN_ID"
+TRACING_RUN_TAG_ENV = "TOLOKAFORGE_TRACING_RUN_TAG"
+TRACING_SESSION_ID_ENV = "TOLOKAFORGE_TRACING_SESSION_ID"
+TRACING_LABEL_ENV = "TOLOKAFORGE_TRACING_LABEL"
+# the one switch and the plain Langfuse receiver variables
+LANGFUSE_ENABLED_ENV = "LANGFUSE_TRACING_ENABLED"
+LANGFUSE_BASE_URL_ENV = "LANGFUSE_BASE_URL"
+LANGFUSE_PUBLIC_KEY_SECRET = "LANGFUSE_PUBLIC_KEY"
+LANGFUSE_SECRET_KEY_SECRET = "LANGFUSE_SECRET_KEY"
+LANGFUSE_PROJECT_ENV = "LANGFUSE_PROJECT"
+LANGFUSE_EXTRA_HEADERS_ENV = "LANGFUSE_EXTRA_HEADERS"
+LANGFUSE_OTEL_PATH = "/api/public/otel/v1/traces"
+_TRUE = frozenset({"1", "true", "yes", "on"})
 PROJECT_VERIFIED = "verified"
 PROJECT_UNVERIFIED = "unverified"
 PROJECT_UNCHECKED = "none"
@@ -94,8 +118,16 @@ def build_trial_observer(
     tracing = getattr(observability, "tracing", None)
     if not isinstance(tracing, TracingConfig):  # absent, or a caller's stub config
         tracing = None
-    run_id = (tracing.run_id or engine_run_id) if tracing else engine_run_id
-    run_tag = (tracing.run_tag or ids.DEFAULT_RUN_TAG) if tracing else ids.DEFAULT_RUN_TAG
+    if langfuse_enabled():
+        # the switch: a run without a tracing block, or with exporter none, traces anyway
+        tracing = (tracing or TracingConfig()).model_copy(update={"exporter": "otlp"})
+    run_id = (tracing.run_id if tracing else None) or _env(TRACING_RUN_ID_ENV) or engine_run_id
+    run_tag = (
+        (tracing.run_tag if tracing and tracing.run_tag != ids.DEFAULT_RUN_TAG else None)
+        or _env(TRACING_RUN_TAG_ENV)
+        or (tracing.run_tag if tracing else None)
+        or ids.DEFAULT_RUN_TAG
+    )
     try:
         ids.check_component("run_id", run_id)
         ids.check_component("run_tag", run_tag)
@@ -118,11 +150,19 @@ def build_trial_observer(
         )
     except ModelNameResolverError as exc:
         raise TracingConfigError(str(exc)) from exc
-    headers = otlp_headers()
-    expect_project = tracing.expect_project or os.environ.get(TRACING_EXPECT_PROJECT_ENV) or None
+    headers = receiver_headers()
+    expect_project = (
+        tracing.expect_project
+        or _env(TRACING_EXPECT_PROJECT_ENV)
+        or _env(LANGFUSE_PROJECT_ENV)
+        or None
+    )
     project_verified = PROJECT_UNCHECKED
     if expect_project:
         project_verified = check_expected_project(tracing, endpoint, headers, expect_project)
+        # the project tag mirrors the destination (PLAN 3.3): the declared project, once checked
+        if not any(tag.startswith("project:") for tag in tags):
+            tags = merge_tags(tags, [f"project:{expect_project}"])
     queue = SpanQueue(
         make_otlp_exporter(endpoint, headers=headers),
         max_size=tracing.queue_size,
@@ -132,8 +172,10 @@ def build_trial_observer(
     observer = OTelTrialObserver(
         queue=queue,
         resolver=resolver,
-        label=tracing.label or (Path(output_dir).name if output_dir else engine_run_id),
-        session_id=tracing.session_id or run_id,
+        label=tracing.label
+        or _env(TRACING_LABEL_ENV)
+        or (Path(output_dir).name if output_dir else engine_run_id),
+        session_id=tracing.session_id or _env(TRACING_SESSION_ID_ENV) or run_id,
         tags=tags,
         metadata=dict(tracing.metadata),
         service_name=tracing.service_name,
@@ -141,6 +183,7 @@ def build_trial_observer(
         context_messages=tracing.context_messages,
         flush_timeout_s=tracing.flush_timeout_s,
         attachments=build_attachments(tracing, endpoint=endpoint, headers=headers),
+        gradings=tracing.gradings,
         expect_project=expect_project,
         project_verified=project_verified,
     )
@@ -161,10 +204,80 @@ def resolve_endpoint(configured: str | None) -> str:
     base = os.environ.get(OTLP_ENDPOINT_ENV, "").strip()
     if base:
         return f"{base.rstrip('/')}/v1/traces"
+    langfuse = _env(LANGFUSE_BASE_URL_ENV)
+    if langfuse:
+        return f"{langfuse.rstrip('/')}{LANGFUSE_OTEL_PATH}"
     raise TracingConfigError(
         "observability.tracing.exporter='otlp' requires an endpoint: set "
-        f"observability.tracing.endpoint or {OTLP_TRACES_ENDPOINT_ENV} / {OTLP_ENDPOINT_ENV}"
+        f"observability.tracing.endpoint, {OTLP_TRACES_ENDPOINT_ENV} / {OTLP_ENDPOINT_ENV}, or "
+        f"{LANGFUSE_BASE_URL_ENV}"
     )
+
+
+def _env(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    return value or None
+
+
+def langfuse_enabled() -> bool:
+    """``LANGFUSE_TRACING_ENABLED`` is truthy (``1`` / ``true`` / ``yes`` / ``on``)."""
+    return (os.environ.get(LANGFUSE_ENABLED_ENV, "").strip().lower()) in _TRUE
+
+
+def _secret(name: str) -> str | None:
+    """A credential by name: the ``SecretManager`` when one is initialised (so the value sits in
+    the log-redaction set), else the process environment."""
+    try:
+        from tolokaforge.secrets import get_default_or_none
+    except ImportError:  # pragma: no cover - the secrets package is part of core
+        manager = None
+    else:
+        manager = get_default_or_none()
+    value = manager.get_secret(name) if manager is not None else None
+    return value or _env(name)
+
+
+def _parse_headers(raw: str | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for item in (raw or "").split(","):
+        key, sep, value = item.partition("=")
+        if sep and key.strip():
+            headers[key.strip()] = value.strip()
+    return headers
+
+
+def langfuse_headers() -> dict[str, str] | None:
+    """The Basic header from ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUSE_SECRET_KEY`` plus
+    ``LANGFUSE_EXTRA_HEADERS``; ``None`` when the key pair is absent. Half a pair is a
+    configuration error: it would otherwise trace unauthenticated and fail late."""
+    public = _secret(LANGFUSE_PUBLIC_KEY_SECRET)
+    secret = _secret(LANGFUSE_SECRET_KEY_SECRET)
+    if not public and not secret:
+        return None
+    if not (public and secret):
+        raise TracingConfigError(
+            f"{LANGFUSE_PUBLIC_KEY_SECRET} and {LANGFUSE_SECRET_KEY_SECRET} must be set together"
+        )
+    token = base64.b64encode(f"{public}:{secret}".encode()).decode()
+    return {"Authorization": f"Basic {token}", **_parse_headers(_env(LANGFUSE_EXTRA_HEADERS_ENV))}
+
+
+def receiver_headers() -> dict[str, str] | None:
+    """The receiver's request headers: the standard ``OTEL_EXPORTER_OTLP_HEADERS`` when set (a
+    launcher owns the receiver), else the Langfuse key pair; the extra headers join either."""
+    headers = otlp_headers()
+    if headers is not None:
+        extra = _parse_headers(_env(LANGFUSE_EXTRA_HEADERS_ENV))
+        return {**extra, **headers}
+    if langfuse_enabled():
+        headers = langfuse_headers()
+        if headers is None:
+            raise TracingConfigError(
+                f"{LANGFUSE_ENABLED_ENV} is set but no receiver credentials were found: set "
+                f"{LANGFUSE_PUBLIC_KEY_SECRET} / {LANGFUSE_SECRET_KEY_SECRET} or {OTLP_HEADERS_SECRET}"
+            )
+        return headers
+    return langfuse_headers()
 
 
 def environment_tags() -> list[str]:
@@ -267,7 +380,9 @@ def build_attachments(
         api_base_from_endpoint,
     )
 
-    if getattr(tracing, "attach", ATTACH_NONE) == ATTACH_NONE:
+    if getattr(tracing, "attach", ATTACH_NONE) == ATTACH_NONE and not getattr(
+        tracing, "gradings", False
+    ):
         return None
     resolved = endpoint or resolve_endpoint(tracing.endpoint)
     return LangfuseAttachments(

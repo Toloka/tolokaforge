@@ -185,7 +185,13 @@ class SpanQueue:
 
 
 class TrialAttachments(Protocol):
-    """The post-trial attachment step a receiver provides (``langfuse_media.LangfuseAttachments``)."""
+    """The post-trial step a receiver provides (``langfuse_media.LangfuseAttachments``): the
+    file attachments and the ingestion route the grading events take."""
+
+    @property
+    def mode(self) -> str: ...
+
+    def ingest(self, events: list[dict[str, Any]], *, batch_size: int = 40) -> None: ...
 
     def attach(
         self,
@@ -225,18 +231,22 @@ class OTelTrialObserver:
         context_messages: int = 6,
         flush_timeout_s: float = 30.0,
         attachments: TrialAttachments | None = None,
+        gradings: bool = True,
         expect_project: str | None = None,
         project_verified: str = "none",
     ) -> None:
         self._queue = queue
         self._attachments = attachments
+        self._gradings = gradings
+        self._grading_counts = {"sent": 0, "failed": 0, "scores": 0, "users": 0}
         self._expect_project = expect_project
         self._project_verified = project_verified
         self._attach_counts = AttachCounts()
-        # trial start and final status by trace id, kept from trial_finished to trial_persisted:
-        # the manifest update re-sends both, so the trace keeps its own timestamp and ends with
-        # the trial's status even when the receiver merged the provisional root's "running" last
-        self._persist_clock: dict[str, tuple[datetime | None, str]] = {}
+        # trial start, final status and the judge / user model names by trace id, kept from
+        # trial_finished to trial_persisted: the manifest update re-sends start and status, so the
+        # trace keeps its own timestamp and ends with the trial's status even when the receiver
+        # merged the provisional root's "running" last; the gradings step names the models
+        self._persist_clock: dict[str, tuple[datetime | None, str, str | None, str | None]] = {}
         self._resolver: ModelNameResolver = resolver or RawModelNameResolver()
         self._label = label
         self._session_id = session_id
@@ -522,7 +532,12 @@ class OTelTrialObserver:
         end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=timezone.utc)
         status_value = _enum_value(status) if trajectory is not None else "error"
         with self._states_lock:
-            self._persist_clock[identity.trace_id] = (start, status_value)
+            self._persist_clock[identity.trace_id] = (
+                start,
+                status_value,
+                self._model_name_of(state, "judge"),
+                self._model_name_of(state, "user"),
+            )
         self._emit(
             name=f"trial {identity.task_id}/{identity.trial_index}",
             identity=identity,
@@ -539,17 +554,68 @@ class OTelTrialObserver:
         when a receiver-side attachment step is configured). Runs in the trial's own thread,
         bounded by the step's timeouts; the counts land in the receipt."""
         with self._states_lock:
-            started, status = self._persist_clock.pop(identity.trace_id, (None, None))
+            started, status, judge_name, user_name = self._persist_clock.pop(
+                identity.trace_id, (None, None, None, None)
+            )
+            state = self._states.get(identity.trace_id)  # a trial persisted without finishing
+        if state is not None:
+            judge_name = judge_name or self._model_name_of(state, "judge")
+            user_name = user_name or self._model_name_of(state, "user")
         if self._attachments is None:
             return
-        counts = self._attachments.attach(
-            identity.trace_id,
-            Path(trial_dir),
-            trace_timestamp=started,
-            metadata={"status": status} if status else None,
-        )
+        if getattr(self._attachments, "mode", "all") != "none":
+            counts = self._attachments.attach(
+                identity.trace_id,
+                Path(trial_dir),
+                trace_timestamp=started,
+                metadata={"status": status} if status else None,
+            )
+            with self._states_lock:
+                self._attach_counts.add(counts)
+        if self._gradings:
+            self._send_gradings(identity, Path(trial_dir), judge_name, user_name)
+
+    def _send_gradings(
+        self,
+        identity: TrialIdentity,
+        trial_dir: Path,
+        judge_name: str | None,
+        user_name: str | None,
+    ) -> None:
+        """The bundle's grading, judge transcript, scores and simulated user turns as ingestion
+        events under the shared id contract (``langfuse_gradings``). Never raises."""
+        from tolokaforge.observability.langfuse_gradings import build_grading_events
+
+        try:
+            built = build_grading_events(
+                identity.trace_id,
+                trial_dir,
+                run_id=identity.run_id,
+                judge_model_name=judge_name,
+                user_model_name=user_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - a malformed bundle is not the trace's problem
+            _log.warning(
+                "gradings: bundle of trace %s not read: %s", identity.trace_id, type(exc).__name__
+            )
+            with self._states_lock:
+                self._grading_counts["failed"] += 1
+            return
+        if not built.events:
+            return
+        try:
+            self._attachments.ingest(built.events)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001 - the observability layer only warns
+            reason = str(exc) if type(exc).__name__ == "LangfuseApiError" else type(exc).__name__
+            _log.warning("gradings: trace %s not sent: %s", identity.trace_id, reason)
+            with self._states_lock:
+                self._grading_counts["failed"] += 1
+            return
         with self._states_lock:
-            self._attach_counts.add(counts)
+            if built.grading_id:
+                self._grading_counts["sent"] += 1
+            self._grading_counts["scores"] += built.scores
+            self._grading_counts["users"] += built.user_generations
 
     def run_finished(self) -> ExportReceipt:
         flushed = self._queue.shutdown(self._flush_timeout_s)
@@ -567,6 +633,10 @@ class OTelTrialObserver:
             manifests_failed=counts.manifests_failed,
             expect_project=self._expect_project,
             project_verified=self._project_verified,
+            gradings_sent=self._grading_counts["sent"],
+            gradings_failed=self._grading_counts["failed"],
+            scores_sent=self._grading_counts["scores"],
+            user_generations_sent=self._grading_counts["users"],
         )
 
     # -- helpers ------------------------------------------------------------------------------------

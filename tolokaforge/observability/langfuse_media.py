@@ -159,6 +159,31 @@ class LangfuseAttachments:
         """True once the breaker switched the step off for the rest of the run."""
         return self._tripped
 
+    @property
+    def mode(self) -> str:
+        """The ``attach`` mode this step was built with (``all`` / ``core`` / ``none``)."""
+        return self._mode
+
+    def ingest(self, events: list[dict[str, Any]], *, batch_size: int = 40) -> None:
+        """Send ingestion events (``POST /api/public/ingestion``) in batches under the legacy
+        API's payload cap; raises ``LangfuseApiError`` on an HTTP failure or a rejected event
+        (the first rejection is named). Runs under the trial's attachment budget when one is
+        open, else under the plain timeout."""
+        for start in range(0, len(events), max(1, batch_size)):
+            batch = events[start : start + max(1, batch_size)]
+            status, raw = self._call("POST", "/api/public/ingestion", {"batch": batch})
+            if not 200 <= status < 300:
+                raise LangfuseApiError(f"POST /api/public/ingestion: HTTP {status}", status=status)
+            try:
+                errors = json.loads(raw or b"{}").get("errors") or []
+            except (ValueError, AttributeError) as exc:
+                raise LangfuseApiError("ingestion answered without JSON") from exc
+            if errors:
+                first = errors[0] if isinstance(errors[0], dict) else {}
+                raise LangfuseApiError(
+                    f"ingestion rejected an event: {first.get('status')} {first.get('message')}"
+                )
+
     def _remaining(self) -> float:
         if self._deadline is None:
             return self._timeout_s
@@ -367,12 +392,4 @@ class LangfuseAttachments:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "body": body,
         }
-        status, raw = self._call("POST", "/api/public/ingestion", {"batch": [event]})
-        if not 200 <= status < 300:
-            raise LangfuseApiError(f"POST /api/public/ingestion: HTTP {status}")
-        errors = json.loads(raw or b"{}").get("errors") or []
-        if errors:
-            first = errors[0] if isinstance(errors[0], dict) else {}
-            raise LangfuseApiError(
-                f"ingestion rejected the manifest event: {first.get('status')} {first.get('message')}"
-            )
+        self.ingest([event])

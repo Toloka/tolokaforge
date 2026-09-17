@@ -43,6 +43,19 @@ configuration error at run start, with nothing to tear down; a receiver that doe
 (the external ingest alias returns 403) leaves the run `unverified`; `tracing_receipt.json`
 records `expect_project` and `project_verified`.
 
+**One switch.** `LANGFUSE_TRACING_ENABLED=true` turns the exporter on without a tracing block
+(or with `exporter: none`). The receiver then comes from the plain Langfuse variables:
+
+| Variable | Meaning |
+|---|---|
+| `LANGFUSE_BASE_URL` | traces go to `<base>/api/public/otel/v1/traces`, attachments and gradings to `<base>` |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | the Basic header (through the `SecretManager` when one is initialised); set both or neither |
+| `LANGFUSE_PROJECT` | the project the keys must open (checked before the first export) and the trace's `project:` tag |
+| `LANGFUSE_EXTRA_HEADERS` | `k=v,k2=v2`, extra request headers (a gateway's own header) |
+| `TOLOKAFORGE_TRACING_RUN_ID`, `_RUN_TAG`, `_SESSION_ID`, `_LABEL` | the run's identity when the config carries none |
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` keep precedence when set.
+
 This is how a deployment keeps its project names out of the engine: the Langfuse connector
 (tolokaforge-tools, `langfuse-connector with-destination <name> -- tolokaforge run ...`) resolves
 a named destination from its own registry file, checks the keys, and injects the endpoint, the
@@ -115,9 +128,22 @@ endpoint (`attach_api_base` overrides it), the headers are `OTEL_EXPORTER_OTLP_H
 request has `attach_timeout_s`; the step runs in the trial's thread once the trial is over and
 never raises. `tracing_receipt.json` reports `attachments_registered`, `attachments_uploaded`,
 `attachments_deduplicated`, `attachments_skipped`, `attachments_failed`, `manifests_sent`,
-`manifests_failed`. What the live trace still lacks against an offline upload of the same bundle
-(judge turns, user-simulator turns, scores, INFO log events) the connector adds on a later pass;
-the files themselves are complete.
+`manifests_failed`.
+
+## Gradings: the bundle's verdict on the live trace
+
+Once the bundle is on disk the exporter also sends what the live spans could not know
+(`observability.tracing.gradings`, default on; needs the same REST base as the attachments): the
+run's grading (`grade.yaml`) as a `grading:live:<run_id>` observation under the root with the
+judge transcript (`judge_trajectory.yaml`) nested beneath and its scores attached (`binary_pass`,
+`score`, `component:*`, `criterion:*`, `trace_check:*`, scope `grading`), the trace-level mirror
+of those scores (scope `primary`), the trace's grading keys (`primary_grading`, `gradings`,
+`grading_count`, the grade summary) and the simulated user's turns as generations of the user
+model. Ids follow the contract the offline connector shares (`ids.py`), and the grading carries
+the connector's content fingerprint, so a later connector pass over the same bundle updates
+instead of duplicating. The receipt reports `gradings_sent`, `gradings_failed`, `scores_sent`,
+`user_generations_sent`. Against an offline upload of the same bundle a live trace then lacks only
+the INFO log events and the connector's extra metadata groups.
 
 ## Delivery
 

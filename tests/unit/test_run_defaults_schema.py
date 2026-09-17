@@ -159,6 +159,8 @@ class TestObservabilityConfig:
         assert TracingConfig(exporter="otlp").endpoint is None
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+        monkeypatch.delenv("LANGFUSE_BASE_URL", raising=False)  # the Langfuse switch's source
+        monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
         with pytest.raises(TracingConfigError, match="requires an endpoint"):
             build_trial_observer(
                 ObservabilityConfig(tracing=TracingConfig(exporter="otlp")), engine_run_id="r"
