@@ -256,7 +256,7 @@ def test_per_task_metrics_round_trip_with_every_outcome_class() -> None:
     # The round trip above holds with both fields typed ``str``, so it locks the
     # wire shape and not the vocabulary. These do the typing's own work.
     model = PerTaskMetrics.model_validate(payload)
-    assert [type(reason) for reason in model.infrastructure_aborts] == [TerminationReason] * 3
+    assert [type(reason) for reason in model.infrastructure_aborts] == [TerminationReason] * 4
     assert [type(row.outcome_class) for row in model.outcomes_by_reason.values()] == [
         TrialOutcomeClass
     ] * 4
