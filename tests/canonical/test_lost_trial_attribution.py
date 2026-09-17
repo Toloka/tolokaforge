@@ -258,6 +258,7 @@ def test_a_lost_trial_is_counted_against_the_run_and_scored_not_at_all(
     assert metrics["success_rate"] == 0.5
     assert sorted(metrics["infrastructure_aborts"]) == [
         "api_timeout",
+        "empty_completion",
         "provision_error",
         "rate_limit",
     ]

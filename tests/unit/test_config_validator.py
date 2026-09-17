@@ -409,14 +409,14 @@ class TestUnmappedAgentModelReportsInfoNotError:
     """
 
     def test_unmapped_agent_model_is_not_reported_unable(self):
-        """`provider: google, name: gemini-3.6-flash` sits outside litellm's
+        """`provider: google, name: gemini-legacy-v1` sits outside litellm's
         map — the Gemini entries live under the `gemini/` prefix, not
-        `google/`. The preflight emits an INFO nudge with the overlay entry
-        to declare and exits zero; the "does not appear to support function
-        calling" line is reserved for keys the map carries with the flag
-        explicitly False.
+        `google/`, and no `google/gemini-legacy-v1` entry exists. The
+        preflight emits an INFO nudge with the overlay entry to declare and
+        exits zero; the "does not appear to support function calling" line
+        is reserved for keys the map carries with the flag explicitly False.
 
-        Load-bearing invariant: `google/gemini-3.6-flash` stays absent from
+        Load-bearing invariant: `google/gemini-legacy-v1` stays absent from
         litellm's map. If a future litellm bump adds it under the `google/`
         key, the map answer becomes authoritative and this INFO flips to
         whatever the map declares — desirable, but the assertion will need
@@ -424,7 +424,7 @@ class TestUnmappedAgentModelReportsInfoNotError:
         """
         from tolokaforge.core.config_validator import Severity, validate_run_config
 
-        cfg = _make_config(agent_provider="google", agent_name="gemini-3.6-flash")
+        cfg = _make_config(agent_provider="google", agent_name="gemini-legacy-v1")
         result = validate_run_config(cfg)
 
         assert result.ok, [str(i) for i in result.errors]

@@ -113,6 +113,7 @@ class MaterialiseContext:
     limited_internet_allowlist: tuple[str, ...]
     restricted_services: frozenset[str]
     mount_docker_socket: bool
+    expose_substrate: bool
     log_capture: MaterialiseLogCapture | None
     write_compose_env: WriteComposeEnv | None
     events: RunDisplayEvents
@@ -137,6 +138,7 @@ class RunCtx:
     run_id: str
     manifest: EnvironmentManifest
     mount_docker_socket: bool
+    expose_substrate: bool
     log_capture: LogCaptureConfig | None
     events: RunDisplayEvents
     seeds: Mapping[str, SeedRef]
@@ -153,9 +155,9 @@ class RunSubstrate:
     :attr:`endpoints` are set iff a run-scope stack owns the runner —
     trial-scope-owned runners live on :class:`ComposedEnvHandle` instead.
 
-    :attr:`mount_docker_socket`, :attr:`log_capture`, :attr:`events`
-    are threaded from :class:`RunCtx` onto the substrate at
-    :meth:`SubstrateComposer.materialise_run` time so
+    :attr:`mount_docker_socket`, :attr:`expose_substrate`,
+    :attr:`log_capture`, :attr:`events` are threaded from :class:`RunCtx`
+    onto the substrate at :meth:`SubstrateComposer.materialise_run` time so
     :meth:`SubstrateComposer.provision_trial` materialises task-scope
     and trial-scope stacks against the same policies the run-scope
     stacks were materialised with — the run-wide values a caller set on
@@ -170,6 +172,7 @@ class RunSubstrate:
     endpoints: EnvEndpoints | None
     seeds: Mapping[str, SeedRef]
     mount_docker_socket: bool
+    expose_substrate: bool
     log_capture: LogCaptureConfig | None
     events: RunDisplayEvents
 

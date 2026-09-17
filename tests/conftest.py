@@ -114,15 +114,24 @@ def write_overlay(tmp_path: Path) -> Callable[[dict], str]:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the parity-gate baseline refresh flag.
+    """Register the parity-gate baseline refresh flags.
 
-    The canonical parity tests under
+    ``--refresh-baselines`` — the canonical parity tests under
     :mod:`tests.canonical.test_grader_parity_reference` rewrite their
     committed ``expected_grade.json`` baselines when this flag is set and
-    stop before running equality assertions. Guarded so a run without the
-    flag stays in assert-mode; the flag is intentionally global so mixed
-    collections (``tests/canonical/`` alongside a scratch reproducer)
-    still read the same option through :attr:`pytest.Config.getoption`.
+    stop before running equality assertions.
+
+    ``--live-parity`` — the canonical judge-kind parity lane at
+    :mod:`tests.canonical.test_judge_kind_parity` regenerates each
+    fixture's ``judge_scripts.<kind_name>`` cassette against a live judge
+    model (requires ``OPENAI_API_KEY`` or ``ANTHROPIC_API_KEY``) and
+    skips the runtime-budget assertions (live dispatch has no bounded
+    latency). Without the flag the lane runs entirely from committed
+    cassettes and asserts the runtime budget.
+
+    Both are guarded so a run without either flag stays in assert-mode;
+    both are intentionally global so mixed collections read the same
+    option through :attr:`pytest.Config.getoption`.
     """
     parser.addoption(
         "--refresh-baselines",
@@ -133,6 +142,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "leg's output and stop before asserting equality. Intended for "
             "canonical parity tests only; the resulting diff belongs in the "
             "same commit as the code change that motivated it."
+        ),
+    )
+    parser.addoption(
+        "--live-parity",
+        action="store_true",
+        default=False,
+        help=(
+            "Drive tests/canonical/test_judge_kind_parity.py against a live "
+            "judge model and rewrite each fixture's judge_scripts cassette "
+            "in place. Requires OPENAI_API_KEY or ANTHROPIC_API_KEY; the "
+            "runtime-budget assertions are skipped under this flag."
         ),
     )
 

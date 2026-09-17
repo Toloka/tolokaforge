@@ -2,12 +2,11 @@
 
 The shipping ``JudgeModelProvider`` builds an
 :class:`~tolokaforge.core.llm.client.LLMClient` from a
-:class:`~tolokaforge.core.models.ModelConfig`. This test pins the two-method
-:class:`JudgeModel` shape the judge consumes (``.generate`` from
-:class:`LoopLLMClient`, plus ``.classify_loop_error``) so a rename of either
-method — or a swap of the reference impl for one that does not carry them —
-trips before it lands. No LLM call is made; the client is not driven, only
-inspected.
+:class:`~tolokaforge.core.models.ModelConfig`. This test pins the
+two-method :class:`JudgeModel` shape the judge consumes (``.generate``
+from :class:`LoopLLMClient`, plus ``.classify_loop_error``) so a rename
+of either method — or a swap of the reference impl for one that does
+not carry them — trips before it lands.
 """
 
 from __future__ import annotations

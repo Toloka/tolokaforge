@@ -36,6 +36,7 @@ from tolokaforge.core.compose_materialisation import (
     enforce_network_policy,
     first_published_port,
     inject_runner_credentials,
+    inject_substrate_env_into_runner,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
     render_squid_config,
@@ -1199,3 +1200,51 @@ class TestInjectRunnerCredentials:
         inject_runner_credentials(compose_file, "runner")
 
         assert compose_file.stat().st_mode & 0o777 == 0o600
+
+
+class TestInjectSubstrateEnvIntoRunner:
+    """A task-declared runner opts into the same ``RUNNER_EXPOSE_SUBSTRATE``
+    servicer registration the built-in ``core_stack`` factory sets directly,
+    so snapshot-mode grade-bundle production works against per-trial
+    task-declared compose stacks too."""
+
+    def test_list_form_environment_gains_the_variable(self, tmp_path: Path) -> None:
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services["runner"]["environment"] = ["DB_SERVICE_URL=http://db-service:8000"]
+        compose_file = _write_compose(tmp_path, services)
+
+        inject_substrate_env_into_runner(compose_file, "runner")
+
+        environment = _runner_environment(compose_file)
+        assert "DB_SERVICE_URL=http://db-service:8000" in environment
+        assert "RUNNER_EXPOSE_SUBSTRATE=true" in environment
+
+    def test_dict_form_environment_gains_the_variable(self, tmp_path: Path) -> None:
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+
+        inject_substrate_env_into_runner(compose_file, "runner")
+
+        environment = _runner_environment(compose_file)
+        assert environment["DB_SERVICE_URL"] == "http://db-service:8000"
+        assert environment["RUNNER_EXPOSE_SUBSTRATE"] == "true"
+
+    def test_a_runner_service_absent_from_the_doc_is_refused(self, tmp_path: Path) -> None:
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+        before = compose_file.read_text()
+
+        with pytest.raises(ValueError) as exc:
+            inject_substrate_env_into_runner(compose_file, "worker")
+
+        assert "'worker'" in str(exc.value)
+        assert "'app-db', 'app-service', 'db-service', 'runner'" in str(exc.value)
+        assert compose_file.read_text() == before
+
+    def test_idempotent_when_variable_already_declared(self, tmp_path: Path) -> None:
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services["runner"]["environment"]["RUNNER_EXPOSE_SUBSTRATE"] = "true"
+        compose_file = _write_compose(tmp_path, services)
+        before = compose_file.read_text()
+
+        inject_substrate_env_into_runner(compose_file, "runner")
+
+        assert compose_file.read_text() == before

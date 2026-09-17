@@ -72,6 +72,7 @@ def _stub_run_substrate(
         endpoints=endpoints,
         seeds={},
         mount_docker_socket=False,
+        expose_substrate=False,
         log_capture=None,
         events=MagicMock(),
     )

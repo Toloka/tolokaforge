@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tolokaforge.core.composition_runtime import ComposedEnvHandle
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.runtime import InMemoryRuntimeBackend, RuntimeBackend
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
@@ -134,7 +135,12 @@ class TestPerTrialRuntimeBackendImpl:
 
         fake_client = MagicMock()
         fake_client.runner_address = "per-trial-runner:50051"
-        backend._delegate.runner_client = fake_client
+        backend._delegate._env_handles["trial-1"] = ComposedEnvHandle(
+            trial_id="trial-1",
+            trial_stack_handles=(),
+            trial_endpoints=None,
+            trial_runner_client=fake_client,
+        )
 
         expected_manifest = object()
         fake_substrate_instance = MagicMock()
@@ -154,6 +160,50 @@ class TestPerTrialRuntimeBackendImpl:
         fake_substrate_cls.assert_called_once_with("per-trial-runner:50051", "trial-1")
         fake_serialise.assert_called_once()
         fake_substrate_instance.close.assert_called_once()
+
+    def test_build_grade_bundle_resolves_address_per_trial_not_shared_default(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression lock: each trial's grade bundle dials the runner
+        address ``_runner_client_for`` resolves for *that* trial, never
+        the run-scope default the orchestrator process cannot resolve
+        docker-compose DNS for. Two trials with distinct trial-owned
+        runner clients must each see their own address."""
+        backend = PerTrialRuntimeBackend()
+        default_client = MagicMock()
+        default_client.runner_address = "runner:50051"
+        backend._delegate.runner_client = default_client
+
+        for trial_id, address in (
+            ("trial-a", "127.0.0.1:60001"),
+            ("trial-b", "127.0.0.1:60002"),
+        ):
+            backend.remember_trial_inputs(trial_id, MagicMock(), MagicMock())
+            trial_client = MagicMock()
+            trial_client.runner_address = address
+            backend._delegate._env_handles[trial_id] = ComposedEnvHandle(
+                trial_id=trial_id,
+                trial_stack_handles=(),
+                trial_endpoints=None,
+                trial_runner_client=trial_client,
+            )
+
+        with (
+            patch(
+                "tolokaforge.core.shared_stack_runtime.LiveRunnerCallbackGradingSubstrate",
+                return_value=MagicMock(),
+            ) as fake_substrate_cls,
+            patch(
+                "tolokaforge.core.shared_stack_runtime.serialize_bundle_from_substrate",
+                return_value=object(),
+            ),
+        ):
+            backend.build_grade_bundle("trial-a", out_dir=tmp_path / "a")
+            backend.build_grade_bundle("trial-b", out_dir=tmp_path / "b")
+
+        dialed_addresses = [call.args[0] for call in fake_substrate_cls.call_args_list]
+        assert dialed_addresses == ["127.0.0.1:60001", "127.0.0.1:60002"]
+        assert "runner:50051" not in dialed_addresses
 
     def test_cleanup_trial_clears_pending_inputs(self) -> None:
         backend = PerTrialRuntimeBackend()

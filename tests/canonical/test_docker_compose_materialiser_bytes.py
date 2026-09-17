@@ -156,6 +156,7 @@ def test_single_run_bytes_parity(tmp_path: Path) -> None:
             limited_internet_allowlist=(),
             restricted_services=frozenset(),
             mount_docker_socket=False,
+            expose_substrate=False,
             log_capture=None,
             write_compose_env=None,
             events=_NULL_EVENTS,
@@ -205,6 +206,7 @@ def test_trial_scoped_bytes_parity(tmp_path: Path) -> None:
             limited_internet_allowlist=(),
             restricted_services=frozenset(),
             mount_docker_socket=True,
+            expose_substrate=False,
             log_capture=None,
             write_compose_env=WriteComposeEnv(
                 trial_id="task_a:0", stack_inputs={"DB_NAME": "example"}

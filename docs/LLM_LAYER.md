@@ -2500,6 +2500,27 @@ the guard described in § `UserSimulator` request and reply contract;
 `GenerationResult.guard_rejections` carries the defects of the attempts
 discarded before it, and is empty everywhere else.
 
+### `JudgeModelProvider` construction path
+
+[`LiteLLMJudgeModelProvider`](../tolokaforge/core/grading/default_judge_model_provider.py)
+— the only shipping `JudgeModelProvider` impl — builds a `JudgeModel` by
+constructing `LLMClient(model_config)` directly through this same path;
+`LLMClient` structurally satisfies `JudgeModel` (`.generate` and
+`.classify_loop_error`) without an adapter. Two call sites build against
+it: the runner-inline judge (`CompositeGraderKind.evaluate`, see
+[docs/JUDGE_KINDS.md § Protocol contract](JUDGE_KINDS.md#protocol-contract))
+resolves it by name through the `tolokaforge.judge_model_providers`
+entry-point (`load_judge_model_provider`); the offline
+[`tools/judge-kind-ab`](../tools/judge-kind-ab) live-A/B framework (see
+[docs/JUDGE_KINDS.md § Live A/B](JUDGE_KINDS.md#live-ab-cross-kind-κ-and-cost-on-real-trials))
+constructs `LiteLLMJudgeModelProvider` directly instead, since it only
+ever compares registered `JudgeKind`s against this one provider. A
+signature or behaviour change to `LLMClient` construction — or to the
+`empty_retry_count` / `output_length_retry_count` / `parser_error_retry_count`
+capabilities-based retry opt-in this client exposes to `ToolCallingLoop`
+(see § *Provider-side empty completion* above) — must account for both
+consumers, not just the runner.
+
 ### Outer retry controllers
 
 `generate()` builds a fresh `tenacity.Retrying` per call, so a stubbed

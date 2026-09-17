@@ -115,3 +115,9 @@ class JudgeResult:
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is
     # the most useful artifact for debugging WHY it failed.
     transcript: tuple[dict[str, Any], ...] = ()
+    # Criterion ids per chunk in original rubric order, populated by chunking
+    # kinds (e.g. ``chunked_rubric``). One inner tuple per chunk. Empty tuple for
+    # kinds that do not chunk. Populated even on a whole-trial ERRORED chunked
+    # run so an offline replay can retry the failing chunk without re-planning
+    # boundaries.
+    chunk_boundaries: tuple[tuple[str, ...], ...] = ()

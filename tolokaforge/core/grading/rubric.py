@@ -180,18 +180,14 @@ def _criterion_justification_property(criterion: Criterion) -> dict:
     }
 
 
-def build_submit_report_tool(rubric: Rubric) -> dict:
-    """Generate the terminal ``submit_report`` tool whose args derive from the rubric.
+def _build_report_tool_parameters(rubric: Rubric) -> dict:
+    """Build the shared ``parameters`` JSON schema for a rubric-report tool.
 
-    The tool follows the project's OpenAI function-calling shape
-    (``{"type": "function", "function": {...}}``) — the same shape every other
-    judge read-tool (``judge_tools.py``) uses, so the LLM layer accepts it directly.
-
-    Argument schema (all fields required). Per criterion, the
-    ``<criterion.id>_justification`` string is emitted **before** its verdict
-    field in both ``properties`` insertion order and the ``required`` list, so a
-    provider that generates tool arguments in schema order writes the reasoning
-    before committing the verdict token (reason-then-answer):
+    Per criterion, the ``<criterion.id>_justification`` string is emitted
+    **before** its verdict field in both ``properties`` insertion order and the
+    ``required`` list, so a provider that generates tool arguments in schema
+    order writes the reasoning before committing the verdict token
+    (reason-then-answer):
 
     - one ``<criterion.id>_justification`` string per criterion, which must end
       with a ``VERDICT: MET`` / ``VERDICT: NOT MET`` (binary) or ``SCORE: <value>``
@@ -210,6 +206,8 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
     ``<id>_justification`` key — so this builder need not re-check collisions.
     The reserved-key contract (``_REASONS_KEY`` / ``_JUSTIFICATION_SUFFIX``) is
     duplicated in that validator; keep the two in sync.
+
+    Used by :func:`build_submit_report_tool` to build the tool's argument schema.
     """
     properties: dict[str, dict] = {}
     required: list[str] = []
@@ -228,6 +226,22 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
     required.append(_REASONS_KEY)
 
     return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    }
+
+
+def build_submit_report_tool(rubric: Rubric) -> dict:
+    """Generate the terminal ``submit_report`` tool whose args derive from the rubric.
+
+    The tool follows the project's OpenAI function-calling shape
+    (``{"type": "function", "function": {...}}``) — the same shape every other
+    judge read-tool (``judge_tools.py``) uses, so the LLM layer accepts it directly.
+
+    Argument schema (all fields required) — see :func:`_build_report_tool_parameters`.
+    """
+    return {
         "type": "function",
         "function": {
             "name": SUBMIT_REPORT_TOOL_NAME,
@@ -236,11 +250,7 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
                 "and a justification for every criterion, plus overall reasons. "
                 "Call this exactly once when you have finished evaluating."
             ),
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
+            "parameters": _build_report_tool_parameters(rubric),
         },
     }
 

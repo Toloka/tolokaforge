@@ -709,6 +709,7 @@ class GrpcRunnerClient:
                                 if grade.judge_report.HasField("include_agent_system_prompt")
                                 else {}
                             ),
+                            "chunk_boundaries_json": grade.judge_report.chunk_boundaries_json,
                         }
                         if grade.HasField("judge_report")
                         else None
@@ -1016,6 +1017,7 @@ class SharedStackRuntimeBackend:
         log_capture: LogCaptureConfig | None = None,
         *,
         mount_docker_socket: bool = False,
+        expose_substrate: bool = False,
         events: RunDisplayEvents | None = None,
         composer: SubstrateComposer | None = None,
         connect_timeout: float = 30.0,
@@ -1045,6 +1047,7 @@ class SharedStackRuntimeBackend:
         self.connect_timeout = connect_timeout
         self.connect_retry_interval = connect_retry_interval
         self._per_trial_mode: bool = False
+        self._expose_substrate_per_trial: bool = expose_substrate
         self._run_substrate: RunSubstrate | None = None
         self._env_handles: dict[str, ComposedEnvHandle] = {}
         self._connected_trials: set[str] = set()
@@ -1151,6 +1154,7 @@ class SharedStackRuntimeBackend:
             run_id=self._run_id,
             manifest=self._env_manifest,
             mount_docker_socket=self._mount_docker_socket,
+            expose_substrate=self._expose_substrate_per_trial,
             log_capture=self.log_capture,
             events=self._events,
             seeds=self.seeds,
@@ -1269,13 +1273,16 @@ class SharedStackRuntimeBackend:
         """Produce a grade bundle for ``trial_id`` in ``out_dir`` by
         composing reads over the runner's ``SubstrateService``.
 
-        A fresh :class:`LiveRunnerCallbackGradingSubstrate` dials the same
-        runner address the live-callback grader path uses; the bundle
-        producer helper reads state through that substrate and stitches
-        it with the trajectory + task description stashed by
-        :meth:`remember_trial_inputs`. The substrate's gRPC channel is
-        closed in ``try/finally`` so a serialise failure still releases
-        the transport.
+        A fresh :class:`LiveRunnerCallbackGradingSubstrate` dials the
+        same runner address the live-callback grader path uses; per-trial
+        modes resolve it via :meth:`_runner_client_for` so the substrate
+        reaches the trial's own runner container (not the shared default
+        ``runner:50051`` docker-compose DNS name, which is unresolvable
+        from the orchestrator process). The bundle producer helper reads
+        state through that substrate and stitches it with the trajectory
+        + task description stashed by :meth:`remember_trial_inputs`. The
+        substrate's gRPC channel is closed in ``try/finally`` so a
+        serialise failure still releases the transport.
         """
         if self.runner_client is None:
             raise RuntimeError(
@@ -1289,7 +1296,8 @@ class SharedStackRuntimeBackend:
         trajectory = self._pending_trajectories[trial_id]
         task_description = self._pending_task_descriptions[trial_id]
         judge_model_config = self._pending_judge_model_configs.get(trial_id)
-        substrate = LiveRunnerCallbackGradingSubstrate(self.runner_client.runner_address, trial_id)
+        runner_address = self._runner_client_for(trial_id).runner_address
+        substrate = LiveRunnerCallbackGradingSubstrate(runner_address, trial_id)
         try:
             return serialize_bundle_from_substrate(
                 substrate=substrate,
@@ -1601,6 +1609,7 @@ class SharedStackRuntimeBackend:
             endpoints=None,
             seeds=self.seeds,
             mount_docker_socket=self._mount_docker_socket,
+            expose_substrate=self._expose_substrate_per_trial,
             log_capture=self.log_capture,
             events=self._events,
         )
@@ -1639,6 +1648,7 @@ def shared_runtime_backend_factory(
             seeds=ctx.seeds,
             log_capture=ctx.log_capture,
             mount_docker_socket=ctx.mount_docker_socket,
+            expose_substrate=ctx.expose_substrate,
             events=ctx.events,
             connect_timeout=ctx.connect_timeout_s,
             connect_retry_interval=ctx.connect_retry_interval_s,
@@ -1649,6 +1659,7 @@ def shared_runtime_backend_factory(
             seeds=ctx.seeds,
             log_capture=ctx.log_capture,
             mount_docker_socket=ctx.mount_docker_socket,
+            expose_substrate=ctx.expose_substrate,
             events=ctx.events,
             connect_timeout=ctx.connect_timeout_s,
             connect_retry_interval=ctx.connect_retry_interval_s,

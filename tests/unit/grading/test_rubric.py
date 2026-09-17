@@ -1,6 +1,6 @@
-"""Unit tests for tolokaforge/core/grading/rubric.py — Stage 3 pure helpers.
+"""Unit tests for tolokaforge/core/grading/rubric.py.
 
-Pins real behaviour of the three pure rubric functions:
+Pins real behaviour of the pure rubric functions:
 - ``build_submit_report_tool`` — schema derived from criteria (met vs score).
 - ``parse_submit_report`` — fail-loud validation + score/met derivation.
 - ``aggregate_rubric`` — required-gate + weighted average.

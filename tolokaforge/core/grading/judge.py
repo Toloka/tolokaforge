@@ -193,30 +193,37 @@ class _SubmitReportTermination:
         return None
 
 
-#: Tool result for a non-``submit_report`` call that shared the terminating turn.
-#: Termination fires the instant ``submit_report`` appears, before any tool runs
-#: (``loop.py``: ``should_terminate`` precedes ``_execute_tool_calls``), so the
-#: sibling genuinely never executed — this is an honest "not run" note, not a
-#: fabricated tool output, and it nudges the judge to read before submitting.
-_SIBLING_NOT_EXECUTED = (
-    "not executed: submit_report ended the turn; gather evidence with your read "
-    "tools *before* calling submit_report."
-)
+#: Termination fires the instant the terminating tool appears, before any tool
+#: runs (``loop.py``: ``should_terminate`` precedes ``_execute_tool_calls``), so
+#: a sibling call on that same turn genuinely never executed — this returns an
+#: honest "not run" note, not a fabricated tool output, naming whichever tool
+#: actually ended the turn so the judge isn't told a falsehood about which call
+#: pre-empted its siblings.
+def _sibling_not_executed(terminating_tool: str) -> str:
+    return (
+        f"not executed: {terminating_tool} ended the turn; gather evidence with "
+        "your read tools *before* calling submit_report."
+    )
 
 
 def _answer_terminating_submit_report(
-    messages: list[Message], captured_call_id: str, rejection: str
+    messages: list[Message],
+    captured_call_id: str,
+    rejection: str,
+    *,
+    terminating_tool: str = "submit_report",
 ) -> None:
     """Rewrite the retry tail into a provider-valid tool-call/tool-result cycle.
 
     Locates the assistant message bearing ``captured_call_id`` (the terminating
-    ``submit_report`` turn), drops the loop's trailing ``"submit_report received;
-    judge terminating."`` system message (false on a continued run and what
-    breaks tool-result adjacency), then answers **every** ``tool_call_id`` on that
-    turn with an adjacent ``role=tool`` result: the ``submit_report`` id carries
-    ``rejection``; each sibling id carries :data:`_SIBLING_NOT_EXECUTED`. No
-    non-tool message separates the assistant call from its (contiguous) results,
-    which is what OpenAI/Azure-family providers require.
+    ``terminating_tool`` turn), drops the loop's trailing system message
+    announcing that termination (false on a continued run and what breaks
+    tool-result adjacency), then answers **every** ``tool_call_id`` on that turn
+    with an adjacent ``role=tool`` result: the id matching ``captured_call_id``
+    carries ``rejection``; each sibling id carries the honest "not executed"
+    note naming ``terminating_tool``. No non-tool message separates the
+    assistant call from its (contiguous) results, which is what
+    OpenAI/Azure-family providers require.
     """
     asst_idx = next(
         (
@@ -235,7 +242,9 @@ def _answer_terminating_submit_report(
     terminating = messages[asst_idx]
     del messages[asst_idx + 1 :]
     for tc in terminating.tool_calls or []:
-        content = rejection if tc.id == captured_call_id else _SIBLING_NOT_EXECUTED
+        content = (
+            rejection if tc.id == captured_call_id else _sibling_not_executed(terminating_tool)
+        )
         messages.append(Message(role=MessageRole.TOOL, tool_call_id=tc.id, content=content))
 
 
@@ -244,12 +253,13 @@ def _answer_terminating_submit_report(
 # ---------------------------------------------------------------------------
 
 
-def _format_transcript(transcript: list[dict[str, Any]]) -> str:
+def format_transcript(transcript: list[dict[str, Any]]) -> str:
     """Render the agent transcript to a compact, judge-readable string.
 
     Receives the same ``llm_messages`` list the runner already decoded for
     grading (role/content/tool_calls dicts). Tool calls are summarised inline so
     the judge sees what the agent *did*, not just what it said.
+
     """
     lines: list[str] = []
     for msg in transcript:
@@ -367,7 +377,7 @@ def _build_opening_message(
         f"{policy_block}"
         "Here is the full transcript of the agent's interaction:\n"
         "===== TRANSCRIPT =====\n"
-        f"{_format_transcript(transcript)}\n"
+        f"{format_transcript(transcript)}\n"
         "===== END TRANSCRIPT =====\n\n"
         f"{state_block}"
         f"{closing}"
@@ -670,7 +680,7 @@ class LLMJudge:
                 outcome = loop.run(system_prompt, messages, start_time=time.time())
             except Exception as exc:  # noqa: BLE001 — fail loud, never score on judge crash
                 logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
-                return _errored(
+                return _build_errored_judge_result(
                     metrics,
                     f"Judge loop crashed: {type(exc).__name__}: {exc}",
                     messages,
@@ -685,7 +695,7 @@ class LLMJudge:
 
             if termination.captured_args is None:
                 # Loop ended without submit_report — turn / wall-time / API error.
-                return _errored(
+                return _build_errored_judge_result(
                     metrics,
                     f"Judge did not call submit_report "
                     f"(termination={outcome.termination_reason}, status={outcome.status}).",
@@ -712,7 +722,7 @@ class LLMJudge:
                         attempts=attempts,
                         error=str(exc),
                     )
-                    return _errored(
+                    return _build_errored_judge_result(
                         metrics,
                         f"submit_report invalid after {self._submit_report_retries} retries: {exc}",
                         messages,
@@ -748,7 +758,7 @@ class LLMJudge:
                 gate_failed=aggregate.gate_failed,
                 failed_required=list(aggregate.failed_required_ids),
             )
-            reasons = _build_reasons(
+            reasons = _build_judge_reasons(
                 termination.captured_args,
                 aggregate.failed_required_ids,
                 kb_tools_offered,
@@ -775,7 +785,7 @@ class LLMJudge:
             )
 
 
-def _errored(
+def _build_errored_judge_result(
     metrics: _JudgeMetricsSink,
     reasons: str,
     messages: list[Message],
@@ -834,7 +844,7 @@ def _kb_note(
     return "Judge KB: none offered"
 
 
-def _build_reasons(
+def _build_judge_reasons(
     tool_args: dict[str, Any],
     failed_required_ids: tuple[str, ...],
     kb_tools_offered: tuple[str, ...],
@@ -967,6 +977,7 @@ __all__ = [
     "JudgeStatus",
     "JudgeUsage",
     "JudgeCallLog",
+    "format_transcript",
     "LLMJudge",
     "InMemoryJudge",
     "effective_judge_system_prompt",

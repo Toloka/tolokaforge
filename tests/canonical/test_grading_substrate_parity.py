@@ -355,6 +355,7 @@ _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
 _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
         "combine.pass_threshold",
+        "state_checks.auto_mask_clock_columns",
         "state_checks.compare_columns",
         "state_checks.hash.description",
         "state_checks.id_fields",
@@ -3678,8 +3679,10 @@ def _drive_llm_judge(
     red on claim 2 for a reason with nothing to do with the recording site.
     """
     from tolokaforge.core.grading import default_rubric_evaluator
+    from tolokaforge.core.grading.judge_kinds import single_shot as _judge_kind_single_shot
 
     monkeypatch.setattr(default_rubric_evaluator, "LLMJudge", _StubJudge)
+    monkeypatch.setattr(_judge_kind_single_shot, "LLMJudge", _StubJudge)
     task_description = runner_models.TaskDescription.model_validate(_JUDGE_DRIVER_TASK)
     _register_pack(
         servicer,

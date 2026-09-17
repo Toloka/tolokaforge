@@ -202,6 +202,7 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
         "state_diff_text": report.state_diff_text,
         "read_tools_offered": list(report.read_tools_offered),
         "custom_system_prompt": report.custom_system_prompt,
+        "chunk_boundaries_json": report.chunk_boundaries_json,
     }
     if report.transcript_json:
         out["transcript_json"] = report.transcript_json

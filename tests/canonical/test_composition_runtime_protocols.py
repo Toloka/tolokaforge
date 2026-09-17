@@ -184,6 +184,7 @@ class TestCompanionDataclassFields:
             "limited_internet_allowlist",
             "restricted_services",
             "mount_docker_socket",
+            "expose_substrate",
             "log_capture",
             "write_compose_env",
             "events",
@@ -197,15 +198,15 @@ class TestCompanionDataclassFields:
             "run_id",
             "manifest",
             "mount_docker_socket",
+            "expose_substrate",
             "log_capture",
             "events",
             "seeds",
         ]
 
     def test_run_substrate_fields(self) -> None:
-        """The three trailing fields — :attr:`mount_docker_socket`,
-        :attr:`log_capture`, :attr:`events` — carry run-wide policy
-        that :meth:`SubstrateComposer.provision_trial` reads when it
+        """The trailing fields carry run-wide policy that
+        :meth:`SubstrateComposer.provision_trial` reads when it
         materialises task-scope and trial-scope stacks. Threading them
         via the substrate keeps :class:`SubstrateComposer` from
         re-reading :class:`RunCtx` on every per-trial call."""
@@ -218,6 +219,7 @@ class TestCompanionDataclassFields:
             "endpoints",
             "seeds",
             "mount_docker_socket",
+            "expose_substrate",
             "log_capture",
             "events",
         ]

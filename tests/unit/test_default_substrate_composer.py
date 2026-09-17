@@ -237,6 +237,7 @@ def _run_ctx(
         run_id=run_id,
         manifest=manifest,
         mount_docker_socket=False,
+        expose_substrate=False,
         log_capture=None,
         events=_NULL_EVENTS,
         seeds=seeds or {},
@@ -278,6 +279,7 @@ def _empty_run_sub(run_id: str = "run-a") -> RunSubstrate:
         endpoints=None,
         seeds={},
         mount_docker_socket=False,
+        expose_substrate=False,
         log_capture=None,
         events=_NULL_EVENTS,
     )
@@ -663,6 +665,7 @@ class TestProvisionTrialTrialScopedPlan:
             endpoints=None,
             seeds={},
             mount_docker_socket=False,
+            expose_substrate=False,
             log_capture=run_log_capture,
             events=events_sink,  # type: ignore[arg-type]
         )
@@ -736,6 +739,7 @@ class TestProvisionTrialTrialScopedPlan:
             endpoints=None,
             seeds={},
             mount_docker_socket=True,
+            expose_substrate=False,
             log_capture=None,
             events=_NULL_EVENTS,
         )
@@ -995,6 +999,7 @@ class TestTeardownIdempotency:
             endpoints=None,
             seeds={},
             mount_docker_socket=False,
+            expose_substrate=False,
             log_capture=None,
             events=_NULL_EVENTS,
         )
@@ -1029,6 +1034,7 @@ class TestRunnerClientAndEndpointsResolution:
             endpoints=EnvEndpoints(runner_url="http://run:1"),
             seeds={},
             mount_docker_socket=False,
+            expose_substrate=False,
             log_capture=None,
             events=_NULL_EVENTS,
         )
@@ -1055,6 +1061,7 @@ class TestRunnerClientAndEndpointsResolution:
             endpoints=EnvEndpoints(runner_url="http://run:1"),
             seeds={},
             mount_docker_socket=False,
+            expose_substrate=False,
             log_capture=None,
             events=_NULL_EVENTS,
         )

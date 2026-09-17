@@ -10,9 +10,9 @@ dialled at the runner's substrate address.
 boot. Five holistic seams (custom-check executor, judge-model provider,
 transcript-rule matcher, state-check backends, substrate class) are
 loaded from :mod:`tolokaforge.core.plugin_registry` and cached on the
-instance; the sixth seam — the rubric evaluator — is loaded per-``grade``
+instance; the sixth seam — the judge kind — is loaded per-``grade``
 call because :class:`~tolokaforge.runner.models.LLMJudgeConfig.customization`
-shapes its construction and rides on the wire per trial.
+shapes the per-``evaluate`` kwargs and rides on the wire per trial.
 
 Each :meth:`grade` call validates the required v2 wire fields, deserialises
 the run-scoped :class:`~tolokaforge.runner.models.RunnerGradingConfig` /
@@ -68,8 +68,8 @@ from tolokaforge.core.models import (
 from tolokaforge.core.plugin_registry import (
     load_custom_check_executor,
     load_grading_substrate,
+    load_judge_kind,
     load_judge_model_provider,
-    load_rubric_evaluator,
     load_state_check_backend,
     load_transcript_rule_matcher,
 )
@@ -91,7 +91,6 @@ from tolokaforge.runner.protocol import parse_termination_reason
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge_result import JudgeResult
-    from tolokaforge.core.grading.rubric_evaluator import RubricEvaluator
     from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.grading.transcript import TranscriptEvaluationResult
     from tolokaforge.core.logging import StructuredLogger
@@ -107,8 +106,9 @@ class GraderCompositeDispatch:
     seams over a :class:`LiveRunnerCallbackGradingSubstrate`.
 
     Constructed once per grader process. Five holistic seams cache at
-    construction; the rubric-evaluator seam loads per-call because the
-    trial's :class:`LLMJudgeConfig.customization` shapes its context.
+    construction; the judge-kind seam loads per-call because the trial's
+    :class:`LLMJudgeConfig.customization` shapes the per-``evaluate``
+    kwargs (KB gate, custom system-prompt, include-agent-system-prompt).
     Every :meth:`grade` call constructs a fresh substrate against the
     trial's ``runner_substrate_address``, extracts the pack's
     ``tool_artifacts`` bundle if present, runs the composite mirroring
@@ -489,7 +489,7 @@ class GraderCompositeDispatch:
         unstable_fields: set[tuple[str, str]],
         components: CompositeGradeComponents,
     ) -> tuple[JudgeResult | None, JudgeStatus, bool, dict[str, KeyAccountingRecord]]:
-        """Load the rubric-evaluator seam, render the state diff, and grade.
+        """Load the judge-kind seam, render the state diff, and grade.
 
         Returns ``(judge_result, wire_judge_status, judge_gate_failed, accounted_keys)``.
         A skipped judge (missing config or empty transcript) reports
@@ -505,10 +505,16 @@ class GraderCompositeDispatch:
             return None, JudgeStatus.UNSPECIFIED, False, {}
         if not llm_messages:
             return None, JudgeStatus.UNSPECIFIED, False, {LLM_JUDGE_KEY: NO_JUDGE_MESSAGES_SKIP}
-        assert (
-            judge_model_config is not None
-        ), "llm_judge branch requires judge_model_config — validated above"
-        rubric_evaluator = self._build_rubric_evaluator(llm_judge_config)
+        assert judge_model_config is not None, "llm_judge branch requires judge_model_config"
+        judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
+        customization = llm_judge_config.customization
+        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+        custom_system_prompt = customization.system_prompt if customization else None
+        include_agent_system_prompt = (
+            customization.include_agent_system_prompt
+            if customization and customization.include_agent_system_prompt is not None
+            else True
+        )
         state_diff_text = composite.build_judge_state_diff(
             trial_id=trial_id,
             substrate=substrate,
@@ -521,7 +527,12 @@ class GraderCompositeDispatch:
             trial_id=trial_id,
             config=llm_judge_config,
             substrate=substrate,
-            rubric_evaluator=rubric_evaluator,
+            judge_kind=judge_kind,
+            judge_model_provider=self._judge_model_provider,
+            disable_knowledge_search=disable_knowledge_search,
+            custom_system_prompt=custom_system_prompt,
+            include_agent_system_prompt=include_agent_system_prompt,
+            kind_config=llm_judge_config.kind_config,
             llm_messages=llm_messages,
             judge_model_config=judge_model_config,
             extra_read_tools=[],
@@ -535,32 +546,6 @@ class GraderCompositeDispatch:
         if judge_result.score is not None:
             components.llm_judge_score = judge_result.score
         return judge_result, JudgeStatus.COMPLETED, judge_gate_failed, accounted
-
-    def _build_rubric_evaluator(self, llm_judge_config: Any) -> RubricEvaluator:
-        """Load the ``llm_judge`` rubric-evaluator seam with per-trial context.
-
-        Mirrors the runner's ``_grade_llm_judge`` construction — the trial's
-        :attr:`LLMJudgeConfig.customization` shapes the KB gate, custom
-        system-prompt override, and the include-agent-system-prompt default.
-        """
-        from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
-
-        customization = llm_judge_config.customization
-        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
-        custom_system_prompt = customization.system_prompt if customization else None
-        include_agent_system_prompt = (
-            customization.include_agent_system_prompt
-            if customization and customization.include_agent_system_prompt is not None
-            else True
-        )
-        return load_rubric_evaluator("llm_judge")(
-            RubricEvaluatorContext(
-                judge_model_provider=self._judge_model_provider,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
-            )
-        )
 
 
 def _build_grade(

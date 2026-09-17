@@ -1,6 +1,6 @@
-"""``load_rubric_evaluator`` discovery + composite dispatch through the seam.
+"""``load_rubric_evaluator`` discovery + third-party evaluator driveability.
 
-Locks two seams the :class:`RubricEvaluator` design commits to:
+Locks two invariants the :class:`RubricEvaluator` seam commits to:
 
 1. :func:`~tolokaforge.core.plugin_registry.load_rubric_evaluator` resolves
    an evaluator registered via ``importlib.metadata`` entry-points. The
@@ -10,11 +10,14 @@ Locks two seams the :class:`RubricEvaluator` design commits to:
    deterministic factory. No wheel pollution: the demo stays discoverable
    only under the monkeypatched mapping.
 
-2. **Composite dispatch through the Protocol.**
-   :func:`composite.grade_llm_judge` drives the resolved evaluator and
-   its ``JudgeResult.score`` matches the deterministic hash the demo
-   emits — proving the composite reaches the plug-in evaluator without
-   ever touching :class:`LLMJudge`.
+2. **Third-party evaluator drives its own ``evaluate`` directly.** The
+   composite's LLM-judge dispatch routes through the newer
+   ``tolokaforge.judge_kinds`` seam, so a downstream integration that
+   still registers under ``tolokaforge.rubric_evaluators`` calls
+   ``.evaluate(...)`` on its resolved evaluator itself. Its
+   :class:`JudgeResult.score` matches the deterministic hash the demo
+   emits — proving the group is still resolvable and its resolved
+   evaluator still drives correctly.
 """
 
 from __future__ import annotations
@@ -31,7 +34,6 @@ from tests.utils.rubric_evaluator_demo import (
     _rubric_signature,
     _test_rubric_evaluator_factory,
 )
-from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.core.logging import StructuredLogger
@@ -138,12 +140,14 @@ def test_loader_resolves_the_monkeypatched_demo_evaluator(
         _clear_discovery_cache()
 
 
-def test_composite_dispatches_through_the_resolved_demo_evaluator(
+def test_resolved_demo_evaluator_drives_evaluate_directly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Composite's ``grade_llm_judge`` produces a :class:`JudgeResult`
-    whose score is the deterministic hash the demo emits — end-to-end
-    proof the seam threads the resolved evaluator through the dispatch.
+    """The resolved third-party evaluator drives its own ``.evaluate(...)``
+    against the substrate + rubric + evidence, and its
+    :class:`JudgeResult.score` matches the deterministic hash the demo
+    emits — proving the ``tolokaforge.rubric_evaluators`` group is still
+    resolvable and its resolved evaluator still drives correctly.
     """
     _inject_demo_evaluator(monkeypatch)
     try:
@@ -151,19 +155,16 @@ def test_composite_dispatches_through_the_resolved_demo_evaluator(
         config = LLMJudgeConfig(rubric=rubric)
         evaluator = load_rubric_evaluator("test_rubric_evaluator")(MagicMock())
 
-        result = composite.grade_llm_judge(
-            trial_id="task:0",
-            config=config,
-            substrate=_substrate(),
-            rubric_evaluator=evaluator,
-            llm_messages=[
-                {"role": "system", "content": "policy"},
+        result = evaluator.evaluate(
+            rubric=config.rubric,
+            agent_system_prompt="policy",
+            transcript=[
                 {"role": "user", "content": "please refund me"},
             ],
+            substrate=_substrate(),
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
             state_diff=None,
-            logger=_logger(),
         )
 
         expected_score = _hash_to_score(_rubric_signature(rubric))

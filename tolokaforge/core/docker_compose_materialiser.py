@@ -11,9 +11,10 @@ structurally. Each :meth:`materialise` call:
    and ADR-0044 § 5 INV-10).
 2. Copies the compose context, optionally writes the per-trial
    ``.env``, applies the run's :class:`NetworkPolicy`, injects the
-   engine's credential payload into the runner service, and mounts the
+   engine's credential payload into the runner service, mounts the
    docker socket into the runner when the run needs compose-variant
-   tools.
+   tools, and sets ``RUNNER_EXPOSE_SUBSTRATE=true`` on the runner when
+   the run exposes the grading substrate.
 3. Constructs a ``testcontainers.compose.DockerCompose`` via the
    injectable :attr:`DockerComposeMaterialiser.docker_compose_factory`
    seam (defaults to the real class; tests substitute a stub) and
@@ -48,6 +49,7 @@ from tolokaforge.core.compose_materialisation import (
     compose_container_to_snapshot,
     copy_compose_context,
     inject_runner_credentials,
+    inject_substrate_env_into_runner,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
     resolve_host_port,
@@ -148,6 +150,8 @@ class DockerComposeMaterialiser:
                 )
                 if ctx.mount_docker_socket:
                     mount_docker_socket_into_runner(compose_file, decl.runner_service)
+                if ctx.expose_substrate:
+                    inject_substrate_env_into_runner(compose_file, decl.runner_service)
             compose = self.docker_compose_factory(
                 context=str(temp_dir),
                 compose_file_name=decl.compose_file.name,

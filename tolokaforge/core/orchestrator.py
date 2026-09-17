@@ -1443,6 +1443,9 @@ class Orchestrator:
                 events=self._events,
                 mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks)
                 or _run_uses_coding_harness(self.config),
+                expose_substrate=(
+                    self.config.grader is not None and self.config.grader.expose_substrate
+                ),
                 per_trial_mode=per_trial_mode,
                 connect_timeout_s=connect_timeout_s,
                 connect_retry_interval_s=connect_retry_interval_s,

@@ -252,6 +252,7 @@ class TestInfrastructureAbortsLeaveTheDenominator:
         assert metrics["measured_trials"] == 2
         assert metrics["infrastructure_aborts"] == {
             "api_timeout": 0,
+            "empty_completion": 0,
             "provision_error": 0,
             "rate_limit": 2,
         }
