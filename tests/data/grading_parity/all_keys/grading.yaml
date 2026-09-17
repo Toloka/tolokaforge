@@ -30,6 +30,12 @@ state_checks:
   id_fields:
     widgets: widget_id
   relaxed_validation: true
+  # auto_mask_clock_columns is declared here so the manifest-coverage gate for
+  # state_checks.auto_mask_clock_columns is satisfied. The pack has no clock
+  # column in its widget table, so the flag's masking is inert for this trial —
+  # presence of the key is what proves the adapter translation carries it end
+  # to end.
+  auto_mask_clock_columns: true
   # compare_columns is declared here so the manifest-coverage gate for
   # state_checks.compare_columns is satisfied. This pack's expect_initial_state
   # source does not hash the widgets.details column asymmetrically, so the rule

@@ -328,6 +328,7 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
         "state_checks.numeric_string_fields",
+        "state_checks.auto_mask_clock_columns",
         "combine.method",
         "combine.weights",
         "trace_checks",
