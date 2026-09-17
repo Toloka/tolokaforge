@@ -328,7 +328,6 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
         "state_checks.numeric_string_fields",
-        "state_checks.auto_mask_clock_columns",
         "combine.method",
         "combine.weights",
         "trace_checks",
@@ -356,6 +355,7 @@ _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
 _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
         "combine.pass_threshold",
+        "state_checks.auto_mask_clock_columns",
         "state_checks.compare_columns",
         "state_checks.hash.description",
         "state_checks.id_fields",

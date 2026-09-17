@@ -12,7 +12,7 @@ corpus fixture's YAML cassette.
 
 A turn carrying both text AND tool calls is recorded as its tool-call
 list only (text discarded) — the same limitation
-:class:`ScriptedLLMClient` itself has, since today's three shipped judge
+:class:`ScriptedLLMClient` itself has, since today's shipped judge
 kinds never emit mixed turns.
 """
 
@@ -21,7 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 from tolokaforge.core.grading.judge_model_provider import JudgeModel
-from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.loop import TerminationDecision
 from tolokaforge.core.models import Message
@@ -44,10 +43,6 @@ class RecordingLLMClient:
     def __init__(self, delegate: JudgeModel) -> None:
         self._delegate = delegate
         self._recorded: list[str | list[tuple[str, dict[str, Any]]]] = []
-
-    @property
-    def capabilities(self) -> ModelCapabilities:
-        return self._delegate.capabilities
 
     def generate(
         self,
