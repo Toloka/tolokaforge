@@ -24,7 +24,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,27 @@ _log = logging.getLogger(__name__)
 
 MEDIA_FIELD = "metadata"
 OTEL_PATH_MARKER = "/api/public/otel"
+# the ingestion API rejects bodies over about 4.5 MB; batches stay well below (the connector's cap)
+MAX_BATCH_BYTES = 3_500_000
+
+
+def iter_batches(
+    events: list[dict[str, Any]], *, batch_size: int = 40, max_bytes: int = MAX_BATCH_BYTES
+) -> Iterator[list[dict[str, Any]]]:
+    """Split events into ingestion batches of at most ``batch_size`` events whose serialised
+    size stays under ``max_bytes`` (one oversized event still travels alone)."""
+    batch: list[dict[str, Any]] = []
+    size = 0
+    for event in events:
+        event_size = len(json.dumps(event).encode("utf-8")) + 1
+        if batch and (size + event_size > max_bytes or len(batch) >= max(1, batch_size)):
+            yield batch
+            batch, size = [], 0
+        batch.append(event)
+        size += event_size
+    if batch:
+        yield batch
+
 
 # method, url, headers, body, timeout -> (status, response body)
 Opener = Callable[[str, str, Mapping[str, str], "bytes | None", float], "tuple[int, bytes]"]
@@ -164,13 +186,19 @@ class LangfuseAttachments:
         """The ``attach`` mode this step was built with (``all`` / ``core`` / ``none``)."""
         return self._mode
 
-    def ingest(self, events: list[dict[str, Any]], *, batch_size: int = 40) -> None:
-        """Send ingestion events (``POST /api/public/ingestion``) in batches under the legacy
-        API's payload cap; raises ``LangfuseApiError`` on an HTTP failure or a rejected event
-        (the first rejection is named). Runs under the trial's attachment budget when one is
-        open, else under the plain timeout."""
-        for start in range(0, len(events), max(1, batch_size)):
-            batch = events[start : start + max(1, batch_size)]
+    def ingest(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        batch_size: int = 40,
+        max_bytes: int = MAX_BATCH_BYTES,
+    ) -> None:
+        """Send ingestion events (``POST /api/public/ingestion``) in batches of at most
+        ``batch_size`` events and ``max_bytes`` serialised bytes (the legacy API's payload cap);
+        raises ``LangfuseApiError`` on an HTTP failure or a rejected event (the first rejection
+        is named). Runs under the trial's budget when one is open, else under the plain
+        timeout."""
+        for batch in iter_batches(events, batch_size=batch_size, max_bytes=max_bytes):
             status, raw = self._call("POST", "/api/public/ingestion", {"batch": batch})
             if not 200 <= status < 300:
                 raise LangfuseApiError(f"POST /api/public/ingestion: HTTP {status}", status=status)
@@ -183,6 +211,41 @@ class LangfuseAttachments:
                 raise LangfuseApiError(
                     f"ingestion rejected an event: {first.get('status')} {first.get('message')}"
                 )
+
+    def register_media(
+        self, trace_id: str, observation_id: str | None, field: str, content_type: str, raw: bytes
+    ) -> str | None:
+        """Register (and upload when the receiver asks) inline bytes, e.g. a base64 image block
+        of a message, on a trace or one of its observations; returns the media token, or None
+        when no media id was issued or the bytes failed the data-safety scan. Runs under the
+        open budget; raises like the file path does."""
+        if self._scan.scan(raw):
+            return None
+        file = TrialFile(
+            name="inline", original=raw, payload=raw, content_type=content_type, encoding="none"
+        )
+        registered = self._register_and_upload(
+            trace_id, file, observation_id=observation_id, field=field
+        )
+        if registered is None:
+            return None
+        media_id, _ = registered
+        return f"@@@langfuseMedia:type={content_type}|id={media_id}|source=bytes@@@"
+
+    def scan_events(self, events: list[dict[str, Any]]) -> list[str]:
+        """The outbound data-safety gate over the serialised ingestion events: the rules hit
+        (empty when the bytes are clean); the caller sends nothing on a hit."""
+        return self._scan.scan(json.dumps(events, ensure_ascii=False).encode("utf-8"))
+
+    @contextmanager
+    def budget(self) -> Iterator[None]:
+        """Open the trial's budget for a sequence of calls (the attachment step and the
+        trial-end projection share one); closed on exit whatever happened."""
+        self._deadline = self._clock() + self._budget_s
+        try:
+            yield
+        finally:
+            self._deadline = None
 
     def _remaining(self) -> float:
         if self._deadline is None:
@@ -205,7 +268,24 @@ class LangfuseAttachments:
         """Register and upload every file of the trial directory (``mode``), then send the
         manifest together with ``metadata`` (the trial's final status, so the trace ends with it
         whatever order the receiver merged the spans in); returns the counts. Never raises."""
+        counts, _ = self.attach_with_manifest(
+            trace_id, trial_dir, trace_timestamp=trace_timestamp, metadata=metadata
+        )
+        return counts
+
+    def attach_with_manifest(
+        self,
+        trace_id: str,
+        trial_dir: Path,
+        *,
+        trace_timestamp: datetime | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> tuple[AttachCounts, dict[str, Any]]:
+        """:meth:`attach`, also returning manifest v2 as sent (for the trial-end projection,
+        whose trace metadata carries the same complete manifest). Runs under the budget the
+        caller opened, else under one of its own."""
         counts = AttachCounts()
+        manifest = build_manifest(trial_dir, [], [])
         attached: list[AttachedFile] = []
         skipped: list[dict[str, str]] = []
         try:
@@ -217,8 +297,10 @@ class LangfuseAttachments:
             # the receiver gave up on earlier trials: count, do not wait again
             counts.failed = len(files)
             counts.manifests_failed = 1
-            return counts
-        self._deadline = self._clock() + self._budget_s
+            return counts, manifest
+        own_budget = self._deadline is None
+        if own_budget:
+            self._deadline = self._clock() + self._budget_s
         budget_spent = False
         for file in files:
             if not allowed_attachment(file.name):
@@ -278,7 +360,8 @@ class LangfuseAttachments:
             reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
             _log.warning("attachments: manifest of trace %s not sent: %s", trace_id, reason)
             counts.manifests_failed += 1
-        self._deadline = None
+        if own_budget:
+            self._deadline = None
         # the breaker: a trial whose every attempt failed (nothing registered, nothing sent)
         # counts against the receiver; a trial that got anything through resets the count
         if files and counts.registered == 0 and counts.manifests_sent == 0:
@@ -293,7 +376,23 @@ class LangfuseAttachments:
                 )
         elif counts.registered or counts.manifests_sent:
             self._consecutive_failures = 0
-        return counts
+        return counts, manifest
+
+    def note_trial_outcome(self, *, reached: bool) -> None:
+        """Feed the breaker from the trial-end projection when no file step ran (``attach:
+        none``): a trial whose pass reached nothing counts against the receiver."""
+        if reached:
+            self._consecutive_failures = 0
+            return
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._breaker_failures and not self._tripped:
+            self._tripped = True
+            _log.warning(
+                "attachments: %d trial(s) in a row reached nothing at %s; the step is off for"
+                " the rest of the run",
+                self._consecutive_failures,
+                self._api_base,
+            )
 
     # -- Langfuse calls -------------------------------------------------------------------------
 
@@ -305,21 +404,28 @@ class LangfuseAttachments:
             data = json.dumps(body).encode("utf-8")
         return self._open(method, f"{self._api_base}{path}", headers, data, self._remaining())
 
-    def _register_and_upload(self, trace_id: str, file: TrialFile) -> tuple[str, bool] | None:
-        """Register (link) the file's bytes on the trace; PUT them only when Langfuse asks.
-        Returns (media id, uploaded by this call) or None when no media id was issued."""
+    def _register_and_upload(
+        self,
+        trace_id: str,
+        file: TrialFile,
+        *,
+        observation_id: str | None = None,
+        field: str = MEDIA_FIELD,
+    ) -> tuple[str, bool] | None:
+        """Register (link) the file's bytes on the trace (or on ``observation_id`` under
+        ``field``); PUT them only when Langfuse asks. Returns (media id, uploaded by this call)
+        or None when no media id was issued."""
         digest = hashlib.sha256(file.payload).digest()
-        status, raw = self._call(
-            "POST",
-            "/api/public/media",
-            {
-                "traceId": trace_id,
-                "field": MEDIA_FIELD,
-                "contentType": file.content_type,
-                "contentLength": len(file.payload),
-                "sha256Hash": base64.b64encode(digest).decode(),
-            },
-        )
+        body: dict[str, Any] = {
+            "traceId": trace_id,
+            "field": field,
+            "contentType": file.content_type,
+            "contentLength": len(file.payload),
+            "sha256Hash": base64.b64encode(digest).decode(),
+        }
+        if observation_id:
+            body["observationId"] = observation_id
+        status, raw = self._call("POST", "/api/public/media", body)
         if not 200 <= status < 300:
             raise LangfuseApiError(f"POST /api/public/media: HTTP {status}")
         answer = json.loads(raw or b"{}")

@@ -23,6 +23,9 @@ observability:
     model_name_normalizer: toloka                   # default: none (raw provider/name)
     model_name_rules: tools/benchmark-results-collector/data/model_name_rules.toml
     attach: all                                     # all | core | none: the trial's files as media (below)
+    projection: full                                # full | gradings | none: what the trial-end pass sends (below)
+    profile: deploy/langfuse_tracing.toml           # the deployment profile (below); or TOLOKAFORGE_TRACING_PROFILE
+    # environment: development                      # a literal native environment; LANGFUSE_ENVIRONMENT wins
 ```
 
 Install the extra: `pip install 'tolokaforge[otel]'`. The receiver's credentials travel in the
@@ -53,6 +56,7 @@ records `expect_project` and `project_verified`.
 | `LANGFUSE_PROJECT` | the project the keys must open (checked before the first export) and the trace's `project:` tag |
 | `LANGFUSE_EXTRA_HEADERS` | `k=v,k2=v2`, extra request headers (a gateway's own header) |
 | `TOLOKAFORGE_TRACING_RUN_ID`, `_RUN_TAG`, `_SESSION_ID`, `_LABEL` | the run's identity when the config carries none |
+| `TOLOKAFORGE_TRACING_PROFILE`, `LANGFUSE_ENVIRONMENT`, `TOLOKAFORGE_TRACING_METADATA` | the deployment profile, the environment override and the per-run metadata (the profile section below) |
 
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` keep precedence when set.
 
@@ -76,15 +80,15 @@ bundle records `trajectory.attempt_id`, and a run with tracing on writes `run_id
 (`run_id`, `run_tag`) into the run directory; the uploader reads both.
 
 Tags: `harness:tolokaforge`, the model tags (`model:<canonical>`, plus `model_vendor:` and
-`model_family:` under the normalizer) and `task:<task_id>` are set by the exporter; `tags:` adds
-`<prefix>:<value>` entries and may not use those prefixes. The engine validates only the syntax
-(`prefix:value`, lowercase prefix, no whitespace) and the reserved prefixes; which prefixes and
-values a deployment allows is the deployment's business (the arena keeps its vocabulary and a
-profile file in `tolokaforge-tasks`, and the offline uploader that shares the trace with this
-exporter enforces it), so the run-config generator of the private integration writes finished,
-validated tags here. Judge generations are not exported live in this version
-(the judge may run in the runner service); the uploader's `attach-grades` adds them and the
-Langfuse scores after the run.
+`model_family:` under the normalizer) and `task:<task_id>` are set by the exporter; `tags:`, the
+launcher's `TOLOKAFORGE_TRACING_TAGS` and the profile's fixed tags add `<prefix>:<value>` entries
+and may not use those prefixes. The engine validates only the syntax (`prefix:value`, lowercase
+prefix, no whitespace) and the reserved prefixes; which prefixes and values a deployment allows is
+the deployment's business (the arena keeps its vocabulary and a profile file in
+`tolokaforge-tasks`, and the offline uploader that shares the trace with this exporter enforces
+it), so the run-config generator of the private integration writes finished, validated tags here.
+Judge generations are not exported live (the judge may run in the runner service); the trial-end
+pass adds them from the bundle together with the Langfuse scores.
 
 ## Model names as configuration
 
@@ -130,20 +134,93 @@ never raises. `tracing_receipt.json` reports `attachments_registered`, `attachme
 `attachments_deduplicated`, `attachments_skipped`, `attachments_failed`, `manifests_sent`,
 `manifests_failed`.
 
-## Gradings: the bundle's verdict on the live trace
+## The trial-end pass: the trace completed from the bundle
 
-Once the bundle is on disk the exporter also sends what the live spans could not know
-(`observability.tracing.gradings`, default on; needs the same REST base as the attachments): the
-run's grading (`grade.yaml`) as a `grading:live:<run_id>` observation under the root with the
-judge transcript (`judge_trajectory.yaml`) nested beneath and its scores attached (`binary_pass`,
-`score`, `component:*`, `criterion:*`, `trace_check:*`, scope `grading`), the trace-level mirror
-of those scores (scope `primary`), the trace's grading keys (`primary_grading`, `gradings`,
-`grading_count`, the grade summary) and the simulated user's turns as generations of the user
-model. Ids follow the contract the offline connector shares (`ids.py`), and the grading carries
-the connector's content fingerprint, so a later connector pass over the same bundle updates
-instead of duplicating. The receipt reports `gradings_sent`, `gradings_failed`, `scores_sent`,
-`user_generations_sent`. Against an offline upload of the same bundle a live trace then lacks only
-the INFO log events and the connector's extra metadata groups.
+Once the bundle is on disk the exporter completes the trace from the files
+(`observability.tracing.projection`, `full` by default; needs the same REST base as the
+attachments): the **default projection** of a persisted trial, the same records the offline
+bundle uploader writes, so a trace traced live never needs a connector pass. The live spans are
+the preview, the bundle is the truth: every observation is re-sent from the persisted files under
+the shared id contract (an upsert on the receiver), and the trace metadata is sent with every key
+of the fixed schema explicit (the receiver merges metadata and an omitted key would persist).
+
+| From the bundle | Records |
+|---|---|
+| `trajectory.yaml`, `metrics.yaml` | the root observation, one generation per agent turn with its paired usage and cost (by generation id, else positionally), one generation per simulated user turn (the user model, no usage), the trace's input, output, timestamp, status and totals |
+| `tool_log.yaml` | one tool span per recorded call, the grader's view (status, executor, latency, sequence, untruncated output) with the transcript's agent-facing text beside it when it differs; the user simulator's own tool calls too |
+| `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` | the `grading:live:<run_id>` observation with the judge turns beneath, its scores and the trace-level mirror (`gradings: false` leaves the grading out, like the offline `--grades none`) |
+| `logs.yaml`, `trajectory.user_reply_guard_events`, `provision_stage`, the run's `LIMIT_HIT.json`, `services/_capture.yaml` | events (WARNING and ERROR always, INFO under `attach: all`) |
+| `task.yaml`, `env.yaml`, `engine_run_state.json` | the metadata groups: task facts, the three model configurations with their presets and policies, the environment identity, the redaction stamp, the models fingerprint |
+| base64 image blocks in messages | media registered on the observation, the token in its output (raw base64 never enters an ingestion body) |
+| the attachment step | manifest v2, complete, in the same trace body |
+
+`projection: gradings` sends only the grading, its scores and the user turns (the behaviour of
+the gradings amendment); `none` sends the attachments alone. The pass runs under the attachment
+step's budget and breaker, the serialised events go through the same data-safety scan as the
+files (a hit sends nothing and counts), and nothing raises into the trial. The receipt reports
+`projections_sent`, `projections_failed`, `observations_sent`, `events_sent`, `scores_sent`,
+`gradings_sent`, `user_generations_sent`, `media_uploaded`, `media_failed`.
+
+Parity with the offline uploader is guarded by a golden test that lives in both repositories: a
+synthetic bundle (`tests/unit/observability/parity_bundle.py`, byte-identical in the connector)
+projected by each side and compared as normalised event lists modulo envelope ids, timestamps,
+tag order and the documented **producer keys**, whose values differ by producer by design:
+`upload_mode` (`live`), `uploader_version` (this engine's `tolokaforge-<version>`),
+`trace_time_source` (`live`), `tag_origins` (where each tag came from: `config`, `launcher`,
+`profile`, `receiver`), `attach_mode`, `project_verified`. The live root span adds three keys no
+bundle projection carries: `generations_observed`, `tool_calls_observed`, `error`.
+
+## The deployment profile
+
+Everything a deployment decides about its traces and the engine must not know as a value arrives
+at run time in one TOML file, `observability.tracing.profile` or `TOLOKAFORGE_TRACING_PROFILE`
+(`tolokaforge/observability/profile.py`; `python -m tolokaforge.observability.profile <file>`
+validates one). Neutral example:
+
+```toml
+schema = 1
+version = "acme-2026.09.17.1"              # joins the native `version` field
+tag_profile_version = "acme-tags-2026.09.16.1"   # the `tag_profile_version` metadata key (default: version)
+
+[environment]                              # the receiver's native environment
+from_tag = "run_kind"                      # or: literal = "development"
+default = "development"
+[environment.values]
+eval = "production"
+
+[tags]
+fixed = ["team:pilot"]                     # tags every trace of the deployment carries
+mirror_to_metadata = ["team", "project", "dataset", "source", "run_kind", "scope", "config",
+                      "domain", "ci_run", "ci_chain"]   # tag prefixes written into trace metadata (`none` when absent)
+
+[metadata.fixed]                           # metadata every trace carries
+deployment = "pilot"
+
+[models]
+rules = "model_name_rules.toml"            # selects the toloka normalizer with these rules (relative to this file)
+```
+
+The engine validates the shape and applies it mechanically. A profile that does not load, an
+environment outside the receiver's alphabet (lowercase letters, digits, `-`, `_`, at most 40
+characters, never starting with `langfuse`), a fixed tag under a prefix the exporter sets itself,
+two values under one prefix, or a metadata key the projection writes itself is a configuration
+error at run start.
+
+**Per-run values from the launcher.** `LANGFUSE_ENVIRONMENT` (a literal) overrides the profile's
+rule and the config's `environment`; `TOLOKAFORGE_TRACING_METADATA` (`key=value,...`) carries the
+per-run metadata the offline command receives as `--metadata` (profile fixed keys < config
+`metadata` < the variable; a key of the fixed schema is refused). The Langfuse connector's
+`with-destination` speaks this dialect (`--tracing-profile`, `--metadata`, the registry entry's
+`environment`), so one launcher serves a local run and the CI.
+
+**Native fields.** `environment` rides on every span (the receiver fixes a trace's environment at
+the first write it sees, verified on Langfuse 3.205.1 on 2026-09-17: a trace written without it
+reads `default` and no later update repairs it) and on every ingestion body of the trial-end pass
+(observations and scores are filed under `default` otherwise, whatever the trace says);
+`release` is this engine's own version (`tolokaforge-<version>`, also written into
+`run_identity.json` as `engine_version` for the offline uploader); `version` is the producer's
+identity plus the model-name rules and the profile it ran under
+(`tolokaforge-<version>+<rules version>+<profile version>`).
 
 ## Delivery
 

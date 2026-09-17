@@ -17,6 +17,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,12 @@ from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, Trace
 from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.attachments import AttachCounts
+from tolokaforge.observability.langfuse_projection import (
+    PROJECTION_FULL,
+    PROJECTION_GRADINGS,
+    ProjectionContext,
+    build_projection,
+)
 from tolokaforge.observability.model_names import (
     NONE,
     ModelIdentity,
@@ -44,6 +51,22 @@ _log = logging.getLogger(__name__)
 
 HARNESS_TAG = "harness:tolokaforge"
 TRACE_TIME_SOURCE = "live"
+
+
+@dataclass(frozen=True)
+class ProjectionSettings:
+    """What the trial-end pass adds to a bundle (ADR-0046, parity amendment): the projection
+    mode, the receiver's native fields, the deployment profile's mirrored prefixes and version,
+    where each tag came from, and this producer's identity."""
+
+    mode: str = PROJECTION_FULL  # full | gradings | none
+    environment: str | None = None
+    release: str | None = None
+    version: str | None = None
+    producer: str = "tolokaforge"  # the ``uploader_version`` metadata value
+    tag_profile_version: str = NONE
+    mirror_prefixes: tuple[str, ...] = ()
+    tag_origins: Mapping[str, str] = field(default_factory=dict)
 
 
 def _scope() -> InstrumentationScope:
@@ -186,7 +209,10 @@ class SpanQueue:
 
 class TrialAttachments(Protocol):
     """The post-trial step a receiver provides (``langfuse_media.LangfuseAttachments``): the
-    file attachments and the ingestion route the grading events take."""
+    file attachments, the ingestion route the trial-end events take, inline media, and the
+    budget and breaker both share. ``attach_with_manifest``, ``register_media``, ``budget``,
+    ``scan_events``, ``note_trial_outcome`` and ``tripped`` are optional capabilities looked up
+    with ``getattr`` (a receiver with the bare ``attach`` / ``ingest`` pair still works)."""
 
     @property
     def mode(self) -> str: ...
@@ -201,6 +227,17 @@ class TrialAttachments(Protocol):
         trace_timestamp: datetime | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> AttachCounts: ...
+
+
+@dataclass
+class _PersistContext:
+    """What a trial's end leaves for its ``trial_persisted`` pass, after the state is dropped."""
+
+    started_at: datetime | None = None
+    status: str | None = None
+    judge_model: str | None = None
+    user_model: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass
@@ -234,19 +271,30 @@ class OTelTrialObserver:
         gradings: bool = True,
         expect_project: str | None = None,
         project_verified: str = "none",
+        projection: ProjectionSettings | None = None,
     ) -> None:
         self._queue = queue
         self._attachments = attachments
         self._gradings = gradings
+        self._projection = projection or ProjectionSettings()
         self._grading_counts = {"sent": 0, "failed": 0, "scores": 0, "users": 0}
+        self._projection_counts = {
+            "sent": 0,
+            "failed": 0,
+            "observations": 0,
+            "events": 0,
+            "media_uploaded": 0,
+            "media_failed": 0,
+        }
         self._expect_project = expect_project
         self._project_verified = project_verified
         self._attach_counts = AttachCounts()
-        # trial start, final status and the judge / user model names by trace id, kept from
-        # trial_finished to trial_persisted: the manifest update re-sends start and status, so the
-        # trace keeps its own timestamp and ends with the trial's status even when the receiver
-        # merged the provisional root's "running" last; the gradings step names the models
-        self._persist_clock: dict[str, tuple[datetime | None, str, str | None, str | None]] = {}
+        # trial start, final status, the judge / user model names and the tags by trace id, kept
+        # from trial_finished to trial_persisted: the manifest update re-sends start and status,
+        # so the trace keeps its own timestamp and ends with the trial's status even when the
+        # receiver merged the provisional root's "running" last; the trial-end pass names the
+        # models and re-sends the tags
+        self._persist: dict[str, _PersistContext] = {}
         self._resolver: ModelNameResolver = resolver or RawModelNameResolver()
         self._label = label
         self._session_id = session_id
@@ -532,11 +580,12 @@ class OTelTrialObserver:
         end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=timezone.utc)
         status_value = _enum_value(status) if trajectory is not None else "error"
         with self._states_lock:
-            self._persist_clock[identity.trace_id] = (
-                start,
-                status_value,
-                self._model_name_of(state, "judge"),
-                self._model_name_of(state, "user"),
+            self._persist[identity.trace_id] = _PersistContext(
+                started_at=start,
+                status=status_value,
+                judge_model=self._model_name_of(state, "judge"),
+                user_model=self._model_name_of(state, "user"),
+                tags=state.tags,
             )
         self._emit(
             name=f"trial {identity.task_id}/{identity.trial_index}",
@@ -550,30 +599,150 @@ class OTelTrialObserver:
         )
 
     def trial_persisted(self, identity: TrialIdentity, *, trial_dir: Path) -> None:
-        """The bundle is on disk: attach its files to the trace and write manifest v2 (only
-        when a receiver-side attachment step is configured). Runs in the trial's own thread,
-        bounded by the step's timeouts; the counts land in the receipt."""
+        """The bundle is on disk: attach its files to the trace, write manifest v2 and complete
+        the trace from the bundle (the default projection, or the gradings alone, or nothing,
+        per ``ProjectionSettings.mode``), all under one budget and breaker. Runs in the trial's
+        own thread, bounded by the step's timeouts, never raises; the counts land in the
+        receipt."""
         with self._states_lock:
-            started, status, judge_name, user_name = self._persist_clock.pop(
-                identity.trace_id, (None, None, None, None)
-            )
+            persist = self._persist.pop(identity.trace_id, None) or _PersistContext()
             state = self._states.get(identity.trace_id)  # a trial persisted without finishing
         if state is not None:
-            judge_name = judge_name or self._model_name_of(state, "judge")
-            user_name = user_name or self._model_name_of(state, "user")
+            persist.judge_model = persist.judge_model or self._model_name_of(state, "judge")
+            persist.user_model = persist.user_model or self._model_name_of(state, "user")
+            persist.tags = persist.tags or state.tags
         if self._attachments is None:
             return
-        if getattr(self._attachments, "mode", "all") != "none":
-            counts = self._attachments.attach(
+        step = self._attachments
+        budget = getattr(step, "budget", None)
+        scope = budget() if callable(budget) else nullcontext()
+        with scope:
+            manifest: dict[str, Any] | None = None
+            if getattr(step, "mode", "all") != "none":
+                with_manifest = getattr(step, "attach_with_manifest", None)
+                if callable(with_manifest):
+                    counts, manifest = with_manifest(
+                        identity.trace_id,
+                        Path(trial_dir),
+                        trace_timestamp=persist.started_at,
+                        metadata={"status": persist.status} if persist.status else None,
+                    )
+                else:
+                    counts = step.attach(
+                        identity.trace_id,
+                        Path(trial_dir),
+                        trace_timestamp=persist.started_at,
+                        metadata={"status": persist.status} if persist.status else None,
+                    )
+                with self._states_lock:
+                    self._attach_counts.add(counts)
+            if self._projection.mode == PROJECTION_FULL:
+                self._send_projection(identity, Path(trial_dir), persist, manifest)
+            elif self._projection.mode == PROJECTION_GRADINGS and self._gradings:
+                self._send_gradings(
+                    identity, Path(trial_dir), persist.judge_model, persist.user_model
+                )
+
+    def _trial_tags(self, identity: TrialIdentity, persist: _PersistContext) -> tuple[str, ...]:
+        """The trace's tags for the trial-end pass: what the trial started with, else rebuilt
+        from what the observer knows (a trial persisted without a recorded start)."""
+        if persist.tags:
+            return persist.tags
+        tags: list[str] = [HARNESS_TAG, f"task:{identity.task_id}"]
+        for tag in self._tags:
+            if tag not in tags:
+                tags.append(tag)
+        return tuple(tags)
+
+    def _send_projection(
+        self,
+        identity: TrialIdentity,
+        trial_dir: Path,
+        persist: _PersistContext,
+        manifest: Mapping[str, Any] | None,
+    ) -> None:
+        """The persisted bundle's default projection (``langfuse_projection``): the same
+        records the offline connector writes, under the contract ids, through the ingestion
+        API. A bundle that cannot be projected, a data-safety hit over the serialised events
+        or a refused batch is a counted failure, never an exception."""
+        step = self._attachments
+        assert step is not None
+        if getattr(step, "tripped", False):
+            with self._states_lock:
+                self._projection_counts["failed"] += 1
+            return
+        settings = self._projection
+        context = ProjectionContext(
+            label=self._label,
+            session_id=self._session_id,
+            tags=self._trial_tags(identity, persist),
+            tag_origins=dict(settings.tag_origins),
+            metadata=dict(self._metadata),
+            mirror_prefixes=settings.mirror_prefixes,
+            environment=settings.environment,
+            release=settings.release,
+            version=settings.version,
+            producer=settings.producer,
+            tag_profile_version=settings.tag_profile_version,
+            project_verified=self._project_verified,
+            attach_mode=str(getattr(step, "mode", "all")),
+            grades=self._gradings,
+        )
+        media = getattr(step, "register_media", None)
+        try:
+            projection = build_projection(
+                identity,
+                trial_dir,
+                context,
+                resolver=self._resolver,
+                manifest=manifest,
+                media=media if callable(media) else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a malformed bundle is not the trace's problem
+            _log.warning(
+                "projection: bundle of trace %s not projected: %s",
                 identity.trace_id,
-                Path(trial_dir),
-                trace_timestamp=started,
-                metadata={"status": status} if status else None,
+                type(exc).__name__,
             )
             with self._states_lock:
-                self._attach_counts.add(counts)
-        if self._gradings:
-            self._send_gradings(identity, Path(trial_dir), judge_name, user_name)
+                self._projection_counts["failed"] += 1
+            return
+        scan = getattr(step, "scan_events", None)
+        findings = scan(projection.events) if callable(scan) else []
+        if findings:
+            # the outbound data-safety gate: nothing is rewritten, the pass is not sent
+            _log.warning(
+                "projection: trace %s not sent, the events would carry a secret: %s",
+                identity.trace_id,
+                ", ".join(findings),
+            )
+            with self._states_lock:
+                self._projection_counts["failed"] += 1
+            return
+        note = getattr(step, "note_trial_outcome", None)
+        try:
+            step.ingest(projection.events)
+        except Exception as exc:  # noqa: BLE001 - the observability layer only warns
+            reason = str(exc) if type(exc).__name__ == "LangfuseApiError" else type(exc).__name__
+            _log.warning("projection: trace %s not sent: %s", identity.trace_id, reason)
+            with self._states_lock:
+                self._projection_counts["failed"] += 1
+            if callable(note) and getattr(step, "mode", "all") == "none":
+                note(reached=False)
+            return
+        if callable(note) and getattr(step, "mode", "all") == "none":
+            note(reached=True)
+        stats = projection.stats
+        with self._states_lock:
+            self._projection_counts["sent"] += 1
+            self._projection_counts["observations"] += stats.observations
+            self._projection_counts["events"] += stats.events
+            self._projection_counts["media_uploaded"] += stats.media_uploaded
+            self._projection_counts["media_failed"] += stats.media_failed
+            if stats.grading_id:
+                self._grading_counts["sent"] += 1
+            self._grading_counts["scores"] += stats.scores
+            self._grading_counts["users"] += stats.user_generations
 
     def _send_gradings(
         self,
@@ -583,7 +752,8 @@ class OTelTrialObserver:
         user_name: str | None,
     ) -> None:
         """The bundle's grading, judge transcript, scores and simulated user turns as ingestion
-        events under the shared id contract (``langfuse_gradings``). Never raises."""
+        events under the shared id contract (``langfuse_gradings``; the ``gradings`` projection
+        mode). Never raises."""
         from tolokaforge.observability.langfuse_gradings import build_grading_events
 
         try:
@@ -603,6 +773,9 @@ class OTelTrialObserver:
             return
         if not built.events:
             return
+        if self._projection.environment is not None:
+            for event in built.events:
+                event["body"].setdefault("environment", self._projection.environment)
         try:
             self._attachments.ingest(built.events)  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001 - the observability layer only warns
@@ -620,7 +793,7 @@ class OTelTrialObserver:
     def run_finished(self) -> ExportReceipt:
         flushed = self._queue.shutdown(self._flush_timeout_s)
         with self._states_lock:
-            self._persist_clock.clear()  # trials that were never announced (attach: none, ...)
+            self._persist.clear()  # trials that were never announced
         counts = self._attach_counts
         return replace(
             self._queue.receipt(flushed=flushed),
@@ -637,6 +810,12 @@ class OTelTrialObserver:
             gradings_failed=self._grading_counts["failed"],
             scores_sent=self._grading_counts["scores"],
             user_generations_sent=self._grading_counts["users"],
+            projections_sent=self._projection_counts["sent"],
+            projections_failed=self._projection_counts["failed"],
+            observations_sent=self._projection_counts["observations"],
+            events_sent=self._projection_counts["events"],
+            media_uploaded=self._projection_counts["media_uploaded"],
+            media_failed=self._projection_counts["media_failed"],
         )
 
     # -- helpers ------------------------------------------------------------------------------------
@@ -667,11 +846,22 @@ class OTelTrialObserver:
         return self._resolve(ref).canonical
 
     def _trace_attributes(self, state: _TrialState) -> dict[str, Any]:
-        return {
+        # the receiver's native fields ride on every span: Langfuse fixes a trace's environment
+        # at the first write it sees (verified on the instance 2026-09-17), so the provisional
+        # root span already carries it and a trace never has to be repaired afterwards
+        attributes: dict[str, Any] = {
             "langfuse.trace.name": f"{self._label}/{state.identity.task_id}",
             "langfuse.session.id": self._session_id,
             "langfuse.trace.tags": list(state.tags),
         }
+        settings = self._projection
+        if settings.environment is not None:
+            attributes["langfuse.environment"] = settings.environment
+        if settings.release is not None:
+            attributes["langfuse.release"] = settings.release
+        if settings.version is not None:
+            attributes["langfuse.version"] = settings.version
+        return attributes
 
     def _emit(
         self,

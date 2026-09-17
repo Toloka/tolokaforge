@@ -22,6 +22,15 @@ for attachments and gradings is ``<base>``), ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUS
 ``LANGFUSE_PROJECT`` (the project the keys must open; also the ``project:`` tag). The run's
 identity may come from the environment too (``TOLOKAFORGE_TRACING_RUN_ID``, ``_RUN_TAG``,
 ``_SESSION_ID``, ``_LABEL``), so a workflow needs no config edit to trace a run.
+
+The deployment profile (ADR-0046, parity amendment; ``profile``): ``observability.tracing.profile``
+or ``TOLOKAFORGE_TRACING_PROFILE`` names a TOML the engine validates and applies without knowing
+any value: the native ``environment`` rule (``LANGFUSE_ENVIRONMENT`` or the config's
+``environment`` literal override it), fixed tags and metadata, the profile version that joins
+the native ``version`` field, optionally the model-name rules. ``TOLOKAFORGE_TRACING_METADATA``
+(``key=value,...``) carries the per-run metadata the offline command receives as ``--metadata``;
+a key the projection writes itself is a configuration error at run start, as is a profile that
+does not load or an environment outside the receiver's alphabet.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,11 +48,23 @@ from typing import TYPE_CHECKING, Any
 
 from tolokaforge.observability import ids
 from tolokaforge.observability.model_names import (
+    NONE,
     RESERVED_TAG_PREFIXES,
     ModelNameResolverError,
     build_model_name_resolver,
 )
 from tolokaforge.observability.observer import NullTrialObserver, TrialIdentity, TrialObserver
+from tolokaforge.observability.profile import (
+    ENVIRONMENT_ENV,
+    METADATA_ENV,
+    NO_PROFILE,
+    PROFILE_ENV,
+    TracingProfile,
+    TracingProfileError,
+    check_environment,
+    load_tracing_profile,
+    parse_metadata_variable,
+)
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import ObservabilityConfig
@@ -137,17 +159,28 @@ def build_trial_observer(
     if tracing is None or tracing.exporter == "none":
         return NullTrialObserver(), identity
     endpoint = resolve_endpoint(tracing.endpoint)
-    tags = merge_tags(tracing.tags, environment_tags())
+    profile = load_profile(tracing.profile)
+    tags, origins = merge_tag_sources(
+        ("config", tracing.tags), ("launcher", environment_tags()), ("profile", profile.fixed_tags)
+    )
     try:
-        from tolokaforge.observability.otel import OTelTrialObserver, SpanQueue, make_otlp_exporter
+        from tolokaforge.observability.otel import (
+            OTelTrialObserver,
+            ProjectionSettings,
+            SpanQueue,
+            make_otlp_exporter,
+        )
     except ImportError as exc:
         raise TracingConfigError(
             "observability.tracing.exporter='otlp' needs the 'otel' extra: pip install 'tolokaforge[otel]'"
         ) from exc
+    # the profile's rules select the normalizer unless the config names its own
+    normalizer_kind = tracing.model_name_normalizer
+    rules = tracing.model_name_rules
+    if rules is None and profile.model_name_rules is not None:
+        normalizer_kind, rules = "toloka", profile.model_name_rules
     try:
-        resolver = build_model_name_resolver(
-            tracing.model_name_normalizer, tracing.model_name_rules
-        )
+        resolver = build_model_name_resolver(normalizer_kind, rules)
     except ModelNameResolverError as exc:
         raise TracingConfigError(str(exc)) from exc
     headers = receiver_headers()
@@ -162,7 +195,14 @@ def build_trial_observer(
         project_verified = check_expected_project(tracing, endpoint, headers, expect_project)
         # the project tag mirrors the destination (PLAN 3.3): the declared project, once checked
         if not any(tag.startswith("project:") for tag in tags):
-            tags = merge_tags(tags, [f"project:{expect_project}"])
+            tags, origins = merge_tag_sources(
+                *[(origins[t.partition(":")[0]], [t]) for t in tags],
+                ("receiver", [f"project:{expect_project}"]),
+            )
+    environment = resolve_environment(tracing.environment, profile, tags)
+    metadata = merge_metadata(tracing.metadata, profile, mirror_prefixes=profile.mirror_to_metadata)
+    release = engine_release()
+    version = producer_version(release, resolver.rules_version, profile)
     queue = SpanQueue(
         make_otlp_exporter(endpoint, headers=headers),
         max_size=tracing.queue_size,
@@ -177,7 +217,7 @@ def build_trial_observer(
         or (Path(output_dir).name if output_dir else engine_run_id),
         session_id=tracing.session_id or _env(TRACING_SESSION_ID_ENV) or run_id,
         tags=tags,
-        metadata=dict(tracing.metadata),
+        metadata=metadata,
         service_name=tracing.service_name,
         attribute_max_chars=tracing.attribute_max_chars,
         context_messages=tracing.context_messages,
@@ -186,10 +226,96 @@ def build_trial_observer(
         gradings=tracing.gradings,
         expect_project=expect_project,
         project_verified=project_verified,
+        projection=ProjectionSettings(
+            mode=tracing.projection,
+            environment=environment,
+            release=release,
+            version=version,
+            producer=release,
+            tag_profile_version=profile.tag_profile_version,
+            mirror_prefixes=profile.mirror_to_metadata,
+            tag_origins=origins,
+        ),
     )
     if output_dir is not None:
-        write_run_identity(Path(output_dir), identity)
+        write_run_identity(Path(output_dir), identity, engine_version=engine_version())
     return observer, identity
+
+
+def load_profile(configured: str | None) -> TracingProfile:
+    """The deployment profile in force: the config's ``profile`` path, else
+    ``TOLOKAFORGE_TRACING_PROFILE``, else none; a file that does not load is a configuration
+    error at run start."""
+    path = configured or _env(PROFILE_ENV)
+    if not path:
+        return NO_PROFILE
+    try:
+        return load_tracing_profile(path)
+    except TracingProfileError as exc:
+        raise TracingConfigError(str(exc)) from exc
+
+
+def resolve_environment(
+    configured: str | None, profile: TracingProfile, tags: Sequence[str]
+) -> str | None:
+    """The receiver's native ``environment``: ``LANGFUSE_ENVIRONMENT`` wins, then the config's
+    literal, then the profile's rule over the trace's tags; None leaves the receiver's default.
+    The value must sit inside the receiver's alphabet."""
+    value = _env(ENVIRONMENT_ENV) or configured or profile.environment.resolve(tags)
+    if value is None:
+        return None
+    try:
+        return check_environment(value)
+    except TracingProfileError as exc:
+        raise TracingConfigError(str(exc)) from exc
+
+
+def merge_metadata(
+    configured: Mapping[str, Any], profile: TracingProfile, *, mirror_prefixes: Sequence[str] = ()
+) -> dict[str, Any]:
+    """The caller's trace metadata: the profile's fixed keys, the config's, then
+    ``TOLOKAFORGE_TRACING_METADATA`` (the launcher's per-run values, which win). A key the
+    projection writes itself is a configuration error: it would silently be overwritten or
+    would overwrite a fact of the trial."""
+    from tolokaforge.observability.langfuse_projection import schema_keys
+
+    try:
+        launcher = parse_metadata_variable(_env(METADATA_ENV))
+    except TracingProfileError as exc:
+        raise TracingConfigError(str(exc)) from exc
+    merged: dict[str, Any] = {**profile.fixed_metadata, **configured, **launcher}
+    clashes = sorted(set(merged) & schema_keys(mirror_prefixes))
+    if clashes:
+        raise TracingConfigError(
+            "tracing metadata may not use the keys the projection writes itself: "
+            + ", ".join(clashes)
+        )
+    return merged
+
+
+def engine_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("tolokaforge")
+    except Exception:  # noqa: BLE001 - version is informational
+        return "unknown"
+
+
+def engine_release() -> str:
+    """The native ``release`` field: this engine's own version, ``tolokaforge-<version>``."""
+    return f"tolokaforge-{engine_version()}"
+
+
+def producer_version(release: str, rules_version: str, profile: TracingProfile) -> str:
+    """The native ``version`` field: the producer's identity plus the model-name rules and the
+    deployment profile it ran under (differs by producer, by design)."""
+    text = release
+    if rules_version and rules_version != NONE:
+        text += f"+{rules_version}"
+    if profile.version != NONE:
+        text += f"+{profile.version}"
+    return text
 
 
 def resolve_endpoint(configured: str | None) -> str:
@@ -286,23 +412,35 @@ def environment_tags() -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def merge_tags(configured: list[str], extra: list[str]) -> list[str]:
+def merge_tags(configured: Sequence[str], extra: Sequence[str]) -> list[str]:
     """Config tags plus environment tags, validated; a prefix carrying two different values is a
     configuration error (a trace never carries two values under one prefix)."""
+    merged, _ = merge_tag_sources(("config", configured), ("launcher", extra))
+    return merged
+
+
+def merge_tag_sources(*sources: tuple[str, Sequence[str]]) -> tuple[list[str], dict[str, str]]:
+    """Tags from several sources (``(origin, tags)`` pairs, in precedence order), validated and
+    deduplicated, plus where each prefix's value came from (the ``tag_origins`` metadata); a
+    prefix carrying two different values is a configuration error."""
     merged: list[str] = []
     values: dict[str, str] = {}
-    for tag in [*configured, *extra]:
-        validate_tag(tag)
-        prefix, _, value = tag.partition(":")
-        if prefix in values and values[prefix] != value:
-            raise TracingConfigError(
-                f"tracing tag prefix {prefix!r} given twice with different values: "
-                f"{values[prefix]!r} and {value!r}"
-            )
-        values[prefix] = value
-        if tag not in merged:
-            merged.append(tag)
-    return merged
+    origins: dict[str, str] = {}
+    for origin, tags in sources:
+        for tag in tags:
+            validate_tag(tag)
+            prefix, _, value = tag.partition(":")
+            if prefix in values and values[prefix] != value:
+                raise TracingConfigError(
+                    f"tracing tag prefix {prefix!r} given twice with different values: "
+                    f"{values[prefix]!r} and {value!r}"
+                )
+            if prefix not in values:
+                origins[prefix] = origin
+            values[prefix] = value
+            if tag not in merged:
+                merged.append(tag)
+    return merged, origins
 
 
 def check_expected_project(
@@ -440,23 +578,22 @@ def otlp_headers() -> dict[str, str] | None:
     return headers or None
 
 
-def write_run_identity(output_dir: Path, identity: RunIdentity) -> Path:
-    """``run_identity.json`` next to ``trials/``: the identity the offline uploader must reuse."""
+def write_run_identity(
+    output_dir: Path, identity: RunIdentity, *, engine_version: str | None = None
+) -> Path:
+    """``run_identity.json`` next to ``trials/``: the identity the offline uploader must reuse,
+    and the engine version it reads the native ``release`` field from."""
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / RUN_IDENTITY_FILE
-    path.write_text(
-        json.dumps(
-            {
-                "run_id": identity.run_id,
-                "run_tag": identity.run_tag,
-                "written_by": "tolokaforge",
-                "written_at": datetime.now(tz=timezone.utc).isoformat(),
-            },
-            indent=1,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    document: dict[str, Any] = {
+        "run_id": identity.run_id,
+        "run_tag": identity.run_tag,
+        "written_by": "tolokaforge",
+        "written_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    if engine_version:
+        document["engine_version"] = engine_version
+    path.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
     return path
 
 

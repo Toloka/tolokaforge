@@ -11,6 +11,7 @@ configuration error, never a silent fallback.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -32,14 +33,67 @@ class ModelIdentity:
 class ModelNameResolver(Protocol):
     def resolve(self, provider: str | None, name: str) -> ModelIdentity: ...
 
+    def absent(self) -> dict[str, Any]:
+        """The ``model_*`` metadata of a trial that names no model: the same keys as a resolved
+        identity, ``none`` values, the rules in force still recorded."""
+        ...
+
     @property
     def description(self) -> str: ...
+
+    @property
+    def rules_version(self) -> str: ...
+
+
+# the descriptive facets every resolver reports as ``model_<facet>`` metadata, in the order
+# ``toloka-model-name-normalizer`` names them; the key set is the same whichever resolver runs,
+# so a trace's metadata schema never depends on the deployment's choice (the values do)
+FACETS = (
+    "vendor",
+    "family",
+    "generation",
+    "tier",
+    "variant",
+    "snapshot",
+    "size",
+    "stage",
+    "capability",
+    "api_version",
+)
+
+
+def identity_metadata(
+    fields: Mapping[str, Any] | None,
+    *,
+    route: str | None,
+    routes: Sequence[str] | None,
+    rules_version: str,
+    identity_fingerprint: str,
+    fields_fingerprint: str,
+    resolver_fingerprint: str | None,
+    lookup: bool,
+) -> dict[str, Any]:
+    """The model's descriptive facets, route and rule provenance, every key with an explicit
+    value (``none`` when absent), the same shape the offline bundle uploader writes."""
+    metadata: dict[str, Any] = {}
+    for facet in FACETS:
+        value = (fields or {}).get(facet)
+        metadata[f"model_{facet}"] = value if value not in (None, "") else NONE
+    metadata["model_route"] = route or NONE
+    metadata["model_routes"] = "/".join(routes) if routes else NONE
+    metadata["model_rules_version"] = rules_version
+    metadata["model_identity_fingerprint"] = identity_fingerprint
+    metadata["model_fields_fingerprint"] = fields_fingerprint
+    metadata["model_resolver_fingerprint"] = resolver_fingerprint or NONE
+    metadata["model_lookup"] = lookup
+    return metadata
 
 
 class RawModelNameResolver:
     """No rules: ``vendor/model`` as spelled, ``provider/name`` for a bare name."""
 
     description = "raw"
+    rules_version = NONE
 
     def resolve(self, provider: str | None, name: str) -> ModelIdentity:
         canonical = name if "/" in name else (f"{provider}/{name}" if provider else name)
@@ -47,13 +101,29 @@ class RawModelNameResolver:
         return ModelIdentity(
             canonical=canonical,
             tags=(f"model:{canonical}",),
-            metadata={
-                "model_vendor": vendor,
-                "model_family": NONE,
-                "model_route": provider or NONE,
-                "model_rules_version": NONE,
-                "model_lookup": False,
-            },
+            metadata=identity_metadata(
+                {"vendor": vendor},
+                route=provider,
+                routes=(provider,) if provider else None,
+                rules_version=NONE,
+                identity_fingerprint=NONE,
+                fields_fingerprint=NONE,
+                resolver_fingerprint=None,
+                lookup=False,
+            ),
+        )
+
+    def absent(self) -> dict[str, Any]:
+        """The metadata of a trial whose bundle names no model (every key explicit)."""
+        return identity_metadata(
+            None,
+            route=None,
+            routes=None,
+            rules_version=NONE,
+            identity_fingerprint=NONE,
+            fields_fingerprint=NONE,
+            resolver_fingerprint=None,
+            lookup=False,
         )
 
 
@@ -87,6 +157,10 @@ class NormalizerModelNameResolver:
             f"toloka-model-name-normalizer rules {rules.version} ({self._rules_path or 'packaged'})"
         )
 
+    @property
+    def rules_version(self) -> str:
+        return str(self._normalizer.rules.version)
+
     def resolve(self, provider: str | None, name: str) -> ModelIdentity:
         try:
             parsed = (
@@ -98,24 +172,33 @@ class NormalizerModelNameResolver:
             raise ModelNameResolverError(
                 f"model reference ({provider!r}, {name!r}) cannot be read: {exc}"
             ) from exc
-        fields = parsed.fields()
         rules = self._normalizer.rules
-        metadata: dict[str, Any] = {
-            f"model_{facet}": (value if value not in (None, "") else NONE)
-            for facet, value in fields.items()
-        }
-        metadata.update(
-            {
-                "model_route": parsed.route or NONE,
-                "model_routes": "/".join(parsed.routes) if parsed.routes else NONE,
-                "model_rules_version": rules.version,
-                "model_identity_fingerprint": rules.identity_fingerprint,
-                "model_fields_fingerprint": rules.fields_fingerprint,
-                "model_lookup": parsed.provenance.lookup,
-            }
+        provenance = parsed.provenance
+        metadata = identity_metadata(
+            parsed.fields(),
+            route=parsed.route,
+            routes=parsed.routes,
+            rules_version=rules.version,
+            identity_fingerprint=rules.identity_fingerprint,
+            fields_fingerprint=rules.fields_fingerprint,
+            resolver_fingerprint=getattr(provenance, "resolver_fingerprint", None),
+            lookup=bool(getattr(provenance, "lookup", False)),
         )
         return ModelIdentity(
             canonical=parsed.canonical, tags=tuple(parsed.tags()), metadata=metadata
+        )
+
+    def absent(self) -> dict[str, Any]:
+        rules = self._normalizer.rules
+        return identity_metadata(
+            None,
+            route=None,
+            routes=None,
+            rules_version=rules.version,
+            identity_fingerprint=rules.identity_fingerprint,
+            fields_fingerprint=rules.fields_fingerprint,
+            resolver_fingerprint=None,
+            lookup=False,
         )
 
 

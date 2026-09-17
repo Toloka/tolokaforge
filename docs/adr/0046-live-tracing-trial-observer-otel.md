@@ -219,6 +219,58 @@ step's budget; `observability.tracing.gradings: false` switches them off;
 the bundle itself lacks: INFO log events under `--attach all` and the connector's extra metadata
 groups.
 
+## Amendment 2026-09-17: the trace is completed from the bundle, the deployment speaks in a profile
+
+A trial traced live and the same trial uploaded from its bundle by the offline uploader must be
+one and the same trace, so a deployment whose engine traces live needs no upload pass at all. Two
+constraints shape the answer. The engine stays tolokaforge-specific and vendor-neutral in what it
+knows: it ships one **default projection** of a persisted trial directory into the receiver's
+records (`tolokaforge/observability/langfuse_projection.py`) and carries no deployment value. The
+offline uploader's projection is the reference; where the two must differ the engine adapts.
+
+**The trial-end pass.** `trial_persisted` now completes the trace from the files, after the
+attachment step and under its budget and breaker: the full trace metadata with every key of the
+fixed schema explicit (the receiver merges metadata), the root observation, the agent generations
+with their paired usage, the tool executions from the grader's `tool_log.yaml` with the
+transcript text beside them (the user simulator's own calls included), the simulated user turns,
+the grading with its judge transcript, its scores and the trace-level mirror, the events of the
+trial logs, guard records, provisioning failures, budget hits and service captures, and media for
+base64 image blocks with the token in the observation output; everything through the ingestion
+API under the shared id contract, so the live spans are the preview and the bundle projection is
+the truth (an upsert over the OTLP-created observations). The serialised events pass the same
+data-safety scan as the files; a hit sends nothing and counts. `observability.tracing.projection`
+selects `full` (default), `gradings` (the previous amendment's behaviour) or `none`;
+`tracing_receipt.json` counts projections, observations, events, scores and media. Drift between
+the two implementations is caught by a golden parity test committed in both repositories over a
+synthetic bundle; the metadata keys whose values differ by producer by design (`upload_mode`,
+`uploader_version`, `trace_time_source`, `tag_origins`, `attach_mode`, `project_verified`) and
+the live root span's own keys (`generations_observed`, `tool_calls_observed`, `error`) are the
+documented exclusions.
+
+**The deployment profile.** Everything deployment-specific reaches the engine as configuration at
+run time, in one TOML file named by `observability.tracing.profile` or
+`TOLOKAFORGE_TRACING_PROFILE` (`tolokaforge/observability/profile.py`): the receiver's native
+`environment` as a literal or as a rule over one tag prefix's value with a default, the tags every
+trace carries, the tag prefixes mirrored into trace metadata (so the key set of a trace never
+depends on which tags a run happened to carry), fixed metadata, the profile version that joins
+the native `version` field, and optionally the model-name rules file (which selects the `toloka`
+normalizer). The engine validates the shape and applies the profile mechanically; a profile that
+does not load, an environment outside the receiver's alphabet, a fixed tag under a
+producer-owned prefix or a metadata key the projection writes itself is a configuration error at
+run start. `LANGFUSE_ENVIRONMENT` overrides the rule and `TOLOKAFORGE_TRACING_METADATA`
+(`key=value,...`) carries the launcher's per-run metadata, the same values the offline command
+receives as `--metadata`.
+
+**Native fields.** The receiver fixes a trace's `environment` at the first write it sees and no
+later update changes it (verified on the instance on 2026-09-17), so the exporter puts
+`langfuse.environment`, `langfuse.release` and `langfuse.version` on every span, the provisional
+root included, and the trial-end pass repeats `environment` on every observation and score body
+(a body without it is filed under `default`). `release` is the engine's own version, also written
+into `run_identity.json` as `engine_version` for the offline uploader; `version` is the
+producer's identity plus the model-name rules and the profile it ran under, so it differs by
+producer by design. The `ModelNameResolver` Protocol gained `absent()` and `rules_version` so the
+`model_*` metadata keys are the same set whichever resolver runs.
+
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern)

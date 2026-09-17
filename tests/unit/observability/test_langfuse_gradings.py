@@ -325,15 +325,24 @@ class TestIngest:
 
 
 class TestObserverGradings:
+    """The ``gradings`` projection mode: the behaviour of the gradings amendment, kept for a
+    deployment that wants the grading alone at trial end (the default is the full projection,
+    tested in ``test_projection.py``)."""
+
     def _observer(self, attachments, **kwargs):
         pytest.importorskip("opentelemetry.sdk")
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-        from tolokaforge.observability.otel import OTelTrialObserver, SpanQueue
+        from tolokaforge.observability.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
 
         queue = SpanQueue(InMemorySpanExporter(), max_size=100, batch_size=4, interval_s=0.05)
         return OTelTrialObserver(
-            queue=queue, label="l", session_id="s", attachments=attachments, **kwargs
+            queue=queue,
+            label="l",
+            session_id="s",
+            attachments=attachments,
+            projection=ProjectionSettings(mode="gradings"),
+            **kwargs,
         )
 
     def test_the_grading_leaves_after_the_attachments_and_is_counted(self, tmp_path: Path) -> None:
@@ -478,9 +487,12 @@ class TestLangfuseSwitch:
 
         def opener(method, url, headers, body, timeout):
             calls.append((method, url, dict(headers)))
-            return 200, json.dumps(
-                {"data": [{"id": f"p{i}", "name": n} for i, n in enumerate(names)]}
-            ).encode()
+            return (
+                200,
+                json.dumps(
+                    {"data": [{"id": f"p{i}", "name": n} for i, n in enumerate(names)]}
+                ).encode(),
+            )
 
         monkeypatch.setattr(langfuse_media, "urllib_opener", opener)
         return calls

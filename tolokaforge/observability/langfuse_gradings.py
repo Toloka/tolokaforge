@@ -62,38 +62,42 @@ class GradingEvents:
     user_generations: int = 0
 
 
-def _text(value: Any) -> Any:
-    if value is None:
+# the connector's helpers, kept identical by hand (``mapping.py``): a value the bundle does not
+# carry is the literal ``none`` (an omitted metadata key would persist on the receiver), nested
+# values are JSON text, a missing number is its default and a present one is left as written
+
+
+def _text(value: Any) -> str:
+    if value is None or value == "":
         return NONE
     if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    return value if isinstance(value, (bool, int, float)) else str(value)
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
-def _number(value: object, default: float | int = 0) -> float | int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float)):
-        return value
-    try:
-        return float(str(value))
-    except (TypeError, ValueError):
-        return default
+def _number(value: object, default: float | int = 0) -> Any:
+    return default if value is None else value
 
 
-def _clock(value: object) -> str | None:
-    """A bundle clock as the RFC 3339 UTC text the ingestion API accepts."""
+def _normalize_ts(value: object) -> str | None:
+    """A bundle clock as the RFC 3339 text the ingestion API accepts: a YAML ``datetime`` (naive
+    stamps are UTC) or the bundle's own text, ``Z`` appended when it carries no zone."""
     if not value:
         return None
     if isinstance(value, datetime):
         aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
         return aware.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
-        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc).isoformat()
-    text = str(value).strip()
-    if " " in text and "T" not in text:
-        text = text.replace(" ", "T", 1)
-    return text
+        return (
+            datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    text = str(value)
+    return text if text.endswith("Z") or "+" in text else text + "Z"
+
+
+_clock = _normalize_ts
 
 
 def content_fingerprint(grade: Mapping[str, Any]) -> str:
@@ -121,9 +125,9 @@ def grade_summary(grade: Mapping[str, Any]) -> dict[str, Any]:
         "score": grade["score"] if grade.get("score") is not None else NONE,
         "synthesized_by_termination_reason": _text(grade.get("synthesized_by_termination_reason")),
         "grade_source": ids.GRADING_SOURCE_LIVE,
-        "judge_status": _text(grade.get("judge_status"))
-        if grade.get("judge_status")
-        else "unspecified",
+        "judge_status": (
+            _text(grade.get("judge_status")) if grade.get("judge_status") else "unspecified"
+        ),
         "judge_calls": _number(judge_usage.get("calls")),
         "judge_tool_calls": _number(judge_usage.get("tool_calls")),
         "judge_prompt_tokens": _number(judge_usage.get("prompt_tokens")),
@@ -504,8 +508,6 @@ def build_grading_events(
         provenance["grading_run_id"] = grading_id
         if at:
             provenance["created_at"] = at
-        if judge_model_name:
-            provenance["judge_model"] = judge_model_name
         metadata: dict[str, Any] = {
             "kind": OBSERVATION_KIND_GRADING,
             "grading_id": grading_id,

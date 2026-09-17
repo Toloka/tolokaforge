@@ -93,6 +93,14 @@ class ExportReceipt:
     gradings_failed: int = 0
     scores_sent: int = 0
     user_generations_sent: int = 0
+    # the parity amendment: per trial, the persisted bundle's default projection (trace body,
+    # observations, events, scores, media) leaves through the ingestion API at trial end
+    projections_sent: int = 0
+    projections_failed: int = 0
+    observations_sent: int = 0
+    events_sent: int = 0
+    media_uploaded: int = 0
+    media_failed: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +123,12 @@ class ExportReceipt:
             "gradings_failed": self.gradings_failed,
             "scores_sent": self.scores_sent,
             "user_generations_sent": self.user_generations_sent,
+            "projections_sent": self.projections_sent,
+            "projections_failed": self.projections_failed,
+            "observations_sent": self.observations_sent,
+            "events_sent": self.events_sent,
+            "media_uploaded": self.media_uploaded,
+            "media_failed": self.media_failed,
         }
 
 
@@ -236,6 +250,16 @@ class CompositeTrialObserver:
             attachments_failed=sum(r.attachments_failed for r in receipts),
             manifests_sent=sum(r.manifests_sent for r in receipts),
             manifests_failed=sum(r.manifests_failed for r in receipts),
+            gradings_sent=sum(r.gradings_sent for r in receipts),
+            gradings_failed=sum(r.gradings_failed for r in receipts),
+            scores_sent=sum(r.scores_sent for r in receipts),
+            user_generations_sent=sum(r.user_generations_sent for r in receipts),
+            projections_sent=sum(r.projections_sent for r in receipts),
+            projections_failed=sum(r.projections_failed for r in receipts),
+            observations_sent=sum(r.observations_sent for r in receipts),
+            events_sent=sum(r.events_sent for r in receipts),
+            media_uploaded=sum(r.media_uploaded for r in receipts),
+            media_failed=sum(r.media_failed for r in receipts),
         )
 
 

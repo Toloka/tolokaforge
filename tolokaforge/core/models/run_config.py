@@ -1149,11 +1149,24 @@ class TracingConfig(BaseModel):
     of the trial directory, ``core`` = task, prompts, tools schemas, logs and grade, ``none`` = no
     attachments. The manifest lands in the trace metadata (``docs/OBSERVABILITY.md``)."""
     gradings: bool = True
-    """After the bundle is written, send the run's grading (``grade.yaml``) as a
-    ``grading:live:<run_id>`` observation with its judge transcript and scores, the trace-level
-    mirror of those scores, and the simulated user turns, under the id contract the offline
-    connector shares, so a later connector pass updates instead of duplicating
-    (``docs/OBSERVABILITY.md``). Needs the receiver's REST API like the attachments."""
+    """Send the run's grading (``grade.yaml``) with the trial-end pass: the
+    ``grading:live:<run_id>`` observation with its judge transcript and scores and the
+    trace-level mirror of those scores, under the id contract the offline connector shares.
+    ``false`` leaves the grading out (the offline ``--grades none``); the rest of the projection
+    is unaffected (``docs/OBSERVABILITY.md``)."""
+    projection: Literal["full", "gradings", "none"] = "full"
+    """What leaves at trial end from the persisted bundle, through the receiver's ingestion API:
+    ``full`` (default) the default projection of the whole bundle (the trace metadata, every
+    observation, events, gradings, scores, media), the same records the offline connector
+    writes; ``gradings`` only the grading, its scores and the simulated user turns (the
+    behaviour before the parity amendment); ``none`` nothing beyond the attachments."""
+    profile: str | None = None
+    """Path of the deployment profile (TOML): the native ``environment`` rule, fixed tags and
+    metadata, the profile version and optionally the model-name rules; default:
+    ``TOLOKAFORGE_TRACING_PROFILE``. Validated at run start (``docs/OBSERVABILITY.md``)."""
+    environment: str | None = None
+    """The receiver's native ``environment`` as a literal, overriding the profile's rule;
+    ``LANGFUSE_ENVIRONMENT`` overrides both. Default: the profile decides, else unset."""
     attach_api_base: str | None = None
     """Base URL of the receiver's REST API for the attachments; default: derived from ``endpoint``
     (``https://host/api/public/otel/v1/traces`` -> ``https://host``)."""
