@@ -19,7 +19,7 @@ One switch (ADR-0047, Langfuse switch amendment): ``LANGFUSE_TRACING_ENABLED=tru
 exporter on without a config block. The receiver then comes from the plain Langfuse variables:
 ``LANGFUSE_BASE_URL`` (the traces endpoint is ``<base>/api/public/otel/v1/traces``, the REST base
 for attachments and gradings is ``<base>``), ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUSE_SECRET_KEY``
-(the Basic header, read through the ``SecretManager`` when one is initialised), optional
+(the Basic header, read through the ``SecretManager``), optional
 ``LANGFUSE_EXTRA_HEADERS`` (``k=v,k2=v2``, a gateway's own header) and optional
 ``LANGFUSE_PROJECT`` (the project the keys must open; also the ``project:`` tag).
 
@@ -175,7 +175,7 @@ def build(
     project_verified = PROJECT_UNCHECKED
     if expect_project:
         project_verified = check_expected_project(tracing, endpoint, headers, expect_project)
-        # the project tag mirrors the destination (PLAN 3.3): the declared project, once checked
+        # the project tag mirrors the destination (ADR-0047): the declared project, once checked
         if not any(tag.startswith("project:") for tag in tags):
             tags, origins = merge_tag_sources(
                 *[(origins[t.partition(":")[0]], [t]) for t in tags],
@@ -333,16 +333,10 @@ def langfuse_enabled() -> bool:
 
 
 def _secret(name: str) -> str | None:
-    """A credential by name: the ``SecretManager`` when one is initialised (so the value sits in
-    the log-redaction set), else the process environment."""
-    try:
-        from tolokaforge.secrets import get_default_or_none
-    except ImportError:  # pragma: no cover - the secrets package is part of core
-        manager = None
-    else:
-        manager = get_default_or_none()
-    value = manager.get_secret(name) if manager is not None else None
-    return value or _env(name)
+    """Read a credential through the shared provider chain and log-redaction boundary."""
+    from tolokaforge.secrets import get_default
+
+    return get_default().get_secret(name)
 
 
 def _parse_headers(raw: str | None) -> dict[str, str]:
@@ -550,26 +544,5 @@ def secret_values() -> list[str]:
 
 
 def otlp_headers() -> dict[str, str] | None:
-    """The receiver's request headers, parsed from the OTLP ``key=value,key2=value2`` form: from
-    the ``SecretManager`` when one is initialised (so the value sits in the log-redaction set),
-    else from the process environment, the same place the SDK's own lookup reads; ``None`` when
-    unset anywhere."""
-    raw: str | None = None
-    try:
-        from tolokaforge.secrets import get_default_or_none
-    except ImportError:  # pragma: no cover - the secrets package is part of core
-        manager = None
-    else:
-        manager = get_default_or_none()
-    if manager is not None:
-        raw = manager.get_secret(OTLP_HEADERS_SECRET)
-    if not raw:
-        raw = os.environ.get(OTLP_HEADERS_SECRET)
-    if not raw:
-        return None
-    headers: dict[str, str] = {}
-    for item in raw.split(","):
-        key, sep, value = item.partition("=")
-        if sep and key.strip():
-            headers[key.strip()] = value.strip()
-    return headers or None
+    """The receiver's OTLP headers, resolved through the shared SecretManager."""
+    return _parse_headers(_secret(OTLP_HEADERS_SECRET)) or None

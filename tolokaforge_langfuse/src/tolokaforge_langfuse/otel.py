@@ -18,7 +18,7 @@ import time
 from collections import deque
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -797,27 +797,34 @@ class OTelTrialObserver:
         with self._states_lock:
             self._persist.clear()  # trials that were never announced
         counts = self._attach_counts
-        return replace(
-            self._queue.receipt(flushed=flushed),
-            attachments_registered=counts.registered,
-            attachments_uploaded=counts.uploaded,
-            attachments_deduplicated=counts.deduplicated,
-            attachments_skipped=counts.skipped,
-            attachments_failed=counts.failed,
-            manifests_sent=counts.manifests_sent,
-            manifests_failed=counts.manifests_failed,
-            expect_project=self._expect_project,
-            project_verified=self._project_verified,
-            gradings_sent=self._grading_counts["sent"],
-            gradings_failed=self._grading_counts["failed"],
-            scores_sent=self._grading_counts["scores"],
-            user_generations_sent=self._grading_counts["users"],
-            projections_sent=self._projection_counts["sent"],
-            projections_failed=self._projection_counts["failed"],
-            observations_sent=self._projection_counts["observations"],
-            events_sent=self._projection_counts["events"],
-            media_uploaded=self._projection_counts["media_uploaded"],
-            media_failed=self._projection_counts["media_failed"],
+        return ExportReceipt(
+            **self._queue.receipt(flushed=flushed).model_dump(exclude={"extra", "details"}),
+            extra={
+                "langfuse.attachments_registered": counts.registered,
+                "langfuse.attachments_uploaded": counts.uploaded,
+                "langfuse.attachments_deduplicated": counts.deduplicated,
+                "langfuse.attachments_skipped": counts.skipped,
+                "langfuse.attachments_failed": counts.failed,
+                "langfuse.manifests_sent": counts.manifests_sent,
+                "langfuse.manifests_failed": counts.manifests_failed,
+                "langfuse.gradings_sent": self._grading_counts["sent"],
+                "langfuse.gradings_failed": self._grading_counts["failed"],
+                "langfuse.scores_sent": self._grading_counts["scores"],
+                "langfuse.user_generations_sent": self._grading_counts["users"],
+                "langfuse.projections_sent": self._projection_counts["sent"],
+                "langfuse.projections_failed": self._projection_counts["failed"],
+                "langfuse.observations_sent": self._projection_counts["observations"],
+                "langfuse.events_sent": self._projection_counts["events"],
+                "langfuse.media_uploaded": self._projection_counts["media_uploaded"],
+                "langfuse.media_failed": self._projection_counts["media_failed"],
+            },
+            details=(
+                {
+                    "exporter": "langfuse",
+                    "expect_project": self._expect_project,
+                    "project_verified": self._project_verified,
+                },
+            ),
         )
 
     # -- helpers ------------------------------------------------------------------------------------

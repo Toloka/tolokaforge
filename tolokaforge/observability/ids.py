@@ -79,7 +79,7 @@ def tool_key(call_id: object | None, message_index: object) -> str:
     return f"msg:{message_index}"
 
 
-# -- scores and gradings (shared with the connector, PLAN 3.6) --------------------------------
+# -- scores and gradings (shared with the connector, ADR-0047) --------------------------------
 #
 #     score_id = uuid5(NS, "score|{trace_id}|{scope...}|{name}").hex
 #

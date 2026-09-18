@@ -12,6 +12,11 @@ from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.loop import LoopConfig, MetricsSink, ToolCallingLoop, classify_loop_error
 from tolokaforge.core.models import Message, MessageRole, ToolCall
+from tolokaforge.observability.observer import (
+    InMemoryTrialObserver,
+    LoopObserverBinding,
+    TrialIdentity,
+)
 from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
@@ -39,23 +44,6 @@ class _Sink(MetricsSink):
 
     def record_parser_errors(self, errors):
         return None
-
-
-class _Recording:
-    def __init__(self, fail: bool = False):
-        self.generations: list[dict] = []
-        self.tool_calls: list[dict] = []
-        self.fail = fail
-
-    def generation(self, **kwargs):
-        if self.fail:
-            raise RuntimeError("boom")
-        self.generations.append(kwargs)
-
-    def tool_call(self, **kwargs):
-        if self.fail:
-            raise RuntimeError("boom")
-        self.tool_calls.append(kwargs)
 
 
 def _terminate_on_text(result, turn, messages):
@@ -90,20 +78,23 @@ def test_indices_match_the_recorded_message_positions() -> None:
             GenerationResult(text="more", usage=Usage(prompt_tokens=1)),
         ]
     )
-    observer = _Recording()
+    observer = InMemoryTrialObserver()
     messages = [Message(role=MessageRole.USER, content="hi", ts=datetime.now(tz=timezone.utc))]
-    _loop(client, observer).run("system", messages, time.time())
+    binding = LoopObserverBinding(observer, TrialIdentity("run-1", "T-1", 0, 0))
+    _loop(client, binding).run("system", messages, time.time())
+    generations = [args for name, args in observer.call_log.calls if name == "generation"]
+    tool_calls = [args for name, args in observer.call_log.calls if name == "tool_call"]
 
     # messages: [user, assistant(tool call), tool, assistant, assistant] -> indices 1, 2, 3, 4
-    assert [g["index"] for g in observer.generations] == [1, 3, 4]
-    assert [t["index"] for t in observer.tool_calls] == [2]
-    for g in observer.generations:
+    assert [g["index"] for g in generations] == [1, 3, 4]
+    assert [t["index"] for t in tool_calls] == [2]
+    for g in generations:
         assert messages[g["index"]].role is MessageRole.ASSISTANT
         assert len(g["request"]) == g["index"]  # everything recorded before the turn
         assert g["started_at"] <= g["ended_at"]
-    assert messages[observer.tool_calls[0]["index"]].role is MessageRole.TOOL
-    assert observer.tool_calls[0]["call"] is call
-    assert observer.tool_calls[0]["result"].output == "ran shell"
+    assert messages[tool_calls[0]["index"]].role is MessageRole.TOOL
+    assert tool_calls[0]["call"] is call
+    assert tool_calls[0]["result"].output == "ran shell"
 
 
 def test_loop_runs_without_an_observer() -> None:

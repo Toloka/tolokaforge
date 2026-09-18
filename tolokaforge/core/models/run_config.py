@@ -1108,7 +1108,7 @@ class TracingConfig(BaseModel):
     offline bundle uploader reaches the same traces (``docs/OBSERVABILITY.md``).
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     exporter: Literal["none", "otlp"] = "none"
     endpoint: str | None = None
@@ -1158,8 +1158,8 @@ class TracingConfig(BaseModel):
     """What leaves at trial end from the persisted bundle, through the receiver's ingestion API:
     ``full`` (default) the default projection of the whole bundle (the trace metadata, every
     observation, events, gradings, scores, media), the same records the offline connector
-    writes; ``gradings`` only the grading, its scores and the simulated user turns (the
-    behaviour before the parity amendment); ``none`` nothing beyond the attachments."""
+    writes; ``gradings`` only the grading, its scores and the simulated user turns;
+    ``none`` nothing beyond the attachments."""
     profile: str | None = None
     """Path of the deployment profile (TOML): the native ``environment`` rule, fixed tags and
     metadata, the profile version and optionally the model-name rules; default:

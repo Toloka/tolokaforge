@@ -11,6 +11,7 @@ from tolokaforge.observability import ids
 from tolokaforge.observability.observer import (
     CompositeTrialObserver,
     ExportReceipt,
+    InMemoryTrialObserver,
     LoopObserverBinding,
     ModelRef,
     NullTrialObserver,
@@ -79,34 +80,6 @@ class TestTrialIdentity:
             ids.observation_id(identity.trace_id, "root")
 
 
-class _Recording:
-    def __init__(self, fail: bool = False) -> None:
-        self.calls: list[tuple[str, dict]] = []
-        self.fail = fail
-
-    def _record(self, name: str, kwargs: dict) -> None:
-        if self.fail:
-            raise RuntimeError("observer exploded")
-        self.calls.append((name, kwargs))
-
-    def trial_started(self, identity, **kwargs):
-        self._record("trial_started", {"identity": identity, **kwargs})
-
-    def generation(self, identity, **kwargs):
-        self._record("generation", {"identity": identity, **kwargs})
-
-    def tool_call(self, identity, **kwargs):
-        self._record("tool_call", {"identity": identity, **kwargs})
-
-    def trial_finished(self, identity, **kwargs):
-        self._record("trial_finished", {"identity": identity, **kwargs})
-
-    def run_finished(self):
-        if self.fail:
-            raise RuntimeError("observer exploded")
-        return ExportReceipt(spans_queued=2, spans_exported=2, exporter="fake")
-
-
 class TestObserverSeam:
     identity = TrialIdentity(run_id="run-1", task_id="T-1", trial_index=0, attempt_id=0)
 
@@ -129,24 +102,35 @@ class TestObserverSeam:
         assert safely(lambda x: x + 1, 1) == 2
 
     def test_binding_adds_identity_and_role(self) -> None:
-        recording = _Recording()
+        recording = InMemoryTrialObserver()
         binding = LoopObserverBinding(recording, self.identity, role="agent")
         binding.generation(index=1, turn=0, request=[], result=None, started_at=None, ended_at=None)
         binding.tool_call(index=2, call=None, result=None, started_at=None, ended_at=None)
-        assert [name for name, _ in recording.calls] == ["generation", "tool_call"]
-        assert recording.calls[0][1]["identity"] is self.identity
-        assert recording.calls[0][1]["role"] == "agent"
-        assert recording.calls[1][1]["index"] == 2
+        assert [name for name, _ in recording.call_log.calls] == ["generation", "tool_call"]
+        assert recording.call_log.calls[0][1]["identity"] is self.identity
+        assert recording.call_log.calls[0][1]["role"] == "agent"
+        assert recording.call_log.calls[1][1]["index"] == 2
 
     def test_binding_never_raises_into_the_loop(self) -> None:
-        binding = LoopObserverBinding(_Recording(fail=True), self.identity)
+        binding = LoopObserverBinding(
+            InMemoryTrialObserver(fail_on={"generation": RuntimeError("observer exploded")}),
+            self.identity,
+        )
         binding.generation(index=1, turn=0, request=[], result=None, started_at=None, ended_at=None)
 
     def test_composite_fans_out_isolates_failures_and_sums_receipts(self) -> None:
-        good, bad = _Recording(), _Recording(fail=True)
+        good = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=2, spans_exported=2, exporter="fake")
+        )
+        bad = InMemoryTrialObserver(
+            fail_on={
+                name: RuntimeError("observer exploded")
+                for name in ("trial_started", "trial_finished", "run_finished")
+            }
+        )
         composite = CompositeTrialObserver([bad, good])
         composite.trial_started(self.identity, models={}, started_at=datetime.now(tz=timezone.utc))
         composite.trial_finished(self.identity, trajectory=None)
-        assert [name for name, _ in good.calls] == ["trial_started", "trial_finished"]
+        assert [name for name, _ in good.call_log.calls] == ["trial_started", "trial_finished"]
         receipt = composite.run_finished()
         assert (receipt.spans_queued, receipt.spans_exported, receipt.exporter) == (2, 2, "fake")

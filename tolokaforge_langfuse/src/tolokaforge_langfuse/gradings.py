@@ -8,7 +8,7 @@ API and under the id contract the offline connector uses (``ids``). A later conn
 the same bundle therefore updates these records instead of duplicating them, and finds the same
 content fingerprint on the grading.
 
-Shapes follow the connector's ``mapping.py`` (PLAN 3.6): one ``grading:<id>`` observation under
+Shapes follow the connector's ``mapping.py`` (ADR-0047): one ``grading:<id>`` observation under
 the root with the judge turns nested beneath and its scores attached (scope ``grading|<id>``),
 the trace-level mirror of the same scores (scope ``primary``) and the trace's grading keys.
 Nothing here raises for a malformed bundle: a file that cannot be read yields no events.
@@ -251,6 +251,40 @@ def _judge_usage_fields(judge_usage: Mapping[str, Any]) -> tuple[dict[str, int],
     return details, metadata
 
 
+def _aggregate_judge_generation(
+    trace_id: str,
+    grading_id: str,
+    common: Mapping[str, str],
+    judge_usage: Mapping[str, Any],
+    *,
+    judge_model_name: str | None,
+    at: str | None,
+) -> list[tuple[str, dict[str, Any]]]:
+    out: list[tuple[str, dict[str, Any]]] = []
+    if judge_usage and int(judge_usage.get("calls") or 0) > 0:
+        details, usage_metadata = _judge_usage_fields(judge_usage)
+        body: dict[str, Any] = {
+            "id": ids.observation_id(trace_id, "jgen", grading_id, 0),
+            **common,
+            "name": "judge (aggregate usage, no transcript)",
+            "startTime": at,
+            "endTime": at,
+            "level": "DEFAULT",
+            "metadata": {
+                "role": "judge",
+                "grading_id": grading_id,
+                "message_index": 0,
+                **usage_metadata,
+            },
+            "usageDetails": details,
+            "costDetails": {"total": judge_usage.get("cost_usd") or 0},
+        }
+        if judge_model_name:
+            body["model"] = judge_model_name
+        out.append(("generation-create", body))
+    return out
+
+
 def _judge_observations(
     trace_id: str,
     grading_id: str,
@@ -269,28 +303,14 @@ def _judge_observations(
     assistant_indexes = [i for i, m in enumerate(judge_messages) if m.get("role") == "assistant"]
     common = {"traceId": trace_id, "parentObservationId": grading_observation_id}
     if not assistant_indexes:
-        if judge_usage and int(judge_usage.get("calls") or 0) > 0:
-            details, usage_metadata = _judge_usage_fields(judge_usage)
-            body: dict[str, Any] = {
-                "id": ids.observation_id(trace_id, "jgen", grading_id, 0),
-                **common,
-                "name": "judge (aggregate usage, no transcript)",
-                "startTime": at,
-                "endTime": at,
-                "level": "DEFAULT",
-                "metadata": {
-                    "role": "judge",
-                    "grading_id": grading_id,
-                    "message_index": 0,
-                    **usage_metadata,
-                },
-                "usageDetails": details,
-                "costDetails": {"total": judge_usage.get("cost_usd") or 0},
-            }
-            if judge_model_name:
-                body["model"] = judge_model_name
-            out.append(("generation-create", body))
-        return out
+        return _aggregate_judge_generation(
+            trace_id,
+            grading_id,
+            common,
+            judge_usage,
+            judge_model_name=judge_model_name,
+            at=at,
+        )
     calls_by_id = {
         call.get("id"): (call.get("name"), call.get("arguments"))
         for message in judge_messages
@@ -450,6 +470,85 @@ def _grading_input(task: Mapping[str, Any], grading_id: str) -> dict[str, Any]:
     }
 
 
+def build_grading_observations(
+    trace_id: str,
+    root_id: str,
+    *,
+    run_id: str,
+    grade: Mapping[str, Any],
+    task: Mapping[str, Any],
+    judge_messages: list[Mapping[str, Any]],
+    judge_model_name: str | None,
+    env_sha256: str | None,
+    at: str | None,
+) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]], dict[str, Any], str]:
+    """The grading observation, judge transcript and scores shared by both projections."""
+    grading_id = ids.live_grading_id(run_id)
+    observation_id = ids.grading_observation_id(trace_id, grading_id)
+    judge = _judge_observations(
+        trace_id,
+        grading_id,
+        observation_id,
+        judge_messages,
+        grade,
+        judge_model_name=judge_model_name,
+        at=at,
+    )
+    scores = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=observation_id)
+    mirror = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=None)
+    summary = grade_summary(grade)
+    status = summary["judge_status"]
+    # provenance as the connector records it for the run's own grading: the grading run id and
+    # the trial's end (a bundle fact); everything else was declared by nobody
+    provenance: dict[str, Any] = dict.fromkeys(PROVENANCE_KEYS, UNKNOWN)
+    provenance["grading_run_id"] = grading_id
+    if at:
+        provenance["created_at"] = at
+    metadata: dict[str, Any] = {
+        "kind": OBSERVATION_KIND_GRADING,
+        "grading_id": grading_id,
+        "source": ids.GRADING_SOURCE_LIVE,
+        "content_fingerprint": content_fingerprint(grade),
+        "env_sha256": env_sha256 or NONE,
+        "supersedes": NONE,
+        "judge_model": judge_model_name or NONE,
+        "components": json.dumps(grade.get("components") or {}, sort_keys=True),
+        "score_count": len(scores),
+        "judge_observation_count": len(judge),
+        **summary,
+        **{f"provenance_{key}": value for key, value in provenance.items()},
+        "attachments": {},
+    }
+    typed: list[tuple[str, dict[str, Any]]] = [
+        (
+            "span-create",
+            {
+                "id": observation_id,
+                "traceId": trace_id,
+                "parentObservationId": root_id,
+                "name": f"grading:{grading_id}",
+                "startTime": at,
+                "endTime": at,
+                "input": _grading_input(task, grading_id),
+                "output": _text(grade.get("reasons")) if grade.get("reasons") else NONE,
+                "level": "ERROR" if status in ("errored", "error", "failed") else "DEFAULT",
+                "statusMessage": status if status not in ("unspecified", NONE) else "",
+                "metadata": metadata,
+            },
+        )
+    ]
+    typed.extend(judge)
+    typed.extend(("score-create", body) for body in scores)
+    return typed, mirror, summary, grading_id
+
+
+def _load_judge_messages(trial_dir: Path) -> list[Mapping[str, Any]]:
+    path = trial_dir / "judge_trajectory.yaml"
+    document = _load_yaml(path) if path.exists() else None
+    messages = document.get("messages") if isinstance(document, Mapping) else document
+    return [m for m in messages if isinstance(m, Mapping)] if isinstance(messages, list) else []
+
+
 def build_grading_events(
     trace_id: str,
     trial_dir: Path,
@@ -479,72 +578,18 @@ def build_grading_events(
 
     grade = _load_yaml(trial_dir / "grade.yaml") if (trial_dir / "grade.yaml").exists() else None
     if isinstance(grade, Mapping) and grade:
-        grading_id = ids.live_grading_id(run_id)
-        observation_id = ids.grading_observation_id(trace_id, grading_id)
-        judge_doc = (
-            _load_yaml(trial_dir / "judge_trajectory.yaml")
-            if (trial_dir / "judge_trajectory.yaml").exists()
-            else None
-        )
-        judge_messages: list[Mapping[str, Any]] = []
-        if isinstance(judge_doc, Mapping) and isinstance(judge_doc.get("messages"), list):
-            judge_messages = [m for m in judge_doc["messages"] if isinstance(m, Mapping)]
-        elif isinstance(judge_doc, list):
-            judge_messages = [m for m in judge_doc if isinstance(m, Mapping)]
-        judge = _judge_observations(
+        grading_typed, mirror, summary, grading_id = build_grading_observations(
             trace_id,
-            grading_id,
-            observation_id,
-            judge_messages,
-            grade,
+            root_id,
+            run_id=run_id,
+            grade=grade,
+            task=task,
+            judge_messages=_load_judge_messages(trial_dir),
             judge_model_name=judge_model_name,
+            env_sha256=env_sha256,
             at=at,
         )
-        scores = _score_bodies(
-            trace_id, grade, grading_id=grading_id, observation_id=observation_id
-        )
-        mirror = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=None)
-        summary = grade_summary(grade)
-        status = summary["judge_status"]
-        provenance = dict.fromkeys(PROVENANCE_KEYS, UNKNOWN)
-        provenance["grading_run_id"] = grading_id
-        if at:
-            provenance["created_at"] = at
-        metadata: dict[str, Any] = {
-            "kind": OBSERVATION_KIND_GRADING,
-            "grading_id": grading_id,
-            "source": ids.GRADING_SOURCE_LIVE,
-            "content_fingerprint": content_fingerprint(grade),
-            "env_sha256": env_sha256 or NONE,
-            "supersedes": NONE,
-            "judge_model": judge_model_name or NONE,
-            "components": json.dumps(grade.get("components") or {}, sort_keys=True),
-            "score_count": len(scores),
-            "judge_observation_count": len(judge),
-            **summary,
-            **{f"provenance_{key}": value for key, value in provenance.items()},
-            "attachments": {},
-        }
-        typed.append(
-            (
-                "span-create",
-                {
-                    "id": observation_id,
-                    "traceId": trace_id,
-                    "parentObservationId": root_id,
-                    "name": f"grading:{grading_id}",
-                    "startTime": at,
-                    "endTime": at,
-                    "input": _grading_input(task, grading_id),
-                    "output": _text(grade.get("reasons")) if grade.get("reasons") else NONE,
-                    "level": "ERROR" if status in ("errored", "error", "failed") else "DEFAULT",
-                    "statusMessage": status if status not in ("unspecified", NONE) else "",
-                    "metadata": metadata,
-                },
-            )
-        )
-        typed.extend(judge)
-        typed.extend(("score-create", body) for body in scores)
+        typed.extend(grading_typed)
         typed.extend(("score-create", body) for body in mirror)
         typed.append(
             (
@@ -561,8 +606,8 @@ def build_grading_events(
             )
         )
         result.grading_id = grading_id
-        result.scores = len(scores) + len(mirror)
-        result.judge_observations = len(judge)
+        result.scores = sum(kind == "score-create" for kind, _ in grading_typed) + len(mirror)
+        result.judge_observations = sum(kind != "score-create" for kind, _ in grading_typed) - 1
 
     now = datetime.now(timezone.utc).isoformat()
     result.events = [

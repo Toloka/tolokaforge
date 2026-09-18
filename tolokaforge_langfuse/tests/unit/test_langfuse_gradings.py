@@ -395,9 +395,13 @@ class TestObserverGradings:
         assert grading["body"]["metadata"]["judge_model"].endswith("gemini-3.6-flash")
         judge_gen = next(e for e in batch if e["body"].get("name", "").startswith("judge turn"))
         assert judge_gen["body"]["model"].endswith("gemini-3.6-flash")
-        assert (receipt.gradings_sent, receipt.gradings_failed, receipt.scores_sent) == (1, 0, 16)
-        assert receipt.user_generations_sent == 2
-        assert receipt.to_dict()["gradings_sent"] == 1
+        assert (
+            receipt.extra["langfuse.gradings_sent"],
+            receipt.extra["langfuse.gradings_failed"],
+            receipt.extra["langfuse.scores_sent"],
+        ) == (1, 0, 16)
+        assert receipt.extra["langfuse.user_generations_sent"] == 2
+        assert receipt.model_dump(mode="json")["extra"]["langfuse.gradings_sent"] == 1
 
     def test_attach_none_skips_the_files_but_the_grading_still_leaves(self, tmp_path: Path) -> None:
         from tolokaforge.observability.observer import TrialIdentity
@@ -419,7 +423,10 @@ class TestObserverGradings:
         observer.trial_persisted(identity, trial_dir=write_bundle(tmp_path / "T-1" / "0"))
         receipt = observer.run_finished()
         assert Step.attached == 0 and len(Step.batches) == 1
-        assert receipt.gradings_sent == 1 and receipt.attachments_registered == 0
+        assert (
+            receipt.extra["langfuse.gradings_sent"] == 1
+            and receipt.extra["langfuse.attachments_registered"] == 0
+        )
 
     def test_a_refused_batch_is_a_failure_count_not_an_exception(self, tmp_path: Path) -> None:
         from tolokaforge.observability.observer import TrialIdentity
@@ -437,7 +444,10 @@ class TestObserverGradings:
         identity = TrialIdentity(run_id=RUN_ID, task_id="T-1", trial_index=0, attempt_id=0)
         observer.trial_persisted(identity, trial_dir=write_bundle(tmp_path / "T-1" / "0"))
         receipt = observer.run_finished()
-        assert (receipt.gradings_sent, receipt.gradings_failed) == (0, 1)
+        assert (
+            receipt.extra["langfuse.gradings_sent"],
+            receipt.extra["langfuse.gradings_failed"],
+        ) == (0, 1)
 
     def test_gradings_off_sends_nothing(self, tmp_path: Path) -> None:
         from tolokaforge.observability.observer import TrialIdentity
@@ -454,7 +464,7 @@ class TestObserverGradings:
         observer = self._observer(Step(), gradings=False)
         identity = TrialIdentity(run_id=RUN_ID, task_id="T-1", trial_index=0, attempt_id=0)
         observer.trial_persisted(identity, trial_dir=write_bundle(tmp_path / "T-1" / "0"))
-        assert observer.run_finished().gradings_sent == 0
+        assert observer.run_finished().extra["langfuse.gradings_sent"] == 0
 
 
 class TestLangfuseSwitch:
@@ -547,7 +557,10 @@ class TestLangfuseSwitch:
             assert observer._queue._exporter._endpoint.endswith("/api/public/otel/v1/traces")
         finally:
             receipt = observer.run_finished()
-        assert receipt.expect_project == "pilot-dev" and receipt.project_verified == "verified"
+        assert (
+            receipt.details[0]["expect_project"] == "pilot-dev"
+            and receipt.details[0]["project_verified"] == "verified"
+        )
         assert (tmp_path / "run_identity.json").exists()
 
     def test_the_switch_without_credentials_or_with_half_a_pair_refuses(self, clean_env) -> None:

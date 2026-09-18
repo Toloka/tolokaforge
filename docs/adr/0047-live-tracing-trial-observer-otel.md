@@ -1,14 +1,14 @@
 # 0047. Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra
 
-- **Status:** Proposed (amended 2026-09-16 and 2026-09-17; "Where the decision stands" below is the current shape)
-- **Date:** 2026-09-15, last amended 2026-09-17
+- **Status:** Proposed (amended through 2026-09-18; "Where the decision stands" below is the current shape)
+- **Date:** 2026-09-15, last amended 2026-09-18
 - **Deciders:** @bberkes-toloka (proposer), @CiroGamboa (engine owner, review pending)
 - **Supersedes:** —
 - **Superseded by:** —
 
-## Where the decision stands (2026-09-17)
+## Where the decision stands (2026-09-18)
 
-The Decision and Consequences sections record the first cut of 2026-09-15; six amendments follow
+The Decision and Consequences sections record the first cut of 2026-09-15; the amendments follow
 them in date order. Read together they leave the decision here:
 
 - **The engine owns the seam, nothing receiver-shaped.** `tolokaforge/observability/observer.py`
@@ -17,7 +17,11 @@ them in date order. Read together they leave the decision here:
   `tool`, `grading`, `jgen`, `jtool`, `event`, and score ids, shared with the offline connector)
   and `factory.py` (the run identity, `run_identity.json`, `tracing_receipt.json`, and the
   discovery of trial-observer plugins under the `tolokaforge.trial_observers` entry-point group).
-  `TracingConfig` stays the seam's public configuration.
+  `TracingConfig` stays the seam's public configuration and rejects unknown fields. The seam
+  follows [ADR-0011](0011-seam-and-declaration-conventions.md): `InMemoryTrialObserver` with a
+  call log and failure knobs, canonical hook tests, and strict snapshot-pinned persisted models.
+  `ExportReceipt` follows [ADR-0021](0021-component-monitoring-seam.md)'s receiver-neutral shape:
+  common span counters, namespaced plugin counters in `extra`, and opaque receiver facts in `details`.
 - **The Langfuse observer is the `tolokaforge-langfuse` wheel** (`tolokaforge_langfuse/`, a
   workspace member released on its own cadence): the OTLP exporter, the attachment step, the
   trial-end projection of the bundle, the gradings, the deployment profile and the model-name
@@ -347,7 +351,7 @@ former `tolokaforge/observability/{otel,langfuse_projection,langfuse_gradings,la
 attachments,profile,model_names}.py` named in the amendments above); the engine's `otel` extra
 resolves to it. The plugin decides enablement (`exporter: otlp` or `LANGFUSE_TRACING_ENABLED`),
 the engine composes what the plugins return and refuses a run that asks for an exporter no plugin
-provides. The pairing is a versioned contract (`PLUGIN_API_VERSION` = `__api_version__` = 1)
+provides. The pairing is a versioned contract (`PLUGIN_API_VERSION` = `__api_version__` = 2, including the receipt contract)
 checked at run start, not a pip dependency: like the models wheel (ADR-0030) the plugin declares
 no `tolokaforge` requirement, so the same wheel installs next to any engine pin and fails loud,
 with both versions in the message, when the contract moved. `TracingConfig` stays in the engine
@@ -382,6 +386,37 @@ module entry and degrades to an offline upload rather than failing a run. The li
 wheel (`tolokaforge-langfuse-<version>+<rules>+<profile>`), `release` the engine. The golden
 parity test carries the derived tags; the shared modules import no engine module, which a test
 pins, so the offline uploader can depend on the wheel next to any engine pin.
+
+## Amendment 2026-09-18: seam contracts and process-local delivery receipts
+
+The Pattern A fixture is `InMemoryTrialObserver`, with `TrialObserverCallLog`, an explicit
+receipt and per-hook failure injection. `tests/canonical/test_trial_observer_contract.py` pins
+all six hook signatures, fan-out and failure isolation. `safely` logs ordinary exceptions;
+process interrupts still propagate.
+
+Pattern B applies to `TracingConfig`, `ExportReceipt`, and the persisted `RunIdentityDocument`:
+all reject unknown fields and have canonical JSON round-trip snapshots. The run identity's
+wire shape stays unchanged. Tracing plugin settings belong in the declared `options` field.
+
+The receipt carries only common delivery counters, `flushed`, and `exporter` at the top level.
+The explicitly sanctioned extension fields are `extra: dict[str, nonnegative int]` (additive,
+plugin-namespaced counters) and `details: tuple[dict[str, str | None], ...]` (non-additive receiver
+facts). The engine sums the former and concatenates the latter without knowing any receiver
+key. Langfuse uses `langfuse.*` counters and a details entry containing `exporter`,
+`expect_project`, and `project_verified`. This is plugin API **2**: older engines and plugins
+must reject the pairing instead of silently dropping receiver data. The composite records a
+missing child receipt as `export_failures += 1` and `flushed: false`.
+
+`run_finished` is per process. `ExportReceipt.merge` provides the reduction for disjoint worker
+receipts; collection, worker deduplication and partial/final accounting belong to the caller.
+No automatic distributed aggregation is implied. Counts describe export attempts, while the
+id contract makes receiver-side re-sends idempotent; summing a receipt twice is not idempotent.
+
+The Protocol is an in-process tap, not a remote-ingest contract. Hook arguments are live engine
+objects; a sidecar or remote collector requires an in-process plugin shim. The durable boundary
+is the id contract plus persisted bundle projection. This preserves the transport-independent
+observability direction of ADR-0021 and the address-boundary direction of ADR-0038 without
+presenting Python objects or process-local counts as a distributed wire protocol.
 
 ## Links
 

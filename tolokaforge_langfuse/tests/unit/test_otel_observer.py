@@ -335,13 +335,13 @@ def test_trial_persisted_attaches_the_bundle_with_the_trial_start_and_counts_in_
     # trace metadata in arrival order and the provisional root's "running" may land last
     assert step.calls == [(IDENTITY.trace_id, tmp_path, T0, {"status": "completed"})]
     assert (
-        receipt.attachments_registered,
-        receipt.attachments_uploaded,
-        receipt.attachments_deduplicated,
-        receipt.attachments_skipped,
-        receipt.manifests_sent,
+        receipt.extra["langfuse.attachments_registered"],
+        receipt.extra["langfuse.attachments_uploaded"],
+        receipt.extra["langfuse.attachments_deduplicated"],
+        receipt.extra["langfuse.attachments_skipped"],
+        receipt.extra["langfuse.manifests_sent"],
     ) == (8, 3, 5, 1, 1)
-    assert receipt.to_dict()["attachments_registered"] == 8
+    assert receipt.model_dump(mode="json")["extra"]["langfuse.attachments_registered"] == 8
     # the root span was not re-emitted: the trace's end time stays the trial end
     assert [s.name for s in exporter.get_finished_spans()].count("trial T-1/0") == 2
 
@@ -351,4 +351,7 @@ def test_without_an_attachment_step_trial_persisted_is_a_no_op(tmp_path) -> None
     observer, _ = _observer(exporter)
     observer.trial_persisted(IDENTITY, trial_dir=tmp_path)
     receipt = observer.run_finished()
-    assert receipt.attachments_registered == 0 and receipt.manifests_sent == 0
+    assert (
+        receipt.extra["langfuse.attachments_registered"] == 0
+        and receipt.extra["langfuse.manifests_sent"] == 0
+    )

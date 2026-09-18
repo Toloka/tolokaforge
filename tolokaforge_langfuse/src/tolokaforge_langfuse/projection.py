@@ -44,16 +44,10 @@ from tolokaforge_langfuse.gradings import (
     CONTEXT_CHARS,
     CONTEXT_MESSAGES,
     NONE,
-    OBSERVATION_KIND_GRADING,
-    PROVENANCE_KEYS,
-    UNKNOWN,
-    _grading_input,
-    _judge_observations,
     _normalize_ts,
     _number,
-    _score_bodies,
     _text,
-    content_fingerprint,
+    build_grading_observations,
     grade_summary,
 )
 from tolokaforge_langfuse.model_names import (
@@ -82,7 +76,7 @@ PROJECTION_GRADINGS = "gradings"
 PROJECTION_NONE = "none"
 PROJECTION_MODES = (PROJECTION_FULL, PROJECTION_GRADINGS, PROJECTION_NONE)
 # the metadata keys whose values differ by producer by design (the connector's exclusion list,
-# PLAN 3.12): each producer writes them, a parity check compares them by name only
+# ADR-0047): each producer writes them, a parity check compares them by name only
 PRODUCER_KEYS = frozenset({"upload_mode", "uploader_version", "trace_time_source", "attach_mode"})
 # what the live root span adds and the bundle cannot know, plus the two keys a Langfuse receiver
 # writes into the metadata of a trace that arrived over OTLP (the trace-level span's raw
@@ -548,6 +542,143 @@ def _user_generation(
     return body
 
 
+def _assistant_generation(
+    trace_id: str,
+    root_id: str,
+    index: int,
+    message: Mapping[str, Any],
+    *,
+    context: list[dict[str, Any]],
+    started: str | None,
+    ended: str | None,
+    model_name: str | None,
+    usage_match: str,
+    call: Mapping[str, Any] | None,
+    media: MediaHandler | None,
+    stats: ProjectionStats,
+) -> dict[str, Any]:
+    blocks = message.get("content_blocks")
+    observation_id = ids.observation_id(trace_id, "gen", index)
+    output: dict[str, Any] = {
+        "content": message.get("content"),
+        "tool_calls": message.get("tool_calls"),
+    }
+    if blocks:
+        output["content_blocks"] = _replace_media(
+            blocks, trace_id, observation_id, "output", media, stats
+        )
+    body: dict[str, Any] = {
+        "id": observation_id,
+        "traceId": trace_id,
+        "parentObservationId": root_id,
+        "name": f"assistant turn {index}",
+        "startTime": started,
+        "endTime": ended or started,
+        "input": context[-CONTEXT_MESSAGES:],
+        "output": output,
+        "metadata": {
+            "role": "agent",
+            "message_index": index,
+            "reasoning": message.get("reasoning"),
+            "usage_match": usage_match,
+        },
+    }
+    if model_name:
+        body["model"] = model_name
+    if call is not None:
+        details, usage_metadata = usage_fields(call)
+        body["usageDetails"] = details
+        body["metadata"].update(usage_metadata)
+        if call.get("cost_usd") is not None:
+            body["costDetails"] = {"total": call["cost_usd"]}
+    return body
+
+
+def _tool_observation(
+    trace_id: str,
+    root_id: str,
+    index: int,
+    message: Mapping[str, Any],
+    *,
+    entry: Mapping[str, Any] | None,
+    tool_calls_by_id: Mapping[Any, tuple[Any, Any]],
+    started: str | None,
+    ended: str | None,
+    media: MediaHandler | None,
+    stats: ProjectionStats,
+) -> dict[str, Any]:
+    call_id = message.get("tool_call_id")
+    blocks = message.get("content_blocks")
+    if entry is not None:
+        body = _tool_body_from_log(
+            trace_id,
+            root_id,
+            entry,
+            transcript=message,
+            message_index=index,
+            fallback_start=started,
+        )
+        if blocks:
+            body["output"] = _replace_media(blocks, trace_id, body["id"], "output", media, stats)
+        return body
+    # Without a tool log, contract v2 keys tools by message position.
+    observation_id = ids.observation_id(trace_id, "tool", ids.tool_key(None, index))
+    name, arguments = tool_calls_by_id.get(call_id, (None, None))
+    tool_output = (
+        _replace_media(blocks, trace_id, observation_id, "output", media, stats)
+        if blocks
+        else message.get("content")
+    )
+    return {
+        "id": observation_id,
+        "traceId": trace_id,
+        "parentObservationId": root_id,
+        "name": f"tool: {name or 'unknown'}",
+        "startTime": started,
+        "endTime": ended or started,
+        "input": arguments,
+        "output": tool_output,
+        "metadata": {
+            "role": "agent_tool",
+            "kind": "tool",
+            "source": "transcript",
+            "message_index": index,
+            "call_id": _text(call_id),
+            "key_source": "msg",
+        },
+    }
+
+
+def _unrecorded_tools(
+    log_entries: Mapping[str, Mapping[str, Any]],
+    emitted_calls: set[str],
+    *,
+    trace_id: str,
+    root_id: str,
+    start: str | None,
+) -> list[tuple[str, dict[str, Any]]]:
+    out: list[tuple[str, dict[str, Any]]] = []
+    # tool calls the grader recorded that never reached the transcript (the user simulator's own
+    # tools, a call dropped before the tool message was written)
+    for call_id, entry in log_entries.items():
+        if call_id in emitted_calls:
+            continue
+        out.append(
+            (
+                "span-create",
+                _tool_body_from_log(
+                    trace_id,
+                    root_id,
+                    entry,
+                    transcript=None,
+                    message_index=None,
+                    fallback_start=start,
+                ),
+            )
+        )
+    return out
+
+
 def _agent_observations(
     bundle: Bundle,
     *,
@@ -581,128 +712,63 @@ def _agent_observations(
         role = message.get("role")
         started = _normalize_ts(message.get("ts")) or start
         ended = _normalize_ts(messages[index + 1].get("ts")) if index + 1 < len(messages) else end
-        blocks = message.get("content_blocks")
         if role == "user" and _is_simulated_user(message, index, bundle.trajectory, bundle.task):
-            out.append(
-                (
-                    "generation-create",
-                    _user_generation(
-                        trace_id,
-                        root_id,
-                        index,
-                        message,
-                        context=context,
-                        started=started,
-                        ended=ended,
-                        user_model_name=user_model_name,
-                    ),
-                )
+            body = _user_generation(
+                trace_id,
+                root_id,
+                index,
+                message,
+                context=context,
+                started=started,
+                ended=ended,
+                user_model_name=user_model_name,
             )
+            out.append(("generation-create", body))
             stats.user_generations += 1
         elif role == "assistant":
-            observation_id = ids.observation_id(trace_id, "gen", index)
-            output: dict[str, Any] = {
-                "content": message.get("content"),
-                "tool_calls": message.get("tool_calls"),
-            }
-            if blocks:
-                output["content_blocks"] = _replace_media(
-                    blocks, trace_id, observation_id, "output", media, stats
-                )
-            body: dict[str, Any] = {
-                "id": observation_id,
-                "traceId": trace_id,
-                "parentObservationId": root_id,
-                "name": f"assistant turn {index}",
-                "startTime": started,
-                "endTime": ended or started,
-                "input": context[-CONTEXT_MESSAGES:],
-                "output": output,
-                "metadata": {
-                    "role": "agent",
-                    "message_index": index,
-                    "reasoning": message.get("reasoning"),
-                    "usage_match": usage_match,
-                },
-            }
-            if model_name:
-                body["model"] = model_name
-            call = paired.get(index)
-            if call is not None:
-                details, usage_metadata = usage_fields(call)
-                body["usageDetails"] = details
-                body["metadata"].update(usage_metadata)
-                if call.get("cost_usd") is not None:
-                    body["costDetails"] = {"total": call["cost_usd"]}
+            body = _assistant_generation(
+                trace_id,
+                root_id,
+                index,
+                message,
+                context=context,
+                started=started,
+                ended=ended,
+                model_name=model_name,
+                usage_match=usage_match,
+                call=paired.get(index),
+                media=media,
+                stats=stats,
+            )
             out.append(("generation-create", body))
         elif role == "tool":
             call_id = message.get("tool_call_id")
-            if call_id is not None and str(call_id) in log_entries:
-                body = _tool_body_from_log(
-                    trace_id,
-                    root_id,
-                    log_entries[str(call_id)],
-                    transcript=message,
-                    message_index=index,
-                    fallback_start=started,
-                )
-                if blocks:
-                    body["output"] = _replace_media(
-                        blocks, trace_id, body["id"], "output", media, stats
-                    )
+            entry = log_entries.get(str(call_id)) if call_id is not None else None
+            if entry is not None:
                 emitted_calls.add(str(call_id))
-                out.append(("span-create", body))
-            else:
-                # a bundle without a tool log keys its tools by message position (contract v2)
-                observation_id = ids.observation_id(trace_id, "tool", ids.tool_key(None, index))
-                name, arguments = tool_calls_by_id.get(call_id, (None, None))
-                tool_output = (
-                    _replace_media(blocks, trace_id, observation_id, "output", media, stats)
-                    if blocks
-                    else message.get("content")
-                )
-                out.append(
-                    (
-                        "span-create",
-                        {
-                            "id": observation_id,
-                            "traceId": trace_id,
-                            "parentObservationId": root_id,
-                            "name": f"tool: {name or 'unknown'}",
-                            "startTime": started,
-                            "endTime": ended or started,
-                            "input": arguments,
-                            "output": tool_output,
-                            "metadata": {
-                                "role": "agent_tool",
-                                "kind": "tool",
-                                "source": "transcript",
-                                "message_index": index,
-                                "call_id": _text(call_id),
-                                "key_source": "msg",
-                            },
-                        },
-                    )
-                )
-        context.append({"role": role, "content": str(message.get("content") or "")[:CONTEXT_CHARS]})
-    # tool calls the grader recorded that never reached the transcript (the user simulator's own
-    # tools, a call dropped before the tool message was written)
-    for call_id, entry in log_entries.items():
-        if call_id in emitted_calls:
-            continue
-        out.append(
-            (
-                "span-create",
-                _tool_body_from_log(
-                    trace_id,
-                    root_id,
-                    entry,
-                    transcript=None,
-                    message_index=None,
-                    fallback_start=start,
-                ),
+            body = _tool_observation(
+                trace_id,
+                root_id,
+                index,
+                message,
+                entry=entry,
+                tool_calls_by_id=tool_calls_by_id,
+                started=started,
+                ended=ended,
+                media=media,
+                stats=stats,
             )
+            out.append(("span-create", body))
+        context.append({"role": role, "content": str(message.get("content") or "")[:CONTEXT_CHARS]})
+    out.extend(
+        _unrecorded_tools(
+            log_entries,
+            emitted_calls,
+            trace_id=trace_id,
+            root_id=root_id,
+            start=start,
         )
+    )
     return out
 
 
@@ -737,16 +803,12 @@ def _log_level(level: str) -> str:
     return "WARNING" if level == "WARNING" else "DEFAULT"
 
 
-def _events(
+def _log_events(
     bundle: Bundle, *, trace_id: str, root_id: str, include_info: bool
 ) -> list[dict[str, Any]]:
-    """Point-in-time records: ``logs.yaml`` entries (WARNING and ERROR always, INFO on request),
-    reply-guard events, a provisioning failure, a run-level budget hit, service captures; keys
-    are facts of the bundle so filtering never re-indexes."""
     out: list[dict[str, Any]] = []
     trajectory = bundle.trajectory
     start, _ = trace_time(trajectory)
-    end = _normalize_ts(trajectory.get("end_ts")) or start
     logs = bundle.logs.get("logs") if isinstance(bundle.logs, Mapping) else None
     for index, record in enumerate(logs or []):
         if not isinstance(record, Mapping):
@@ -774,6 +836,13 @@ def _events(
                 },
             )
         )
+    return out
+
+
+def _reply_guard_events(bundle: Bundle, *, trace_id: str, root_id: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    trajectory = bundle.trajectory
+    start, _ = trace_time(trajectory)
     messages = trajectory.get("messages") or []
     for guard in trajectory.get("user_reply_guard_events") or []:
         if not isinstance(guard, Mapping):
@@ -806,6 +875,14 @@ def _events(
                 },
             )
         )
+    return out
+
+
+def _failure_events(bundle: Bundle, *, trace_id: str, root_id: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    trajectory = bundle.trajectory
+    start, _ = trace_time(trajectory)
+    end = _normalize_ts(trajectory.get("end_ts")) or start
     stage = trajectory.get("provision_stage")
     if stage:
         metrics = bundle.metrics
@@ -848,6 +925,14 @@ def _events(
                 },
             )
         )
+    return out
+
+
+def _capture_events(bundle: Bundle, *, trace_id: str, root_id: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    trajectory = bundle.trajectory
+    start, _ = trace_time(trajectory)
+    end = _normalize_ts(trajectory.get("end_ts")) or start
     captures = bundle.captures
     services = captures.get("services") if isinstance(captures, Mapping) else None
     for service, info in sorted((services or {}).items()):
@@ -870,6 +955,18 @@ def _events(
             )
         )
     return out
+
+
+def _events(
+    bundle: Bundle, *, trace_id: str, root_id: str, include_info: bool
+) -> list[dict[str, Any]]:
+    """Bundle events in source order; filtering never re-indexes their stable keys."""
+    return [
+        *_log_events(bundle, trace_id=trace_id, root_id=root_id, include_info=include_info),
+        *_reply_guard_events(bundle, trace_id=trace_id, root_id=root_id),
+        *_failure_events(bundle, trace_id=trace_id, root_id=root_id),
+        *_capture_events(bundle, trace_id=trace_id, root_id=root_id),
+    ]
 
 
 # -- trace metadata ---------------------------------------------------------------------------------
@@ -900,7 +997,7 @@ def trace_metadata(
     if tokens_output is None:
         tokens_output = usage.get("completion_tokens")
     manifest = dict(manifest or {})
-    # The slim schema of the offline uploader's ``_trace_metadata`` (PLAN 3.10, revised
+    # The slim schema of the offline uploader's ``_trace_metadata`` (ADR-0047, revised
     # 2026-09-17): what a reader of the trace page needs and what the uploader's own commands
     # read back. Everything else about the trial lives in the attached files, in the scores and
     # on the grading observation, and the tags carry the deployment's vocabulary. Every key is
@@ -987,85 +1084,32 @@ def _grading_events(
     judge_model_name: str | None,
     at: str | None,
     stats: ProjectionStats,
-) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]], dict[str, Any], str]:
-    """The run's own grading: (typed events, mirror score bodies, grade summary, grading id)."""
-    grade = bundle.grade
-    grading_id = ids.live_grading_id(run_id)
-    observation_id = ids.grading_observation_id(trace_id, grading_id)
-    judge = _judge_observations(
+    include: bool,
+) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any]]:
+    """The optional grading observations, mirror scores and trace-level summary."""
+    if not include or not bundle.grade:
+        return [], grade_summary({})
+    typed, mirror, summary, grading_id = build_grading_observations(
         trace_id,
-        grading_id,
-        observation_id,
-        bundle.judge_messages,
-        grade,
+        root_id,
+        run_id=run_id,
+        grade=bundle.grade,
+        task=bundle.task,
+        judge_messages=bundle.judge_messages,
         judge_model_name=judge_model_name,
+        env_sha256=bundle.env_sha256,
         at=at,
     )
-    scores = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=observation_id)
-    mirror = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=None)
-    summary = grade_summary(grade)
-    status = summary["judge_status"]
-    # provenance as the connector records it for the run's own grading: the grading run id and
-    # the trial's end (a bundle fact); everything else was declared by nobody
-    provenance: dict[str, Any] = dict.fromkeys(PROVENANCE_KEYS, UNKNOWN)
-    provenance["grading_run_id"] = grading_id
-    if at:
-        provenance["created_at"] = at
-    metadata: dict[str, Any] = {
-        "kind": OBSERVATION_KIND_GRADING,
-        "grading_id": grading_id,
-        "source": ids.GRADING_SOURCE_LIVE,
-        "content_fingerprint": content_fingerprint(grade),
-        "env_sha256": bundle.env_sha256 or NONE,
-        "supersedes": NONE,
-        "judge_model": judge_model_name or NONE,
-        "components": json.dumps(grade.get("components") or {}, sort_keys=True),
-        "score_count": len(scores),
-        "judge_observation_count": len(judge),
-        **summary,
-        **{f"provenance_{key}": value for key, value in provenance.items()},
-        "attachments": {},
-    }
-    typed: list[tuple[str, dict[str, Any]]] = [
-        (
-            "span-create",
-            {
-                "id": observation_id,
-                "traceId": trace_id,
-                "parentObservationId": root_id,
-                "name": f"grading:{grading_id}",
-                "startTime": at,
-                "endTime": at,
-                "input": _grading_input(bundle.task, grading_id),
-                "output": _text(grade.get("reasons")) if grade.get("reasons") else NONE,
-                "level": "ERROR" if status in ("errored", "error", "failed") else "DEFAULT",
-                "statusMessage": status if status not in ("unspecified", NONE) else "",
-                "metadata": metadata,
-            },
-        )
-    ]
-    typed.extend(judge)
-    typed.extend(("score-create", body) for body in scores)
-    stats.judge_observations = len(judge)
+    stats.judge_observations = sum(kind != "score-create" for kind, _ in typed) - 1
     stats.grading_id = grading_id
-    return typed, mirror, summary, grading_id
+    typed.extend(("score-create", body) for body in mirror)
+    return typed, summary
 
 
-def build_projection(
-    identity: TrialIdentity,
-    trial_dir: Path,
-    ctx: ProjectionContext,
-    *,
-    resolver: ModelNameResolver,
-    manifest: Mapping[str, Any] | None = None,
-    media: MediaHandler | None = None,
-) -> Projection:
-    """Project the persisted trial under ``identity`` into its ingestion events."""
-    bundle = load_bundle(Path(trial_dir))
-    trace_id = identity.trace_id
-    root_id = identity.root_id
-    stats = ProjectionStats()
+def _bundle_identity(bundle: Bundle, identity: TrialIdentity) -> tuple[str, Any]:
+    """Warn on a bundle mismatch; the run identity remains authoritative."""
     trajectory = bundle.trajectory
+    trace_id = identity.trace_id
     task_id = str(trajectory.get("task_id") or identity.task_id)
     trial_index: object = trajectory.get("trial_index")
     if trial_index is None:
@@ -1086,6 +1130,93 @@ def build_projection(
             recorded,
             trace_id,
         )
+    return task_id, trial_index
+
+
+def _trace_body(
+    bundle: Bundle,
+    ctx: ProjectionContext,
+    *,
+    trace_id: str,
+    task_id: str,
+    start: str | None,
+    messages: list[Mapping[str, Any]],
+    agent: ModelIdentity | None,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": trace_id,
+        "name": f"{ctx.label}/{task_id}",
+        "timestamp": start,
+        "sessionId": ctx.session_id,
+        "input": next((m.get("content") for m in messages if m.get("role") == "user"), None),
+        "output": next(
+            (
+                m.get("content")
+                for m in reversed(messages)
+                if m.get("role") == "assistant" and m.get("content")
+            ),
+            None,
+        ),
+        # the run's tags, the model identity's (the resolver's tags, facets included) and the
+        # bundle-derived ones (vocabulary.derived_tags), deduplicated in core order: the same set
+        # the offline uploader writes, whatever the live spans started with
+        "tags": order_tags(
+            [
+                f"harness:{HARNESS}",
+                f"source:{SOURCE_TRIAL}",
+                f"task:{task_id}",
+                *ctx.tags,
+                *(agent.tags if agent is not None else ()),
+                *derived_tags(bundle.task, bundle.metrics, groups=ctx.derived_groups),
+            ]
+        ),
+        "metadata": metadata,
+        "environment": ctx.environment,
+        "release": ctx.release,
+        "version": ctx.version,
+    }
+
+
+def _projection_events(
+    trace_body: dict[str, Any],
+    typed: list[tuple[str, dict[str, Any]]],
+    *,
+    environment: str | None,
+    stats: ProjectionStats,
+) -> list[dict[str, Any]]:
+    events = [envelope("trace-create", trace_body)]
+    for kind, body in typed:
+        if environment is not None:
+            # observations and scores carry the environment too: the receiver files them under
+            # ``default`` otherwise, whatever the trace says
+            body.setdefault("environment", environment)
+        events.append(envelope(kind, body))
+        if kind == "score-create":
+            stats.scores += 1
+        elif kind == "event-create":
+            stats.events += 1
+        else:
+            stats.observations += 1
+    return events
+
+
+def build_projection(
+    identity: TrialIdentity,
+    trial_dir: Path,
+    ctx: ProjectionContext,
+    *,
+    resolver: ModelNameResolver,
+    manifest: Mapping[str, Any] | None = None,
+    media: MediaHandler | None = None,
+) -> Projection:
+    """Project the persisted trial under ``identity`` into its ingestion events."""
+    bundle = load_bundle(Path(trial_dir))
+    trace_id = identity.trace_id
+    root_id = identity.root_id
+    stats = ProjectionStats()
+    trajectory = bundle.trajectory
+    task_id, trial_index = _bundle_identity(bundle, identity)
     agent_name, agent_provider = agent_model(bundle.task)
     agent = _resolve(resolver, agent_provider, agent_name)
     user_model_name = _role_canonical(bundle.task, "user", resolver)
@@ -1129,24 +1260,17 @@ def build_projection(
             bundle, trace_id=trace_id, root_id=root_id, include_info=ctx.attach_mode == "all"
         )
     )
-    grading_ids: list[str] = []
-    primary: str | None = None
-    summary = grade_summary({})
-    mirror: list[dict[str, Any]] = []
-    if ctx.grades and bundle.grade:
-        grading_typed, mirror, summary, grading_id = _grading_events(
-            bundle,
-            trace_id=trace_id,
-            root_id=root_id,
-            run_id=identity.run_id,
-            judge_model_name=judge_model_name,
-            at=at,
-            stats=stats,
-        )
-        typed.extend(grading_typed)
-        grading_ids = [grading_id]
-        primary = grading_id
-    typed.extend(("score-create", body) for body in mirror)
+    grading_typed, summary = _grading_events(
+        bundle,
+        trace_id=trace_id,
+        root_id=root_id,
+        run_id=identity.run_id,
+        judge_model_name=judge_model_name,
+        at=at,
+        stats=stats,
+        include=ctx.grades,
+    )
+    typed.extend(grading_typed)
 
     metadata = trace_metadata(
         bundle,
@@ -1157,53 +1281,19 @@ def build_projection(
         usage_match=usage_match,
         unpaired_calls=len(calls) - len(paired),
         primary_summary=summary,
-        primary=primary,
-        grading_ids=grading_ids,
+        primary=stats.grading_id,
+        grading_ids=[stats.grading_id] if stats.grading_id else [],
         manifest=manifest,
     )
-    trace_body: dict[str, Any] = {
-        "id": trace_id,
-        "name": f"{ctx.label}/{task_id}",
-        "timestamp": start,
-        "sessionId": ctx.session_id,
-        "input": next((m.get("content") for m in messages if m.get("role") == "user"), None),
-        "output": next(
-            (
-                m.get("content")
-                for m in reversed(messages)
-                if m.get("role") == "assistant" and m.get("content")
-            ),
-            None,
-        ),
-        # the run's tags, the model identity's (the resolver's tags, facets included) and the
-        # bundle-derived ones (vocabulary.derived_tags), deduplicated in core order: the same set
-        # the offline uploader writes, whatever the live spans started with
-        "tags": order_tags(
-            [
-                f"harness:{HARNESS}",
-                f"source:{SOURCE_TRIAL}",
-                f"task:{task_id}",
-                *ctx.tags,
-                *(agent.tags if agent is not None else ()),
-                *derived_tags(bundle.task, bundle.metrics, groups=ctx.derived_groups),
-            ]
-        ),
-        "metadata": metadata,
-        "environment": ctx.environment,
-        "release": ctx.release,
-        "version": ctx.version,
-    }
-    events = [envelope("trace-create", trace_body)]
-    for kind, body in typed:
-        if ctx.environment is not None:
-            # observations and scores carry the environment too: the receiver files them under
-            # ``default`` otherwise, whatever the trace says
-            body.setdefault("environment", ctx.environment)
-        events.append(envelope(kind, body))
-        if kind == "score-create":
-            stats.scores += 1
-        elif kind == "event-create":
-            stats.events += 1
-        else:
-            stats.observations += 1
+    trace_body = _trace_body(
+        bundle,
+        ctx,
+        trace_id=trace_id,
+        task_id=task_id,
+        start=start,
+        messages=messages,
+        agent=agent,
+        metadata=metadata,
+    )
+    events = _projection_events(trace_body, typed, environment=ctx.environment, stats=stats)
     return Projection(trace_id=trace_id, events=events, trace_body=trace_body, stats=stats)

@@ -538,18 +538,15 @@ class InProcessConductor:
             trajectory, runner, system_prompt = self._run_agent_loop(
                 spec, task_config, setup, identity
             )
+            # Every bundle, including the snapshot grader's, records the traced attempt.
+            trajectory.attempt_id = spec.attempt_id
             self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
-            # The bundle records the attempt it describes (ADR-0047), so the offline uploader
-            # derives the trace id the live exporter used.
-            trajectory.attempt_id = spec.attempt_id
         except BaseException as exc:
             # A trial that dies here (a hard raise, strict mode, a lost registration) still
             # closes its trace, or its live spans would hang without a root; the orchestrator's
             # retry then opens a new trace under the next attempt id.
-            if trajectory is not None:
-                trajectory.attempt_id = spec.attempt_id
             safely(
                 self.trial_observer.trial_finished,
                 identity,

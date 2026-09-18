@@ -8,37 +8,19 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from tolokaforge.core.conductor import InProcessConductor
 from tolokaforge.core.models import Trajectory
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.observability.factory import TRACING_RECEIPT_FILE, RunIdentity
-from tolokaforge.observability.observer import ExportReceipt, NullTrialObserver
+from tolokaforge.observability.observer import (
+    ExportReceipt,
+    InMemoryTrialObserver,
+    NullTrialObserver,
+)
 
 pytestmark = pytest.mark.unit
-
-
-class _Recording:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict]] = []
-
-    def trial_started(self, identity, **kwargs):
-        self.events.append(("trial_started", {"identity": identity, **kwargs}))
-
-    def generation(self, identity, **kwargs):
-        self.events.append(("generation", {"identity": identity, **kwargs}))
-
-    def tool_call(self, identity, **kwargs):
-        self.events.append(("tool_call", {"identity": identity, **kwargs}))
-
-    def trial_finished(self, identity, **kwargs):
-        self.events.append(("trial_finished", {"identity": identity, **kwargs}))
-
-    def trial_persisted(self, identity, **kwargs):
-        self.events.append(("trial_persisted", {"identity": identity, **kwargs}))
-
-    def run_finished(self):
-        return ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
 
 
 def _spec(attempt: int = 0) -> MagicMock:
@@ -87,16 +69,18 @@ def _conductor(observer, run_identity=None, trial_dir: Path | None = None) -> In
 
 class TestConductorLifecycle:
     def test_started_then_finished_with_the_attempt_recorded_before_the_bundle(self) -> None:
-        observer = _Recording()
+        observer = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+        )
         conductor = _conductor(observer, RunIdentity(run_id="acme/pilot/v1/1/1", run_tag="v2"))
         trajectory = _trajectory()
         conductor._run_agent_loop = MagicMock(return_value=(trajectory, MagicMock(), "sys"))
         conductor.run(_spec(attempt=1), MagicMock())
 
-        names = [name for name, _ in observer.events]
+        names = [name for name, _ in observer.call_log.calls]
         # the bundle is announced by the trial executor after its own writes, not by run()
         assert names == ["trial_started", "trial_finished"]
-        started, finished = observer.events[0][1], observer.events[1][1]
+        started, finished = observer.call_log.calls[0][1], observer.call_log.calls[1][1]
         identity = started["identity"]
         assert (
             identity.run_id,
@@ -112,26 +96,46 @@ class TestConductorLifecycle:
             1,
         )
         assert started["models"]["agent"].name == "acme/agent-1"
-        assert finished["trajectory"] is trajectory and "error" not in finished
+        assert finished["trajectory"] is trajectory and finished["error"] is None
         assert trajectory.attempt_id == 1
         # the loop received a binding for the agent role
         assert conductor._run_agent_loop.call_args.args[3] is identity
         # the bundle is written after the trace closed
         conductor._write_artifacts.assert_called_once()
 
+    def test_snapshot_and_primary_bundle_record_the_same_attempt(self, tmp_path: Path) -> None:
+        conductor = _conductor(InMemoryTrialObserver())
+        trajectory = _trajectory()
+        conductor._run_agent_loop = MagicMock(return_value=(trajectory, MagicMock(), "sys"))
+
+        def snapshot(spec, setup, value):
+            (tmp_path / "snapshot.json").write_text(value.model_dump_json())
+
+        def primary(spec, task_config, setup, value, runner):
+            (tmp_path / "trajectory.yaml").write_text(yaml.safe_dump(value.model_dump(mode="json")))
+
+        conductor._produce_grade_bundle = snapshot
+        conductor._write_artifacts = primary
+        conductor.run(_spec(attempt=3), MagicMock())
+        snapshot_value = json.loads((tmp_path / "snapshot.json").read_text())
+        primary_value = yaml.safe_load((tmp_path / "trajectory.yaml").read_text())
+        assert snapshot_value["attempt_id"] == primary_value["attempt_id"] == 3
+
     def test_trial_persisted_announces_an_existing_bundle_under_the_contract_identity(
         self, tmp_path: Path
     ) -> None:
-        observer = _Recording()
+        observer = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+        )
         conductor = _conductor(observer, RunIdentity(run_id="acme/pilot/v1/1/1", run_tag="v2"))
         conductor.output_dir = tmp_path
         conductor.trial_persisted(_spec(attempt=1))  # no bundle yet: nothing announced
-        assert observer.events == []
+        assert observer.call_log.calls == []
         trial_dir = tmp_path / "trials" / "T-1" / "0"
         trial_dir.mkdir(parents=True)
         (trial_dir / "trajectory.yaml").write_text("task_id: T-1\n")
         conductor.trial_persisted(_spec(attempt=1))
-        ((name, payload),) = observer.events
+        ((name, payload),) = observer.call_log.calls
         assert name == "trial_persisted" and payload["trial_dir"] == trial_dir
         identity = payload["identity"]
         assert (identity.run_id, identity.run_tag, identity.task_id, identity.trial_index) == (
@@ -154,15 +158,17 @@ class TestConductorLifecycle:
         assert trajectory.attempt_id == 0
 
     def test_a_trial_that_raises_still_closes_its_trace_with_the_error(self) -> None:
-        observer = _Recording()
+        observer = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+        )
         conductor = _conductor(observer)
         conductor._run_agent_loop = MagicMock(side_effect=RuntimeError("lost"))
         with pytest.raises(RuntimeError):
             conductor.run(_spec(), MagicMock())
-        names = [name for name, _ in observer.events]
+        names = [name for name, _ in observer.call_log.calls]
         # no bundle exists on this path, so nothing is announced as persisted
         assert names == ["trial_started", "trial_finished"]
-        finished = observer.events[1][1]
+        finished = observer.call_log.calls[1][1]
         assert finished["trajectory"] is None and finished["error"] == "RuntimeError: lost"
         conductor._write_artifacts.assert_not_called()
 
@@ -172,7 +178,9 @@ class TestConductorLifecycle:
         """trajectory.yaml is only written after the trial body succeeded, so a bundle found on
         the error path belongs to an earlier attempt (same directory, no cleanup between
         attempts): announcing it would attach attempt 0's files to attempt 1's trace."""
-        observer = _Recording()
+        observer = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+        )
         trial_dir = tmp_path / "trials" / "T-1" / "0"
         trial_dir.mkdir(parents=True)
         (trial_dir / "trajectory.yaml").write_text("task_id: T-1\nattempt_id: 0\n")
@@ -181,7 +189,7 @@ class TestConductorLifecycle:
         conductor._run_agent_loop = MagicMock(side_effect=RuntimeError("lost"))
         with pytest.raises(RuntimeError):
             conductor.run(_spec(attempt=1), MagicMock())
-        names = [name for name, _ in observer.events]
+        names = [name for name, _ in observer.call_log.calls]
         assert names == ["trial_started", "trial_finished"]
 
     def test_an_observer_without_the_hook_or_a_raising_one_never_reaches_the_caller(
@@ -203,21 +211,25 @@ class TestConductorLifecycle:
         trial_dir.mkdir(parents=True)
         (trial_dir / "trajectory.yaml").write_text("task_id: T-1\n")
         conductor.trial_persisted(_spec())  # no AttributeError
-        raising = _Recording()
+        raising = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+        )
         raising.trial_persisted = MagicMock(side_effect=RuntimeError("receiver down"))
         conductor = _conductor(raising)
         conductor.output_dir = tmp_path
         conductor.trial_persisted(_spec())  # swallowed by safely
 
     def test_a_trial_that_raises_after_the_loop_closes_with_its_trajectory(self) -> None:
-        observer = _Recording()
+        observer = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+        )
         conductor = _conductor(observer)
         trajectory = _trajectory()
         conductor._run_agent_loop = MagicMock(return_value=(trajectory, MagicMock(), "sys"))
         conductor._grade = MagicMock(side_effect=ValueError("grader down"))
         with pytest.raises(ValueError):
             conductor.run(_spec(attempt=2), MagicMock())
-        finished = observer.events[-1][1]
+        finished = observer.call_log.calls[-1][1]
         assert finished["trajectory"] is trajectory and finished["error"].startswith("ValueError")
         assert trajectory.attempt_id == 2
 
@@ -230,7 +242,11 @@ class TestFinishTracing:
         return orchestrator
 
     def test_receipt_is_written_and_the_observer_reset(self, tmp_path: Path) -> None:
-        orchestrator = self._orchestrator(_Recording())
+        orchestrator = self._orchestrator(
+            InMemoryTrialObserver(
+                receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+            )
+        )
         orchestrator._finish_tracing(tmp_path)
         receipt = json.loads((tmp_path / TRACING_RECEIPT_FILE).read_text())
         assert (receipt["spans_exported"], receipt["exporter"], receipt["flushed"]) == (
@@ -247,7 +263,9 @@ class TestFinishTracing:
         assert not (tmp_path / TRACING_RECEIPT_FILE).exists()
 
     def test_a_raising_observer_is_reported_not_propagated(self, tmp_path: Path) -> None:
-        observer = _Recording()
+        observer = InMemoryTrialObserver(
+            receipt=ExportReceipt(spans_queued=3, spans_exported=3, exporter="fake")
+        )
         observer.run_finished = MagicMock(side_effect=RuntimeError("exporter gone"))
         orchestrator = self._orchestrator(observer)
         orchestrator._finish_tracing(tmp_path)

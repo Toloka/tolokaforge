@@ -25,18 +25,11 @@ from tolokaforge.observability.factory import (
 from tolokaforge.observability.observer import (
     CompositeTrialObserver,
     ExportReceipt,
+    InMemoryTrialObserver,
     NullTrialObserver,
 )
 
 pytestmark = pytest.mark.unit
-
-
-class _Observer(NullTrialObserver):
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def run_finished(self) -> ExportReceipt:
-        return ExportReceipt(exporter=self.name, spans_exported=1)
 
 
 class _EntryPoint:
@@ -158,14 +151,19 @@ class TestWithPlugins:
         self, plugins, tmp_path: Path
     ) -> None:
         calls: list[dict[str, Any]] = []
-        plugins["a"] = _EntryPoint("a", _recording(_Observer("a"), calls))
+        plugins["a"] = _EntryPoint(
+            "a",
+            _recording(
+                InMemoryTrialObserver(receipt=ExportReceipt(exporter="a", spans_exported=1)), calls
+            ),
+        )
         tracing = TracingConfig(
             exporter="otlp", endpoint="http://127.0.0.1:9/v1/traces", run_id="acme/1", run_tag="v2"
         )
         observer, identity = build_trial_observer(
             ObservabilityConfig(tracing=tracing), engine_run_id="engine-run", output_dir=tmp_path
         )
-        assert isinstance(observer, _Observer) and observer.name == "a"
+        assert isinstance(observer, InMemoryTrialObserver) and observer.receipt.exporter == "a"
         assert identity == RunIdentity(run_id="acme/1", run_tag="v2")
         assert calls[0]["tracing"] is tracing and calls[0]["output_dir"] == tmp_path
         sidecar = json.loads((tmp_path / RUN_IDENTITY_FILE).read_text())
@@ -179,7 +177,12 @@ class TestWithPlugins:
     def test_the_launcher_identity_beats_the_engine_run_id_and_the_config_beats_both(
         self, plugins, monkeypatch
     ) -> None:
-        plugins["a"] = _EntryPoint("a", _recording(_Observer("a"), []))
+        plugins["a"] = _EntryPoint(
+            "a",
+            _recording(
+                InMemoryTrialObserver(receipt=ExportReceipt(exporter="a", spans_exported=1)), []
+            ),
+        )
         monkeypatch.setenv("TOLOKAFORGE_TRACING_RUN_ID", "launcher/7")
         monkeypatch.setenv("TOLOKAFORGE_TRACING_RUN_TAG", "v3")
         _, identity = build_trial_observer(None, engine_run_id="engine-run")
@@ -191,11 +194,21 @@ class TestWithPlugins:
         assert identity == RunIdentity(run_id="cfg/1", run_tag="v3")
 
     def test_two_plugins_compose_in_name_order(self, plugins) -> None:
-        plugins["b"] = _EntryPoint("b", _recording(_Observer("b"), []))
-        plugins["a"] = _EntryPoint("a", _recording(_Observer("a"), []))
+        plugins["b"] = _EntryPoint(
+            "b",
+            _recording(
+                InMemoryTrialObserver(receipt=ExportReceipt(exporter="b", spans_exported=1)), []
+            ),
+        )
+        plugins["a"] = _EntryPoint(
+            "a",
+            _recording(
+                InMemoryTrialObserver(receipt=ExportReceipt(exporter="a", spans_exported=1)), []
+            ),
+        )
         observer, _ = build_trial_observer(None, engine_run_id="run-1")
         assert isinstance(observer, CompositeTrialObserver)
-        assert [o.name for o in observer.observers] == ["a", "b"]
+        assert [o.receipt.exporter for o in observer.observers] == ["a", "b"]
         receipt = observer.run_finished()
         assert (receipt.exporter, receipt.spans_exported) == ("a, b", 2)
 
@@ -220,7 +233,7 @@ class TestWithPlugins:
 
 class TestTheContract:
     def test_the_plugin_api_version_is_the_documented_one(self) -> None:
-        assert PLUGIN_API_VERSION == 1
+        assert PLUGIN_API_VERSION == 2
 
     def test_the_langfuse_plugin_is_installed_in_this_workspace(self) -> None:
         # the workspace member registers itself; the engine finds it without importing it

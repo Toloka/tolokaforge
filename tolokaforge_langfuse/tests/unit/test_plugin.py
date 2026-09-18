@@ -298,8 +298,11 @@ class TestReceiverFromTheEnvironment:
             assert observer._tags == ("project:pilot-dev",)
         finally:
             receipt = observer.run_finished()
-        assert receipt.expect_project == "pilot-dev" and receipt.project_verified == "verified"
-        assert receipt.to_dict()["project_verified"] == "verified"
+        assert (
+            receipt.details[0]["expect_project"] == "pilot-dev"
+            and receipt.details[0]["project_verified"] == "verified"
+        )
+        assert receipt.model_dump(mode="json")["details"][0]["project_verified"] == "verified"
 
     def test_expect_project_mismatch_refuses_to_trace_before_anything_starts(
         self, monkeypatch
@@ -332,7 +335,10 @@ class TestReceiverFromTheEnvironment:
         )
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
         receipt = observer.run_finished()
-        assert receipt.project_verified == "unverified" and receipt.expect_project == "pilot"
+        assert (
+            receipt.details[0]["project_verified"] == "unverified"
+            and receipt.details[0]["expect_project"] == "pilot"
+        )
 
     def test_a_401_refuses_and_a_non_json_200_is_unverified(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
@@ -349,13 +355,17 @@ class TestReceiverFromTheEnvironment:
             build_trial_observer(config, engine_run_id="run-1")
         self._projects(monkeypatch, (200, b"<html>not json</html>"))
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
-        assert observer.run_finished().project_verified == "unverified"
+        assert observer.run_finished().details[0]["project_verified"] == "unverified"
 
     def test_expect_project_without_any_headers_refuses(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
         self._projects(monkeypatch, (200, b"{}"))
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_HEADERS", raising=False)
-        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: None)
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager", SecretManager([DictProvider({})])
+        )
         config = ObservabilityConfig(
             tracing=TracingConfig(
                 exporter="otlp",
@@ -387,4 +397,43 @@ class TestReceiverFromTheEnvironment:
         )
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
         receipt = observer.run_finished()
-        assert calls == [] and receipt.project_verified == "none"
+        assert calls == [] and receipt.details[0]["project_verified"] == "none"
+
+
+class TestSecretManagerBoundary:
+    def test_headers_and_keys_do_not_bypass_an_empty_manager(self, monkeypatch):
+        from tolokaforge_langfuse.plugin import langfuse_headers, otlp_headers
+
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=external")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "external-public")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "external-secret")
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager", SecretManager([DictProvider({})])
+        )
+        assert otlp_headers() is None
+        assert langfuse_headers() is None
+
+    def test_headers_follow_the_configured_provider_chain(self, monkeypatch):
+        from tolokaforge_langfuse.plugin import otlp_headers
+
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=external")
+        manager = SecretManager(
+            [DictProvider({"OTEL_EXPORTER_OTLP_HEADERS": "Authorization=managed"})]
+        )
+        monkeypatch.setattr("tolokaforge.secrets.manager._default_manager", manager)
+        assert otlp_headers() == {"Authorization": "managed"}
+
+
+@pytest.mark.parametrize("offered", [1, 3, None])
+def test_incompatible_receipt_contract_is_rejected_at_start(monkeypatch, offered):
+    from tolokaforge_langfuse.plugin import check_engine_api
+
+    from tolokaforge.observability import factory
+
+    monkeypatch.setattr(factory, "PLUGIN_API_VERSION", offered)
+    with pytest.raises(TracingConfigError, match="speaks trial-observer API v2"):
+        check_engine_api()

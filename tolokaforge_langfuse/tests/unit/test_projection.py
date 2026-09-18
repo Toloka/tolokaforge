@@ -334,11 +334,23 @@ class TestObserverProjection:
             "event-create",
             "score-create",
         }
-        assert (receipt.projections_sent, receipt.projections_failed) == (1, 0)
-        assert receipt.observations_sent == 11 and receipt.events_sent == 4
-        assert receipt.scores_sent == 16 and receipt.gradings_sent == 1
-        assert receipt.user_generations_sent == 2 and receipt.media_uploaded == 1
-        assert receipt.to_dict()["projections_sent"] == 1
+        assert (
+            receipt.extra["langfuse.projections_sent"],
+            receipt.extra["langfuse.projections_failed"],
+        ) == (1, 0)
+        assert (
+            receipt.extra["langfuse.observations_sent"] == 11
+            and receipt.extra["langfuse.events_sent"] == 4
+        )
+        assert (
+            receipt.extra["langfuse.scores_sent"] == 16
+            and receipt.extra["langfuse.gradings_sent"] == 1
+        )
+        assert (
+            receipt.extra["langfuse.user_generations_sent"] == 2
+            and receipt.extra["langfuse.media_uploaded"] == 1
+        )
+        assert receipt.model_dump(mode="json")["extra"]["langfuse.projections_sent"] == 1
 
     def test_the_provisional_root_span_carries_the_native_fields(self, tmp_path: Path) -> None:
         pytest.importorskip("opentelemetry.sdk")
@@ -373,15 +385,21 @@ class TestObserverProjection:
         observer = self._observer(step)
         observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
         receipt = observer.run_finished()
-        assert (receipt.projections_sent, receipt.projections_failed) == (0, 1)
-        assert receipt.gradings_sent == 0 and receipt.scores_sent == 0
+        assert (
+            receipt.extra["langfuse.projections_sent"],
+            receipt.extra["langfuse.projections_failed"],
+        ) == (0, 1)
+        assert (
+            receipt.extra["langfuse.gradings_sent"] == 0
+            and receipt.extra["langfuse.scores_sent"] == 0
+        )
 
     def test_a_tripped_breaker_skips_the_pass(self, tmp_path: Path) -> None:
         step = _Step(tripped=True)
         observer = self._observer(step)
         observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
         receipt = observer.run_finished()
-        assert step.batches == [] and receipt.projections_failed == 1
+        assert step.batches == [] and receipt.extra["langfuse.projections_failed"] == 1
 
     def test_a_data_safety_hit_blocks_the_pass(self, tmp_path: Path) -> None:
         step = _Step()
@@ -389,7 +407,7 @@ class TestObserverProjection:
         observer = self._observer(step)
         observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
         receipt = observer.run_finished()
-        assert step.batches == [] and receipt.projections_failed == 1
+        assert step.batches == [] and receipt.extra["langfuse.projections_failed"] == 1
 
     def test_projection_none_sends_only_the_attachments(self, tmp_path: Path) -> None:
         from tolokaforge_langfuse.otel import ProjectionSettings
@@ -399,7 +417,10 @@ class TestObserverProjection:
         observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
         receipt = observer.run_finished()
         assert step.attached == [IDENTITY.trace_id] and step.batches == []
-        assert receipt.projections_sent == 0 and receipt.attachments_registered == 1
+        assert (
+            receipt.extra["langfuse.projections_sent"] == 0
+            and receipt.extra["langfuse.attachments_registered"] == 1
+        )
 
     def test_a_bare_receiver_with_only_attach_and_ingest_still_works(self, tmp_path: Path) -> None:
         class Bare:
@@ -415,7 +436,7 @@ class TestObserverProjection:
         observer = self._observer(Bare())
         observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
         receipt = observer.run_finished()
-        assert len(Bare.batches) == 1 and receipt.projections_sent == 1
+        assert len(Bare.batches) == 1 and receipt.extra["langfuse.projections_sent"] == 1
         trace = next(e["body"] for e in Bare.batches[0] if e["type"] == "trace-create")
         assert trace["metadata"]["attachments"] == {} and trace["metadata"]["attach_mode"] == "none"
 

@@ -16,7 +16,7 @@ knows no receiver. Everything Langfuse-shaped lives here and releases on its own
 (`langfuse-vX.Y.Z` tags, see [`docs/RELEASING.md`](../docs/RELEASING.md)), so a fix to the
 projection, the profile or the attachment step reaches a deployment by moving this package's pin
 while the engine pin stays where it is. The pairing is checked at run start: the engine's
-`PLUGIN_API_VERSION` must equal this package's `__api_version__`, and a mismatch names both.
+`PLUGIN_API_VERSION` (currently **2**, including the receipt shape) must equal this package's `__api_version__`, and a mismatch names both.
 
 ## Install
 
@@ -39,7 +39,7 @@ normalizer and rules, queue and flush limits, `attach`, `gradings`, `projection`
 | Variable | Meaning |
 |---|---|
 | `LANGFUSE_TRACING_ENABLED` | the one switch: trace this run even without a tracing block |
-| `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_EXTRA_HEADERS`, `LANGFUSE_PROJECT` | the receiver, its credentials (read through the engine's `SecretManager` when one is initialised) and the project the keys must open |
+| `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_EXTRA_HEADERS`, `LANGFUSE_PROJECT` | the receiver, its credentials (read through the engine's `SecretManager`) and the project the keys must open |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | the standard OpenTelemetry receiver variables, when a launcher owns the receiver |
 | `TOLOKAFORGE_TRACING_TAGS`, `TOLOKAFORGE_TRACING_EXPECT_PROJECT`, `TOLOKAFORGE_TRACING_SESSION_ID`, `TOLOKAFORGE_TRACING_LABEL` | the launcher's tags, project expectation, session and label |
 | `TOLOKAFORGE_TRACING_PROFILE`, `TOLOKAFORGE_TRACING_METADATA`, `LANGFUSE_ENVIRONMENT` | the deployment profile (TOML, validated at run start), the per-run metadata, the native environment override |

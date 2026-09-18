@@ -310,12 +310,12 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
         mock_web = (
             initial_state.mock_web
             if hasattr(initial_state, "mock_web")
-            else initial_state.get("mock_web") if isinstance(initial_state, dict) else None
+            else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
         )
         rag = (
             initial_state.rag
             if hasattr(initial_state, "rag")
-            else initial_state.get("rag") if isinstance(initial_state, dict) else None
+            else (initial_state.get("rag") if isinstance(initial_state, dict) else None)
         )
         if mock_web or rag:
             return True
@@ -675,9 +675,8 @@ class Orchestrator:
         # by :meth:`_build_conductor`; drained in reverse order at the end of
         # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
         # (``queue``) shuts down cleanly regardless of the caller's flow.
-        self._trial_graders_to_close: list = (
-            []
-        )  # list[TrialGrader]; annotated bare to avoid a runtime import cycle
+        # list[TrialGrader]; annotated bare to avoid a runtime import cycle.
+        self._trial_graders_to_close: list = []
         # Shared per-trial writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
@@ -3160,9 +3159,9 @@ class Orchestrator:
         if receipt is None:
             self.logger.warning("Trial observer did not report an export receipt")
             return
-        summary = receipt.to_dict()
+        summary = receipt.model_dump(mode="json")
         try:
-            write_tracing_receipt(output_dir, summary)
+            write_tracing_receipt(output_dir, receipt)
         except OSError as exc:
             self.logger.warning("Could not write the tracing receipt", error=str(exc))
         if receipt.spans_dropped or receipt.export_failures or not receipt.flushed:

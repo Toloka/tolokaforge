@@ -20,7 +20,6 @@ tear down; nothing here raises into a trial later.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import Callable, Mapping
@@ -29,9 +28,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from pydantic import BaseModel
+
 from tolokaforge.observability import ids
 from tolokaforge.observability.observer import (
     CompositeTrialObserver,
+    ExportReceipt,
     NullTrialObserver,
     TrialIdentity,
     TrialObserver,
@@ -42,9 +44,9 @@ if TYPE_CHECKING:
 
 TRIAL_OBSERVERS_GROUP = "tolokaforge.trial_observers"
 """The entry-point group a trial-observer plugin registers its ``build`` callable under."""
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 2
 """The plugin contract this engine speaks: the ``build`` signature above, the ``TrialObserver``
-hooks of :mod:`tolokaforge.observability.observer` and the id contract of
+hooks and receipt shape of :mod:`tolokaforge.observability.observer` and the id contract of
 :mod:`tolokaforge.observability.ids`. A plugin compares it with the version it was built for."""
 
 RUN_IDENTITY_FILE = "run_identity.json"
@@ -196,6 +198,18 @@ def _env(name: str) -> str | None:
     return value or None
 
 
+class RunIdentityDocument(BaseModel):
+    """The persisted run identity consumed by bundle uploaders (ADR-0047)."""
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    run_id: str
+    run_tag: str = ids.DEFAULT_RUN_TAG
+    written_by: str = "tolokaforge"
+    written_at: str
+    engine_version: str | None = None
+
+
 def write_run_identity(
     output_dir: Path, identity: RunIdentity, *, engine_version: str | None = None
 ) -> Path:
@@ -203,19 +217,17 @@ def write_run_identity(
     and the engine version it reads the native ``release`` field from."""
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / RUN_IDENTITY_FILE
-    document: dict[str, Any] = {
-        "run_id": identity.run_id,
-        "run_tag": identity.run_tag,
-        "written_by": "tolokaforge",
-        "written_at": datetime.now(tz=timezone.utc).isoformat(),
-    }
-    if engine_version:
-        document["engine_version"] = engine_version
-    path.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
+    document = RunIdentityDocument(
+        run_id=identity.run_id,
+        run_tag=identity.run_tag,
+        written_at=datetime.now(tz=timezone.utc).isoformat(),
+        engine_version=engine_version or None,
+    )
+    path.write_text(document.model_dump_json(indent=1, exclude_none=True) + "\n", encoding="utf-8")
     return path
 
 
-def write_tracing_receipt(output_dir: Path, receipt: dict[str, Any]) -> Path:
+def write_tracing_receipt(output_dir: Path, receipt: ExportReceipt) -> Path:
     path = Path(output_dir) / TRACING_RECEIPT_FILE
-    path.write_text(json.dumps(receipt, indent=1) + "\n", encoding="utf-8")
+    path.write_text(receipt.model_dump_json(indent=1) + "\n", encoding="utf-8")
     return path

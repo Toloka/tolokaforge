@@ -46,7 +46,7 @@ Before the first export the exporter asks the receiver (Langfuse: `GET /api/publ
 REST base derived from the endpoint, the OTLP headers as credentials): a mismatch is a
 configuration error at run start, with nothing to tear down; a receiver that does not answer
 (the external ingest alias returns 403) leaves the run `unverified`; `tracing_receipt.json`
-records `expect_project` and `project_verified`.
+records `expect_project` and `project_verified` in its `details` entry with `exporter: langfuse`.
 
 **One switch.** `LANGFUSE_TRACING_ENABLED=true` turns the exporter on without a tracing block
 (or with `exporter: none`). The receiver then comes from the plain Langfuse variables:
@@ -132,7 +132,8 @@ JWTs, secret-named fields); a hit skips the file, names it in `attachments_skipp
 `attachments_complete: false`. Bytes are never rewritten. The REST base URL derives from the OTLP
 endpoint (`attach_api_base` overrides it), the headers are `OTEL_EXPORTER_OTLP_HEADERS`, each
 request has `attach_timeout_s`; the step runs in the trial's thread once the trial is over and
-never raises. `tracing_receipt.json` reports `attachments_registered`, `attachments_uploaded`,
+never raises. Under `extra`, `tracing_receipt.json` reports the `langfuse.`-prefixed counters
+`attachments_registered`, `attachments_uploaded`,
 `attachments_deduplicated`, `attachments_skipped`, `attachments_failed`, `manifests_sent`,
 `manifests_failed`.
 
@@ -156,10 +157,10 @@ of the fixed schema explicit (the receiver merges metadata and an omitted key wo
 | base64 image blocks in messages | media registered on the observation, the token in its output (raw base64 never enters an ingestion body) |
 | the attachment step | manifest v2, complete, in the same trace body |
 
-`projection: gradings` sends only the grading, its scores and the user turns (the behaviour of
-the gradings amendment); `none` sends the attachments alone. The pass runs under the attachment
+`projection: gradings` sends only the grading, its scores and the user turns; `none` sends the attachments alone. The pass runs under the attachment
 step's budget and breaker, the serialised events go through the same data-safety scan as the
 files (a hit sends nothing and counts), and nothing raises into the trial. The receipt reports
+the following counters under `extra`, each prefixed with `langfuse.`:
 `projections_sent`, `projections_failed`, `observations_sent`, `events_sent`, `scores_sent`,
 `gradings_sent`, `user_generations_sent`, `media_uploaded`, `media_failed`.
 
@@ -288,7 +289,7 @@ identity plus the model-name rules and the profile it ran under
 ## Packaging: the seam in the engine, the observer in its own wheel
 
 The engine owns the seam and nothing receiver-shaped: `tolokaforge/observability/observer.py`
-(the `TrialObserver` hooks, the null and composite observers, the receipt), `ids.py` (the id
+(the `TrialObserver` hooks, null, in-memory and composite observers, and the receipt), `ids.py` (the id
 contract shared with the offline uploader) and `factory.py` (the run identity, `run_identity.json`,
 `tracing_receipt.json`, and the discovery of the installed **trial-observer plugins**). Everything
 Langfuse-shaped is the `tolokaforge-langfuse` distribution (`tolokaforge_langfuse/` in this
@@ -306,10 +307,18 @@ or a plugin that cannot be imported, is a configuration error at run start; so i
 plugin produced an observer, so a run never proceeds silently without the traces it asked for. The
 pairing is checked
 by the plugin: the engine's `PLUGIN_API_VERSION` (the `build` signature, the observer hooks and the
-id contract) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
+id and receipt contracts, currently version **2**) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
 fix to the projection, the profile or the attachment step reaches a deployment by moving the
 `tolokaforge-langfuse` pin while the engine pin stays; a change to the hooks or the ids moves both,
 engine first. `observability.tracing.options` carries plugin settings the engine has no field for.
+Unknown top-level tracing keys are rejected at config load, so misspellings cannot silently
+switch off a requested setting.
+
+`TrialObserver` is an in-process hook: it receives engine objects such as `GenerationResult`
+and `Trajectory`. A remote collector needs an in-process plugin that translates those objects
+into its transport. The durable cross-process contract is the deterministic id scheme plus the
+persisted bundle, not the Python hook arguments. `InMemoryTrialObserver` provides a deterministic
+fixture with `call_log.calls`, a configurable `receipt`, and per-hook exceptions in `fail_on`.
 
 ## Delivery
 
@@ -324,3 +333,25 @@ mapping) pass through the engine's `SensitiveKeyRedaction`; tool outputs and mes
 text, which key-based redaction cannot cover, so they are capped at `attribute_max_chars` but not
 redacted; base64 image blocks never leave through spans. The receiver's headers are read through
 the `SecretManager` (`OTEL_EXPORTER_OTLP_HEADERS`) so their value is redacted from the engine's logs.
+
+
+The receipt is a strict Pydantic `ExportReceipt`: its common fields are `spans_queued`,
+`spans_exported`, `spans_dropped`, `export_failures`, `flushed`, and `exporter`. Plugin counters
+live under `extra`, with namespaced keys such as `langfuse.projections_sent`. Non-additive
+receiver facts live in `details`, for example:
+
+```json
+{"exporter": "langfuse", "expect_project": "pilot", "project_verified": "verified"}
+```
+
+`details` is a list, preserving each observer's facts even when two target different projects.
+`CompositeTrialObserver` sums common and plugin counters, ANDs `flushed`, and concatenates
+`details` without interpreting receiver keys. A missing receipt counts as an export failure
+and leaves `flushed: false`. API version 2 moves the Langfuse-specific fields from the receipt's
+top level into `extra` and `details`; consumers must update their field paths.
+
+A receipt covers one process. `ExportReceipt.merge` applies the same reduction to receipts
+collected from distinct workers; the caller must deduplicate workers and retain partial/final
+status before calling it. The engine does not collect worker receipts automatically. Counts
+measure export attempts, so deterministic ids prevent duplicate receiver records without making
+repeat receipt merges idempotent.

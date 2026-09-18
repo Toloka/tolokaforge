@@ -2,7 +2,7 @@
 
 The conductor opens and closes a trial, the tool-calling loop reports each generation and tool
 call with its content, the orchestrator closes the run. Every implementation is called through
-:func:`safely`, so an observer can never fail or slow a trial by raising. Parents are explicit
+:func:`safely`, so ordinary observer exceptions are logged without failing the trial. Parents are explicit
 (the :class:`TrialIdentity` travels with every call); nothing here uses ambient context, because
 trials run in parallel workers.
 """
@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from pydantic import BaseModel, Field, NonNegativeInt
 
 from tolokaforge.observability import ids
 
@@ -63,73 +65,46 @@ class TrialIdentity:
         return ids.observation_id(self.trace_id, "root", ids.ROOT_KEY)
 
 
-@dataclass(frozen=True)
-class ExportReceipt:
-    """What left the process: the counts a run summary reports (ADR-0047, delivery contract)."""
+class ExportReceipt(BaseModel):
+    """Process-local delivery counts, with opaque plugin details (ADR-0047).
 
-    spans_queued: int = 0
-    spans_exported: int = 0
-    spans_dropped: int = 0
-    export_failures: int = 0
+    Plugins namespace their additive ``extra`` counters (for example,
+    ``langfuse.attachments_uploaded``). ``details`` preserves each receiver's
+    non-additive facts separately when several observers are composed.
+    """
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    spans_queued: NonNegativeInt = 0
+    spans_exported: NonNegativeInt = 0
+    spans_dropped: NonNegativeInt = 0
+    export_failures: NonNegativeInt = 0
     flushed: bool = True
     exporter: str = "none"
-    # the post-trial attachment step (ADR-0047 amendment): files registered on their trace,
-    # bytes uploaded by this run, registrations the receiver answered from bytes it already
-    # held, files kept back by the data-safety scan, files that failed, manifests written
-    attachments_registered: int = 0
-    attachments_uploaded: int = 0
-    attachments_deduplicated: int = 0
-    attachments_skipped: int = 0
-    attachments_failed: int = 0
-    manifests_sent: int = 0
-    manifests_failed: int = 0
-    # the receiver-side project the credentials had to open, and the outcome of the check
-    # (verified | unverified | none) run before the first export (destinations amendment)
-    expect_project: str | None = None
-    project_verified: str = "none"
-    # the gradings amendment: per trial, the run's grading with its judge transcript and scores
-    # and the simulated user turns leave from the persisted bundle through the ingestion API
-    gradings_sent: int = 0
-    gradings_failed: int = 0
-    scores_sent: int = 0
-    user_generations_sent: int = 0
-    # the parity amendment: per trial, the persisted bundle's default projection (trace body,
-    # observations, events, scores, media) leaves through the ingestion API at trial end
-    projections_sent: int = 0
-    projections_failed: int = 0
-    observations_sent: int = 0
-    events_sent: int = 0
-    media_uploaded: int = 0
-    media_failed: int = 0
+    extra: dict[str, NonNegativeInt] = Field(default_factory=dict)
+    details: tuple[dict[str, str | None], ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "spans_queued": self.spans_queued,
-            "spans_exported": self.spans_exported,
-            "spans_dropped": self.spans_dropped,
-            "export_failures": self.export_failures,
-            "flushed": self.flushed,
-            "exporter": self.exporter,
-            "attachments_registered": self.attachments_registered,
-            "attachments_uploaded": self.attachments_uploaded,
-            "attachments_deduplicated": self.attachments_deduplicated,
-            "attachments_skipped": self.attachments_skipped,
-            "attachments_failed": self.attachments_failed,
-            "manifests_sent": self.manifests_sent,
-            "manifests_failed": self.manifests_failed,
-            "expect_project": self.expect_project,
-            "project_verified": self.project_verified,
-            "gradings_sent": self.gradings_sent,
-            "gradings_failed": self.gradings_failed,
-            "scores_sent": self.scores_sent,
-            "user_generations_sent": self.user_generations_sent,
-            "projections_sent": self.projections_sent,
-            "projections_failed": self.projections_failed,
-            "observations_sent": self.observations_sent,
-            "events_sent": self.events_sent,
-            "media_uploaded": self.media_uploaded,
-            "media_failed": self.media_failed,
-        }
+    @classmethod
+    def merge(cls, receipts: Sequence[ExportReceipt]) -> ExportReceipt:
+        """Sum disjoint process/observer receipts; preserve all receiver details.
+
+        Counts describe export attempts, not unique receiver records. Merging the
+        same process receipt twice double-counts it; callers own deduplication.
+        """
+        extra: dict[str, int] = {}
+        for receipt in receipts:
+            for key, value in receipt.extra.items():
+                extra[key] = extra.get(key, 0) + value
+        return cls(
+            spans_queued=sum(r.spans_queued for r in receipts),
+            spans_exported=sum(r.spans_exported for r in receipts),
+            spans_dropped=sum(r.spans_dropped for r in receipts),
+            export_failures=sum(r.export_failures for r in receipts),
+            flushed=all(r.flushed for r in receipts),
+            exporter=", ".join(r.exporter for r in receipts if r.exporter != "none") or "none",
+            extra=extra,
+            details=tuple(detail for receipt in receipts for detail in receipt.details),
+        )
 
 
 @runtime_checkable
@@ -207,6 +182,99 @@ class NullTrialObserver:
 
 
 @dataclass
+class TrialObserverCallLog:
+    """Hook order and arguments received by an in-memory observer, including failed calls."""
+
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+
+
+class InMemoryTrialObserver:
+    """Deterministic observer for conductor/orchestrator injection (ADR-0011).
+
+    ``fail_on`` maps hook names to exceptions raised after recording the call;
+    ``receipt`` controls the result of a successful ``run_finished``.
+    """
+
+    def __init__(
+        self,
+        *,
+        receipt: ExportReceipt | None = None,
+        fail_on: Mapping[str, Exception] | None = None,
+    ) -> None:
+        self.call_log = TrialObserverCallLog()
+        self.receipt = receipt if receipt is not None else ExportReceipt()
+        self.fail_on = dict(fail_on or {})
+
+    def _record(self, name: str, **kwargs: Any) -> None:
+        self.call_log.calls.append((name, kwargs))
+        if name in self.fail_on:
+            raise self.fail_on[name]
+
+    def trial_started(
+        self, identity: TrialIdentity, *, models: Mapping[str, ModelRef], started_at: datetime
+    ) -> None:
+        self._record("trial_started", identity=identity, models=models, started_at=started_at)
+
+    def generation(
+        self,
+        identity: TrialIdentity,
+        *,
+        role: str,
+        index: int,
+        turn: int,
+        request: Sequence[Message],
+        result: GenerationResult,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> None:
+        self._record(
+            "generation",
+            identity=identity,
+            role=role,
+            index=index,
+            turn=turn,
+            request=request,
+            result=result,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
+    def tool_call(
+        self,
+        identity: TrialIdentity,
+        *,
+        role: str,
+        index: int,
+        call: ToolCall,
+        result: ToolResult,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> None:
+        self._record(
+            "tool_call",
+            identity=identity,
+            role=role,
+            index=index,
+            call=call,
+            result=result,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
+    def trial_finished(
+        self, identity: TrialIdentity, *, trajectory: Trajectory | None, error: str | None = None
+    ) -> None:
+        self._record("trial_finished", identity=identity, trajectory=trajectory, error=error)
+
+    def trial_persisted(self, identity: TrialIdentity, *, trial_dir: Path) -> None:
+        self._record("trial_persisted", identity=identity, trial_dir=trial_dir)
+
+    def run_finished(self) -> ExportReceipt:
+        self._record("run_finished")
+        return self.receipt
+
+
+@dataclass
 class CompositeTrialObserver:
     """Fans every call out to several observers; one failing observer never starves another."""
 
@@ -235,32 +303,13 @@ class CompositeTrialObserver:
                 safely(hook, identity, **kwargs)
 
     def run_finished(self) -> ExportReceipt:
-        receipts = [safely(observer.run_finished) or ExportReceipt() for observer in self.observers]
-        return ExportReceipt(
-            spans_queued=sum(r.spans_queued for r in receipts),
-            spans_exported=sum(r.spans_exported for r in receipts),
-            spans_dropped=sum(r.spans_dropped for r in receipts),
-            export_failures=sum(r.export_failures for r in receipts),
-            flushed=all(r.flushed for r in receipts),
-            exporter=", ".join(r.exporter for r in receipts if r.exporter != "none") or "none",
-            attachments_registered=sum(r.attachments_registered for r in receipts),
-            attachments_uploaded=sum(r.attachments_uploaded for r in receipts),
-            attachments_deduplicated=sum(r.attachments_deduplicated for r in receipts),
-            attachments_skipped=sum(r.attachments_skipped for r in receipts),
-            attachments_failed=sum(r.attachments_failed for r in receipts),
-            manifests_sent=sum(r.manifests_sent for r in receipts),
-            manifests_failed=sum(r.manifests_failed for r in receipts),
-            gradings_sent=sum(r.gradings_sent for r in receipts),
-            gradings_failed=sum(r.gradings_failed for r in receipts),
-            scores_sent=sum(r.scores_sent for r in receipts),
-            user_generations_sent=sum(r.user_generations_sent for r in receipts),
-            projections_sent=sum(r.projections_sent for r in receipts),
-            projections_failed=sum(r.projections_failed for r in receipts),
-            observations_sent=sum(r.observations_sent for r in receipts),
-            events_sent=sum(r.events_sent for r in receipts),
-            media_uploaded=sum(r.media_uploaded for r in receipts),
-            media_failed=sum(r.media_failed for r in receipts),
-        )
+        receipts = []
+        for observer in self.observers:
+            receipt = safely(observer.run_finished)
+            if receipt is None:
+                receipt = ExportReceipt(export_failures=1, flushed=False)
+            receipts.append(receipt)
+        return ExportReceipt.merge(receipts)
 
 
 def safely(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
