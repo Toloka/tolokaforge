@@ -821,6 +821,19 @@ class TrialRunner:
                 records=wire.requests,
             )
 
+        if not wire.prompt_tokens and not wire.completion_tokens:
+            # Records exist, so the CLI did reach a provider — but every count
+            # in them is zero, which no real exchange produces. An upstream
+            # that answers without populating usage (a gateway translating a
+            # streamed response, say) is reporting nothing, not reporting
+            # nothing spent, and recording it as the latter puts a $0.00 in a
+            # cost comparison for a trial that ran.
+            self.logger.warning(
+                "Harness wire usage is entirely zero; leaving the trial unmeasured",
+                records=wire.requests,
+            )
+            return
+
         self.metrics.harness_usage_source = MIDDLEWARE_PROXY_USAGE_SOURCE
         self.metrics.usage = Usage(
             prompt_tokens=wire.prompt_tokens,

@@ -519,3 +519,87 @@ class TestProxyUsageLog:
                 server.server_close()
         assert status == 429
         assert _records(usage_log)[0]["status"] == 429
+
+
+class TestTheGeminiUsageShape:
+    """The proxy meters whatever the harness routes through it, and
+    ``gemini-cli`` speaks Google's ``generateContent``, not OpenAI's chat
+    completions. Its counts are normalised onto the same basis so a record's
+    meaning does not depend on which CLI produced it."""
+
+    @staticmethod
+    def _counts(body: str):
+        from tolokaforge_coding_harnesses.middleware_proxy import _extract_token_counts
+
+        return _extract_token_counts(body.encode())
+
+    def test_usage_metadata_is_read(self) -> None:
+        counts = self._counts(
+            json.dumps(
+                {
+                    "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 1200,
+                        "candidatesTokenCount": 140,
+                        "totalTokenCount": 1340,
+                        "cachedContentTokenCount": 900,
+                    },
+                }
+            )
+        )
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 1200
+        assert counts["completion_tokens"] == 140
+        assert counts["cache_read_input_tokens"] == 900
+
+    def test_thinking_tokens_are_added_back_into_the_completion_total(self) -> None:
+        """Google reports ``candidatesTokenCount`` *excluding* thinking, where
+        OpenAI's ``completion_tokens`` includes it. Leaving them apart would
+        under-count the part of the answer the model charged for and did not
+        show."""
+        counts = self._counts(
+            json.dumps(
+                {
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 40,
+                        "thoughtsTokenCount": 25,
+                        "totalTokenCount": 75,
+                    }
+                }
+            )
+        )
+
+        assert counts is not None
+        assert counts["completion_tokens"] == 65
+        assert counts["reasoning_tokens"] == 25
+
+    def test_the_final_sse_chunk_wins(self) -> None:
+        """``streamGenerateContent`` repeats the block, and only the last
+        chunk carries the totals."""
+        body = (
+            'data: {"candidates":[{"content":{"parts":[{"text":"h"}]}}]}\n\n'
+            'data: {"candidates":[{"content":{"parts":[]}}],'
+            '"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,'
+            '"totalTokenCount":10}}\n\n'
+        )
+
+        counts = self._counts(body)
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 7
+        assert counts["completion_tokens"] == 3
+
+    def test_an_empty_usage_metadata_reports_nothing_rather_than_zero(self) -> None:
+        """A zero-filled record would claim the request spent nothing, which
+        is a different and false claim from "not reported"."""
+        assert self._counts(json.dumps({"usageMetadata": {}})) is None
+
+    def test_an_openai_shaped_body_still_wins_where_both_could_parse(self) -> None:
+        counts = self._counts(
+            json.dumps({"usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}})
+        )
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 5

@@ -77,3 +77,16 @@ harnesses:
     provider_env:
       GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
       GOOGLE_GEMINI_BASE_URL: "${secret:LITELLM_BASE_URL}"
+    # The CLI prints no usage this repo can read, so token counts come off the
+    # wire. It takes its endpoint from ``GOOGLE_GEMINI_BASE_URL``, so the
+    # proxy redirects it the same way it redirects an OpenAI-shaped CLI; the
+    # settings file above carries no endpoint of its own to bake in.
+    #
+    # ``path_filter`` names Google's REST prefix rather than
+    # ``/chat/completions``: the CLI posts to
+    # ``/v1beta/models/<model>:streamGenerateContent``. The tap reads the
+    # ``usageMetadata`` those responses carry.
+    request_middleware:
+      upstream_env_key: "GOOGLE_GEMINI_BASE_URL"
+      port: 8899
+      path_filter: "/v1beta/"

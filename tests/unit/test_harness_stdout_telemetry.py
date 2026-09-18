@@ -774,3 +774,43 @@ class TestACacheHeavyTrialOnARateLessRowIsFlagged:
 
         assert metrics.usage.cache_read_input_tokens > 0
         assert metrics.cost_cache_rate_fallback is False
+
+
+class TestAnAllZeroWireMeasurementIsNotAMeasurement:
+    """A provider that answers without populating usage is reporting nothing,
+    not reporting nothing spent.
+
+    Seen live: a LiteLLM gateway translating Google's ``generateContent``
+    returns real counts on the unary path and zeros on the streamed one, which
+    is the path ``gemini-cli`` takes. Recording that faithfully put `$0.00`
+    on a trial that did a task's worth of work.
+    """
+
+    def test_records_that_sum_to_zero_leave_the_trial_unmeasured(self) -> None:
+        # The record shape the proxy actually appends, so this exercises the
+        # summing path rather than being discarded as unparseable.
+        zeroed = json.dumps(
+            {
+                "timestamp": "2026-09-18T10:00:00+00:00",
+                "path": "/v1beta/models/gemini-3.6-flash:streamGenerateContent",
+                "status": 200,
+                "model": "gemini-3.6-flash",
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+        )
+
+        metrics = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=zeroed + "\n",
+        ).metrics
+
+        assert metrics.cost_usd is None
+        assert metrics.harness_usage_source is None
+        assert metrics.usage.prompt_tokens == 0
