@@ -46,10 +46,15 @@ observability:
         attach: all
         gradings: true
         projection: full
+        server_api: auto
         profile: deploy/langfuse_tracing.toml
 ```
 
-`config.LangfuseConfig` also owns `attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
+`server_api` says which receiver family to write for: `auto` (the default) asks the receiver once
+at run start, by capability, and a Langfuse v4 receiver gets the **write-once layout** (declared
+preview rows while the trial runs, the record written once from the bundle, the root last); see
+`docs/OBSERVABILITY.md`, "The write-once layout". `config.LangfuseConfig` also owns
+`attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
 `environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
 invalid values before any receiver work starts; other plugins' namespaces remain opaque.
 Plugin API 3 moves these fields out of the engine config: old top-level keys are rejected,
@@ -95,7 +100,8 @@ profile".
 | `otel.py` | the OTLP span exporter and the `TrialObserver` implementation |
 | `projection.py` | the default projection of a persisted trial bundle (the connector's `mapping.py` is the reference) |
 | `gradings.py` | the grading observation, its judge transcript and scores |
-| `media.py` | the ingestion and media REST calls, the budget and the breaker |
+| `otlp_spans.py` | the projection's ingestion bodies as OTLP spans (the write-once layout of a v4 receiver); engine-free, imported by the offline connector too |
+| `media.py` | the ingestion and media REST calls, the receiver-family probe, the budget and the breaker |
 | `attachments.py` | attachment manifest v2 and the data-safety scan |
 | `vocabulary.py` | the default trace vocabulary: prefixes, derived tags, the environment rule (shared with the offline uploader) |
 | `profile.py` | the deployment profile (schema 2; schema 1 still loads) and the launcher-input check |
@@ -105,4 +111,6 @@ profile".
 
 `tests/unit/` runs with the engine's suite (`uv run pytest tolokaforge_langfuse/tests`). The
 golden parity test (`parity_bundle.py`, `parity_golden.json`) is committed byte-identically in the
-connector's repository too; regenerate the golden from the connector, never by hand.
+connector's repository too; regenerate the golden from the connector, never by hand. The span
+golden (`parity_span_golden.json`) is the same event golden run through `otlp_spans`, so both
+producers derive it from one input and must agree byte for byte.

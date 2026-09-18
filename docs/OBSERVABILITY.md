@@ -192,6 +192,44 @@ receiver adds three more to a trace that arrived over OTLP, `attributes`, `resou
 (the trace-level span's raw attributes, the SDK's resource attributes and the instrumentation
 scope).
 
+## The write-once layout, on a receiver whose observations are append-only
+
+Langfuse v4 in its default write mode takes observations over **OTLP only** (the legacy ingestion
+events for observations are refused), stores them **append-only** (a re-sent id is a second row,
+there is no read-time dedup and no way to delete one observation) and makes a trace **be its root
+observation** (the trace list is the list of root observations). The two shapes above - a
+provisional root at trial start and a trial-end pass that re-sends everything - cannot work there,
+so the observer detects the receiver's family once per run and writes accordingly.
+
+**How the family is decided.** `GET /api/public/v2/observations` answers on a v4 receiver in every
+write mode and 404s on a v3 one; the version the receiver reports cannot decide, because a v4
+receiver reports `4.x` in its transitional write modes too. The probe is read-only and runs once,
+at run start, next to the project check; `options.langfuse.server_api` (`auto` / `v3` / `v4`)
+overrides it, a receiver that cannot be asked leaves the run on the v3 family, and the family
+lands in the tracing receipt (`details[0].server_api`).
+
+**What the v4 family writes.**
+
+| When | What | Ids |
+|---|---|---|
+| trial start | the **preview root** `preview: trial <task>/<trial>`, whose parent is the final root's id, with the trace name, session, the tags known then, the native fields and the identity metadata | `obs\|<trace>\|proot\|-` |
+| every call end | the same live bodies as on a v3 receiver, under the **preview kinds** and under the preview root, named `preview: ...`, with `preview: true` in their metadata | `pgen`, `pjgen`, `ptool`, `pjtool` |
+| trial persisted | the whole bundle projection converted to spans by `tolokaforge_langfuse.otlp_spans`, written **once**, the **root last**, after the media upload, with the complete manifest in the root's metadata as a JSON string the receiver parses back; the scores through the ingestion route, each with the grading's own timestamp | the final kinds, unchanged |
+| run end | one minimal **error root** for every trace whose real root can no longer come (the trial never persisted, the bundle pass wrote none, or the root never reached the receiver): name, session, tags, native fields, identity, start, `status: error` and the reason, no manifest and no verdict | `root` |
+
+Nothing is ever re-sent: a preview id can never collide with a final one (the kind is part of the
+id), a preview row says so in its own metadata, and a reader excludes previews by that marker and
+by the ids the contract derives. Until the final root arrives the trace has **no** root row, so it
+is in no trace list; a reviewer reaches a running trial by its (deterministic) trace id or by its
+session, and the trace joins the list when the trial ends. The trace's name, session, tags, native
+fields and identity metadata ride on **every** span, previews included, because a v4 receiver
+stores and filters them per observation.
+
+The receipt gains three counters under `extra`: `langfuse.previews_sent`,
+`langfuse.final_observations_sent`, `langfuse.error_roots_sent`. `projection: full` is required on
+this family - the trace's root observation comes from the bundle - and a run that asks for less is
+refused at run start.
+
 ## The trace metadata
 
 A trace's metadata is a fixed, flat schema of 34 keys plus the caller's per-run keys, identical

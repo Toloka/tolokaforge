@@ -230,13 +230,18 @@ class TestReceiverFromTheEnvironment:
         with pytest.raises(TracingConfigError):
             merge_tags([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
 
-    def _projects(self, monkeypatch, answer) -> list[tuple[str, str, dict]]:
+    def _projects(
+        self, monkeypatch, answer, family_answer=(404, b"")
+    ) -> list[tuple[str, str, dict]]:
         from tolokaforge_langfuse import media
 
         calls: list[tuple[str, str, dict]] = []
 
         def opener(method, url, headers, body, timeout):
             calls.append((method, url, dict(headers)))
+            if media.V2_OBSERVATIONS_PATH in url:
+                # the receiver-family probe (D-v4-5); a v3 server 404s it
+                return family_answer
             if isinstance(answer, Exception):
                 raise answer
             return answer
@@ -265,7 +270,8 @@ class TestReceiverFromTheEnvironment:
         observer, _ = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
         try:
             assert [(m, u) for m, u, _ in calls] == [
-                ("GET", "http://127.0.0.1:9/api/public/projects")
+                ("GET", "http://127.0.0.1:9/api/public/projects"),
+                ("GET", "http://127.0.0.1:9/api/public/v2/observations?limit=1"),
             ]
             # the check authenticates with the exporter's own header
             assert calls[0][2]["Authorization"] == "Basic dGVzdDpzZWNyZXQ="
@@ -275,6 +281,7 @@ class TestReceiverFromTheEnvironment:
         assert (
             receipt.details[0]["expect_project"] == "pilot-dev"
             and receipt.details[0]["project_verified"] == "verified"
+            and receipt.details[0]["server_api"] == "v3"
         )
         assert receipt.model_dump(mode="json")["details"][0]["project_verified"] == "verified"
 
@@ -355,7 +362,7 @@ class TestReceiverFromTheEnvironment:
             == "https://lf.example:8443"
         )
 
-    def test_without_expect_project_nothing_is_checked(self, monkeypatch) -> None:
+    def test_without_expect_project_only_the_family_is_probed(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
         calls = self._projects(monkeypatch, (200, b"{}"))
         monkeypatch.delenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", raising=False)
@@ -369,7 +376,70 @@ class TestReceiverFromTheEnvironment:
         )
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
         receipt = observer.run_finished()
-        assert calls == [] and receipt.details[0]["project_verified"] == "none"
+        # the project is not checked; the family probe is read-only and always runs under auto
+        assert [u for _, u, _ in calls] == ["http://127.0.0.1:9/api/public/v2/observations?limit=1"]
+        assert receipt.details[0]["project_verified"] == "none"
+
+
+class TestTheReceiverFamily:
+    """D-v4-5: by capability, once per run, never by the version the receiver reports."""
+
+    def _build(self, monkeypatch, family_answer, options=None):
+        from tolokaforge_langfuse import media
+
+        calls: list[str] = []
+
+        def opener(method, url, headers, body, timeout):
+            calls.append(url)
+            if media.V2_OBSERVATIONS_PATH in url:
+                if isinstance(family_answer, Exception):
+                    raise family_answer
+                return family_answer
+            return (200, b'{"data": []}')
+
+        monkeypatch.setattr(media, "urllib_opener", opener)
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_TAGS", raising=False)
+        monkeypatch.delenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic dGVzdDpzZWNyZXQ=")
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+                options={"langfuse": {"attach": "none", **(options or {})}},
+            )
+        )
+        return build_trial_observer(config, engine_run_id="run-1")[0], calls
+
+    @pytest.mark.parametrize(
+        ("answer", "family"),
+        [((200, b'{"data": []}'), "v4"), ((404, b""), "v3"), ((500, b""), "v3")],
+    )
+    def test_the_probe_decides_the_family(self, monkeypatch, answer, family) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        observer, calls = self._build(monkeypatch, answer)
+        assert observer._write_once is (family == "v4")
+        assert observer.run_finished().details[0]["server_api"] == family
+
+    def test_an_unreachable_receiver_leaves_the_run_on_the_v3_family(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        observer, _ = self._build(monkeypatch, OSError("connection refused"))
+        assert observer.run_finished().details[0]["server_api"] == "v3"
+
+    def test_the_override_skips_the_probe(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        observer, calls = self._build(monkeypatch, (404, b""), options={"server_api": "v4"})
+        assert observer._write_once
+        assert not [u for u in calls if "/v2/observations" in u]
+        assert observer.run_finished().details[0]["server_api"] == "v4"
+
+    def test_a_write_once_receiver_needs_the_full_projection(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        with pytest.raises(TracingConfigError, match="projection='gradings' cannot be used"):
+            self._build(
+                monkeypatch,
+                (200, b'{"data": []}'),
+                options={"projection": "gradings", "attach": "all"},
+            )
 
 
 class TestSecretManagerBoundary:
@@ -462,12 +532,12 @@ class TestPluginOptions:
         assert build(config, RunIdentity("run-1"), engine_run_id="run-1") is None
 
 
-@pytest.mark.parametrize("offered", [1, 2, 4, None])
+@pytest.mark.parametrize("offered", [1, 2, 3, 5, None])
 def test_incompatible_plugin_contract_is_rejected_at_start(monkeypatch, offered):
     from tolokaforge_langfuse.plugin import check_engine_api
 
     from tolokaforge.observability import factory
 
     monkeypatch.setattr(factory, "PLUGIN_API_VERSION", offered)
-    with pytest.raises(TracingConfigError, match="speaks trial-observer API v3"):
+    with pytest.raises(TracingConfigError, match="speaks trial-observer API v4"):
         check_engine_api()

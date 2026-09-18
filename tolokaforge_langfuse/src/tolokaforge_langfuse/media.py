@@ -128,6 +128,46 @@ def list_projects(
     return [str(p["name"]) for p in listed if isinstance(p, dict) and p.get("name")]
 
 
+SERVER_V3 = "v3"
+SERVER_V4 = "v4"
+SERVER_AUTO = "auto"
+SERVER_FAMILIES = (SERVER_V3, SERVER_V4, SERVER_AUTO)
+V2_OBSERVATIONS_PATH = "/api/public/v2/observations"
+
+
+def detect_server_family(
+    api_base: str,
+    headers: Mapping[str, str],
+    *,
+    timeout_s: float = 30.0,
+    opener: Opener | None = None,
+) -> str:
+    """Which receiver family answers at ``api_base``, by capability, never by version (D-v4-5).
+
+    ``GET /api/public/v2/observations?limit=1`` answers 200 on a v4 server in **every** write
+    mode and 404 on 3.205.1; the health endpoint cannot decide, because a v4 server reports
+    ``4.x`` in the legacy and dual modes too (step 00, ``write_mode_probe.json``). A read-only
+    probe: nothing is written into the destination project. Any other answer is reported as the
+    v3 family, which is what every deployment runs today, and the caller logs it.
+    """
+    status, _ = (opener or urllib_opener)(
+        "GET",
+        f"{api_base.rstrip('/')}{V2_OBSERVATIONS_PATH}?limit=1",
+        dict(headers),
+        None,
+        timeout_s,
+    )
+    if 200 <= status < 300:
+        return SERVER_V4
+    if status != 404:
+        _log.warning(
+            "server family: GET %s answered HTTP %s; taking the v3 family",
+            V2_OBSERVATIONS_PATH,
+            status,
+        )
+    return SERVER_V3
+
+
 class LangfuseApiError(RuntimeError):
     """A Langfuse API call answered outside 2xx (the message names status and path, never a
     credential); ``status`` carries the HTTP status (None for a malformed answer)."""
@@ -164,6 +204,7 @@ class LangfuseAttachments:
         opener: Opener | None = None,
         clock: Callable[[], float] | None = None,
         environment: str | None = None,
+        send_manifest_event: bool = True,
     ) -> None:
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
@@ -181,6 +222,9 @@ class LangfuseAttachments:
         # the receiver's native environment, on every body this step sends (the receiver fixes
         # a trace's environment at the first write it sees; the manifest update may be it)
         self._environment = environment
+        # on a v4 family receiver the manifest rides on the root observation, written once after
+        # this step (D-v4-8), and a ``trace-create`` update would be refused anyway (F1)
+        self._send_manifest_event = send_manifest_event
 
     @property
     def _deadline(self) -> float | None:
@@ -367,13 +411,18 @@ class LangfuseAttachments:
         manifest = build_manifest(trial_dir, attached, skipped)
         if counts.failed:
             manifest["attachments_complete"] = False
-        try:
-            self._send_manifest(trace_id, {**dict(metadata or {}), **manifest}, trace_timestamp)
-            counts.manifests_sent += 1
-        except Exception as exc:  # noqa: BLE001
-            reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
-            _log.warning("attachments: manifest of trace %s not sent: %s", trace_id, reason)
-            counts.manifests_failed += 1
+        if not self._send_manifest_event:
+            # the caller writes it into the root observation and counts it there; the breaker
+            # then judges this step by the files alone
+            pass
+        else:
+            try:
+                self._send_manifest(trace_id, {**dict(metadata or {}), **manifest}, trace_timestamp)
+                counts.manifests_sent += 1
+            except Exception as exc:  # noqa: BLE001
+                reason = str(exc) if isinstance(exc, LangfuseApiError) else type(exc).__name__
+                _log.warning("attachments: manifest of trace %s not sent: %s", trace_id, reason)
+                counts.manifests_failed += 1
         if own_budget:
             self._deadline = None
         # the breaker: a trial whose every attempt failed (nothing registered, nothing sent)

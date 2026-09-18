@@ -93,6 +93,10 @@ LANGFUSE_SECRET_KEY_SECRET = "LANGFUSE_SECRET_KEY"
 LANGFUSE_PROJECT_ENV = "LANGFUSE_PROJECT"
 LANGFUSE_EXTRA_HEADERS_SECRET = "LANGFUSE_EXTRA_HEADERS"
 LANGFUSE_OTEL_PATH = "/api/public/otel/v1/traces"
+# the receiver families (media.SERVER_V3 / SERVER_V4), resolved by capability at run start
+SERVER_V3 = "v3"
+SERVER_V4 = "v4"
+PROJECTION_FULL = "full"
 _TRUE = frozenset({"1", "true", "yes", "on"})
 PROJECT_VERIFIED = "verified"
 PROJECT_UNVERIFIED = "unverified"
@@ -179,6 +183,13 @@ def build(
                 *[(origins[t.partition(":")[0]], [t]) for t in tags],
                 ("receiver", [f"project:{expect_project}"]),
             )
+    server_api = resolve_server_family(settings, endpoint, headers)
+    if server_api == SERVER_V4 and settings.projection != PROJECTION_FULL:
+        raise TracingConfigError(
+            f"observability.tracing.options.langfuse.projection={settings.projection!r} cannot "
+            "be used with this receiver: it writes every observation once, so a trace's root "
+            "observation comes from the persisted bundle and only projection='full' writes one"
+        )
     environment = resolve_environment(settings.environment, profile, tags)
     metadata = merge_metadata(tracing.metadata, profile)
     # the vocabulary's and the profile's discipline over the launcher's inputs, at run start
@@ -190,7 +201,13 @@ def build(
     producer = producer_identity()
     version = producer_version(producer, resolver.rules_version, profile)
     attachments = build_attachments(
-        settings, endpoint=endpoint, headers=headers, environment=environment
+        settings,
+        endpoint=endpoint,
+        headers=headers,
+        environment=environment,
+        # on a write-once receiver the manifest is part of the root observation (D-v4-8), and a
+        # legacy trace-create update would be refused anyway
+        send_manifest_event=server_api == SERVER_V3,
     )
     queue = SpanQueue(
         make_otlp_exporter(endpoint, headers=headers),
@@ -223,6 +240,7 @@ def build(
             producer=producer,
             derived_groups=profile.derived_groups,
         ),
+        server_api=server_api,
     )
 
 
@@ -445,6 +463,39 @@ def merge_tag_sources(
     return merged, origins
 
 
+def resolve_server_family(
+    settings: LangfuseConfig, endpoint: str, headers: dict[str, str] | None
+) -> str:
+    """Which receiver family this run writes for (D-v4-5), resolved once, at run start.
+
+    ``options.langfuse.server_api`` decides when it names a family; ``auto`` asks the receiver
+    by capability (``GET /api/public/v2/observations``), never by the version it reports, because
+    a v4 server reports ``4.x`` in its legacy and dual write modes too. A receiver that cannot be
+    asked leaves the run on the v3 family, which is what every deployment runs today; the choice
+    lands in the receipt either way.
+    """
+    from tolokaforge_langfuse.media import (
+        SERVER_AUTO,
+        api_base_from_endpoint,
+        detect_server_family,
+    )
+
+    if settings.server_api != SERVER_AUTO:
+        return settings.server_api
+    if not headers:
+        return SERVER_V3
+    api_base = settings.attach_api_base or api_base_from_endpoint(endpoint)
+    try:
+        family = detect_server_family(api_base, headers, timeout_s=settings.attach_timeout_s)
+    except Exception as exc:  # noqa: BLE001 - an unreachable receiver is not a config error
+        _log.warning(
+            "the receiver's family could not be probed (%s); writing for the v3 family",
+            type(exc).__name__,
+        )
+        return SERVER_V3
+    return family
+
+
 def check_expected_project(
     settings: LangfuseConfig, endpoint: str, headers: dict[str, str] | None, expected: str
 ) -> str:
@@ -515,6 +566,7 @@ def build_attachments(
     endpoint: str,
     headers: dict[str, str] | None = None,
     environment: str | None = None,
+    send_manifest_event: bool = True,
 ) -> Any:
     """The post-trial step (the attachments and the ingestion route of the trial-end pass) for
     ``observability.tracing.options.langfuse.attach`` / ``projection``; ``None`` only when nothing
@@ -523,7 +575,8 @@ def build_attachments(
     the headers are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s
     credential values (keys with secret-like names; URL, path and name values are not
     credentials and a bundle may legitimately quote them), and ``environment`` rides on the
-    manifest update too."""
+    manifest update too. ``send_manifest_event`` is false on a write-once receiver, where the
+    manifest is part of the root observation instead of a ``trace-create`` update."""
     from tolokaforge_langfuse.attachments import ATTACH_NONE, SecretScan
     from tolokaforge_langfuse.media import (
         LangfuseAttachments,
@@ -542,6 +595,7 @@ def build_attachments(
         timeout_s=settings.attach_timeout_s,
         budget_s=settings.attach_budget_s,
         environment=environment,
+        send_manifest_event=send_manifest_event,
     )
 
 

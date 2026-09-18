@@ -16,6 +16,8 @@ SHARED = (
     "tolokaforge_langfuse.vocabulary",
     "tolokaforge_langfuse.profile",
     "tolokaforge_langfuse.model_names",
+    # the converter both producers write v4 observations through: bodies in, spans out
+    "tolokaforge_langfuse.otlp_spans",
 )
 
 PROBE = """

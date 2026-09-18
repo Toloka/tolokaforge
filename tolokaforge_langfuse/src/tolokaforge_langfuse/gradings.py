@@ -159,10 +159,20 @@ def _load_yaml(path: Path) -> Any:
 
 
 def _score_bodies(
-    trace_id: str, grade: Mapping[str, Any], *, grading_id: str, observation_id: str | None
+    trace_id: str,
+    grade: Mapping[str, Any],
+    *,
+    grading_id: str,
+    observation_id: str | None,
+    at: str | None = None,
 ) -> list[dict[str, Any]]:
     """Score bodies of the grade on its observation (scope ``grading|<id>``) or as the
-    trace-level mirror (scope ``primary``); comment and the stale marker are explicit."""
+    trace-level mirror (scope ``primary``); comment and the stale marker are explicit.
+
+    ``at`` is the grading's own time (the trial's end for the run's own grading) and travels as
+    the score's ``timestamp`` on every write: a receiver keeps the **first** write's timestamp
+    for ever (measured on 4.38.0, F10b), so an overwrite must not be allowed to date a score
+    from the moment it was sent."""
     bodies: list[dict[str, Any]] = []
     scope = ids.SCORE_SCOPE_PRIMARY if observation_id is None else ids.SCORE_SCOPE_GRADING
 
@@ -191,6 +201,8 @@ def _score_bodies(
                 **dict(metadata or {}),
             },
         }
+        if at:
+            body["timestamp"] = at
         if observation_id is not None:
             body["observationId"] = observation_id
         bodies.append(body)
@@ -494,8 +506,10 @@ def build_grading_observations(
         judge_model_name=judge_model_name,
         at=at,
     )
-    scores = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=observation_id)
-    mirror = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=None)
+    scores = _score_bodies(
+        trace_id, grade, grading_id=grading_id, observation_id=observation_id, at=at
+    )
+    mirror = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=None, at=at)
     summary = grade_summary(grade)
     status = summary["judge_status"]
     # provenance as the connector records it for the run's own grading: the grading run id and

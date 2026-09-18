@@ -25,6 +25,10 @@ class LangfuseConfig(BaseModel):
     """Include the grading observation, its judge transcript and scores at trial end."""
     projection: Literal["full", "gradings", "none"] = "full"
     """Persisted-bundle records sent through ingestion, in addition to attachments."""
+    server_api: Literal["auto", "v3", "v4"] = "auto"
+    """Which receiver family to write for; ``auto`` asks the receiver once, at run start
+    (``GET /api/public/v2/observations``: a v4 server answers it in every write mode, a v3 one
+    404s). ``v4`` writes every observation once, the live rows as declared previews."""
     attach_api_base: str | None = None
     """REST base URL; by default strip ``/api/public/otel/v1/traces`` from the endpoint."""
     attach_timeout_s: float = Field(default=60.0, gt=0)

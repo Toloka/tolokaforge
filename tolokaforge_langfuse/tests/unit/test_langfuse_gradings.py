@@ -499,6 +499,8 @@ class TestLangfuseSwitch:
 
         def opener(method, url, headers, body, timeout):
             calls.append((method, url, dict(headers)))
+            if media.V2_OBSERVATIONS_PATH in url:
+                return (404, b"")  # the receiver-family probe: this fixture is a v3 receiver
             return (
                 200,
                 json.dumps(
@@ -543,12 +545,10 @@ class TestLangfuseSwitch:
         try:
             assert identity.run_id == "acme/pilot/v1/123/1" and identity.run_tag == "v1"
             expected = "Basic " + base64.b64encode(b"pk-lf-test:sk-lf-test").decode()
+            headers = {"Authorization": expected, "X-GitHub-Runner-Key": "abc"}
             assert calls == [
-                (
-                    "GET",
-                    "https://lf.example/api/public/projects",
-                    {"Authorization": expected, "X-GitHub-Runner-Key": "abc"},
-                )
+                ("GET", "https://lf.example/api/public/projects", headers),
+                ("GET", "https://lf.example/api/public/v2/observations?limit=1", headers),
             ]
             assert observer._tags == ("project:pilot-dev",)
             assert observer._label == "cfg" and observer._session_id == "acme/pilot/v1/m/cfg/123"
