@@ -135,6 +135,7 @@ _PREDATES_FLOOR: frozenset[str] = frozenset(
         "grading.llm_judge.customization.system_prompt",
         "grading.llm_judge.rubric",
         "grading.llm_judge.rubric.criteria",
+        "grading.llm_judge.rubric.criteria[].chunk_group",
         "grading.llm_judge.rubric.criteria[].description",
         "grading.llm_judge.rubric.criteria[].expected",
         "grading.llm_judge.rubric.criteria[].id",
@@ -722,6 +723,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
     ),
     _WireKey(
         path="grading.llm_judge.rubric.criteria[].expected",
+        emitted_for="grading.llm_judge.rubric.criteria",
+        wire_shape="str | None",
+    ),
+    _WireKey(
+        path="grading.llm_judge.rubric.criteria[].chunk_group",
         emitted_for="grading.llm_judge.rubric.criteria",
         wire_shape="str | None",
     ),
