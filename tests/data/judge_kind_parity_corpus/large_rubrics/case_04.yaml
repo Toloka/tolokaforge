@@ -325,3 +325,157 @@ judge_scripts_per_chunk:
           order_shipped_justification: 'because order_shipped
 
             VERDICT: MET'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          field_validated: true
+          field_validated_justification: 'because field_validated
+
+            VERDICT: MET'
+          no_pii_leaked: true
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: MET'
+          tool_called_once: true
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: MET'
+          summary_provided: 0.9
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.9'
+          channel_appropriate: true
+          channel_appropriate_justification: 'because channel_appropriate
+
+            VERDICT: MET'
+          outcome_communicated: 0.9
+          outcome_communicated_justification: 'because outcome_communicated
+
+            SCORE: 0.9'
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+          policy_check: true
+          policy_check_justification: 'because policy_check
+
+            VERDICT: MET'
+          identity_verified: true
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: MET'
+          stock_updated: true
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: MET'
+          order_shipped: true
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          field_validated: true
+          field_validated_justification: 'because field_validated
+
+            VERDICT: MET'
+          no_pii_leaked: true
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: MET'
+          tool_called_once: true
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: MET'
+          summary_provided: 0.9
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.9'
+          channel_appropriate: true
+          channel_appropriate_justification: 'because channel_appropriate
+
+            VERDICT: MET'
+          outcome_communicated: 0.9
+          outcome_communicated_justification: 'because outcome_communicated
+
+            SCORE: 0.9'
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+          policy_check: true
+          policy_check_justification: 'because policy_check
+
+            VERDICT: MET'
+          identity_verified: true
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: MET'
+          stock_updated: true
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: MET'
+          order_shipped: true
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          field_validated: true
+          field_validated_justification: 'because field_validated
+
+            VERDICT: MET'
+          no_pii_leaked: true
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: MET'
+          tool_called_once: true
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: MET'
+          summary_provided: 0.9
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.9'
+          channel_appropriate: true
+          channel_appropriate_justification: 'because channel_appropriate
+
+            VERDICT: MET'
+          outcome_communicated: 0.9
+          outcome_communicated_justification: 'because outcome_communicated
+
+            SCORE: 0.9'
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+          policy_check: true
+          policy_check_justification: 'because policy_check
+
+            VERDICT: MET'
+          identity_verified: true
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: MET'
+          stock_updated: true
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: MET'
+          order_shipped: true
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: MET'

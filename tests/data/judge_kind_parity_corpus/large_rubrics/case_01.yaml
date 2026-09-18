@@ -250,3 +250,121 @@ judge_scripts_per_chunk:
           greeting_present_justification: 'because greeting_present
 
             VERDICT: NOT MET'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          identity_verified: false
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: NOT MET'
+          stock_updated: false
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: NOT MET'
+          order_shipped: false
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: NOT MET'
+          cancellation_confirmed: false
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: NOT MET'
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+          intent_clarified: false
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: NOT MET'
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          identity_verified: false
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: NOT MET'
+          stock_updated: false
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: NOT MET'
+          order_shipped: false
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: NOT MET'
+          cancellation_confirmed: false
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: NOT MET'
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+          intent_clarified: false
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: NOT MET'
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          identity_verified: false
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: NOT MET'
+          stock_updated: false
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: NOT MET'
+          order_shipped: false
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: NOT MET'
+          cancellation_confirmed: false
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: NOT MET'
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+          intent_clarified: false
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: NOT MET'
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'

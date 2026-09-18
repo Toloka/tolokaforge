@@ -79,3 +79,37 @@ judge_scripts_per_chunk:
           question_answered_justification: 'because question_answered
 
             SCORE: 0.2'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          cancellation_confirmed: false
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: NOT MET'
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          cancellation_confirmed: false
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: NOT MET'
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          cancellation_confirmed: false
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: NOT MET'
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'

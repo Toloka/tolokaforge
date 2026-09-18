@@ -274,3 +274,133 @@ judge_scripts_per_chunk:
           summary_provided_justification: 'because summary_provided
 
             SCORE: 0.9'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          cancellation_confirmed: true
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: MET'
+          question_answered: 0.9
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.9'
+          intent_clarified: true
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: MET'
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+          greeting_present: true
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: MET'
+          field_validated: true
+          field_validated_justification: 'because field_validated
+
+            VERDICT: MET'
+          no_pii_leaked: true
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: MET'
+          tool_called_once: true
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: MET'
+          summary_provided: 0.9
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          cancellation_confirmed: true
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: MET'
+          question_answered: 0.9
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.9'
+          intent_clarified: true
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: MET'
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+          greeting_present: true
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: MET'
+          field_validated: true
+          field_validated_justification: 'because field_validated
+
+            VERDICT: MET'
+          no_pii_leaked: true
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: MET'
+          tool_called_once: true
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: MET'
+          summary_provided: 0.9
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          cancellation_confirmed: true
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: MET'
+          question_answered: 0.9
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.9'
+          intent_clarified: true
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: MET'
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+          greeting_present: true
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: MET'
+          field_validated: true
+          field_validated_justification: 'because field_validated
+
+            VERDICT: MET'
+          no_pii_leaked: true
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: MET'
+          tool_called_once: true
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: MET'
+          summary_provided: 0.9
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.9'

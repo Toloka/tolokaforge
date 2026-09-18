@@ -79,3 +79,37 @@ judge_scripts_per_chunk:
           tone_justification: 'because tone
 
             SCORE: 0.9'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'

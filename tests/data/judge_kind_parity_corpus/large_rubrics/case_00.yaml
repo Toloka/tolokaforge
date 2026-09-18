@@ -226,3 +226,109 @@ judge_scripts_per_chunk:
           question_answered_justification: 'because question_answered
 
             SCORE: 0.9'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+          policy_check: true
+          policy_check_justification: 'because policy_check
+
+            VERDICT: MET'
+          identity_verified: true
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: MET'
+          stock_updated: true
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: MET'
+          order_shipped: true
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: MET'
+          cancellation_confirmed: true
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: MET'
+          question_answered: 0.9
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+          policy_check: true
+          policy_check_justification: 'because policy_check
+
+            VERDICT: MET'
+          identity_verified: true
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: MET'
+          stock_updated: true
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: MET'
+          order_shipped: true
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: MET'
+          cancellation_confirmed: true
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: MET'
+          question_answered: 0.9
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+          tone: 0.9
+          tone_justification: 'because tone
+
+            SCORE: 0.9'
+          policy_check: true
+          policy_check_justification: 'because policy_check
+
+            VERDICT: MET'
+          identity_verified: true
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: MET'
+          stock_updated: true
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: MET'
+          order_shipped: true
+          order_shipped_justification: 'because order_shipped
+
+            VERDICT: MET'
+          cancellation_confirmed: true
+          cancellation_confirmed_justification: 'because cancellation_confirmed
+
+            VERDICT: MET'
+          question_answered: 0.9
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.9'
