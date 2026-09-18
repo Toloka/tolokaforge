@@ -692,29 +692,33 @@ class HarnessSpec(BaseModel):
         )
 
     @model_validator(mode="after")
-    def _config_files_and_request_middleware_do_not_coexist(self) -> HarnessSpec:
-        """Refuse a spec that would silently bake the upstream URL into a config file.
+    def _a_middleware_bearing_config_template_reads_the_proxy(self) -> HarnessSpec:
+        """Refuse a config template that would route around its own proxy.
 
-        :attr:`config_files` templates render at Python assembly time from
-        :attr:`provider_env` — the ``base_url`` variable interpolates the
-        pre-rewrite ``*_BASE_URL`` value. :attr:`request_middleware`
-        rewrites that env var at bash time, AFTER the config files have
-        already been written. A CLI that reads its endpoint from an on-disk
-        config file bakes in the upstream URL and bypasses the proxy —
-        silently, since the CLI never touches the env var again after
-        startup. Reject the combination at load rather than at trial time
-        with a broken run to diagnose.
+        A CLI reading its endpoint from an on-disk config file never touches
+        the env var again after startup, so the middleware's bash-time rewrite
+        cannot reach it. That is why the two were once refused outright.
+
+        They are compatible as long as the rendered file names the proxy:
+        :func:`_config_template_variables` resolves ``base_url`` to the
+        proxy's local address whenever a spec declares middleware, and the
+        proxy boots from the declared upstream one step earlier, before the
+        rewrite. What stays refused is a template that hard-codes an endpoint
+        of its own instead of asking for ``{{ base_url }}`` — that one really
+        would bypass the proxy, silently.
         """
-        if self.request_middleware is not None and self.config_files:
-            raise ValueError(
-                "HarnessSpec: request_middleware and config_files cannot both be "
-                "set. config_files render at assembly time with the upstream URL "
-                "from provider_env; the middleware rewrite only reaches env-driven "
-                "routing. A CLI that reads its endpoint from a config file would "
-                "bake in the upstream and bypass the proxy. Route the CLI's "
-                "endpoint through an env var, or land the config template "
-                "referencing http://127.0.0.1:<port> directly."
-            )
+        if self.request_middleware is None or not self.config_files:
+            return self
+        for path, template in self.config_files.items():
+            if "://" in template and "{{ base_url }}" not in template:
+                raise ValueError(
+                    f"HarnessSpec: config_files template {path!r} hard-codes a URL "
+                    "while the spec declares request_middleware. The rendered file "
+                    "is what the CLI reads its endpoint from, so a literal URL there "
+                    "routes around the proxy and the trial reports no tokens. Use "
+                    "'{{ base_url }}', which renders as the proxy's address when "
+                    "middleware is declared."
+                )
         return self
 
     @model_validator(mode="after")
@@ -1379,9 +1383,19 @@ def _config_file_write(path: str, content: str) -> str:
 
 
 def _config_template_variables(
-    resolved_model: str, model: str, provider_env: Mapping[str, str]
+    resolved_model: str,
+    model: str,
+    provider_env: Mapping[str, str],
+    middleware: RequestMiddleware | None = None,
 ) -> dict[str, str]:
     """The :data:`CONFIG_TEMPLATE_VARIABLES` values for one trial.
+
+    ``base_url`` is the endpoint the CLI should send to, which is not always
+    the endpoint the trial talks to upstream: when *middleware* is declared the
+    proxy is in front, so the rendered config names the proxy and the proxy
+    holds the declared upstream. It reads that upstream from the env var one
+    preamble step earlier, before the same rewrite that env-driven CLIs get —
+    so both kinds of CLI end up pointed at the same place.
 
     Raises:
         ValueError: *provider_env* carries more than one ``*_BASE_URL`` or
@@ -1400,7 +1414,11 @@ def _config_template_variables(
     return {
         "model": resolved_model,
         "provider": model.partition("/")[0] if "/" in model else "",
-        "base_url": provider_env[base_urls[0]] if base_urls else "",
+        "base_url": (
+            f"http://127.0.0.1:{middleware.port}"
+            if middleware is not None
+            else (provider_env[base_urls[0]] if base_urls else "")
+        ),
         "api_key_env": api_keys[0] if api_keys else "",
     }
 
@@ -1463,7 +1481,10 @@ def harness_command(
         preamble_parts.extend(_middleware_preamble(spec.request_middleware))
     if spec.config_files:
         variables = _config_template_variables(
-            resolved_model, model, spec.provider_env if provider_env is None else provider_env
+            resolved_model,
+            model,
+            spec.provider_env if provider_env is None else provider_env,
+            spec.request_middleware,
         )
         resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
         preamble_parts.extend(
