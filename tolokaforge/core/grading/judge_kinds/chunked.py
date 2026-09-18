@@ -2,11 +2,15 @@
 
 Registered under the name ``chunked_rubric`` in the
 ``tolokaforge.judge_kinds`` entry-point group. Partitions the rubric's
-criteria into chunks of at most ``chunk_size`` (default 5) — first
-grouping criteria that share a ``Criterion.chunk_group`` name into the
-same chunk (or consecutive chunks when a group's size exceeds
-``chunk_size``), then packing every other criterion (and every complete
-group block that fits) in first-appearance order. Runs one
+criteria into chunks of at most ``chunk_size`` — first grouping criteria
+that share a ``Criterion.chunk_group`` name into the same chunk (or
+consecutive chunks when a group's size exceeds ``chunk_size``), then
+packing every other criterion (and every complete group block that
+fits) in first-appearance order. When ``kind_config`` omits
+``chunk_size``, the effective size is derived from
+``judge_model_config.max_tokens`` via :func:`_adaptive_chunk_size` so a
+large-context judge degenerates to a single call when the whole rubric
+fits in its output-token headroom. Runs one
 :class:`LLMJudge` per chunk against a scoped sub-rubric (sharing the
 original ``reference``) and merges the per-chunk
 :class:`~tolokaforge.runner.models.CriterionResult` maps above
@@ -56,12 +60,25 @@ if TYPE_CHECKING:
     from tolokaforge.tools.registry import Tool
 
 __all__ = [
-    "DEFAULT_CHUNK_SIZE",
+    "FALLBACK_MAX_TOKENS",
+    "HEADROOM_FRACTION",
+    "TOKENS_PER_CRITERION_ESTIMATE",
     "ChunkedRubricJudgeKind",
 ]
 
-#: Default number of criteria per chunk when ``kind_config`` omits ``chunk_size``.
-DEFAULT_CHUNK_SIZE = 5
+#: Per-criterion verdict output-token estimate. Module-level so callers can
+#: monkeypatch it in tests; production code treats it as fixed.
+TOKENS_PER_CRITERION_ESTIMATE = 200
+
+#: Fraction of ``ModelConfig.max_tokens`` the adaptive heuristic packs criteria
+#: into. The complement (40 %) is reserved for the judge's reasoning tokens and
+#: a retry buffer.
+HEADROOM_FRACTION = 0.6
+
+#: Conservative stand-in when ``ModelConfig.max_tokens`` is ``None`` (unset).
+#: Combined with the defaults above this yields six criteria per chunk on the
+#: fallback path.
+FALLBACK_MAX_TOKENS = 2048
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
 _ACCEPTED_KIND_CONFIG_KEYS = frozenset({"chunk_size"})
@@ -91,7 +108,7 @@ class ChunkedRubricJudgeKind:
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
-        chunk_size = _resolve_chunk_size(kind_config)
+        chunk_size = _resolve_chunk_size(kind_config, judge_model_config)
         chunks = _chunk_boundaries(rubric.criteria, chunk_size)
         chunk_boundaries: tuple[tuple[str, ...], ...] = tuple(
             tuple(c.id for c in chunk) for chunk in chunks
@@ -136,14 +153,20 @@ class ChunkedRubricJudgeKind:
         )
 
 
-def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
+def _resolve_chunk_size(
+    kind_config: Mapping[str, Any] | None,
+    judge_model_config: ModelConfig,
+) -> int:
     """Validate ``kind_config`` and return the effective chunk size.
 
+    When ``kind_config`` omits ``chunk_size`` (or is itself ``None``), the size
+    is derived from the judge model's output-token headroom via
+    :func:`_adaptive_chunk_size`. An explicit ``chunk_size`` always wins.
     Raises :class:`ValueError` on any unknown key or a non-positive
     ``chunk_size`` before any judge dispatch runs.
     """
     if kind_config is None:
-        return DEFAULT_CHUNK_SIZE
+        return _adaptive_chunk_size(judge_model_config)
     unknown = set(kind_config) - _ACCEPTED_KIND_CONFIG_KEYS
     if unknown:
         raise ValueError(
@@ -152,7 +175,7 @@ def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
         )
     raw = kind_config.get("chunk_size")
     if raw is None:
-        return DEFAULT_CHUNK_SIZE
+        return _adaptive_chunk_size(judge_model_config)
     if not isinstance(raw, int) or isinstance(raw, bool):
         raise ValueError(
             f"chunked_rubric chunk_size must be an int; got {type(raw).__name__} {raw!r}."
@@ -160,6 +183,21 @@ def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
     if raw < 1:
         raise ValueError(f"chunked_rubric chunk_size must be >= 1; got {raw}.")
     return raw
+
+
+def _adaptive_chunk_size(judge_model_config: ModelConfig) -> int:
+    """Derive ``chunk_size`` from the judge model's output-token headroom.
+
+    Packs criteria into :data:`HEADROOM_FRACTION` of the model's
+    ``max_tokens`` at :data:`TOKENS_PER_CRITERION_ESTIMATE` tokens per
+    criterion. Falls back to :data:`FALLBACK_MAX_TOKENS` when ``max_tokens``
+    is unset. The ``max(1, ...)`` floor guarantees a legal partition even
+    under pathological configs (e.g. a user setting ``max_tokens=100``).
+    """
+    max_tokens = judge_model_config.max_tokens
+    if max_tokens is None:
+        max_tokens = FALLBACK_MAX_TOKENS
+    return max(1, int((max_tokens * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE))
 
 
 def _chunk_boundaries(criteria: Sequence[Criterion], chunk_size: int) -> list[list[Criterion]]:

@@ -227,9 +227,24 @@ the same math the single-shot kind uses. Opt in via
 
 `kind_config` schema: `{"chunk_size": int}`. `chunk_size` must be `>= 1`
 (a `chunk_size >= len(criteria)` degenerates to a single call, which is
-deliberate). Missing key or a `None` config → `DEFAULT_CHUNK_SIZE = 5`;
-follow-up [#1581](https://github.com/Toloka/tolokaforge/issues/1581)
-tunes this default from live measurement. Any unknown key or a
+deliberate). When `kind_config` omits `chunk_size` (or is itself
+`None`), the effective size is derived from the judge model's
+output-token headroom: `max(1, floor(max_tokens * 0.6 / 200))`, where
+`max_tokens` is read off `judge_model_config.max_tokens`, `200` is the
+per-criterion verdict token estimate
+(`TOKENS_PER_CRITERION_ESTIMATE`), and the `0.6` factor
+(`HEADROOM_FRACTION`) reserves 40 % of `max_tokens` for the judge's
+reasoning tokens and a retry buffer. When `max_tokens` is unset
+(`None`), a conservative `FALLBACK_MAX_TOKENS = 2048` stands in
+(yielding six criteria per chunk on the fallback path). This lets a
+large-context judge degenerate to a single call when the whole rubric
+fits in headroom while still chunking large rubrics against the
+truncation failure class the kind exists to remove. All three
+constants are module-level in
+[`chunked.py`](../tolokaforge/core/grading/judge_kinds/chunked.py) so a
+downstream deployment can monkeypatch them without adding new
+`kind_config` plumbing; per-model conditional branching is deliberately
+absent (one estimator across every judge model). Any unknown key or a
 non-positive `chunk_size` raises `ValueError` inside `evaluate` before
 any judge call runs.
 
@@ -326,9 +341,11 @@ encoding — the host materialiser maps it to `None`.
 
 Bundle-side: `chunk_boundaries` is a judge OUTPUT, not a grading INPUT,
 so it lives on the grade side (`grade.yaml`), not on the v1.1 bundle.
-The bundle's `grading_config.json` records `kind_config.chunk_size` from
-which the chunked kind re-derives the same boundaries deterministically
-on regrade.
+The bundle's `grading_config.json` records `kind_config` and the
+recorded `judge_model_config.json` (its `max_tokens` feeds the adaptive
+`chunk_size` when `kind_config` omits one) — the chunked kind re-derives
+the same boundaries deterministically on regrade from either the
+explicit `kind_config.chunk_size` or the same adaptive computation.
 
 ### Replay routing
 
@@ -514,6 +531,43 @@ offers over `voted_rubric` is diversity, not a cheaper cost model: pick
 `voted_rubric` when the goal is damping one model's own self-variance
 cheaply, and `jury_rubric` when cross-family diversity outweighs that
 cost per PoLL (Panel of LLM evaluators) evidence.
+
+## Composing kinds
+
+`voted_rubric` and `jury_rubric` both take a `wrapped_kind` field on
+`kind_config`; the wrapped kind is dispatched once per sample / panel
+member. Composition is a first-class extension point:
+
+- **`voted_rubric` wrapping `chunked_rubric`** — K samples of the whole
+  rubric, each sample itself chunked into ≤ `chunk_size` criterion
+  groups. Fits when the rubric is large AND you want K-sample
+  variance reduction on top. Cost = K × chunked's per-trial cost.
+
+- **`jury_rubric` wrapping `chunked_rubric`** — a cross-family panel
+  where each member's grade is itself chunked. This is the
+  recommended composition for `jury_rubric` on rubrics of ≥ 6
+  criteria: the weakest panel member (typically the smallest
+  cheap-tier model) is the truncation floor for the whole panel, and
+  wrapping it in `chunked_rubric` narrows each panel-member call to a
+  sub-rubric that fits well inside every family's output-token
+  ceiling. Without this wrapping, a single member's truncated
+  `submit_report` on a large rubric fails the whole panel loud per
+  `jury_rubric`'s per-member contract. Example:
+
+  ```yaml
+  grading:
+    llm_judge:
+      judge_kind: jury_rubric
+      kind_config:
+        wrapped_kind: chunked_rubric
+  ```
+
+Wrapped-kind ergonomics: the wrapper always passes `kind_config=None`
+into the wrapped kind, so the wrapped kind uses its own defaults —
+`chunked_rubric`'s adaptive `chunk_size` heuristic (per this milestone)
+picks the effective chunk size from the judge model's `max_tokens`
+headroom, so no explicit `chunk_size` needs to be threaded through the
+outer composition.
 
 ## Parity gate
 

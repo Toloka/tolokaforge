@@ -28,10 +28,7 @@ and not part of the runner subset.
 """
 
 from tolokaforge.core.grading.judge_kinds._protocol import JudgeKind
-from tolokaforge.core.grading.judge_kinds.chunked import (
-    DEFAULT_CHUNK_SIZE,
-    ChunkedRubricJudgeKind,
-)
+from tolokaforge.core.grading.judge_kinds.chunked import ChunkedRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds.jury import DEFAULT_PANEL, JuryRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds.single_shot import SingleShotRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds.voted import (
@@ -43,7 +40,6 @@ from tolokaforge.core.grading.judge_kinds.voted import (
 
 __all__ = [
     "DEFAULT_AGGREGATOR",
-    "DEFAULT_CHUNK_SIZE",
     "DEFAULT_N_SAMPLES",
     "DEFAULT_PANEL",
     "DEFAULT_WRAPPED_KIND",

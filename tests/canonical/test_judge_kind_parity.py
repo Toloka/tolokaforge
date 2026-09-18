@@ -86,9 +86,8 @@ _LIVE_API_KEYS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 _INNER_SUM_BUDGET_S = 60.0
 _FULL_WALLCLOCK_BUDGET_S = 90.0
 
-#: Fixed chunk size the parity-lane chunked measurements use. Matches
-#: ``ChunkedRubricJudgeKind``'s ``DEFAULT_CHUNK_SIZE = 5``; large-rubric
-#: cassettes are authored against this value.
+#: Fixed value the parity-lane pins for cassette determinism; the adaptive
+#: default is deliberately bypassed here so byte-parity anchors hold.
 _CHUNK_SIZE = 5
 _CHUNKED_KIND_CONFIG: dict[str, Any] = {"chunk_size": _CHUNK_SIZE}
 
