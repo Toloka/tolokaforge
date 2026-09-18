@@ -7,9 +7,8 @@ tracing identity (the external ``run_id`` a workflow hands in through the config
 every installed **trial-observer plugin** for an observer, and composes what comes back. A plugin
 is a callable registered under the ``tolokaforge.trial_observers`` entry-point group with the
 signature ``build(tracing, identity, *, engine_run_id, output_dir) -> TrialObserver | None``;
-``None`` means "nothing asks for me in this run". The Langfuse observer ships as the
-``tolokaforge-langfuse`` distribution (the ``otel`` extra installs it), so a receiver-side fix
-releases without moving the engine.
+``None`` means "nothing asks for me in this run". Receiver plugins ship independently; their
+namespaced settings live in ``tracing.options`` and require no engine release to extend.
 
 The identity is returned alongside so the conductor derives the same trace ids the offline
 bundle uploader will, and is written to ``run_identity.json`` in the run directory for that
@@ -44,10 +43,11 @@ if TYPE_CHECKING:
 
 TRIAL_OBSERVERS_GROUP = "tolokaforge.trial_observers"
 """The entry-point group a trial-observer plugin registers its ``build`` callable under."""
-PLUGIN_API_VERSION = 2
-"""The plugin contract this engine speaks: the ``build`` signature above, the ``TrialObserver``
-hooks and receipt shape of :mod:`tolokaforge.observability.observer` and the id contract of
-:mod:`tolokaforge.observability.ids`. A plugin compares it with the version it was built for."""
+PLUGIN_API_VERSION = 3
+"""The plugin contract this engine speaks: the ``build`` signature above, ``TracingConfig``,
+the ``TrialObserver`` hooks and receipt shape of :mod:`tolokaforge.observability.observer`, and
+the id contract of :mod:`tolokaforge.observability.ids`. A plugin compares it with the version
+it was built for."""
 
 RUN_IDENTITY_FILE = "run_identity.json"
 TRACING_RECEIPT_FILE = "tracing_receipt.json"
@@ -115,9 +115,9 @@ def build_trial_observer(
         if asked:
             raise TracingConfigError(
                 f"{asked} but no trial-observer plugin produced an observer (installed under "
-                f"{TRIAL_OBSERVERS_GROUP!r}: {', '.join(installed_plugins()) or 'none'}); the "
-                "Langfuse observer is the tolokaforge-langfuse package: pip install "
-                "'tolokaforge[otel]'"
+                f"{TRIAL_OBSERVERS_GROUP!r}: {', '.join(installed_plugins()) or 'none'}). "
+                "Install and configure an observer plugin supporting the requested exporter "
+                "or tracing switch."
             )
         return NullTrialObserver(), identity
     observer: TrialObserver = (
@@ -129,7 +129,7 @@ def build_trial_observer(
 
 
 TRACING_SWITCH_SUFFIX = "_TRACING_ENABLED"
-"""A plugin's one-switch variable ends in this suffix (``LANGFUSE_TRACING_ENABLED``): the engine
+"""A plugin's one-switch variable ends in this suffix (``<PLUGIN>_TRACING_ENABLED``): the engine
 knows no receiver's name, but a switch that is on while no plugin produced an observer is a
 misconfiguration it refuses at run start rather than a run silently without traces."""
 _TRUE = frozenset({"1", "true", "yes", "on"})

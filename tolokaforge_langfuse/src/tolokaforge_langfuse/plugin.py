@@ -23,9 +23,10 @@ for attachments and gradings is ``<base>``), ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUS
 ``LANGFUSE_EXTRA_HEADERS`` (``k=v,k2=v2``, a gateway's own header) and optional
 ``LANGFUSE_PROJECT`` (the project the keys must open; also the ``project:`` tag).
 
-The deployment profile (ADR-0047, parity amendment; ``profile``): ``observability.tracing.profile``
-or ``TOLOKAFORGE_TRACING_PROFILE`` names a TOML this module validates and applies without knowing
-any value: the native ``environment`` rule (``LANGFUSE_ENVIRONMENT`` or the config's
+The deployment profile (ADR-0047, parity amendment; ``profile``):
+``observability.tracing.options.langfuse.profile`` or ``TOLOKAFORGE_TRACING_PROFILE`` names a TOML
+this module validates and applies without knowing any value: the native ``environment`` rule
+(``LANGFUSE_ENVIRONMENT`` or the config's
 ``environment`` literal override it), fixed tags and metadata, the profile version that joins
 the native ``version`` field, optionally the model-name rules. ``TOLOKAFORGE_TRACING_METADATA``
 (``key=value,...``) carries the per-run metadata the offline command receives as ``--metadata``;
@@ -48,11 +49,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
 from tolokaforge.observability.factory import RunIdentity, TracingConfigError, engine_version
 from tolokaforge.observability.observer import TrialObserver
 from tolokaforge_langfuse import __api_version__, __version__
+from tolokaforge_langfuse.config import LangfuseConfig
 from tolokaforge_langfuse.model_names import (
     NONE,
+    ModelNameResolver,
     ModelNameResolverError,
     build_model_name_resolver,
 )
@@ -86,7 +91,7 @@ LANGFUSE_BASE_URL_ENV = "LANGFUSE_BASE_URL"
 LANGFUSE_PUBLIC_KEY_SECRET = "LANGFUSE_PUBLIC_KEY"
 LANGFUSE_SECRET_KEY_SECRET = "LANGFUSE_SECRET_KEY"
 LANGFUSE_PROJECT_ENV = "LANGFUSE_PROJECT"
-LANGFUSE_EXTRA_HEADERS_ENV = "LANGFUSE_EXTRA_HEADERS"
+LANGFUSE_EXTRA_HEADERS_SECRET = "LANGFUSE_EXTRA_HEADERS"
 LANGFUSE_OTEL_PATH = "/api/public/otel/v1/traces"
 _TRUE = frozenset({"1", "true", "yes", "on"})
 PROJECT_VERIFIED = "verified"
@@ -136,9 +141,10 @@ def build(
     if tracing is None or tracing.exporter != "otlp":
         return None
     check_engine_api()  # only a run that traces needs the contract to hold
+    settings = read_config(tracing.options)
     run_id = identity.run_id
     endpoint = resolve_endpoint(tracing.endpoint)
-    profile = load_profile(tracing.profile)
+    profile = load_profile(settings.profile)
     tags, origins = merge_tag_sources(
         ("config", tracing.tags),
         ("launcher", environment_tags()),
@@ -156,32 +162,24 @@ def build(
         raise TracingConfigError(
             "tolokaforge-langfuse needs the OpenTelemetry SDK it depends on: reinstall the package"
         ) from exc
-    # the profile's rules select the normalizer unless the config names its own
-    normalizer_kind = tracing.model_name_normalizer
-    rules = tracing.model_name_rules
-    if rules is None and profile.model_name_rules is not None:
-        normalizer_kind, rules = "toloka", profile.model_name_rules
-    try:
-        resolver = build_model_name_resolver(normalizer_kind, rules)
-    except ModelNameResolverError as exc:
-        raise TracingConfigError(str(exc)) from exc
+    resolver = resolve_model_names(settings, profile)
     headers = receiver_headers()
     expect_project = (
-        tracing.expect_project
+        settings.expect_project
         or _env(TRACING_EXPECT_PROJECT_ENV)
         or _env(LANGFUSE_PROJECT_ENV)
         or None
     )
     project_verified = PROJECT_UNCHECKED
     if expect_project:
-        project_verified = check_expected_project(tracing, endpoint, headers, expect_project)
+        project_verified = check_expected_project(settings, endpoint, headers, expect_project)
         # the project tag mirrors the destination (ADR-0047): the declared project, once checked
         if not any(tag.startswith("project:") for tag in tags):
             tags, origins = merge_tag_sources(
                 *[(origins[t.partition(":")[0]], [t]) for t in tags],
                 ("receiver", [f"project:{expect_project}"]),
             )
-    environment = resolve_environment(tracing.environment, profile, tags)
+    environment = resolve_environment(settings.environment, profile, tags)
     metadata = merge_metadata(tracing.metadata, profile)
     # the vocabulary's and the profile's discipline over the launcher's inputs, at run start
     try:
@@ -192,7 +190,7 @@ def build(
     producer = producer_identity()
     version = producer_version(producer, resolver.rules_version, profile)
     attachments = build_attachments(
-        tracing, endpoint=endpoint, headers=headers, environment=environment
+        settings, endpoint=endpoint, headers=headers, environment=environment
     )
     queue = SpanQueue(
         make_otlp_exporter(endpoint, headers=headers),
@@ -200,7 +198,7 @@ def build(
         batch_size=tracing.export_batch_size,
         interval_s=tracing.export_interval_s,
     )
-    observer = OTelTrialObserver(
+    return OTelTrialObserver(
         queue=queue,
         resolver=resolver,
         label=tracing.label
@@ -214,11 +212,11 @@ def build(
         context_messages=tracing.context_messages,
         flush_timeout_s=tracing.flush_timeout_s,
         attachments=attachments,
-        gradings=tracing.gradings,
+        gradings=settings.gradings,
         expect_project=expect_project,
         project_verified=project_verified,
         projection=ProjectionSettings(
-            mode=tracing.projection,
+            mode=settings.projection,
             environment=environment,
             release=release,
             version=version,
@@ -226,7 +224,27 @@ def build(
             derived_groups=profile.derived_groups,
         ),
     )
-    return observer
+
+
+def read_config(options: Mapping[str, Any]) -> LangfuseConfig:
+    """Validate only this plugin's namespace before starting any receiver-side work."""
+    try:
+        return LangfuseConfig.model_validate(options.get("langfuse", {}))
+    except ValidationError as exc:
+        raise TracingConfigError(f"observability.tracing.options.langfuse: {exc}") from exc
+
+
+def resolve_model_names(settings: LangfuseConfig, profile: TracingProfile) -> ModelNameResolver:
+    """Explicit normalizer rules override the deployment profile's rules."""
+    # the profile's rules select the normalizer unless the config names its own
+    normalizer_kind = settings.model_name_normalizer
+    rules = settings.model_name_rules
+    if rules is None and profile.model_name_rules is not None:
+        normalizer_kind, rules = "toloka", profile.model_name_rules
+    try:
+        return build_model_name_resolver(normalizer_kind, rules)
+    except ModelNameResolverError as exc:
+        raise TracingConfigError(str(exc)) from exc
 
 
 def load_profile(configured: str | None) -> TracingProfile:
@@ -361,7 +379,10 @@ def langfuse_headers() -> dict[str, str] | None:
             f"{LANGFUSE_PUBLIC_KEY_SECRET} and {LANGFUSE_SECRET_KEY_SECRET} must be set together"
         )
     token = base64.b64encode(f"{public}:{secret}".encode()).decode()
-    return {"Authorization": f"Basic {token}", **_parse_headers(_env(LANGFUSE_EXTRA_HEADERS_ENV))}
+    return {
+        "Authorization": f"Basic {token}",
+        **_parse_headers(_secret(LANGFUSE_EXTRA_HEADERS_SECRET)),
+    }
 
 
 def receiver_headers() -> dict[str, str] | None:
@@ -369,7 +390,7 @@ def receiver_headers() -> dict[str, str] | None:
     launcher owns the receiver), else the Langfuse key pair; the extra headers join either."""
     headers = otlp_headers()
     if headers is not None:
-        extra = _parse_headers(_env(LANGFUSE_EXTRA_HEADERS_ENV))
+        extra = _parse_headers(_secret(LANGFUSE_EXTRA_HEADERS_SECRET))
         return {**extra, **headers}
     if langfuse_enabled():
         headers = langfuse_headers()
@@ -425,7 +446,7 @@ def merge_tag_sources(
 
 
 def check_expected_project(
-    tracing: Any, endpoint: str, headers: dict[str, str] | None, expected: str
+    settings: LangfuseConfig, endpoint: str, headers: dict[str, str] | None, expected: str
 ) -> str:
     """The fail-closed project check of the live path: the credentials in the headers must open
     ``expected`` on the receiver (Langfuse ``GET /api/public/projects``). A mismatch, a 401 (the
@@ -441,16 +462,18 @@ def check_expected_project(
 
     if not headers:
         raise TracingConfigError(
-            f"observability.tracing.expect_project={expected!r} needs the receiver credentials in "
+            f"observability.tracing.options.langfuse.expect_project={expected!r} "
+            "needs the receiver credentials in "
             f"{OTLP_HEADERS_SECRET} to check the project; none were found"
         )
-    api_base = tracing.attach_api_base or api_base_from_endpoint(endpoint)
+    api_base = settings.attach_api_base or api_base_from_endpoint(endpoint)
     try:
-        names = list_projects(api_base, headers, timeout_s=tracing.attach_timeout_s)
+        names = list_projects(api_base, headers, timeout_s=settings.attach_timeout_s)
     except LangfuseApiError as exc:
         if exc.status == 401:
             raise TracingConfigError(
-                f"observability.tracing.expect_project={expected!r} but the receiver rejected the "
+                f"observability.tracing.options.langfuse.expect_project={expected!r} "
+                "but the receiver rejected the "
                 "credentials (HTTP 401): they open no project; tracing refused"
             ) from exc
         _log.warning(
@@ -471,7 +494,8 @@ def check_expected_project(
     if expected in names:
         return PROJECT_VERIFIED
     raise TracingConfigError(
-        f"observability.tracing.expect_project={expected!r} but the receiver credentials open "
+        f"observability.tracing.options.langfuse.expect_project={expected!r} "
+        "but the receiver credentials open "
         f"{names!r}; tracing refused (fix the credentials, never the expectation)"
     )
 
@@ -486,15 +510,15 @@ _NOT_SECRET_NAME = re.compile(
 
 
 def build_attachments(
-    tracing: Any,
+    settings: LangfuseConfig,
     *,
-    endpoint: str | None = None,
+    endpoint: str,
     headers: dict[str, str] | None = None,
     environment: str | None = None,
 ) -> Any:
     """The post-trial step (the attachments and the ingestion route of the trial-end pass) for
-    ``observability.tracing.attach`` / ``projection``; ``None`` only when nothing runs at trial
-    end (``attach: none`` and ``projection: none``, or ``projection: gradings`` with
+    ``observability.tracing.options.langfuse.attach`` / ``projection``; ``None`` only when nothing
+    runs at trial end (``attach: none`` and ``projection: none``, or ``projection: gradings`` with
     ``gradings: false``). The receiver's REST base derives from the OTLP endpoint unless given,
     the headers are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s
     credential values (keys with secret-like names; URL, path and name values are not
@@ -506,20 +530,17 @@ def build_attachments(
         api_base_from_endpoint,
     )
 
-    projection = getattr(tracing, "projection", "full")
-    sends_at_trial_end = projection == "full" or (
-        projection == "gradings" and getattr(tracing, "gradings", False)
-    )
-    if getattr(tracing, "attach", ATTACH_NONE) == ATTACH_NONE and not sends_at_trial_end:
+    projection = settings.projection
+    sends_at_trial_end = projection == "full" or (projection == "gradings" and settings.gradings)
+    if settings.attach == ATTACH_NONE and not sends_at_trial_end:
         return None
-    resolved = endpoint or resolve_endpoint(tracing.endpoint)
     return LangfuseAttachments(
-        api_base=tracing.attach_api_base or api_base_from_endpoint(resolved),
+        api_base=settings.attach_api_base or api_base_from_endpoint(endpoint),
         headers=(headers if headers is not None else otlp_headers()) or {},
-        mode=tracing.attach,
+        mode=settings.attach,
         scan=SecretScan(secret_values()),
-        timeout_s=tracing.attach_timeout_s,
-        budget_s=tracing.attach_budget_s,
+        timeout_s=settings.attach_timeout_s,
+        budget_s=settings.attach_budget_s,
         environment=environment,
     )
 

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tolokaforge_langfuse.config import LangfuseConfig
 from tolokaforge_langfuse.plugin import (
     merge_metadata,
     merge_tag_sources,
@@ -242,9 +243,14 @@ class TestFactory:
             "exporter": "otlp",
             "endpoint": "http://127.0.0.1:9/api/public/otel/v1/traces",
             "run_id": "acme/pilot/1",
-            "attach": "none",
         }
-        params.update(tracing)
+        settings = {"attach": "none"}
+        for key, value in tracing.items():
+            if key in LangfuseConfig.model_fields:
+                settings[key] = value
+            else:
+                params[key] = value
+        params["options"] = {"langfuse": settings}
         config = ObservabilityConfig(tracing=TracingConfig(**params))
         return build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
 
@@ -401,7 +407,7 @@ class TestFactory:
             observer.run_finished()
 
     def test_the_projection_mode_is_locked_to_full_by_default(self) -> None:
-        assert TracingConfig().projection == "full" and TracingConfig().profile is None
-        assert TracingConfig().environment is None
+        assert LangfuseConfig().projection == "full" and LangfuseConfig().profile is None
+        assert LangfuseConfig().environment is None
         with pytest.raises(ValueError):
-            TracingConfig(projection="everything")
+            LangfuseConfig(projection="everything")

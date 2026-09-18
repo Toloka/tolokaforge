@@ -12,6 +12,7 @@ pytestmark = pytest.mark.unit
 
 SHARED = (
     "tolokaforge_langfuse",
+    "tolokaforge_langfuse.config",
     "tolokaforge_langfuse.vocabulary",
     "tolokaforge_langfuse.profile",
     "tolokaforge_langfuse.model_names",

@@ -16,7 +16,7 @@ knows no receiver. Everything Langfuse-shaped lives here and releases on its own
 (`langfuse-vX.Y.Z` tags, see [`docs/RELEASING.md`](../docs/RELEASING.md)), so a fix to the
 projection, the profile or the attachment step reaches a deployment by moving this package's pin
 while the engine pin stays where it is. The pairing is checked at run start: the engine's
-`PLUGIN_API_VERSION` (currently **2**, including the receipt shape) must equal this package's `__api_version__`, and a mismatch names both.
+`PLUGIN_API_VERSION` (currently **3**, including the neutral config and receipt shapes) must equal this package's `__api_version__`, and a mismatch names both.
 
 ## Install
 
@@ -31,10 +31,32 @@ The engine discovers the observer through the `tolokaforge.trial_observers` entr
 
 ## Configuration
 
-Everything arrives through the run config's `observability.tracing` block (the engine's
-`TracingConfig`: exporter, endpoint, expect_project, run identity, tags, metadata, model-name
-normalizer and rules, queue and flush limits, `attach`, `gradings`, `projection`, `profile`,
-`environment`) and the environment a launcher sets:
+The engine's `observability.tracing` block contains only common settings: `exporter`,
+`endpoint`, run identity, session/label, service name, tags, metadata, queue/flush limits and
+span content limits. Receiver settings belong to **`observability.tracing.options.langfuse`**:
+
+```yaml
+observability:
+  tracing:
+    exporter: otlp
+    endpoint: https://langfuse.example/api/public/otel/v1/traces
+    options:
+      langfuse:
+        expect_project: pilot
+        attach: all
+        gradings: true
+        projection: full
+        profile: deploy/langfuse_tracing.toml
+```
+
+`config.LangfuseConfig` also owns `attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
+`environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
+invalid values before any receiver work starts; other plugins' namespaces remain opaque.
+Plugin API 3 moves these fields out of the engine config: old top-level keys are rejected,
+so move them under `options.langfuse` when upgrading the engine and plugin. Defaults and
+environment precedence are unchanged. A second backend need not declare any Langfuse fields.
+
+A launcher can also supply settings through these variables:
 
 | Variable | Meaning |
 |---|---|
@@ -68,6 +90,7 @@ profile".
 
 | Module | What it does |
 |---|---|
+| `config.py` | the strict, engine-independent `options.langfuse` schema |
 | `plugin.py` | the entry point: enablement, receiver, credentials, profile, project check, the observer |
 | `otel.py` | the OTLP span exporter and the `TrialObserver` implementation |
 | `projection.py` | the default projection of a persisted trial bundle (the connector's `mapping.py` is the reference) |

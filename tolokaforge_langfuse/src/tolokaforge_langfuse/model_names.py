@@ -65,7 +65,7 @@ class NormalizerModelNameResolver:
             )
         except ImportError as exc:  # pragma: no cover - exercised through the factory error path
             raise ModelNameResolverError(
-                "observability.tracing.model_name_normalizer='toloka' needs the "
+                "observability.tracing.options.langfuse.model_name_normalizer='toloka' needs the "
                 "toloka-model-name-normalizer package installed"
             ) from exc
         try:
@@ -115,6 +115,6 @@ def build_model_name_resolver(kind: str, rules_path: str | None) -> ModelNameRes
         return NormalizerModelNameResolver(rules_path)
     if rules_path:
         raise ModelNameResolverError(
-            "observability.tracing.model_name_rules needs model_name_normalizer='toloka'"
+            "observability.tracing.options.langfuse.model_name_rules needs model_name_normalizer='toloka'"
         )
     return RawModelNameResolver()

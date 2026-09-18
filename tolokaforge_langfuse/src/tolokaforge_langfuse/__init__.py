@@ -17,6 +17,6 @@ __all__ = ["__api_version__", "__version__"]
 __version__: Final[str] = "0.1.0"
 """PEP 440 version of this wheel."""
 
-__api_version__: Final[int] = 2
+__api_version__: Final[int] = 3
 """The trial-observer plugin contract this wheel speaks; the engine's
 ``tolokaforge.observability.factory.PLUGIN_API_VERSION`` must equal it (checked at run start)."""

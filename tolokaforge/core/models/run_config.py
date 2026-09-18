@@ -1091,33 +1091,21 @@ class GraderConfig(BaseModel):
 
 
 class TracingConfig(BaseModel):
-    """Live tracing of trials (ADR-0047).
+    """Receiver-neutral trial tracing contract (ADR-0047).
 
-    ``exporter: otlp`` switches the engine's ``TrialObserver`` on: every generation and tool call
-    of a trial leaves as a span while the trial runs, the graded trial closes the trace. Needs the
-    ``otel`` extra. ``none`` (the default) observes nothing. The receiver is ``endpoint`` (the
-    OTLP/HTTP traces URL) or, when the field is absent, the standard
-    ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_ENDPOINT`` variables, so a
-    launcher can inject the receiver without touching the config; credentials travel in the
-    standard ``OTEL_EXPORTER_OTLP_HEADERS`` variable, never in this file. ``expect_project``
-    (or ``TOLOKAFORGE_TRACING_EXPECT_PROJECT``) names the receiver-side project the credentials
-    must open; the exporter checks it before the first export and refuses to trace on a mismatch.
+    ``exporter`` selects an installed observer plugin; ``none`` is off by default. Plugins
+    interpret the endpoint and their own namespaced ``options``. The engine owns run identity,
+    common trace attributes and transport limits, and never interprets receiver settings.
 
-    Identity: ``run_id`` is the external execution identity a workflow hands in (default: the
-    engine's own run id) and ``run_tag`` the id namespace; both enter every trace id, so the
-    offline bundle uploader reaches the same traces (``docs/OBSERVABILITY.md``).
+    ``run_id`` is the external execution identity (default: the engine's run id); ``run_tag``
+    namespaces it. Both enter every trace id, including those used by offline bundle uploaders.
     """
 
     model_config = {"extra": "forbid"}
 
-    exporter: Literal["none", "otlp"] = "none"
+    exporter: str = Field(default="none", min_length=1, pattern=r"^\S+$")
     endpoint: str | None = None
-    """The receiver's OTLP/HTTP traces URL; default: ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` or
-    ``OTEL_EXPORTER_OTLP_ENDPOINT`` + ``/v1/traces`` from the environment (checked at run start)."""
-    expect_project: str | None = None
-    """The receiver's project the credentials must open (Langfuse: the name listed by
-    ``GET /api/public/projects``); default: ``TOLOKAFORGE_TRACING_EXPECT_PROJECT``. A mismatch
-    refuses to trace before the first export; an unreachable check proceeds ``unverified``."""
+    """Receiver endpoint; the selected plugin owns protocol and environment resolution."""
     run_id: str | None = None
     run_tag: str = "v1"
     session_id: str | None = None
@@ -1126,16 +1114,9 @@ class TracingConfig(BaseModel):
     """Trace-name prefix, ``<label>/<task_id>`` (default: the run directory's name)."""
     service_name: str = "tolokaforge"
     tags: list[str] = Field(default_factory=list)
-    """Extra trace tags, each ``<prefix>:<value>``; ``harness:`` and ``model*:`` are set by the
-    exporter and refused here. ``TOLOKAFORGE_TRACING_TAGS`` (comma-separated) adds tags from the
-    environment; one prefix may not carry two values."""
+    """Extra trace tags; plugins validate any receiver-specific vocabulary."""
     metadata: dict[str, str] = Field(default_factory=dict)
-    """Extra trace metadata; the exporter's own keys win on a clash."""
-    model_name_normalizer: Literal["none", "toloka"] = "none"
-    """``toloka``: identity, ``model_vendor`` / ``model_family`` tags and facet metadata from
-    ``toloka-model-name-normalizer`` (must be installed); ``none``: the raw provider/name pair."""
-    model_name_rules: str | None = None
-    """Override rules file for the normalizer (a deployment's stems, aliases, abbreviations)."""
+    """Extra trace metadata; plugins validate their reserved keys."""
     queue_size: int = Field(default=4096, ge=1)
     export_batch_size: int = Field(default=64, ge=1)
     export_interval_s: float = Field(default=1.0, gt=0)
@@ -1143,51 +1124,12 @@ class TracingConfig(BaseModel):
     attribute_max_chars: int = Field(default=20_000, ge=64)
     context_messages: int = Field(default=6, ge=1)
     """How many preceding messages a generation span carries as its input."""
-    attach: Literal["all", "core", "none"] = "all"
-    """Which files of a persisted trial the exporter attaches to its trace through the
-    receiver's media API (Langfuse), after the bundle is written: ``all`` = every top-level file
-    of the trial directory, ``core`` = task, prompts, tools schemas, logs and grade, ``none`` = no
-    attachments. The manifest lands in the trace metadata (``docs/OBSERVABILITY.md``)."""
-    gradings: bool = True
-    """Send the run's grading (``grade.yaml``) with the trial-end pass: the
-    ``grading:live:<run_id>`` observation with its judge transcript and scores and the
-    trace-level mirror of those scores, under the id contract the offline connector shares.
-    ``false`` leaves the grading out (the offline ``--grades none``); the rest of the projection
-    is unaffected (``docs/OBSERVABILITY.md``)."""
-    projection: Literal["full", "gradings", "none"] = "full"
-    """What leaves at trial end from the persisted bundle, through the receiver's ingestion API:
-    ``full`` (default) the default projection of the whole bundle (the trace metadata, every
-    observation, events, gradings, scores, media), the same records the offline connector
-    writes; ``gradings`` only the grading, its scores and the simulated user turns;
-    ``none`` nothing beyond the attachments."""
-    profile: str | None = None
-    """Path of the deployment profile (TOML): the native ``environment`` rule, fixed tags and
-    metadata, the profile version and optionally the model-name rules; default:
-    ``TOLOKAFORGE_TRACING_PROFILE``. Validated at run start (``docs/OBSERVABILITY.md``)."""
-    environment: str | None = None
-    """The receiver's native ``environment`` as a literal, overriding the profile's rule;
-    ``LANGFUSE_ENVIRONMENT`` overrides both. Default: the profile decides, else unset."""
     options: dict[str, Any] = Field(default_factory=dict)
-    """Reserved for settings of a trial-observer plugin the engine has no field for, passed
-    through untouched, so a receiver-side setting needs no engine release (ADR-0047, packaging
-    amendment). The Langfuse observer reads no key here yet; its README lists them when it does."""
-    attach_api_base: str | None = None
-    """Base URL of the receiver's REST API for the attachments; default: derived from ``endpoint``
-    (``https://host/api/public/otel/v1/traces`` -> ``https://host``)."""
-    attach_timeout_s: float = Field(default=60.0, gt=0)
-    """Per-request timeout of the attachment step."""
-    attach_budget_s: float = Field(default=120.0, gt=0)
-    """Whole-trial budget of the attachment step: requests get the smaller of the timeout and
-    what is left of it, files beyond it are counted as failed; after three trials in a row that
-    reached nothing the step switches itself off for the rest of the run."""
+    """Plugin-owned settings, keyed by plugin name and passed through untouched. Each active
+    plugin validates its own namespace before starting any exports (ADR-0047)."""
 
     @model_validator(mode="after")
     def _check_fields(self) -> Self:
-        # the endpoint may come from the standard OTel variables: the factory checks at run start
-        if self.model_name_rules and self.model_name_normalizer == "none":
-            raise ValueError(
-                "TracingConfig.model_name_rules requires model_name_normalizer='toloka'."
-            )
         for component, value in (("run_id", self.run_id), ("run_tag", self.run_tag)):
             if value is not None and (not value.strip() or value != value.strip() or "|" in value):
                 raise ValueError(

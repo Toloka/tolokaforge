@@ -108,7 +108,8 @@ class TestWithoutAnObserver:
             tracing=TracingConfig(exporter="otlp", endpoint="http://127.0.0.1:9/v1/traces")
         )
         with pytest.raises(
-            TracingConfigError, match="no trial-observer plugin.*tolokaforge-langfuse"
+            TracingConfigError,
+            match="no trial-observer plugin.*Install and configure an observer plugin",
         ):
             build_trial_observer(config, engine_run_id="run-1")
 
@@ -147,6 +148,22 @@ class TestWithoutAnObserver:
 
 
 class TestWithPlugins:
+    def test_another_backend_receives_its_options_without_receiver_assumptions(self, plugins):
+        calls: list[dict[str, Any]] = []
+        answer = InMemoryTrialObserver(receipt=ExportReceipt(exporter="archive"))
+        plugins["archive"] = _EntryPoint("archive", _recording(answer, calls))
+        tracing = TracingConfig(
+            exporter="archive",
+            endpoint="file:///var/traces",
+            tags=["free-form-tag"],
+            options={"archive": {"compression": "gzip", "retention_days": 7}},
+        )
+        observer, _ = build_trial_observer(
+            ObservabilityConfig(tracing=tracing), engine_run_id="run-1"
+        )
+        assert observer is answer
+        assert calls[0]["tracing"].model_dump() == tracing.model_dump()
+
     def test_one_plugin_is_the_observer_and_the_identity_is_written(
         self, plugins, tmp_path: Path
     ) -> None:
@@ -233,7 +250,7 @@ class TestWithPlugins:
 
 class TestTheContract:
     def test_the_plugin_api_version_is_the_documented_one(self) -> None:
-        assert PLUGIN_API_VERSION == 2
+        assert PLUGIN_API_VERSION == 3
 
     def test_the_langfuse_plugin_is_installed_in_this_workspace(self) -> None:
         # the workspace member registers itself; the engine finds it without importing it

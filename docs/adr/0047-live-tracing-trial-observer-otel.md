@@ -17,7 +17,9 @@ them in date order. Read together they leave the decision here:
   `tool`, `grading`, `jgen`, `jtool`, `event`, and score ids, shared with the offline connector)
   and `factory.py` (the run identity, `run_identity.json`, `tracing_receipt.json`, and the
   discovery of trial-observer plugins under the `tolokaforge.trial_observers` entry-point group).
-  `TracingConfig` stays the seam's public configuration and rejects unknown fields. The seam
+  `TracingConfig` keeps only receiver-neutral fields and rejects unknown fields. Plugin settings
+  pass through `options.<plugin>`; the plugin validates its own namespace. The current pairing
+  is plugin API **3** (configuration and receipt contract). The seam
   follows [ADR-0011](0011-seam-and-declaration-conventions.md): `InMemoryTrialObserver` with a
   call log and failure knobs, canonical hook tests, and strict snapshot-pinned persisted models.
   `ExportReceipt` follows [ADR-0021](0021-component-monitoring-seam.md)'s receiver-neutral shape:
@@ -190,7 +192,7 @@ directory any more (after its `metrics.yaml` amendment and service-log capture; 
 round trip caught a `provisioning_duration_s` line the conductor-time announcement missed) and, on
 the conductor's error path, when a bundle was left behind, so a receiver can attach the files a
 trial directory holds. The OTLP observer, when
-`observability.tracing.attach` is `all` (the default) or `core`, then registers and uploads every
+`observability.tracing.options.langfuse.attach` is `all` (the default) or `core`, then registers and uploads every
 regular top-level file of the trial directory through the receiver's media REST API (Langfuse:
 `POST /api/public/media`, the presigned `PUT` with `x-ms-blob-type: BlockBlob` on Azure Blob, the
 confirmation `PATCH` reported as 200 so the receiver's sha256 dedup works), `env.yaml` and
@@ -218,7 +220,7 @@ standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` wh
 `observability.tracing.endpoint` is absent (the config validator no longer requires the field; the
 factory does, at run start), merges `TOLOKAFORGE_TRACING_TAGS` into the config's tags (a prefix
 carrying two different values is a configuration error), and gains one setting,
-`observability.tracing.expect_project` (or `TOLOKAFORGE_TRACING_EXPECT_PROJECT`): the
+`observability.tracing.options.langfuse.expect_project` (or `TOLOKAFORGE_TRACING_EXPECT_PROJECT`): the
 receiver-side project the credentials must open. Before the first export the factory asks the
 receiver (Langfuse `GET /api/public/projects` through the OTLP headers, REST base derived from the
 endpoint); a mismatch refuses to trace with a `TracingConfigError` before any service starts, an
@@ -256,7 +258,7 @@ turns as generations of the user model. The ids are the shared contract (`ids.py
 carries the same content fingerprint the connector computes, so a later connector pass over the
 same bundle updates these records instead of duplicating them, and finds nothing to change when
 the content is equal. The events travel through the receiver's ingestion API under the attachment
-step's budget; `observability.tracing.gradings: false` switches them off;
+step's budget; `observability.tracing.options.langfuse.gradings: false` switches them off;
 `tracing_receipt.json` reports `gradings_sent`, `gradings_failed`, `scores_sent`,
 `user_generations_sent`. What a live trace still lacks against an offline upload is now only what
 the bundle itself lacks: INFO log events under `--attach all` and the connector's extra metadata
@@ -281,7 +283,7 @@ trial logs, guard records, provisioning failures, budget hits and service captur
 base64 image blocks with the token in the observation output; everything through the ingestion
 API under the shared id contract, so the live spans are the preview and the bundle projection is
 the truth (an upsert over the OTLP-created observations). The serialised events pass the same
-data-safety scan as the files; a hit sends nothing and counts. `observability.tracing.projection`
+data-safety scan as the files; a hit sends nothing and counts. `observability.tracing.options.langfuse.projection`
 selects `full` (default), `gradings` (the previous amendment's behaviour) or `none`;
 `tracing_receipt.json` counts projections, observations, events, scores and media. Drift between
 the two implementations is caught by a golden parity test committed in both repositories over a
@@ -291,7 +293,7 @@ the live root span's own keys (`generations_observed`, `tool_calls_observed`, `e
 documented exclusions.
 
 **The deployment profile.** Everything deployment-specific reaches the engine as configuration at
-run time, in one TOML file named by `observability.tracing.profile` or
+run time, in one TOML file named by `observability.tracing.options.langfuse.profile` or
 `TOLOKAFORGE_TRACING_PROFILE` (`tolokaforge/observability/profile.py`): the receiver's native
 `environment` as a literal or as a rule over one tag prefix's value with a default, the tags every
 trace carries, fixed metadata, the profile version that joins
@@ -351,7 +353,7 @@ former `tolokaforge/observability/{otel,langfuse_projection,langfuse_gradings,la
 attachments,profile,model_names}.py` named in the amendments above); the engine's `otel` extra
 resolves to it. The plugin decides enablement (`exporter: otlp` or `LANGFUSE_TRACING_ENABLED`),
 the engine composes what the plugins return and refuses a run that asks for an exporter no plugin
-provides. The pairing is a versioned contract (`PLUGIN_API_VERSION` = `__api_version__` = 2, including the receipt contract)
+provides. The pairing is a versioned contract (`PLUGIN_API_VERSION` = `__api_version__` = 3, including the configuration and receipt contracts)
 checked at run start, not a pip dependency: like the models wheel (ADR-0030) the plugin declares
 no `tolokaforge` requirement, so the same wheel installs next to any engine pin and fails loud,
 with both versions in the message, when the contract moved. `TracingConfig` stays in the engine
@@ -417,6 +419,32 @@ objects; a sidecar or remote collector requires an in-process plugin shim. The d
 is the id contract plus persisted bundle projection. This preserves the transport-independent
 observability direction of ADR-0021 and the address-boundary direction of ADR-0038 without
 presenting Python objects or process-local counts as a distributed wire protocol.
+
+## Amendment 2026-09-18: receiver-neutral configuration (ADR-0021)
+
+The seam's configuration follows the same ownership boundary as its receipt. The engine's
+`TracingConfig` declares exporter selection, endpoint, run identity, session/label, service name,
+tags, metadata, queue/flush limits and span content limits. It does not prescribe a receiver's
+project API, native fields, media protocol, grading projection or vocabulary. Exporter names
+are extensible; an unsupported exporter fails at run start with a generic error listing the
+installed observer plugins.
+
+`options` is a mapping keyed by plugin name, passed through unchanged. The Langfuse wheel owns
+the strict `LangfuseConfig` schema under `options.langfuse`: `expect_project`, `attach`,
+`gradings`, `projection`, `attach_api_base`, `attach_timeout_s`, `attach_budget_s`, `profile`,
+`environment`, `model_name_normalizer` and `model_name_rules`. These fields describe receiver
+REST operations or deployment-specific projection and naming; another backend need not set
+any of them. The active plugin validates its namespace before resolving or contacting the
+receiver, ignores other plugins' namespaces, and supplies its existing defaults. The deployment
+profile and environment variables keep their previous precedence.
+
+This is plugin API **3**: version-2 engines and plugins reject the pairing. Existing configurations
+must move receiver fields from `observability.tracing` into `observability.tracing.options.langfuse`;
+old top-level fields and misspelled Langfuse options fail explicitly. There is no engine-owned
+alias or hidden migration layer. The plugin's schema imports no engine module; canonical
+round-trip snapshots pin both shapes, and a separate backend test exercises the engine with
+its own exporter, endpoint, tags and options. This implements the engine-owner review boundary;
+the ADR remains Proposed until the owner accepts it.
 
 ## Links
 

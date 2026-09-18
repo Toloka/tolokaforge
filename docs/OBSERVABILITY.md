@@ -1,33 +1,50 @@
 # Live tracing (ADR-0047)
 
-`observability.tracing` in the run config switches the engine's live trace export on. Every
-generation and tool call of a trial leaves the process as an OpenTelemetry span while the trial
-runs; the graded trial closes the trace. The exporter is OTLP/HTTP and vendor-neutral: Langfuse
-renders the traces like the offline bundle uploader's, any collector receives valid spans.
+`observability.tracing` in the run config selects an installed trial-observer plugin. The
+Langfuse plugin described here exports each generation and tool call as an OpenTelemetry span
+while the trial runs; the graded trial closes the trace. Its OTLP/HTTP exporter sends valid spans
+to any collector, and its receiver-specific REST operations complete the trace in Langfuse.
+The engine's observer seam also accepts other backends.
 
 ```yaml
 observability:
   tracing:
-    exporter: otlp                                  # default: none
-    endpoint: https://langfuse.example/api/public/otel/v1/traces   # or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-    expect_project: pilot                           # the receiver-side project the credentials must open
-    run_id: acme/pilot/34390073272/1                # external run identity; default: the engine run id
-    run_tag: v1                                     # id namespace
+    exporter: otlp                         # default: none
+    endpoint: https://langfuse.example/api/public/otel/v1/traces
+    run_id: acme/pilot/34390073272/1         # default: engine run id
+    run_tag: v1                            # id namespace
     session_id: acme/pilot/pilot_agent/34390073272  # default: run_id
-    label: pilot_agent                              # trace name <label>/<task_id>; default: run dir name
-    # the caller's tags, <prefix>:<value>, under the vocabulary's caller prefixes (team, dataset,
-    # run_kind, scope, config, domain, ci_run, ci_chain; "The trace vocabulary" below); the
-    # producer sets harness:, source:, task:, model*:, reasoning_*: and route: itself and the
-    # launcher that owns the receiver adds project:
-    tags: [team:pilot, dataset:v1, run_kind:eval, scope:full, config:pilot_agent, domain:pilot-domain]
+    label: pilot_agent                     # trace name <label>/<task_id>
+    tags: [team:pilot, dataset:v1, run_kind:eval, scope:full, config:pilot_agent]
     metadata: {model_stem: pilot_agent}
-    model_name_normalizer: toloka                   # default: none (raw provider/name)
-    model_name_rules: deploy/model_name_rules.toml   # the deployment's rules file for the normalizer
-    attach: all                                     # all | core | none: the trial's files as media (below)
-    projection: full                                # full | gradings | none: what the trial-end pass sends (below)
-    profile: deploy/langfuse_tracing.toml           # the deployment profile (below); or TOLOKAFORGE_TRACING_PROFILE
-    # environment: development                      # a literal native environment; LANGFUSE_ENVIRONMENT wins
+    options:
+      langfuse:
+        expect_project: pilot              # project the credentials must open
+        model_name_normalizer: toloka      # default: none (raw provider/name)
+        model_name_rules: deploy/model_name_rules.toml
+        attach: all                        # all | core | none: trial files as media
+        gradings: true                     # include grading transcript and scores
+        projection: full                   # full | gradings | none: trial-end records
+        profile: deploy/langfuse_tracing.toml  # or TOLOKAFORGE_TRACING_PROFILE
+        # environment: development         # LANGFUSE_ENVIRONMENT wins
+        # attach_api_base: https://langfuse.example  # default: derived from endpoint
+        # attach_timeout_s: 60              # per-request timeout
+        # attach_budget_s: 120              # whole-trial attachment budget
 ```
+
+The engine's `TracingConfig` owns only exporter selection, endpoint, run identity, session/label,
+service name, tags, metadata, queue/flush limits and span content limits. `exporter` may name any
+installed plugin's supported exporter. `options` is an opaque mapping keyed by plugin name;
+the engine passes it through unchanged. The Langfuse plugin validates `options.langfuse` against
+its strict `LangfuseConfig` before contacting the receiver. All receiver-specific settings below
+(`expect_project`, `attach`, `gradings`, `projection`, `attach_*`, `profile`, `environment`,
+`model_name_*`) live in that namespace. Defaults and environment precedence are unchanged.
+
+**Migration (plugin API 3):** move those settings from `observability.tracing` into
+`observability.tracing.options.langfuse`. The old top-level keys and unknown keys inside the
+Langfuse namespace are errors; they are never silently ignored. Upgrade the engine and plugin
+together for this contract change. Later Langfuse-only option additions need no engine release.
+
 
 Install the observer: `pip install 'tolokaforge[otel]'` (the extra resolves to the `tolokaforge-langfuse`
 package, a separate wheel released on its own cadence; "Packaging" below). The receiver's credentials travel in the
@@ -54,7 +71,7 @@ records `expect_project` and `project_verified` in its `details` entry with `exp
 | Variable | Meaning |
 |---|---|
 | `LANGFUSE_BASE_URL` | traces go to `<base>/api/public/otel/v1/traces`, attachments and gradings to `<base>` |
-| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | the Basic header (through the `SecretManager` when one is initialised); set both or neither |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | the Basic header (through the `SecretManager`); set both or neither |
 | `LANGFUSE_PROJECT` | the project the keys must open (checked before the first export) and the trace's `project:` tag |
 | `LANGFUSE_EXTRA_HEADERS` | `k=v,k2=v2`, extra request headers (a gateway's own header) |
 | `TOLOKAFORGE_TRACING_RUN_ID`, `_RUN_TAG`, `_SESSION_ID`, `_LABEL` | the run's identity when the config carries none |
@@ -84,7 +101,7 @@ bundle records `trajectory.attempt_id`, and a run with tracing on writes `run_id
 Tags: `harness:tolokaforge`, the model tags (`model:<canonical>`, plus `model_vendor:` and
 `model_family:` under the normalizer) and `task:<task_id>` are set by the exporter; `tags:`, the
 launcher's `TOLOKAFORGE_TRACING_TAGS` and the profile's fixed tags add `<prefix>:<value>` entries
-and may not use those prefixes. The engine validates only the syntax (`prefix:value`, lowercase
+and may not use those prefixes. The Langfuse plugin validates the syntax (`prefix:value`, lowercase
 prefix, no whitespace) and the reserved prefixes; which prefixes and values a deployment allows is
 the deployment's business (a deployment keeps its vocabulary and a profile file in its own
 repository, and the offline uploader that shares the trace with this exporter enforces it), so
@@ -140,7 +157,7 @@ never raises. Under `extra`, `tracing_receipt.json` reports the `langfuse.`-pref
 ## The trial-end pass: the trace completed from the bundle
 
 Once the bundle is on disk the exporter completes the trace from the files
-(`observability.tracing.projection`, `full` by default; needs the same REST base as the
+(`observability.tracing.options.langfuse.projection`, `full` by default; needs the same REST base as the
 attachments): the **default projection** of a persisted trial, the same records the offline
 bundle uploader writes, so a trace traced live never needs a connector pass. The live spans are
 the preview, the bundle is the truth: every observation is re-sent from the persisted files under
@@ -224,7 +241,7 @@ follows the vocabulary's rule unless a profile or `LANGFUSE_ENVIRONMENT` says ot
 
 Everything a deployment decides about its traces, and neither producer may know as a value,
 arrives at run time in one TOML file: the live observer reads it through
-`observability.tracing.profile` or `TOLOKAFORGE_TRACING_PROFILE`, the offline uploader through its
+`observability.tracing.options.langfuse.profile` or `TOLOKAFORGE_TRACING_PROFILE`, the offline uploader through its
 `--tag-profile` flag (`tolokaforge_langfuse/src/tolokaforge_langfuse/profile.py`;
 `python -m tolokaforge_langfuse.profile <file> [--tags a:b,...] [--metadata k=v,...]` validates one,
 and a launcher's inputs against it). Neutral example:
@@ -307,10 +324,10 @@ or a plugin that cannot be imported, is a configuration error at run start; so i
 plugin produced an observer, so a run never proceeds silently without the traces it asked for. The
 pairing is checked
 by the plugin: the engine's `PLUGIN_API_VERSION` (the `build` signature, the observer hooks and the
-id and receipt contracts, currently version **2**) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
+id, configuration and receipt contracts, currently version **3**) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
 fix to the projection, the profile or the attachment step reaches a deployment by moving the
 `tolokaforge-langfuse` pin while the engine pin stays; a change to the hooks or the ids moves both,
-engine first. `observability.tracing.options` carries plugin settings the engine has no field for.
+engine first. `observability.tracing.options.<plugin>` carries receiver-owned settings.
 Unknown top-level tracing keys are rejected at config load, so misspellings cannot silently
 switch off a requested setting.
 

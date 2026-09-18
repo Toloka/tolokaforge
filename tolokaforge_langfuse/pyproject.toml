@@ -30,6 +30,7 @@ classifiers = [
 # ``tolokaforge.observability.factory.PLUGIN_API_VERSION`` (fail-loud, actionable, independent of
 # the resolver). That is what lets a Langfuse fix ship without moving the engine pin.
 dependencies = [
+    "pydantic>=2.0.0",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
     "pyyaml>=6.0.1",

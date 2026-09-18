@@ -2,7 +2,7 @@
 
 Everything a deployment decides about its traces, and neither producer may know as a value,
 arrives at run time in one TOML file: the live observer reads it through
-``observability.tracing.profile`` or ``TOLOKAFORGE_TRACING_PROFILE``, the offline bundle uploader
+``observability.tracing.options.langfuse.profile`` or ``TOLOKAFORGE_TRACING_PROFILE``, the offline bundle uploader
 through its ``--tag-profile`` flag. Over the default vocabulary of
 :mod:`tolokaforge_langfuse.vocabulary` (the prefixes, the producer's derived tags, the engine's
 closed lists, the default environment rule) a profile says:

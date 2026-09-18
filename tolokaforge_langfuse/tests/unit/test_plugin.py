@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tolokaforge_langfuse.config import LangfuseConfig
 from tolokaforge_langfuse.model_names import (
     ModelNameResolverError,
     RawModelNameResolver,
@@ -62,7 +63,8 @@ class TestTracingConfig:
     def test_defaults_are_off_and_locked(self) -> None:
         tracing = TracingConfig()
         assert (tracing.exporter, tracing.endpoint, tracing.run_tag) == ("none", None, "v1")
-        assert tracing.model_name_normalizer == "none" and tracing.model_name_rules is None
+        settings = LangfuseConfig()
+        assert settings.model_name_normalizer == "none" and settings.model_name_rules is None
         assert tracing.tags == [] and tracing.metadata == {}
 
     def test_otlp_without_an_endpoint_anywhere_is_a_run_start_error(self, monkeypatch) -> None:
@@ -77,11 +79,11 @@ class TestTracingConfig:
             build_trial_observer(config, engine_run_id="run-1")
 
     def test_expect_project_defaults_to_none(self) -> None:
-        assert TracingConfig().expect_project is None
+        assert LangfuseConfig().expect_project is None
 
     def test_rules_need_the_normalizer(self) -> None:
         with pytest.raises(ValueError):
-            TracingConfig(model_name_rules="rules.toml")
+            LangfuseConfig(model_name_rules="rules.toml")
 
     @pytest.mark.parametrize("bad", ["", " x", "a|b"])
     def test_run_id_components_are_validated(self, bad: str) -> None:
@@ -141,72 +143,42 @@ class TestFactory:
 
     def test_rules_without_normalizer_is_a_config_error(self) -> None:
         with pytest.raises(ValueError):
-            TracingConfig(exporter="otlp", endpoint="http://x/v1/traces", model_name_rules="r.toml")
+            LangfuseConfig(model_name_rules="r.toml")
 
 
 class TestAttachmentStep:
     def test_attach_defaults_to_all_and_none_builds_no_step(self) -> None:
         from tolokaforge_langfuse.plugin import build_attachments
 
-        from tolokaforge.core.models import TracingConfig
-
-        config = TracingConfig(
-            exporter="otlp", endpoint="https://lf.example/api/public/otel/v1/traces"
-        )
+        endpoint = "https://lf.example/api/public/otel/v1/traces"
+        config = LangfuseConfig()
         assert config.attach == "all" and config.attach_api_base is None
-        # nothing to send at trial end (no files, the gradings-only projection without gradings):
-        # no receiver-side step at all; the default full projection, or gradings alone, still
-        # need the ingestion route, so attach: none by itself builds a step in mode none
+        for settings in (
+            LangfuseConfig(attach="none", gradings=False, projection="gradings"),
+            LangfuseConfig(attach="none", projection="none"),
+        ):
+            assert build_attachments(settings, endpoint=endpoint) is None
+        # Full projection still needs ingestion when files and gradings are disabled.
         assert (
-            build_attachments(
-                TracingConfig(exporter="none", attach="none", gradings=False, projection="gradings")
-            )
-            is None
-        )
-        assert (
-            build_attachments(TracingConfig(exporter="none", attach="none", projection="none"))
-            is None
-        )
-        assert (
-            build_attachments(
-                TracingConfig(
-                    exporter="none",
-                    endpoint="https://lf.example/api/public/otel/v1/traces",
-                    attach="none",
-                    gradings=False,
-                )
-            )
+            build_attachments(LangfuseConfig(attach="none", gradings=False), endpoint=endpoint)
             is not None
         )
-        none_step = build_attachments(
-            TracingConfig(
-                exporter="otlp",
-                endpoint="https://lf.example/api/public/otel/v1/traces",
-                attach="none",
-            )
-        )
+        none_step = build_attachments(LangfuseConfig(attach="none"), endpoint=endpoint)
         assert none_step is not None and none_step.mode == "none"
-        pytest.importorskip("opentelemetry.sdk")
-        step = build_attachments(config)
+        step = build_attachments(config, endpoint=endpoint)
         assert step is not None and step._api_base == "https://lf.example"
         assert step._mode == "all"
         explicit = build_attachments(
-            TracingConfig(
-                exporter="otlp",
-                endpoint="https://lf.example/api/public/otel/v1/traces",
-                attach="core",
-                attach_api_base="https://proxy.example/lf/",
-            )
+            LangfuseConfig(attach="core", attach_api_base="https://proxy.example/lf/"),
+            endpoint=endpoint,
         )
         assert explicit._api_base == "https://proxy.example/lf" and explicit._mode == "core"
 
     def test_attach_values_are_validated(self) -> None:
         from pydantic import ValidationError
 
-        from tolokaforge.core.models import TracingConfig
-
         with pytest.raises(ValidationError):
-            TracingConfig(exporter="none", attach="everything")
+            LangfuseConfig(attach="everything")
 
     def test_secret_values_take_credential_names_only(self, monkeypatch) -> None:
         from tolokaforge_langfuse import plugin
@@ -287,7 +259,9 @@ class TestReceiverFromTheEnvironment:
         )
         monkeypatch.setenv("TOLOKAFORGE_TRACING_TAGS", "project:pilot-dev")
         monkeypatch.setenv("TOLOKAFORGE_TRACING_EXPECT_PROJECT", "pilot-dev")
-        config = ObservabilityConfig(tracing=TracingConfig(exporter="otlp", attach="none"))
+        config = ObservabilityConfig(
+            tracing=TracingConfig(exporter="otlp", options={"langfuse": {"attach": "none"}})
+        )
         observer, _ = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
         try:
             assert [(m, u) for m, u, _ in calls] == [
@@ -315,8 +289,7 @@ class TestReceiverFromTheEnvironment:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="pilot",
-                attach="none",
+                options={"langfuse": {"expect_project": "pilot", "attach": "none"}},
             )
         )
         with pytest.raises(TracingConfigError, match="expect_project='pilot'.*\\['pilot-dev'\\]"):
@@ -329,8 +302,7 @@ class TestReceiverFromTheEnvironment:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="pilot",
-                attach="none",
+                options={"langfuse": {"expect_project": "pilot", "attach": "none"}},
             )
         )
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
@@ -346,8 +318,7 @@ class TestReceiverFromTheEnvironment:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="pilot-dev",
-                attach="none",
+                options={"langfuse": {"expect_project": "pilot-dev", "attach": "none"}},
             )
         )
         self._projects(monkeypatch, (401, b'{"message":"Unauthorized"}'))
@@ -370,8 +341,7 @@ class TestReceiverFromTheEnvironment:
             tracing=TracingConfig(
                 exporter="otlp",
                 endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
-                expect_project="pilot-dev",
-                attach="none",
+                options={"langfuse": {"expect_project": "pilot-dev", "attach": "none"}},
             )
         )
         with pytest.raises(TracingConfigError, match="needs the receiver credentials"):
@@ -392,7 +362,9 @@ class TestReceiverFromTheEnvironment:
         monkeypatch.delenv("TOLOKAFORGE_TRACING_TAGS", raising=False)
         config = ObservabilityConfig(
             tracing=TracingConfig(
-                exporter="otlp", endpoint="http://127.0.0.1:9/v1/traces", attach="none"
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/v1/traces",
+                options={"langfuse": {"attach": "none"}},
             )
         )
         observer, _ = build_trial_observer(config, engine_run_id="run-1")
@@ -427,13 +399,75 @@ class TestSecretManagerBoundary:
         monkeypatch.setattr("tolokaforge.secrets.manager._default_manager", manager)
         assert otlp_headers() == {"Authorization": "managed"}
 
+    def test_gateway_headers_follow_the_configured_provider_chain(self, monkeypatch):
+        from tolokaforge_langfuse.plugin import langfuse_headers, receiver_headers
 
-@pytest.mark.parametrize("offered", [1, 3, None])
-def test_incompatible_receipt_contract_is_rejected_at_start(monkeypatch, offered):
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setenv("LANGFUSE_EXTRA_HEADERS", "X-Gateway-Key=external")
+        credentials = {
+            "LANGFUSE_PUBLIC_KEY": "public",
+            "LANGFUSE_SECRET_KEY": "secret",
+            "LANGFUSE_EXTRA_HEADERS": "X-Gateway-Key=managed",
+        }
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager",
+            SecretManager([DictProvider(credentials)]),
+        )
+        assert langfuse_headers()["X-Gateway-Key"] == "managed"
+        assert receiver_headers()["X-Gateway-Key"] == "managed"
+        credentials["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=managed-otlp"
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager",
+            SecretManager([DictProvider(credentials)]),
+        )
+        assert receiver_headers() == {
+            "Authorization": "managed-otlp",
+            "X-Gateway-Key": "managed",
+        }
+
+
+class TestPluginOptions:
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"attach": "everything"},
+            {"expect_projct": "pilot"},
+            {"attach_timeout_s": 0},
+            {"attach_budget_s": -1},
+            {"model_name_rules": "rules.toml"},
+            "not a mapping",
+            None,
+        ],
+    )
+    def test_invalid_options_fail_before_endpoint_resolution(self, monkeypatch, options):
+        from tolokaforge_langfuse.plugin import build
+
+        monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
+        config = TracingConfig(exporter="otlp", options={"langfuse": options})
+        with pytest.raises(TracingConfigError, match=r"observability.tracing.options.langfuse"):
+            build(config, RunIdentity("run-1"), engine_run_id="run-1")
+
+    def test_another_plugins_options_are_opaque(self):
+        from tolokaforge_langfuse.plugin import read_config
+
+        assert read_config({"archive": {"compression": "gzip"}}) == LangfuseConfig()
+        assert read_config({"langfuse": {"attach": "core"}, "archive": None}).attach == "core"
+
+    def test_unselected_plugin_does_not_validate_options(self, monkeypatch):
+        from tolokaforge_langfuse.plugin import build
+
+        monkeypatch.delenv("LANGFUSE_TRACING_ENABLED", raising=False)
+        config = TracingConfig(exporter="archive", options={"archive": {"format": "json"}})
+        assert build(config, RunIdentity("run-1"), engine_run_id="run-1") is None
+
+
+@pytest.mark.parametrize("offered", [1, 2, 4, None])
+def test_incompatible_plugin_contract_is_rejected_at_start(monkeypatch, offered):
     from tolokaforge_langfuse.plugin import check_engine_api
 
     from tolokaforge.observability import factory
 
     monkeypatch.setattr(factory, "PLUGIN_API_VERSION", offered)
-    with pytest.raises(TracingConfigError, match="speaks trial-observer API v2"):
+    with pytest.raises(TracingConfigError, match="speaks trial-observer API v3"):
         check_engine_api()

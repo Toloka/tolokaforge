@@ -115,10 +115,11 @@ uv run ruff format --check tolokaforge tests scripts tools
 
 ### Testing
 
-Three test categories with distinct markers. Tests live in three roots — `tests/` plus a
+Three test categories with distinct markers. Tests live in four roots — `tests/` plus a
 root inside each workspace package that owns a contract (`tolokaforge_models/tests/`,
-`tolokaforge_coding_harnesses/tests/`). `[tool.pytest.ini_options] testpaths` names all
-three, so omit the path; a command naming only `tests/` overrides `testpaths`, runs a
+`tolokaforge_coding_harnesses/tests/`, `tolokaforge_langfuse/tests/`).
+`[tool.pytest.ini_options] testpaths` names all four, so omit the path; a command naming only
+`tests/` overrides `testpaths`, runs a
 subset, and still reports green.
 
 ```bash
