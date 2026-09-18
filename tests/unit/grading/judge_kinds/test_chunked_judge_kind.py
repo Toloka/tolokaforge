@@ -20,7 +20,14 @@ import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import ChunkedRubricJudgeKind
-from tolokaforge.core.grading.judge_kinds.chunked import DEFAULT_CHUNK_SIZE, _chunk_boundaries
+from tolokaforge.core.grading.judge_kinds import chunked as _chunked_module
+from tolokaforge.core.grading.judge_kinds.chunked import (
+    FALLBACK_MAX_TOKENS,
+    HEADROOM_FRACTION,
+    TOKENS_PER_CRITERION_ESTIMATE,
+    _adaptive_chunk_size,
+    _chunk_boundaries,
+)
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
@@ -87,6 +94,7 @@ def _evaluate(
     *,
     provider: _QueuedProvider,
     kind_config: dict[str, Any] | None,
+    judge_model_config: ModelConfig = _JUDGE_MODEL,
 ) -> JudgeResult:
     """Drive :meth:`ChunkedRubricJudgeKind.evaluate` with a minimal input surface."""
     kind = ChunkedRubricJudgeKind()
@@ -99,7 +107,7 @@ def _evaluate(
         workspace_dir=None,
         extra_read_tools=[],
         state_diff=None,
-        judge_model_config=_JUDGE_MODEL,
+        judge_model_config=judge_model_config,
         judge_model_provider=provider,
         disable_knowledge_search=False,
         custom_system_prompt=None,
@@ -242,7 +250,10 @@ def test_kind_config_schema(
     """``kind_config`` is validated at ``evaluate`` entry before any judge call."""
     rubric = _binary_rubric(7)
     if expected_error_fragment is None:
-        chunk_size = 3 if kind_config == {"chunk_size": 3} else DEFAULT_CHUNK_SIZE
+        if kind_config == {"chunk_size": 3}:
+            chunk_size = 3
+        else:
+            chunk_size = _adaptive_chunk_size(_JUDGE_MODEL)
         provider = _QueuedProvider(_clients(_chunk_scripts(rubric, chunk_size=chunk_size)))
         result = _evaluate(rubric, provider=provider, kind_config=kind_config)
         assert result.status is JudgeStatus.COMPLETED
@@ -299,6 +310,114 @@ def test_fail_loud_on_missing_verdict_in_chunk() -> None:
     assert reason is not None
     assert "missing verdicts" in reason
     assert "c1" in reason
+
+
+# ===================================================================
+# _adaptive_chunk_size — headroom-derived default
+# ===================================================================
+
+
+def test_adaptive_chunk_size_large_max_tokens() -> None:
+    """``max_tokens=8192`` packs ``floor(8192 * 0.6 / 200)`` criteria per chunk."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=8192)
+
+    assert _adaptive_chunk_size(config) == int(
+        (8192 * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE
+    )
+
+
+def test_adaptive_chunk_size_moderate_max_tokens() -> None:
+    """``max_tokens=2048`` yields ``floor(2048 * 0.6 / 200) = 6`` criteria per chunk."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=2048)
+
+    assert _adaptive_chunk_size(config) == int(
+        (2048 * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE
+    )
+
+
+def test_adaptive_chunk_size_unset_max_tokens_uses_fallback() -> None:
+    """``max_tokens=None`` stands in the ``FALLBACK_MAX_TOKENS`` constant."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=None)
+
+    assert _adaptive_chunk_size(config) == int(
+        (FALLBACK_MAX_TOKENS * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE
+    )
+
+
+def test_adaptive_chunk_size_pathological_config_clamps_to_one() -> None:
+    """A ``max_tokens`` too small to fit one criterion clamps to ``1``."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=100)
+
+    assert _adaptive_chunk_size(config) == 1
+
+
+def test_adaptive_chunk_size_constants_are_monkeypatchable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overriding a module-level constant changes the derived chunk size."""
+    monkeypatch.setattr(_chunked_module, "TOKENS_PER_CRITERION_ESTIMATE", 100)
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=2048)
+
+    assert _chunked_module._adaptive_chunk_size(config) == int((2048 * HEADROOM_FRACTION) // 100)
+
+
+def test_omitted_kind_config_fires_heuristic_single_chunk() -> None:
+    """20 criteria + ``max_tokens=8192`` → adaptive size ≥ 20 → 1 chunk."""
+    rubric = _binary_rubric(20)
+    judge_model = ModelConfig(provider="openai", name="gpt-4o", max_tokens=8192)
+    effective_size = _adaptive_chunk_size(judge_model)
+    scripts = _chunk_scripts(rubric, chunk_size=effective_size)
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config=None,
+        judge_model_config=judge_model,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert len(result.chunk_boundaries) == 1
+    assert len(result.chunk_boundaries[0]) == len(rubric.criteria)
+
+
+def test_omitted_kind_config_small_max_tokens_forces_multiple_chunks() -> None:
+    """30 criteria + ``max_tokens=2048`` → adaptive size 6 → 5 chunks."""
+    rubric = _binary_rubric(30)
+    judge_model = ModelConfig(provider="openai", name="gpt-4o", max_tokens=2048)
+    effective_size = _adaptive_chunk_size(judge_model)
+    scripts = _chunk_scripts(rubric, chunk_size=effective_size)
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config=None,
+        judge_model_config=judge_model,
+    )
+
+    expected_chunks = (len(rubric.criteria) + effective_size - 1) // effective_size
+    assert result.status is JudgeStatus.COMPLETED
+    assert len(result.chunk_boundaries) == expected_chunks
+
+
+def test_explicit_chunk_size_overrides_heuristic() -> None:
+    """``kind_config={"chunk_size": 5}`` wins even when the heuristic would return 24."""
+    rubric = _binary_rubric(20)
+    judge_model = ModelConfig(provider="openai", name="gpt-4o", max_tokens=8192)
+    scripts = _chunk_scripts(rubric, chunk_size=5)
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config={"chunk_size": 5},
+        judge_model_config=judge_model,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert len(result.chunk_boundaries) == 4
+    assert all(len(chunk) == 5 for chunk in result.chunk_boundaries)
 
 
 # ===================================================================
