@@ -55,6 +55,40 @@ class TestIds:
             ids.observation_id("not-hex", "gen", 0)
 
 
+class TestPreviewKinds:
+    """Contract v2's preview twins: a live row can never take a final row's id."""
+
+    def test_every_kind_a_running_trial_reports_has_a_twin(self) -> None:
+        assert set(ids.PREVIEWABLE_KINDS) == {"root", "gen", "ugen", "tool", "jgen", "jtool"}
+        assert set(ids.PREVIEW_KINDS) == {"proot", "pgen", "pugen", "ptool", "pjgen", "pjtool"}
+        assert ids.OBSERVATION_KINDS == ids.FINAL_KINDS | ids.PREVIEW_KINDS
+        # the bundle names these; nothing reports them before it exists
+        assert not ids.PREVIEW_KINDS & {"grading", "event"}
+
+    def test_preview_kind_maps_and_refuses_a_kind_without_a_twin(self) -> None:
+        assert ids.preview_kind("gen") == "pgen"
+        assert ids.preview_kind("root") == "proot"
+        assert ids.is_preview_kind("pgen") and not ids.is_preview_kind("gen")
+        for kind in ("grading", "event", "pgen", "span"):
+            with pytest.raises(ValueError):
+                ids.preview_kind(kind)
+
+    def test_a_preview_id_never_equals_its_final_id(self) -> None:
+        trace = ids.trace_id(run_tag="v1", run_id="run-1", task_id="T-1", trial_index=0, attempt=0)
+        for kind in sorted(ids.PREVIEWABLE_KINDS):
+            key = ids.ROOT_KEY if kind == "root" else "k"
+            assert ids.observation_id(trace, kind, key) != ids.observation_id(
+                trace, ids.preview_kind(kind), key
+            )
+
+    def test_the_formula_is_unchanged_so_no_existing_id_moves(self) -> None:
+        trace = ids.trace_id(run_tag="v1", run_id="run-1", task_id="T-1", trial_index=0, attempt=0)
+        assert (
+            ids.observation_id(trace, "pgen", 3)
+            == uuid.uuid5(ids.NAMESPACE, f"obs|{trace}|pgen|3").hex[:16]
+        )
+
+
 class TestTrialIdentity:
     def test_parity_with_the_bundle_uploader(self) -> None:
         """Literals computed with langfuse-uploader's ``ids.py`` (tolokaforge-tools) for the same
@@ -69,6 +103,10 @@ class TestTrialIdentity:
         assert identity.observation_id("grading", "live:run-1") == "a73db1b441495f84"
         assert identity.observation_id("jgen", "live:run-1", 1) == "25da0f923e335e95"
         assert identity.observation_id("event", "log:0") == "453d10c7f96753eb"
+        # the preview twins (contract v2, v4 migration): the same formula under a kind of its own
+        assert identity.observation_id("proot", ids.ROOT_KEY) == "f9cd83758f7155a6"
+        assert identity.observation_id("pgen", 1) == "0a3f0d2d744f553c"
+        assert identity.observation_id("ptool", "call-1") == "61a323fa44935acc"
 
     def test_trace_and_observation_ids_derive_from_the_identity(self) -> None:
         identity = TrialIdentity(run_id="run-1", task_id="T-1", trial_index=0, attempt_id=0)

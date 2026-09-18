@@ -13,6 +13,15 @@ tool-call id the loop assigned (``msg:<index>`` when there is none); ``grading``
 source-qualified key (``log:<i>``, ``guard:<i>``, ...). No component may be empty, carry
 surrounding whitespace or contain ``|``. The namespace never changes; a change of the formula is
 a new contract version.
+
+**Preview kinds.** A receiver whose observations are append-only (Langfuse v4 ``events_only``)
+cannot take a live row and a final row under one id, so every kind a running trial can report
+has a preview twin named ``p`` + the kind: ``proot`` (key ``-``), ``pgen``, ``pugen``, ``ptool``,
+``pjgen``, ``pjtool``. The formula is the same, so no existing id moves; a preview id can never
+collide with a final one because the kind is part of the name. What the loop reports while the
+trial runs goes out under the preview kinds, under a preview root whose parent is the final root;
+the record that counts is written once from the persisted bundle under the final kinds. ``grading``
+and ``event`` have no twin: nothing reports them before the bundle exists.
 """
 
 from __future__ import annotations
@@ -24,7 +33,12 @@ NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000f00d")
 CONTRACT_VERSION = 2
 DEFAULT_RUN_TAG = "v1"
 ROOT_KEY = "-"
-OBSERVATION_KINDS = frozenset({"root", "gen", "ugen", "tool", "grading", "jgen", "jtool", "event"})
+FINAL_KINDS = frozenset({"root", "gen", "ugen", "tool", "grading", "jgen", "jtool", "event"})
+# the kinds a running trial can report, and their preview twins (see the module docstring)
+PREVIEW_PREFIX = "p"
+PREVIEWABLE_KINDS = frozenset({"root", "gen", "ugen", "tool", "jgen", "jtool"})
+PREVIEW_KINDS = frozenset(PREVIEW_PREFIX + kind for kind in PREVIEWABLE_KINDS)
+OBSERVATION_KINDS = FINAL_KINDS | PREVIEW_KINDS
 
 _TRACE_SHAPE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -70,6 +84,21 @@ def observation_id(trace: str, kind: str, *key: object) -> str:
         raise ValueError(f"observation kind {kind!r} needs a stable key")
     parts = ["obs", trace, kind, *(check_component(f"{kind} key", part) for part in key)]
     return uuid.uuid5(NAMESPACE, "|".join(parts)).hex[:16]
+
+
+def preview_kind(kind: str) -> str:
+    """The preview twin of a final kind (``gen`` -> ``pgen``); a kind with no twin is refused."""
+    if kind not in PREVIEWABLE_KINDS:
+        raise ValueError(
+            f"observation kind {kind!r} has no preview twin; expected one of "
+            f"{sorted(PREVIEWABLE_KINDS)}"
+        )
+    return PREVIEW_PREFIX + kind
+
+
+def is_preview_kind(kind: str) -> bool:
+    """True for a preview kind; the marker a reader excludes previews by, beside the metadata."""
+    return kind in PREVIEW_KINDS
 
 
 def tool_key(call_id: object | None, message_index: object) -> str:

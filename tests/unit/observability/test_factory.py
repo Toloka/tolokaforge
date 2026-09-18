@@ -250,7 +250,7 @@ class TestWithPlugins:
 
 class TestTheContract:
     def test_the_plugin_api_version_is_the_documented_one(self) -> None:
-        assert PLUGIN_API_VERSION == 3
+        assert PLUGIN_API_VERSION == 4
 
     def test_the_langfuse_plugin_is_installed_in_this_workspace(self) -> None:
         # the workspace member registers itself; the engine finds it without importing it

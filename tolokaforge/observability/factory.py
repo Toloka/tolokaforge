@@ -43,11 +43,12 @@ if TYPE_CHECKING:
 
 TRIAL_OBSERVERS_GROUP = "tolokaforge.trial_observers"
 """The entry-point group a trial-observer plugin registers its ``build`` callable under."""
-PLUGIN_API_VERSION = 3
+PLUGIN_API_VERSION = 4
 """The plugin contract this engine speaks: the ``build`` signature above, ``TracingConfig``,
 the ``TrialObserver`` hooks and receipt shape of :mod:`tolokaforge.observability.observer`, and
 the id contract of :mod:`tolokaforge.observability.ids`. A plugin compares it with the version
-it was built for."""
+it was built for. Version 4 widens the id contract's kind set with the preview kinds, so a
+plugin that emits them needs an engine whose ``ids`` knows them."""
 
 RUN_IDENTITY_FILE = "run_identity.json"
 TRACING_RECEIPT_FILE = "tracing_receipt.json"

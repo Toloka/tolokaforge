@@ -19,7 +19,9 @@ them in date order. Read together they leave the decision here:
   discovery of trial-observer plugins under the `tolokaforge.trial_observers` entry-point group).
   `TracingConfig` keeps only receiver-neutral fields and rejects unknown fields. Plugin settings
   pass through `options.<plugin>`; the plugin validates its own namespace. The current pairing
-  is plugin API **3** (configuration and receipt contract). The seam
+  is plugin API **4**: version 4 widens the id contract's kind set with the **preview kinds**
+  (`proot`, `pgen`, `pugen`, `ptool`, `pjgen`, `pjtool`), which a plugin writing for a receiver
+  whose observations are append-only needs (`docs/OBSERVABILITY.md`, "The write-once layout"). The seam
   follows [ADR-0011](0011-seam-and-declaration-conventions.md): `InMemoryTrialObserver` with a
   call log and failure knobs, canonical hook tests, and strict snapshot-pinned persisted models.
   `ExportReceipt` follows [ADR-0021](0021-component-monitoring-seam.md)'s receiver-neutral shape:
