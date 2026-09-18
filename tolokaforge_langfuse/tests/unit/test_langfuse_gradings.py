@@ -19,6 +19,8 @@ from tolokaforge_langfuse.media import LangfuseApiError, LangfuseAttachments
 
 from tolokaforge.observability import ids
 
+pytestmark = pytest.mark.unit
+
 TRACE = "b" * 32
 RUN_ID = "pilot-dev/v3/live/gemini/20260916T195039Z"
 GRADE = {
