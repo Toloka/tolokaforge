@@ -530,16 +530,15 @@ class TestTheFinalLayout:
         identity, spans, step, receipt = self._run(tmp_path, manifest=manifest)
         root = next(s for s in spans if s.parent is None)
         attributes = _attrs(root)
-        assert json.loads(attributes["langfuse.trace.metadata.attachments"]) == (
-            manifest["attachments"]
+        assert (
+            json.loads(attributes["langfuse.trace.metadata.attachments"])
+            == (manifest["attachments"])
         )
         assert attributes["langfuse.trace.metadata.attachments_complete"] is True
         assert attributes["langfuse.trace.metadata.status"] == "completed"
         assert receipt.extra["langfuse.manifests_sent"] == 1
 
-    def test_the_scores_take_the_ingestion_route_with_the_gradings_own_time(
-        self, tmp_path
-    ) -> None:
+    def test_the_scores_take_the_ingestion_route_with_the_gradings_own_time(self, tmp_path) -> None:
         import parity_bundle as pb
 
         identity, spans, step, receipt = self._run(tmp_path)
@@ -562,9 +561,7 @@ class TestErrorRoots:
         exporter = InMemorySpanExporter()
         observer, _ = _v4_observer(exporter)
         _v4_trial(observer)
-        observer.trial_finished(
-            IDENTITY, trajectory=None, error="RuntimeError: the worker died"
-        )
+        observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
         receipt = observer.run_finished()
 
         roots = [s for s in exporter.get_finished_spans() if s.parent is None]

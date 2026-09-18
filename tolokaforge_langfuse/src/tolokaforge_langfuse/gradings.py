@@ -158,6 +158,33 @@ def _load_yaml(path: Path) -> Any:
         return None
 
 
+PRIMARY_GRADING_SCORE = "primary_grading"
+
+
+def primary_grading_score(trace_id: str, grading_id: str, *, at: str | None = None) -> dict:
+    """The trace-level score naming the grading the mirror belongs to (ADR-0048, D-v4-3).
+
+    It is what a reader has instead of the trace metadata's ``primary_grading`` on a receiver that
+    writes the trace once: the metadata pointer is as of the root's single write, this score is
+    rewritten whenever the primary changes."""
+    body: dict = {
+        "id": ids.primary_score_id(trace_id, PRIMARY_GRADING_SCORE),
+        "traceId": trace_id,
+        "name": PRIMARY_GRADING_SCORE,
+        "value": grading_id,
+        "dataType": "CATEGORICAL",
+        "comment": "",
+        "metadata": {
+            "scope": ids.SCORE_SCOPE_PRIMARY,
+            "grading_id": grading_id,
+            "stale": False,
+        },
+    }
+    if at:
+        body["timestamp"] = at
+    return body
+
+
 def _score_bodies(
     trace_id: str,
     grade: Mapping[str, Any],
@@ -510,6 +537,7 @@ def build_grading_observations(
         trace_id, grade, grading_id=grading_id, observation_id=observation_id, at=at
     )
     mirror = _score_bodies(trace_id, grade, grading_id=grading_id, observation_id=None, at=at)
+    mirror.append(primary_grading_score(trace_id, grading_id, at=at))
     summary = grade_summary(grade)
     status = summary["judge_status"]
     # provenance as the connector records it for the run's own grading: the grading run id and

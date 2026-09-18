@@ -172,8 +172,12 @@ class TestBuildGradingEvents:
             "trace_check:gate",
             "trace_check:no_refund",
         ]
-        assert sorted(s["name"] for s in mirror) == names
-        assert built.scores == len(scores) == 16
+        # the mirror is the same set plus the pointer naming the grading it mirrors (D-v4-3)
+        assert sorted(s["name"] for s in mirror) == sorted([*names, "primary_grading"])
+        pointer = next(s for s in mirror if s["name"] == "primary_grading")
+        assert pointer["value"] == grading_id and pointer["dataType"] == "CATEGORICAL"
+        assert pointer["metadata"]["scope"] == "primary"
+        assert built.scores == len(scores) == 17
         pick = {s["name"]: s for s in on_grading}
         assert pick["score"]["id"] == ids.grading_score_id(TRACE, grading_id, "score")
         assert pick["score"]["metadata"] == {
@@ -399,7 +403,7 @@ class TestObserverGradings:
             receipt.extra["langfuse.gradings_sent"],
             receipt.extra["langfuse.gradings_failed"],
             receipt.extra["langfuse.scores_sent"],
-        ) == (1, 0, 16)
+        ) == (1, 0, 17)  # 8 grading scores + 8 mirrored + the primary_grading pointer
         assert receipt.extra["langfuse.user_generations_sent"] == 2
         assert receipt.model_dump(mode="json")["extra"]["langfuse.gradings_sent"] == 1
 

@@ -600,6 +600,24 @@
  {
   "body": {
    "comment": "",
+   "dataType": "CATEGORICAL",
+   "environment": "development",
+   "id": "8e8673a8da255865a1cc097c715014ae",
+   "metadata": {
+    "grading_id": "live:acme/pilot/parity/20260917T000000Z",
+    "scope": "primary",
+    "stale": false
+   },
+   "name": "primary_grading",
+   "timestamp": "2026-09-17T09:00:40.500000+00:00",
+   "traceId": "31500a73337f515f9ee15ea2d06e357d",
+   "value": "live:acme/pilot/parity/20260917T000000Z"
+  },
+  "type": "score-create"
+ },
+ {
+  "body": {
+   "comment": "",
    "dataType": "NUMERIC",
    "environment": "development",
    "id": "a9ea9fb375d35ec9b3f82bbdefa50316",
