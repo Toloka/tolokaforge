@@ -48,6 +48,16 @@ judge_scripts_per_chunk:
             reasons: '...'
             <chunk_1_id>: true|false|<float>
             <chunk_1_id>_justification: "because <id>\nVERDICT: MET"
+  voted_rubric:
+    - - - name: submit_report                     # sample 0 script (K=3 total)
+          arguments:
+            reasons: '...'
+            <criterion_id>: true|false|<float>    # every criterion, same as judge_scripts.single_shot_rubric
+            <criterion_id>_justification: "because <id>\nVERDICT: MET"
+    - - - name: submit_report                     # sample 1 script
+          arguments: { ... }                      # byte-identical to sample 0 (default n_samples=3)
+    - - - name: submit_report                     # sample 2 script
+          arguments: { ... }
 ```
 
 Three families of fixture shape:
@@ -72,25 +82,34 @@ Three families of fixture shape:
   own line. Single-quoted YAML preserves `\n` as two literal characters
   and would fail rubric validation at trial time (a
   `VerdictConsistencyError`, not a κ mismatch).
-- **Every fixture ships a `judge_scripts.single_shot_rubric` cassette
-  AND a `judge_scripts_per_chunk.chunked_rubric` cassette.** The chunked
+- **Every fixture ships a `judge_scripts.single_shot_rubric` cassette,
+  a `judge_scripts_per_chunk.chunked_rubric` cassette, AND a
+  `judge_scripts_per_chunk.voted_rubric` cassette.** The chunked
   cassette carries one script per chunk at `chunk_size=5` — small-rubric
   and multi-turn fixtures (2–4 criteria) ship one script (single-chunk
   degenerate case, mirroring the single-shot content); large-rubric
   fixtures (8–15 criteria) ship 2–3 scripts, each covering its chunk's
-  criterion ids in original rubric order. Per-criterion verdicts across
-  the chunk scripts MUST match the single-shot cassette's for identical
-  cross-kind κ. Fixture-kind cassettes (like the parity lane's
-  `_FlakyJudgeKind`) are authored in the test file, not here — the
-  corpus stays reusable by future kinds without carrying a per-kind
-  script.
-- **Adding a new chunking kind:** register it in `pyproject.toml`, add
-  a `judge_scripts_per_chunk.<your_kind>` block to every fixture, and
-  name it in the pool-provider path — no harness change needed. The
-  provider dispatches on cassette shape (presence of
-  `judge_scripts_per_chunk[NAME]`), so a kind that dispatches one
-  client per chunk gets its N scripts from that map and a single-client
-  kind falls back to `judge_scripts[NAME]`.
+  criterion ids in original rubric order. The voted cassette carries
+  exactly 3 scripts (K=3, the default `n_samples`), each covering every
+  criterion and byte-identical to the fixture's `single_shot_rubric`
+  script — `voted_rubric` samples the SAME rubric evidence K times, so
+  there is no per-sample criterion split the way chunking splits by
+  criterion id. Per-criterion verdicts across the chunk and voted
+  scripts MUST match the single-shot cassette's for identical cross-kind
+  κ. Fixture-kind cassettes (like the parity lane's `_FlakyJudgeKind`)
+  are authored in the test file, not here — the corpus stays reusable
+  by future kinds without carrying a per-kind script.
+- **Adding a new multi-client kind (chunking or K-sampling):** register
+  it in `pyproject.toml`, add a `judge_scripts_per_chunk.<your_kind>`
+  block to every fixture, and name it in the pool-provider path — no
+  harness change needed. The provider dispatches on cassette shape
+  (presence of `judge_scripts_per_chunk[NAME]`), so any kind that calls
+  `judge_model_provider.build(...)` more than once per `evaluate` gets
+  its N scripts from that map — chunking (`chunked_rubric`, one script
+  per chunk) and K-sampling (`voted_rubric`, one script per sample) are
+  two instances of the same shape, not two different maps. A
+  single-client kind (`single_shot_rubric`) falls back to
+  `judge_scripts[NAME]` instead.
 
 ## Refreshing cassettes against a live judge
 
