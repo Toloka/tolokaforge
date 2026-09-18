@@ -1,8 +1,7 @@
 """Robust aggregators over K per-sample rubric verdicts.
 
 Pure math — no coupling to :class:`JudgeKind`, :class:`LLMJudge`, or any
-LLM-dispatch surface. Shared by :class:`VotedRubricJudgeKind` (this issue)
-and ``jury_rubric`` (#1602, cross-model panels) unchanged.
+LLM-dispatch surface.
 
 ``per_sample_scores`` is always ``n_samples`` rows × ``n_criteria`` columns,
 one row per K-sampled judge verdict, columns ordered by the rubric's
