@@ -53,6 +53,7 @@ from tolokaforge.core.grading.judge_kinds import (
     ChunkedRubricJudgeKind,
     JudgeKind,
     SingleShotRubricJudgeKind,
+    VotedRubricJudgeKind,
 )
 from tolokaforge.core.grading.judge_kinds.parity import (
     ParityCorpusEntry,
@@ -85,6 +86,12 @@ _FULL_WALLCLOCK_BUDGET_S = 90.0
 #: cassettes are authored against this value.
 _CHUNK_SIZE = 5
 _CHUNKED_KIND_CONFIG: dict[str, Any] = {"chunk_size": _CHUNK_SIZE}
+
+#: K the parity-lane voted measurements use. Matches
+#: ``VotedRubricJudgeKind``'s ``DEFAULT_N_SAMPLES = 3``; every corpus
+#: fixture's ``judge_scripts_per_chunk.voted_rubric`` cassette carries
+#: exactly this many scripts.
+_VOTED_N_SAMPLES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -419,9 +426,11 @@ class _InnerBudget:
 def test_corpus_has_twenty_entries() -> None:
     """Twenty fixtures, every one parses cleanly into
     :class:`ParityCorpusEntry`, every one ships a
-    ``judge_scripts.single_shot_rubric`` cassette AND a
+    ``judge_scripts.single_shot_rubric`` cassette, a
     ``judge_scripts_per_chunk.chunked_rubric`` cassette with the
-    correct chunk count for ``chunk_size=5``. A malformed rubric fails
+    correct chunk count for ``chunk_size=5``, AND a
+    ``judge_scripts_per_chunk.voted_rubric`` cassette with exactly 3
+    scripts (K=3, the default ``n_samples``). A malformed rubric fails
     Pydantic validation right here — never at replay time."""
     corpus = _load_corpus()
     assert len(corpus) == 20, f"corpus size drift: {len(corpus)} entries"
@@ -439,6 +448,14 @@ def test_corpus_has_twenty_entries() -> None:
             f"{len(entry.rubric.criteria)} criteria"
         )
         assert actual_chunks == expected_chunks, chunk_count_msg
+        missing_voted_msg = f"{entry.entry_id}: missing voted_rubric per-chunk cassette"
+        assert "voted_rubric" in entry.judge_scripts_per_chunk, missing_voted_msg
+        actual_samples = len(entry.judge_scripts_per_chunk["voted_rubric"])
+        sample_count_msg = (
+            f"{entry.entry_id}: voted_rubric cassette has {actual_samples} scripts, "
+            f"expected {_VOTED_N_SAMPLES}"
+        )
+        assert actual_samples == _VOTED_N_SAMPLES, sample_count_msg
 
 
 def test_missing_chunked_cassette_raises_with_entry_and_kind_name() -> None:
@@ -485,6 +502,10 @@ def _single_shot_kind() -> SingleShotRubricJudgeKind:
 
 def _chunked_kind() -> ChunkedRubricJudgeKind:
     return ChunkedRubricJudgeKind()
+
+
+def _voted_kind() -> VotedRubricJudgeKind:
+    return VotedRubricJudgeKind()
 
 
 def test_single_shot_self_parity_ships() -> None:
@@ -617,6 +638,52 @@ def test_cross_kind_chunked_vs_single_shot_ships() -> None:
     assert decision.blocking_criteria == ()
 
 
+def test_voted_self_parity_ships() -> None:
+    """Five deterministic replays of ``voted_rubric`` (default config,
+    K=3) on the corpus produce identical per-criterion verdicts across
+    replays — the 3 per-sample scripts within a replay are identical
+    cassette content, so the aggregate is byte-identical every replay —
+    per-criterion κ = 1.0, the self-consistency arm ships. Locks that
+    the voted kind is deterministic under the cassette contract."""
+    corpus = _load_corpus()
+    report = measure_self_consistency(
+        kind_factory=lambda _i: _voted_kind(),
+        corpus=corpus,
+        replays=5,
+        judge_model_config=_JUDGE_MODEL,
+        provider_factory=_cassette_provider_factory(corpus, "voted_rubric"),
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
+    self_blocked_msg = f"voted self-parity blocked on {decision.blocking_criteria!r}"
+    assert decision.shippable is True, self_blocked_msg
+    assert decision.blocking_criteria == ()
+    assert decision.warning_criteria == ()
+
+
+def test_cross_kind_voted_vs_single_shot_ships() -> None:
+    """``voted_rubric`` (K=3, default ``geometric_median``) vs
+    ``single_shot_rubric`` on the same corpus — the 3 per-sample
+    cassettes carry the identical per-criterion verdicts the
+    single-shot cassette carries, so the aggregate is exactly that
+    verdict on every criterion and cross-kind κ = 1.0. Satisfies the
+    issue's κ ≥ 0.9 acceptance bar as the κ=1.0 identical-sample special
+    case (the relationship ``test_cross_kind_identity_ships`` documents
+    for byte-parity)."""
+    corpus = _load_corpus()
+    report = measure_cross_kind_agreement(
+        reference_kind=_single_shot_kind(),
+        candidate_kind=_voted_kind(),
+        corpus=corpus,
+        judge_model_config=_JUDGE_MODEL,
+        reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
+        candidate_provider=_cassette_provider(corpus, "voted_rubric"),
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="cross_kind")
+    cross_blocked_msg = f"voted vs single-shot cross-kind blocked on {decision.blocking_criteria!r}"
+    assert decision.shippable is True, cross_blocked_msg
+    assert decision.blocking_criteria == ()
+
+
 def test_report_reports_per_criterion_not_aggregate() -> None:
     """Cross-kind identity → :class:`ParityGateDecision` carries a
     per-criterion verdict for every criterion id in the pool, and
@@ -645,10 +712,10 @@ def test_report_reports_per_criterion_not_aggregate() -> None:
 
 
 def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
-    """Runs the four cassette measurements above end-to-end and asserts
+    """Runs the eight cassette measurements above end-to-end and asserts
     two thresholds:
 
-    - **Inner sum** < 60 s across the four ``measure_*`` calls (kind
+    - **Inner sum** < 60 s across the eight ``measure_*`` calls (kind
       work only, excludes corpus load).
     - **Full wall-clock** < 90 s including corpus load + YAML parse.
 
@@ -724,6 +791,27 @@ def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
             reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
             candidate_provider=_cassette_provider(corpus, "chunked_rubric"),
             kind_config=_CHUNKED_KIND_CONFIG,
+        ),
+    )
+    budget.measure(
+        "voted_self",
+        lambda: measure_self_consistency(
+            kind_factory=lambda _i: _voted_kind(),
+            corpus=corpus,
+            replays=5,
+            judge_model_config=_JUDGE_MODEL,
+            provider_factory=_cassette_provider_factory(corpus, "voted_rubric"),
+        ),
+    )
+    budget.measure(
+        "cross_kind_voted_vs_single_shot",
+        lambda: measure_cross_kind_agreement(
+            reference_kind=_single_shot_kind(),
+            candidate_kind=_voted_kind(),
+            corpus=corpus,
+            judge_model_config=_JUDGE_MODEL,
+            reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
+            candidate_provider=_cassette_provider(corpus, "voted_rubric"),
         ),
     )
 
