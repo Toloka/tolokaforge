@@ -13,17 +13,20 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-Three kinds ship in the reference distribution: `single_shot_rubric`
+Four kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
 `LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
 invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
 for large rubrics where a single `submit_report` payload would exceed
-the judge model's output-token ceiling), and `voted_rubric` (wraps any
+the judge model's output-token ceiling), `voted_rubric` (wraps any
 registered kind and samples it K times, folding the per-criterion
 verdicts through a robust aggregator to reduce judge-model
-self-variance — see § Voted kind). Downstream packages
-register further alternatives (e.g. jury, agentic) alongside without a
-framework PR.
+self-variance — see § Voted kind), and `jury_rubric` (wraps any
+registered kind and dispatches to a cross-family panel of N different
+judge models instead of K samples of one model, folding the
+per-criterion verdicts through the same robust aggregator — see § Jury
+kind). Downstream packages register further alternatives (e.g.
+agentic) alongside without a framework PR.
 
 The `JudgeKind` Protocol and registry seam decision is recorded in
 [`docs/adr/0046-judgekind-protocol-and-registry.md`](adr/0046-judgekind-protocol-and-registry.md).
@@ -180,6 +183,30 @@ the three per-criterion verdicts through the geometric-median
 aggregator. Opt in to reduce judge-model self-variance on
 subjective/graded criteria — see § Voted kind for the config schema,
 the fail-loud contract, and the aggregator trade-offs.
+
+### `jury_rubric`
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: jury_rubric
+    kind_config:
+      panel:
+        - {provider: openrouter, name: openai/gpt-4o-mini, temperature: 0.0}
+        - {provider: openrouter, name: anthropic/claude-3-haiku, temperature: 0.0}
+        - {provider: openrouter, name: google/gemini-2.0-flash, temperature: 0.0}
+      aggregator: geometric_median
+      wrapped_kind: single_shot_rubric
+```
+
+Runs `single_shot_rubric` (or any other registered kind named by
+`wrapped_kind`) once per panel member — each member a DIFFERENT judge
+model, not a repeated sample of one model — and folds the per-criterion
+verdicts through the same geometric-median aggregator `voted_rubric`
+uses. Opt in when cross-family model diversity outweighs the cost of a
+same-model K-sample vote (PoLL evidence) — see § Jury kind for the
+config schema, the credential-preflight contract, and the fail-loud
+contract.
 
 ## Chunked kind
 
@@ -344,6 +371,82 @@ Cost note: K samples consume up to `K ×` the wrapped kind's per-trial
 wall-clock, tokens, and cost. This is the acknowledged cost of reducing
 judge-model self-variance; the K vs. reliability trade is measured in
 the umbrella issue's live A/B report (see § Live A/B below).
+
+## Jury kind
+
+`jury_rubric` wraps any other registered `JudgeKind` (default
+`single_shot_rubric`) exactly like `voted_rubric`, but where
+`voted_rubric` samples ONE model K times, `jury_rubric` dispatches to a
+cross-family PANEL of N DIFFERENT judge models — each panel member
+supplies its own `provider`/`name` (and optional `temperature`), so a
+task author gets model diversity instead of repeated-sampling variance
+reduction from the same model. The wrapped kind always receives
+`kind_config=None` on every panel dispatch, same restriction as
+`voted_rubric`. Opt in via `grading.llm_judge.judge_kind: jury_rubric`;
+the default remains `single_shot_rubric`.
+
+`kind_config` schema: `{"panel": list[{"provider": str, "name": str,
+"temperature": float}], "aggregator": "majority" | "median" |
+"geometric_median", "wrapped_kind": str}`. All three keys are optional.
+`panel` defaults to a 3-member cross-family panel, all routed through
+OpenRouter: `openai/gpt-4o-mini`, `anthropic/claude-3-haiku`, and
+`google/gemini-2.0-flash`, each at `temperature: 0.0`. Every panel
+entry requires a non-empty `provider` and `name`; `temperature` is
+optional and must be a non-`bool` `int`/`float` when present; any
+unrecognised entry key raises `ValueError` naming the entry index.
+`aggregator` defaults to `geometric_median` and `wrapped_kind` defaults
+to `single_shot_rubric`, with the same validation `voted_rubric` uses
+(§ Voted kind) — panel size stands in for `n_samples`: `len(panel) >= 2`
+(K<2 makes voting undefined), and `aggregator="majority"` additionally
+requires an odd panel size and an all-`binary` rubric. Any unknown
+top-level `kind_config` key, or a violation of the above, raises
+`ValueError` before any judge dispatch runs.
+
+**Credential preflight.** Before any panel member is dispatched, every
+DISTINCT `provider` across the panel is checked against
+`tolokaforge.core.llm.providers.credential_env_names` and
+`SecretManager.has_secret` — a provider whose every candidate
+credential name is absent accumulates into ONE `ValueError` naming
+EVERY missing provider at once (not just the first), since a task
+author fixing panel credentials wants the whole list in one pass. A
+provider with no known credential-name mapping (an out-of-tree
+provider `credential_env_names` cannot resolve) is skipped —
+preflighting it is impossible, so it fails loud at the LLM call itself
+instead, exactly as it does today without `jury_rubric`.
+
+Reuses `tolokaforge.core.grading.judge_kinds.aggregators` unchanged —
+the same `"median"` / `"majority"` / `"geometric_median"` aggregators
+`voted_rubric` uses, with identical semantics (§ Voted kind lists them).
+
+Per-member fail-loud (mirrors `voted_rubric`'s per-sample contract,
+renamed to per-panel-member): any panel member whose
+`JudgeResult.status` is not `COMPLETED` — or whose `criterion_results`
+is missing one of the rubric's criterion ids — yields a whole-trial
+`JudgeResult` with `status=ERRORED`, `score=None`,
+`criterion_results=()`, and a `reasons` naming the failing member's
+INDEX plus its `provider`/`name` — panel members are heterogeneous, so
+naming which model failed is the point, not just which position in the
+list. Iteration stops at the first failing member (later members are
+never dispatched); `usage` is still summed across every member that DID
+dispatch.
+
+**Justification audit trail.** Each merged `CriterionResult.justification`
+records the aggregator name, N, the raw per-member scores for that
+criterion, the resulting aggregate, and then every member's own
+justification labelled by its panel `provider/name` (not a bare index,
+since a reviewer needs to know WHICH model produced which verdict in a
+heterogeneous panel).
+
+`chunk_boundaries` is always `()` — `jury_rubric` never chunks, same as
+`voted_rubric`.
+
+Cost note: N panel members consume up to `N ×` the wrapped kind's
+per-trial wall-clock, tokens, and cost — the same acknowledged
+multiplier `voted_rubric`'s `K ×` carries. The trade `jury_rubric`
+offers over `voted_rubric` is diversity, not a cheaper cost model: pick
+`voted_rubric` when the goal is damping one model's own self-variance
+cheaply, and `jury_rubric` when cross-family diversity outweighs that
+cost per PoLL (Panel of LLM evaluators) evidence.
 
 ## Parity gate
 
