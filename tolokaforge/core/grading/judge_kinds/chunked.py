@@ -60,18 +60,11 @@ if TYPE_CHECKING:
     from tolokaforge.tools.registry import Tool
 
 __all__ = [
-    "DEFAULT_CHUNK_SIZE",
     "FALLBACK_MAX_TOKENS",
     "HEADROOM_FRACTION",
     "TOKENS_PER_CRITERION_ESTIMATE",
     "ChunkedRubricJudgeKind",
 ]
-
-#: Legacy fixed default; retained as a compatibility knob for downstream callers.
-#: The evaluate path no longer reads it — the omitted-``chunk_size`` branch
-#: derives an adaptive size from ``judge_model_config.max_tokens`` via
-#: :func:`_adaptive_chunk_size`.
-DEFAULT_CHUNK_SIZE = 5
 
 #: Per-criterion verdict output-token estimate. Module-level so callers can
 #: monkeypatch it in tests; production code treats it as fixed.

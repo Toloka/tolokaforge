@@ -341,9 +341,11 @@ encoding — the host materialiser maps it to `None`.
 
 Bundle-side: `chunk_boundaries` is a judge OUTPUT, not a grading INPUT,
 so it lives on the grade side (`grade.yaml`), not on the v1.1 bundle.
-The bundle's `grading_config.json` records `kind_config.chunk_size` from
-which the chunked kind re-derives the same boundaries deterministically
-on regrade.
+The bundle's `grading_config.json` records `kind_config` and the
+recorded `judge_model_config.json` (its `max_tokens` feeds the adaptive
+`chunk_size` when `kind_config` omits one) — the chunked kind re-derives
+the same boundaries deterministically on regrade from either the
+explicit `kind_config.chunk_size` or the same adaptive computation.
 
 ### Replay routing
 
