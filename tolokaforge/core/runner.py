@@ -12,7 +12,9 @@ from tolokaforge_coding_harnesses.stdout_telemetry import (
 )
 from tolokaforge_coding_harnesses.usage_log import (
     MIDDLEWARE_PROXY_USAGE_SOURCE,
+    HarnessRequestOutcomes,
     sum_harness_usage_records,
+    summarise_harness_requests,
 )
 
 from tolokaforge.core.actors.actor import Actor
@@ -573,7 +575,22 @@ class TrialRunner:
                 )
             )
 
-            if tool_status is ToolExecutionStatus.SUCCESS:
+            refused = self._harness_requests_all_refused()
+            if refused is not None:
+                # The CLI ran, wrote a transcript and exited — but the provider
+                # served none of its requests, so nothing it "did" was its own
+                # work. Left as a completed trial this scores against an
+                # untouched repository, and on these packs that is worth
+                # 0.42-0.58 of partial credit: a dead agent reported as a weak
+                # one. ERROR routes it to a synthesized grade instead.
+                status = TrialStatus.ERROR
+                termination_reason = TerminationReason.API_ERROR
+                self.logger.error(
+                    "Harness trial made no successful provider request; not scoring it",
+                    requests=refused.requests,
+                    statuses=list(refused.statuses),
+                )
+            elif tool_status is ToolExecutionStatus.SUCCESS:
                 status = TrialStatus.COMPLETED
                 termination_reason = TerminationReason.AGENT_DONE
             elif tool_status is ToolExecutionStatus.TIMEOUT:
@@ -588,6 +605,24 @@ class TrialRunner:
             return self._finalise(
                 status=status, termination_reason=termination_reason, start_ts=start_ts
             )
+
+    def _harness_requests_all_refused(self) -> HarnessRequestOutcomes | None:
+        """The trial's request outcomes when the provider served none of them.
+
+        ``None`` whenever the question cannot be answered or the answer is no:
+        the harness booted no proxy, the records were unreadable, the CLI
+        called no provider, or at least one request was served. Only a
+        positive count of requests, every one of them refused, is evidence —
+        an absent measurement must not condemn a trial any more than it may
+        excuse one.
+        """
+        records = self._harness_usage_records
+        if records is None:
+            return None
+        outcomes = summarise_harness_requests(records)
+        if outcomes is None or not outcomes.none_succeeded:
+            return None
+        return outcomes
 
     def _finalise(
         self,

@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from tolokaforge.core.models import Trajectory, TrialStatus
+from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.core.pricing import get_pricing_info
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.tools.registry import ToolResult
@@ -814,3 +815,61 @@ class TestAnAllZeroWireMeasurementIsNotAMeasurement:
         assert metrics.cost_usd is None
         assert metrics.harness_usage_source is None
         assert metrics.usage.prompt_tokens == 0
+
+
+class TestATrialTheProviderNeverServedIsNotScored:
+    """The dead-agent case, reached live twice by different routes: a stale
+    image whose CLI never started, and a gateway that refused every call.
+
+    Both times the CLI wrote a transcript, exited, and left an untouched
+    repository the grader scored — worth 0.42-0.58 of partial credit on the
+    Arena packs, which reads as a weak agent rather than no agent. A trial the
+    provider never served must not reach the grader as a completed one.
+    """
+
+    @staticmethod
+    def _records(*statuses: int) -> str:
+        return "".join(
+            json.dumps(
+                {
+                    "timestamp": "2026-09-18T10:00:00+00:00",
+                    "path": "/v1beta/models/gemini-3.6-flash:streamGenerateContent",
+                    "status": status,
+                    "model": "gemini-3.6-flash",
+                }
+            )
+            + "\n"
+            for status in statuses
+        )
+
+    def test_every_request_refused_errors_the_trial(self) -> None:
+        trajectory = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=self._records(403, 403, 403),
+        )
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.termination_reason is TerminationReason.API_ERROR
+
+    def test_one_served_request_leaves_the_trial_alone(self) -> None:
+        """A trial that reached the provider at all is the agent's own work,
+        however badly it went — retries and rate limits are not a dead run."""
+        trajectory = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=self._records(429, 200, 500),
+        )
+
+        assert trajectory.status is TrialStatus.COMPLETED
+
+    def test_no_records_at_all_condemns_nothing(self) -> None:
+        """No proxy, or a CLI that called no provider. An absent measurement
+        must not fail a trial any more than it may excuse one."""
+        trajectory = _run("", harness="kimi-code", model=_KIMI_MODEL)
+
+        assert trajectory.status is TrialStatus.COMPLETED

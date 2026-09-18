@@ -6,12 +6,14 @@ import random
 import shutil
 import socket
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
@@ -271,6 +273,67 @@ def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
         return None
     image = entry.get("image")
     return image if isinstance(image, str) and image else None
+
+
+_PROVIDER_PROBE_TIMEOUT_S = 10.0
+"""Seconds to wait on the preflight probe. Short: a slow endpoint is a
+separate problem from a dead one, and this runs before every harness run."""
+
+
+def _harness_provider_probe(
+    provider_env: Mapping[str, str],
+) -> tuple[str, dict[str, str]] | None:
+    """The URL to probe for *provider_env*, and the headers to send.
+
+    ``None`` when the envelope names no HTTP endpoint this can reach — a
+    harness routed at a provider whose base URL the adapter never resolved, or
+    one behind a scheme the probe does not speak. The caller treats that as
+    "not checked" and says nothing, because a probe that guesses is worse than
+    no probe.
+
+    The credential goes on the request because an endpoint that answers only
+    to an authorised caller is exactly the case worth catching: the team
+    gateway that refused this host answered 403 to everything, credential or
+    not, and a probe without one could not tell that from a healthy endpoint
+    behind auth.
+    """
+    base_urls = sorted(key for key in provider_env if key.endswith(("_BASE_URL", "_API_BASE")))
+    if not base_urls:
+        return None
+    url = provider_env[base_urls[0]].strip()
+    if not url.startswith(("http://", "https://")):
+        return None
+    headers = {"User-Agent": "tolokaforge-preflight"}
+    api_keys = sorted(key for key in provider_env if key.endswith("_API_KEY"))
+    if api_keys:
+        token = provider_env[api_keys[0]]
+        headers["Authorization"] = f"Bearer {token}"
+        # Google's REST surface reads its own header and ignores Authorization.
+        headers["x-goog-api-key"] = token
+    return url, headers
+
+
+def _unreachable_reason(url: str, headers: Mapping[str, str]) -> str | None:
+    """Why *url* cannot serve this run, or ``None`` when it can.
+
+    A HEAD on the base URL: the probe is asking whether an authorised caller
+    reaches this host at all, not whether a particular route exists. So a 404
+    passes — the endpoint answered, and which paths it serves is the CLI's
+    business — while 401/403 and a transport failure do not.
+    """
+    request = urllib_request.Request(url, method="HEAD", headers=dict(headers))
+    try:
+        with urllib_request.urlopen(request, timeout=_PROVIDER_PROBE_TIMEOUT_S) as response:
+            status = response.status
+    except urllib_error.HTTPError as exc:
+        status = exc.code
+    except Exception as exc:  # noqa: BLE001 — any transport failure is unreachable
+        return f"{type(exc).__name__}: {exc}"
+    if status in (401, 403):
+        return f"HTTP {status} — the endpoint refused this credential"
+    if status >= 500:
+        return f"HTTP {status} — the endpoint is failing"
+    return None
 
 
 def _local_image_exists(image_ref: str) -> bool:
@@ -2182,6 +2245,7 @@ class Orchestrator:
                 )
 
         self._warn_on_unreliable_pricing()
+        self._refuse_an_unreachable_harness_provider()
 
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()
@@ -2203,6 +2267,59 @@ class Orchestrator:
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
+
+    def _refuse_an_unreachable_harness_provider(self) -> None:
+        """Refuse before any container work when the CLI's provider is dead.
+
+        A coding-harness CLI owns its own connection: the engine issues no
+        request on its behalf, so none of its retry or model-fallback
+        machinery is in the path. When the provider refuses everything the CLI
+        still writes a transcript and exits, and the trial is scored against an
+        untouched repository — observed live as three Arena tasks scoring
+        0.42-0.58 while the gateway 403'd every call.
+
+        :meth:`TrialRunner._harness_requests_all_refused` catches that per
+        trial, after the fact. This catches it before the run spends anything,
+        which is the difference between a wasted minute and a wasted matrix.
+
+        A refusal rather than a warning, because there is no reading of a dead
+        endpoint under which the run's numbers mean anything. Probing is
+        skipped entirely when ``TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT`` is set —
+        an air-gapped or record-replay run has no endpoint to reach and is not
+        in doubt. An endpoint the probe cannot form an opinion about (no
+        resolved base URL, a scheme it does not speak) is left alone: silence
+        here means "not checked", never "checked and fine".
+        """
+        agent = self.config.models.get("agent") if self.config.models else None
+        if agent is None or not agent.harness:
+            return
+        if os.environ.get("TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT"):
+            self.logger.info(
+                "Skipping the harness provider preflight",
+                reason="TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT",
+                harness=agent.harness,
+            )
+            return
+        provider_env = getattr(self.adapter, "agent_provider_env", None)
+        if not provider_env:
+            return
+        probe = _harness_provider_probe(provider_env)
+        if probe is None:
+            return
+        url, headers = probe
+        detail = _unreachable_reason(url, headers)
+        if detail is None:
+            self.logger.info("Harness provider reachable", harness=agent.harness, endpoint=url)
+            return
+        raise RuntimeError(
+            f"coding harness {agent.harness!r}: its provider endpoint {url} is not "
+            f"reachable ({detail}). The CLI talks to this endpoint itself — the "
+            "engine issues no request on its behalf, so nothing retries or falls "
+            "back, and a run against a dead endpoint produces trials that score "
+            "against an untouched task rather than failing. Fix the endpoint or "
+            "the credential, point the harness at a reachable gateway, or set "
+            "TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT=1 to run anyway."
+        )
 
     def _warn_on_unreliable_pricing(self) -> None:
         """Warn per configured role whose model prices badly, before any trial runs.

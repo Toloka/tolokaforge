@@ -335,23 +335,29 @@ def _make_handler(
 
             Token counts and the model only. The bodies passing through carry
             the trial's prompts and travel with the provider credential.
+
+            **One record per provider response, whatever it reported.** A
+            response that carried no usage block still happened, and a trial
+            whose every request was refused is the case that otherwise reads
+            as an agent that worked and did badly: the CLI writes its error
+            to stdout, the tool call returns, and the trial is scored against
+            an untouched repository. The counts are merged in when present, so
+            a reader summing tokens still sees only the requests that reported
+            them.
             """
             if usage_log is None:
                 return
             try:
+                record: dict[str, Any] = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "path": self.path,
+                    "status": status,
+                    "model": _request_model(request_body),
+                }
                 counts = _extract_token_counts(response_body)
-                if counts is None:
-                    return
-                _append_usage_record(
-                    usage_log,
-                    {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "path": self.path,
-                        "status": status,
-                        "model": _request_model(request_body),
-                        **counts,
-                    },
-                )
+                if counts is not None:
+                    record.update(counts)
+                _append_usage_record(usage_log, record)
             except Exception as exc:
                 print(f"middleware_proxy: usage tap failed: {exc}", file=sys.stderr)
 

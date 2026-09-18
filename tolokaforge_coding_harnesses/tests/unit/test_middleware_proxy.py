@@ -22,6 +22,7 @@ from tolokaforge_coding_harnesses.middleware_proxy import (
     _extract_token_counts,
     _make_handler,
 )
+from tolokaforge_coding_harnesses.usage_log import sum_harness_usage_records
 
 pytestmark = pytest.mark.unit
 
@@ -424,10 +425,12 @@ class TestProxyUsageLog:
                 server.server_close()
         assert len(_records(usage_log)) == 1
 
-    def test_response_without_usage_records_nothing(self, tmp_path):
-        """Not even an empty file: a zero-filled record would read as a
-        request that spent nothing, which is a different claim from
-        "this request's usage was never reported"."""
+    def test_a_response_without_usage_is_recorded_but_counts_nothing(self, tmp_path):
+        """The request happened, so it is recorded — a trial whose every
+        request was refused has to be legible as one, or it reads as an agent
+        that worked and did badly. But the record carries no counts, because a
+        zero-filled one would claim the request spent nothing, which is a
+        different claim from "this request's usage was never reported"."""
         usage_log = tmp_path / "usage.ndjson"
         with _RecordingUpstream(response_body=b'{"choices":[{"message":{"content":"hi"}}]}') as up:
             server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
@@ -440,9 +443,12 @@ class TestProxyUsageLog:
                 server.server_close()
         assert status == 200
         assert body == b'{"choices":[{"message":{"content":"hi"}}]}'
-        assert not usage_log.exists()
+        record = json.loads(usage_log.read_text().strip())
+        assert record["status"] == 200
+        assert "prompt_tokens" not in record
+        assert sum_harness_usage_records(usage_log.read_text()) is None
 
-    def test_malformed_response_body_records_nothing_and_still_relays(self, tmp_path):
+    def test_a_malformed_response_body_counts_nothing_and_still_relays(self, tmp_path):
         usage_log = tmp_path / "usage.ndjson"
         malformed = b'{"choices":[{"message":'
         with _RecordingUpstream(response_body=malformed) as up:
@@ -455,7 +461,7 @@ class TestProxyUsageLog:
                 server.shutdown()
                 server.server_close()
         assert (status, body) == (200, malformed)
-        assert not usage_log.exists()
+        assert sum_harness_usage_records(usage_log.read_text()) is None
 
     def test_unwritable_usage_log_does_not_break_the_relay(self, tmp_path):
         """The tap is wrapped, the relay is not: a trial losing a usage

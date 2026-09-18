@@ -477,10 +477,15 @@ def test_the_proxy_taps_usage_and_the_trial_reads_it_out_of_the_container(
 
     assert trajectory.status is TrialStatus.COMPLETED, trajectory.messages[-1].content
 
-    # The tap wrote one record — the usage-bearing response's. A record for the
-    # response without a usage block would report zero spend as if measured.
-    assert len(records) == 1, f"expected exactly one usage record. Got: {records}"
-    record = records[0]
+    # One record per provider response, so a trial whose every request was
+    # refused is legible as one rather than reading as a weak agent. Only the
+    # usage-bearing response carries counts: a zero-filled record for the
+    # silent one would report zero spend as if measured.
+    assert len(records) == 2, f"expected one record per response. Got: {records}"
+    counted = [r for r in records if "prompt_tokens" in r]
+    assert len(counted) == 1, f"expected one record to carry counts. Got: {records}"
+    assert all(r["status"] == 200 for r in records)
+    record = counted[0]
     assert record["model"] == REPORTING_MODEL
     assert record["path"] == "/chat/completions"
     assert record["status"] == 200
