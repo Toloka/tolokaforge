@@ -57,7 +57,7 @@ from tolokaforge.core.models import (
     UserReplyOutcome,
 )
 from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
-from tolokaforge.core.pricing import estimate_cost, resolve_pricing
+from tolokaforge.core.pricing import MODEL_PRICING, estimate_cost, resolve_pricing
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -140,6 +140,16 @@ class TrialToolCallRecorder:
         window would dilute it.
         """
         return tuple(call for call in self._recorded if call.executor is executor)
+
+
+_VENDOR_COST_TOLERANCE = 1.25
+"""How far our price may sit from a CLI's own before the trial says so.
+
+Wide on purpose. The two figures are allowed to differ — rounding, a retry the
+CLI folded away, a list rate against a negotiated one — and the failure worth
+catching is a *multiple*: the live drifts that motivated this were 1.4x, 2.5x
+and 4.6x.
+"""
 
 
 class TrialRunner:
@@ -763,8 +773,39 @@ class TrialRunner:
             priced = self._price_harness_tokens(self.metrics.usage)
             if priced is not None:
                 cost_usd = priced
+                self._warn_on_vendor_cost_divergence(priced, telemetry.cost_usd)
         if cost_usd is not None:
             self.metrics.cost_usd = cost_usd
+
+    def _warn_on_vendor_cost_divergence(self, ours: float, theirs: float | None) -> None:
+        """Compare our price for this trial against the CLI's own figure.
+
+        ``harness_reported_cost_usd`` has been recorded as "the cross-check"
+        since the field was added, and nothing ever compared the two. Where a
+        CLI bills itself, that comparison is a free and continuous audit of the
+        whole pricing path — the table, the token basis and the arithmetic —
+        against a number the vendor computed independently. It has been exact
+        when both sides were right: a live ``claude-code`` trial agreed to
+        fifteen significant figures.
+
+        A warning rather than a refusal, because the two figures are allowed to
+        differ: a CLI may round, may price a retry we did not see, or may quote
+        a list rate against our negotiated one. What it must not do is differ
+        by a multiple, which is what a stale or wrong rate looks like.
+        """
+        if theirs is None or theirs <= 0:
+            return
+        ratio = ours / theirs
+        if 1 / _VENDOR_COST_TOLERANCE <= ratio <= _VENDOR_COST_TOLERANCE:
+            return
+        self.logger.warning(
+            "Our price for this trial disagrees with the CLI's own figure",
+            ours_usd=ours,
+            cli_reported_usd=theirs,
+            ratio=round(ratio, 3),
+            model=self.agent_client.model_name,
+            remedy="check the pricing table's rates for this model against the provider",
+        )
 
     def _read_container_usage_records(self, tool_name: str, container_path: str) -> str | None:
         """Read the wire-usage records out of the trial container via *tool_name*.
@@ -920,6 +961,14 @@ class TrialRunner:
         a multiple rather than a rounding.
         """
         model = self.agent_client.model_name
+        resolution = resolve_pricing(model)
+        self.metrics.pricing_key = resolution.resolved_key
+        if resolution.priced:
+            self.metrics.pricing_basis = {
+                rate: float(value)
+                for rate, value in (MODEL_PRICING.get(resolution.resolved_key) or {}).items()
+                if isinstance(value, (int, float))
+            }
         cost = estimate_cost(
             model=model,
             input_tokens=usage.prompt_tokens,

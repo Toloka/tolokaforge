@@ -528,6 +528,31 @@ class Metrics(BaseModel):
     a second flag nobody's reader knows to check."""
 
     harness_reported_cost_usd: float | None = None
+    pricing_basis: dict[str, float] = Field(default_factory=dict)
+    """The rates ``cost_usd`` was computed from, per million tokens.
+
+    Empty when nothing priced this trial locally — a litellm-priced call
+    carries the provider's own figure and no table rate decided it, and an
+    unpriced model has no rates to record.
+
+    Stored because a cost without its rates cannot be corrected, only
+    re-earned. When the shipped table was found 16 days stale, re-pricing the
+    affected runs meant reconstructing the rates by hand from the table's
+    history; with this, a corrected table re-prices any recorded trial from
+    its own bundle. Keys are the table's own: ``input``, ``output``,
+    ``cache_read``, ``cache_write``.
+    """
+
+    pricing_key: str | None = None
+    """The pricing-table key that actually decided the lookup.
+
+    Not the model as configured: normalisation strips ``openrouter/`` and can
+    infer a vendor namespace, so the row billed is routinely not the one the
+    config appears to name — which is the whole of the duplicate-spelling
+    defect. Recording the resolved key is what lets a reader check the trial
+    was priced off the row they think it was.
+    """
+
     """What a coding-harness CLI said it billed for this trial — the
     cross-check on ``cost_usd``, not the reported cost.
 

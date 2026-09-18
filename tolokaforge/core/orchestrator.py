@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 from urllib import error as urllib_error
@@ -89,7 +89,8 @@ from tolokaforge.core.plugin_registry import (
     load_runtime_backend,
     load_trial_grader,
 )
-from tolokaforge.core.pricing import resolve_pricing
+from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
+from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -334,6 +335,15 @@ def _unreachable_reason(url: str, headers: Mapping[str, str]) -> str | None:
     if status >= 500:
         return f"HTTP {status} — the endpoint is failing"
     return None
+
+
+_PRICING_TABLE_STALE_AFTER = timedelta(days=7)
+"""How old the pricing table may be before a run says so.
+
+A warning, not a refusal: age alone is not drift, and a table a fortnight old
+whose rates have not moved prices a run correctly. The refusal is earned by
+disagreeing with the source, which is checked separately.
+"""
 
 
 def _local_image_exists(image_ref: str) -> bool:
@@ -2246,6 +2256,7 @@ class Orchestrator:
 
         self._warn_on_unreliable_pricing()
         self._refuse_an_unreachable_harness_provider()
+        self._refuse_prices_it_cannot_vouch_for()
 
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()
@@ -2319,6 +2330,70 @@ class Orchestrator:
             "against an untouched task rather than failing. Fix the endpoint or "
             "the credential, point the harness at a reachable gateway, or set "
             "TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT=1 to run anyway."
+        )
+
+    def _refuse_prices_it_cannot_vouch_for(self) -> None:
+        """Refuse before any trial when the table disagrees with its source.
+
+        The shipped table is a copy that names where it came from and when.
+        Refreshing it is a manual command in no CI workflow, so it drifts, and
+        every other pricing signal the engine has asks a different question:
+        the cache-rate preflight asks whether a row is complete, the per-trial
+        fallback flag asks whether cache tokens were billed at the input rate,
+        and the vendor cross-check asks whether our arithmetic matches a CLI's
+        own figure. All three passed while two models were billed at rates the
+        provider had stopped charging — the arithmetic was right and only the
+        inputs had aged.
+
+        A refusal, because a cost comparison computed from wrong rates is not
+        a cost comparison. ``TOLOKAFORGE_SKIP_PRICING_FRESHNESS`` opts out for
+        a run that is not being compared on spend, or one deliberately pinned
+        to a historical table.
+
+        Failing to *ask* is never an answer: an unreachable source, a table
+        that names none, or a model neither side prices all leave the run
+        alone. Silence here means "not checked", never "checked and current".
+        """
+        if os.environ.get("TOLOKAFORGE_SKIP_PRICING_FRESHNESS"):
+            self.logger.info(
+                "Skipping the pricing freshness check",
+                reason="TOLOKAFORGE_SKIP_PRICING_FRESHNESS",
+            )
+            return
+        configured = sorted(
+            {model.name for model in (self.config.models or {}).values() if model.name}
+        )
+        if not configured:
+            return
+        metadata = pricing_table_metadata()
+        age = metadata.age
+        if age is not None and age > _PRICING_TABLE_STALE_AFTER:
+            self.logger.warning(
+                "The pricing table is older than its staleness window",
+                updated_at=metadata.updated_at.isoformat() if metadata.updated_at else None,
+                age_days=round(age.total_seconds() / 86400, 1),
+                remedy="uv run pricing-updater update",
+            )
+        if not metadata.source_url:
+            return
+        source = live_prices(metadata.source_url)
+        if source is None:
+            self.logger.info(
+                "Could not reach the pricing source; prices not checked",
+                source_url=metadata.source_url,
+            )
+            return
+        drifts = compare_against_source(configured, source)
+        if not drifts:
+            self.logger.info("Pricing table agrees with its source", models=len(configured))
+            return
+        detail = "; ".join(f"{drift.describe()} ({drift.ratio:.2f}x)" for drift in drifts)
+        raise RuntimeError(
+            f"pricing table disagrees with {metadata.source_url} on "
+            f"{len(drifts)} rate(s) this run would bill: {detail}. Every cost this "
+            "run reports would be computed from a rate the provider no longer "
+            "charges. Refresh with `uv run pricing-updater update`, or set "
+            "TOLOKAFORGE_SKIP_PRICING_FRESHNESS=1 to run anyway."
         )
 
     def _warn_on_unreliable_pricing(self) -> None:

@@ -22,6 +22,7 @@ figure is reproducible from the table, whichever tap produced the tokens.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -873,3 +874,88 @@ class TestATrialTheProviderNeverServedIsNotScored:
         trajectory = _run("", harness="kimi-code", model=_KIMI_MODEL)
 
         assert trajectory.status is TrialStatus.COMPLETED
+
+
+class TestTheVendorCrossCheckIsActuallyChecked:
+    """`harness_reported_cost_usd` was recorded as "the cross-check" from the
+    day it was added, and nothing compared it to ours. Where a CLI bills
+    itself that comparison is a free, continuous audit of the table, the token
+    basis and the arithmetic against a number the vendor computed
+    independently — and it has been exact when both were right."""
+
+    @staticmethod
+    def _divergences(records) -> list[str]:
+        return [r.getMessage() for r in records if "disagrees with the CLI" in r.getMessage()]
+
+    def test_a_multiple_apart_is_reported(self, caplog) -> None:
+        """Priced off the spelling whose row carries no cache rates, so the
+        cache-heavy fixture is billed several-fold over what the CLI reported —
+        which is what a stale or wrong rate looks like."""
+        with caplog.at_level(logging.WARNING):
+            metrics = _run(_STREAM_JSON, model=_FLAT_MODEL).metrics
+
+        assert metrics.cost_usd is not None
+        assert metrics.harness_reported_cost_usd is not None
+        assert metrics.cost_usd / metrics.harness_reported_cost_usd > 1.25
+        assert self._divergences(caplog.records)
+
+    def test_agreement_is_silent(self, caplog) -> None:
+        """The live `claude-code` case: the two agreed to fifteen significant
+        figures, and a trial that agrees must say nothing."""
+        with caplog.at_level(logging.WARNING):
+            metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+
+        assert metrics.cost_usd is not None
+        assert metrics.harness_reported_cost_usd is not None
+        assert self._divergences(caplog.records) == []
+
+
+class TestTheRatesBehindTheCostAreRecorded:
+    """A cost without its rates cannot be corrected, only re-earned.
+
+    When the shipped table was found 16 days stale, re-pricing the affected
+    runs meant reconstructing rates by hand from the table's history. With the
+    basis on the trial, a corrected table re-prices any recorded run from its
+    own bundle.
+    """
+
+    def test_the_rates_and_the_resolved_key_are_stored(self) -> None:
+        metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+
+        assert metrics.cost_usd is not None
+        assert metrics.pricing_key == "anthropic/claude-sonnet-4.6"
+        assert metrics.pricing_basis["input"] > 0
+        assert metrics.pricing_basis["output"] > 0
+
+    def test_the_key_is_the_row_that_decided_the_lookup(self) -> None:
+        """Not the model as configured: normalisation strips `openrouter/`,
+        so the row billed is routinely not the one the config appears to
+        name — which is the whole of the duplicate-spelling defect."""
+        metrics = _run(_STREAM_JSON, model="openrouter/anthropic/claude-sonnet-4.6").metrics
+
+        assert metrics.pricing_key == "anthropic/claude-sonnet-4.6"
+
+    def test_the_recorded_basis_reproduces_the_recorded_cost(self) -> None:
+        """The point of storing it: a reader can re-derive the number without
+        the table the run used."""
+        metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+        usage, basis = metrics.usage, metrics.pricing_basis
+
+        fresh = usage.prompt_tokens - usage.cache_read_input_tokens
+        fresh -= usage.cache_creation_input_tokens
+        expected = (
+            fresh * basis["input"]
+            + usage.completion_tokens * basis["output"]
+            + usage.cache_read_input_tokens * basis["cache_read"]
+            + usage.cache_creation_input_tokens * basis["cache_write"]
+        ) / 1_000_000
+
+        assert metrics.cost_usd == pytest.approx(expected, rel=1e-6)
+
+    def test_an_unpriced_model_records_no_rates(self) -> None:
+        """Empty, not zeroed: a model with no row has no rates, and a zero
+        there would read as a model priced at nothing."""
+        metrics = _run(_STREAM_JSON, model=_UNPRICED_MODEL).metrics
+
+        assert metrics.pricing_basis == {}
+        assert metrics.pricing_key is not None
