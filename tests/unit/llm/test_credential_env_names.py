@@ -1,7 +1,7 @@
 """Unit tests for :func:`tolokaforge.core.llm.providers.credential_env_names`.
 
 Locks the provider -> expected ``SecretManager`` key-name mapping that
-``jury_rubric``'s panel credential preflight (issue #1602) will read.
+``jury_rubric``'s panel credential preflight reads.
 """
 
 from __future__ import annotations

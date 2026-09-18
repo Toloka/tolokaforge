@@ -13,7 +13,28 @@ from tolokaforge.core.grading.judge_result import JudgeStatus, JudgeUsage
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge_result import JudgeResult
 
-__all__ = ["assert_construction_fields_match", "member_failure_reason", "sum_usage"]
+__all__ = [
+    "CONSTRUCTION_FIELDS",
+    "assert_construction_fields_match",
+    "member_failure_reason",
+    "sum_usage",
+]
+
+
+#: Per-dispatch fields that MUST be constant across every dispatch of a
+#: multi-client ``JudgeKind`` (pure functions of the ``evaluate`` inputs). A
+#: mismatch across chunks / samples / panel members is a defensive lock
+#: catching a future kind refactor that accidentally per-dispatches one of
+#: these inputs.
+CONSTRUCTION_FIELDS: tuple[str, ...] = (
+    "kb_tools_offered",
+    "kb_tools_withheld",
+    "knowledge_search_disabled",
+    "custom_system_prompt",
+    "include_agent_system_prompt",
+    "read_tools_offered",
+    "state_diff",
+)
 
 
 def sum_usage(results: list[JudgeResult]) -> JudgeUsage:

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge_kinds import aggregators
 from tolokaforge.core.grading.judge_kinds._shared import (
+    CONSTRUCTION_FIELDS,
     assert_construction_fields_match,
     member_failure_reason,
     sum_usage,
@@ -57,20 +58,6 @@ DEFAULT_WRAPPED_KIND = "single_shot_rubric"
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
 _ACCEPTED_KIND_CONFIG_KEYS = frozenset({"n_samples", "aggregator", "wrapped_kind"})
-
-#: Per-sample fields that MUST be constant across samples (pure functions of
-#: the ``evaluate`` inputs, which are identical on every sample call). A
-#: mismatch is a defensive lock catching a future kind refactor that
-#: accidentally diverges one of these inputs per sample.
-_CONSTRUCTION_FIELDS = (
-    "kb_tools_offered",
-    "kb_tools_withheld",
-    "knowledge_search_disabled",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
-    "read_tools_offered",
-    "state_diff",
-)
 
 
 class VotedRubricJudgeKind:
@@ -228,12 +215,12 @@ def _merge_sample_results(
 
     Every sample here is COMPLETED and covers every rubric criterion id (the
     fail-loud guard ran before this call). The construction-time fields
-    listed in :data:`_CONSTRUCTION_FIELDS` MUST match across samples — a
+    listed in :data:`CONSTRUCTION_FIELDS` MUST match across samples — a
     mismatch raises :class:`RuntimeError` naming the field and the divergent
     values.
     """
     assert_construction_fields_match(
-        sample_results, _CONSTRUCTION_FIELDS, kind_label="voted_rubric", unit_noun="sample"
+        sample_results, CONSTRUCTION_FIELDS, kind_label="voted_rubric", unit_noun="sample"
     )
 
     by_sample_by_id: list[dict[str, CriterionResult]] = [

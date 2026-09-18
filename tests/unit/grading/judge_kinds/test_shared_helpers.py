@@ -1,8 +1,8 @@
 """Unit tests for ``tolokaforge.core.grading.judge_kinds._shared``.
 
-Locks the two Rule-of-Three extractions (issue #1602) that ``chunked.py``,
-``voted.py``, and the forthcoming ``jury.py`` all reuse:
-``member_failure_reason`` and ``assert_construction_fields_match``.
+Locks the two Rule-of-Three extractions that ``chunked.py``, ``voted.py``,
+and ``jury.py`` all reuse: ``member_failure_reason`` and
+``assert_construction_fields_match``.
 """
 
 from __future__ import annotations

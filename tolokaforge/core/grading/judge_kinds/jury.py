@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge_kinds import aggregators
 from tolokaforge.core.grading.judge_kinds._shared import (
+    CONSTRUCTION_FIELDS,
     assert_construction_fields_match,
     member_failure_reason,
     sum_usage,
@@ -80,20 +81,6 @@ _ACCEPTED_KIND_CONFIG_KEYS = frozenset({"panel", "aggregator", "wrapped_kind"})
 
 #: Accepted keys per ``panel`` entry; every other key raises ``ValueError``.
 _ACCEPTED_PANEL_ENTRY_KEYS = frozenset({"provider", "name", "temperature"})
-
-#: Per-member fields that MUST be constant across panel members (pure
-#: functions of the ``evaluate`` inputs, identical on every member call). A
-#: mismatch is a defensive lock catching a future kind refactor that
-#: accidentally diverges one of these inputs per member.
-_CONSTRUCTION_FIELDS = (
-    "kb_tools_offered",
-    "kb_tools_withheld",
-    "knowledge_search_disabled",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
-    "read_tools_offered",
-    "state_diff",
-)
 
 
 class JuryRubricJudgeKind:
@@ -343,12 +330,12 @@ def _merge_member_results(
 
     Every member here is COMPLETED and covers every rubric criterion id (the
     fail-loud guard ran before this call). The construction-time fields
-    listed in :data:`_CONSTRUCTION_FIELDS` MUST match across members — a
+    listed in :data:`CONSTRUCTION_FIELDS` MUST match across members — a
     mismatch raises :class:`RuntimeError` naming the field and the divergent
     values.
     """
     assert_construction_fields_match(
-        member_results, _CONSTRUCTION_FIELDS, kind_label="jury_rubric", unit_noun="panel member"
+        member_results, CONSTRUCTION_FIELDS, kind_label="jury_rubric", unit_noun="panel member"
     )
 
     by_member_by_id: list[dict[str, CriterionResult]] = [

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_kinds._shared import (
+    CONSTRUCTION_FIELDS,
     assert_construction_fields_match,
     member_failure_reason,
     sum_usage,
@@ -55,28 +56,11 @@ __all__ = [
     "ChunkedRubricJudgeKind",
 ]
 
-#: Chunk-local name for the shared, unit-agnostic
-#: :func:`~tolokaforge.core.grading.judge_kinds._shared.member_failure_reason`.
-_chunk_failure_reason = member_failure_reason
-
 #: Default number of criteria per chunk when ``kind_config`` omits ``chunk_size``.
 DEFAULT_CHUNK_SIZE = 5
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
 _ACCEPTED_KIND_CONFIG_KEYS = frozenset({"chunk_size"})
-
-#: Per-chunk fields that MUST be constant across chunks (pure functions of the
-#: ``evaluate`` inputs). A mismatch is a defensive lock catching a future kind
-#: refactor that accidentally per-chunks one of these inputs.
-_CONSTRUCTION_FIELDS = (
-    "kb_tools_offered",
-    "kb_tools_withheld",
-    "knowledge_search_disabled",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
-    "read_tools_offered",
-    "state_diff",
-)
 
 
 class ChunkedRubricJudgeKind:
@@ -134,7 +118,7 @@ class ChunkedRubricJudgeKind:
                 state_diff=state_diff,
             )
             chunk_results.append(chunk_result)
-            failure = _chunk_failure_reason(chunk_result, chunk_boundaries[chunk_index])
+            failure = member_failure_reason(chunk_result, chunk_boundaries[chunk_index])
             if failure is not None:
                 return _errored_trial(
                     chunk_results=chunk_results,
@@ -215,11 +199,11 @@ def _merge_chunk_results(
 
     Every chunk here is COMPLETED and covers its own criterion ids (the fail-loud
     guard ran before this call). The construction-time fields listed in
-    :data:`_CONSTRUCTION_FIELDS` MUST match across chunks — a mismatch raises
+    :data:`CONSTRUCTION_FIELDS` MUST match across chunks — a mismatch raises
     :class:`RuntimeError` naming the field and the divergent values.
     """
     assert_construction_fields_match(
-        chunk_results, _CONSTRUCTION_FIELDS, kind_label="chunked_rubric", unit_noun="chunk"
+        chunk_results, CONSTRUCTION_FIELDS, kind_label="chunked_rubric", unit_noun="chunk"
     )
 
     by_id: dict[str, CriterionResult] = {}
