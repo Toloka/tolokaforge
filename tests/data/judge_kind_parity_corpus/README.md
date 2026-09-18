@@ -58,6 +58,16 @@ judge_scripts_per_chunk:
           arguments: { ... }                      # byte-identical to sample 0 (default n_samples=3)
     - - - name: submit_report                     # sample 2 script
           arguments: { ... }
+  jury_rubric:
+    - - - name: submit_report                     # panel member 0 script (3 total, one per DEFAULT_PANEL member)
+          arguments:
+            reasons: '...'
+            <criterion_id>: true|false|<float>    # every criterion, byte-identical to judge_scripts.single_shot_rubric
+            <criterion_id>_justification: "because <id>\nVERDICT: MET"
+    - - - name: submit_report                     # panel member 1 script
+          arguments: { ... }                      # byte-identical to member 0 (default panel size 3)
+    - - - name: submit_report                     # panel member 2 script
+          arguments: { ... }
 ```
 
 Three families of fixture shape:
@@ -83,8 +93,9 @@ Three families of fixture shape:
   and would fail rubric validation at trial time (a
   `VerdictConsistencyError`, not a κ mismatch).
 - **Every fixture ships a `judge_scripts.single_shot_rubric` cassette,
-  a `judge_scripts_per_chunk.chunked_rubric` cassette, AND a
-  `judge_scripts_per_chunk.voted_rubric` cassette.** The chunked
+  a `judge_scripts_per_chunk.chunked_rubric` cassette, a
+  `judge_scripts_per_chunk.voted_rubric` cassette, AND a
+  `judge_scripts_per_chunk.jury_rubric` cassette.** The chunked
   cassette carries one script per chunk at `chunk_size=5` — small-rubric
   and multi-turn fixtures (2–4 criteria) ship one script (single-chunk
   degenerate case, mirroring the single-shot content); large-rubric
@@ -94,20 +105,27 @@ Three families of fixture shape:
   criterion and byte-identical to the fixture's `single_shot_rubric`
   script — `voted_rubric` samples the SAME rubric evidence K times, so
   there is no per-sample criterion split the way chunking splits by
-  criterion id. Per-criterion verdicts across the chunk and voted
-  scripts MUST match the single-shot cassette's for identical cross-kind
-  κ. Fixture-kind cassettes (like the parity lane's `_FlakyJudgeKind`)
-  are authored in the test file, not here — the corpus stays reusable
-  by future kinds without carrying a per-kind script.
-- **Adding a new multi-client kind (chunking or K-sampling):** register
-  it in `pyproject.toml`, add a `judge_scripts_per_chunk.<your_kind>`
-  block to every fixture, and name it in the pool-provider path — no
-  harness change needed. The provider dispatches on cassette shape
-  (presence of `judge_scripts_per_chunk[NAME]`), so any kind that calls
+  criterion id. The jury cassette carries exactly 3 scripts (the
+  default panel size), same rationale as the voted cassette and also
+  byte-identical to `single_shot_rubric`'s script — a panel of 3
+  differently-routed but identically-scripted clients still needs
+  identical verdicts for the self/cross-kind κ=1.0 locks to hold. Per-
+  criterion verdicts across the chunk, voted, and jury scripts MUST
+  match the single-shot cassette's for identical cross-kind κ.
+  Fixture-kind cassettes (like the parity lane's `_FlakyJudgeKind`) are
+  authored in the test file, not here — the corpus stays reusable by
+  future kinds without carrying a per-kind script.
+- **Adding a new multi-client kind (chunking, K-sampling, or a
+  cross-family panel):** register it in `pyproject.toml`, add a
+  `judge_scripts_per_chunk.<your_kind>` block to every fixture, and name
+  it in the pool-provider path — no harness change needed. The provider
+  dispatches on cassette shape (presence of
+  `judge_scripts_per_chunk[NAME]`), so any kind that calls
   `judge_model_provider.build(...)` more than once per `evaluate` gets
   its N scripts from that map — chunking (`chunked_rubric`, one script
-  per chunk) and K-sampling (`voted_rubric`, one script per sample) are
-  two instances of the same shape, not two different maps. A
+  per chunk), K-sampling (`voted_rubric`, one script per sample), and a
+  cross-family panel (`jury_rubric`, one script per panel member) are
+  three instances of the same shape, not three different maps. A
   single-client kind (`single_shot_rubric`) falls back to
   `judge_scripts[NAME]` instead.
 

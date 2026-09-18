@@ -127,3 +127,61 @@ judge_scripts_per_chunk:
           tone_justification: 'because tone
 
             SCORE: 0.2'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+          refund_done: false
+          refund_done_justification: 'because refund_done
+
+            VERDICT: NOT MET'
+          tone: 0.2
+          tone_justification: 'because tone
+
+            SCORE: 0.2'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+          refund_done: false
+          refund_done_justification: 'because refund_done
+
+            VERDICT: NOT MET'
+          tone: 0.2
+          tone_justification: 'because tone
+
+            SCORE: 0.2'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+          refund_done: false
+          refund_done_justification: 'because refund_done
+
+            VERDICT: NOT MET'
+          tone: 0.2
+          tone_justification: 'because tone
+
+            SCORE: 0.2'

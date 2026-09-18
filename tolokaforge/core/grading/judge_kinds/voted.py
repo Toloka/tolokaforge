@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge_kinds import aggregators
-from tolokaforge.core.grading.judge_kinds._shared import sum_usage
+from tolokaforge.core.grading.judge_kinds._shared import (
+    CONSTRUCTION_FIELDS,
+    assert_construction_fields_match,
+    member_failure_reason,
+    sum_usage,
+)
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.rubric import GRADED_MET_THRESHOLD, aggregate_rubric
 from tolokaforge.runner.models import CriterionResult
@@ -53,20 +58,6 @@ DEFAULT_WRAPPED_KIND = "single_shot_rubric"
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
 _ACCEPTED_KIND_CONFIG_KEYS = frozenset({"n_samples", "aggregator", "wrapped_kind"})
-
-#: Per-sample fields that MUST be constant across samples (pure functions of
-#: the ``evaluate`` inputs, which are identical on every sample call). A
-#: mismatch is a defensive lock catching a future kind refactor that
-#: accidentally diverges one of these inputs per sample.
-_CONSTRUCTION_FIELDS = (
-    "kb_tools_offered",
-    "kb_tools_withheld",
-    "knowledge_search_disabled",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
-    "read_tools_offered",
-    "state_diff",
-)
 
 
 class VotedRubricJudgeKind:
@@ -128,7 +119,7 @@ class VotedRubricJudgeKind:
                 logger=logger,
             )
             sample_results.append(sample_result)
-            failure = _sample_failure_reason(sample_result, criterion_ids)
+            failure = member_failure_reason(sample_result, criterion_ids)
             if failure is not None:
                 return _errored_trial(
                     sample_results=sample_results,
@@ -174,19 +165,6 @@ def _resolve_kind_config(kind_config: Mapping[str, Any] | None) -> tuple[int, st
     wrapped_kind = kind_config.get("wrapped_kind", DEFAULT_WRAPPED_KIND)
 
     return raw_n_samples, aggregator, wrapped_kind
-
-
-def _sample_failure_reason(
-    sample_result: JudgeResult, criterion_ids: tuple[str, ...]
-) -> str | None:
-    """Return a failure reason string if the sample did not COMPLETE cleanly."""
-    if sample_result.status is not JudgeStatus.COMPLETED:
-        return f"status={sample_result.status.value}: {sample_result.reasons}"
-    covered = {cr.id for cr in sample_result.criterion_results}
-    missing = [cid for cid in criterion_ids if cid not in covered]
-    if missing:
-        return f"missing verdicts for criterion ids {missing}: {sample_result.reasons}"
-    return None
 
 
 def _errored_trial(
@@ -237,22 +215,13 @@ def _merge_sample_results(
 
     Every sample here is COMPLETED and covers every rubric criterion id (the
     fail-loud guard ran before this call). The construction-time fields
-    listed in :data:`_CONSTRUCTION_FIELDS` MUST match across samples — a
+    listed in :data:`CONSTRUCTION_FIELDS` MUST match across samples — a
     mismatch raises :class:`RuntimeError` naming the field and the divergent
     values.
     """
-    for field in _CONSTRUCTION_FIELDS:
-        head_value = getattr(sample_results[0], field)
-        for sample_index, sample_result in enumerate(sample_results[1:], start=1):
-            other_value = getattr(sample_result, field)
-            if other_value != head_value:
-                raise RuntimeError(
-                    f"voted_rubric construction-field mismatch across samples: "
-                    f"{field!r} on sample 0 is {head_value!r} but sample "
-                    f"{sample_index} is {other_value!r}. Every sample shares the "
-                    f"same evaluate inputs; a divergence signals a kind refactor "
-                    f"that accidentally per-samples a construction input."
-                )
+    assert_construction_fields_match(
+        sample_results, CONSTRUCTION_FIELDS, kind_label="voted_rubric", unit_noun="sample"
+    )
 
     by_sample_by_id: list[dict[str, CriterionResult]] = [
         {cr.id: cr for cr in sample_result.criterion_results} for sample_result in sample_results

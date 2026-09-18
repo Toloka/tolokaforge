@@ -133,3 +133,61 @@ judge_scripts_per_chunk:
           refund_done_justification: 'because refund_done
 
             VERDICT: MET'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+          greeting_present: true
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: MET'
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+          greeting_present: true
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: MET'
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+          greeting_present: true
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: MET'
+          refund_done: true
+          refund_done_justification: 'because refund_done
+
+            VERDICT: MET'

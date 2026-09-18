@@ -301,3 +301,145 @@ judge_scripts_per_chunk:
           tone_justification: 'because tone
 
             SCORE: 0.2'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+          field_validated: false
+          field_validated_justification: 'because field_validated
+
+            VERDICT: NOT MET'
+          no_pii_leaked: false
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: NOT MET'
+          tool_called_once: false
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: NOT MET'
+          summary_provided: 0.2
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.2'
+          channel_appropriate: false
+          channel_appropriate_justification: 'because channel_appropriate
+
+            VERDICT: NOT MET'
+          outcome_communicated: 0.2
+          outcome_communicated_justification: 'because outcome_communicated
+
+            SCORE: 0.2'
+          refund_done: false
+          refund_done_justification: 'because refund_done
+
+            VERDICT: NOT MET'
+          tone: 0.2
+          tone_justification: 'because tone
+
+            SCORE: 0.2'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+          field_validated: false
+          field_validated_justification: 'because field_validated
+
+            VERDICT: NOT MET'
+          no_pii_leaked: false
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: NOT MET'
+          tool_called_once: false
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: NOT MET'
+          summary_provided: 0.2
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.2'
+          channel_appropriate: false
+          channel_appropriate_justification: 'because channel_appropriate
+
+            VERDICT: NOT MET'
+          outcome_communicated: 0.2
+          outcome_communicated_justification: 'because outcome_communicated
+
+            SCORE: 0.2'
+          refund_done: false
+          refund_done_justification: 'because refund_done
+
+            VERDICT: NOT MET'
+          tone: 0.2
+          tone_justification: 'because tone
+
+            SCORE: 0.2'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+          sla_within: 0.2
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.2'
+          greeting_present: false
+          greeting_present_justification: 'because greeting_present
+
+            VERDICT: NOT MET'
+          field_validated: false
+          field_validated_justification: 'because field_validated
+
+            VERDICT: NOT MET'
+          no_pii_leaked: false
+          no_pii_leaked_justification: 'because no_pii_leaked
+
+            VERDICT: NOT MET'
+          tool_called_once: false
+          tool_called_once_justification: 'because tool_called_once
+
+            VERDICT: NOT MET'
+          summary_provided: 0.2
+          summary_provided_justification: 'because summary_provided
+
+            SCORE: 0.2'
+          channel_appropriate: false
+          channel_appropriate_justification: 'because channel_appropriate
+
+            VERDICT: NOT MET'
+          outcome_communicated: 0.2
+          outcome_communicated_justification: 'because outcome_communicated
+
+            SCORE: 0.2'
+          refund_done: false
+          refund_done_justification: 'because refund_done
+
+            VERDICT: NOT MET'
+          tone: 0.2
+          tone_justification: 'because tone
+
+            SCORE: 0.2'

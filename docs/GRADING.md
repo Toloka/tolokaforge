@@ -38,13 +38,16 @@ dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
 [GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
-Three built-ins ship: `single_shot_rubric` (the shipping reference impl
+Four built-ins ship: `single_shot_rubric` (the shipping reference impl
 wrapping today's `LLMJudge` in one shot), `chunked_rubric` (one
 `LLMJudge` invocation per fixed-K chunk — the alternative kind for large
-rubrics where a single `submit_report` would truncate), and
-`voted_rubric` (wraps any registered kind and samples it K times,
-aggregating the per-criterion verdicts robustly to reduce judge-model
-self-variance; see [JUDGE_KINDS.md](JUDGE_KINDS.md)). Per-kind options ride on
+rubrics where a single `submit_report` would truncate), `voted_rubric`
+(wraps any registered kind and samples it K times, aggregating the
+per-criterion verdicts robustly to reduce judge-model self-variance),
+and `jury_rubric` (wraps any registered kind and dispatches to N
+different judge models in one cross-family panel, aggregating the
+per-criterion verdicts robustly — see
+[JUDGE_KINDS.md § Jury kind](JUDGE_KINDS.md#jury-kind)). Per-kind options ride on
 `task.grading.llm_judge.kind_config` — an opaque `dict[str, Any]` the
 framework never inspects; each kind validates its own slice inside
 `evaluate`. Unknown `judge_kind` names are refused at parse time with a

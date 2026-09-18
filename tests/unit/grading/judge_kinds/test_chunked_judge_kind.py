@@ -285,7 +285,7 @@ def test_fail_loud_on_missing_verdict_in_chunk() -> None:
     that guards the missing-verdict shape after a hypothetical judge succeeded
     on a partial rubric.
     """
-    from tolokaforge.core.grading.judge_kinds.chunked import _chunk_failure_reason
+    from tolokaforge.core.grading.judge_kinds._shared import member_failure_reason
 
     chunk_result = JudgeResult(
         status=JudgeStatus.COMPLETED,
@@ -295,7 +295,7 @@ def test_fail_loud_on_missing_verdict_in_chunk() -> None:
             CriterionResult(id="c0", met=True, score=1.0, justification="j\nVERDICT: MET"),
         ),
     )
-    reason = _chunk_failure_reason(chunk_result, ("c0", "c1"))
+    reason = member_failure_reason(chunk_result, ("c0", "c1"))
     assert reason is not None
     assert "missing verdicts" in reason
     assert "c1" in reason

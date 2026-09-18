@@ -103,3 +103,49 @@ judge_scripts_per_chunk:
           sla_within_justification: 'because sla_within
 
             SCORE: 0.9'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          intent_clarified: true
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: MET'
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          intent_clarified: true
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: MET'
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          intent_clarified: true
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: MET'
+          escalation_appropriate: true
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: MET'
+          sla_within: 0.9
+          sla_within_justification: 'because sla_within
+
+            SCORE: 0.9'

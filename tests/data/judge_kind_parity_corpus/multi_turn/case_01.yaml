@@ -109,3 +109,49 @@ judge_scripts_per_chunk:
           escalation_appropriate_justification: 'because escalation_appropriate
 
             VERDICT: NOT MET'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+          intent_clarified: false
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: NOT MET'
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+          intent_clarified: false
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: NOT MET'
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          question_answered: 0.2
+          question_answered_justification: 'because question_answered
+
+            SCORE: 0.2'
+          intent_clarified: false
+          intent_clarified_justification: 'because intent_clarified
+
+            VERDICT: NOT MET'
+          escalation_appropriate: false
+          escalation_appropriate_justification: 'because escalation_appropriate
+
+            VERDICT: NOT MET'

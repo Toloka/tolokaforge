@@ -33,7 +33,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge import LLMJudge
-from tolokaforge.core.grading.judge_kinds._shared import sum_usage
+from tolokaforge.core.grading.judge_kinds._shared import (
+    CONSTRUCTION_FIELDS,
+    assert_construction_fields_match,
+    member_failure_reason,
+    sum_usage,
+)
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.rubric import aggregate_rubric
 from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
@@ -56,19 +61,6 @@ DEFAULT_CHUNK_SIZE = 5
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
 _ACCEPTED_KIND_CONFIG_KEYS = frozenset({"chunk_size"})
-
-#: Per-chunk fields that MUST be constant across chunks (pure functions of the
-#: ``evaluate`` inputs). A mismatch is a defensive lock catching a future kind
-#: refactor that accidentally per-chunks one of these inputs.
-_CONSTRUCTION_FIELDS = (
-    "kb_tools_offered",
-    "kb_tools_withheld",
-    "knowledge_search_disabled",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
-    "read_tools_offered",
-    "state_diff",
-)
 
 
 class ChunkedRubricJudgeKind:
@@ -126,7 +118,7 @@ class ChunkedRubricJudgeKind:
                 state_diff=state_diff,
             )
             chunk_results.append(chunk_result)
-            failure = _chunk_failure_reason(chunk_result, chunk_boundaries[chunk_index])
+            failure = member_failure_reason(chunk_result, chunk_boundaries[chunk_index])
             if failure is not None:
                 return _errored_trial(
                     chunk_results=chunk_results,
@@ -169,17 +161,6 @@ def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
     return raw
 
 
-def _chunk_failure_reason(chunk_result: JudgeResult, chunk_ids: tuple[str, ...]) -> str | None:
-    """Return a failure reason string if the chunk did not COMPLETE cleanly."""
-    if chunk_result.status is not JudgeStatus.COMPLETED:
-        return f"status={chunk_result.status.value}: {chunk_result.reasons}"
-    covered = {cr.id for cr in chunk_result.criterion_results}
-    missing = [cid for cid in chunk_ids if cid not in covered]
-    if missing:
-        return f"missing verdicts for criterion ids {missing}: {chunk_result.reasons}"
-    return None
-
-
 def _errored_trial(
     *,
     chunk_results: list[JudgeResult],
@@ -218,21 +199,12 @@ def _merge_chunk_results(
 
     Every chunk here is COMPLETED and covers its own criterion ids (the fail-loud
     guard ran before this call). The construction-time fields listed in
-    :data:`_CONSTRUCTION_FIELDS` MUST match across chunks — a mismatch raises
+    :data:`CONSTRUCTION_FIELDS` MUST match across chunks — a mismatch raises
     :class:`RuntimeError` naming the field and the divergent values.
     """
-    for field in _CONSTRUCTION_FIELDS:
-        head_value = getattr(chunk_results[0], field)
-        for chunk_index, chunk_result in enumerate(chunk_results[1:], start=1):
-            other_value = getattr(chunk_result, field)
-            if other_value != head_value:
-                raise RuntimeError(
-                    f"chunked_rubric construction-field mismatch across chunks: "
-                    f"{field!r} on chunk 0 is {head_value!r} but chunk "
-                    f"{chunk_index} is {other_value!r}. Every chunk shares the "
-                    f"same evaluate inputs; a divergence signals a kind refactor "
-                    f"that accidentally per-chunks a construction input."
-                )
+    assert_construction_fields_match(
+        chunk_results, CONSTRUCTION_FIELDS, kind_label="chunked_rubric", unit_noun="chunk"
+    )
 
     by_id: dict[str, CriterionResult] = {}
     for chunk_result in chunk_results:

@@ -103,3 +103,49 @@ judge_scripts_per_chunk:
           stock_updated_justification: 'because stock_updated
 
             VERDICT: NOT MET'
+  jury_rubric:
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          policy_check: false
+          policy_check_justification: 'because policy_check
+
+            VERDICT: NOT MET'
+          identity_verified: false
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: NOT MET'
+          stock_updated: false
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: NOT MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          policy_check: false
+          policy_check_justification: 'because policy_check
+
+            VERDICT: NOT MET'
+          identity_verified: false
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: NOT MET'
+          stock_updated: false
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: NOT MET'
+  - - - name: submit_report
+        arguments:
+          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+          policy_check: false
+          policy_check_justification: 'because policy_check
+
+            VERDICT: NOT MET'
+          identity_verified: false
+          identity_verified_justification: 'because identity_verified
+
+            VERDICT: NOT MET'
+          stock_updated: false
+          stock_updated_justification: 'because stock_updated
+
+            VERDICT: NOT MET'
