@@ -1,10 +1,14 @@
 """Chunked-rubric impl of :class:`JudgeKind` — one :class:`LLMJudge` per chunk.
 
 Registered under the name ``chunked_rubric`` in the
-``tolokaforge.judge_kinds`` entry-point group. Splits the rubric's criteria
-into fixed-size contiguous chunks of ``chunk_size`` (default 5), runs one
+``tolokaforge.judge_kinds`` entry-point group. Partitions the rubric's
+criteria into chunks of at most ``chunk_size`` (default 5) — first
+grouping criteria that share a ``Criterion.chunk_group`` name into the
+same chunk (or consecutive chunks when a group's size exceeds
+``chunk_size``), then packing every other criterion (and every complete
+group block that fits) in first-appearance order. Runs one
 :class:`LLMJudge` per chunk against a scoped sub-rubric (sharing the
-original ``reference``), and merges the per-chunk
+original ``reference``) and merges the per-chunk
 :class:`~tolokaforge.runner.models.CriterionResult` maps above
 :class:`~tolokaforge.core.grading.judge._SubmitReportTermination` before
 folding them through :func:`aggregate_rubric` on the ORIGINAL full rubric.
@@ -28,7 +32,7 @@ bundle persistence and offline replay can retry only the failing chunk.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -88,10 +92,7 @@ class ChunkedRubricJudgeKind:
         logger: StructuredLogger,
     ) -> JudgeResult:
         chunk_size = _resolve_chunk_size(kind_config)
-        chunks: list[list[Criterion]] = [
-            list(rubric.criteria[i : i + chunk_size])
-            for i in range(0, len(rubric.criteria), chunk_size)
-        ]
+        chunks = _chunk_boundaries(rubric.criteria, chunk_size)
         chunk_boundaries: tuple[tuple[str, ...], ...] = tuple(
             tuple(c.id for c in chunk) for chunk in chunks
         )
@@ -159,6 +160,58 @@ def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
     if raw < 1:
         raise ValueError(f"chunked_rubric chunk_size must be >= 1; got {raw}.")
     return raw
+
+
+def _chunk_boundaries(criteria: Sequence[Criterion], chunk_size: int) -> list[list[Criterion]]:
+    """Partition ``criteria`` into chunks of at most ``chunk_size`` criteria.
+
+    Two-phase, deterministic, no I/O. First groups criteria sharing a
+    ``Criterion.chunk_group`` name into one block anchored at that name's
+    first-occurrence position; criteria with ``chunk_group is None`` are
+    each their own singleton block. Then packs the ordered blocks into
+    chunks: a block that fits in the current chunk's remaining room is
+    appended; a block that does not fit but is itself ``<= chunk_size``
+    flushes the current chunk and starts a new one with that block; a
+    block whose own size exceeds ``chunk_size`` flushes the current
+    chunk, then is sliced on its own into consecutive ``chunk_size``
+    runs (never combined with another block).
+
+    When no criterion declares ``chunk_group``, every block is a
+    singleton in original order, packing degenerates to plain fixed-K
+    runs, and the output is identical to
+    ``criteria[i : i + chunk_size]`` slicing — the byte-parity anchor
+    the κ-parity gate depends on.
+    """
+    blocks: list[list[Criterion]] = []
+    group_block_index: dict[str, int] = {}
+    for criterion in criteria:
+        if criterion.chunk_group is None:
+            blocks.append([criterion])
+            continue
+        existing_index = group_block_index.get(criterion.chunk_group)
+        if existing_index is None:
+            group_block_index[criterion.chunk_group] = len(blocks)
+            blocks.append([criterion])
+        else:
+            blocks[existing_index].append(criterion)
+
+    chunks: list[list[Criterion]] = []
+    current: list[Criterion] = []
+    for block in blocks:
+        if len(block) > chunk_size:
+            if current:
+                chunks.append(current)
+                current = []
+            for start in range(0, len(block), chunk_size):
+                chunks.append(list(block[start : start + chunk_size]))
+            continue
+        if len(current) + len(block) > chunk_size:
+            chunks.append(current)
+            current = []
+        current.extend(block)
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _errored_trial(

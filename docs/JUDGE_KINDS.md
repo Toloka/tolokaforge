@@ -210,9 +210,13 @@ contract.
 
 ## Chunked kind
 
-`chunked_rubric` splits the rubric's criteria into fixed-K contiguous
-chunks (`rubric.criteria[i*K:(i+1)*K]`), runs one `LLMJudge` per chunk
-against a scoped sub-rubric (each chunk sees the original `reference`
+`chunked_rubric` partitions the rubric's criteria into chunks of at
+most `chunk_size` criteria — first grouping criteria that share a
+`Criterion.chunk_group` name (in first-appearance order) into one
+block, then packing every block in order into chunks of size
+`chunk_size`, with a group whose own size exceeds `chunk_size` spanning
+consecutive chunks on its own — runs one `LLMJudge` per chunk against
+a scoped sub-rubric (each chunk sees the original `reference`
 verbatim), and merges the per-chunk `CriterionResult` maps into the
 original full rubric — folded through `aggregate_rubric` on the
 original rubric so `score` / `binary_pass` / `gate_failed` come out of
