@@ -16,9 +16,10 @@ the composite fold that dispatches into the kind is documented in
 Four kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
 `LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
-invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
-for large rubrics where a single `submit_report` payload would exceed
-the judge model's output-token ceiling), `voted_rubric` (wraps any
+invocation per chunk of the rubric's criteria, optionally grouped by
+`Criterion.chunk_group` — the opt-in kind for large rubrics where a
+single `submit_report` payload would exceed the judge model's
+output-token ceiling), `voted_rubric` (wraps any
 registered kind and samples it K times, folding the per-criterion
 verdicts through a robust aggregator to reduce judge-model
 self-variance — see § Voted kind), and `jury_rubric` (wraps any

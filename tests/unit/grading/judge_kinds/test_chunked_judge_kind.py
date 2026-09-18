@@ -302,7 +302,7 @@ def test_fail_loud_on_missing_verdict_in_chunk() -> None:
 
 
 # ===================================================================
-# _chunk_boundaries — pure partition function (issue #1603)
+# _chunk_boundaries — pure partition function
 # ===================================================================
 
 
