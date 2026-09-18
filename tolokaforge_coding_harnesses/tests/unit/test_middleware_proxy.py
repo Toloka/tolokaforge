@@ -603,3 +603,51 @@ class TestTheGeminiUsageShape:
 
         assert counts is not None
         assert counts["prompt_tokens"] == 5
+
+
+class TestGeminiPartialUsageShapes:
+    @staticmethod
+    def _counts(body: str):
+        from tolokaforge_coding_harnesses.middleware_proxy import _extract_token_counts
+
+        return _extract_token_counts(body.encode())
+
+    def test_thinking_tokens_survive_without_a_candidates_count(self) -> None:
+        """The caller prices completion and never reasoning, because every
+        dialect counts reasoning inside it. Leaving `completion_tokens` unset
+        here would bill the thinking tokens at nothing."""
+        counts = self._counts(
+            json.dumps({"usageMetadata": {"promptTokenCount": 10, "thoughtsTokenCount": 25}})
+        )
+
+        assert counts is not None
+        assert counts["completion_tokens"] == 25
+        assert counts["reasoning_tokens"] == 25
+
+    def test_a_block_carrying_only_cached_tokens_is_still_a_measurement(self) -> None:
+        counts = self._counts(json.dumps({"usageMetadata": {"cachedContentTokenCount": 900}}))
+
+        assert counts is not None
+        assert counts["cache_read_input_tokens"] == 900
+
+    def test_a_json_array_of_chunks_is_read(self) -> None:
+        """`streamGenerateContent` without `alt=sse` answers with an array —
+        neither a single object nor an SSE stream. Unhandled, the tap writes
+        nothing and the trial is silently unmetered."""
+        counts = self._counts(
+            json.dumps(
+                [
+                    {"candidates": [{"content": {"parts": [{"text": "h"}]}}]},
+                    {
+                        "usageMetadata": {
+                            "promptTokenCount": 7,
+                            "candidatesTokenCount": 3,
+                            "totalTokenCount": 10,
+                        }
+                    },
+                ]
+            )
+        )
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 7

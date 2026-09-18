@@ -379,3 +379,112 @@ class TestOpencodeJson:
 
     def test_a_stream_with_no_step_finish_reports_nothing(self) -> None:
         assert parse_harness_stdout("opencode", '{"type":"step_start"}\n') is None
+
+
+class TestOpencodeStepsThatReportPartially:
+    """A step that omits a field must cost the trial nothing.
+
+    `parse_harness_stdout` is called unguarded on the raw stream
+    (`tolokaforge/core/runner.py`), after the CLI has already done and paid for
+    its work — so a parser that raises turns an unmetered trial into a lost
+    one."""
+
+    def test_a_step_without_a_cost_does_not_raise(self) -> None:
+        stream = json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "total": 10,
+                        "input": 1,
+                        "output": 4,
+                        "cache": {"write": 2, "read": 3},
+                    }
+                },
+            }
+        )
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.turns == 1
+        assert telemetry.completion_tokens == 4
+
+    def test_a_stream_where_no_step_reports_cost_reports_no_cost(self) -> None:
+        """`0.0` would claim a trial that ran spent nothing — the exact reading
+        this dialect exists to remove."""
+        stream = json.dumps({"type": "step_finish", "part": {"tokens": {"total": 10, "input": 10}}})
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.cost_usd is None
+
+    def test_cost_sums_only_the_steps_that_reported_one(self) -> None:
+        stream = (
+            json.dumps(
+                {"type": "step_finish", "part": {"cost": 0.02, "tokens": {"total": 5, "input": 5}}}
+            )
+            + "\n"
+            + json.dumps({"type": "step_finish", "part": {"tokens": {"total": 5, "input": 5}}})
+            + "\n"
+        )
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.cost_usd == pytest.approx(0.02)
+
+
+class TestOpencodePromptBasisFollowsTheProvider:
+    """Whether `tokens.input` includes the cached prompt is a property of the
+    provider opencode routed to, not of opencode. Reading either shape as the
+    other doubles or halves a cache-heavy trial's prompt, and the docs support
+    routing this harness at non-Anthropic vendors via an operator overlay."""
+
+    def test_an_anthropic_shaped_step_folds_the_cache_counters_in(self) -> None:
+        """Recorded live: input is the non-cached remainder, and total is the
+        sum of all four."""
+        step = json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "total": 16315,
+                        "input": 1,
+                        "output": 304,
+                        "cache": {"write": 387, "read": 15623},
+                    },
+                    "cost": 0.0107,
+                },
+            }
+        )
+
+        telemetry = parse_harness_stdout("opencode", step)
+
+        assert telemetry is not None
+        assert telemetry.prompt_tokens == 1 + 387 + 15623
+
+    def test_an_openai_shaped_step_is_left_alone(self) -> None:
+        """`input` already includes the cached part, so `input + output` is the
+        total. Folding again would bill the cached prompt twice."""
+        step = json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "total": 1100,
+                        "input": 1000,
+                        "output": 100,
+                        "cache": {"write": 0, "read": 900},
+                    },
+                    "cost": 0.01,
+                },
+            }
+        )
+
+        telemetry = parse_harness_stdout("opencode", step)
+
+        assert telemetry is not None
+        assert telemetry.prompt_tokens == 1000
+        assert telemetry.cache_read_input_tokens == 900

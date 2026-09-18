@@ -226,18 +226,31 @@ def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
     and each ``step_finish`` carries **that step's** tokens and cost under
     ``part`` — so totals are a sum across them, not the last one.
 
-    Its ``tokens.input`` is the non-cached remainder, the way ``claude-code``
-    reports: on a recorded step, ``input=1``, ``cache.write=387``,
-    ``cache.read=15623``, ``output=304`` and ``total=16315``, which is their
-    sum. The record declares an inclusive prompt basis, so the cache counters
-    are folded back in rather than passed through beside it.
+    Whether ``tokens.input`` already includes the cached prompt depends on the
+    **provider** opencode routed to, not on opencode: the shipped Anthropic
+    block reports the non-cached remainder (a recorded step: ``input=1``,
+    ``cache.write=387``, ``cache.read=15623``, ``output=304``, ``total=16315``
+    — their sum), while an OpenAI-shaped provider reports an inclusive
+    ``input`` with the cached part as a subset of it. Reading either as the
+    other doubles or halves a cache-heavy trial's prompt.
+
+    So the basis is not assumed, it is read off the step: ``total`` says which
+    arithmetic the provider used, and the cache counters are folded in only
+    when the exclusive reading is the one that reconciles. A step whose
+    ``total`` reconciles with neither, or reports none, is folded — the shipped
+    default is Anthropic-shaped and that is the safer error, since it
+    understates a prompt rather than billing a cached one twice.
 
     ``reasoning`` is already inside ``output``, matching what the record
     declares and what the caller's pricing expects.
+
+    Cost is summed only across the steps that reported one, and stays ``None``
+    when no step did — a ``0.0`` here would claim a trial that ran spent
+    nothing, which is the reading this dialect exists to remove.
     """
     turns = 0
     prompt = completion = cache_read = cache_write = reasoning = 0
-    cost = 0.0
+    cost: float | None = None
     for event in _json_lines(stdout):
         if event.get("type") != "step_finish":
             continue
@@ -245,15 +258,21 @@ def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
         if not isinstance(part, Mapping):
             continue
         turns += 1
-        cost += _as_float(part.get("cost"))
+        step_cost = _as_float(part.get("cost"))
+        if step_cost is not None:
+            cost = step_cost if cost is None else cost + step_cost
         tokens = part.get("tokens")
         if not isinstance(tokens, Mapping):
             continue
         cache = tokens.get("cache")
         read = _as_int(cache.get("read")) if isinstance(cache, Mapping) else 0
         write = _as_int(cache.get("write")) if isinstance(cache, Mapping) else 0
-        prompt += _as_int(tokens.get("input")) + read + write
-        completion += _as_int(tokens.get("output"))
+        step_input = _as_int(tokens.get("input"))
+        step_output = _as_int(tokens.get("output"))
+        total = _as_int(tokens.get("total"))
+        inclusive = total > 0 and step_input + step_output == total and (read or write)
+        prompt += step_input if inclusive else step_input + read + write
+        completion += step_output
         reasoning += _as_int(tokens.get("reasoning"))
         cache_read += read
         cache_write += write

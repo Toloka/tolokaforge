@@ -821,7 +821,14 @@ class TrialRunner:
                 records=wire.requests,
             )
 
-        if not wire.prompt_tokens and not wire.completion_tokens:
+        if not any(
+            (
+                wire.prompt_tokens,
+                wire.completion_tokens,
+                wire.cache_read_input_tokens,
+                wire.reasoning_tokens,
+            )
+        ):
             # Records exist, so the CLI did reach a provider — but every count
             # in them is zero, which no real exchange produces. An upstream
             # that answers without populating usage (a gateway translating a

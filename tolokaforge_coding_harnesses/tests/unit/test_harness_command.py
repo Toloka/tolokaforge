@@ -619,3 +619,39 @@ class TestModelFlagStyle:
         )
         command = harness_command("opencode", "go", "openrouter/openai/gpt-5", {"opencode": spec})
         assert shlex.split(command) == ["opencode", "run", "--model=openai/gpt-5", "go"]
+
+
+class TestTheMiddlewareConfigTemplateRuleIsPerLine:
+    """A template naming several endpoints — `grok-build` declares one per
+    model — must not be excused by the first line that asks properly."""
+
+    @staticmethod
+    def _spec(template: str):
+        from tolokaforge_coding_harnesses import HarnessSpec, RequestMiddleware
+
+        return HarnessSpec(
+            install_source="p",
+            version="1.0.0",
+            argv_prefix=("cli",),
+            argv_suffix=(),
+            config_files={"/etc/cli.conf": template},
+            request_middleware=RequestMiddleware(upstream_env_key="X_BASE_URL"),
+            provider_env={"X_BASE_URL": "https://upstream.example.com/v1"},
+        )
+
+    def test_a_second_hardcoded_endpoint_is_still_refused(self) -> None:
+        with pytest.raises(Exception, match="hard-codes a URL on line 2"):
+            self._spec('a = {{ base_url }}\nb = "https://api.example.com/v1"')
+
+    @pytest.mark.parametrize(
+        "template",
+        ["url={{base_url}}", "url={{ base_url | trim }}"],
+        ids=["no-spaces", "with-filter"],
+    )
+    def test_the_jinja_spellings_that_render_correctly_are_accepted(self, template) -> None:
+        """`{{base_url}}` and `{{ base_url | trim }}` render the same value; a
+        spelling check that refused them would reject a working config."""
+        assert self._spec(template).request_middleware is not None
+
+    def test_a_documentation_url_in_a_comment_is_not_an_endpoint(self) -> None:
+        assert self._spec("url={{ base_url }}\n# see https://docs.example.com") is not None

@@ -137,6 +137,11 @@ def _response_payloads(body: bytes) -> list[dict[str, Any]]:
         payload = None
     if isinstance(payload, dict):
         return [payload]
+    # ``streamGenerateContent`` without ``alt=sse`` answers with a JSON array
+    # of the same chunks, which is neither a single object nor an SSE stream.
+    # Unhandled, the tap writes nothing and the trial is silently unmetered.
+    if isinstance(payload, list):
+        return [chunk for chunk in payload if isinstance(chunk, dict)]
 
     payloads: list[dict[str, Any]] = []
     for line in body.splitlines():
@@ -197,17 +202,22 @@ def _gemini_token_counts(usage: Any) -> dict[str, int | None] | None:
     prompt = _as_token_count(usage.get("promptTokenCount"))
     candidates = _as_token_count(usage.get("candidatesTokenCount"))
     total = _as_token_count(usage.get("totalTokenCount"))
-    if prompt is None and candidates is None and total is None:
-        return None
     reasoning = _as_token_count(usage.get("thoughtsTokenCount"))
+    cached = _as_token_count(usage.get("cachedContentTokenCount"))
+    if all(count is None for count in (prompt, candidates, total, reasoning, cached)):
+        return None
+    # Thinking tokens are part of what the model charged for. A block that
+    # reports them without a candidates count would otherwise leave them out
+    # of the completion total entirely, and the caller prices completion —
+    # not reasoning, which every dialect already counts inside it.
     completion = candidates
-    if completion is not None and reasoning is not None:
-        completion += reasoning
+    if reasoning is not None:
+        completion = reasoning if completion is None else completion + reasoning
     return {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": total,
-        "cache_read_input_tokens": _as_token_count(usage.get("cachedContentTokenCount")),
+        "cache_read_input_tokens": cached,
         "reasoning_tokens": reasoning,
     }
 

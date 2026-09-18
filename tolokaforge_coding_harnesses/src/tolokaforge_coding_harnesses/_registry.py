@@ -424,6 +424,15 @@ class CredentialGateway(BaseModel):
         return self
 
 
+_BASE_URL_VARIABLE = re.compile(r"\{\{\s*base_url\b[^}]*\}\}")
+"""A template line asking for the endpoint rather than naming one.
+
+Tolerates the whitespace and filter forms Jinja accepts — ``{{base_url}}``
+and ``{{ base_url | trim }}`` render the same value as ``{{ base_url }}`` and
+must not be refused for spelling.
+"""
+
+
 class HarnessSpec(BaseModel):
     """One coding-harness CLI: how to install it, how to drive it.
 
@@ -699,23 +708,35 @@ class HarnessSpec(BaseModel):
         the env var again after startup, so the middleware's bash-time rewrite
         cannot reach it. That is why the two were once refused outright.
 
-        They are compatible as long as the rendered file names the proxy:
+        They are compatible as long as every endpoint the rendered file names
+        is the proxy:
         :func:`_config_template_variables` resolves ``base_url`` to the
         proxy's local address whenever a spec declares middleware, and the
         proxy boots from the declared upstream one step earlier, before the
-        rewrite. What stays refused is a template that hard-codes an endpoint
+        rewrite. What stays refused is any *line* that hard-codes an endpoint
         of its own instead of asking for ``{{ base_url }}`` — that one really
-        would bypass the proxy, silently.
+        would bypass the proxy, silently. Per line rather than per template,
+        because a config naming several endpoints (``grok-build`` declares one
+        per model) would otherwise be excused by the first one that asked
+        properly.
         """
         if self.request_middleware is None or not self.config_files:
             return self
         for path, template in self.config_files.items():
-            if "://" in template and "{{ base_url }}" not in template:
+            for number, line in enumerate(template.splitlines(), start=1):
+                stripped = line.lstrip()
+                if stripped.startswith(("#", "//", ";")):
+                    # A comment cannot be the endpoint the CLI reads, and
+                    # config templates routinely cite a vendor's docs URL.
+                    continue
+                if "://" not in line or _BASE_URL_VARIABLE.search(line):
+                    continue
                 raise ValueError(
-                    f"HarnessSpec: config_files template {path!r} hard-codes a URL "
-                    "while the spec declares request_middleware. The rendered file "
-                    "is what the CLI reads its endpoint from, so a literal URL there "
-                    "routes around the proxy and the trial reports no tokens. Use "
+                    f"HarnessSpec: config_files template {path!r} hard-codes a URL on "
+                    f"line {number} ({line.strip()!r}) while the spec declares "
+                    "request_middleware. The rendered file is what the CLI reads its "
+                    "endpoint from, so a literal URL there routes around the proxy and "
+                    "the trial reports no tokens. Ask for the endpoint with "
                     "'{{ base_url }}', which renders as the proxy's address when "
                     "middleware is declared."
                 )
