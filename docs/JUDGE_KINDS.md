@@ -16,9 +16,10 @@ the composite fold that dispatches into the kind is documented in
 Four kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
 `LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
-invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
-for large rubrics where a single `submit_report` payload would exceed
-the judge model's output-token ceiling), `voted_rubric` (wraps any
+invocation per chunk of the rubric's criteria, optionally grouped by
+`Criterion.chunk_group` — the opt-in kind for large rubrics where a
+single `submit_report` payload would exceed the judge model's
+output-token ceiling), `voted_rubric` (wraps any
 registered kind and samples it K times, folding the per-criterion
 verdicts through a robust aggregator to reduce judge-model
 self-variance — see § Voted kind), and `jury_rubric` (wraps any
@@ -210,9 +211,13 @@ contract.
 
 ## Chunked kind
 
-`chunked_rubric` splits the rubric's criteria into fixed-K contiguous
-chunks (`rubric.criteria[i*K:(i+1)*K]`), runs one `LLMJudge` per chunk
-against a scoped sub-rubric (each chunk sees the original `reference`
+`chunked_rubric` partitions the rubric's criteria into chunks of at
+most `chunk_size` criteria — first grouping criteria that share a
+`Criterion.chunk_group` name (in first-appearance order) into one
+block, then packing every block in order into chunks of size
+`chunk_size`, with a group whose own size exceeds `chunk_size` spanning
+consecutive chunks on its own — runs one `LLMJudge` per chunk against
+a scoped sub-rubric (each chunk sees the original `reference`
 verbatim), and merges the per-chunk `CriterionResult` maps into the
 original full rubric — folded through `aggregate_rubric` on the
 original rubric so `score` / `binary_pass` / `gate_failed` come out of
@@ -227,6 +232,68 @@ follow-up [#1581](https://github.com/Toloka/tolokaforge/issues/1581)
 tunes this default from live measurement. Any unknown key or a
 non-positive `chunk_size` raises `ValueError` inside `evaluate` before
 any judge call runs.
+
+### chunk_group grouping
+
+Each `Criterion` may declare a free-form `chunk_group: <name>` (default
+`None`). `chunked_rubric` groups criteria sharing the same name into
+the same chunk (or, when the group exceeds `chunk_size`, consecutive
+chunks that hold only that group's criteria) before packing everything
+else in first-appearance order. The algorithm is deterministic and
+pure:
+
+1. **Group blocks, first-appearance order.** Walk `rubric.criteria`
+   once. A criterion with `chunk_group is None` becomes its own
+   singleton block anchored at its position. A criterion with
+   `chunk_group = "x"` joins block `"x"`, anchored at `"x"`'s
+   first-occurrence position; non-contiguous same-group criteria are
+   silently pulled together at that anchor.
+2. **Pack blocks into chunks of ≤ `chunk_size`.** Walk the ordered
+   blocks. A block that fits in the current chunk's remaining room is
+   appended. A block that does not fit but is itself `<= chunk_size`
+   flushes the current chunk and starts a new one with that block. A
+   block whose own size exceeds `chunk_size` flushes the current chunk,
+   then is sliced on its own into consecutive `chunk_size`-runs (never
+   combined with another block).
+
+Worked example — a 5-criterion hotel-review rubric with three declared
+groups (`wifi`, `staff`, `food`) at `chunk_size = 3`:
+
+```yaml
+criteria:
+  - id: wifi_speed
+    chunk_group: wifi
+  - id: food_variety
+    chunk_group: food
+  - id: wifi_reach
+    chunk_group: wifi
+  - id: staff_polite
+    chunk_group: staff
+  - id: food_hot
+    chunk_group: food
+```
+
+Phase 1 groups blocks by first-occurrence anchor: `wifi` block
+`[wifi_speed, wifi_reach]`, `food` block `[food_variety, food_hot]`,
+`staff` block `[staff_polite]`. Phase 2 packs in order: `wifi` (2)
+plus `food` (2) overflows chunk 0 (2 + 2 > 3) → chunk 0 =
+`[wifi_speed, wifi_reach]`; `food` (2) plus `staff` (1) fits →
+chunk 1 = `[food_variety, food_hot, staff_polite]`.
+
+Oversize group example — 8 criteria sharing one group, `chunk_size = 5`:
+the group's own size (8) exceeds `chunk_size`, so it flushes into
+consecutive chunks of shape `[5, 3]` on its own, and no other group's
+criterion joins either slice.
+
+`chunk_group` names are free-form and scoped to the rubric they're
+declared on — the same name in another task's rubric means nothing.
+Rubrics that declare no `chunk_group` degenerate to plain fixed-K runs
+identical to `criteria[i : i + chunk_size]` slicing — the byte-parity
+anchor the κ-parity gate depends on. Reordering happens inside
+`_chunk_boundaries` only; `_merge_chunk_results` re-indexes
+`criterion_results` back to `rubric.criteria`'s original order, so a
+rubric's final `criterion_results` order is unaffected by grouping —
+only which criteria share a judge call.
 
 Per-chunk fail-loud (#1471): any chunk whose `JudgeResult.status` is
 not `COMPLETED` — or whose `criterion_results` is missing one of its

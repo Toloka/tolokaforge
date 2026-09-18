@@ -40,7 +40,8 @@ kind implements the `JudgeKind` Protocol (see
 [GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
 Four built-ins ship: `single_shot_rubric` (the shipping reference impl
 wrapping today's `LLMJudge` in one shot), `chunked_rubric` (one
-`LLMJudge` invocation per fixed-K chunk — the alternative kind for large
+`LLMJudge` invocation per chunk of the rubric's criteria, optionally
+grouped by `Criterion.chunk_group` — the alternative kind for large
 rubrics where a single `submit_report` would truncate), `voted_rubric`
 (wraps any registered kind and samples it K times, aggregating the
 per-criterion verdicts robustly to reduce judge-model self-variance),
@@ -3706,6 +3707,7 @@ grading:
           description: "Reply is polite and professional"
           kind: graded
           weight: 0.5
+          chunk_group: tone      # optional; chunked_rubric groups same-name criteria into one chunk (see JUDGE_KINDS.md)
 ```
 
 ### How the judge works

@@ -20,7 +20,7 @@ import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import ChunkedRubricJudgeKind
-from tolokaforge.core.grading.judge_kinds.chunked import DEFAULT_CHUNK_SIZE
+from tolokaforge.core.grading.judge_kinds.chunked import DEFAULT_CHUNK_SIZE, _chunk_boundaries
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
@@ -299,3 +299,125 @@ def test_fail_loud_on_missing_verdict_in_chunk() -> None:
     assert reason is not None
     assert "missing verdicts" in reason
     assert "c1" in reason
+
+
+# ===================================================================
+# _chunk_boundaries — pure partition function
+# ===================================================================
+
+
+def _ids(chunks: list[list[Criterion]]) -> list[list[str]]:
+    return [[c.id for c in chunk] for chunk in chunks]
+
+
+@pytest.mark.parametrize(
+    ("n", "chunk_size"),
+    [(7, 3), (12, 5), (30, 5), (1, 5), (5, 5)],
+)
+def test_chunk_boundaries_ungrouped_matches_fixed_k_slicing(n: int, chunk_size: int) -> None:
+    """No criterion declares chunk_group → output is identical to
+    ``criteria[i:i+chunk_size]`` slicing. This is the byte-parity anchor
+    the 20-fixture κ-parity gate depends on."""
+    rubric = _binary_rubric(n)
+    expected = [
+        list(rubric.criteria[i : i + chunk_size])
+        for i in range(0, len(rubric.criteria), chunk_size)
+    ]
+
+    assert _chunk_boundaries(rubric.criteria, chunk_size) == expected
+
+
+def test_chunk_boundaries_group_cohesion_fits_one_chunk() -> None:
+    """Three criteria sharing one group plus two ungrouped fillers all land
+    in the same chunk when chunk_size=5."""
+    criteria = [
+        Criterion(id="g1", description="g1", chunk_group="wifi"),
+        Criterion(id="g2", description="g2", chunk_group="wifi"),
+        Criterion(id="g3", description="g3", chunk_group="wifi"),
+        Criterion(id="f1", description="f1"),
+        Criterion(id="f2", description="f2"),
+    ]
+
+    assert _ids(_chunk_boundaries(criteria, 5)) == [["g1", "g2", "g3", "f1", "f2"]]
+
+
+def test_chunk_boundaries_oversize_group_splits_across_consecutive_chunks() -> None:
+    """A group whose size exceeds chunk_size flushes into consecutive
+    chunk_size-runs on its own; no other group's criterion joins either
+    slice (8 criteria sharing one group, chunk_size=5 → lengths [5, 3])."""
+    criteria = [Criterion(id=f"x{i}", description=f"x{i}", chunk_group="x") for i in range(8)]
+    criteria.append(Criterion(id="other", description="other"))
+
+    chunks = _ids(_chunk_boundaries(criteria, 5))
+
+    assert chunks[:2] == [["x0", "x1", "x2", "x3", "x4"], ["x5", "x6", "x7"]]
+    assert "other" in chunks[-1]
+    assert not any("other" in chunk for chunk in chunks[:2])
+
+
+def test_chunk_boundaries_non_contiguous_group_reordered_to_first_anchor() -> None:
+    """Non-contiguous same-group criteria are silently pulled together at
+    the group's first-occurrence position (plan default: silent reorder,
+    no validation)."""
+    criteria = [
+        Criterion(id="a", description="a"),
+        Criterion(id="b", description="b", chunk_group="x"),
+        Criterion(id="c", description="c"),
+        Criterion(id="d", description="d", chunk_group="x"),
+        Criterion(id="e", description="e"),
+    ]
+
+    assert _ids(_chunk_boundaries(criteria, 3)) == [["a", "b", "d"], ["c", "e"]]
+
+
+def test_chunk_boundaries_three_declared_groups_pack_together() -> None:
+    """Three distinct chunk_group names, each small enough to share a chunk
+    with neighbours, produce chunks where every group's members are
+    contiguous and no group is split unless it individually exceeds
+    chunk_size (mirrors the issue's literal 3-group ask)."""
+    criteria = [
+        Criterion(id="wifi_speed", description="w1", chunk_group="wifi"),
+        Criterion(id="food_var", description="f1", chunk_group="food"),
+        Criterion(id="wifi_reach", description="w2", chunk_group="wifi"),
+        Criterion(id="staff_polite", description="s1", chunk_group="staff"),
+        Criterion(id="food_hot", description="f2", chunk_group="food"),
+        Criterion(id="staff_quick", description="s2", chunk_group="staff"),
+        Criterion(id="loose", description="l1"),
+    ]
+
+    chunks = _ids(_chunk_boundaries(criteria, 5))
+
+    for chunk in chunks:
+        for group in ("wifi", "food", "staff"):
+            group_positions = [i for i, cid in enumerate(chunk) if cid.startswith(group)]
+            if len(group_positions) >= 2:
+                assert group_positions == list(
+                    range(group_positions[0], group_positions[0] + len(group_positions))
+                ), f"group {group!r} split across chunk {chunk!r}"
+    all_ids = [cid for chunk in chunks for cid in chunk]
+    assert sorted(all_ids) == sorted(c.id for c in criteria)
+
+
+def test_chunk_boundaries_end_to_end_matches_chunk_size_shape() -> None:
+    """A rubric with declared chunk_group hints run through the full public
+    ``evaluate`` path lands the grouped criteria in the same
+    ``chunk_boundaries`` tuple end-to-end (locks the wire between
+    ``_chunk_boundaries`` and the evaluate loop)."""
+    rubric = Rubric(
+        criteria=[
+            Criterion(id="w1", description="w1", chunk_group="wifi"),
+            Criterion(id="w2", description="w2", chunk_group="wifi"),
+            Criterion(id="loose1", description="loose1"),
+            Criterion(id="loose2", description="loose2"),
+            Criterion(id="w3", description="w3", chunk_group="wifi"),
+        ]
+    )
+    grouped_chunks = _chunk_boundaries(rubric.criteria, 3)
+    scripts = [[_submit_call(chunk)] for chunk in grouped_chunks]
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(rubric, provider=provider, kind_config={"chunk_size": 3})
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.chunk_boundaries == (("w1", "w2", "w3"), ("loose1", "loose2"))
+    assert [cr.id for cr in result.criterion_results] == [c.id for c in rubric.criteria]
