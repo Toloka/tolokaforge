@@ -532,6 +532,43 @@ offers over `voted_rubric` is diversity, not a cheaper cost model: pick
 cheaply, and `jury_rubric` when cross-family diversity outweighs that
 cost per PoLL (Panel of LLM evaluators) evidence.
 
+## Composing kinds
+
+`voted_rubric` and `jury_rubric` both take a `wrapped_kind` field on
+`kind_config`; the wrapped kind is dispatched once per sample / panel
+member. Composition is a first-class extension point:
+
+- **`voted_rubric` wrapping `chunked_rubric`** — K samples of the whole
+  rubric, each sample itself chunked into ≤ `chunk_size` criterion
+  groups. Fits when the rubric is large AND you want K-sample
+  variance reduction on top. Cost = K × chunked's per-trial cost.
+
+- **`jury_rubric` wrapping `chunked_rubric`** — a cross-family panel
+  where each member's grade is itself chunked. This is the
+  recommended composition for `jury_rubric` on rubrics of ≥ 6
+  criteria: the weakest panel member (typically the smallest
+  cheap-tier model) is the truncation floor for the whole panel, and
+  wrapping it in `chunked_rubric` narrows each panel-member call to a
+  sub-rubric that fits well inside every family's output-token
+  ceiling. Without this wrapping, a single member's truncated
+  `submit_report` on a large rubric fails the whole panel loud per
+  `jury_rubric`'s per-member contract. Example:
+
+  ```yaml
+  grading:
+    llm_judge:
+      judge_kind: jury_rubric
+      kind_config:
+        wrapped_kind: chunked_rubric
+  ```
+
+Wrapped-kind ergonomics: the wrapper always passes `kind_config=None`
+into the wrapped kind, so the wrapped kind uses its own defaults —
+`chunked_rubric`'s adaptive `chunk_size` heuristic (per this milestone)
+picks the effective chunk size from the judge model's `max_tokens`
+headroom, so no explicit `chunk_size` needs to be threaded through the
+outer composition.
+
 ## Parity gate
 
 Every `JudgeKind` — the shipped `single_shot_rubric` and every
