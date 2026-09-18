@@ -2,18 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.26.0 (2026-09-18)
 
-### Added
+### Feat
 
-- **grading**: LLM-judge dispatch is selectable via `grading.llm_judge.judge_kind` (default `single_shot_rubric`, defined by the `tolokaforge.judge_kinds` entry-point group) with an opaque `kind_config` bag for per-kind options; unknown kinds are refused at parse time (#1567).
-- **grading**: `chunked_rubric` `JudgeKind` — splits the rubric into fixed-K contiguous chunks (default `chunk_size=5`) and runs one `LLMJudge` per chunk, removing the whole-trial `UNGRADEABLE` on 30+ criterion rubrics whose single `submit_report` payload would exceed the judge model's output-token ceiling. Opt-in via `grading.llm_judge.judge_kind: chunked_rubric`; `single_shot_rubric` remains the default. Any chunk that errors or returns partial verdicts fails the whole trial loud (#1471); `JudgeResult.chunk_boundaries` records every chunk attempted so #1569 can persist them and offline replay can retry only the failing chunk. `chunked_rubric` passes the κ-parity gate against `single_shot_rubric` (cross-kind κ ≥ 0.8, self-consistency κ ≥ 0.7) on the 20-fixture canonical parity corpus; `ParityCorpusEntry` gains an additive `judge_scripts_per_chunk` field and the pool provider dispatches on cassette shape so a future chunking kind onboards with one entry-point line + per-fixture cassette blocks (#1524).
-- **grading**: `Grade` now carries `judge_chunk_boundaries` — a list-of-lists of criterion ids (one inner list per chunk in original rubric order) populated by chunking judge kinds (`chunked_rubric`), `None` for non-chunking kinds and grades produced without a judge. Wire fields `runner.JudgeReport.chunk_boundaries_json` and `grader.JudgeReport.chunk_boundaries_json` (both field 16) encode the value as compact JSON on both proto messages; empty string is the "no chunking" wire encoding, and old runners / graders / hosts stay compatible (proto3 default preserved as empty string; the host materialiser maps empty back to `None`). Populated by every path that produces a `Grade` from a `JudgeResult`: runner-service composite, grader-service, `CompositeGraderKind._recompute_from_substrate` (offline regrade via `tolokaforge grade`), and `build_replay_grade` (the judge-only + `replay.replay_trial` seam). No user action needed; unchanged task packs / run configs keep grading identically (#1569).
-- **grading**: ADR-0046 records the `JudgeKind` registry decision, and `docs/JUDGE_KINDS.md` grows a Protocol contract, an authoring guide, worked examples for both registered kinds, and sections on the cassette-mode parity gate and a live cross-kind κ/cost framework. The new `tools/judge-kind-ab` workspace member assembles a corpus from committed grade bundles (`grading_config.json` + `task_description.json` + `trajectory.json`) and runs a candidate `JudgeKind` against the reference kind to measure real-trial κ and cost; this PR ships the framework and its dry-run test only — a live run's κ/cost table is attached to the PR body when main executes it post-merge, never asserted here. The canonical cassette-mode parity gate (#1568) separately gains a `--live-parity` opt-in that refreshes its committed cassettes from a live judge call through a new `RecordingLLMClient` test double, idempotent across repeated writeback runs (#1572).
+- **grading**: M49 — agentic LLM-as-judge + pluggable JudgeKind registry (#1562) (#1588)
+- **coding-harness**: harness trial cost, image freshness, pricing-row surfacing, and a seventh harness (#1593)
+- **automation**: page the Slack requester alone for model integrations (#1532)
+- **models**: integrate Cohere Command A+ (azure_ai/cohere-command-a-plus-05-2026) (#1599)
 
-### Changed
+### Fix
 
-- **grading**: Offline replay (`tolokaforge/core/grading/replay.py::replay_trial`) now dispatches through the `JudgeKind` seam (`load_judge_kind(inputs.judge_kind)()`) rather than constructing `LLMJudge` directly. Recorded trials whose `task.yaml.grading_config.llm_judge` declares a `judge_kind` (e.g. `chunked_rubric`) now replay through that kind and produce `JudgeResult.chunk_boundaries` matching the recorded partition. Legacy trials without the field default to `single_shot_rubric` — byte-identical to prior behaviour. `ReplayInputs` grows `judge_kind` + `kind_config` construction kwargs (populated by `read_replay_inputs`); `ReplayProvenance` grows `judge_kind` + `judge_kind_source` (always `recorded` at this stage — no `--judge-kind` CLI override). The bundle-branch `prompts.yaml.judge_prompt` path continues to route through `LLMJudge` directly via an explicit escape hatch; widening the `JudgeKind.evaluate` signature to accept `explicit_system_prompt` is tracked in #1583 (#1569).
+- **automation**: integrate a model only the gateway serves (rebase of #1064 + fixes) (#1598)
 
 ## v0.25.3 (2026-09-15)
 
