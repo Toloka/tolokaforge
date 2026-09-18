@@ -977,8 +977,16 @@ class TrialRunner:
             cache_creation_input_tokens=usage.cache_creation_input_tokens,
         )
         if cost is not None:
-            cache_tokens = usage.cache_read_input_tokens + usage.cache_creation_input_tokens
-            if cache_tokens and resolve_pricing(model).missing_cache_rates:
+            # Each missing rate against its own counter, not both against
+            # either: a row lacking only `cache_write` misprices nothing on a
+            # trial that wrote no cache, and flagging it there would teach a
+            # reader to ignore the flag where it does mean something.
+            observed = {
+                "cache_read": usage.cache_read_input_tokens,
+                "cache_write": usage.cache_creation_input_tokens,
+            }
+            missing = resolve_pricing(model).missing_cache_rates
+            if any(observed.get(rate) for rate in missing):
                 self.metrics.cost_cache_rate_fallback = True
         return cost
 

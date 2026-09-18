@@ -528,12 +528,32 @@ class Metrics(BaseModel):
     a second flag nobody's reader knows to check."""
 
     harness_reported_cost_usd: float | None = None
+    """What a coding-harness CLI said it billed for this trial — the
+    cross-check on ``cost_usd``, not the reported cost.
+
+    ``cost_usd`` on a harness trial is the engine's own price for the tokens
+    the CLI reported, so that every arm of a cross-mode comparison is priced
+    by one authority instead of one vendor's billing against another's. This
+    field keeps the vendor's figure beside it wherever the CLI printed one.
+
+    A material divergence between the two is worth catching before a large
+    run, and it says which of two things happened: a wrong row in the pricing
+    table (our figure is wrong), or a vendor billing surprise (theirs is). A
+    reader of ``cost_usd`` alone can tell neither, which is why the vendor
+    figure is preserved rather than discarded.
+
+    ``None`` on every engine-loop trial and on a harness trial whose CLI
+    reported no cost of its own — ``codex`` and ``kimi-code`` print none, so
+    only their priced ``cost_usd`` exists to compare across arms."""
+
     pricing_basis: dict[str, float] = Field(default_factory=dict)
     """The rates ``cost_usd`` was computed from, per million tokens.
 
-    Empty when nothing priced this trial locally — a litellm-priced call
-    carries the provider's own figure and no table rate decided it, and an
-    unpriced model has no rates to record.
+    Populated on a **coding-harness** trial, which the engine prices itself
+    from the bundled table. Empty elsewhere: an engine-loop trial's cost is
+    assembled per call by the cost ladder and often comes from litellm rather
+    than a table row, so there is no single basis to name; an unpriced model
+    has no rates at all.
 
     Stored because a cost without its rates cannot be corrected, only
     re-earned. When the shipped table was found 16 days stale, re-pricing the
@@ -553,23 +573,6 @@ class Metrics(BaseModel):
     was priced off the row they think it was.
     """
 
-    """What a coding-harness CLI said it billed for this trial — the
-    cross-check on ``cost_usd``, not the reported cost.
-
-    ``cost_usd`` on a harness trial is the engine's own price for the tokens
-    the CLI reported, so that every arm of a cross-mode comparison is priced
-    by one authority instead of one vendor's billing against another's. This
-    field keeps the vendor's figure beside it wherever the CLI printed one.
-
-    A material divergence between the two is worth catching before a large
-    run, and it says which of two things happened: a wrong row in the pricing
-    table (our figure is wrong), or a vendor billing surprise (theirs is). A
-    reader of ``cost_usd`` alone can tell neither, which is why the vendor
-    figure is preserved rather than discarded.
-
-    ``None`` on every engine-loop trial and on a harness trial whose CLI
-    reported no cost of its own — ``codex`` and ``kimi-code`` print none, so
-    only their priced ``cost_usd`` exists to compare across arms."""
     cost_cache_rate_fallback: bool = False
     """``cost_usd`` is an overestimate: at least one call was priced off the
     bundled table, reported cache tokens, and resolved to a row carrying no

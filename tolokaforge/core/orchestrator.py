@@ -110,6 +110,7 @@ from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
+from tolokaforge_coding_harnesses import ENGINE_LOOP
 
 if TYPE_CHECKING:
     from tolokaforge.core.search.typesense_server import TypeSenseServerManager
@@ -281,6 +282,26 @@ _PROVIDER_PROBE_TIMEOUT_S = 10.0
 separate problem from a dead one, and this runs before every harness run."""
 
 
+def _configured_harness(config: Any) -> str | None:
+    """The harness slug a run selects, from either place it may be spelled.
+
+    ``models.agent.harness`` is the canonical home, and the orchestrator lifts
+    it into ``harness_adapter.params.agent_harness`` — but not the other way,
+    and the legacy param is what this repo's own matrix workflow and the
+    terminal-bench recipes still write. A guard reading only the canonical
+    field silently never runs on the shipped configuration.
+    """
+    agent = config.models.get("agent") if getattr(config, "models", None) else None
+    if agent is not None and getattr(agent, "harness", None):
+        return str(agent.harness)
+    adapter = getattr(config.evaluation, "harness_adapter", None)
+    params = getattr(adapter, "params", None) or {}
+    selected = params.get("agent_harness")
+    if selected and selected != ENGINE_LOOP:
+        return str(selected)
+    return None
+
+
 def _harness_provider_probe(
     provider_env: Mapping[str, str],
 ) -> tuple[str, dict[str, str]] | None:
@@ -299,13 +320,18 @@ def _harness_provider_probe(
     behind auth.
     """
     base_urls = sorted(key for key in provider_env if key.endswith(("_BASE_URL", "_API_BASE")))
-    if not base_urls:
+    api_keys = sorted(key for key in provider_env if key.endswith("_API_KEY"))
+    # Several of either leaves no single answer for "the" endpoint or "the"
+    # key, and probing the wrong pair would refuse a healthy run on a spurious
+    # 401. `_config_template_variables` raises on the same ambiguity; a
+    # preflight declines to judge instead, which is the weaker and safer of
+    # the two responses for a check that is not a contract.
+    if len(base_urls) != 1 or len(api_keys) > 1:
         return None
     url = provider_env[base_urls[0]].strip()
     if not url.startswith(("http://", "https://")):
         return None
     headers = {"User-Agent": "tolokaforge-preflight"}
-    api_keys = sorted(key for key in provider_env if key.endswith("_API_KEY"))
     if api_keys:
         token = provider_env[api_keys[0]]
         headers["Authorization"] = f"Bearer {token}"
@@ -328,8 +354,14 @@ def _unreachable_reason(url: str, headers: Mapping[str, str]) -> str | None:
             status = response.status
     except urllib_error.HTTPError as exc:
         status = exc.code
-    except Exception as exc:  # noqa: BLE001 — any transport failure is unreachable
-        return f"{type(exc).__name__}: {exc}"
+    except Exception:  # noqa: BLE001 — see below: this is "could not ask"
+        # NOT a refusal. The URL probed is the one the *trial container* will
+        # use, and the probe runs on the host: a gateway on the container
+        # network, or `host.docker.internal` (which does not resolve on a
+        # Linux host at all), is unreachable from here and perfectly healthy
+        # from there. Refusing on that would fail correct runs, so a transport
+        # failure means "not checked".
+        return None
     if status in (401, 403):
         return f"HTTP {status} — the endpoint refused this credential"
     if status >= 500:
@@ -2301,14 +2333,12 @@ class Orchestrator:
         resolved base URL, a scheme it does not speak) is left alone: silence
         here means "not checked", never "checked and fine".
         """
-        agent = self.config.models.get("agent") if self.config.models else None
-        if agent is None or not agent.harness:
+        if not _configured_harness(self.config):
             return
         if os.environ.get("TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT"):
             self.logger.info(
                 "Skipping the harness provider preflight",
                 reason="TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT",
-                harness=agent.harness,
             )
             return
         provider_env = getattr(self.adapter, "agent_provider_env", None)
@@ -2320,10 +2350,11 @@ class Orchestrator:
         url, headers = probe
         detail = _unreachable_reason(url, headers)
         if detail is None:
-            self.logger.info("Harness provider reachable", harness=agent.harness, endpoint=url)
+            self.logger.info("Harness provider reachable", endpoint=url)
             return
         raise RuntimeError(
-            f"coding harness {agent.harness!r}: its provider endpoint {url} is not "
+            f"coding harness {_configured_harness(self.config)!r}: its provider "
+            f"endpoint {url} is not "
             f"reachable ({detail}). The CLI talks to this endpoint itself — the "
             "engine issues no request on its behalf, so nothing retries or falls "
             "back, and a run against a dead endpoint produces trials that score "
@@ -2367,7 +2398,14 @@ class Orchestrator:
             return
         metadata = pricing_table_metadata()
         age = metadata.age
-        if age is not None and age > _PRICING_TABLE_STALE_AFTER:
+        if age is not None and age <= _PRICING_TABLE_STALE_AFTER:
+            # A table refreshed inside the window is taken at its word. This is
+            # what keeps the check off the network in the ordinary case: every
+            # unit and canonical test constructs an orchestrator, and a live
+            # fetch on each would make the suite slow and non-hermetic for a
+            # question a timestamp already answers.
+            return
+        if age is not None:
             self.logger.warning(
                 "The pricing table is older than its staleness window",
                 updated_at=metadata.updated_at.isoformat() if metadata.updated_at else None,

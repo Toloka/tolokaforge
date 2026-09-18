@@ -646,6 +646,19 @@ directory they are written into from a per-trial context copy it deletes at
 teardown; that read is engine instrumentation and is never part of `tool_calls`
 or [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
+`pricing_basis` and `pricing_key` record what that price was computed *from*:
+the four per-million rates the row carried, and the key that actually decided
+the lookup. They are populated on a coding-harness trial and empty elsewhere,
+because an engine-loop trial's cost is assembled per call by the cost ladder
+rather than from one row. They exist because a cost without its rates cannot be
+corrected, only re-earned — when the bundled table was found 16 days behind its
+source, re-pricing the affected runs meant reconstructing rates by hand. With
+the basis on the trial, a corrected table re-prices any recorded run from its
+own bundle. `pricing_key` is the *resolved* key rather than the configured
+model, since normalisation strips `openrouter/` and can infer a vendor
+namespace, so the row billed is routinely not the one the config appears to
+name.
+
 `cost_usd` on a harness trial is **the engine's price for those tokens**, from
 the same bundled pricing table the engine-loop cost ladder falls back to — not
 the figure the CLI printed. The CLIs report different subsets (`claude-code`

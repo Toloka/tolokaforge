@@ -311,6 +311,12 @@ def _make_handler(
                 headers = list(exc.headers.items()) if exc.headers else []
                 body = exc.read()
             except urllib_error.URLError as exc:
+                # Record it before relaying the error. A provider that refuses
+                # the connection outright — DNS gone, port shut, gateway down —
+                # is the plainest form of the failure the usage log exists to
+                # make legible, and returning here without a record left the
+                # trial reporting "not checked" and being scored anyway.
+                self._tap_usage(request_body, b"", 502)
                 self.send_error(502, f"upstream unreachable: {exc}")
                 return
 

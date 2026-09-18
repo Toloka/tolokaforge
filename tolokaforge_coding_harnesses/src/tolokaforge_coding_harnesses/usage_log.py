@@ -149,6 +149,12 @@ def summarise_harness_requests(records: str) -> HarnessRequestOutcomes | None:
         status = record.get("status")
         if not isinstance(status, int):
             continue
+        if not _is_completion_path(record.get("path")):
+            # The proxy taps every path, and several harnesses allowlist a
+            # model-list GET on their credential gateway. Counting one of
+            # those as a served request would mask a trial whose every
+            # completion was refused — the case this exists to catch.
+            continue
         requests += 1
         if not 200 <= status < 300:
             failed += 1
@@ -158,6 +164,33 @@ def summarise_harness_requests(records: str) -> HarnessRequestOutcomes | None:
     return HarnessRequestOutcomes(
         requests=requests, failed=failed, statuses=tuple(sorted(statuses))
     )
+
+
+_COMPLETION_PATH_MARKERS = (
+    "/chat/completions",
+    "/completions",
+    "/messages",
+    "/responses",
+    ":generatecontent",
+    ":streamgeneratecontent",
+)
+"""Path fragments identifying a request that asks a model to do work.
+
+A trial is served when its *completions* are served. Everything else a CLI
+sends through the proxy — a model list, a health probe, a token count — can
+succeed against a provider that refuses every actual request.
+"""
+
+
+def _is_completion_path(path: object) -> bool:
+    """Whether *path* is a request asking a model to do work."""
+    if not isinstance(path, str):
+        # A record without a path predates the field or came from a shape this
+        # does not recognise; counting it keeps the old behaviour rather than
+        # silently shrinking the evidence.
+        return True
+    lowered = path.lower()
+    return any(marker in lowered for marker in _COMPLETION_PATH_MARKERS)
 
 
 def _is_record(line: str) -> bool:

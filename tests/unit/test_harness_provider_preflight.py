@@ -72,8 +72,16 @@ class TestWhatCountsAsUnreachable:
 
         assert _unreachable_reason(endpoint.url, {}) is not None
 
-    def test_nothing_listening_is_unreachable(self) -> None:
-        assert _unreachable_reason("http://127.0.0.1:9", {}) is not None
+    def test_nothing_listening_is_not_checked_rather_than_refused(self) -> None:
+        """The URL probed is the one the *trial container* uses, and the probe
+        runs on the host. A gateway on the container network, or
+        `host.docker.internal` — which does not resolve on a Linux host at
+        all — is unreachable from here and healthy from there, so refusing on
+        a transport failure would fail correct runs.
+
+        Only an authoritative answer condemns: the live failure this guard
+        exists for answered 403, not nothing."""
+        assert _unreachable_reason("http://127.0.0.1:9", {}) is None
 
 
 class TestWhatTheProbeDeclinesToJudge:

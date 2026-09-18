@@ -488,3 +488,36 @@ class TestOpencodePromptBasisFollowsTheProvider:
         assert telemetry is not None
         assert telemetry.prompt_tokens == 1000
         assert telemetry.cache_read_input_tokens == 900
+
+
+class TestOpencodeStepsWithNoTokensBlock:
+    def test_steps_without_tokens_report_no_counts(self) -> None:
+        """Zeros here would make `has_token_counts` true, price the trial at
+        $0.00 and suppress the wire fallback that could still measure it —
+        "not measured" rendered as "measured as zero", on the one path that
+        had no guard."""
+        stream = json.dumps({"type": "step_finish", "part": {"cost": 0.01}})
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.turns == 1
+        assert telemetry.has_token_counts is False
+        assert telemetry.prompt_tokens is None
+        assert telemetry.cost_usd == pytest.approx(0.01)
+
+    def test_a_single_step_with_tokens_is_enough(self) -> None:
+        stream = (
+            json.dumps({"type": "step_finish", "part": {"cost": 0.01}})
+            + "\n"
+            + json.dumps(
+                {"type": "step_finish", "part": {"tokens": {"total": 5, "input": 5}, "cost": 0.02}}
+            )
+            + "\n"
+        )
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.has_token_counts is True
+        assert telemetry.prompt_tokens == 5

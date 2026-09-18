@@ -959,3 +959,68 @@ class TestTheRatesBehindTheCostAreRecorded:
 
         assert metrics.pricing_basis == {}
         assert metrics.pricing_key is not None
+
+
+class TestTheCacheRateFlagTracksTheRateThatWasMissing:
+    """Each missing rate against its own counter.
+
+    A row lacking only `cache_write` misprices nothing on a trial that wrote
+    no cache, and flagging it there would teach a reader to ignore the flag
+    where it does mean something.
+    """
+
+    WRITE_RATE_ONLY_MISSING = "openrouter/x-ai/grok-4.5"
+    """A row carrying `cache_read` and no `cache_write`."""
+
+    def test_a_missing_write_rate_with_no_writes_is_not_flagged(self) -> None:
+        records = json.dumps(
+            {
+                "timestamp": "2026-09-18T10:00:00+00:00",
+                "path": "/chat/completions",
+                "status": 200,
+                "model": "m",
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "total_tokens": 1050,
+                "cache_read_input_tokens": 900,
+                "reasoning_tokens": 0,
+            }
+        )
+
+        metrics = _run(
+            "",
+            harness="kimi-code",
+            model=self.WRITE_RATE_ONLY_MISSING,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=records + "\n",
+        ).metrics
+
+        assert metrics.usage.cache_creation_input_tokens == 0
+        assert metrics.usage.cache_read_input_tokens == 900
+        assert metrics.cost_cache_rate_fallback is False
+
+    def test_a_missing_read_rate_with_reads_is_flagged(self) -> None:
+        """The same trial on a row that cannot price the reads it did."""
+        records = json.dumps(
+            {
+                "timestamp": "2026-09-18T10:00:00+00:00",
+                "path": "/chat/completions",
+                "status": 200,
+                "model": "m",
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "total_tokens": 1050,
+                "cache_read_input_tokens": 900,
+                "reasoning_tokens": 0,
+            }
+        )
+
+        metrics = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=records + "\n",
+        ).metrics
+
+        assert metrics.cost_cache_rate_fallback is True

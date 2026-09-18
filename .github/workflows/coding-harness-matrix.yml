@@ -194,7 +194,7 @@ jobs:
         # would have passed that gate. This checks the floor — that each trial
         # was measured at all — not the score, which a harness is allowed to
         # do badly on.
-        run: uv run python scripts/ci/assert_harness_run_is_measured.py results/
+        run: uv run python scripts/ci/assert_harness_run_is_measured.py results/ "${{ matrix.harness }}"
 
       - name: Upload result bundle
         if: always()

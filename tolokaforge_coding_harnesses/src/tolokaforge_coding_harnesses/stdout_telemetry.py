@@ -237,9 +237,10 @@ def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
     So the basis is not assumed, it is read off the step: ``total`` says which
     arithmetic the provider used, and the cache counters are folded in only
     when the exclusive reading is the one that reconciles. A step whose
-    ``total`` reconciles with neither, or reports none, is folded — the shipped
-    default is Anthropic-shaped and that is the safer error, since it
-    understates a prompt rather than billing a cached one twice.
+    ``total`` reconciles with neither, or reports none, is folded, because the
+    shipped provider block is Anthropic-shaped. That is a choice about which
+    error to prefer, not a safe default: folding an already-inclusive ``input``
+    counts the cached prompt twice and overstates.
 
     ``reasoning`` is already inside ``output``, matching what the record
     declares and what the caller's pricing expects.
@@ -251,6 +252,7 @@ def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
     turns = 0
     prompt = completion = cache_read = cache_write = reasoning = 0
     cost: float | None = None
+    counted_steps = 0
     for event in _json_lines(stdout):
         if event.get("type") != "step_finish":
             continue
@@ -264,6 +266,7 @@ def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
         tokens = part.get("tokens")
         if not isinstance(tokens, Mapping):
             continue
+        counted_steps += 1
         cache = tokens.get("cache")
         read = _as_int(cache.get("read")) if isinstance(cache, Mapping) else 0
         write = _as_int(cache.get("write")) if isinstance(cache, Mapping) else 0
@@ -278,6 +281,22 @@ def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
         cache_write += write
     if turns == 0:
         return None
+    if counted_steps == 0:
+        # Steps ran but none carried a tokens block. Reporting zeros here would
+        # make `has_token_counts` true, price the trial at $0.00 and suppress
+        # the wire fallback that could still measure it — "not measured"
+        # rendered as "measured as zero", on the one path that had no guard.
+        return HarnessStdoutTelemetry(
+            dialect=OPENCODE_JSON,
+            turns=turns,
+            cost_usd=cost,
+            duration_s=None,
+            prompt_tokens=None,
+            completion_tokens=None,
+            cache_read_input_tokens=None,
+            cache_creation_input_tokens=None,
+            reasoning_tokens=None,
+        )
     return HarnessStdoutTelemetry(
         dialect=OPENCODE_JSON,
         turns=turns,

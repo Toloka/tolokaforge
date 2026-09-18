@@ -261,3 +261,17 @@ __all__ = [
     # Docker-extra fixtures (only available when the ``[docker]`` extra is installed)
     *_DOCKER_EXTRA_FIXTURES,
 ]
+
+
+@pytest.fixture(autouse=True)
+def _offline_pricing_freshness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the pricing-freshness check off the network for every test.
+
+    The check asks the pricing table's own source whether its rates still hold,
+    and only reaches for it when the shipped table is older than its staleness
+    window. That keeps the ordinary suite offline — but it makes hermeticity a
+    property of *when the table was last refreshed*, which is not a property a
+    test suite should depend on. Setting the opt-out here makes it a property
+    of the suite instead.
+    """
+    monkeypatch.setenv("TOLOKAFORGE_SKIP_PRICING_FRESHNESS", "1")

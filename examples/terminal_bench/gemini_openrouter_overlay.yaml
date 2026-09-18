@@ -82,9 +82,10 @@ harnesses:
     # proxy redirects it the same way it redirects an OpenAI-shaped CLI; the
     # settings file above carries no endpoint of its own to bake in.
     #
-    # ``path_filter`` names Google's REST prefix rather than
-    # ``/chat/completions``: the CLI posts to
-    # ``/v1beta/models/<model>:streamGenerateContent``. The tap reads the
+    # ``path_filter`` gates *body injection* only, and this spec injects
+    # nothing — it is set to Google's REST prefix to say what the CLI posts to
+    # (``/v1beta/models/<model>:streamGenerateContent``) rather than to switch
+    # anything on. The usage tap runs on every path regardless, and reads the
     # ``usageMetadata`` those responses carry.
     request_middleware:
       upstream_env_key: "GOOGLE_GEMINI_BASE_URL"
