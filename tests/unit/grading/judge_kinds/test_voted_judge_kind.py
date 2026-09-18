@@ -23,11 +23,8 @@ import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import VotedRubricJudgeKind
-from tolokaforge.core.grading.judge_kinds.voted import (
-    DEFAULT_N_SAMPLES,
-    _merge_sample_results,
-    _sample_failure_reason,
-)
+from tolokaforge.core.grading.judge_kinds._shared import member_failure_reason
+from tolokaforge.core.grading.judge_kinds.voted import DEFAULT_N_SAMPLES, _merge_sample_results
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
@@ -255,7 +252,7 @@ def test_fail_loud_on_missing_verdict_in_sample() -> None:
             CriterionResult(id="c0", met=True, score=1.0, justification="j\nVERDICT: MET"),
         ),
     )
-    reason = _sample_failure_reason(sample_result, ("c0", "c1"))
+    reason = member_failure_reason(sample_result, ("c0", "c1"))
     assert reason is not None
     assert "missing verdicts" in reason
     assert "c1" in reason

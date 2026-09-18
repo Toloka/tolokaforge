@@ -28,6 +28,7 @@ __all__ = [
     "ProviderBinding",
     "SlugRewrite",
     "compile_rate_limit_patterns",
+    "credential_env_names",
     "get_provider_binding",
 ]
 
@@ -158,3 +159,35 @@ def get_provider_binding(provider: str) -> ProviderBinding:
     """
     key = (provider or "").split("/", 1)[0].lower()
     return _load_bundled_providers().get(key, ProviderBinding())
+
+
+#: Credential env-var names for providers litellm authenticates directly from
+#: process env — ``providers.yaml`` carries no ``api_key_env``/``api_keys_env``
+#: for these, so :func:`credential_env_names` falls back here. Mirrors the
+#: exact name set ``tolokaforge/dx/cli/main.py`` and
+#: ``tolokaforge/runner/__main__.py`` mirror into ``os.environ`` at startup.
+_CREDENTIAL_ENV_NAME_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+}
+
+
+def credential_env_names(provider: str) -> tuple[str, ...]:
+    """Expected ``SecretManager`` key names for ``provider``'s credential.
+
+    Prefers the provider's :class:`ProviderBinding` (``api_keys_env`` before
+    ``api_key_env``, filtering unset fields) — covers ``openrouter`` and
+    ``nova``. Falls back to :data:`_CREDENTIAL_ENV_NAME_FALLBACKS` for
+    providers whose binding declares neither. An unrecognised provider
+    returns ``()`` — "no known credential name to validate against", not an
+    error; callers treat an empty tuple as "cannot preflight this provider,
+    let the LLM call itself fail loud like it does today."
+    """
+    binding = get_provider_binding(provider)
+    names = tuple(name for name in (binding.api_keys_env, binding.api_key_env) if name is not None)
+    if names:
+        return names
+    key = (provider or "").split("/", 1)[0].lower()
+    return _CREDENTIAL_ENV_NAME_FALLBACKS.get(key, ())
