@@ -1880,7 +1880,10 @@ class Criterion(BaseModel):
     ``kind`` selects binary (met / not-met → 0 or 1) or graded (0–1 gradient).
     A failed ``required`` criterion fails the whole rubric regardless of others.
     ``expected`` is an optional author-written reference shown to the judge for
-    this criterion (e.g. the correct value to look for).
+    this criterion (e.g. the correct value to look for). ``chunk_group`` is an
+    optional free-form name hinting that criteria sharing the same name should
+    be grouped into the same judge call by the ``chunked_rubric`` kind; it is
+    inert for every other judge kind and scoped to the rubric it is declared on.
     """
 
     id: str
@@ -1889,6 +1892,7 @@ class Criterion(BaseModel):
     kind: Literal["binary", "graded"] = "binary"
     required: bool = False
     expected: str | None = None
+    chunk_group: str | None = None
 
     model_config = {"extra": "forbid"}
 

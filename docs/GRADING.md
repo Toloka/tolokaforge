@@ -3706,6 +3706,7 @@ grading:
           description: "Reply is polite and professional"
           kind: graded
           weight: 0.5
+          chunk_group: tone      # optional; chunked_rubric groups same-name criteria into one chunk (see JUDGE_KINDS.md)
 ```
 
 ### How the judge works
