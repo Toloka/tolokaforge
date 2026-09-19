@@ -187,14 +187,16 @@ class TestHarnessRequestMiddleware:
 
         A harness earns one by printing no usage of its own: the proxy tees
         what the provider returned, which is the only token source those CLIs
-        have. ``kimi-code`` also uses it to pin a provider; ``qwen-code`` runs
-        it as a meter with no injections."""
+        have. ``kimi-code`` also uses it to pin a provider; ``qwen-code`` and
+        ``grok-build`` run it as a meter with no injections. ``grok-build``
+        reaches it through its config file rather than its environment, which
+        is why the template asks for ``{{ base_url }}``."""
         from tolokaforge_coding_harnesses import HARNESSES
 
         with_middleware = {
             name for name, spec in HARNESSES.items() if spec.request_middleware is not None
         }
-        assert with_middleware == {"kimi-code", "qwen-code"}
+        assert with_middleware == {"grok-build", "kimi-code", "qwen-code"}
 
     def test_the_qwen_middleware_injects_nothing(self):
         """It is a meter, not a rewrite — an injection here would change what
@@ -262,25 +264,51 @@ class TestHarnessRequestMiddleware:
 
         assert MIDDLEWARE_USAGE_LOG_CONTAINER_PATH.startswith("/logs/agent/")
 
-    def test_a_spec_that_declares_both_middleware_and_config_files_is_refused(self):
-        """The two features do not compose today: ``config_files`` templates
-        interpolate provider_env at Python-assembly time, while the middleware
-        rewrite happens at bash time. A CLI reading its endpoint from an
-        on-disk config would bake in the upstream URL and bypass the proxy."""
-        from tolokaforge_coding_harnesses import (
-            HarnessSpec,
-            RequestMiddleware,
-        )
+    def test_a_config_template_that_hardcodes_an_endpoint_is_refused(self):
+        """A CLI reading its endpoint from an on-disk config never touches the
+        env var again after startup, so the middleware's bash-time rewrite
+        cannot reach it. A literal URL in the template therefore routes around
+        the proxy — silently, and the trial reports no tokens."""
+        from tolokaforge_coding_harnesses import HarnessSpec, RequestMiddleware
 
-        with pytest.raises(Exception, match="request_middleware and config_files"):
+        with pytest.raises(Exception, match="hard-codes a URL"):
             HarnessSpec(
                 install_source="some-pkg",
                 version="1.0.0",
                 argv_prefix=("cli",),
                 argv_suffix=(),
-                config_files={"/etc/cli.conf": "endpoint={{ base_url }}"},
+                config_files={"/etc/cli.conf": "endpoint=https://api.example.com/v1"},
                 request_middleware=RequestMiddleware(upstream_env_key="X_BASE_URL"),
             )
+
+    def test_a_config_template_asking_for_base_url_renders_the_proxy(self):
+        """The combination the refusal above used to forbid outright. The
+        template asks for the endpoint rather than naming one, so it renders
+        as the proxy's address — and the proxy holds the declared upstream,
+        which it read one preamble step earlier."""
+        from tolokaforge_coding_harnesses import (
+            HarnessSpec,
+            RequestMiddleware,
+            harness_command,
+        )
+
+        spec = HarnessSpec(
+            install_source="some-pkg",
+            version="1.0.0",
+            argv_prefix=("cli",),
+            argv_suffix=(),
+            config_files={"/etc/cli.conf": "endpoint={{ base_url }}"},
+            request_middleware=RequestMiddleware(upstream_env_key="X_BASE_URL", port=8899),
+            provider_env={"X_BASE_URL": "https://upstream.example.com/v1"},
+        )
+        command = harness_command("cli", "do it", "vendor/model", {"cli": spec})
+
+        assert "endpoint=http://127.0.0.1:8899" in command
+        assert "endpoint=https://upstream.example.com/v1" not in command
+        # The proxy still forwards to the declared upstream: it reads the env
+        # var before the rewrite that points everything downstream at it.
+        assert '--upstream "${X_BASE_URL}"' in command
+        assert command.index("middleware_proxy.py") < command.index("/etc/cli.conf")
 
     def test_if_the_validator_ever_loosens_the_preamble_order_is_middleware_first(self):
         """Defensive positive test: the validator refuses the combo today, so
@@ -591,3 +619,39 @@ class TestModelFlagStyle:
         )
         command = harness_command("opencode", "go", "openrouter/openai/gpt-5", {"opencode": spec})
         assert shlex.split(command) == ["opencode", "run", "--model=openai/gpt-5", "go"]
+
+
+class TestTheMiddlewareConfigTemplateRuleIsPerLine:
+    """A template naming several endpoints — `grok-build` declares one per
+    model — must not be excused by the first line that asks properly."""
+
+    @staticmethod
+    def _spec(template: str):
+        from tolokaforge_coding_harnesses import HarnessSpec, RequestMiddleware
+
+        return HarnessSpec(
+            install_source="p",
+            version="1.0.0",
+            argv_prefix=("cli",),
+            argv_suffix=(),
+            config_files={"/etc/cli.conf": template},
+            request_middleware=RequestMiddleware(upstream_env_key="X_BASE_URL"),
+            provider_env={"X_BASE_URL": "https://upstream.example.com/v1"},
+        )
+
+    def test_a_second_hardcoded_endpoint_is_still_refused(self) -> None:
+        with pytest.raises(Exception, match="hard-codes a URL on line 2"):
+            self._spec('a = {{ base_url }}\nb = "https://api.example.com/v1"')
+
+    @pytest.mark.parametrize(
+        "template",
+        ["url={{base_url}}", "url={{ base_url | trim }}"],
+        ids=["no-spaces", "with-filter"],
+    )
+    def test_the_jinja_spellings_that_render_correctly_are_accepted(self, template) -> None:
+        """`{{base_url}}` and `{{ base_url | trim }}` render the same value; a
+        spelling check that refused them would reject a working config."""
+        assert self._spec(template).request_middleware is not None
+
+    def test_a_documentation_url_in_a_comment_is_not_an_endpoint(self) -> None:
+        assert self._spec("url={{ base_url }}\n# see https://docs.example.com") is not None

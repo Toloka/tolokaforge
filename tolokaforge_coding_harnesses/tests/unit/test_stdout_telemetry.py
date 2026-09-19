@@ -321,13 +321,203 @@ class TestKimiCodeReportsTurnsAndNoUsage:
 
 class TestTheDialectTableIsTheWholeSurface:
     def test_the_table_names_exactly_the_cls_that_report_something(self) -> None:
-        """`grok-build` and `opencode` are absent deliberately — the first
-        prints a usage-free event stream, the second needs an accumulating
-        parser that is not written yet. Adding a name here means adding a
-        parser branch with it."""
-        assert set(STDOUT_TELEMETRY_DIALECTS) == {"claude-code", "codex", "kimi-code"}
+        """`grok-build` is absent deliberately: its stream is `text` events
+        closing on an `end` event that carries only a stop reason, so there is
+        nothing for a parser to read. Adding a name here means adding a parser
+        branch with it."""
+        assert set(STDOUT_TELEMETRY_DIALECTS) == {
+            "claude-code",
+            "codex",
+            "kimi-code",
+            "opencode",
+        }
 
     def test_every_declared_dialect_has_a_parser(self) -> None:
         for harness in STDOUT_TELEMETRY_DIALECTS:
             # An unparseable stream is fine; an AssertionError is not.
             parse_harness_stdout(harness, '{"type":"nothing"}\n')
+
+
+class TestOpencodeJson:
+    """Recorded from a live `opencode run --format=json` trial: 22 steps, each
+    `step_finish` carrying that step's tokens and cost."""
+
+    STREAM = (
+        '{"type":"step_start","part":{}}\n'
+        '{"type":"tool_use","part":{}}\n'
+        '{"type":"step_finish","part":{"tokens":{"total":16315,"input":1,'
+        '"output":304,"reasoning":0,"cache":{"write":387,"read":15623}},'
+        '"cost":0.01070115}}\n'
+        '{"type":"step_finish","part":{"tokens":{"total":200,"input":10,'
+        '"output":40,"reasoning":5,"cache":{"write":50,"read":100}},'
+        '"cost":0.002}}\n'
+    )
+
+    def test_usage_sums_across_steps(self) -> None:
+        t = parse_harness_stdout("opencode", self.STREAM)
+        assert t is not None
+        assert t.dialect == "opencode/json"
+        assert t.turns == 2
+        assert t.completion_tokens == 344
+        assert t.cache_read_input_tokens == 15723
+        assert t.cache_creation_input_tokens == 437
+        assert t.reasoning_tokens == 5
+
+    def test_the_prompt_basis_folds_the_cache_counters_back_in(self) -> None:
+        """`tokens.input` is the non-cached remainder — the step above reports
+        `input=1` against `total=16315`. The record declares an inclusive
+        prompt, so a reader that passed `input` through would price a
+        cache-heavy trial as though it had barely any prompt at all."""
+        t = parse_harness_stdout("opencode", self.STREAM)
+        assert t is not None
+        assert t.prompt_tokens == 1 + 15623 + 387 + 10 + 100 + 50
+
+    def test_cost_sums_across_steps(self) -> None:
+        t = parse_harness_stdout("opencode", self.STREAM)
+        assert t is not None
+        assert t.cost_usd == pytest.approx(0.01270115)
+
+    def test_a_stream_with_no_step_finish_reports_nothing(self) -> None:
+        assert parse_harness_stdout("opencode", '{"type":"step_start"}\n') is None
+
+
+class TestOpencodeStepsThatReportPartially:
+    """A step that omits a field must cost the trial nothing.
+
+    `parse_harness_stdout` is called unguarded on the raw stream
+    (`tolokaforge/core/runner.py`), after the CLI has already done and paid for
+    its work — so a parser that raises turns an unmetered trial into a lost
+    one."""
+
+    def test_a_step_without_a_cost_does_not_raise(self) -> None:
+        stream = json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "total": 10,
+                        "input": 1,
+                        "output": 4,
+                        "cache": {"write": 2, "read": 3},
+                    }
+                },
+            }
+        )
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.turns == 1
+        assert telemetry.completion_tokens == 4
+
+    def test_a_stream_where_no_step_reports_cost_reports_no_cost(self) -> None:
+        """`0.0` would claim a trial that ran spent nothing — the exact reading
+        this dialect exists to remove."""
+        stream = json.dumps({"type": "step_finish", "part": {"tokens": {"total": 10, "input": 10}}})
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.cost_usd is None
+
+    def test_cost_sums_only_the_steps_that_reported_one(self) -> None:
+        stream = (
+            json.dumps(
+                {"type": "step_finish", "part": {"cost": 0.02, "tokens": {"total": 5, "input": 5}}}
+            )
+            + "\n"
+            + json.dumps({"type": "step_finish", "part": {"tokens": {"total": 5, "input": 5}}})
+            + "\n"
+        )
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.cost_usd == pytest.approx(0.02)
+
+
+class TestOpencodePromptBasisFollowsTheProvider:
+    """Whether `tokens.input` includes the cached prompt is a property of the
+    provider opencode routed to, not of opencode. Reading either shape as the
+    other doubles or halves a cache-heavy trial's prompt, and the docs support
+    routing this harness at non-Anthropic vendors via an operator overlay."""
+
+    def test_an_anthropic_shaped_step_folds_the_cache_counters_in(self) -> None:
+        """Recorded live: input is the non-cached remainder, and total is the
+        sum of all four."""
+        step = json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "total": 16315,
+                        "input": 1,
+                        "output": 304,
+                        "cache": {"write": 387, "read": 15623},
+                    },
+                    "cost": 0.0107,
+                },
+            }
+        )
+
+        telemetry = parse_harness_stdout("opencode", step)
+
+        assert telemetry is not None
+        assert telemetry.prompt_tokens == 1 + 387 + 15623
+
+    def test_an_openai_shaped_step_is_left_alone(self) -> None:
+        """`input` already includes the cached part, so `input + output` is the
+        total. Folding again would bill the cached prompt twice."""
+        step = json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "tokens": {
+                        "total": 1100,
+                        "input": 1000,
+                        "output": 100,
+                        "cache": {"write": 0, "read": 900},
+                    },
+                    "cost": 0.01,
+                },
+            }
+        )
+
+        telemetry = parse_harness_stdout("opencode", step)
+
+        assert telemetry is not None
+        assert telemetry.prompt_tokens == 1000
+        assert telemetry.cache_read_input_tokens == 900
+
+
+class TestOpencodeStepsWithNoTokensBlock:
+    def test_steps_without_tokens_report_no_counts(self) -> None:
+        """Zeros here would make `has_token_counts` true, price the trial at
+        $0.00 and suppress the wire fallback that could still measure it —
+        "not measured" rendered as "measured as zero", on the one path that
+        had no guard."""
+        stream = json.dumps({"type": "step_finish", "part": {"cost": 0.01}})
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.turns == 1
+        assert telemetry.has_token_counts is False
+        assert telemetry.prompt_tokens is None
+        assert telemetry.cost_usd == pytest.approx(0.01)
+
+    def test_a_single_step_with_tokens_is_enough(self) -> None:
+        stream = (
+            json.dumps({"type": "step_finish", "part": {"cost": 0.01}})
+            + "\n"
+            + json.dumps(
+                {"type": "step_finish", "part": {"tokens": {"total": 5, "input": 5}, "cost": 0.02}}
+            )
+            + "\n"
+        )
+
+        telemetry = parse_harness_stdout("opencode", stream)
+
+        assert telemetry is not None
+        assert telemetry.has_token_counts is True
+        assert telemetry.prompt_tokens == 5

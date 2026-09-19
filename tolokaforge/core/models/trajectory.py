@@ -545,6 +545,34 @@ class Metrics(BaseModel):
     ``None`` on every engine-loop trial and on a harness trial whose CLI
     reported no cost of its own — ``codex`` and ``kimi-code`` print none, so
     only their priced ``cost_usd`` exists to compare across arms."""
+
+    pricing_basis: dict[str, float] = Field(default_factory=dict)
+    """The rates ``cost_usd`` was computed from, per million tokens.
+
+    Populated on a **coding-harness** trial, which the engine prices itself
+    from the bundled table. Empty elsewhere: an engine-loop trial's cost is
+    assembled per call by the cost ladder and often comes from litellm rather
+    than a table row, so there is no single basis to name; an unpriced model
+    has no rates at all.
+
+    Stored because a cost without its rates cannot be corrected, only
+    re-earned. When the shipped table was found 16 days stale, re-pricing the
+    affected runs meant reconstructing the rates by hand from the table's
+    history; with this, a corrected table re-prices any recorded trial from
+    its own bundle. Keys are the table's own: ``input``, ``output``,
+    ``cache_read``, ``cache_write``.
+    """
+
+    pricing_key: str | None = None
+    """The pricing-table key that actually decided the lookup.
+
+    Not the model as configured: normalisation strips ``openrouter/`` and can
+    infer a vendor namespace, so the row billed is routinely not the one the
+    config appears to name — which is the whole of the duplicate-spelling
+    defect. Recording the resolved key is what lets a reader check the trial
+    was priced off the row they think it was.
+    """
+
     cost_cache_rate_fallback: bool = False
     """``cost_usd`` is an overestimate: at least one call was priced off the
     bundled table, reported cache tokens, and resolved to a row carrying no

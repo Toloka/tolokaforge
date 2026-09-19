@@ -6,12 +6,14 @@ import random
 import shutil
 import socket
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
@@ -87,7 +89,8 @@ from tolokaforge.core.plugin_registry import (
     load_runtime_backend,
     load_trial_grader,
 )
-from tolokaforge.core.pricing import resolve_pricing
+from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
+from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -107,6 +110,7 @@ from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
+from tolokaforge_coding_harnesses import ENGINE_LOOP
 
 if TYPE_CHECKING:
     from tolokaforge.core.search.typesense_server import TypeSenseServerManager
@@ -271,6 +275,107 @@ def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
         return None
     image = entry.get("image")
     return image if isinstance(image, str) and image else None
+
+
+_PROVIDER_PROBE_TIMEOUT_S = 10.0
+"""Seconds to wait on the preflight probe. Short: a slow endpoint is a
+separate problem from a dead one, and this runs before every harness run."""
+
+
+def _configured_harness(config: Any) -> str | None:
+    """The harness slug a run selects, from either place it may be spelled.
+
+    ``models.agent.harness`` is the canonical home, and the orchestrator lifts
+    it into ``harness_adapter.params.agent_harness`` — but not the other way,
+    and the legacy param is what this repo's own matrix workflow and the
+    terminal-bench recipes still write. A guard reading only the canonical
+    field silently never runs on the shipped configuration.
+    """
+    agent = config.models.get("agent") if getattr(config, "models", None) else None
+    if agent is not None and getattr(agent, "harness", None):
+        return str(agent.harness)
+    adapter = getattr(config.evaluation, "harness_adapter", None)
+    params = getattr(adapter, "params", None) or {}
+    selected = params.get("agent_harness")
+    if selected and selected != ENGINE_LOOP:
+        return str(selected)
+    return None
+
+
+def _harness_provider_probe(
+    provider_env: Mapping[str, str],
+) -> tuple[str, dict[str, str]] | None:
+    """The URL to probe for *provider_env*, and the headers to send.
+
+    ``None`` when the envelope names no HTTP endpoint this can reach — a
+    harness routed at a provider whose base URL the adapter never resolved, or
+    one behind a scheme the probe does not speak. The caller treats that as
+    "not checked" and says nothing, because a probe that guesses is worse than
+    no probe.
+
+    The credential goes on the request because an endpoint that answers only
+    to an authorised caller is exactly the case worth catching: the team
+    gateway that refused this host answered 403 to everything, credential or
+    not, and a probe without one could not tell that from a healthy endpoint
+    behind auth.
+    """
+    base_urls = sorted(key for key in provider_env if key.endswith(("_BASE_URL", "_API_BASE")))
+    api_keys = sorted(key for key in provider_env if key.endswith("_API_KEY"))
+    # Several of either leaves no single answer for "the" endpoint or "the"
+    # key, and probing the wrong pair would refuse a healthy run on a spurious
+    # 401. `_config_template_variables` raises on the same ambiguity; a
+    # preflight declines to judge instead, which is the weaker and safer of
+    # the two responses for a check that is not a contract.
+    if len(base_urls) != 1 or len(api_keys) > 1:
+        return None
+    url = provider_env[base_urls[0]].strip()
+    if not url.startswith(("http://", "https://")):
+        return None
+    headers = {"User-Agent": "tolokaforge-preflight"}
+    if api_keys:
+        token = provider_env[api_keys[0]]
+        headers["Authorization"] = f"Bearer {token}"
+        # Google's REST surface reads its own header and ignores Authorization.
+        headers["x-goog-api-key"] = token
+    return url, headers
+
+
+def _unreachable_reason(url: str, headers: Mapping[str, str]) -> str | None:
+    """Why *url* cannot serve this run, or ``None`` when it can.
+
+    A HEAD on the base URL: the probe is asking whether an authorised caller
+    reaches this host at all, not whether a particular route exists. So a 404
+    passes — the endpoint answered, and which paths it serves is the CLI's
+    business — while 401/403 and a transport failure do not.
+    """
+    request = urllib_request.Request(url, method="HEAD", headers=dict(headers))
+    try:
+        with urllib_request.urlopen(request, timeout=_PROVIDER_PROBE_TIMEOUT_S) as response:
+            status = response.status
+    except urllib_error.HTTPError as exc:
+        status = exc.code
+    except Exception:  # noqa: BLE001 — see below: this is "could not ask"
+        # NOT a refusal. The URL probed is the one the *trial container* will
+        # use, and the probe runs on the host: a gateway on the container
+        # network, or `host.docker.internal` (which does not resolve on a
+        # Linux host at all), is unreachable from here and perfectly healthy
+        # from there. Refusing on that would fail correct runs, so a transport
+        # failure means "not checked".
+        return None
+    if status in (401, 403):
+        return f"HTTP {status} — the endpoint refused this credential"
+    if status >= 500:
+        return f"HTTP {status} — the endpoint is failing"
+    return None
+
+
+_PRICING_TABLE_STALE_AFTER = timedelta(days=7)
+"""How old the pricing table may be before a run says so.
+
+A warning, not a refusal: age alone is not drift, and a table a fortnight old
+whose rates have not moved prices a run correctly. The refusal is earned by
+disagreeing with the source, which is checked separately.
+"""
 
 
 def _local_image_exists(image_ref: str) -> bool:
@@ -2182,6 +2287,9 @@ class Orchestrator:
                 )
 
         self._warn_on_unreliable_pricing()
+        self._refuse_an_unreachable_harness_provider()
+        self._refuse_prices_it_cannot_vouch_for()
+        self._refuse_an_unenforceable_cost_limit()
 
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()
@@ -2203,6 +2311,164 @@ class Orchestrator:
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
+
+    def _refuse_an_unreachable_harness_provider(self) -> None:
+        """Refuse before any container work when the CLI's provider is dead.
+
+        A coding-harness CLI owns its own connection: the engine issues no
+        request on its behalf, so none of its retry or model-fallback
+        machinery is in the path. When the provider refuses everything the CLI
+        still writes a transcript and exits, and the trial is scored against an
+        untouched repository — observed live as three Arena tasks scoring
+        0.42-0.58 while the gateway 403'd every call.
+
+        :meth:`TrialRunner._harness_requests_all_refused` catches that per
+        trial, after the fact. This catches it before the run spends anything,
+        which is the difference between a wasted minute and a wasted matrix.
+
+        A refusal rather than a warning, because there is no reading of a dead
+        endpoint under which the run's numbers mean anything. Probing is
+        skipped entirely when ``TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT`` is set —
+        an air-gapped or record-replay run has no endpoint to reach and is not
+        in doubt. An endpoint the probe cannot form an opinion about (no
+        resolved base URL, a scheme it does not speak) is left alone: silence
+        here means "not checked", never "checked and fine".
+        """
+        if not _configured_harness(self.config):
+            return
+        if os.environ.get("TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT"):
+            self.logger.info(
+                "Skipping the harness provider preflight",
+                reason="TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT",
+            )
+            return
+        provider_env = getattr(self.adapter, "agent_provider_env", None)
+        if not provider_env:
+            return
+        probe = _harness_provider_probe(provider_env)
+        if probe is None:
+            return
+        url, headers = probe
+        detail = _unreachable_reason(url, headers)
+        if detail is None:
+            self.logger.info("Harness provider reachable", endpoint=url)
+            return
+        raise RuntimeError(
+            f"coding harness {_configured_harness(self.config)!r}: its provider "
+            f"endpoint {url} is not "
+            f"reachable ({detail}). The CLI talks to this endpoint itself — the "
+            "engine issues no request on its behalf, so nothing retries or falls "
+            "back, and a run against a dead endpoint produces trials that score "
+            "against an untouched task rather than failing. Fix the endpoint or "
+            "the credential, point the harness at a reachable gateway, or set "
+            "TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT=1 to run anyway."
+        )
+
+    def _refuse_an_unenforceable_cost_limit(self) -> None:
+        """Refuse a spend cap the run has no way to enforce.
+
+        A cost limit stops the run when accumulated spend crosses it, and the
+        accumulator adds ``trajectory.metrics.cost_usd or 0.0`` — so a trial
+        the table cannot price contributes **nothing**. A run whose model has
+        no pricing row therefore charges zero against its cap for every trial,
+        and the cap can never fire however much the run actually spends. The
+        operator asked for a bound and silently does not have one.
+
+        Only refused when a cap is actually set. Without one an unpriced model
+        is a reporting gap, which ``_warn_on_unreliable_pricing`` already
+        names; with one it is a safety guarantee that does not hold.
+        """
+        limit = self.config.effective_max_budget_usd
+        if limit is None:
+            return
+        unpriceable = sorted(
+            {
+                model.name
+                for model in (self.config.models or {}).values()
+                if model.name and not resolve_pricing(model.name).priced
+            }
+        )
+        if not unpriceable:
+            return
+        raise RuntimeError(
+            f"a cost limit of ${limit} is set, but the pricing table has no row for "
+            f"{', '.join(repr(name) for name in unpriceable)}. An unpriced trial adds "
+            "nothing to the accumulated spend, so the limit would never fire however "
+            "much the run costs — the cap would be a number in the config and nothing "
+            "else. Price the model (observability.pricing_overlay_path supplies rates "
+            "the bundled table lacks), or drop the limit and run without a cap."
+        )
+
+    def _refuse_prices_it_cannot_vouch_for(self) -> None:
+        """Refuse before any trial when the table disagrees with its source.
+
+        The shipped table is a copy that names where it came from and when.
+        Refreshing it is a manual command in no CI workflow, so it drifts, and
+        every other pricing signal the engine has asks a different question:
+        the cache-rate preflight asks whether a row is complete, the per-trial
+        fallback flag asks whether cache tokens were billed at the input rate,
+        and the vendor cross-check asks whether our arithmetic matches a CLI's
+        own figure. All three passed while two models were billed at rates the
+        provider had stopped charging — the arithmetic was right and only the
+        inputs had aged.
+
+        A refusal, because a cost comparison computed from wrong rates is not
+        a cost comparison. ``TOLOKAFORGE_SKIP_PRICING_FRESHNESS`` opts out for
+        a run that is not being compared on spend, or one deliberately pinned
+        to a historical table.
+
+        Failing to *ask* is never an answer: an unreachable source, a table
+        that names none, or a model neither side prices all leave the run
+        alone. Silence here means "not checked", never "checked and current".
+        """
+        if os.environ.get("TOLOKAFORGE_SKIP_PRICING_FRESHNESS"):
+            self.logger.info(
+                "Skipping the pricing freshness check",
+                reason="TOLOKAFORGE_SKIP_PRICING_FRESHNESS",
+            )
+            return
+        configured = sorted(
+            {model.name for model in (self.config.models or {}).values() if model.name}
+        )
+        if not configured:
+            return
+        metadata = pricing_table_metadata()
+        age = metadata.age
+        if age is not None and age <= _PRICING_TABLE_STALE_AFTER:
+            # A table refreshed inside the window is taken at its word. This is
+            # what keeps the check off the network in the ordinary case: every
+            # unit and canonical test constructs an orchestrator, and a live
+            # fetch on each would make the suite slow and non-hermetic for a
+            # question a timestamp already answers.
+            return
+        if age is not None:
+            self.logger.warning(
+                "The pricing table is older than its staleness window",
+                updated_at=metadata.updated_at.isoformat() if metadata.updated_at else None,
+                age_days=round(age.total_seconds() / 86400, 1),
+                remedy="uv run pricing-updater update",
+            )
+        if not metadata.source_url:
+            return
+        source = live_prices(metadata.source_url)
+        if source is None:
+            self.logger.info(
+                "Could not reach the pricing source; prices not checked",
+                source_url=metadata.source_url,
+            )
+            return
+        drifts = compare_against_source(configured, source)
+        if not drifts:
+            self.logger.info("Pricing table agrees with its source", models=len(configured))
+            return
+        detail = "; ".join(f"{drift.describe()} ({drift.ratio:.2f}x)" for drift in drifts)
+        raise RuntimeError(
+            f"pricing table disagrees with {metadata.source_url} on "
+            f"{len(drifts)} rate(s) this run would bill: {detail}. Every cost this "
+            "run reports would be computed from a rate the provider no longer "
+            "charges. Refresh with `uv run pricing-updater update`, or set "
+            "TOLOKAFORGE_SKIP_PRICING_FRESHNESS=1 to run anyway."
+        )
 
     def _warn_on_unreliable_pricing(self) -> None:
         """Warn per configured role whose model prices badly, before any trial runs.

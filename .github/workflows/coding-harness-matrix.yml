@@ -187,6 +187,15 @@ jobs:
             --cost-limit "${{ inputs.cost_limit_per_trial || '2' }}" \
             --time-limit "${{ inputs.time_limit_per_trial || '30m' }}"
 
+      - name: Assert the run measured something
+        # The matrix used to run every harness and assert nothing: a trial
+        # reporting no cost, or scoring against a repository its agent never
+        # touched, left the job green. Every defect the telemetry work found
+        # would have passed that gate. This checks the floor — that each trial
+        # was measured at all — not the score, which a harness is allowed to
+        # do badly on.
+        run: uv run python scripts/ci/assert_harness_run_is_measured.py results/ "${{ matrix.harness }}"
+
       - name: Upload result bundle
         if: always()
         uses: actions/upload-artifact@v4

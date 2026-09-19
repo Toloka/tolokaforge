@@ -223,7 +223,29 @@ provider block but not on `@ai-sdk/openai-compatible` blocks — the literal
 string ends up in the config file and OpenRouter answers 401 "Missing
 Authentication header".
 
-### Recipe — Gemini CLI (LiteLLM gateway)
+### Recipe — Gemini CLI on OpenRouter (a LiteLLM you run)
+
+`gemini-cli` speaks Google's native `generateContent` and has no
+OpenAI-compatible auth mode — 0.55.1 knows `LOGIN_WITH_GOOGLE`, `USE_GEMINI`,
+`USE_VERTEX_AI`, `COMPUTE_ADC`, `GATEWAY` and `LEGACY_CLOUD_SHELL`, and nothing
+else — so OpenRouter cannot serve it directly. A LiteLLM in front translates,
+which is what lets an OpenRouter-only host run this harness at all:
+
+```yaml
+harness_presets_file: "examples/terminal_bench/gemini_openrouter_overlay.yaml"
+```
+
+Point `LITELLM_BASE_URL` at your own gateway (from inside a trial container
+that is the host's address — `http://host.docker.internal:4111` on Docker
+Desktop). Register every model name the CLI may ask for, including the flash
+model it falls back to on its own: a gateway that knows only the configured
+slug answers `Invalid model name passed in model=gemini-3.5-flash` and the
+trial does no work.
+
+Verified on `git-recovery-challenge`: score 1.0 against the 0.58 the same task
+returns when the agent never starts.
+
+### Recipe — Gemini CLI (team LiteLLM gateway)
 
 The shipped default routes gemini-cli at Google directly and needs a real
 `GEMINI_API_KEY`. To route through a team LiteLLM gateway instead (recommended

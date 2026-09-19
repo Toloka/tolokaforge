@@ -12,7 +12,9 @@ from tolokaforge_coding_harnesses.stdout_telemetry import (
 )
 from tolokaforge_coding_harnesses.usage_log import (
     MIDDLEWARE_PROXY_USAGE_SOURCE,
+    HarnessRequestOutcomes,
     sum_harness_usage_records,
+    summarise_harness_requests,
 )
 
 from tolokaforge.core.actors.actor import Actor
@@ -55,7 +57,7 @@ from tolokaforge.core.models import (
     UserReplyOutcome,
 )
 from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
-from tolokaforge.core.pricing import estimate_cost
+from tolokaforge.core.pricing import MODEL_PRICING, estimate_cost, resolve_pricing
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -138,6 +140,16 @@ class TrialToolCallRecorder:
         window would dilute it.
         """
         return tuple(call for call in self._recorded if call.executor is executor)
+
+
+_VENDOR_COST_TOLERANCE = 1.25
+"""How far our price may sit from a CLI's own before the trial says so.
+
+Wide on purpose. The two figures are allowed to differ — rounding, a retry the
+CLI folded away, a list rate against a negotiated one — and the failure worth
+catching is a *multiple*: the live drifts that motivated this were 1.4x, 2.5x
+and 4.6x.
+"""
 
 
 class TrialRunner:
@@ -573,7 +585,22 @@ class TrialRunner:
                 )
             )
 
-            if tool_status is ToolExecutionStatus.SUCCESS:
+            refused = self._harness_requests_all_refused()
+            if refused is not None:
+                # The CLI ran, wrote a transcript and exited — but the provider
+                # served none of its requests, so nothing it "did" was its own
+                # work. Left as a completed trial this scores against an
+                # untouched repository, and on these packs that is worth
+                # 0.42-0.58 of partial credit: a dead agent reported as a weak
+                # one. ERROR routes it to a synthesized grade instead.
+                status = TrialStatus.ERROR
+                termination_reason = TerminationReason.API_ERROR
+                self.logger.error(
+                    "Harness trial made no successful provider request; not scoring it",
+                    requests=refused.requests,
+                    statuses=list(refused.statuses),
+                )
+            elif tool_status is ToolExecutionStatus.SUCCESS:
                 status = TrialStatus.COMPLETED
                 termination_reason = TerminationReason.AGENT_DONE
             elif tool_status is ToolExecutionStatus.TIMEOUT:
@@ -588,6 +615,24 @@ class TrialRunner:
             return self._finalise(
                 status=status, termination_reason=termination_reason, start_ts=start_ts
             )
+
+    def _harness_requests_all_refused(self) -> HarnessRequestOutcomes | None:
+        """The trial's request outcomes when the provider served none of them.
+
+        ``None`` whenever the question cannot be answered or the answer is no:
+        the harness booted no proxy, the records were unreadable, the CLI
+        called no provider, or at least one request was served. Only a
+        positive count of requests, every one of them refused, is evidence —
+        an absent measurement must not condemn a trial any more than it may
+        excuse one.
+        """
+        records = self._harness_usage_records
+        if records is None:
+            return None
+        outcomes = summarise_harness_requests(records)
+        if outcomes is None or not outcomes.none_succeeded:
+            return None
+        return outcomes
 
     def _finalise(
         self,
@@ -728,8 +773,39 @@ class TrialRunner:
             priced = self._price_harness_tokens(self.metrics.usage)
             if priced is not None:
                 cost_usd = priced
+                self._warn_on_vendor_cost_divergence(priced, telemetry.cost_usd)
         if cost_usd is not None:
             self.metrics.cost_usd = cost_usd
+
+    def _warn_on_vendor_cost_divergence(self, ours: float, theirs: float | None) -> None:
+        """Compare our price for this trial against the CLI's own figure.
+
+        ``harness_reported_cost_usd`` has been recorded as "the cross-check"
+        since the field was added, and nothing ever compared the two. Where a
+        CLI bills itself, that comparison is a free and continuous audit of the
+        whole pricing path — the table, the token basis and the arithmetic —
+        against a number the vendor computed independently. It has been exact
+        when both sides were right: a live ``claude-code`` trial agreed to
+        fifteen significant figures.
+
+        A warning rather than a refusal, because the two figures are allowed to
+        differ: a CLI may round, may price a retry we did not see, or may quote
+        a list rate against our negotiated one. What it must not do is differ
+        by a multiple, which is what a stale or wrong rate looks like.
+        """
+        if theirs is None or theirs <= 0:
+            return
+        ratio = ours / theirs
+        if 1 / _VENDOR_COST_TOLERANCE <= ratio <= _VENDOR_COST_TOLERANCE:
+            return
+        self.logger.warning(
+            "Our price for this trial disagrees with the CLI's own figure",
+            ours_usd=ours,
+            cli_reported_usd=theirs,
+            ratio=round(ratio, 3),
+            model=self.agent_client.model_name,
+            remedy="check the pricing table's rates for this model against the provider",
+        )
 
     def _read_container_usage_records(self, tool_name: str, container_path: str) -> str | None:
         """Read the wire-usage records out of the trial container via *tool_name*.
@@ -821,6 +897,26 @@ class TrialRunner:
                 records=wire.requests,
             )
 
+        if not any(
+            (
+                wire.prompt_tokens,
+                wire.completion_tokens,
+                wire.cache_read_input_tokens,
+                wire.reasoning_tokens,
+            )
+        ):
+            # Records exist, so the CLI did reach a provider — but every count
+            # in them is zero, which no real exchange produces. An upstream
+            # that answers without populating usage (a gateway translating a
+            # streamed response, say) is reporting nothing, not reporting
+            # nothing spent, and recording it as the latter puts a $0.00 in a
+            # cost comparison for a trial that ran.
+            self.logger.warning(
+                "Harness wire usage is entirely zero; leaving the trial unmeasured",
+                records=wire.requests,
+            )
+            return
+
         self.metrics.harness_usage_source = MIDDLEWARE_PROXY_USAGE_SOURCE
         self.metrics.usage = Usage(
             prompt_tokens=wire.prompt_tokens,
@@ -856,14 +952,43 @@ class TrialRunner:
         reason: every shipped dialect counts reasoning inside its output
         total, while :func:`estimate_cost` adds the argument to
         ``output_tokens``.
+
+        Flags the trial when the row priced observed cache tokens at its
+        input rate. The preflight check warns before the run that a model
+        resolves to a row without cache rates, but it cannot know whether the
+        trial will actually use the cache; this is the after-the-fact half of
+        the same signal, and on a cache-heavy harness trial the difference is
+        a multiple rather than a rounding.
         """
-        return estimate_cost(
-            model=self.agent_client.model_name,
+        model = self.agent_client.model_name
+        resolution = resolve_pricing(model)
+        self.metrics.pricing_key = resolution.resolved_key
+        if resolution.priced:
+            self.metrics.pricing_basis = {
+                rate: float(value)
+                for rate, value in (MODEL_PRICING.get(resolution.resolved_key) or {}).items()
+                if isinstance(value, (int, float))
+            }
+        cost = estimate_cost(
+            model=model,
             input_tokens=usage.prompt_tokens,
             output_tokens=usage.completion_tokens,
             cache_read_input_tokens=usage.cache_read_input_tokens,
             cache_creation_input_tokens=usage.cache_creation_input_tokens,
         )
+        if cost is not None:
+            # Each missing rate against its own counter, not both against
+            # either: a row lacking only `cache_write` misprices nothing on a
+            # trial that wrote no cache, and flagging it there would teach a
+            # reader to ignore the flag where it does mean something.
+            observed = {
+                "cache_read": usage.cache_read_input_tokens,
+                "cache_write": usage.cache_creation_input_tokens,
+            }
+            missing = resolve_pricing(model).missing_cache_rates
+            if any(observed.get(rate) for rate in missing):
+                self.metrics.cost_cache_rate_fallback = True
+        return cost
 
     def _apply_probe_stats(self) -> None:
         """Copy the trial's rate-limit probe accounting onto :class:`Metrics`.

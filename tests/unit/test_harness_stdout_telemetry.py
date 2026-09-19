@@ -22,11 +22,13 @@ figure is reproducible from the table, whichever tap produced the tokens.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
 
 from tolokaforge.core.models import Trajectory, TrialStatus
+from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.core.pricing import get_pricing_info
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.tools.registry import ToolResult
@@ -742,3 +744,283 @@ class TestTheClisOwnTokensWinOverTheWires:
 
         assert metrics.usage.prompt_tokens == 1_234
         assert metrics.harness_usage_source == MIDDLEWARE_PROXY_USAGE_SOURCE
+
+
+class TestACacheHeavyTrialOnARateLessRowIsFlagged:
+    """The after-the-fact half of the cache-rate signal.
+
+    The preflight check warns that a model resolves to a row carrying no
+    cache rates, but before the run it cannot know whether the trial will use
+    the cache — a model without prompt caching legitimately has no rates. Once
+    a trial reports cache tokens against such a row, `_compute_cost` has
+    billed them at the input rate and the figure is overstated. A harness
+    trial is where this bites hardest: they are cache-dominated, so the gap is
+    a multiple, not a rounding.
+
+    Regression: both harness pricing paths set `cost_usd` without setting the
+    flag, so the one signal that says "this number is wrong" stayed `False` on
+    a live trial that overstated cost 4.6x.
+    """
+
+    def test_cache_tokens_on_a_row_without_cache_rates_flag_the_trial(self) -> None:
+        metrics = _run(_STREAM_JSON, model=_FLAT_MODEL).metrics
+
+        assert metrics.usage.cache_read_input_tokens > 0
+        assert metrics.cost_usd is not None
+        assert metrics.cost_cache_rate_fallback is True
+
+    def test_the_same_trial_on_the_row_that_carries_them_is_not_flagged(self) -> None:
+        """Same tokens, same CLI — only the spelling of the model differs, and
+        with it whether the row can price a cache read."""
+        metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+
+        assert metrics.usage.cache_read_input_tokens > 0
+        assert metrics.cost_cache_rate_fallback is False
+
+
+class TestAnAllZeroWireMeasurementIsNotAMeasurement:
+    """A provider that answers without populating usage is reporting nothing,
+    not reporting nothing spent.
+
+    Seen live: a LiteLLM gateway translating Google's ``generateContent``
+    returns real counts on the unary path and zeros on the streamed one, which
+    is the path ``gemini-cli`` takes. Recording that faithfully put `$0.00`
+    on a trial that did a task's worth of work.
+    """
+
+    def test_records_that_sum_to_zero_leave_the_trial_unmeasured(self) -> None:
+        # The record shape the proxy actually appends, so this exercises the
+        # summing path rather than being discarded as unparseable.
+        zeroed = json.dumps(
+            {
+                "timestamp": "2026-09-18T10:00:00+00:00",
+                "path": "/v1beta/models/gemini-3.6-flash:streamGenerateContent",
+                "status": 200,
+                "model": "gemini-3.6-flash",
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+        )
+
+        metrics = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=zeroed + "\n",
+        ).metrics
+
+        assert metrics.cost_usd is None
+        assert metrics.harness_usage_source is None
+        assert metrics.usage.prompt_tokens == 0
+
+
+class TestATrialTheProviderNeverServedIsNotScored:
+    """The dead-agent case, reached live twice by different routes: a stale
+    image whose CLI never started, and a gateway that refused every call.
+
+    Both times the CLI wrote a transcript, exited, and left an untouched
+    repository the grader scored — worth 0.42-0.58 of partial credit on the
+    Arena packs, which reads as a weak agent rather than no agent. A trial the
+    provider never served must not reach the grader as a completed one.
+    """
+
+    @staticmethod
+    def _records(*statuses: int) -> str:
+        return "".join(
+            json.dumps(
+                {
+                    "timestamp": "2026-09-18T10:00:00+00:00",
+                    "path": "/v1beta/models/gemini-3.6-flash:streamGenerateContent",
+                    "status": status,
+                    "model": "gemini-3.6-flash",
+                }
+            )
+            + "\n"
+            for status in statuses
+        )
+
+    def test_every_request_refused_errors_the_trial(self) -> None:
+        trajectory = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=self._records(403, 403, 403),
+        )
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.termination_reason is TerminationReason.API_ERROR
+
+    def test_one_served_request_leaves_the_trial_alone(self) -> None:
+        """A trial that reached the provider at all is the agent's own work,
+        however badly it went — retries and rate limits are not a dead run."""
+        trajectory = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=self._records(429, 200, 500),
+        )
+
+        assert trajectory.status is TrialStatus.COMPLETED
+
+    def test_no_records_at_all_condemns_nothing(self) -> None:
+        """No proxy, or a CLI that called no provider. An absent measurement
+        must not fail a trial any more than it may excuse one."""
+        trajectory = _run("", harness="kimi-code", model=_KIMI_MODEL)
+
+        assert trajectory.status is TrialStatus.COMPLETED
+
+
+class TestTheVendorCrossCheckIsActuallyChecked:
+    """`harness_reported_cost_usd` was recorded as "the cross-check" from the
+    day it was added, and nothing compared it to ours. Where a CLI bills
+    itself that comparison is a free, continuous audit of the table, the token
+    basis and the arithmetic against a number the vendor computed
+    independently — and it has been exact when both were right."""
+
+    @staticmethod
+    def _divergences(records) -> list[str]:
+        return [r.getMessage() for r in records if "disagrees with the CLI" in r.getMessage()]
+
+    def test_a_multiple_apart_is_reported(self, caplog) -> None:
+        """Priced off the spelling whose row carries no cache rates, so the
+        cache-heavy fixture is billed several-fold over what the CLI reported —
+        which is what a stale or wrong rate looks like."""
+        with caplog.at_level(logging.WARNING):
+            metrics = _run(_STREAM_JSON, model=_FLAT_MODEL).metrics
+
+        assert metrics.cost_usd is not None
+        assert metrics.harness_reported_cost_usd is not None
+        assert metrics.cost_usd / metrics.harness_reported_cost_usd > 1.25
+        assert self._divergences(caplog.records)
+
+    def test_agreement_is_silent(self, caplog) -> None:
+        """The live `claude-code` case: the two agreed to fifteen significant
+        figures, and a trial that agrees must say nothing."""
+        with caplog.at_level(logging.WARNING):
+            metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+
+        assert metrics.cost_usd is not None
+        assert metrics.harness_reported_cost_usd is not None
+        assert self._divergences(caplog.records) == []
+
+
+class TestTheRatesBehindTheCostAreRecorded:
+    """A cost without its rates cannot be corrected, only re-earned.
+
+    When the shipped table was found 16 days stale, re-pricing the affected
+    runs meant reconstructing rates by hand from the table's history. With the
+    basis on the trial, a corrected table re-prices any recorded run from its
+    own bundle.
+    """
+
+    def test_the_rates_and_the_resolved_key_are_stored(self) -> None:
+        metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+
+        assert metrics.cost_usd is not None
+        assert metrics.pricing_key == "anthropic/claude-sonnet-4.6"
+        assert metrics.pricing_basis["input"] > 0
+        assert metrics.pricing_basis["output"] > 0
+
+    def test_the_key_is_the_row_that_decided_the_lookup(self) -> None:
+        """Not the model as configured: normalisation strips `openrouter/`,
+        so the row billed is routinely not the one the config appears to
+        name — which is the whole of the duplicate-spelling defect."""
+        metrics = _run(_STREAM_JSON, model="openrouter/anthropic/claude-sonnet-4.6").metrics
+
+        assert metrics.pricing_key == "anthropic/claude-sonnet-4.6"
+
+    def test_the_recorded_basis_reproduces_the_recorded_cost(self) -> None:
+        """The point of storing it: a reader can re-derive the number without
+        the table the run used."""
+        metrics = _run(_STREAM_JSON, model=_MODEL).metrics
+        usage, basis = metrics.usage, metrics.pricing_basis
+
+        fresh = usage.prompt_tokens - usage.cache_read_input_tokens
+        fresh -= usage.cache_creation_input_tokens
+        expected = (
+            fresh * basis["input"]
+            + usage.completion_tokens * basis["output"]
+            + usage.cache_read_input_tokens * basis["cache_read"]
+            + usage.cache_creation_input_tokens * basis["cache_write"]
+        ) / 1_000_000
+
+        assert metrics.cost_usd == pytest.approx(expected, rel=1e-6)
+
+    def test_an_unpriced_model_records_no_rates(self) -> None:
+        """Empty, not zeroed: a model with no row has no rates, and a zero
+        there would read as a model priced at nothing."""
+        metrics = _run(_STREAM_JSON, model=_UNPRICED_MODEL).metrics
+
+        assert metrics.pricing_basis == {}
+        assert metrics.pricing_key is not None
+
+
+class TestTheCacheRateFlagTracksTheRateThatWasMissing:
+    """Each missing rate against its own counter.
+
+    A row lacking only `cache_write` misprices nothing on a trial that wrote
+    no cache, and flagging it there would teach a reader to ignore the flag
+    where it does mean something.
+    """
+
+    WRITE_RATE_ONLY_MISSING = "openrouter/x-ai/grok-4.5"
+    """A row carrying `cache_read` and no `cache_write`."""
+
+    def test_a_missing_write_rate_with_no_writes_is_not_flagged(self) -> None:
+        records = json.dumps(
+            {
+                "timestamp": "2026-09-18T10:00:00+00:00",
+                "path": "/chat/completions",
+                "status": 200,
+                "model": "m",
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "total_tokens": 1050,
+                "cache_read_input_tokens": 900,
+                "reasoning_tokens": 0,
+            }
+        )
+
+        metrics = _run(
+            "",
+            harness="kimi-code",
+            model=self.WRITE_RATE_ONLY_MISSING,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=records + "\n",
+        ).metrics
+
+        assert metrics.usage.cache_creation_input_tokens == 0
+        assert metrics.usage.cache_read_input_tokens == 900
+        assert metrics.cost_cache_rate_fallback is False
+
+    def test_a_missing_read_rate_with_reads_is_flagged(self) -> None:
+        """The same trial on a row that cannot price the reads it did."""
+        records = json.dumps(
+            {
+                "timestamp": "2026-09-18T10:00:00+00:00",
+                "path": "/chat/completions",
+                "status": 200,
+                "model": "m",
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "total_tokens": 1050,
+                "cache_read_input_tokens": 900,
+                "reasoning_tokens": 0,
+            }
+        )
+
+        metrics = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=records + "\n",
+        ).metrics
+
+        assert metrics.cost_cache_rate_fallback is True
