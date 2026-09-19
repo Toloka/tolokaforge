@@ -1972,33 +1972,44 @@ def validate(tasks: str, strict_authoring: bool):
         raise click.ClickException(f"{invalid} of {len(task_files)} task files failed validation")
 
 
-def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int]:
+def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int, int]:
     """Aggregate spend / prompt-tokens / completion-tokens from per-trial metrics.
 
     Reads the ``metrics.yaml`` usage shape: ``usage.prompt_tokens`` /
     ``usage.completion_tokens`` (plus cache and reasoning counters, ignored
     here — they are surfaced by the aggregate reporter under ``tools/``).
+
+    The fourth value is how many trials carried **no** cost. They are left out
+    of the total rather than counted as zero, so the caller can say the figure
+    is a floor instead of presenting a partial sum as the answer.
     """
     total_cost = 0.0
+    unpriced = 0
     total_prompt_tokens = 0
     total_completion_tokens = 0
 
     trials_root = run_dir / "trials"
     if not trials_root.exists():
-        return total_cost, total_prompt_tokens, total_completion_tokens
+        return total_cost, total_prompt_tokens, total_completion_tokens, unpriced
 
     for metrics_path in trials_root.glob("*/*/metrics.yaml"):
         try:
             with open(metrics_path) as f:
                 metrics = yaml.safe_load(f) or {}
-            total_cost += float(metrics.get("cost_usd", 0.0) or 0.0)
+            trial_cost = metrics.get("cost_usd")
+            if trial_cost is None:
+                # Counting it as zero reports an unmeasured trial as a free
+                # one, and the two are the opposite claim.
+                unpriced += 1
+            else:
+                total_cost += float(trial_cost)
             usage = metrics.get("usage", {}) or {}
             total_prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
             total_completion_tokens += int(usage.get("completion_tokens", 0) or 0)
         except Exception:
             continue
 
-    return total_cost, total_prompt_tokens, total_completion_tokens
+    return total_cost, total_prompt_tokens, total_completion_tokens, unpriced
 
 
 def _format_eta(seconds: float | None) -> str:
@@ -2051,7 +2062,12 @@ def status(run_dir: str, config: str | None):
         console.print(f"[red]No run_state.json or queue backend found in {run_path}[/red]")
         return
 
-    total_cost, total_input_tokens, total_output_tokens = _collect_run_spend_and_tokens(run_path)
+    (
+        total_cost,
+        total_input_tokens,
+        total_output_tokens,
+        unpriced_trials,
+    ) = _collect_run_spend_and_tokens(run_path)
 
     if info:
         console.print(f"[bold]Run:[/bold] {info['run_id']}")
@@ -2079,7 +2095,14 @@ def status(run_dir: str, config: str | None):
         )
         console.print(f"[bold]Queue ETA:[/bold] {_format_eta(eta_s)}")
 
-    console.print(f"[bold]Estimated cost:[/bold] ${total_cost:.4f}")
+    if unpriced_trials:
+        # ">=" rather than a bare figure: the number is a floor, not a total.
+        console.print(
+            f"[bold]Estimated cost:[/bold] >= ${total_cost:.4f} "
+            f"[dim]({unpriced_trials} trial(s) carry no cost and are not in this)[/dim]"
+        )
+    else:
+        console.print(f"[bold]Estimated cost:[/bold] ${total_cost:.4f}")
     console.print(f"[bold]Input tokens:[/bold] {total_input_tokens}")
     console.print(f"[bold]Output tokens:[/bold] {total_output_tokens}")
 

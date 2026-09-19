@@ -2289,6 +2289,7 @@ class Orchestrator:
         self._warn_on_unreliable_pricing()
         self._refuse_an_unreachable_harness_provider()
         self._refuse_prices_it_cannot_vouch_for()
+        self._refuse_an_unenforceable_cost_limit()
 
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()
@@ -2361,6 +2362,41 @@ class Orchestrator:
             "against an untouched task rather than failing. Fix the endpoint or "
             "the credential, point the harness at a reachable gateway, or set "
             "TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT=1 to run anyway."
+        )
+
+    def _refuse_an_unenforceable_cost_limit(self) -> None:
+        """Refuse a spend cap the run has no way to enforce.
+
+        A cost limit stops the run when accumulated spend crosses it, and the
+        accumulator adds ``trajectory.metrics.cost_usd or 0.0`` — so a trial
+        the table cannot price contributes **nothing**. A run whose model has
+        no pricing row therefore charges zero against its cap for every trial,
+        and the cap can never fire however much the run actually spends. The
+        operator asked for a bound and silently does not have one.
+
+        Only refused when a cap is actually set. Without one an unpriced model
+        is a reporting gap, which ``_warn_on_unreliable_pricing`` already
+        names; with one it is a safety guarantee that does not hold.
+        """
+        limit = self.config.effective_max_budget_usd
+        if limit is None:
+            return
+        unpriceable = sorted(
+            {
+                model.name
+                for model in (self.config.models or {}).values()
+                if model.name and not resolve_pricing(model.name).priced
+            }
+        )
+        if not unpriceable:
+            return
+        raise RuntimeError(
+            f"a cost limit of ${limit} is set, but the pricing table has no row for "
+            f"{', '.join(repr(name) for name in unpriceable)}. An unpriced trial adds "
+            "nothing to the accumulated spend, so the limit would never fire however "
+            "much the run costs — the cap would be a number in the config and nothing "
+            "else. Price the model (observability.pricing_overlay_path supplies rates "
+            "the bundled table lacks), or drop the limit and run without a cap."
         )
 
     def _refuse_prices_it_cannot_vouch_for(self) -> None:

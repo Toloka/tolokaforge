@@ -185,12 +185,26 @@ class PerTaskMetrics(BaseModel):
     total_cost_usd: int | float | None = None
     avg_cost_usd: int | float | None = None
 
+    # How much of the run the cost figures above actually cover. A total over
+    # 3 of 50 trials and a total over 50 of 50 are the same number without
+    # these, and `avg_cost_usd` averages over `costed_trials`, not over every
+    # attempt — the denominator travels beside its average for the same reason
+    # `scored_trials` does.
+    costed_trials: int = 0
+    unpriced_trials: int = 0
+
     # Judge-cost split — ``judge_cost_usd`` is the LLM-judge grader's
     # spend, tracked separately so the agent-vs-judge cost breakdown
     # survives round-trips. ``total_cost_incl_judge_usd`` = agent +
     # judge; ``None`` when neither is known.
     judge_cost_usd: int | float | None = None
     total_cost_incl_judge_usd: int | float | None = None
+    total_cost_incl_judge_is_partial: bool = False
+    """Whether the combined total is missing one of its two halves.
+
+    ``total_cost_incl_judge_usd`` used to coerce an unknown half to ``0.0``,
+    reporting the known half alone as if it were the run's total. It now
+    carries whichever half is known and says so here."""
 
     # Per-trial wall-time percentiles.
     latency_p50_s: int | float = 0
@@ -277,10 +291,24 @@ class AggregateMetrics(BaseModel):
     total_cost_usd: int | float | None = None
     avg_cost_usd: int | float | None = None
 
+    # How much of the run the cost figures above actually cover. A total over
+    # 3 of 50 trials and a total over 50 of 50 are the same number without
+    # these, and `avg_cost_usd` averages over `costed_trials`, not over every
+    # attempt — the denominator travels beside its average for the same reason
+    # `scored_trials` does.
+    costed_trials: int = 0
+    unpriced_trials: int = 0
+
     # Judge-cost split at the run/slice level — same shape as
     # ``PerTaskMetrics`` but aggregated across the tasks/slice.
     judge_cost_usd: int | float | None = None
     total_cost_incl_judge_usd: int | float | None = None
+    total_cost_incl_judge_is_partial: bool = False
+    """Whether the combined total is missing one of its two halves.
+
+    ``total_cost_incl_judge_usd`` used to coerce an unknown half to ``0.0``,
+    reporting the known half alone as if it were the run's total. It now
+    carries whichever half is known and says so here."""
 
     latency_p50_s_macro: int | float = 0
     latency_p90_s_macro: int | float = 0
