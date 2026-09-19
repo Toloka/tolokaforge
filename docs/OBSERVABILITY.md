@@ -225,10 +225,43 @@ session, and the trace joins the list when the trial ends. The trace's name, ses
 fields and identity metadata ride on **every** span, previews included, because a v4 receiver
 stores and filters them per observation.
 
-The receipt gains three counters under `extra`: `langfuse.previews_sent`,
-`langfuse.final_observations_sent`, `langfuse.error_roots_sent`. `projection: full` is required on
+The receipt gains four counters under `extra`: `langfuse.previews_sent`,
+`langfuse.final_observations_sent`, `langfuse.error_roots_sent` and
+`langfuse.roots_unconfirmed`. The first three count spans **queued**, not spans a receiver
+acknowledged: the queue takes a span whether or not the endpoint answers, and what actually left
+is `spans_exported` / `spans_dropped` at the top of the receipt. `projection: full` is required on
 this family - the trace's root observation comes from the bundle - and a run that asks for less is
 refused at run start.
+
+**One POST per batch, and what happens when one fails.** The stock OTLP exporter re-posts a batch
+that failed with a connection error or a retryable status. Here that is unsafe in exactly one
+case: the receiver wrote the batch and its answer was lost, so the re-post writes every
+observation again, the root included, with no way to delete either copy. The v4 family therefore
+posts each batch once. The consequences are visible in the receipt:
+
+- a batch the queue never took (it was full, or the flush budget ran out) is certainly unwritten,
+  so the trace gets its **error root** at run end;
+- a batch the exporter posted and could not confirm is **ambiguous**: no error root is written for
+  it, because a second root under the same id could never be removed. The run warns, counts it in
+  `langfuse.roots_unconfirmed`, and the offline uploader completes such a trace later (it reads
+  which ids the receiver already holds before writing).
+
+The error root itself carries nine of the trace metadata schema's keys, not the full 34: it is
+deliberately minimal (identity, status, the reason, the label and the time source), so a reader
+that groups by `model_name` or by a verdict key does not see the failed trials at all. Look for
+`status: error` or the `error_root` marker in the observation's own metadata.
+
+**Where the verdict lives on this family.** The trace's metadata is written once with the root, so
+a later grading cannot correct it: `pass`, `score` and `primary_grading` in the metadata are as of
+that write, for good. Scores are not append-only, so they carry the current answer instead. Beside
+the trace-level mirror of the primary grading the observer writes a categorical `primary_grading`
+score naming the grading the mirror belongs to, and both carry `scope: primary` in the score
+metadata. A reader that wants "the verdict as it stands" queries the scores filtered on that
+marker; without the filter the grading-scoped copies are counted too. The offline connector moves
+the same pair when a later grading becomes primary.
+
+The decision, the options it was chosen over and its consequences are
+[ADR-0048](adr/0048-write-once-observations-append-only-receiver.md).
 
 ## The trace metadata
 

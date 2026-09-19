@@ -55,6 +55,11 @@ from tolokaforge.observability.factory import RunIdentity, TracingConfigError, e
 from tolokaforge.observability.observer import TrialObserver
 from tolokaforge_langfuse import __api_version__, __version__
 from tolokaforge_langfuse.config import LangfuseConfig
+
+# the receiver families and the projection mode have one home each: the module that owns the
+# behaviour behind them (the capability probe, the bundle projection). Neither pulls the
+# OpenTelemetry SDK in, which is why they can be imported here and the observer cannot.
+from tolokaforge_langfuse.media import SERVER_V3, SERVER_V4
 from tolokaforge_langfuse.model_names import (
     NONE,
     ModelNameResolver,
@@ -73,6 +78,7 @@ from tolokaforge_langfuse.profile import (
     load_tracing_profile,
     parse_metadata_variable,
 )
+from tolokaforge_langfuse.projection import PROJECTION_FULL
 from tolokaforge_langfuse.vocabulary import VocabularyError, validate_caller_tag
 
 if TYPE_CHECKING:
@@ -93,10 +99,6 @@ LANGFUSE_SECRET_KEY_SECRET = "LANGFUSE_SECRET_KEY"
 LANGFUSE_PROJECT_ENV = "LANGFUSE_PROJECT"
 LANGFUSE_EXTRA_HEADERS_SECRET = "LANGFUSE_EXTRA_HEADERS"
 LANGFUSE_OTEL_PATH = "/api/public/otel/v1/traces"
-# the receiver families (media.SERVER_V3 / SERVER_V4), resolved by capability at run start
-SERVER_V3 = "v3"
-SERVER_V4 = "v4"
-PROJECTION_FULL = "full"
 _TRUE = frozenset({"1", "true", "yes", "on"})
 PROJECT_VERIFIED = "verified"
 PROJECT_UNVERIFIED = "unverified"
@@ -157,6 +159,7 @@ def build(
     )
     try:
         from tolokaforge_langfuse.otel import (
+            INGESTION_VERSION,
             OTelTrialObserver,
             ProjectionSettings,
             SpanQueue,
@@ -210,7 +213,14 @@ def build(
         send_manifest_event=server_api == SERVER_V3,
     )
     queue = SpanQueue(
-        make_otlp_exporter(endpoint, headers=headers),
+        make_otlp_exporter(
+            endpoint,
+            headers=headers,
+            # the direct ingestion path is a v4 route; the v3 family is written exactly as before
+            ingestion_version=INGESTION_VERSION if server_api == SERVER_V4 else None,
+            # a retried batch the receiver already wrote is a duplicate it cannot delete
+            retry=server_api != SERVER_V4,
+        ),
         max_size=tracing.queue_size,
         batch_size=tracing.export_batch_size,
         interval_s=tracing.export_interval_s,

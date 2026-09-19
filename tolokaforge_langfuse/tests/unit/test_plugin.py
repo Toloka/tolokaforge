@@ -432,6 +432,33 @@ class TestTheReceiverFamily:
         assert not [u for u in calls if "/v2/observations" in u]
         assert observer.run_finished().details[0]["server_api"] == "v4"
 
+    def test_the_v3_family_is_written_exactly_as_before(self, monkeypatch) -> None:
+        """The direct ingestion path and the single-post exporter are v4 answers: a v3 receiver
+        gets neither, so its wire traffic is the one this observer has always written."""
+        pytest.importorskip("opentelemetry.sdk")
+        from tolokaforge_langfuse.otel import INGESTION_VERSION_HEADER
+
+        observer, _ = self._build(monkeypatch, (404, b""))
+        exporter = observer._queue._exporter
+        assert type(exporter).__name__ == "OTLPSpanExporter"
+        assert INGESTION_VERSION_HEADER not in exporter._session.headers
+
+    def test_the_v4_family_asks_for_the_direct_path_and_posts_once(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from tolokaforge_langfuse.otel import INGESTION_VERSION_HEADER
+
+        observer, _ = self._build(monkeypatch, (200, b'{"data": []}'))
+        exporter = observer._queue._exporter
+        assert type(exporter).__name__ == "SingleAttemptSpanExporter"
+        assert exporter._session.headers[INGESTION_VERSION_HEADER] == "4"
+
+    def test_a_page_that_is_not_this_api_is_not_a_v4_receiver(self, monkeypatch) -> None:
+        """An authenticating proxy answers 200 with an HTML login page on any path; taking that
+        for a receiver would put the whole run on the write-once layout against a v3 one."""
+        pytest.importorskip("opentelemetry.sdk")
+        observer, _ = self._build(monkeypatch, (200, b"<html><body>Sign in</body></html>"))
+        assert observer.run_finished().details[0]["server_api"] == "v3"
+
     def test_a_write_once_receiver_needs_the_full_projection(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
         with pytest.raises(TracingConfigError, match="projection='gradings' cannot be used"):

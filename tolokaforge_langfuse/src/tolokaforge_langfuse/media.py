@@ -135,6 +135,18 @@ SERVER_FAMILIES = (SERVER_V3, SERVER_V4, SERVER_AUTO)
 V2_OBSERVATIONS_PATH = "/api/public/v2/observations"
 
 
+def _answers_like_the_observations_api(body: bytes | str | None) -> bool:
+    """True when the body is what ``GET /v2/observations`` returns: a JSON object with ``data``."""
+    if body is None:
+        return False
+    raw = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+    try:
+        answer = json.loads(raw or "")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(answer, dict) and "data" in answer
+
+
 def detect_server_family(
     api_base: str,
     headers: Mapping[str, str],
@@ -150,7 +162,7 @@ def detect_server_family(
     probe: nothing is written into the destination project. Any other answer is reported as the
     v3 family, which is what every deployment runs today, and the caller logs it.
     """
-    status, _ = (opener or urllib_opener)(
+    status, body = (opener or urllib_opener)(
         "GET",
         f"{api_base.rstrip('/')}{V2_OBSERVATIONS_PATH}?limit=1",
         dict(headers),
@@ -158,7 +170,18 @@ def detect_server_family(
         timeout_s,
     )
     if 200 <= status < 300:
-        return SERVER_V4
+        # a 2xx alone is not the answer: an authenticating proxy or an SSO portal answers 200
+        # with an HTML page on any path, and taking that for a v4 receiver would put a whole run
+        # on the write-once layout against a v3 one
+        if _answers_like_the_observations_api(body):
+            return SERVER_V4
+        _log.warning(
+            "server family: GET %s answered HTTP %s with a body that is not this API's; taking "
+            "the v3 family",
+            V2_OBSERVATIONS_PATH,
+            status,
+        )
+        return SERVER_V3
     if status != 404:
         _log.warning(
             "server family: GET %s answered HTTP %s; taking the v3 family",
@@ -411,11 +434,9 @@ class LangfuseAttachments:
         manifest = build_manifest(trial_dir, attached, skipped)
         if counts.failed:
             manifest["attachments_complete"] = False
-        if not self._send_manifest_event:
-            # the caller writes it into the root observation and counts it there; the breaker
-            # then judges this step by the files alone
-            pass
-        else:
+        # without the event the caller writes the manifest into the root observation and counts
+        # it there, and the breaker judges this step by the files alone
+        if self._send_manifest_event:
             try:
                 self._send_manifest(trace_id, {**dict(metadata or {}), **manifest}, trace_timestamp)
                 counts.manifests_sent += 1

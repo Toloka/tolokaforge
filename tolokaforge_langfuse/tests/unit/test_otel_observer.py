@@ -606,7 +606,66 @@ class TestErrorRoots:
         receipt = observer.run_finished()
         assert receipt.extra["langfuse.error_roots_sent"] == 0
 
-    def test_a_root_the_exporter_never_took_is_answered_with_one(self, tmp_path) -> None:
+    def test_a_root_the_queue_never_took_is_answered_with_one(self, tmp_path) -> None:
+        """A span the queue refused never reached the receiver, so the trace has no root at all
+        and the error root writes under its id."""
+        import parity_bundle as pb
+
+        from tolokaforge.observability.observer import TrialIdentity
+
+        identity = TrialIdentity(
+            run_id=pb.RUN_ID,
+            task_id=pb.TASK_ID,
+            trial_index=pb.TRIAL_INDEX,
+            attempt_id=pb.ATTEMPT_ID,
+            run_tag=pb.RUN_TAG,
+        )
+
+        class _FullWhenTheRootArrives(SpanQueue):
+            """The real "queue full" branch, taken for the final root span alone."""
+
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.refused = 0
+
+            def put(self, span, *, track=None):
+                if format(span.context.span_id, "016x") == identity.root_id and not self.refused:
+                    self.refused += 1
+                    room, self._max_size = self._max_size, 0
+                    try:
+                        return super().put(span, track=track)
+                    finally:
+                        self._max_size = room
+                return super().put(span, track=track)
+
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        exporter = InMemorySpanExporter()
+        queue = _FullWhenTheRootArrives(exporter, max_size=100, batch_size=4, interval_s=0.05)
+        observer = OTelTrialObserver(
+            queue=queue,
+            label="pilot_agent",
+            session_id="acme/pilot/v1/pilot_agent/pilot_agent/123",
+            tags=("config:pilot_agent", "domain:pilot-domain"),
+            metadata={"model_stem": "pilot_agent"},
+            server_api="v4",
+            attachments=_V4Attachments(),
+        )
+        _v4_trial(observer, identity)
+        observer.trial_finished(identity, trajectory=_Trajectory([], grade=_Grade()))
+        observer.trial_persisted(identity, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+
+        assert queue.refused == 1
+        assert receipt.extra["langfuse.error_roots_sent"] == 1
+        assert receipt.extra["langfuse.roots_unconfirmed"] == 0
+        roots = [s for s in exporter.get_finished_spans() if s.parent is None]
+        assert len(roots) == 1 and format(roots[0].context.span_id, "016x") == identity.root_id
+        assert "never left the queue" in _attrs(roots[0])["langfuse.trace.metadata.error"]
+
+    def test_a_root_the_exporter_could_not_confirm_is_not_written_again(self, tmp_path) -> None:
+        """A batch the exporter reported as failed may have been written anyway (the receiver
+        wrote it and the answer was lost). A second root under the same id could never be
+        removed there, so the run reports it instead (ADR-0048)."""
         import parity_bundle as pb
 
         from tolokaforge.observability.observer import TrialIdentity
@@ -620,7 +679,7 @@ class TestErrorRoots:
         )
 
         class _RefusesTheRootOnce(InMemorySpanExporter):
-            """The batch that carries the final root is refused; the retry after it is not."""
+            """The batch that carries the final root is refused; the ones after it are not."""
 
             def __init__(self) -> None:
                 super().__init__()
@@ -642,12 +701,52 @@ class TestErrorRoots:
         observer.trial_finished(identity, trajectory=_Trajectory([], grade=_Grade()))
         observer.trial_persisted(identity, trial_dir=trial_dir)
         receipt = observer.run_finished()
+
         assert exporter.refused == 1
-        assert receipt.extra["langfuse.error_roots_sent"] == 1
-        # the lost root's id was never taken, so the error root writes under it
-        roots = [s for s in exporter.get_finished_spans() if s.parent is None]
-        assert len(roots) == 1 and format(roots[0].context.span_id, "016x") == identity.root_id
-        assert "did not reach the receiver" in _attrs(roots[0])["langfuse.trace.metadata.error"]
+        assert receipt.extra["langfuse.error_roots_sent"] == 0
+        assert receipt.extra["langfuse.roots_unconfirmed"] == 1
+        assert [s for s in exporter.get_finished_spans() if s.parent is None] == []
+
+
+class TestHowManyTimesABatchIsPosted:
+    """On an append-only receiver a retried batch the receiver already wrote is a duplicate that
+    cannot be deleted, so the v4 family posts once (ADR-0048)."""
+
+    def _refusing(self, exporter):
+        posts = []
+
+        class _Answer:
+            ok = False
+            status_code = 503
+            reason = "Service Unavailable"
+
+        def _export(data, *args, **kwargs):
+            posts.append(data)
+            return _Answer()
+
+        exporter._export = _export
+        return posts
+
+    def test_the_default_exporter_keeps_the_sdk_retries(self) -> None:
+        from tolokaforge_langfuse.otel import make_otlp_exporter
+
+        exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"})
+        posts = self._refusing(exporter)
+        exporter._shutdown_in_progress.set()  # do not wait out the backoff in a unit test
+        exporter.export([])
+        assert type(exporter).__name__ == "OTLPSpanExporter"
+        assert len(posts) >= 1
+
+    def test_the_write_once_exporter_posts_once(self) -> None:
+        from opentelemetry.sdk.trace.export import SpanExportResult
+        from tolokaforge_langfuse.otel import make_otlp_exporter
+
+        exporter = make_otlp_exporter(
+            "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
+        )
+        posts = self._refusing(exporter)
+        assert exporter.export([]) is SpanExportResult.FAILURE
+        assert len(posts) == 1, "a refused batch may not be posted again"
 
 
 class TestTheIngestionHeader:

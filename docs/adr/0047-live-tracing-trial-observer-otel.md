@@ -448,6 +448,18 @@ round-trip snapshots pin both shapes, and a separate backend test exercises the 
 its own exporter, endpoint, tags and options. This implements the engine-owner review boundary;
 the ADR remains Proposed until the owner accepts it.
 
+## Amendment 2026-09-19: a receiver whose observations are append-only
+
+A receiver that takes observations over OTLP only, stores them append-only and makes a trace be its
+root observation cannot take the provisional root and the re-sending trial-end pass above. The
+observer detects that family by capability at run start and writes a different layout there:
+declared preview rows while the trial runs, the record written once from the persisted bundle with
+the root last, the verdict in `scope = primary` scores instead of the frozen trace metadata, and a
+minimal error root at run end for a trace whose real root can no longer come. This is plugin API
+**4**. The v3 family keeps everything above unchanged. The decision, its options and its
+consequences are [ADR-0048](0048-write-once-observations-append-only-receiver.md); the layout is in
+`docs/OBSERVABILITY.md`.
+
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern),

@@ -53,12 +53,17 @@ observability:
 `server_api` says which receiver family to write for: `auto` (the default) asks the receiver once
 at run start, by capability, and a Langfuse v4 receiver gets the **write-once layout** (declared
 preview rows while the trial runs, the record written once from the bundle, the root last); see
-`docs/OBSERVABILITY.md`, "The write-once layout". `config.LangfuseConfig` also owns
+`docs/OBSERVABILITY.md`, "The write-once layout", and ADR-0048. Two consequences worth knowing
+before configuring a run on that family: `projection` must be `full`, because the trace's root
+observation comes from the bundle, and the current verdict lives in the `scope: primary` scores
+(the trace metadata is frozen at its single write). `config.LangfuseConfig` also owns
 `attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
 `environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
 invalid values before any receiver work starts; other plugins' namespaces remain opaque.
-Plugin API 3 moves these fields out of the engine config: old top-level keys are rejected,
-so move them under `options.langfuse` when upgrading the engine and plugin. Defaults and
+Plugin API 3 moved these fields out of the engine config: old top-level keys are rejected,
+so move them under `options.langfuse` when upgrading the engine and plugin. The wheel now declares
+plugin API **4** (the write-once layout), and an engine and a plugin of different API versions
+refuse to pair. Defaults and
 environment precedence are unchanged. A second backend need not declare any Langfuse fields.
 
 A launcher can also supply settings through these variables:

@@ -48,6 +48,7 @@ from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
 from tolokaforge_langfuse.attachments import AttachCounts
+from tolokaforge_langfuse.media import SERVER_V3, SERVER_V4
 from tolokaforge_langfuse.model_names import (
     NONE,
     ModelIdentity,
@@ -76,10 +77,9 @@ HARNESS_TAG = "harness:tolokaforge"
 # a trial observer traces trials: the source is the producer's fact (vocabulary.SOURCE_TRIAL)
 SOURCE_TAG = f"source:{SOURCE_TRIAL}"
 TRACE_TIME_SOURCE = "live"
-# the receiver families this observer writes for (media.SERVER_V3 / SERVER_V4, resolved at run
-# start by capability, never by the reported version)
-SERVER_V3 = "v3"
-SERVER_V4 = "v4"
+# the receiver families this observer writes for (imported above from `media`, which owns the
+# names because the capability probe lives there) are resolved at run start, never from the
+# version a receiver reports
 # Langfuse v4 takes OTLP on the documented direct path behind this header; step 00 could not
 # measure a latency benefit on an idle deployment (F14), the vendor documents it as the path
 INGESTION_VERSION_HEADER = "x-langfuse-ingestion-version"
@@ -115,24 +115,79 @@ def _scope() -> InstrumentationScope:
     return InstrumentationScope("tolokaforge.observability", engine_version)
 
 
+def _single_attempt_exporter_class() -> type | None:
+    """An ``OTLPSpanExporter`` that posts a batch **once**, or None when the SDK has moved on.
+
+    The stock exporter re-posts a batch that failed with a connection error or a retryable
+    status, up to six times. On a receiver whose observations are append-only that is unsafe in
+    one case: the receiver wrote the batch and the answer was lost, so the re-post writes every
+    observation of it a second time, the root included, and nothing can delete either copy
+    (ADR-0048). A dropped batch is recoverable there (the run says so in its receipt and the
+    offline uploader completes the trace), a duplicate is not, so the v4 family trades the
+    retries away. It touches the SDK's internals, so a version that no longer offers them
+    leaves the caller on the stock exporter."""
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+            encode_spans,
+        )
+    except ImportError:
+        return None
+    if not hasattr(OTLPSpanExporter, "_export"):
+        return None
+
+    class SingleAttemptSpanExporter(OTLPSpanExporter):  # type: ignore[misc, valid-type]
+        """One POST per batch: a retry could duplicate what the receiver already wrote."""
+
+        def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:  # type: ignore[override]
+            if getattr(self, "_shutdown", False):
+                return SpanExportResult.FAILURE
+            try:
+                answer = self._export(encode_spans(spans).SerializePartialToString())
+            except Exception as exc:  # noqa: BLE001 - the queue counts and reports a failure
+                _log.warning("span export failed: %s", exc)
+                return SpanExportResult.FAILURE
+            if getattr(answer, "ok", False):
+                return SpanExportResult.SUCCESS
+            _log.warning("span export refused: HTTP %s", getattr(answer, "status_code", "unknown"))
+            return SpanExportResult.FAILURE
+
+    return SingleAttemptSpanExporter
+
+
 def make_otlp_exporter(
     endpoint: str,
     headers: Mapping[str, str] | None = None,
     *,
     ingestion_version: str | None = INGESTION_VERSION,
+    retry: bool = True,
 ) -> SpanExporter:
     """The standard OTLP/HTTP span exporter; ``OTEL_EXPORTER_OTLP_HEADERS`` supplies the
     receiver's credentials when ``headers`` is not given, and is never logged here.
 
     ``ingestion_version`` adds Langfuse's ``x-langfuse-ingestion-version`` header, which selects
-    the receiver's direct ingestion path; a v3 receiver ignores it. It joins caller-supplied
-    headers only: with none, the SDK's own environment variable owns the header set."""
+    the receiver's direct ingestion path; the v3 family is not sent it at all. It joins
+    caller-supplied headers only: with none, the SDK's own environment variable owns the header
+    set.
+
+    ``retry=False`` posts each batch once (:func:`_single_attempt_exporter_class`), which is what
+    a write-once receiver needs."""
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
     merged = dict(headers) if headers else {}
     if merged and ingestion_version:
         merged.setdefault(INGESTION_VERSION_HEADER, ingestion_version)
-    return OTLPSpanExporter(endpoint=endpoint, headers=merged or None)
+    exporter_class: type = OTLPSpanExporter
+    if not retry:
+        single = _single_attempt_exporter_class()
+        if single is None:
+            _log.warning(
+                "the OTLP exporter of this SDK cannot be asked to post once; a retried batch "
+                "the receiver already wrote would be a duplicate there"
+            )
+        else:
+            exporter_class = single
+    return exporter_class(endpoint=endpoint, headers=merged or None)
 
 
 class SpanQueue:
@@ -164,7 +219,11 @@ class SpanQueue:
         self._interval_s = max(0.05, interval_s)
         self.name = name
         self._items: deque[tuple[ReadableSpan, str | None]] = deque()
-        self._lost_tracked: set[str] = set()
+        # a tracked span that never reached the exporter (the queue refused it, or the flush
+        # budget ran out) against one the exporter reported as failed: the first is certainly
+        # unwritten, the second may have been written and lost its answer (ADR-0048)
+        self._unsent_tracked: set[str] = set()
+        self._failed_tracked: set[str] = set()
         self._lock = threading.Lock()
         self._drain_lock = threading.Lock()
         self._wake = threading.Event()
@@ -183,7 +242,7 @@ class SpanQueue:
             if len(self._items) >= self._max_size:
                 self.dropped += 1
                 if track is not None:
-                    self._lost_tracked.add(track)
+                    self._unsent_tracked.add(track)
                 return False
             self._items.append((span, track))
             self.queued += 1
@@ -193,9 +252,19 @@ class SpanQueue:
         return True
 
     def lost_tracked(self) -> set[str]:
-        """The track keys whose span the exporter never accepted (dropped or a failed batch)."""
+        """Every track key whose span did not land: never sent, or sent and refused."""
         with self._lock:
-            return set(self._lost_tracked)
+            return self._unsent_tracked | self._failed_tracked
+
+    def unsent_tracked(self) -> set[str]:
+        """The track keys whose span never reached the exporter: certainly not written."""
+        with self._lock:
+            return set(self._unsent_tracked)
+
+    def failed_tracked(self) -> set[str]:
+        """The track keys the exporter reported as failed: the receiver may hold them anyway."""
+        with self._lock:
+            return set(self._failed_tracked)
 
     def _take_batch(self) -> list[tuple[ReadableSpan, str | None]]:
         with self._lock:
@@ -215,7 +284,7 @@ class SpanQueue:
             else:
                 self.failures += 1
                 self.dropped += len(batch)
-                self._lost_tracked.update(track for _, track in batch if track is not None)
+                self._failed_tracked.update(track for _, track in batch if track is not None)
 
     def _drain(self, deadline: float | None = None) -> None:
         """Export batches until the queue is empty or ``deadline`` (``time.monotonic``) passes."""
@@ -242,7 +311,7 @@ class SpanQueue:
         with self._lock:
             left = len(self._items)
             if left:
-                self._lost_tracked.update(track for _, track in self._items if track is not None)
+                self._unsent_tracked.update(track for _, track in self._items if track is not None)
                 self._items.clear()
                 self.dropped += left
         return left == 0
@@ -308,6 +377,8 @@ class _PersistContext:
     identity: TrialIdentity | None = None
     error: str | None = None
     root_sent: bool = False
+    root_refused: bool = False
+    finished_at: datetime | None = None
 
 
 @dataclass
@@ -352,7 +423,12 @@ class OTelTrialObserver:
         # once, the live rows are declared previews and the record comes from the bundle
         self._server_api = server_api
         self._write_once = server_api == SERVER_V4
-        self._write_once_counts = {"previews": 0, "error_roots": 0, "final_observations": 0}
+        self._write_once_counts = {
+            "previews": 0,
+            "error_roots": 0,
+            "final_observations": 0,
+            "roots_unconfirmed": 0,
+        }
         # the trials whose final root has not been written yet, by trace id: one of them gets an
         # error root at run end unless its bundle pass writes the real one
         self._roots_pending: dict[str, _PersistContext] = {}
@@ -640,6 +716,8 @@ class OTelTrialObserver:
             tags=state.tags,
             identity=identity,
             error=error,
+            finished_at=_as_utc(getattr(trajectory, "end_ts", None))
+            or datetime.now(tz=timezone.utc),
         )
         with self._states_lock:
             self._persist[identity.trace_id] = context
@@ -840,9 +918,14 @@ class OTelTrialObserver:
         note = getattr(step, "note_trial_outcome", None)
         scores_sent = True
         if self._write_once:
-            written, scores_sent = self._write_projection_once(identity, projection, manifest)
+            written, scores_sent, scores_tried = self._write_projection_once(
+                identity, projection, manifest
+            )
+            if callable(note) and getattr(step, "mode", "all") == "none" and scores_tried:
+                # the only call in this pass that waits for the receiver
+                note(reached=scores_sent)
             if not written:
-                if callable(note) and getattr(step, "mode", "all") == "none":
+                if callable(note) and getattr(step, "mode", "all") == "none" and not scores_tried:
                     note(reached=False)
                 return
         else:
@@ -868,7 +951,8 @@ class OTelTrialObserver:
             self._projection_counts["media_uploaded"] += stats.media_uploaded
             self._projection_counts["media_failed"] += stats.media_failed
             if stats.grading_id:
-                self._grading_counts["sent"] += 1
+                # a grading whose scores did not reach the receiver is not a grading that landed
+                self._grading_counts["sent" if scores_sent else "failed"] += 1
             if scores_sent:
                 self._grading_counts["scores"] += stats.scores
             self._grading_counts["users"] += stats.user_generations
@@ -878,13 +962,15 @@ class OTelTrialObserver:
         identity: TrialIdentity,
         projection: Any,
         manifest: Mapping[str, Any] | None,
-    ) -> tuple[bool, bool]:
+    ) -> tuple[bool, bool, bool]:
         """The bundle's records on a write-once receiver: every observation as a span under its
         contract id, **the root last** (it completes the trace, so nothing may follow it), then
         the scores through the ingestion route, which still accepts them. Each id leaves exactly
         once; a failed score batch is counted and leaves the trace complete but unscored.
-        Returns ``(the receiver was reached at all, the scores reached it)``: a queue so full
-        that nothing was taken is a trial the pass did not reach, which feeds the breaker."""
+        Returns ``(anything was queued, the scores reached the receiver, the scores were tried
+        at all)``. Only the score call is evidence about the receiver: queueing a span says
+        nothing, because the queue takes it whether or not the endpoint answers, so the third
+        value tells the caller whether there is anything to feed the breaker with."""
         settings = self._projection
         spans = spans_from_events(
             projection.events,
@@ -914,6 +1000,9 @@ class OTelTrialObserver:
             elif manifest is not None:
                 self._attach_counts.manifests_failed += 1
         if not root_queued:
+            with self._states_lock:
+                if context is not None:
+                    context.root_refused = True
             _log.warning(
                 "projection: the root observation of trace %s was not queued", identity.trace_id
             )
@@ -930,9 +1019,7 @@ class OTelTrialObserver:
                     "projection: scores of trace %s not sent: %s", identity.trace_id, reason
                 )
                 scores_sent = False
-                with self._states_lock:
-                    self._grading_counts["failed"] += 1
-        return bool(queued_spans), scores_sent
+        return bool(queued_spans), scores_sent, bool(scores)
 
     def _send_gradings(
         self,
@@ -1013,6 +1100,8 @@ class OTelTrialObserver:
                 "langfuse.media_failed": self._projection_counts["media_failed"],
                 "langfuse.previews_sent": self._write_once_counts["previews"],
                 "langfuse.error_roots_sent": self._write_once_counts["error_roots"],
+                # a root the exporter posted and could not confirm: no second root is written
+                "langfuse.roots_unconfirmed": self._write_once_counts["roots_unconfirmed"],
                 "langfuse.final_observations_sent": self._write_once_counts["final_observations"],
             },
             details=(
@@ -1030,19 +1119,35 @@ class OTelTrialObserver:
         trial died before its bundle was written, the bundle pass wrote no root, or the root
         span never reached the receiver. Written once, at run end, so every trace of the run is
         in the trace list and the broken ones say so. Carries no manifest and no verdict."""
-        lost = self._queue.lost_tracked()
+        unsent = self._queue.unsent_tracked()
+        unconfirmed = self._queue.failed_tracked()
         with self._states_lock:
             pending = [
-                context
+                (trace_id, context)
                 for trace_id, context in self._roots_pending.items()
-                if not context.root_sent or trace_id in lost
+                if not context.root_sent or trace_id in unsent
             ]
-        for context in pending:
+            # a root the exporter posted and could not confirm is NOT written again: the receiver
+            # may hold it, and a second root under the same id could never be removed (ADR-0048).
+            # The run says so instead, and the offline uploader completes such a trace later.
+            ambiguous = sorted(
+                trace_id
+                for trace_id, context in self._roots_pending.items()
+                if context.root_sent and trace_id in unconfirmed and trace_id not in unsent
+            )
+            self._write_once_counts["roots_unconfirmed"] += len(ambiguous)
+        for trace_id in ambiguous:
+            _log.warning(
+                "the root observation of trace %s was posted but not confirmed; no error root is "
+                "written for it, because the receiver may hold it already",
+                trace_id,
+            )
+        for trace_id, context in pending:
             identity = context.identity
             if identity is None:  # a trial that was never announced has nothing to write
                 continue
-            if context.root_sent:
-                reason = "the root observation did not reach the receiver"
+            if context.root_refused or trace_id in unsent:
+                reason = "the root observation never left the queue"
             elif context.status is None:
                 reason = context.error or "the trial did not finish"
             else:
@@ -1052,7 +1157,10 @@ class OTelTrialObserver:
                 if context.error:
                     reason = f"{reason}: {context.error}"
             started = context.started_at or datetime.now(tz=timezone.utc)
-            self._emit(
+            # the trace's duration is its root's duration on this receiver, so a trial that died
+            # in the fifth minute of a four-hour run must not be dated as a four-hour trace
+            ended = context.finished_at or started
+            written = self._emit(
                 name=f"trial {identity.task_id}/{identity.trial_index}",
                 identity=identity,
                 span_id=identity.root_id,
@@ -1070,11 +1178,12 @@ class OTelTrialObserver:
                     f"{OBSERVATION_METADATA_PREFIX}error_root": True,
                 },
                 start=started,
-                end=datetime.now(tz=timezone.utc),
+                end=ended,
                 error=True,
             )
-            with self._states_lock:
-                self._write_once_counts["error_roots"] += 1
+            if written:
+                with self._states_lock:
+                    self._write_once_counts["error_roots"] += 1
 
     # -- helpers ------------------------------------------------------------------------------------
 
@@ -1178,7 +1287,7 @@ class OTelTrialObserver:
         end: datetime | None,
         error: bool = False,
         preview: bool = False,
-    ) -> None:
+    ) -> bool:
         trace_int = int(identity.trace_id, 16)
         context = SpanContext(
             trace_id=trace_int,
@@ -1214,9 +1323,11 @@ class OTelTrialObserver:
             start_time=_nanos(start_dt),
             end_time=_nanos(end_dt),
         )
-        if self._queue.put(span) and preview:
+        queued = self._queue.put(span)
+        if queued and preview:
             with self._states_lock:
                 self._write_once_counts["previews"] += 1
+        return queued
 
     def _redact(self, mapping: Any) -> Any:
         if isinstance(mapping, Mapping):
