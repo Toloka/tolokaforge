@@ -7,6 +7,7 @@ on:
     paths:
       - 'tolokaforge/**'
       - 'tolokaforge_models/**'
+      - 'tolokaforge_langfuse/**'
       - 'tolokaforge_coding_harnesses/**'
       - 'tests/**'
       - 'scripts/**'
@@ -20,6 +21,7 @@ on:
     paths:
       - 'tolokaforge/**'
       - 'tolokaforge_models/**'
+      - 'tolokaforge_langfuse/**'
       - 'tolokaforge_coding_harnesses/**'
       - 'tests/**'
       - 'scripts/**'
@@ -95,11 +97,12 @@ jobs:
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
 
-    - name: Build engine + sibling wheels (models, coding-harnesses)
+    - name: Build engine + sibling wheels (models, coding-harnesses, langfuse)
       run: |
         uv build --wheel --package tolokaforge
         uv build --wheel --package tolokaforge-models
         uv build --wheel --package tolokaforge-coding-harnesses
+        uv build --wheel --package tolokaforge-langfuse
 
     - name: Install the engine wheel into a clean venv (no source tree on the path)
       # Use --find-links so uv resolves `tolokaforge-models` against the

@@ -31,6 +31,7 @@ _EXPECTED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
     {
         "task_id",
         "trial_index",
+        "attempt_id",  # the final attempt the trial ran as (live tracing, ADR-0047)
         "simulator_schema_version",
         "start_ts",
         "end_ts",

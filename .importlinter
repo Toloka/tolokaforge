@@ -19,6 +19,7 @@
 [importlinter]
 root_packages =
     tolokaforge
+    tolokaforge_langfuse
 
 
 # Grader-detach seam (ADR-0038, milestone: grader detachment).
@@ -291,4 +292,21 @@ forbidden_modules =
     tolokaforge.runner.runner_pb2_grpc
     tolokaforge.grader
     tolokaforge.core.grading.substrate_live
+allow_indirect_imports = true
+
+
+# Trial-observer seam (ADR-0047, packaging amendment).
+#
+# The engine reaches the Langfuse observer only through the
+# ``tolokaforge.trial_observers`` entry-point group
+# (``tolokaforge.observability.factory``). A static import of the plugin
+# package from the engine would tie the two release cadences back together,
+# which is the one thing the split exists to prevent.
+[importlinter:contract:trial-observer-seam]
+name = The engine never imports the Langfuse trial-observer plugin
+type = forbidden
+source_modules =
+    tolokaforge
+forbidden_modules =
+    tolokaforge_langfuse
 allow_indirect_imports = true
