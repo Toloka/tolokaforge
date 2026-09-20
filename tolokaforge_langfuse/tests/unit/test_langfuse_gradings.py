@@ -403,7 +403,11 @@ class TestObserverGradings:
             receipt.extra["langfuse.gradings_sent"],
             receipt.extra["langfuse.gradings_failed"],
             receipt.extra["langfuse.scores_sent"],
-        ) == (1, 0, 17)  # 8 grading scores + 8 mirrored + the primary_grading pointer
+        ) == (
+            1,
+            0,
+            17,
+        )  # 8 grading scores + 8 mirrored + the primary_grading pointer
         assert receipt.extra["langfuse.user_generations_sent"] == 2
         assert receipt.model_dump(mode="json")["extra"]["langfuse.gradings_sent"] == 1
 

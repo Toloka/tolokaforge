@@ -530,9 +530,8 @@ class TestTheFinalLayout:
         identity, spans, step, receipt = self._run(tmp_path, manifest=manifest)
         root = next(s for s in spans if s.parent is None)
         attributes = _attrs(root)
-        assert (
-            json.loads(attributes["langfuse.trace.metadata.attachments"])
-            == (manifest["attachments"])
+        assert json.loads(attributes["langfuse.trace.metadata.attachments"]) == (
+            manifest["attachments"]
         )
         assert attributes["langfuse.trace.metadata.attachments_complete"] is True
         assert attributes["langfuse.trace.metadata.status"] == "completed"
