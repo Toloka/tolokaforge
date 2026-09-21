@@ -506,11 +506,13 @@ class RunnerStateChecksConfig(BaseModel):
     # :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
     auto_mask_clock_columns: bool = False
 
-    # Opt-in: fold every scalar column under the three nullable
-    # equivalences (``None ≡ [] ≡ {} ≡ ""`` and trailing-``Z`` stripping)
-    # before hashing. Task-level alternative to enumerating each column in
+    # Opt-in: fold every scalar column under the two null-vs-empty
+    # equivalences (``None ≡ [] ≡ {} ≡ ""``) before hashing. Task-level
+    # alternative to enumerating each nullable column in
     # ``compare_columns``; composes with per-column rules (this pass runs
-    # first, and per-column declarations still apply on top). Applied
+    # first, and per-column declarations still apply on top). Timezone-
+    # suffix stripping stays per-column-opt-in via
+    # ``ColumnCompareRule.normalize_timezone_suffix``. Applied
     # symmetrically on both substrates so digests stay comparable. See
     # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
     auto_normalize_nullables: bool = False

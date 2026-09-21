@@ -154,6 +154,19 @@ class TestConsultSite:
         assert kwargs["parallel_tool_calls"] is True
         assert "not directly comparable" in caplog.text
 
+    def test_override_rule_with_non_boolean_substitute_raises(self, tmp_path: Path) -> None:
+        """``parallel_tool_calls`` is a bool; a substitute spelling other
+        than ``"true"`` or ``"false"`` cannot round-trip into a real bool,
+        so ``client._build_kwargs`` refuses the rule loudly rather than
+        silently coercing every non-``"true"`` value to ``False``.
+        """
+        with pytest.raises(ValueError, match="is not a boolean spelling"):
+            self._kwargs(
+                tmp_path,
+                parallel_tool_calls=False,
+                rules=_rules("parallel_tool_calls", "false", "override", "vendor uses int", "1"),
+            )
+
 
 class TestOverlayValidation:
     """The overlay currently rejects ``param_value_rules`` for parameters not

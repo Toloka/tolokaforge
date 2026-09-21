@@ -128,12 +128,15 @@ def state_digest(
     before hashing. Symmetric with the runner's ``compute_stable_hash`` flag so
     the two substrates continue to agree on which states are equal.
 
-    ``auto_normalize_nullables`` (opt-in) folds every scalar column under the
-    three nullable equivalences (``None ≡ [] ≡ {} ≡ ""`` and trailing-``Z``
-    stripping) before hashing, without per-column enumeration. Applied
-    symmetrically on both sides of one comparison and on both substrates so
-    the two continue to agree on which states are equal. Grading config
-    ``state_checks.auto_normalize_nullables``.
+    ``auto_normalize_nullables`` (opt-in) folds every scalar column under
+    the two null-vs-empty equivalences (``None ≡ [] ≡ {} ≡ ""``) before
+    hashing, without per-column enumeration. Timezone-suffix stripping is
+    deliberately NOT part of this pass — packs opt into it per-column via
+    :attr:`tolokaforge.core.hash.ColumnCompareRule.normalize_timezone_suffix`
+    instead, since a trailing ``Z`` / ``+0000`` can appear on non-datetime
+    strings. Applied symmetrically on both sides of one comparison and on
+    both substrates so the two continue to agree on which states are
+    equal. Grading config ``state_checks.auto_normalize_nullables``.
 
     ``unstable_fields`` (opt-in) drops author-declared columns from every row
     before hashing. Each entry is a dotted ``table.field`` path, matching the
@@ -154,41 +157,26 @@ def state_digest(
 def load_task_unstable_fields(task_dir: Path | None) -> list[str]:
     """Read ``<task_dir>/fixtures/unstable_fields.json`` as dotted paths.
 
-    The fixtures file is a list of ``{"table_name", "field_name", "reason"}``
-    objects (see :class:`tolokaforge.runner.models.UnstableFieldSpec` and
-    :func:`tolokaforge.adapters.bundle_writer.write_bundle`). This loader
-    returns them in the dotted ``table.field`` shape
-    :func:`tolokaforge.core.hash.filter_unstable_fields` accepts, so the
-    core-substrate grader and the runner substrate apply an identical mask.
+    Delegates parsing to the runner-side
+    :class:`tolokaforge.runner.models.UnstableFieldSpec` (pydantic-strict:
+    unknown keys refused, ``reason`` restricted to the documented enum), so
+    the core-substrate grader and the runner substrate accept exactly the
+    same fixtures. Returns dotted ``table.field`` paths in the shape
+    :func:`tolokaforge.core.hash.filter_unstable_fields` accepts.
 
     Missing file, missing directory, or an empty list all return ``[]``.
-    Malformed JSON or entries missing ``table_name`` / ``field_name`` are
-    refused loudly so a fixture typo does not silently degrade to no
-    filter (a repeat of the class of bug this loader was added to close).
+    A malformed file raises through the pydantic validator so the pack
+    sees a loud fixture error rather than silently getting no filter.
     """
     if task_dir is None:
         return []
-    path = Path(task_dir) / "fixtures" / "unstable_fields.json"
-    if not path.is_file():
-        return []
-    with path.open() as f:
-        raw = json.load(f)
-    if not isinstance(raw, list):
-        raise ValueError(
-            f"{path}: expected a JSON list of unstable-field specs, got {type(raw).__name__}"
-        )
-    dotted: list[str] = []
-    for index, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise ValueError(f"{path}[{index}]: expected a JSON object, got {type(entry).__name__}")
-        table = entry.get("table_name")
-        field = entry.get("field_name")
-        if not isinstance(table, str) or not isinstance(field, str) or not table or not field:
-            raise ValueError(
-                f"{path}[{index}]: 'table_name' and 'field_name' are required non-empty strings"
-            )
-        dotted.append(f"{table}.{field}")
-    return dotted
+    # Lazy import: the runner-model tree pulls the grpc stack, which the
+    # core substrate does not otherwise touch.
+    from tolokaforge.adapters.native import _read_unstable_field_specs
+    from tolokaforge.runner.models import UnstableFieldSpec
+
+    specs = _read_unstable_field_specs(Path(task_dir), UnstableFieldSpec)
+    return [f"{spec.table_name}.{spec.field_name}" for spec in specs]
 
 
 def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
@@ -449,6 +437,18 @@ class StateChecker:
         Returns:
             (score 0 or 1, reason)
         """
+        # A truthy ``compare_columns`` needs both raw sides so the extras
+        # filter can pair rows; a caller passing rules without
+        # ``expected_state_for_pipeline`` computed the expected digest
+        # against a pipelined state on their side, so silently skipping
+        # the pipeline here would false-fail every trial. Raise outside
+        # the try/except so the contract violation surfaces to the caller
+        # instead of degrading to a score-zero verdict.
+        if compare_columns and expected_state_for_pipeline is None:
+            raise ValueError(
+                "check_hash: compare_columns requires expected_state_for_pipeline; "
+                "pass the raw expected state or clear compare_columns."
+            )
         try:
             if (
                 compare_columns or auto_normalize_nullables

@@ -271,12 +271,14 @@ def _fold_column_value(value: Any, rule: "ColumnCompareRule") -> Any:
 
 
 #: Sentinel rule applied by :func:`apply_global_nullable_normalize` when a
-#: pack sets ``state_checks.auto_normalize_nullables: true``. Sets every
-#: nullable-equivalence flag :class:`ColumnCompareRule` recognises so a single
-#: :func:`_fold_column_value` pass covers every scalar in the state.
+#: pack sets ``state_checks.auto_normalize_nullables: true``. Sets only the
+#: two null-vs-empty flags — timezone-suffix stripping is deliberately NOT
+#: in the global pass, since a non-datetime string ending in ``Z`` /
+#: ``+0000`` (e.g. a product code) would false-collapse. Packs that want
+#: timezone-suffix normalization on a specific datetime column declare it
+#: per-column via :class:`ColumnCompareRule.normalize_timezone_suffix`.
 _GLOBAL_NULLABLE_RULE: "ColumnCompareRule" = ColumnCompareRule(
     treat_null_as_empty_collection=True,
-    normalize_timezone_suffix=True,
     treat_empty_string_as_null=True,
 )
 
@@ -285,26 +287,32 @@ def apply_global_nullable_normalize(
     state: dict[str, Any],
     enabled: bool,
 ) -> dict[str, Any]:
-    """Return ``state`` with every scalar column folded under the three
-    nullable equivalences (``None ≡ [] ≡ {} ≡ ""`` and trailing-``Z``
-    stripping) when ``enabled`` is True.
+    """Return ``state`` with every scalar column folded under the two
+    null-vs-empty equivalences (``None ≡ [] ≡ {} ≡ ""``) when ``enabled``
+    is True.
 
     Task-level bool grading config
     ``state_checks.auto_normalize_nullables``. Composes with per-column
     :class:`ColumnCompareRule` declarations — this pass runs first, so a
     per-column rule that sets one of the same flags is idempotent, and a
     per-column rule that sets a distinct flag (e.g. ``mode: subset``,
-    ``order: unordered``) still applies afterwards.
+    ``order: unordered``, ``normalize_timezone_suffix``) still applies
+    afterwards.
+
+    Timezone-suffix normalization is NOT part of the global pass — a
+    trailing ``Z`` / ``+00:00`` / ``+0000`` can appear on non-datetime
+    strings, so packs opt in per-column via
+    :attr:`ColumnCompareRule.normalize_timezone_suffix` instead.
 
     Symmetric by design: every caller applies it to both trial and golden
     before hashing.
 
     Table entries that are not row lists (single dicts, or non-collection
     scalars at the top level) are folded key-by-key; anything else passes
-    through unchanged. Returns a shallow copy; unchanged tables share list
-    / dict references with the input.
+    through unchanged. A non-dict ``state`` passes through unchanged
+    (matching :func:`apply_auto_clock_mask`'s guard).
     """
-    if not enabled:
+    if not enabled or not isinstance(state, dict):
         return state
 
     def _fold_row(row: Any) -> Any:
@@ -449,8 +457,10 @@ def apply_compare_columns_pipeline(
     0. Global nullable normalization
        (:func:`apply_global_nullable_normalize`) runs first on both sides
        when the task sets ``state_checks.auto_normalize_nullables: true`` —
-       every scalar collapses under ``None ≡ [] ≡ {} ≡ ""`` and
-       trailing-``Z`` stripping before per-column rules see the values.
+       every scalar collapses under ``None ≡ [] ≡ {} ≡ ""`` before
+       per-column rules see the values. Timezone-suffix stripping stays
+       per-column-opt-in (see
+       :attr:`ColumnCompareRule.normalize_timezone_suffix`).
     1. Equivalence folds (:func:`apply_compare_columns_equivalences`) run
        next on both sides — two values a rule declared equivalent collapse
        to one token before anything else sees them. Idempotent with the
@@ -825,11 +835,14 @@ def compute_stable_hash(
             hashing. Composes with ``unstable_fields`` — pack-declared masks
             still apply on top of this one. Grading config
             ``state_checks.auto_mask_clock_columns``.
-        auto_normalize_nullables: When True, fold every scalar column under
-            the three nullable equivalences (``None ≡ [] ≡ {} ≡ ""`` and
-            trailing-``Z`` stripping) before hashing. Symmetric with the core
-            substrate's ``state_digest`` flag so the two continue to agree
-            on which states are equal. Grading config
+        auto_normalize_nullables: When True, fold every scalar column
+            under the two null-vs-empty equivalences (``None ≡ [] ≡ {} ≡
+            ""``) before hashing. Timezone-suffix stripping is opt-in
+            per-column via
+            :attr:`ColumnCompareRule.normalize_timezone_suffix` and not
+            part of this pass. Symmetric with the core substrate's
+            ``state_digest`` flag so the two continue to agree on which
+            states are equal. Grading config
             ``state_checks.auto_normalize_nullables``.
 
     Returns:

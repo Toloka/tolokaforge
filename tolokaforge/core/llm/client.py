@@ -1938,9 +1938,22 @@ class LLMClient:
                     )
                 if p_action == RuleAction.OVERRIDE:
                     substitute = policy.rule_substitute("parallel_tool_calls", p_value)
-                    if substitute is not None:
-                        policy.warn_substituted("parallel_tool_calls", p_value, substitute)
-                        parallel_tool_calls = substitute == "true"
+                    if substitute is None:
+                        raise ValueError(
+                            f"parallel_tool_calls override rule for {p_value!r} on this "
+                            f"provider+model combination declared no substitute. Evidence: "
+                            f"{policy.rule_evidence('parallel_tool_calls', p_value)}. "
+                            f"Add a 'with' spelled 'true' or 'false', or switch the action "
+                            f"to 'drop'."
+                        )
+                    if substitute not in ("true", "false"):
+                        raise ValueError(
+                            f"parallel_tool_calls override substitute {substitute!r} is not "
+                            f"a boolean spelling ('true' or 'false'). Evidence: "
+                            f"{policy.rule_evidence('parallel_tool_calls', p_value)}."
+                        )
+                    policy.warn_substituted("parallel_tool_calls", p_value, substitute)
+                    parallel_tool_calls = substitute == "true"
                 if p_action == RuleAction.DROP:
                     policy.warn_substituted("parallel_tool_calls", p_value, "<omitted>")
                 if p_action != RuleAction.DROP:

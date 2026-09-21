@@ -106,7 +106,7 @@ def _read_unstable_field_specs(task_dir: Path, spec_cls: type) -> list:
     path = task_dir / "fixtures" / "unstable_fields.json"
     if not path.is_file():
         return []
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         raw = json.load(f)
     if not isinstance(raw, list):
         raise ValueError(

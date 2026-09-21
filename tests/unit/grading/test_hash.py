@@ -992,10 +992,17 @@ class TestAutoNormalizeNullables:
             expected, auto_normalize_nullables=True
         )
 
-    def test_trailing_z_normalizes_via_compute_stable_hash(self):
-        actual = {"orders": [{"id": "1", "at": "2026-09-14T13:00:00Z"}]}
-        expected = {"orders": [{"id": "1", "at": "2026-09-14T13:00:00"}]}
-        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+    def test_trailing_z_does_not_normalize_globally(self):
+        """Timezone-suffix stripping is per-column-opt-in, NOT part of the
+        global pass — a non-datetime string ending in ``Z`` (e.g. a
+        product code) must not false-collapse with its stripped twin.
+        """
+        actual = {"products": [{"id": "1", "code": "ABZ"}]}
+        expected = {"products": [{"id": "1", "code": "AB"}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) != compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) != state_digest(
             expected, auto_normalize_nullables=True
         )
 
@@ -1127,6 +1134,61 @@ class TestRealPackShapes_AutoNormalize:
         )
 
 
+class TestAutoNormalizeGuards:
+    """Safety rails on the global-normalize primitive and its check_hash gate."""
+
+    def test_non_dict_state_passes_through(self):
+        """``apply_global_nullable_normalize`` matches its sibling
+        ``apply_auto_clock_mask`` on non-dict input — return the value
+        unchanged rather than raising on ``dict(None)``.
+        """
+        from tolokaforge.core.hash import apply_global_nullable_normalize
+
+        # None passes through
+        assert apply_global_nullable_normalize(None, True) is None
+        # A list top-level (unusual but possible) passes through
+        assert apply_global_nullable_normalize([1, 2, 3], True) == [1, 2, 3]
+        # A dict top-level normalizes
+        result = apply_global_nullable_normalize({"t": [{"tags": None}]}, True)
+        assert result["t"][0]["tags"] != None  # folded to a token  # noqa: E711
+
+    def test_check_hash_raises_when_compare_columns_without_expected(self):
+        """A caller passing ``compare_columns`` but no
+        ``expected_state_for_pipeline`` computed the expected digest
+        against a pipelined state on their side; silently skipping the
+        pipeline on this side would false-fail every trial.
+        """
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        checker = StateChecker()
+        rules = {"t": {"c": ColumnCompareRule(mode="subset", extras_allowed_for=["x"])}}
+        with pytest.raises(ValueError, match="expected_state_for_pipeline"):
+            checker.check_hash(
+                {"t": [{"id": "1", "c": {"a": 1}}]},
+                "0" * 64,
+                compare_columns=rules,
+                expected_state_for_pipeline=None,
+            )
+
+    def test_check_hash_accepts_auto_normalize_without_expected(self):
+        """``auto_normalize_nullables`` alone (no compare_columns) does
+        not need the pipeline — ``state_digest`` applies the fold via its
+        own flag, so the gate must NOT raise.
+        """
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        checker = StateChecker()
+        state = {"t": [{"id": "1", "tags": None}]}
+        expected_hash = state_digest(state, auto_normalize_nullables=True)
+        score, _ = checker.check_hash(
+            state,
+            expected_hash,
+            auto_normalize_nullables=True,
+            expected_state_for_pipeline=None,
+        )
+        assert score == 1.0
+
+
 class TestStateDigestHonorsUnstableFields:
     """``state_digest`` accepts a pack-declared ``unstable_fields`` list and
     applies it symmetrically with the runner substrate's ``compute_stable_hash``.
@@ -1212,10 +1274,36 @@ class TestLoadTaskUnstableFields:
             load_task_unstable_fields(tmp_path)
 
     def test_refuses_entry_missing_field_name(self, tmp_path):
+        """Delegation to pydantic-strict ``UnstableFieldSpec`` surfaces the
+        missing-required-field error rather than a custom-message raise.
+        Both loaders (native adapter + core grader) now refuse identically.
+        """
         import json as _json
+
+        from pydantic import ValidationError
 
         fixtures = tmp_path / "fixtures"
         fixtures.mkdir()
         (fixtures / "unstable_fields.json").write_text(_json.dumps([{"table_name": "t"}]))
-        with pytest.raises(ValueError, match="required non-empty strings"):
+        with pytest.raises(ValidationError, match="field_name"):
+            load_task_unstable_fields(tmp_path)
+
+    def test_refuses_unknown_reason(self, tmp_path):
+        """Pydantic-strict ``reason`` enum refuses out-of-set values, so a
+        pack authoring a custom ``reason`` string is caught loudly on both
+        substrates rather than silently masking on one and failing on the
+        other.
+        """
+        import json as _json
+
+        from pydantic import ValidationError
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(
+            _json.dumps(
+                [{"table_name": "t", "field_name": "f", "reason": "custom"}],
+            )
+        )
+        with pytest.raises(ValidationError):
             load_task_unstable_fields(tmp_path)
