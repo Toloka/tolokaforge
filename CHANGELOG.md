@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.27.0 (2026-09-21)
+
+### Feat
+
+- **grading**: state-hash mask parity + parallel_tool_calls request knob (#1619)
+- **observability**: a TrialObserver seam, the tolokaforge-langfuse wheel, and write-once tracing on a v4 receiver (#1597)
+
 ## v0.26.0 (2026-09-18)
 
 ### Feat
