@@ -2388,6 +2388,8 @@ class Orchestrator:
             return f"* {task.task_id} — {exc}"
         for skip in report.unchecked:
             self._warn_grading_unchecked(task.task_id, skip.where, skip.reason)
+        for hint in report.hints:
+            self._warn_grading_hint(task.task_id, hint.where, hint.message)
         return None
 
     def _warn_grading_unchecked(self, task_id: str, where: str, reason: str) -> None:
@@ -2398,6 +2400,22 @@ class Orchestrator:
         """
         self.logger.warning(
             "Grading validation could not check part of this task's block",
+            task_id=task_id,
+            where=where,
+            reason=reason,
+        )
+
+    def _warn_grading_hint(self, task_id: str, where: str, reason: str) -> None:
+        """Report one author-facing hint the gate raised beside the task it read.
+
+        A hint is non-fatal by construction (``AuthoringReport.fatal`` never
+        returns it, at any :class:`GradingFindingSeverity`), so it never affects
+        the pre-flight return value. Surfaced through the same warning logger as
+        ``unchecked`` so a pack owner who ignores ``tolokaforge validate`` still
+        sees the nudge in the run's log.
+        """
+        self.logger.warning(
+            "Grading validation raised an authoring hint on this task's block",
             task_id=task_id,
             where=where,
             reason=reason,
