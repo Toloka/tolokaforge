@@ -105,6 +105,12 @@ from tolokaforge.core.trial import (
 )
 from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
+from tolokaforge.observability.factory import (
+    RunIdentity,
+    build_trial_observer,
+    write_tracing_receipt,
+)
+from tolokaforge.observability.observer import NullTrialObserver, TrialObserver, safely
 from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
 
@@ -304,12 +310,12 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
         mock_web = (
             initial_state.mock_web
             if hasattr(initial_state, "mock_web")
-            else initial_state.get("mock_web") if isinstance(initial_state, dict) else None
+            else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
         )
         rag = (
             initial_state.rag
             if hasattr(initial_state, "rag")
-            else initial_state.get("rag") if isinstance(initial_state, dict) else None
+            else (initial_state.get("rag") if isinstance(initial_state, dict) else None)
         )
         if mock_web or rag:
             return True
@@ -669,9 +675,8 @@ class Orchestrator:
         # by :meth:`_build_conductor`; drained in reverse order at the end of
         # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
         # (``queue``) shuts down cleanly regardless of the caller's flow.
-        self._trial_graders_to_close: list = (
-            []
-        )  # list[TrialGrader]; annotated bare to avoid a runtime import cycle
+        # list[TrialGrader]; annotated bare to avoid a runtime import cycle.
+        self._trial_graders_to_close: list = []
         # Shared per-trial writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
@@ -691,6 +696,9 @@ class Orchestrator:
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
+        # Live tracing (ADR-0047): built per run from ``observability.tracing`` in :meth:`run`.
+        self._trial_observer: TrialObserver = NullTrialObserver()
+        self._run_identity: RunIdentity | None = None
         self._events: RunDisplayEvents = resolved_deps.events
         # Budget composite driving the graceful-shutdown path. ``None``
         # means "no CLI budget flag AND no legacy ``compute.max_budget_usd``";
@@ -1014,6 +1022,8 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
             events=self._events,
+            trial_observer=self._trial_observer,
+            run_identity=self._run_identity,
         )
         factory = self._conductor_factory or load_conductor("in_process")
         conductor = factory(ctx)
@@ -2455,6 +2465,11 @@ class Orchestrator:
             )
         if run_id is None:
             run_id, output_dir = resolve_run_directory(self.config.evaluation.output_dir)
+        # Live tracing (ADR-0047) is built from the config before any service starts, so a
+        # missing extra or an unreadable rules file fails here, with nothing to tear down.
+        self._trial_observer, self._run_identity = build_trial_observer(
+            getattr(self.config, "observability", None), engine_run_id=run_id, output_dir=output_dir
+        )
         assert output_dir is not None
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3129,7 +3144,30 @@ class Orchestrator:
             self._events.run_finished(output_dir=resolved_output_dir)
             return resolved_output_dir
         finally:
+            # Flush the live traces on every exit path (an exception or Ctrl-C included): the
+            # export thread is a daemon and would otherwise die with the last batch unsent.
+            self._finish_tracing(output_dir)
             self._close_trial_graders()
+
+    def _finish_tracing(self, output_dir: Path) -> None:
+        """Flush and close the run's trial observer; the export receipt lands in the run
+        directory and the log. Never raises: the observability layer only warns (ADR-0047)."""
+        observer, self._trial_observer = self._trial_observer, NullTrialObserver()
+        if isinstance(observer, NullTrialObserver):
+            return
+        receipt = safely(observer.run_finished)
+        if receipt is None:
+            self.logger.warning("Trial observer did not report an export receipt")
+            return
+        summary = receipt.model_dump(mode="json")
+        try:
+            write_tracing_receipt(output_dir, receipt)
+        except OSError as exc:
+            self.logger.warning("Could not write the tracing receipt", error=str(exc))
+        if receipt.spans_dropped or receipt.export_failures or not receipt.flushed:
+            self.logger.warning("Live tracing export incomplete", **summary)
+        else:
+            self.logger.info("Live tracing export complete", **summary)
 
     def _close_trial_graders(self) -> None:
         """Release every ``TrialGrader`` built during this orchestrator's
@@ -3191,6 +3229,10 @@ class Orchestrator:
                 f"Worker requires an engine_run_state.json with a run_id in {output_dir}. "
                 "Run `tolokaforge prepare` first."
             )
+        # Live tracing (ADR-0047): a worker traces under the run it joins.
+        self._trial_observer, self._run_identity = build_trial_observer(
+            getattr(self.config, "observability", None), engine_run_id=run_id, output_dir=output_dir
+        )
 
         # Log model configuration for all roles
         self.logger.info(
@@ -3385,6 +3427,7 @@ class Orchestrator:
             # the leased-work loop above. Sequential with the runtime
             # teardown; each failure is logged rather than raised so the
             # outer flow still surfaces the original exception.
+            self._finish_tracing(output_dir)
             self._close_trial_graders()
 
         self._publish_grading_completeness()

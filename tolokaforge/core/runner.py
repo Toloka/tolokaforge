@@ -4,7 +4,7 @@ import shlex
 import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tolokaforge_coding_harnesses.stdout_telemetry import (
     HarnessStdoutTelemetry,
@@ -68,6 +68,9 @@ from tolokaforge.core.summarize_policy import LLMSummarizer, SummarizePolicy
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
+
+if TYPE_CHECKING:
+    from tolokaforge.observability.observer import LoopObserver
 
 _HARNESS_USAGE_READ_CALL_ID_PREFIX = "harness-usage:"
 """Call-id prefix for the engine's own read of a harness trial's usage records.
@@ -163,6 +166,7 @@ class TrialRunner:
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
+        loop_observer: "LoopObserver | None" = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -185,6 +189,8 @@ class TrialRunner:
         # user observations so both roles' 429s land in one per-trial total, and
         # copied onto ``Metrics`` when the trial finalises.
         self._probe_stats = probe_stats
+        # Live tracing (ADR-0047): the trial's observer bound to the agent role, or None.
+        self._loop_observer = loop_observer
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
@@ -422,6 +428,7 @@ class TrialRunner:
                         role="agent",
                         probe_stats=self._probe_stats,
                     ),
+                    observer=self._loop_observer,
                 ).run(system_prompt, self.messages, self.start_time)
 
                 status = outcome.status

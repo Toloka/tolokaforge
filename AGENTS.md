@@ -115,10 +115,11 @@ uv run ruff format --check tolokaforge tests scripts tools
 
 ### Testing
 
-Three test categories with distinct markers. Tests live in three roots — `tests/` plus a
+Three test categories with distinct markers. Tests live in four roots — `tests/` plus a
 root inside each workspace package that owns a contract (`tolokaforge_models/tests/`,
-`tolokaforge_coding_harnesses/tests/`). `[tool.pytest.ini_options] testpaths` names all
-three, so omit the path; a command naming only `tests/` overrides `testpaths`, runs a
+`tolokaforge_coding_harnesses/tests/`, `tolokaforge_langfuse/tests/`).
+`[tool.pytest.ini_options] testpaths` names all four, so omit the path; a command naming only
+`tests/` overrides `testpaths`, runs a
 subset, and still reports green.
 
 ```bash
@@ -344,6 +345,7 @@ When extending an existing contract, follow the existing choice unless you have 
 - `external_adapters/tolokaforge-adapter-terminal-bench` — Terminal-Bench adapter
 - `tolokaforge_models` — model data + per-model policy subclasses
 - `tolokaforge_coding_harnesses` — coding-harness registry, installer, middleware proxy
+- `tolokaforge_langfuse` — Langfuse trial-observer plugin, bundle projection and shared trace vocabulary
 
 ### Virtual Environment
 
@@ -605,6 +607,7 @@ The grader is a plug-in seam with three independent axes — substrate topology,
 | Trace replay (re-checking trace constraints) | `docs/TRACE_REPLAY.md` |
 | Rubric migration (retiring a judge criterion against recorded evidence) | `docs/RUBRIC_MIGRATION.md` |
 | Configuration | `docs/CONFIG.md` |
+| Live tracing and trial observers | `docs/OBSERVABILITY.md` |
 | Docker / Runner | `docs/RUNNER.md` |
 | Adapters | `docs/ADAPTERS.md` |
 | CLI | `docs/CLI.md` |

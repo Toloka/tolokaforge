@@ -1,0 +1,4 @@
+{
+  "default": "{\"spans_queued\":0,\"spans_exported\":0,\"spans_dropped\":0,\"export_failures\":0,\"flushed\":true,\"exporter\":\"none\",\"extra\":{},\"details\":[]}",
+  "populated": "{\"spans_queued\":5,\"spans_exported\":3,\"spans_dropped\":2,\"export_failures\":1,\"flushed\":false,\"exporter\":\"example\",\"extra\":{\"example.accepted\":3},\"details\":[{\"exporter\":\"example\",\"destination\":\"test\",\"optional\":null}]}"
+}

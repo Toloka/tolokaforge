@@ -1,0 +1,3 @@
+{
+  "wire": "{\"exporter\":\"none\",\"endpoint\":null,\"run_id\":null,\"run_tag\":\"v1\",\"session_id\":null,\"label\":null,\"service_name\":\"tolokaforge\",\"tags\":[],\"metadata\":{},\"queue_size\":4096,\"export_batch_size\":64,\"export_interval_s\":1.0,\"flush_timeout_s\":30.0,\"attribute_max_chars\":20000,\"context_messages\":6,\"options\":{\"example\":{\"collector\":\"local\"}}}"
+}

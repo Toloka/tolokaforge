@@ -168,6 +168,42 @@ required and no PyPI release is cut. Bump `[project].version` locally on a
 throwaway commit if the run overlaps an already-published version — TestPyPI
 refuses re-uploads of a used version string.
 
+## PyPI package — tolokaforge-langfuse `langfuse-vX.Y.Z` (manual)
+
+The `tolokaforge-langfuse` wheel — the Langfuse trial observer of ADR-0047 (packaging
+amendment): the OTLP exporter, the trial-end projection, the attachment step, the deployment
+profile — ships on its own cadence so a receiver-side fix reaches a deployment without moving its
+engine pin. The release is
+[`.github/workflows/release-langfuse.yml`](../.github/workflows/release-langfuse.yml)
+("Release tolokaforge-langfuse (cz bump)"), a `workflow_dispatch` with the same `bump` /
+`dry_run` inputs as the models release; nothing cuts it automatically. It enters
+`tolokaforge_langfuse/` and runs `cz bump` against the per-project commitizen config: the bump
+rewrites `tolokaforge_langfuse/pyproject.toml` `[project].version` and
+`src/tolokaforge_langfuse/__init__.py` `__version__`, regenerates
+`tolokaforge_langfuse/CHANGELOG.md`, relocks `uv.lock`, commits
+`chore(langfuse-release): bump tolokaforge-langfuse to X.Y.Z` and pushes the annotated
+`langfuse-vX.Y.Z` tag, which triggers
+[`publish-tolokaforge-langfuse.yml`](../.github/workflows/publish-tolokaforge-langfuse.yml)
+(build with `uv build --package tolokaforge-langfuse`, OIDC trusted publishing, GitHub Release).
+
+One-time setup before the first tag: create the `tolokaforge-langfuse` project on PyPI (and
+TestPyPI) with a trusted publisher pointing at this repository and the
+`publish-tolokaforge-langfuse.yml` workflow (environments `release` / `testpypi`, as for the
+models wheel).
+
+### The plugin contract version
+
+`tolokaforge.observability.factory.PLUGIN_API_VERSION` (engine) and
+`tolokaforge_langfuse.__api_version__` (plugin) name the contract between the two: the `build`
+signature of the `tolokaforge.trial_observers` entry point, the `TrialObserver` hooks and the id
+contract. They are not maintained by `cz bump`. Bump both, in the same PR, only when that contract
+changes; cut the engine release first, then the plugin's, so a deployment that moves one pin at a
+time sees a clear run-start error naming both versions rather than a mid-run failure. The engine's
+`otel` extra pins `tolokaforge-langfuse>=0.1.0,<1.0.0`: raise the lower bound in the engine
+release that changes the contract. The very first release is the exception to "engine first": an
+engine whose `otel` extra names `tolokaforge-langfuse` cannot resolve that extra until
+`langfuse-v0.1.0` is on PyPI, so publish the plugin first (or the two together).
+
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
 The four first-party images —
