@@ -38,6 +38,7 @@ type is aliased.
 from __future__ import annotations
 
 import ipaddress
+import json
 import math
 import re
 from collections import Counter
@@ -198,6 +199,32 @@ class UnstableFieldSpec(BaseModel):
     reason: Literal["auto_id", "timestamp", "llm_generated", "random"] = "auto_id"
 
     model_config = {"extra": "forbid"}
+
+
+def read_unstable_field_specs(task_dir: Path) -> list[UnstableFieldSpec]:
+    """Read ``<task_dir>/fixtures/unstable_fields.json`` as validated specs.
+
+    Bundle-writer output puts pack-authored unstable-field declarations at
+    ``fixtures/unstable_fields.json``, shaped as a JSON list of
+    ``{"table_name", "field_name", "reason"}`` objects. Missing file
+    returns ``[]``; a malformed file raises through the pydantic validator
+    so the pack sees a loud fixture error rather than silently getting no
+    filter.
+
+    Colocated with :class:`UnstableFieldSpec` so both grading substrates
+    (core-side ``state_digest`` and runner-side ``compute_stable_hash``)
+    reach one loader for the same fixture shape.
+    """
+    path = task_dir / "fixtures" / "unstable_fields.json"
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{path}: expected a JSON list of unstable-field specs, got {type(raw).__name__}"
+        )
+    return [UnstableFieldSpec.model_validate(entry) for entry in raw]
 
 
 class TableSchema(BaseModel):

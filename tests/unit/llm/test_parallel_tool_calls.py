@@ -156,11 +156,11 @@ class TestConsultSite:
 
     def test_override_rule_with_non_boolean_substitute_raises(self, tmp_path: Path) -> None:
         """``parallel_tool_calls`` is a bool; a substitute spelling other
-        than ``"true"`` or ``"false"`` cannot round-trip into a real bool,
-        so ``client._build_kwargs`` refuses the rule loudly rather than
-        silently coercing every non-``"true"`` value to ``False``.
+        than ``"true"`` or ``"false"`` is refused by the overlay validator
+        at load time so a misspelled preset fails before a grading run
+        starts, not an hour in when the first request is built.
         """
-        with pytest.raises(ValueError, match="is not a boolean spelling"):
+        with pytest.raises(ValueError, match="accepts only"):
             self._kwargs(
                 tmp_path,
                 parallel_tool_calls=False,
@@ -191,4 +191,49 @@ class TestOverlayValidation:
         }
         with _overlay(tmp_path, overlay):
             # Construction alone triggers overlay validation via preset build.
+            LLMClient(ModelConfig(provider="mock", name="mock-model"))
+
+
+class TestSubstituteValidation:
+    """The overlay validator refuses non-boolean substitutes for
+    ``parallel_tool_calls`` at config load time — a bad spelling like
+    ``"1"`` or ``"yes"`` would otherwise validate here and fail an hour
+    into a grading run when the first request is built.
+    """
+
+    @pytest.mark.parametrize("bad_substitute", ["1", "0", "yes", "no"])
+    def test_non_bool_substitute_raises_at_load(self, tmp_path: Path, bad_substitute: str) -> None:
+        overlay = {
+            "providers": {
+                "mock": {
+                    "params": {
+                        "param_value_rules": _rules(
+                            "parallel_tool_calls",
+                            "true",
+                            "override",
+                            substitute=bad_substitute,
+                        )
+                    }
+                }
+            }
+        }
+        with _overlay(tmp_path, overlay), pytest.raises(ValueError, match="accepts only"):
+            LLMClient(ModelConfig(provider="mock", name="mock-model"))
+
+    def test_bool_substitute_validates(self, tmp_path: Path) -> None:
+        overlay = {
+            "providers": {
+                "mock": {
+                    "params": {
+                        "param_value_rules": _rules(
+                            "parallel_tool_calls",
+                            "true",
+                            "override",
+                            substitute="false",
+                        )
+                    }
+                }
+            }
+        }
+        with _overlay(tmp_path, overlay):
             LLMClient(ModelConfig(provider="mock", name="mock-model"))

@@ -48,6 +48,11 @@ class ModelConfig(BaseModel):
     # the default and omits the parameter, letting the provider's default
     # apply. The overlay's ``supports_function_calling`` capability admits
     # this parameter alongside ``tools`` and ``tool_choice``.
+    #
+    # No-op on tools-less requests: the parameter is only meaningful when
+    # the same request carries ``tools``, so a rubric-judge or
+    # completions-only call omits ``parallel_tool_calls`` regardless of
+    # what this field is set to.
     parallel_tool_calls: bool | None = None
     # Coding-harness selector. When set, the trial's LLM loop is replaced by a
     # single invocation of the named vendor CLI (``claude-code``, ``codex``,

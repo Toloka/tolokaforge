@@ -1066,11 +1066,81 @@ class TestAutoNormalizeNullables:
         )
 
     def test_leaves_non_row_dict_values_alone(self):
-        """Top-level dict-row values fold key-by-key; keys stay, only nullable scalars collapse."""
-        actual = {"metadata": {"schema_version": 1, "tags": None}}
-        folded = compute_stable_hash(actual, auto_normalize_nullables=True)
-        assert isinstance(folded, str)
-        assert len(folded) == 64
+        """A dict-valued top-level entry (metadata block, schema stamps —
+        not row-shaped tables) is left untouched, mirroring
+        :func:`apply_auto_clock_mask`'s shape assumption. Only list-valued
+        top-level entries fold.
+        """
+        actual = {
+            "metadata": {"schema_version": 1, "config": "", "updated_at": "2026-09-01"},
+            "cases": [{"id": "1", "tags": None}],
+        }
+        expected = {
+            "metadata": {"schema_version": 1, "config": "", "updated_at": "2026-09-01"},
+            "cases": [{"id": "1", "tags": []}],
+        }
+        # Metadata block byte-preserved on both sides; list-shaped table folds.
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        # And a metadata-only diff still surfaces — the block is not being
+        # silently collapsed.
+        differ = {
+            "metadata": {"schema_version": 2, "config": "", "updated_at": "2026-09-01"},
+            "cases": [{"id": "1", "tags": None}],
+        }
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) != compute_stable_hash(
+            differ, auto_normalize_nullables=True
+        )
+
+
+class TestAutoNormalizeNullablesLeavesDictTablesAlone:
+    """Parity with :class:`TestAutoClockMaskLeavesDictTablesAlone`:
+    ``auto_normalize_nullables`` operates only on list-valued top-level
+    entries. Dict-valued entries — a schema-version block, a per-run
+    config, anything the pack authored as metadata rather than as a row
+    table — pass through untouched.
+    """
+
+    def test_apply_global_nullable_normalize_leaves_dict_tables_alone(self):
+        from tolokaforge.core.hash import apply_global_nullable_normalize
+
+        state = {
+            "cases": [{"id": "1", "tags": None}],
+            "metadata": {"schema_version": 1, "config": "", "notes": []},
+        }
+        folded = apply_global_nullable_normalize(state, True)
+        # Row table: nullable columns fold to the sentinel token.
+        assert folded["cases"][0]["tags"] != None  # noqa: E711
+        # Metadata dict: every value byte-identical.
+        assert folded["metadata"] == state["metadata"]
+        # Same instance is preserved (shallow copy, dict-valued entries
+        # not re-wrapped by the fold pass).
+        assert folded["metadata"] is state["metadata"]
+
+
+class TestComposesWithSubsetOnEmptyGolden:
+    """Composition invariant: a column declared under ``mode: subset``
+    with ``extras_allowed_for`` on a golden ``{}`` value AND global
+    ``auto_normalize_nullables: true`` still folds. The extras filter
+    must see the raw dict shape before the global pass collapses ``{}``
+    to a sentinel token.
+    """
+
+    def test_subset_on_empty_golden_composes_with_global_fold(self):
+        actual = {"orders": [{"id": "1", "params": {"note": "extra"}}]}
+        expected = {"orders": [{"id": "1", "params": {}}]}
+        rules = {
+            "orders": {
+                "params": ColumnCompareRule(mode="subset", extras_allowed_for=["note"]),
+            }
+        }
+        actual_p, expected_p = apply_compare_columns_pipeline(
+            actual, expected, rules, auto_normalize_nullables=True
+        )
+        assert compute_stable_hash(actual_p, auto_normalize_nullables=True) == compute_stable_hash(
+            expected_p, auto_normalize_nullables=True
+        )
 
 
 class TestRealPackShapes_AutoNormalize:
@@ -1152,11 +1222,13 @@ class TestAutoNormalizeGuards:
         result = apply_global_nullable_normalize({"t": [{"tags": None}]}, True)
         assert result["t"][0]["tags"] != None  # folded to a token  # noqa: E711
 
-    def test_check_hash_raises_when_compare_columns_without_expected(self):
-        """A caller passing ``compare_columns`` but no
-        ``expected_state_for_pipeline`` computed the expected digest
-        against a pipelined state on their side; silently skipping the
-        pipeline on this side would false-fail every trial.
+    def test_check_hash_raises_when_populated_compare_columns_without_expected(self):
+        """A populated ``compare_columns`` rule needs the raw expected
+        state so the extras filter can pair rows; a caller passing the
+        legacy ``expected_hash`` shape without ``expected_state_for_pipeline``
+        computed the expected digest against a pipelined state on their
+        side, so silently skipping the pipeline here would false-fail
+        every trial.
         """
         from tolokaforge.core.grading.state_checks import StateChecker
 
@@ -1169,6 +1241,25 @@ class TestAutoNormalizeGuards:
                 compare_columns=rules,
                 expected_state_for_pipeline=None,
             )
+
+    def test_check_hash_inert_compare_columns_does_not_raise(self):
+        """An empty rules table (``{}`` or ``{'t': {}}``) carries no
+        active rule and stays a no-op — must not trip the raise even
+        though the outer dict is truthy. Callers commonly pass an
+        empty per-table entry when they iterate every table but declare
+        no rules on some of them.
+        """
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        checker = StateChecker()
+        state = {"t": [{"id": "1", "note": "ok"}]}
+        expected_hash_local = state_digest(state)
+        # Empty top-level dict: no active rule.
+        score, _ = checker.check_hash(state, expected_hash_local, compare_columns={})
+        assert score == 1.0
+        # Table entry with no per-column rules: still no active rule.
+        score, _ = checker.check_hash(state, expected_hash_local, compare_columns={"t": {}})
+        assert score == 1.0
 
     def test_check_hash_accepts_auto_normalize_without_expected(self):
         """``auto_normalize_nullables`` alone (no compare_columns) does

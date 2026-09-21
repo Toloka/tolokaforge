@@ -293,11 +293,10 @@ def apply_global_nullable_normalize(
 
     Task-level bool grading config
     ``state_checks.auto_normalize_nullables``. Composes with per-column
-    :class:`ColumnCompareRule` declarations — this pass runs first, so a
-    per-column rule that sets one of the same flags is idempotent, and a
-    per-column rule that sets a distinct flag (e.g. ``mode: subset``,
-    ``order: unordered``, ``normalize_timezone_suffix``) still applies
-    afterwards.
+    :class:`ColumnCompareRule` declarations — this pass runs LAST inside
+    :func:`apply_compare_columns_pipeline`, so per-column rules see the
+    raw dict shape (which the extras filter needs) before empties collapse
+    to a sentinel token.
 
     Timezone-suffix normalization is NOT part of the global pass — a
     trailing ``Z`` / ``+00:00`` / ``+0000`` can appear on non-datetime
@@ -307,10 +306,11 @@ def apply_global_nullable_normalize(
     Symmetric by design: every caller applies it to both trial and golden
     before hashing.
 
-    Table entries that are not row lists (single dicts, or non-collection
-    scalars at the top level) are folded key-by-key; anything else passes
-    through unchanged. A non-dict ``state`` passes through unchanged
-    (matching :func:`apply_auto_clock_mask`'s guard).
+    Only list-valued top-level entries (row-shaped tables) are folded — a
+    dict-valued top-level entry (e.g. a ``metadata`` block whose keys are
+    schema-version stamps, not row records) is left alone, mirroring
+    :func:`apply_auto_clock_mask`'s shape assumption. A non-dict ``state``
+    passes through unchanged.
     """
     if not enabled or not isinstance(state, dict):
         return state
@@ -324,8 +324,6 @@ def apply_global_nullable_normalize(
     for table, table_data in state.items():
         if isinstance(table_data, list):
             result[table] = [_fold_row(row) for row in table_data]
-        elif isinstance(table_data, dict):
-            result[table] = _fold_row(table_data)
     return result
 
 
@@ -454,24 +452,27 @@ def apply_compare_columns_pipeline(
 
     Order matters and this function owns it:
 
-    0. Global nullable normalization
-       (:func:`apply_global_nullable_normalize`) runs first on both sides
-       when the task sets ``state_checks.auto_normalize_nullables: true`` —
-       every scalar collapses under ``None ≡ [] ≡ {} ≡ ""`` before
-       per-column rules see the values. Timezone-suffix stripping stays
-       per-column-opt-in (see
-       :attr:`ColumnCompareRule.normalize_timezone_suffix`).
     1. Equivalence folds (:func:`apply_compare_columns_equivalences`) run
-       next on both sides — two values a rule declared equivalent collapse
-       to one token before anything else sees them. Idempotent with the
-       global pass; per-column rules setting distinct flags still apply.
+       first on both sides — two values a per-column rule declared
+       equivalent collapse to one token before anything else sees them.
     2. Ordering (:func:`apply_compare_columns_ordering`) then sorts the
        row list of any table a rule declared ``unordered`` on both sides.
        Extras filtering pairs rows positionally, so the sort must happen
        before extras run or the wrong pair of rows drives the drop.
     3. Extras (:func:`apply_compare_columns_extras`) drops keys the pack
        declared permitted-extra from ``actual`` where ``expected`` does
-       not carry them, on the sorted pairing.
+       not carry them, on the sorted pairing. Runs on the raw dict shape,
+       so ``{}`` on the expected side is still a dict here.
+    4. Global nullable normalization
+       (:func:`apply_global_nullable_normalize`) runs last on both sides
+       when the task sets ``state_checks.auto_normalize_nullables: true`` —
+       any scalar surviving through the earlier steps then collapses under
+       ``None ≡ [] ≡ {} ≡ ""``. Running last preserves the dict shape the
+       extras filter needs; a column whose expected side collapses to
+       ``{}`` after extras drop still folds cleanly to the same sentinel
+       token as ``None`` on the actual side. Timezone-suffix stripping
+       stays per-column-opt-in (see
+       :attr:`ColumnCompareRule.normalize_timezone_suffix`).
 
     Two-sided by design: the actual and expected states must go through
     the same pipeline for their hashes to agree, and calling site
@@ -484,18 +485,18 @@ def apply_compare_columns_pipeline(
     """
     if not compare_columns and not auto_normalize_nullables:
         return actual, expected
-    actual_normalized = apply_global_nullable_normalize(actual, auto_normalize_nullables)
-    expected_normalized = apply_global_nullable_normalize(expected, auto_normalize_nullables)
-    actual_folded = apply_compare_columns_equivalences(actual_normalized, compare_columns)
-    expected_folded = apply_compare_columns_equivalences(expected_normalized, compare_columns)
+    actual_folded = apply_compare_columns_equivalences(actual, compare_columns)
+    expected_folded = apply_compare_columns_equivalences(expected, compare_columns)
     actual_sorted = apply_compare_columns_ordering(
         actual_folded, compare_columns, numeric_string_fields=numeric_string_fields
     )
     expected_sorted = apply_compare_columns_ordering(
         expected_folded, compare_columns, numeric_string_fields=numeric_string_fields
     )
-    actual_final = apply_compare_columns_extras(actual_sorted, expected_sorted, compare_columns)
-    return actual_final, expected_sorted
+    actual_extras = apply_compare_columns_extras(actual_sorted, expected_sorted, compare_columns)
+    actual_final = apply_global_nullable_normalize(actual_extras, auto_normalize_nullables)
+    expected_final = apply_global_nullable_normalize(expected_sorted, auto_normalize_nullables)
+    return actual_final, expected_final
 
 
 def _numeric_token(d: Decimal) -> str:
@@ -866,10 +867,12 @@ def compute_stable_hash(
         state = apply_auto_clock_mask(state)
 
     # Global nullable normalization (opt-in): fold every scalar column
-    # under None ≡ [] ≡ {} ≡ "" and trailing-Z stripping so a pack does
-    # not have to enumerate every nullable column in compare_columns.
-    if auto_normalize_nullables:
-        state = apply_global_nullable_normalize(state, True)
+    # under None ≡ [] ≡ {} ≡ "" so a pack does not have to enumerate
+    # every nullable column in compare_columns. Timezone-suffix stripping
+    # stays per-column-opt-in via
+    # :attr:`ColumnCompareRule.normalize_timezone_suffix` — a trailing Z
+    # on a non-datetime string would otherwise false-collapse.
+    state = apply_global_nullable_normalize(state, auto_normalize_nullables)
 
     # Convert datetime objects to strings
     serializable_state = _convert_datetime_to_str(state)
