@@ -22,7 +22,9 @@ from tolokaforge.core.hash import (
     ColumnCompareRule,
     apply_auto_clock_mask,
     apply_compare_columns_pipeline,
+    apply_global_nullable_normalize,
     canonical_number,
+    filter_unstable_fields,
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
@@ -104,6 +106,8 @@ def state_digest(
     *,
     numeric_string_fields: list[str] | None = None,
     auto_mask_clock_columns: bool = False,
+    auto_normalize_nullables: bool = False,
+    unstable_fields: list[str] | None = None,
 ) -> str:
     """The digest core writes a state in, for either side of one comparison.
 
@@ -123,11 +127,55 @@ def state_digest(
     :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS` from every table row
     before hashing. Symmetric with the runner's ``compute_stable_hash`` flag so
     the two substrates continue to agree on which states are equal.
+
+    ``auto_normalize_nullables`` (opt-in) folds every scalar column under
+    the two null-vs-empty equivalences (``None ≡ [] ≡ {} ≡ ""``) before
+    hashing, without per-column enumeration. Timezone-suffix stripping is
+    deliberately NOT part of this pass — packs opt into it per-column via
+    :attr:`tolokaforge.core.hash.ColumnCompareRule.normalize_timezone_suffix`
+    instead, since a trailing ``Z`` / ``+0000`` can appear on non-datetime
+    strings. Applied symmetrically on both sides of one comparison and on
+    both substrates so the two continue to agree on which states are
+    equal. Grading config ``state_checks.auto_normalize_nullables``.
+
+    ``unstable_fields`` (opt-in) drops author-declared columns from every row
+    before hashing. Each entry is a dotted ``table.field`` path, matching the
+    shape :func:`tolokaforge.core.hash.filter_unstable_fields` accepts and the
+    shape the runner substrate's ``compute_stable_hash`` reads. Both sides of
+    one comparison must pass the same list.
     """
+    if unstable_fields:
+        state = filter_unstable_fields(state, unstable_fields)
     if auto_mask_clock_columns:
         state = apply_auto_clock_mask(state)
+    state = apply_global_nullable_normalize(state, auto_normalize_nullables)
     string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
     return consistent_hash(to_hashable(state, string_fields))
+
+
+def load_task_unstable_fields(task_dir: Path | None) -> list[str]:
+    """Read ``<task_dir>/fixtures/unstable_fields.json`` as dotted paths.
+
+    Delegates parsing to
+    :func:`tolokaforge.runner.models.read_unstable_field_specs`
+    (pydantic-strict: unknown keys refused, ``reason`` restricted to the
+    documented enum), so the core-substrate grader and the runner
+    substrate accept exactly the same fixtures. Returns dotted
+    ``table.field`` paths in the shape
+    :func:`tolokaforge.core.hash.filter_unstable_fields` accepts.
+
+    Missing file, missing directory, or an empty list all return ``[]``.
+    A malformed file raises through the pydantic validator so the pack
+    sees a loud fixture error rather than silently getting no filter.
+    """
+    if task_dir is None:
+        return []
+    # Lazy import: the runner-model tree pulls the grpc stack, which the
+    # core substrate does not otherwise touch.
+    from tolokaforge.runner.models import read_unstable_field_specs
+
+    specs = read_unstable_field_specs(Path(task_dir))
+    return [f"{spec.table_name}.{spec.field_name}" for spec in specs]
 
 
 def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
@@ -349,40 +397,119 @@ class StateChecker:
     def check_hash(
         self,
         state: dict[str, Any],
-        expected_hash: str,
+        expected_hash: str | None = None,
         *,
         numeric_string_fields: list[str] | None = None,
         auto_mask_clock_columns: bool = False,
+        auto_normalize_nullables: bool = False,
         compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
+        expected_state: dict[str, Any] | None = None,
         expected_state_for_pipeline: dict[str, Any] | None = None,
+        unstable_fields: list[str] | None = None,
     ) -> tuple[float, str]:
         """
-        Check state hash against expected using tau-bench algorithm
+        Check state hash against expected using tau-bench algorithm.
+
+        Two calling shapes:
+
+        - ``expected_state`` (recommended): caller passes the raw expected
+          state. This method owns the ``compare_columns`` pipeline for both
+          sides and hashes both, so the caller does not pre-pipeline
+          anything.
+        - ``expected_hash`` (legacy): caller passes a stored digest already
+          computed against a pipelined expected state on their side. In
+          this shape, ``compare_columns`` needs the raw expected state too
+          — pass ``expected_state_for_pipeline`` alongside, or the
+          contract fails.
 
         Args:
-            state: Final environment state
-            expected_hash: Expected SHA256 hash of normalized state
+            state: Final environment state (raw).
+            expected_hash: Stored SHA256 digest of the pipelined expected
+                state, when the caller already has one. Mutually exclusive
+                with ``expected_state``.
             numeric_string_fields: Record field names whose numeric-looking
                 string values fold when hashing (per-field opt-in).
             auto_mask_clock_columns: Drop conventional write-time clock
                 columns from every row before hashing (per-task opt-in). Both
                 sides of one comparison must pass the same value.
+            auto_normalize_nullables: Fold every scalar column under
+                ``None ≡ [] ≡ {} ≡ ""`` before hashing. Applied
+                symmetrically on both sides.
             compare_columns: Per-(table, column) rules folded and pruned via
-                :func:`apply_compare_columns_pipeline` before hashing. The
-                pipeline needs the expected state to run — pass
-                ``expected_state_for_pipeline`` alongside; without it the
-                pipeline is skipped and the flag falls to a no-op.
-            expected_state_for_pipeline: Expected state the ``compare_columns``
-                pipeline uses to pair rows for the extras filter. The caller
-                that provides ``expected_hash`` derived from a stored digest
-                (``expect_initial_state`` path) also holds this state and
-                threads it here.
+                :func:`apply_compare_columns_pipeline` before hashing.
+                A rule table with no active per-column rules (empty or
+                ``{'t': {}}``) is a no-op. When any rule is active, either
+                ``expected_state`` or ``expected_state_for_pipeline`` must
+                be provided so the pipeline can pair rows.
+            expected_state: Raw expected state; this method owns the
+                pipeline and computes both hashes.
+            expected_state_for_pipeline: Legacy alias when the caller
+                supplies ``expected_hash``; used to run the pipeline on
+                ``state`` (actual side only). The caller's stored digest
+                must have been computed against a pipelined expected state
+                on their side under the same config.
+            unstable_fields: Dotted ``table.field`` paths the pack declared as
+                unstable (auto-ids, timestamps, random). Both sides of one
+                comparison must pass the same list, and the caller that
+                derived ``expected_hash`` from a stored digest also
+                pre-applied this filter on that side.
 
         Returns:
             (score 0 or 1, reason)
         """
+        if expected_hash is None and expected_state is None:
+            raise ValueError("check_hash: pass exactly one of expected_hash or expected_state.")
+        if expected_hash is not None and expected_state is not None:
+            raise ValueError("check_hash: expected_hash and expected_state are mutually exclusive.")
+        # A rule table with any populated per-column rule needs both raw
+        # sides so the extras filter can pair rows. Empty containers
+        # (``{}`` or ``{'t': {}}``) carry no active rule and stay a
+        # no-op — the pipeline early-returns unchanged states in that
+        # case, so the contract only bites when a caller declared a real
+        # rule.
+        has_active_rules = bool(compare_columns) and any(
+            rules for rules in compare_columns.values()
+        )
+        if expected_hash is not None and has_active_rules and expected_state_for_pipeline is None:
+            raise ValueError(
+                "check_hash: compare_columns with populated rules requires "
+                "expected_state_for_pipeline (or pass expected_state instead of "
+                "expected_hash to let this method own the pipeline)."
+            )
         try:
-            if compare_columns and expected_state_for_pipeline is not None:
+            if expected_state is not None:
+                actual_processed, expected_processed = apply_compare_columns_pipeline(
+                    state,
+                    expected_state,
+                    compare_columns,
+                    numeric_string_fields=(
+                        frozenset(numeric_string_fields) if numeric_string_fields else None
+                    ),
+                    auto_normalize_nullables=auto_normalize_nullables,
+                )
+                actual_hash = state_digest(
+                    actual_processed,
+                    numeric_string_fields=numeric_string_fields,
+                    auto_mask_clock_columns=auto_mask_clock_columns,
+                    auto_normalize_nullables=auto_normalize_nullables,
+                    unstable_fields=unstable_fields,
+                )
+                computed_expected_hash = state_digest(
+                    expected_processed,
+                    numeric_string_fields=numeric_string_fields,
+                    auto_mask_clock_columns=auto_mask_clock_columns,
+                    auto_normalize_nullables=auto_normalize_nullables,
+                    unstable_fields=unstable_fields,
+                )
+                if actual_hash == computed_expected_hash:
+                    return 1.0, "State hash matches (tau-bench algorithm)"
+                return (
+                    0.0,
+                    f"State hash mismatch: expected {computed_expected_hash[:16]}..., "
+                    f"got {actual_hash[:16]}...",
+                )
+
+            if has_active_rules and expected_state_for_pipeline is not None:
                 state, _ = apply_compare_columns_pipeline(
                     state,
                     expected_state_for_pipeline,
@@ -390,20 +517,21 @@ class StateChecker:
                     numeric_string_fields=(
                         frozenset(numeric_string_fields) if numeric_string_fields else None
                     ),
+                    auto_normalize_nullables=auto_normalize_nullables,
                 )
             actual_hash = state_digest(
                 state,
                 numeric_string_fields=numeric_string_fields,
                 auto_mask_clock_columns=auto_mask_clock_columns,
+                auto_normalize_nullables=auto_normalize_nullables,
+                unstable_fields=unstable_fields,
             )
-
             if actual_hash == expected_hash:
                 return 1.0, "State hash matches (tau-bench algorithm)"
-            else:
-                return (
-                    0.0,
-                    f"State hash mismatch: expected {expected_hash[:16]}..., got {actual_hash[:16]}...",
-                )
+            return (
+                0.0,
+                f"State hash mismatch: expected {expected_hash[:16]}..., got {actual_hash[:16]}...",
+            )
         except Exception as e:
             return 0.0, f"Error computing hash: {str(e)}"
 
@@ -521,6 +649,8 @@ class StateChecker:
         numeric_string_fields: list[str] | None = None,
         compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
         auto_mask_clock_columns: bool = False,
+        auto_normalize_nullables: bool = False,
+        unstable_fields: list[str] | None = None,
     ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
@@ -543,6 +673,10 @@ class StateChecker:
                 (``updated_at``, ``last_modified_date``, ...) from every row on
                 both sides before hashing. Composes with pack-declared
                 ``unstable_fields``; see :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
+            unstable_fields: Dotted ``table.field`` paths the pack declared as
+                unstable (auto-generated ids, timestamps, random values).
+                Applied to both ``db_state`` and the replayed expected state
+                so the mask is symmetric across the comparison.
 
         Returns:
             (score 0 or 1, reason, diff_result dict or None, replay record). The verdict
@@ -576,6 +710,7 @@ class StateChecker:
             expected_state,
             compare_columns,
             numeric_string_fields=frozenset(numeric_string_fields or ()),
+            auto_normalize_nullables=auto_normalize_nullables,
         )
 
         # Compute hashes
@@ -583,11 +718,15 @@ class StateChecker:
             expected_state_folded,
             numeric_string_fields=numeric_string_fields,
             auto_mask_clock_columns=auto_mask_clock_columns,
+            auto_normalize_nullables=auto_normalize_nullables,
+            unstable_fields=unstable_fields,
         )
         actual_hash = state_digest(
             db_state_folded,
             numeric_string_fields=numeric_string_fields,
             auto_mask_clock_columns=auto_mask_clock_columns,
+            auto_normalize_nullables=auto_normalize_nullables,
+            unstable_fields=unstable_fields,
         )
 
         # Calculate diff if states don't match

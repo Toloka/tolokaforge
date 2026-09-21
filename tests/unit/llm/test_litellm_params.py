@@ -119,7 +119,7 @@ class TestTheCanonicalContract:
 class TestWhatAnEntryAdmits:
     def test_a_declared_flag_admits_its_parameters(self, overlay):
         overlay({MID: _entry()})
-        assert allowed_openai_params(MID) == ["tools", "tool_choice"]
+        assert allowed_openai_params(MID) == ["tools", "tool_choice", "parallel_tool_calls"]
 
     def test_reasoning_is_admitted_only_when_declared(self, overlay):
         overlay({MID: _entry()})
@@ -134,11 +134,12 @@ class TestWhatAnEntryAdmits:
     def test_every_declarable_flag_admits_a_parameter_we_actually_send(self):
         """A flag admitting something the engine never sends is a dead knob.
 
-        `tool_choice` only ever ships alongside `tools`, and
-        `parallel_tool_calls` is never set, so a flag for either would validate
-        cleanly and leave the run refused on the parameter it needed.
+        ``tool_choice`` only ever ships alongside ``tools``; ``parallel_tool_calls``
+        ships alongside ``tools`` when a :class:`ModelConfig` sets it. A flag
+        for a parameter with no consult site would validate cleanly and leave
+        the run refused on the parameter it needed.
         """
-        sent_somewhere = {"tools", "tool_choice", "reasoning_effort"}
+        sent_somewhere = {"tools", "tool_choice", "reasoning_effort", "parallel_tool_calls"}
         for flag in DECLARABLE_FLAGS:
             assert FLAG_PARAMS[flag], f"{flag} admits nothing"
             assert set(FLAG_PARAMS[flag]) <= sent_somewhere, f"{flag} admits an unsent parameter"
@@ -170,7 +171,11 @@ class TestAModelIdThatCarriesNoVendor:
 
     def test_the_entry_is_found_via_the_provider(self, overlay):
         overlay({"nova/some-nova-model": _entry()})
-        assert allowed_openai_params("some-nova-model", "nova") == ["tools", "tool_choice"]
+        assert allowed_openai_params("some-nova-model", "nova") == [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        ]
 
     def test_without_a_provider_a_bare_id_matches_nothing(self, overlay):
         overlay({"nova/some-nova-model": _entry()})
@@ -235,17 +240,25 @@ class TestCaseIsNotAWayToMiss:
     )
     def test_the_vendor_case_does_not_decide_whether_it_matches(self, overlay, declared, asked):
         overlay({declared: _entry()})
-        assert allowed_openai_params(asked) == ["tools", "tool_choice"]
+        assert allowed_openai_params(asked) == ["tools", "tool_choice", "parallel_tool_calls"]
 
     def test_and_on_the_bare_name_path_too(self, overlay):
         overlay({"Nova/some-nova-model": _entry()})
-        assert allowed_openai_params("some-nova-model", "NOVA") == ["tools", "tool_choice"]
+        assert allowed_openai_params("some-nova-model", "NOVA") == [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        ]
 
     def test_the_model_name_keeps_its_own_case(self, overlay):
         """Only the vendor is normalised: litellm's ids are lowercase, model
         names are the vendor's business."""
         overlay({"meta/Muse-Spark-1.2": _entry()})
-        assert allowed_openai_params("meta/Muse-Spark-1.2") == ["tools", "tool_choice"]
+        assert allowed_openai_params("meta/Muse-Spark-1.2") == [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        ]
         assert allowed_openai_params("meta/muse-spark-1.2") == []
 
 
@@ -276,7 +289,11 @@ class TestTheClientActuallyAttachesIt:
 
     def test_a_declared_model_carries_the_allow_list(self, overlay):
         overlay({MID: _entry()})
-        assert self._kwargs("meta", NAME)["allowed_openai_params"] == ["tools", "tool_choice"]
+        assert self._kwargs("meta", NAME)["allowed_openai_params"] == [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        ]
 
     def test_a_model_litellm_knows_carries_no_kwarg_at_all(self, overlay):
         """Absent, not empty: an empty list is still a claim about the call."""
@@ -290,5 +307,6 @@ class TestTheClientActuallyAttachesIt:
         assert self._kwargs("meta", NAME)["allowed_openai_params"] == [
             "tools",
             "tool_choice",
+            "parallel_tool_calls",
             "reasoning_effort",
         ]
