@@ -3,8 +3,8 @@
 Locks the three invariants the typed-kind registry commits to:
 
 1. Each built-in name (``single_shot_rubric``, ``chunked_rubric``,
-   ``voted_rubric``, ``jury_rubric``) resolves to its class with matching
-   ``NAME``.
+   ``voted_rubric``, ``jury_rubric``, ``per_criterion_rubric``) resolves
+   to its class with matching ``NAME``.
 2. An unknown name fails loud via :class:`UnknownImplementationError`
    naming the offending key + the registered set + the group.
 3. Each built-in class satisfies the runtime-checkable
@@ -19,6 +19,7 @@ from tolokaforge.core.grading.judge_kinds import (
     ChunkedRubricJudgeKind,
     JudgeKind,
     JuryRubricJudgeKind,
+    PerCriterionRubricJudgeKind,
     SingleShotRubricJudgeKind,
     VotedRubricJudgeKind,
 )
@@ -36,9 +37,11 @@ def test_builtin_judge_kinds_resolve_to_their_class() -> None:
     assert load_judge_kind("chunked_rubric") is ChunkedRubricJudgeKind
     assert load_judge_kind("voted_rubric") is VotedRubricJudgeKind
     assert load_judge_kind("jury_rubric") is JuryRubricJudgeKind
+    assert load_judge_kind("per_criterion_rubric") is PerCriterionRubricJudgeKind
     assert available_judge_kinds() == [
         "chunked_rubric",
         "jury_rubric",
+        "per_criterion_rubric",
         "single_shot_rubric",
         "voted_rubric",
     ]
@@ -54,6 +57,7 @@ def test_unknown_judge_kind_raises_named_error() -> None:
     assert "chunked_rubric" in message
     assert "voted_rubric" in message
     assert "jury_rubric" in message
+    assert "per_criterion_rubric" in message
 
 
 def test_judge_kind_classes_are_runtime_checkable_protocol_instances() -> None:
@@ -61,3 +65,4 @@ def test_judge_kind_classes_are_runtime_checkable_protocol_instances() -> None:
     assert isinstance(ChunkedRubricJudgeKind(), JudgeKind)
     assert isinstance(VotedRubricJudgeKind(), JudgeKind)
     assert isinstance(JuryRubricJudgeKind(), JudgeKind)
+    assert isinstance(PerCriterionRubricJudgeKind(), JudgeKind)

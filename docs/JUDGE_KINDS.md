@@ -13,7 +13,7 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-Four kinds ship in the reference distribution: `single_shot_rubric`
+Five kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
 `LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
 invocation per chunk of the rubric's criteria, optionally grouped by
@@ -22,10 +22,13 @@ single `submit_report` payload would exceed the judge model's
 output-token ceiling), `voted_rubric` (wraps any
 registered kind and samples it K times, folding the per-criterion
 verdicts through a robust aggregator to reduce judge-model
-self-variance — see § Voted kind), and `jury_rubric` (wraps any
+self-variance — see § Voted kind), `jury_rubric` (wraps any
 registered kind and dispatches to a cross-family panel of N different
 judge models instead of K samples of one model, folding the
 per-criterion verdicts through the same robust aggregator — see § Jury
+kind), and `per_criterion_rubric` (a thin specialisation of
+`chunked_rubric` that hard-pins `chunk_size=1` — one `LLMJudge` call
+per criterion, the strictest isolation of them all — see § Per-criterion
 kind). Downstream packages register further alternatives (e.g.
 agentic) alongside without a framework PR.
 
@@ -568,6 +571,46 @@ into the wrapped kind, so the wrapped kind uses its own defaults —
 picks the effective chunk size from the judge model's `max_tokens`
 headroom, so no explicit `chunk_size` needs to be threaded through the
 outer composition.
+
+## Per-criterion kind
+
+`per_criterion_rubric` is a thin specialisation of `chunked_rubric` that
+hard-pins `chunk_size = 1`: every criterion is graded by its own
+`LLMJudge` call, so each `submit_report` payload carries exactly one
+verdict and cross-criterion halo/recency drift cannot occur by
+construction. Opt in via `grading.llm_judge.judge_kind:
+per_criterion_rubric`; `kind_config` accepts no keys (an explicit
+`chunk_size` here would be silently overridden, so unknown keys fail
+loud eagerly).
+
+Cost note: N criteria = N judge dispatches per grade. This is the
+strictest isolation and the most expensive kind — reach for it on
+graded/subjective rubrics of six or more criteria where the M50
+drift-report identified cross-chunk context loss as a real source of
+drift, and where you would otherwise reach for `voted_rubric` at the
+same K× cost. Every fail-loud guarantee `chunked_rubric` carries
+(per-chunk COMPLETED status, missing-verdict detection, whole-trial
+ERRORED with `chunk_boundaries` populated for offline retry) applies
+here too — the underlying merge path is the same.
+
+## Grade-injection defenses
+
+Model-controlled slots (`agent_system_prompt`, each transcript
+message's `content`, tool-call `arguments`) are neutralised at
+interpolation time before they land in the judge prompt. The exact
+fence strings the judge prompt uses to fence untrusted evidence
+(`===== TRANSCRIPT =====`, `===== END TRANSCRIPT =====`) are replaced
+with a spaced/zero-width-space variant if they appear inside those
+slots, so a payload that replays the fence cannot break out of the
+transcript block and inject fake instructions into what the judge
+reads as harness text. Free-form Markdown (`---`, triple-backtick) is
+NOT neutralised — those are common in honest agent output and blanket-
+neutralising them would garble every trial. The defense is a
+byte-level string replacement in
+[`tolokaforge/core/grading/judge.py::_neutralise_judge_delimiters`](../tolokaforge/core/grading/judge.py);
+honest trials see no change (the fence strings never appear in normal
+output), and payloads that carry the fence keep their content in the
+prompt but lose the anchor.
 
 ## Parity gate
 

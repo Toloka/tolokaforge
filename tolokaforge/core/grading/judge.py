@@ -253,13 +253,47 @@ def _answer_terminating_submit_report(
 # ---------------------------------------------------------------------------
 
 
+#: Delimiter strings the judge prompt uses to fence untrusted evidence
+#: (agent system prompt + transcript). Anything inside those slots that
+#: replays one of these exactly would break the judge out of the evidence
+#: section and let it read subsequent bytes as the harness's own
+#: instructions. Neutralised at interpolation time by
+#: :func:`_neutralise_judge_delimiters`.
+_JUDGE_UNTRUSTED_DELIMITERS: tuple[str, ...] = (
+    "===== TRANSCRIPT =====",
+    "===== END TRANSCRIPT =====",
+)
+
+
+def _neutralise_judge_delimiters(text: str) -> str:
+    """Break exact matches of the judge prompt's own fence strings inside untrusted text.
+
+    Called on every model-controlled slot (``agent_system_prompt``, each
+    transcript message's ``content``, each tool call's ``arguments``) before
+    those slots are interpolated into the judge prompt. The replacement inserts
+    a zero-width space so the fence string is still human-readable in the
+    prompt (an operator debugging a run can spot the exact byte a payload used)
+    while no longer matching the delimiter the judge's own attention anchors on.
+
+    Only exact fence strings from :data:`_JUDGE_UNTRUSTED_DELIMITERS` are
+    neutralised — free-form Markdown (``---``, triple-backtick) is common in
+    honest agent output and blanket-neutralising it would garble every trial.
+    """
+    for delimiter in _JUDGE_UNTRUSTED_DELIMITERS:
+        text = text.replace(delimiter, delimiter.replace("=====", "===​==="))
+    return text
+
+
 def format_transcript(transcript: list[dict[str, Any]]) -> str:
     """Render the agent transcript to a compact, judge-readable string.
 
     Receives the same ``llm_messages`` list the runner already decoded for
     grading (role/content/tool_calls dicts). Tool calls are summarised inline so
-    the judge sees what the agent *did*, not just what it said.
-
+    the judge sees what the agent *did*, not just what it said. Every
+    model-controlled slot (``content``, tool_call ``arguments``) is passed
+    through :func:`_neutralise_judge_delimiters` before it lands in the prompt,
+    so a payload that replays one of the judge prompt's own fence strings
+    cannot escape the transcript block and inject fake instructions.
     """
     lines: list[str] = []
     for msg in transcript:
@@ -271,12 +305,12 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
             )
         content = (content or "").strip()
         if content:
-            lines.append(f"{role}: {content}")
+            lines.append(f"{role}: {_neutralise_judge_delimiters(content)}")
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", tc) if isinstance(tc, dict) else {}
             name = fn.get("name", "?")
             args = fn.get("arguments", "")
-            lines.append(f"  -> tool_call {name}({args})")
+            lines.append(f"  -> tool_call {name}({_neutralise_judge_delimiters(str(args))})")
         if msg.get("tool_call_id") and not content:
             lines.append(f"{role}: (tool result)")
     return "\n".join(lines) if lines else "(empty transcript)"
@@ -348,7 +382,7 @@ def _build_opening_message(
     """
     policy_block = (
         f"The agent under evaluation operated under this policy / system prompt:\n"
-        f"---\n{agent_system_prompt.strip()}\n---\n\n"
+        f"---\n{_neutralise_judge_delimiters(agent_system_prompt.strip())}\n---\n\n"
         if include_agent_system_prompt and agent_system_prompt and agent_system_prompt.strip()
         else ""
     )

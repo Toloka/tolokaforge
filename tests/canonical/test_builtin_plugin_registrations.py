@@ -37,6 +37,7 @@ from tolokaforge.core.grading.grading_method import (
 from tolokaforge.core.grading.judge_kinds import (
     ChunkedRubricJudgeKind,
     JuryRubricJudgeKind,
+    PerCriterionRubricJudgeKind,
     SingleShotRubricJudgeKind,
     VotedRubricJudgeKind,
 )
@@ -222,6 +223,7 @@ def test_grader_kind_names_resolve_to_their_class(name: str, expected_cls: type)
     [
         ("chunked_rubric", ChunkedRubricJudgeKind),
         ("jury_rubric", JuryRubricJudgeKind),
+        ("per_criterion_rubric", PerCriterionRubricJudgeKind),
         ("single_shot_rubric", SingleShotRubricJudgeKind),
         ("voted_rubric", VotedRubricJudgeKind),
     ],
@@ -254,6 +256,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_judge_kinds() == [
         "chunked_rubric",
         "jury_rubric",
+        "per_criterion_rubric",
         "single_shot_rubric",
         "voted_rubric",
     ]
@@ -292,7 +295,13 @@ def test_raw_entry_point_probe_lists_grader_kinds() -> None:
 
 def test_raw_entry_point_probe_lists_judge_kinds() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=JUDGE_KINDS_GROUP))
-    assert names == ["chunked_rubric", "jury_rubric", "single_shot_rubric", "voted_rubric"]
+    assert names == [
+        "chunked_rubric",
+        "jury_rubric",
+        "per_criterion_rubric",
+        "single_shot_rubric",
+        "voted_rubric",
+    ]
 
 
 def test_raw_entry_point_probe_lists_bundle_stores() -> None:
