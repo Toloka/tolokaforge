@@ -80,4 +80,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0045](0045-content-loop-heuristic-deleted.md) | StuckDetector runs one heuristic — repeated identical result | Accepted |
 | [0046](0046-judgekind-protocol-and-registry.md) | The `JudgeKind` Protocol and entry-point registry | Accepted |
 | [0047](0047-live-tracing-trial-observer-otel.md) | Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra (amended: the Langfuse observer is the `tolokaforge-langfuse` plugin wheel) | Proposed, amended 2026-09-17 |
-| [0048](0048-write-once-observations-append-only-receiver.md) | Write-once observations on an append-only receiver (preview rows while a trial runs, the record written once from the bundle) | Proposed |
+| [0048](0048-write-once-observations-append-only-receiver.md) | Write-once producer layout for Langfuse v4 (preview rows while a trial runs, the record written once from the bundle) | Proposed |

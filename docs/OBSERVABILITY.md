@@ -191,14 +191,15 @@ receiver adds three more to a trace that arrived over OTLP, `attributes`, `resou
 (the trace-level span's raw attributes, the SDK's resource attributes and the instrumentation
 scope).
 
-## The write-once layout, on a receiver whose observations are append-only
+## The write-once producer layout for Langfuse v4
 
 Langfuse v4 in its default write mode takes observations over **OTLP only** (the legacy ingestion
-events for observations are refused), stores them **append-only** (a re-sent id is a second row,
-there is no read-time dedup and no way to delete one observation) and makes a trace **be its root
-observation** (the trace list is the list of root observations). The two shapes above - a
-provisional root at trial start and a trial-end pass that re-sends everything - cannot work there,
-so the observer detects the receiver's family once per run and writes accordingly.
+events for observations are refused) and makes a trace **be its root observation** (the trace list
+is the list of root observations). On the measured 4.38.0 `events_only` receiver, a re-sent
+observation id is an update, last write wins, even when its content or `environment` changes.
+Transient rows during ingestion converge; they are not permanent duplicates. The observer detects
+the receiver's family once per run and uses separate live previews and a complete bundle-derived
+record on v4. Writing that record once is a producer policy, not a receiver limitation.
 
 **How the family is decided.** `GET /api/public/v2/observations` answers on a v4 receiver in every
 write mode and 404s on a v3 one; the version the receiver reports cannot decide, because a v4
@@ -214,13 +215,14 @@ lands in the tracing receipt (`details[0].server_api`).
 | trial start | the **preview root** `preview: trial <task>/<trial>`, whose parent is the final root's id, with the trace name, session, the tags known then, the native fields and the identity metadata | `obs\|<trace>\|proot\|-` |
 | every call end | the same live bodies as on a v3 receiver, under the **preview kinds** and under the preview root, named `preview: ...`, with `preview: true` in their metadata | `pgen`, `pjgen`, `ptool`, `pjtool` |
 | trial persisted | the whole bundle projection converted to spans by `tolokaforge_langfuse.otlp_spans`, written **once**, the **root last**, after the media upload, with the complete manifest in the root's metadata as a JSON string the receiver parses back; the scores through the ingestion route, each with the grading's own timestamp | the final kinds, unchanged |
-| run end | one minimal **error root** for every trace whose real root can no longer come (the trial never persisted, the bundle pass wrote none, or the root never reached the receiver): name, session, tags, native fields, identity, start, `status: error` and the reason, no manifest and no verdict | `root` |
+| run end | one minimal **error root** for every trace whose real root can no longer come (the trial never persisted, the bundle pass wrote none, or the root never reached the exporter): name, session, tags, native fields, identity, start, `status: error` and the reason, no manifest and no verdict | `root` |
 
-Nothing is ever re-sent: a preview id can never collide with a final one (the kind is part of the
-id), a preview row says so in its own metadata, and a reader excludes previews by that marker and
-by the ids the contract derives. Until the final root arrives the trace has **no** root row, so it
-is in no trace list; a reviewer reaches a running trial by its (deterministic) trace id or by its
-session, and the trace joins the list when the trial ends. The trace's name, session, tags, native
+Within a run, the producer does not re-send observations: a preview id can never collide with a
+final one (the kind is part of the id), a preview row says so in its own metadata, and a reader
+excludes previews by that marker and by the ids the contract derives. Until the final root arrives
+the trace has **no** root row, so it is in no trace list; a reviewer reaches a running trial by its
+(deterministic) trace id or by its session, and the trace joins the list when the trial ends.
+The trace's name, session, tags, native
 fields and identity metadata ride on **every** span, previews included, because a v4 receiver
 stores and filters them per observation.
 
@@ -233,36 +235,36 @@ this family - the trace's root observation comes from the bundle - and a run tha
 refused at run start.
 
 **One POST per batch, and what happens when one fails.** The stock OTLP exporter re-posts a batch
-that failed with a connection error or a retryable status. Here that is unsafe in exactly one
-case: the receiver wrote the batch and its answer was lost, so the re-post writes every
-observation again, the root included, with no way to delete either copy. The v4 family therefore
-posts each batch **exactly once**, which takes more than turning the exporter's retry loop off:
-the SDK's own `_export` posts a second time on a lost connection, `requests` follows a 307 or 308
+that failed with a connection error or a retryable status. The v4 producer makes one POST attempt
+per batch to avoid unnecessary requests and unintended overwrites. This does not guarantee
+delivery or prevent an undeletable duplicate. It takes more than disabling the exporter's retry
+loop: the SDK's own `_export` posts a second time on a lost connection, `requests` follows a 307 or 308
 by re-sending the body, and a session's adapter can retry by itself. The exporter makes the
-request itself with redirects refused and no adapter attempts. This is the whole safety argument
-for writing to such a receiver, so it is not optional: an OpenTelemetry SDK whose exporter cannot
-be asked for it fails the run at start rather than falling back to a retrying one. A v3 run is
-unaffected, because it upserts. The consequences are visible in the receipt:
+request itself with redirects refused and no adapter retries. Only 2xx responses are successful;
+3xx responses, including 307 and 308, are failed exports. An OpenTelemetry SDK whose exporter cannot
+enforce this policy fails the run at start rather than silently enabling retries. A v3 run keeps
+the stock retrying exporter. The consequences are visible in the receipt:
 
 - a batch the queue never took (it was full, or the flush budget ran out) is certainly unwritten,
   so the trace gets its **error root** at run end;
 - a batch the exporter posted and could not confirm is **ambiguous**: no error root is written for
-  it, because a second root under the same id could never be removed. The run warns, counts it in
-  `langfuse.roots_unconfirmed`, and the offline uploader completes such a trace later (it reads
-  which ids the receiver already holds before writing).
+  it, because a minimal error root could overwrite a complete root already stored. The run warns,
+  counts it in `langfuse.roots_unconfirmed`, and the offline uploader completes such a trace later
+  (it reads which ids the receiver already holds before writing).
 
 The error root itself carries nine of the trace metadata schema's keys, not the full 34: it is
 deliberately minimal (identity, status, the reason, the label and the time source), so a reader
 that groups by `model_name` or by a verdict key does not see the failed trials at all. Look for
 `status: error` or the `error_root` marker in the observation's own metadata.
 
-**Where the verdict lives on this family.** The trace's metadata is written once with the root, so
-a later grading cannot correct it: `pass`, `score` and `primary_grading` in the metadata are as of
-that write, for good. Scores are not append-only, so they carry the current answer instead. Beside
-the trace-level mirror of the primary grading the observer writes a categorical `primary_grading`
-score naming the grading the mirror belongs to, and both carry `scope: primary` in the score
-metadata. A reader that wants "the verdict as it stands" queries the scores filtered on that
-marker; without the filter the grading-scoped copies are counted too. The offline connector moves
+**Where the verdict lives on this family.** The producer writes the trace's metadata once with the
+root and does not rewrite it for later gradings: `pass`, `score` and `primary_grading` in the
+metadata remain as of that write. This is the layout's policy, not a receiver immutability guarantee.
+Scores carry the current answer instead. Beside the trace-level mirror of the primary grading the
+observer writes a categorical `primary_grading` score naming the grading the mirror belongs to,
+and both carry `scope: primary` in the score metadata. A reader that wants "the verdict as it
+stands" queries the scores filtered on that marker; without the filter the grading-scoped copies
+are counted too. The offline connector moves
 the same pair when a later grading becomes primary.
 
 The decision, the options it was chosen over and its consequences are

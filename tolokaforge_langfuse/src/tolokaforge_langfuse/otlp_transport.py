@@ -1,10 +1,9 @@
-"""The OTLP/HTTP span exporter, and the one that posts a batch **exactly once**.
+"""The OTLP/HTTP span exporter, with an optional single-attempt transport.
 
-A receiver whose observations are append-only cannot delete a row, so a batch written twice is
-two rows forever (ADR-0048). A batch that never arrived is recoverable: the run says so in its
-receipt and the offline sibling completes the trace. So on that family the transport trades every
-repeat away, and the guarantee has to hold for the **physical** request, not just for the
-exporter's own loop.
+The v4 producer layout deliberately avoids re-sending observations (ADR-0048). On the measured
+Langfuse 4.38.0 ``events_only`` receiver, a re-sent observation id is an update, last write wins.
+One attempt avoids unnecessary requests and unintended overwrites; it does not guarantee delivery.
+The receipt reports failed exports so the offline sibling can recover missing observations.
 
 Three repeats have to be off, and the stock exporter leaves two of them on:
 
@@ -76,7 +75,7 @@ def _single_attempt_exporter_class() -> type | None:
         return None
 
     class SingleAttemptSpanExporter(OTLPSpanExporter):  # type: ignore[misc, valid-type]
-        """One POST per batch: a repeat could duplicate what the receiver already wrote."""
+        """One POST attempt per batch, without automatic repeats or overwrites."""
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
@@ -116,7 +115,7 @@ def _single_attempt_exporter_class() -> type | None:
                 # unconfirmed, never as "certainly not written" (ADR-0048)
                 _log.warning("span export failed: %s", type(exc).__name__)
                 return SpanExportResult.FAILURE
-            if getattr(answer, "ok", False):
+            if 200 <= answer.status_code < 300:
                 return SpanExportResult.SUCCESS
             _log.warning("span export refused: HTTP %s", getattr(answer, "status_code", "unknown"))
             return SpanExportResult.FAILURE
@@ -139,11 +138,10 @@ def make_otlp_exporter(
     caller-supplied headers only: with none, the SDK's own environment variable owns the header
     set.
 
-    ``retry=False`` posts each batch exactly once (:func:`_single_attempt_exporter_class`), which
-    is what a write-once receiver needs. When this SDK no longer offers what that requires, it
-    raises :class:`SingleAttemptUnavailable` instead of returning a retrying exporter: a
-    duplicate on such a receiver cannot be deleted, so the run has to stop rather than risk
-    one."""
+    ``retry=False`` makes one POST attempt per batch (:func:`_single_attempt_exporter_class`),
+    accepting only 2xx responses as successful exports. When this SDK no longer offers what
+    that requires, it raises :class:`SingleAttemptUnavailable` rather than silently changing
+    the requested delivery policy to a retrying exporter."""
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
     merged = dict(headers) if headers else {}
@@ -165,7 +163,6 @@ def make_otlp_exporter(
 
 
 _REFUSAL = (
-    "the OTLP exporter of this OpenTelemetry SDK cannot be asked to post a batch exactly once, "
-    "and a repeated batch the receiver already wrote would be a duplicate it cannot delete: pin "
-    "an SDK this package supports, or write for the v3 family"
+    "the OTLP exporter of this OpenTelemetry SDK cannot enforce the single-attempt delivery "
+    "policy: pin an SDK this package supports"
 )

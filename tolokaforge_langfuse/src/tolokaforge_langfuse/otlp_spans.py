@@ -2,8 +2,8 @@
 
 A Langfuse v4 receiver in its default write mode takes observations over OTLP alone: the legacy
 ``trace-create`` / ``span-create`` / ``generation-create`` / ``event-create`` events are refused,
-every observation is append-only, and **a trace is its root observation**. This module turns the
-ingestion bodies :mod:`tolokaforge_langfuse.projection` builds (and the connector's ``mapping``
+and **a trace is its root observation**. This module turns the ingestion bodies
+:mod:`tolokaforge_langfuse.projection` builds (and the connector's ``mapping``
 builds from the same bundle) into finished spans, so one body builder still serves both
 producers and the v4 write path is a translation rather than a second projection.
 

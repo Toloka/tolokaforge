@@ -14,7 +14,7 @@ same trace the offline uploader produces; any OTLP collector still receives vali
 - ``v3``: what this module always did. The per-call spans carry the contract's final ids, the
   root is provisional at trial start and complete at trial end, and the trial-end pass re-sends
   every record through the ingestion API, where the receiver upserts.
-- ``v4``: observations are append-only, so every id is written **once**. The live spans become
+- ``v4``: the producer writes every id **once** by policy. The live spans become
   declared **previews** under the preview kinds, children of a preview root whose parent is the
   final root, marked ``preview: true`` and named ``preview: ...``; nothing live is ever re-sent
   or completed. At ``trial_persisted`` the bundle's projection is converted
@@ -615,7 +615,7 @@ class OTelTrialObserver:
     def trial_finished(
         self, identity: TrialIdentity, *, trajectory: Any, error: str | None = None
     ) -> None:
-        """Close the trace with the root span, or, on a write-once receiver, only keep what the
+        """Close the trace with the root span, or, in the write-once layout, only keep what the
         bundle pass and a possible error root need: there the root is written from the bundle at
         ``trial_persisted``. ``trajectory`` is ``None`` when the trial died before producing one;
         ``error`` names the exception that ended it, if any."""
@@ -885,7 +885,7 @@ class OTelTrialObserver:
         projection: Any,
         manifest: Mapping[str, Any] | None,
     ) -> tuple[bool, bool, bool]:
-        """The bundle's records on a write-once receiver: every observation as a span under its
+        """The bundle's records in the write-once layout: every observation as a span under its
         contract id, **the root last** (it completes the trace, so nothing may follow it), then
         the scores through the ingestion route, which still accepts them. Each id leaves exactly
         once; a failed score batch is counted and leaves the trace complete but unscored.

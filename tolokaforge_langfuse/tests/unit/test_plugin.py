@@ -460,13 +460,12 @@ class TestTheReceiverFamily:
         assert observer.run_finished().details[0]["server_api"] == "v3"
 
     def test_a_v4_run_stops_when_the_sdk_cannot_post_once(self, monkeypatch) -> None:
-        """At-most-once on the wire is why this layout may be written at all; without it the
-        run is refused at start rather than degraded to a retrying exporter."""
+        """The v4 producer's single-attempt policy is required at run start."""
         pytest.importorskip("opentelemetry.sdk")
         from tolokaforge_langfuse import otlp_transport
 
         monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
-        with pytest.raises(TracingConfigError, match="writes every observation once"):
+        with pytest.raises(TracingConfigError, match="requires a single attempt"):
             self._build(monkeypatch, (200, b'{"data": []}'))
 
     def test_the_same_sdk_leaves_a_v3_run_alone(self, monkeypatch) -> None:

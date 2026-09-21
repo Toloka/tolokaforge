@@ -193,7 +193,7 @@ def build(
     if server_api == SERVER_V4 and settings.projection != PROJECTION_FULL:
         raise TracingConfigError(
             f"observability.tracing.options.langfuse.projection={settings.projection!r} cannot "
-            "be used with this receiver: it writes every observation once, so a trace's root "
+            "be used with the v4 write-once layout: a trace's root "
             "observation comes from the persisted bundle and only projection='full' writes one"
         )
     environment = resolve_environment(settings.environment, profile, tags)
@@ -211,7 +211,7 @@ def build(
         endpoint=endpoint,
         headers=headers,
         environment=environment,
-        # on a write-once receiver the manifest is part of the root observation, and a legacy
+        # in the v4 layout the manifest is part of the root observation, and a legacy
         # trace-create update would be refused anyway
         send_manifest_event=server_api == SERVER_V3,
     )
@@ -221,12 +221,13 @@ def build(
             headers=headers,
             # the direct ingestion path is a v4 route; the v3 family is written exactly as before
             ingestion_version=INGESTION_VERSION if server_api == SERVER_V4 else None,
-            # a retried batch the receiver already wrote is a duplicate it cannot delete
+            # the v4 producer policy avoids automatic repeats and unintended overwrites
             retry=server_api != SERVER_V4,
         )
     except SingleAttemptUnavailable as exc:
-        # the write-once guarantee is the reason this run may write to that receiver at all
-        raise TracingConfigError(f"this receiver writes every observation once: {exc}") from exc
+        raise TracingConfigError(
+            f"the v4 write-once layout requires a single attempt: {exc}"
+        ) from exc
     queue = SpanQueue(
         exporter,
         max_size=tracing.queue_size,
@@ -593,7 +594,7 @@ def build_attachments(
     the headers are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s
     credential values (keys with secret-like names; URL, path and name values are not
     credentials and a bundle may legitimately quote them), and ``environment`` rides on the
-    manifest update too. ``send_manifest_event`` is false on a write-once receiver, where the
+    manifest update too. ``send_manifest_event`` is false in the v4 layout, where the
     manifest is part of the root observation instead of a ``trace-create`` update."""
     from tolokaforge_langfuse.attachments import ATTACH_NONE, SecretScan
     from tolokaforge_langfuse.media import (
