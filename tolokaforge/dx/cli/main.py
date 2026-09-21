@@ -1962,6 +1962,8 @@ def validate(tasks: str, strict_authoring: bool):
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")
+            for hint in report.hints:
+                console.print(f"[yellow]  ⚠ {hint.where}: {hint.message}[/yellow]")
             valid += 1
         except Exception as e:
             console.print(f"[red]✗ {task_file}: {str(e)}[/red]")
