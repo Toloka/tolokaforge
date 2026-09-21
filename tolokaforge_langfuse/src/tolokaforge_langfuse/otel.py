@@ -14,7 +14,7 @@ same trace the offline uploader produces; any OTLP collector still receives vali
 - ``v3``: what this module always did. The per-call spans carry the contract's final ids, the
   root is provisional at trial start and complete at trial end, and the trial-end pass re-sends
   every record through the ingestion API, where the receiver upserts.
-- ``v4``: observations are append-only, so every id is written **once**. The live spans become
+- ``v4``: the producer writes every id **once** by policy. The live spans become
   declared **previews** under the preview kinds, children of a preview root whose parent is the
   final root, marked ``preview: true`` and named ``preview: ...``; nothing live is ever re-sent
   or completed. At ``trial_persisted`` the bundle's projection is converted
@@ -81,10 +81,6 @@ HARNESS_TAG = "harness:tolokaforge"
 # a trial observer traces trials: the source is the producer's fact (vocabulary.SOURCE_TRIAL)
 SOURCE_TAG = f"source:{SOURCE_TRIAL}"
 TRACE_TIME_SOURCE = "live"
-# Langfuse v4 takes OTLP on the documented direct path behind this header; a measurement on an
-# idle deployment found no latency benefit, but the vendor documents it as the path
-INGESTION_VERSION_HEADER = "x-langfuse-ingestion-version"
-INGESTION_VERSION = "4"
 # what a preview row says about itself: a marker in its metadata and a name a reader recognises
 # without looking the id up
 PREVIEW_METADATA_KEY = "preview"
@@ -114,89 +110,6 @@ def _scope() -> InstrumentationScope:
     except Exception:  # noqa: BLE001 - version is informational
         engine_version = "unknown"
     return InstrumentationScope("tolokaforge.observability", engine_version)
-
-
-class SingleAttemptUnavailable(RuntimeError):
-    """This OpenTelemetry SDK cannot be asked to post a batch once."""
-
-
-def _single_attempt_exporter_class() -> type | None:
-    """An ``OTLPSpanExporter`` that posts a batch **once**, or None when the SDK has moved on.
-
-    The stock exporter re-posts a batch that failed with a connection error or a retryable
-    status, up to six times. On a receiver whose observations are append-only that is unsafe in
-    one case: the receiver wrote the batch and the answer was lost, so the re-post writes every
-    observation of it a second time, the root included, and nothing can delete either copy
-    (ADR-0048). A dropped batch is recoverable there (the run says so in its receipt and the
-    offline uploader completes the trace), a duplicate is not, so the v4 family trades the
-    retries away. It touches the SDK's internals, so a version that no longer offers them
-    returns None here, and :func:`make_otlp_exporter` refuses the run rather than falling back
-    to a retrying exporter."""
-    try:
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-            encode_spans,
-        )
-    except ImportError:
-        return None
-    if not hasattr(OTLPSpanExporter, "_export"):
-        return None
-
-    class SingleAttemptSpanExporter(OTLPSpanExporter):  # type: ignore[misc, valid-type]
-        """One POST per batch: a retry could duplicate what the receiver already wrote."""
-
-        def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:  # type: ignore[override]
-            if getattr(self, "_shutdown", False):
-                return SpanExportResult.FAILURE
-            try:
-                answer = self._export(encode_spans(spans).SerializePartialToString())
-            except Exception as exc:  # noqa: BLE001 - the queue counts and reports a failure
-                _log.warning("span export failed: %s", exc)
-                return SpanExportResult.FAILURE
-            if getattr(answer, "ok", False):
-                return SpanExportResult.SUCCESS
-            _log.warning("span export refused: HTTP %s", getattr(answer, "status_code", "unknown"))
-            return SpanExportResult.FAILURE
-
-    return SingleAttemptSpanExporter
-
-
-def make_otlp_exporter(
-    endpoint: str,
-    headers: Mapping[str, str] | None = None,
-    *,
-    ingestion_version: str | None = INGESTION_VERSION,
-    retry: bool = True,
-) -> SpanExporter:
-    """The standard OTLP/HTTP span exporter; ``OTEL_EXPORTER_OTLP_HEADERS`` supplies the
-    receiver's credentials when ``headers`` is not given, and is never logged here.
-
-    ``ingestion_version`` adds Langfuse's ``x-langfuse-ingestion-version`` header, which selects
-    the receiver's direct ingestion path; the v3 family is not sent it at all. It joins
-    caller-supplied headers only: with none, the SDK's own environment variable owns the header
-    set.
-
-    ``retry=False`` posts each batch once (:func:`_single_attempt_exporter_class`), which is what
-    a write-once receiver needs. When this SDK no longer offers the internals that requires, it
-    raises :class:`SingleAttemptUnavailable` instead of returning a retrying exporter: a
-    duplicate on such a receiver cannot be deleted, so the run has to stop rather than risk
-    one."""
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-
-    merged = dict(headers) if headers else {}
-    if merged and ingestion_version:
-        merged.setdefault(INGESTION_VERSION_HEADER, ingestion_version)
-    exporter_class: type = OTLPSpanExporter
-    if not retry:
-        single = _single_attempt_exporter_class()
-        if single is None:
-            raise SingleAttemptUnavailable(
-                "the OTLP exporter of this OpenTelemetry SDK cannot be asked to post a batch "
-                "once, and a retried batch the receiver already wrote would be a duplicate it "
-                "cannot delete: pin an SDK this package supports, or write for the v3 family"
-            )
-        exporter_class = single
-    return exporter_class(endpoint=endpoint, headers=merged or None)
 
 
 class SpanQueue:
@@ -702,7 +615,7 @@ class OTelTrialObserver:
     def trial_finished(
         self, identity: TrialIdentity, *, trajectory: Any, error: str | None = None
     ) -> None:
-        """Close the trace with the root span, or, on a write-once receiver, only keep what the
+        """Close the trace with the root span, or, in the write-once layout, only keep what the
         bundle pass and a possible error root need: there the root is written from the bundle at
         ``trial_persisted``. ``trajectory`` is ``None`` when the trial died before producing one;
         ``error`` names the exception that ended it, if any."""
@@ -972,7 +885,7 @@ class OTelTrialObserver:
         projection: Any,
         manifest: Mapping[str, Any] | None,
     ) -> tuple[bool, bool, bool]:
-        """The bundle's records on a write-once receiver: every observation as a span under its
+        """The bundle's records in the write-once layout: every observation as a span under its
         contract id, **the root last** (it completes the trace, so nothing may follow it), then
         the scores through the ingestion route, which still accepts them. Each id leaves exactly
         once; a failed score batch is counted and leaves the trace complete but unscored.

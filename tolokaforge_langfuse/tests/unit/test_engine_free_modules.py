@@ -18,6 +18,8 @@ SHARED = (
     "tolokaforge_langfuse.model_names",
     # the converter both producers write v4 observations through: bodies in, spans out
     "tolokaforge_langfuse.otlp_spans",
+    # the single-attempt transport shared by the v4 producers
+    "tolokaforge_langfuse.otlp_transport",
 )
 
 PROBE = """
@@ -35,9 +37,32 @@ print("ok")
 """
 
 
+# importing a module proves less than using it: the one-post exporter is built lazily, inside
+# the factory, so the engine could still be reached on that path
+BUILD_PROBE = PROBE.replace(
+    'print("ok")',
+    """
+from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
+exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"},
+                              retry=False)
+assert type(exporter).__name__ == "SingleAttemptSpanExporter", type(exporter).__name__
+assert exporter._session.get_adapter("http://127.0.0.1:9/v1/traces").max_retries.total == 0
+print("ok")
+""",
+)
+
+
 def test_the_shared_modules_load_without_the_engine() -> None:
     result = subprocess.run(
         [sys.executable, "-c", PROBE % (SHARED,)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_the_one_post_exporter_is_built_and_usable_without_the_engine() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", BUILD_PROBE % (SHARED,)], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"

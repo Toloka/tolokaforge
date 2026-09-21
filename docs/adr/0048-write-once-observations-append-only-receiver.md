@@ -1,4 +1,4 @@
-# 0048. Write-once observations on an append-only receiver
+# 0048. Write-once producer layout for Langfuse v4
 
 - **Status:** Proposed
 - **Date:** 2026-09-19
@@ -12,15 +12,19 @@ ADR-0047 writes a trial twice over: a provisional root and live rows while the t
 complete pass from the persisted bundle at `trial_persisted` that re-sends every observation under
 the same ids. That works on a receiver where a re-sent id is an upsert.
 
-The Langfuse 4.x line changes all three assumptions this rests on. In its default write mode
-(`events_only`) a receiver:
+In Langfuse v4's default write mode (`events_only`), a receiver:
 
 - takes observations over **OTLP only** (the legacy ingestion events for observations are refused,
   while scores and media keep their routes);
-- stores observations **append-only**: a re-sent id becomes a second row, there is no read-time
-  dedup and no API to delete one observation;
+- merges updates by observation id: on the measured 4.38.0 receiver, re-sending identical content,
+  changed content or a changed `environment` converges to one observation, last write wins;
 - makes a trace **be** its root observation, so a trace list is a list of root observations and a
   trace with no root row is in no list.
+
+The write-once layout is a producer policy, not a receiver constraint. It keeps live previews
+separate from the persisted record and avoids unintended overwrites. Re-sending an observation
+does not create a permanent duplicate: observations briefly visible during asynchronous ingestion
+must be checked after convergence before drawing that conclusion.
 
 Two further measured facts shape the design. The version a receiver reports cannot decide which
 family it is, because a 4.x receiver in a transitional write mode still accepts the legacy route
@@ -32,13 +36,13 @@ receiver on today's behaviour, without the engine's core learning anything recei
 
 ## Decision Drivers
 
-- Nothing may be written twice, and no existing observation id may move (the offline sibling
-  derives the same ids from the same contract).
+- Avoid automatic re-sends and preserve existing observation ids (the offline sibling derives
+  the same ids from the same contract).
 - A trial in flight must stay reachable, and a reader must be able to tell what the loop reported
   from what the bundle says.
 - A trial that never persists must not vanish from the trace list.
-- The verdict of a trace must stay correctable after the fact, although the trace's own metadata
-  cannot be.
+- The verdict of a trace must stay correctable after the fact without requiring this producer
+  to rewrite its root observation.
 - One converter for both producers: the live path and the offline uploader must emit identical
   spans, so the converter cannot import the engine.
 - A receiver that cannot be asked, or an operator who knows better, must be able to force a family.
@@ -47,8 +51,8 @@ receiver on today's behaviour, without the engine's core learning anything recei
 
 - **(A) One export at trial end.** Simple and correct, but nothing is visible while a trial runs,
   which is the point of live tracing.
-- **(B) The live rows are the record, completed at the end.** Impossible on an append-only
-  receiver: completing means re-sending, and a re-send duplicates.
+- **(B) The live rows are the record, completed at the end.** Updates are possible, but mix
+  provisional and bundle-derived content under the same ids.
 - **(C) Declared previews plus a write-once record.** The live rows are written under their own
   ids and marked as previews; the record is written once, from the bundle. Chosen.
 
@@ -85,16 +89,17 @@ metadata ride on **every** span, previews included, because this receiver stores
 per observation. `projection: full` is required on this family, since the root comes from the
 bundle: a run that asks for less is refused at run start.
 
-**5. The verdict lives in the scores.** The trace's metadata is frozen at that single write, so a
-later grading cannot correct it. Scores keep the ingestion route (they are not append-only) and each
-carries the grading's own timestamp. The trace-level mirror of the primary grading is joined by a
+**5. The verdict lives in the scores.** This producer leaves the trace's metadata as of the root's
+single write; later gradings update scores instead of rewriting the root. This is a layout policy,
+not a claim that receiver metadata is immutable. Scores keep the ingestion route and each carries
+the grading's own timestamp. The trace-level mirror of the primary grading is joined by a
 categorical `primary_grading` score naming the grading it mirrors; both are marked `scope: primary`
 in the score metadata, which is what a dashboard filters on. The frozen `pass` / `score` /
 `primary_grading` metadata keys stay as of the first write and are documented as such.
 
 **6. A trace whose root can no longer come gets one at run end.** At `run_finished` the observer
 writes a minimal error root for every trial that never persisted, whose bundle pass wrote nothing,
-or whose root never reached the receiver: name, session, tags, native fields, identity, start,
+or whose root never reached the exporter: name, session, tags, native fields, identity, start,
 `status: error` and the reason, with no manifest and no verdict.
 
 **7. Plugin API 4.** The engine's `PLUGIN_API_VERSION` and the wheel's `__api_version__` move
@@ -107,17 +112,25 @@ the family in `details`. The first three count what was queued; what left is the
 
 ## Consequences
 
-- **Delivery becomes at-most-once on the wire.** The transport's own retries are turned off on
-  this family, because a retried batch the receiver already wrote is a duplicate that cannot be
-  deleted, while a dropped batch is recoverable: the receipt says so and the offline sibling
-  completes the trace. For the same reason a root the exporter posted but could not confirm gets
-  **no** error root, only a counter and a warning. The single post is the safety argument itself,
-  so it is a run-start requirement rather than a best effort: an OpenTelemetry SDK that cannot be
-  asked for it fails the run instead of degrading to the retrying exporter.
-- A re-run of the same trial under the same run id no longer corrects anything on this family: the
-  observations are already there. Changing what a trace says means a new run id. The offline sibling
-  reports how many ids it skipped as already present, and refuses the one command that would have
-  to rewrite an existing root.
+- **One POST attempt per batch, without guaranteed delivery.** Re-sending an observation id can
+  overwrite it. Avoiding automatic repeats saves requests and preserves the producer's delivery
+  policy; it does not prevent an undeletable duplicate. A failed batch is reported in the receipt,
+  and the offline sibling can recover missing observations. A root the exporter posted but could
+  not confirm gets **no** error root, only a counter and a warning, so a minimal error record does
+  not overwrite a complete root that may already be stored. An OpenTelemetry SDK that cannot
+  enforce the single-attempt policy fails the run instead of silently enabling retries.
+- **The guarantee is about the physical request, and the stock transport repeats it in three
+  places.** Turning off the exporter's own retry loop is not enough: the SDK's `_export` re-posts
+  the same bytes in an `except ConnectionError` branch (which is precisely the lost-answer case),
+  and `requests` follows a 307 or 308 by re-sending the body while a caller-supplied session's
+  adapter may retry on its own. The exporter therefore issues the `session.post` itself, with
+  redirects refused and the endpoint's adapter mounted with no retries. Only 2xx responses count
+  as successful exports; a redirect is a failed export. Tests count posts at the HTTP layer and
+  use real response objects to preserve HTTP status semantics.
+- A live re-run under the same run id can overwrite existing observation ids. A new run id keeps
+  the records separate. The offline sibling's existence check deliberately skips already-present
+  ids and its write-once mode refuses root rewrites; those are uploader policies, not storage
+  limitations.
 - A trace list shows one row per finished trial and nothing for a trial in flight. Tooling that
   polls the trace list for progress has to poll the session or the known trace id instead.
 - Anything that reads "the current verdict" from the trace metadata is wrong on this family and has
