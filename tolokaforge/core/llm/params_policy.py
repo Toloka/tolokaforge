@@ -240,6 +240,14 @@ def _normalise_value_rules(
                         f"param_value_rules[{param!r}][{value!r}]: 'with' is "
                         f"the value being overridden; that rule does nothing."
                     )
+                allowed = _PARAM_ALLOWED_SUBSTITUTES.get(param)
+                if allowed is not None and substitute not in allowed:
+                    raise ValueError(
+                        f"param_value_rules[{param!r}][{value!r}]: 'with' is "
+                        f"{substitute!r}, but {param!r} accepts only "
+                        f"{sorted(allowed)}. A misspelled substitute would "
+                        f"validate here and fail only at request-build time."
+                    )
             elif substitute is not None:
                 raise ValueError(
                     f"param_value_rules[{param!r}][{value!r}]: 'with' is only "
@@ -266,7 +274,19 @@ def _normalise_value_rules(
 #: rule on anything else would be accepted and then never read, so it is
 #: refused: that is a typo, not a decision. Adding a parameter here means
 #: adding the site that consults it.
-RULABLE_PARAMS: Final[frozenset[str]] = frozenset({"reasoning_effort", "tool_choice"})
+RULABLE_PARAMS: Final[frozenset[str]] = frozenset(
+    {"reasoning_effort", "tool_choice", "parallel_tool_calls"}
+)
+
+
+#: Per-parameter allowed override substitutes (lowercased). A rule that
+#: substitutes into a bool-shaped consult site with anything other than
+#: ``"true"`` / ``"false"`` would validate at overlay load and fail only
+#: when a request is built an hour into a run — catch it at load instead.
+#: Parameters absent from this map accept any non-empty substitute string.
+_PARAM_ALLOWED_SUBSTITUTES: Final[dict[str, frozenset[str]]] = {
+    "parallel_tool_calls": frozenset({"true", "false"}),
+}
 
 
 class RuleAction(str, Enum):

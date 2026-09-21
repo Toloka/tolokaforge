@@ -2675,15 +2675,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         numeric_string_fields = state_checks.numeric_string_fields
         compare_columns = state_checks.compare_columns
         auto_mask_clock_columns = state_checks.auto_mask_clock_columns
+        auto_normalize_nullables = state_checks.auto_normalize_nullables
         # Client-side hashing is required whenever the state comparator
-        # needs both raw states in hand — either because the pack declared
-        # any per-column rule (folds, ordering, or subset extras) or
-        # because the auto clock-column mask is on. Empty compare_columns
-        # AND no auto-mask falls to the fast server-side get_stable_hash
-        # path; a compare_columns config with only empty inner dicts
-        # (``{table: {}}``) is inert and also stays on the fast path.
-        client_side_hash = auto_mask_clock_columns or any(
-            column_rules for column_rules in compare_columns.values()
+        # needs both raw states in hand — the pack declared any per-column
+        # rule (folds, ordering, or subset extras), the auto clock-column
+        # mask is on, or the global nullable normalization is on. Empty
+        # compare_columns AND no auto-mask AND no auto-normalize falls to
+        # the fast server-side get_stable_hash path; a compare_columns
+        # config with only empty inner dicts (``{table: {}}``) is inert
+        # and also stays on the fast path.
+        client_side_hash = (
+            auto_mask_clock_columns
+            or auto_normalize_nullables
+            or any(column_rules for column_rules in compare_columns.values())
         )
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
@@ -2832,16 +2836,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 numeric_string_fields=(
                     frozenset(numeric_string_fields) if numeric_string_fields else None
                 ),
+                auto_normalize_nullables=auto_normalize_nullables,
             )
             trial_hash = compute_stable_hash(
                 trial_state_processed,
                 numeric_string_fields=numeric_string_fields,
                 auto_mask_clock_columns=auto_mask_clock_columns,
+                auto_normalize_nullables=auto_normalize_nullables,
             )
             golden_hash = compute_stable_hash(
                 golden_state_processed,
                 numeric_string_fields=numeric_string_fields,
                 auto_mask_clock_columns=auto_mask_clock_columns,
+                auto_normalize_nullables=auto_normalize_nullables,
             )
             logger.debug(
                 f"GradeTrial: Client-side hashes computed (compare_columns applied) "

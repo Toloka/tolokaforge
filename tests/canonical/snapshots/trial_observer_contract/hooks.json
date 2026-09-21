@@ -1,0 +1,8 @@
+{
+  "generation": "(self, identity: 'TrialIdentity', *, role: 'str', index: 'int', turn: 'int', request: 'Sequence[Message]', result: 'GenerationResult', started_at: 'datetime', ended_at: 'datetime') -> 'None'",
+  "run_finished": "(self) -> 'ExportReceipt'",
+  "tool_call": "(self, identity: 'TrialIdentity', *, role: 'str', index: 'int', call: 'ToolCall', result: 'ToolResult', started_at: 'datetime', ended_at: 'datetime') -> 'None'",
+  "trial_finished": "(self, identity: 'TrialIdentity', *, trajectory: 'Trajectory | None', error: 'str | None' = None) -> 'None'",
+  "trial_persisted": "(self, identity: 'TrialIdentity', *, trial_dir: 'Path') -> 'None'",
+  "trial_started": "(self, identity: 'TrialIdentity', *, models: 'Mapping[str, ModelRef]', started_at: 'datetime') -> 'None'"
+}

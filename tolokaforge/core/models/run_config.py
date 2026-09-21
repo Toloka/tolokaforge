@@ -1091,21 +1091,51 @@ class GraderConfig(BaseModel):
 
 
 class TracingConfig(BaseModel):
-    """Tracing exporter selection.
+    """Receiver-neutral trial tracing contract (ADR-0047).
 
-    A non-default ``exporter`` requires an ``endpoint``; ``none`` (the
-    default) does not.
+    ``exporter`` selects an installed observer plugin; ``none`` is off by default. Plugins
+    interpret the endpoint and their own namespaced ``options``. The engine owns run identity,
+    common trace attributes and transport limits, and never interprets receiver settings.
+
+    ``run_id`` is the external execution identity (default: the engine's run id); ``run_tag``
+    namespaces it. Both enter every trace id, including those used by offline bundle uploaders.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
-    exporter: Literal["none", "otlp"] = "none"
+    exporter: str = Field(default="none", min_length=1, pattern=r"^\S+$")
     endpoint: str | None = None
+    """Receiver endpoint; the selected plugin owns protocol and environment resolution."""
+    run_id: str | None = None
+    run_tag: str = "v1"
+    session_id: str | None = None
+    """Session every trace of the run joins (default: ``run_id``)."""
+    label: str | None = None
+    """Trace-name prefix, ``<label>/<task_id>`` (default: the run directory's name)."""
+    service_name: str = "tolokaforge"
+    tags: list[str] = Field(default_factory=list)
+    """Extra trace tags; plugins validate any receiver-specific vocabulary."""
+    metadata: dict[str, str] = Field(default_factory=dict)
+    """Extra trace metadata; plugins validate their reserved keys."""
+    queue_size: int = Field(default=4096, ge=1)
+    export_batch_size: int = Field(default=64, ge=1)
+    export_interval_s: float = Field(default=1.0, gt=0)
+    flush_timeout_s: float = Field(default=30.0, ge=0)
+    attribute_max_chars: int = Field(default=20_000, ge=64)
+    context_messages: int = Field(default=6, ge=1)
+    """How many preceding messages a generation span carries as its input."""
+    options: dict[str, Any] = Field(default_factory=dict)
+    """Plugin-owned settings, keyed by plugin name and passed through untouched. Each active
+    plugin validates its own namespace before starting any exports (ADR-0047)."""
 
     @model_validator(mode="after")
-    def _require_endpoint_when_active(self) -> Self:
-        if self.exporter != "none" and not self.endpoint:
-            raise ValueError(f"TracingConfig.exporter={self.exporter!r} requires endpoint.")
+    def _check_fields(self) -> Self:
+        for component, value in (("run_id", self.run_id), ("run_tag", self.run_tag)):
+            if value is not None and (not value.strip() or value != value.strip() or "|" in value):
+                raise ValueError(
+                    f"TracingConfig.{component}={value!r} must be non-empty without surrounding "
+                    "whitespace or '|'."
+                )
         return self
 
 

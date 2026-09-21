@@ -844,6 +844,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             TaskDescription,
             TraceChecksConfig,
             TranscriptRulesConfig,
+            read_unstable_field_specs,
         )
 
         logger.info(
@@ -959,6 +960,9 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     relaxed_validation=relaxed_validation,
                     compare_columns=state_checks_data.get("compare_columns", {}),
                     auto_mask_clock_columns=state_checks_data.get("auto_mask_clock_columns", False),
+                    auto_normalize_nullables=state_checks_data.get(
+                        "auto_normalize_nullables", False
+                    ),
                 )
 
             # Build transcript rules. One model serves the authored block and the
@@ -1046,7 +1050,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         initial_state = RunnerInitialStateConfig(
             tables=initial_tables,
             schemas=[],
-            unstable_fields=[],
+            unstable_fields=read_unstable_field_specs(task_dir),
             filesystem=initial_filesystem,
         )
 

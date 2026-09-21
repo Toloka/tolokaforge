@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from tolokaforge.core.grading.state_checks import state_digest
+from tolokaforge.core.grading.state_checks import load_task_unstable_fields, state_digest
 from tolokaforge.core.hash import (
     AUTO_MASKED_CLOCK_COLUMNS,
     ColumnCompareRule,
@@ -956,3 +956,445 @@ class TestOrderingSortKeyRaisesOnUnserializableRow:
         # sanity: the well-behaved unserializable row (str fallback catches it)
         # does not raise.
         apply_compare_columns_ordering(actual, rules)
+
+
+class TestAutoNormalizeNullables:
+    """Task-level ``state_checks.auto_normalize_nullables`` folds every scalar
+    column under the three nullable equivalences (``None`` ≡ ``[]`` ≡ ``{}``
+    ≡ ``""`` and trailing-``Z`` stripping) without per-column enumeration.
+    Symmetric on both substrates.
+    """
+
+    def test_default_off_preserves_failure_shape(self):
+        actual = {"t": [{"id": "1", "tags": None, "note": ""}]}
+        expected = {"t": [{"id": "1", "tags": [], "note": None}]}
+        assert compute_stable_hash(actual) != compute_stable_hash(expected)
+        assert state_digest(actual) != state_digest(expected)
+
+    def test_null_and_empty_list_fold_via_compute_stable_hash(self):
+        actual = {"cases": [{"id": "1", "tags": None}]}
+        expected = {"cases": [{"id": "1", "tags": []}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_null_and_empty_dict_fold_via_compute_stable_hash(self):
+        actual = {"cases": [{"id": "1", "meta": None}]}
+        expected = {"cases": [{"id": "1", "meta": {}}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_null_and_empty_string_fold_via_compute_stable_hash(self):
+        actual = {"cases": [{"id": "1", "account_id": ""}]}
+        expected = {"cases": [{"id": "1", "account_id": None}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_trailing_z_does_not_normalize_globally(self):
+        """Timezone-suffix stripping is per-column-opt-in, NOT part of the
+        global pass — a non-datetime string ending in ``Z`` (e.g. a
+        product code) must not false-collapse with its stripped twin.
+        """
+        actual = {"products": [{"id": "1", "code": "ABZ"}]}
+        expected = {"products": [{"id": "1", "code": "AB"}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) != compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) != state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_state_digest_agrees_with_runner_substrate(self):
+        actual = {"cases": [{"id": "1", "tags": None, "account_id": ""}]}
+        expected = {"cases": [{"id": "1", "tags": [], "account_id": None}]}
+        assert state_digest(actual, auto_normalize_nullables=True) == state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_still_fails_on_genuine_content_diff(self):
+        actual = {"cases": [{"id": "1", "status": "open", "tags": None}]}
+        expected = {"cases": [{"id": "1", "status": "closed", "tags": []}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) != compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) != state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_composes_with_per_column_equivalence_declaration(self):
+        """A per-column rule that sets one of the same flags is idempotent."""
+        actual = {"cases": [{"id": "1", "tags": None, "account_id": ""}]}
+        expected = {"cases": [{"id": "1", "tags": [], "account_id": None}]}
+        rules = {
+            "cases": {
+                "tags": ColumnCompareRule(treat_null_as_empty_collection=True),
+            }
+        }
+        actual_p, expected_p = apply_compare_columns_pipeline(
+            actual, expected, rules, auto_normalize_nullables=True
+        )
+        assert compute_stable_hash(actual_p, auto_normalize_nullables=True) == compute_stable_hash(
+            expected_p, auto_normalize_nullables=True
+        )
+
+    def test_composes_with_unrelated_per_column_rule(self):
+        """A per-column rule declaring a distinct flag (subset/order) still applies on top."""
+        actual = {
+            "notify": [
+                {"id": "1", "params": {"a": 1, "b": 2}, "tags": None},
+                {"id": "2", "params": {"a": 3}, "tags": ""},
+            ]
+        }
+        expected = {
+            "notify": [
+                {"id": "1", "params": {"a": 1}, "tags": []},
+                {"id": "2", "params": {"a": 3}, "tags": None},
+            ]
+        }
+        rules = {
+            "notify": {
+                "params": ColumnCompareRule(mode="subset", extras_allowed_for=["b"]),
+            }
+        }
+        actual_p, expected_p = apply_compare_columns_pipeline(
+            actual, expected, rules, auto_normalize_nullables=True
+        )
+        assert compute_stable_hash(actual_p, auto_normalize_nullables=True) == compute_stable_hash(
+            expected_p, auto_normalize_nullables=True
+        )
+
+    def test_leaves_non_row_dict_values_alone(self):
+        """A dict-valued top-level entry (metadata block, schema stamps —
+        not row-shaped tables) is left untouched, mirroring
+        :func:`apply_auto_clock_mask`'s shape assumption. Only list-valued
+        top-level entries fold.
+        """
+        actual = {
+            "metadata": {"schema_version": 1, "config": "", "updated_at": "2026-09-01"},
+            "cases": [{"id": "1", "tags": None}],
+        }
+        expected = {
+            "metadata": {"schema_version": 1, "config": "", "updated_at": "2026-09-01"},
+            "cases": [{"id": "1", "tags": []}],
+        }
+        # Metadata block byte-preserved on both sides; list-shaped table folds.
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        # And a metadata-only diff still surfaces — the block is not being
+        # silently collapsed.
+        differ = {
+            "metadata": {"schema_version": 2, "config": "", "updated_at": "2026-09-01"},
+            "cases": [{"id": "1", "tags": None}],
+        }
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) != compute_stable_hash(
+            differ, auto_normalize_nullables=True
+        )
+
+
+class TestAutoNormalizeNullablesLeavesDictTablesAlone:
+    """Parity with :class:`TestAutoClockMaskLeavesDictTablesAlone`:
+    ``auto_normalize_nullables`` operates only on list-valued top-level
+    entries. Dict-valued entries — a schema-version block, a per-run
+    config, anything the pack authored as metadata rather than as a row
+    table — pass through untouched.
+    """
+
+    def test_apply_global_nullable_normalize_leaves_dict_tables_alone(self):
+        from tolokaforge.core.hash import apply_global_nullable_normalize
+
+        state = {
+            "cases": [{"id": "1", "tags": None}],
+            "metadata": {"schema_version": 1, "config": "", "notes": []},
+        }
+        folded = apply_global_nullable_normalize(state, True)
+        # Row table: nullable columns fold to the sentinel token.
+        assert folded["cases"][0]["tags"] != None  # noqa: E711
+        # Metadata dict: every value byte-identical.
+        assert folded["metadata"] == state["metadata"]
+        # Same instance is preserved (shallow copy, dict-valued entries
+        # not re-wrapped by the fold pass).
+        assert folded["metadata"] is state["metadata"]
+
+
+class TestComposesWithSubsetOnEmptyGolden:
+    """Composition invariant: a column declared under ``mode: subset``
+    with ``extras_allowed_for`` on a golden ``{}`` value AND global
+    ``auto_normalize_nullables: true`` still folds. The extras filter
+    must see the raw dict shape before the global pass collapses ``{}``
+    to a sentinel token.
+    """
+
+    def test_subset_on_empty_golden_composes_with_global_fold(self):
+        actual = {"orders": [{"id": "1", "params": {"note": "extra"}}]}
+        expected = {"orders": [{"id": "1", "params": {}}]}
+        rules = {
+            "orders": {
+                "params": ColumnCompareRule(mode="subset", extras_allowed_for=["note"]),
+            }
+        }
+        actual_p, expected_p = apply_compare_columns_pipeline(
+            actual, expected, rules, auto_normalize_nullables=True
+        )
+        assert compute_stable_hash(actual_p, auto_normalize_nullables=True) == compute_stable_hash(
+            expected_p, auto_normalize_nullables=True
+        )
+
+
+class TestRealPackShapes_AutoNormalize:
+    """State-pair shapes drawn from the arena's nullable-normalization
+    breaking set. The auto-normalize task bool folds them without
+    per-column enumeration.
+    """
+
+    def test_pharma_custom_tags_null_vs_empty_list(self):
+        """``d365_cases.custom_tags`` — golden ``null`` vs actual ``[]`` on a
+        nullable-collection column.
+        """
+        actual = {
+            "d365_cases": [
+                {"case_id": "CS-1", "title": "reagent shortfall", "custom_tags": []},
+                {"case_id": "CS-2", "title": "compliance flag", "custom_tags": []},
+            ]
+        }
+        expected = {
+            "d365_cases": [
+                {"case_id": "CS-1", "title": "reagent shortfall", "custom_tags": None},
+                {"case_id": "CS-2", "title": "compliance flag", "custom_tags": None},
+            ]
+        }
+        assert compute_stable_hash(actual) != compute_stable_hash(expected)
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) == state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_marketplace_custom_corporate_account_id_empty_string_vs_null(self):
+        """``d365_api_cases.custom_corporate_account_id`` — prompt says
+        "Leave empty", one side stores ``""`` and the other ``null``.
+        """
+        actual = {
+            "d365_api_cases": [
+                {
+                    "case_id": "CA-1",
+                    "custom_corporate_account_id": "",
+                    "priority": "low",
+                },
+            ]
+        }
+        expected = {
+            "d365_api_cases": [
+                {
+                    "case_id": "CA-1",
+                    "custom_corporate_account_id": None,
+                    "priority": "low",
+                },
+            ]
+        }
+        assert compute_stable_hash(actual) != compute_stable_hash(expected)
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) == state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+
+class TestAutoNormalizeGuards:
+    """Safety rails on the global-normalize primitive and its check_hash gate."""
+
+    def test_non_dict_state_passes_through(self):
+        """``apply_global_nullable_normalize`` matches its sibling
+        ``apply_auto_clock_mask`` on non-dict input — return the value
+        unchanged rather than raising on ``dict(None)``.
+        """
+        from tolokaforge.core.hash import apply_global_nullable_normalize
+
+        # None passes through
+        assert apply_global_nullable_normalize(None, True) is None
+        # A list top-level (unusual but possible) passes through
+        assert apply_global_nullable_normalize([1, 2, 3], True) == [1, 2, 3]
+        # A dict top-level normalizes
+        result = apply_global_nullable_normalize({"t": [{"tags": None}]}, True)
+        assert result["t"][0]["tags"] != None  # folded to a token  # noqa: E711
+
+    def test_check_hash_raises_when_populated_compare_columns_without_expected(self):
+        """A populated ``compare_columns`` rule needs the raw expected
+        state so the extras filter can pair rows; a caller passing the
+        legacy ``expected_hash`` shape without ``expected_state_for_pipeline``
+        computed the expected digest against a pipelined state on their
+        side, so silently skipping the pipeline here would false-fail
+        every trial.
+        """
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        checker = StateChecker()
+        rules = {"t": {"c": ColumnCompareRule(mode="subset", extras_allowed_for=["x"])}}
+        with pytest.raises(ValueError, match="expected_state_for_pipeline"):
+            checker.check_hash(
+                {"t": [{"id": "1", "c": {"a": 1}}]},
+                "0" * 64,
+                compare_columns=rules,
+                expected_state_for_pipeline=None,
+            )
+
+    def test_check_hash_inert_compare_columns_does_not_raise(self):
+        """An empty rules table (``{}`` or ``{'t': {}}``) carries no
+        active rule and stays a no-op — must not trip the raise even
+        though the outer dict is truthy. Callers commonly pass an
+        empty per-table entry when they iterate every table but declare
+        no rules on some of them.
+        """
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        checker = StateChecker()
+        state = {"t": [{"id": "1", "note": "ok"}]}
+        expected_hash_local = state_digest(state)
+        # Empty top-level dict: no active rule.
+        score, _ = checker.check_hash(state, expected_hash_local, compare_columns={})
+        assert score == 1.0
+        # Table entry with no per-column rules: still no active rule.
+        score, _ = checker.check_hash(state, expected_hash_local, compare_columns={"t": {}})
+        assert score == 1.0
+
+    def test_check_hash_accepts_auto_normalize_without_expected(self):
+        """``auto_normalize_nullables`` alone (no compare_columns) does
+        not need the pipeline — ``state_digest`` applies the fold via its
+        own flag, so the gate must NOT raise.
+        """
+        from tolokaforge.core.grading.state_checks import StateChecker
+
+        checker = StateChecker()
+        state = {"t": [{"id": "1", "tags": None}]}
+        expected_hash = state_digest(state, auto_normalize_nullables=True)
+        score, _ = checker.check_hash(
+            state,
+            expected_hash,
+            auto_normalize_nullables=True,
+            expected_state_for_pipeline=None,
+        )
+        assert score == 1.0
+
+
+class TestStateDigestHonorsUnstableFields:
+    """``state_digest`` accepts a pack-declared ``unstable_fields`` list and
+    applies it symmetrically with the runner substrate's ``compute_stable_hash``.
+    """
+
+    def test_default_off_still_fails_on_masked_column_diff(self):
+        actual = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        expected = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "ok"}]}
+        assert state_digest(actual) != state_digest(expected)
+
+    def test_declared_folds_differing_masked_column(self):
+        actual = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        expected = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "ok"}]}
+        mask = ["responses.response_id"]
+        assert state_digest(actual, unstable_fields=mask) == state_digest(
+            expected, unstable_fields=mask
+        )
+
+    def test_declared_still_fails_on_unmasked_content_diff(self):
+        actual = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        expected = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "changed"}]}
+        mask = ["responses.response_id"]
+        assert state_digest(actual, unstable_fields=mask) != state_digest(
+            expected, unstable_fields=mask
+        )
+
+    def test_core_and_runner_substrates_mask_the_same_columns(self):
+        """Cross-substrate parity: with the same mask, both substrates hash
+        an identical filtered state, so equivalent-modulo-mask states are
+        equivalent under both.
+        """
+        state_a = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        state_b = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "ok"}]}
+        mask = ["responses.response_id"]
+        # Core substrate agrees on both.
+        assert state_digest(state_a, unstable_fields=mask) == state_digest(
+            state_b, unstable_fields=mask
+        )
+        # Runner substrate agrees on both.
+        assert compute_stable_hash(state_a, mask) == compute_stable_hash(state_b, mask)
+        # And the two substrates continue to label states differently
+        # (the portability invariant :file:`test_expected_state_hash_is_not_portable.py`
+        # enforces).
+        assert state_digest(state_a, unstable_fields=mask) != compute_stable_hash(state_a, mask)
+
+
+class TestLoadTaskUnstableFields:
+    """``load_task_unstable_fields`` reads ``fixtures/unstable_fields.json``
+    from a task directory and returns dotted ``table.field`` paths.
+    """
+
+    def test_missing_task_dir_returns_empty(self):
+        assert load_task_unstable_fields(None) == []
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert load_task_unstable_fields(tmp_path) == []
+
+    def test_reads_valid_file(self, tmp_path):
+        import json as _json
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(
+            _json.dumps(
+                [
+                    {"table_name": "responses", "field_name": "response_id", "reason": "auto_id"},
+                    {"table_name": "tickets", "field_name": "updated_at", "reason": "timestamp"},
+                ]
+            )
+        )
+        assert load_task_unstable_fields(tmp_path) == [
+            "responses.response_id",
+            "tickets.updated_at",
+        ]
+
+    def test_refuses_non_list(self, tmp_path):
+        import json as _json
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(_json.dumps({"not": "a list"}))
+        with pytest.raises(ValueError, match="expected a JSON list"):
+            load_task_unstable_fields(tmp_path)
+
+    def test_refuses_entry_missing_field_name(self, tmp_path):
+        """Delegation to pydantic-strict ``UnstableFieldSpec`` surfaces the
+        missing-required-field error rather than a custom-message raise.
+        Both loaders (native adapter + core grader) now refuse identically.
+        """
+        import json as _json
+
+        from pydantic import ValidationError
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(_json.dumps([{"table_name": "t"}]))
+        with pytest.raises(ValidationError, match="field_name"):
+            load_task_unstable_fields(tmp_path)
+
+    def test_refuses_unknown_reason(self, tmp_path):
+        """Pydantic-strict ``reason`` enum refuses out-of-set values, so a
+        pack authoring a custom ``reason`` string is caught loudly on both
+        substrates rather than silently masking on one and failing on the
+        other.
+        """
+        import json as _json
+
+        from pydantic import ValidationError
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(
+            _json.dumps(
+                [{"table_name": "t", "field_name": "f", "reason": "custom"}],
+            )
+        )
+        with pytest.raises(ValidationError):
+            load_task_unstable_fields(tmp_path)

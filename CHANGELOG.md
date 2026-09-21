@@ -17,9 +17,25 @@ All notable changes to this project are documented in this file.
 - **grading**: `Criterion` gains an optional `chunk_group: str | None = None` hint (additive; `extra="forbid"` unchanged), and `chunked_rubric` now partitions criteria in two phases — first grouping criteria that share a `chunk_group` name (anchored at each group's first-occurrence position; non-contiguous same-group members are silently pulled together at that anchor) into one block, then packing every block in first-appearance order into chunks of at most `chunk_size`. A block that outgrows `chunk_size` flushes into consecutive `chunk_size`-runs on its own (never combined with another block). Rubrics that declare no `chunk_group` produce byte-identical `chunk_boundaries` to plain fixed-K slicing (the 20-fixture κ-parity gate locks this). `_merge_chunk_results` re-indexes verdicts back to `rubric.criteria`'s original order, so a rubric's final `criterion_results` order is unaffected by grouping — only which criteria share a judge call. Rubric authors can now pin semantically related criteria (e.g. `mentions_board_meeting_date` / `mentions_board_meeting_time`) into the same judge call to reduce cross-chunk halo/recency drift (#1603).
 - **docs**: `docs/JUDGE_KINDS.md` gains a `## Composing kinds` section documenting the two supported wrapper compositions — `voted_rubric wrapping chunked_rubric` (K samples × chunked coverage on large rubrics) and `jury_rubric wrapping chunked_rubric` (recommended for `jury_rubric` on rubrics ≥ 6 criteria because the weakest panel member is the truncation floor for the whole panel; without this, one truncated `submit_report` fails the whole panel loud per `jury_rubric`'s per-member contract). Motivation: an empirical M50 A/B (`judge-kind-ab` on a 10-criterion synthetic subjective rubric, gpt-4.1-mini judge, 8 bundles × 5 replays) surfaced this composition need — `jury_rubric` errored on every trial when a panel member (`openai/gpt-4o-mini`) truncated its 10-criterion `submit_report`. Adaptive `chunk_size` on the wrapped `chunked_rubric` picks the effective chunk size from each panel member's `max_tokens` headroom automatically, so no explicit `chunk_size` needs to be threaded through the outer composition.
 
-### Changed
+## v0.27.0 (2026-09-21)
 
-- **grading**: Offline replay (`tolokaforge/core/grading/replay.py::replay_trial`) now dispatches through the `JudgeKind` seam (`load_judge_kind(inputs.judge_kind)()`) rather than constructing `LLMJudge` directly. Recorded trials whose `task.yaml.grading_config.llm_judge` declares a `judge_kind` (e.g. `chunked_rubric`) now replay through that kind and produce `JudgeResult.chunk_boundaries` matching the recorded partition. Legacy trials without the field default to `single_shot_rubric` — byte-identical to prior behaviour. `ReplayInputs` grows `judge_kind` + `kind_config` construction kwargs (populated by `read_replay_inputs`); `ReplayProvenance` grows `judge_kind` + `judge_kind_source` (always `recorded` at this stage — no `--judge-kind` CLI override). The bundle-branch `prompts.yaml.judge_prompt` path continues to route through `LLMJudge` directly via an explicit escape hatch; widening the `JudgeKind.evaluate` signature to accept `explicit_system_prompt` is tracked in #1583 (#1569).
+### Feat
+
+- **grading**: state-hash mask parity + parallel_tool_calls request knob (#1619)
+- **observability**: a TrialObserver seam, the tolokaforge-langfuse wheel, and write-once tracing on a v4 receiver (#1597)
+
+## v0.26.0 (2026-09-18)
+
+### Feat
+
+- **grading**: M49 — agentic LLM-as-judge + pluggable JudgeKind registry (#1562) (#1588)
+- **coding-harness**: harness trial cost, image freshness, pricing-row surfacing, and a seventh harness (#1593)
+- **automation**: page the Slack requester alone for model integrations (#1532)
+- **models**: integrate Cohere Command A+ (azure_ai/cohere-command-a-plus-05-2026) (#1599)
+
+### Fix
+
+- **automation**: integrate a model only the gateway serves (rebase of #1064 + fixes) (#1598)
 
 ## v0.25.3 (2026-09-15)
 

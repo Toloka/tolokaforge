@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tolokaforge-langfuse"
+version = "0.1.0"
+description = "Langfuse live tracing for tolokaforge: the OTLP trial observer, the trial-end projection of a trial bundle and the deployment profile."
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Tolokaforge Contributors"},
+]
+keywords = ["llm", "benchmark", "tracing", "langfuse", "opentelemetry"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# No hard ``Requires-Dist: tolokaforge`` on purpose (the reasoning of the models wheel,
+# ADR-0030): the engine this plugin imports at run time is installed next to it under whatever
+# pin the deployment holds, and the pairing is checked at run start against the engine's
+# ``tolokaforge.observability.factory.PLUGIN_API_VERSION`` (fail-loud, actionable, independent of
+# the resolver). That is what lets a Langfuse fix ship without moving the engine pin.
+dependencies = [
+    "pydantic>=2.0.0",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "pyyaml>=6.0.1",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+# The engine's trial-observer seam (ADR-0047): ``build(tracing, identity, *, engine_run_id,
+# output_dir) -> TrialObserver | None``.
+[project.entry-points."tolokaforge.trial_observers"]
+langfuse = "tolokaforge_langfuse.plugin:build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tolokaforge_langfuse"]
+
+# =============================================================================
+# Release tooling (commitizen) — drives the `Release tolokaforge-langfuse
+# (cz bump)` workflow. `cz bump` reads/writes the single version literal in
+# `[project] version`, regenerates `CHANGELOG.md` from Conventional Commits,
+# commits, and tags `langfuse-vX.Y.Z`. Independent of the engine's own
+# `[tool.commitizen]` block in the workspace-root `pyproject.toml` and of the
+# models wheel's. See `docs/RELEASING.md` ("Cutting a tolokaforge-langfuse release").
+# =============================================================================
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"          # read/write [project] version in place
+tag_format = "langfuse-v$version"    # matches the `langfuse-v*` trigger in publish-tolokaforge-langfuse.yml
+changelog_file = "CHANGELOG.md"      # relative to this pyproject's directory
+version_files = [
+    "src/tolokaforge_langfuse/__init__.py:__version__",
+]
+update_changelog_on_bump = true
+changelog_incremental = true         # only prepend new sections; never rewrite hand-written history
+major_version_zero = true            # pre-1.0: a breaking change bumps the minor
+bump_message = "chore(langfuse-release): bump tolokaforge-langfuse to $new_version"
+annotated_tag = true
+
+# Keep the workspace-root `uv.lock` in step with the version bump (the models wheel's pattern).
+pre_bump_hooks = [
+    "uv lock",
+    "git add -- ../uv.lock",
+]

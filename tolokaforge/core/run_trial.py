@@ -168,6 +168,8 @@ def run_trial(
         rate_limit_probe,
     )
 
+    # No live tracing here (ADR-0047): this surface has no run-level observability config, so
+    # the conductor keeps its no-op observer; the orchestrator surfaces export traces.
     conductor_impl = conductor_factory(
         ConductorContext(
             adapter=adapter,

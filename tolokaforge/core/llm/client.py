@@ -1916,6 +1916,49 @@ class LLMClient:
             if tool_choice and action != RuleAction.DROP:
                 kwargs["tool_choice"] = tool_choice
 
+            # ``parallel_tool_calls`` is meaningful only when the request
+            # carries ``tools``, so its consult site sits inside this same
+            # guard. Both semantics for ``bool | None`` are load-bearing:
+            # ``None`` omits the parameter and lets the provider default
+            # apply, ``True`` / ``False`` sends the operator's choice. The
+            # rule accessors take a lowercase string (``"true"`` / ``"false"``)
+            # so a param_value_rules block can key on the same spelling YAML
+            # writes.
+            parallel_tool_calls = self.config.parallel_tool_calls
+            if parallel_tool_calls is not None:
+                p_value = "true" if parallel_tool_calls else "false"
+                p_action = policy.rule_for("parallel_tool_calls", p_value)
+                if p_action == RuleAction.REJECT:
+                    raise ValueError(
+                        f"parallel_tool_calls={parallel_tool_calls!r} is declared "
+                        f"unusable for this provider+model combination. Evidence: "
+                        f"{policy.rule_evidence('parallel_tool_calls', p_value)}. "
+                        f"Change the value, or declare 'drop' / 'override' if the "
+                        f"call should proceed anyway."
+                    )
+                if p_action == RuleAction.OVERRIDE:
+                    substitute = policy.rule_substitute("parallel_tool_calls", p_value)
+                    if substitute is None:
+                        raise ValueError(
+                            f"parallel_tool_calls override rule for {p_value!r} on this "
+                            f"provider+model combination declared no substitute. Evidence: "
+                            f"{policy.rule_evidence('parallel_tool_calls', p_value)}. "
+                            f"Add a 'with' spelled 'true' or 'false', or switch the action "
+                            f"to 'drop'."
+                        )
+                    if substitute not in ("true", "false"):
+                        raise ValueError(
+                            f"parallel_tool_calls override substitute {substitute!r} is not "
+                            f"a boolean spelling ('true' or 'false'). Evidence: "
+                            f"{policy.rule_evidence('parallel_tool_calls', p_value)}."
+                        )
+                    policy.warn_substituted("parallel_tool_calls", p_value, substitute)
+                    parallel_tool_calls = substitute == "true"
+                if p_action == RuleAction.DROP:
+                    policy.warn_substituted("parallel_tool_calls", p_value, "<omitted>")
+                if p_action != RuleAction.DROP:
+                    kwargs["parallel_tool_calls"] = parallel_tool_calls
+
         kwargs["messages"] = self.capabilities.cache_policy.apply_messages(
             self._convert_messages(system, messages)
         )

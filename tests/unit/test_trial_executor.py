@@ -106,6 +106,66 @@ class TestHappyPathBracket:
         logger.error.assert_not_called()
 
 
+class TestBundleAnnouncedLast:
+    """The observer hears about the bundle only once the executor's own writes into the trial
+    directory (the ``metrics.yaml`` amendment, the service-log capture) are done (ADR-0047
+    amendment), so what it attaches is what stays on disk."""
+
+    def test_trial_persisted_fires_after_the_metrics_amendment(self, tmp_path: Path) -> None:
+        import yaml
+
+        class _Conductor(InMemoryConductor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.metrics_at_announce: dict | None = None
+
+            def run(self, spec, task_config):
+                trial_dir = (
+                    tmp_path / "trials" / task_config.task_id / spec.trial_id.rsplit(":", 1)[1]
+                )
+                trial_dir.mkdir(parents=True)
+                (trial_dir / "metrics.yaml").write_text("turns: 3\n")
+                return super().run(spec, task_config)
+
+            def trial_persisted(self, spec):
+                super().trial_persisted(spec)
+                trial_dir = tmp_path / "trials" / spec.trial_id.replace(":", "/")
+                self.metrics_at_announce = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+                self.torn_down_at_announce = list(backend.call_log.torn_down_trials)
+
+        conductor = _Conductor()
+        backend = InMemoryRuntimeBackend()
+        executor, backend, _, _ = _make_executor(
+            backend=backend, conductor=conductor, output_dir=tmp_path
+        )
+        spec = make_trial_spec()
+        result = executor.execute(spec, make_task_config())
+        assert conductor.call_log.persisted == [spec.trial_id]
+        assert conductor.metrics_at_announce is not None
+        assert "provisioning_duration_s" in conductor.metrics_at_announce
+        # the substrate is torn down first: the upload never holds the containers
+        assert conductor.torn_down_at_announce == [spec.trial_id]
+        assert result.trajectory.status == TrialStatus.COMPLETED
+
+    def test_a_raising_announcement_never_fails_the_finished_trial(self, tmp_path: Path) -> None:
+        class _Conductor(InMemoryConductor):
+            def trial_persisted(self, spec):
+                raise RuntimeError("receiver down")
+
+        executor, _, _, logger = _make_executor(conductor=_Conductor(), output_dir=tmp_path)
+        result = executor.execute(make_trial_spec(), make_task_config())
+        assert result.trajectory.status == TrialStatus.COMPLETED
+        assert (
+            logger.warning.call_args.args[0] == "Announcing the persisted bundle failed; continuing"
+        )
+
+    def test_no_announcement_when_provisioning_fails(self) -> None:
+        backend = InMemoryRuntimeBackend(await_ready_times_out=True)
+        executor, _, conductor, _ = _make_executor(backend=backend)
+        executor.execute(make_trial_spec(), make_task_config())
+        assert conductor.call_log.persisted == []
+
+
 class TestTeardownAlwaysFires:
     """teardown() runs even when the conductor body raises."""
 

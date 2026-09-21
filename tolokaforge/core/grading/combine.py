@@ -42,7 +42,7 @@ from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, componen
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
     extract_db_state,
-    state_digest,
+    load_task_unstable_fields,
 )
 from tolokaforge.core.grading.state_composition import (
     AUTHORED_HASH_WEIGHT_CONTEXT,
@@ -58,7 +58,6 @@ from tolokaforge.core.grading.transcript import (
     evaluate_transcript_rules,
     scored_transcript_rules,
 )
-from tolokaforge.core.hash import apply_compare_columns_pipeline
 from tolokaforge.core.models import (
     CustomCheckDetail,
     Grade,
@@ -376,6 +375,7 @@ class GradingEngine:
             return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
+        unstable_fields = load_task_unstable_fields(self.task_dir)
         score: float | None
         diff_result: dict[str, Any] | None = None
         replay: GoldenReplayRecord | None = None
@@ -387,31 +387,16 @@ class GradingEngine:
                     self.task_initial_state.json_db if self.task_initial_state else None
                 ),
             )
-            # The pipeline needs both sides raw so it can pair rows for the
-            # extras filter; the expected-side digest is taken over the
-            # pipeline-processed initial state so both sides land in the
-            # same canonical shape before hashing.
-            _, expected_initial = apply_compare_columns_pipeline(
-                db_state,
-                initial_state,
-                checks.compare_columns,
-                numeric_string_fields=(
-                    frozenset(checks.numeric_string_fields)
-                    if checks.numeric_string_fields
-                    else None
-                ),
-            )
+            # check_hash owns the pipeline for both sides — pass the raw
+            # expected state and it hashes both after one pipeline run.
             score, reason = self.state_checker.check_hash(
                 db_state,
-                state_digest(
-                    expected_initial,
-                    numeric_string_fields=checks.numeric_string_fields,
-                    auto_mask_clock_columns=checks.auto_mask_clock_columns,
-                ),
+                expected_state=initial_state,
                 numeric_string_fields=checks.numeric_string_fields,
                 auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                auto_normalize_nullables=checks.auto_normalize_nullables,
                 compare_columns=checks.compare_columns,
-                expected_state_for_pipeline=initial_state,
+                unstable_fields=unstable_fields,
             )
             reasons = [reason]
         elif not hash_config.golden_actions:
@@ -437,6 +422,8 @@ class GradingEngine:
                     numeric_string_fields=checks.numeric_string_fields,
                     compare_columns=checks.compare_columns,
                     auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                    auto_normalize_nullables=checks.auto_normalize_nullables,
+                    unstable_fields=unstable_fields,
                 )
             )
             reasons = [reason]
