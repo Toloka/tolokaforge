@@ -107,13 +107,21 @@ the family in `details`. The first three count what was queued; what left is the
 
 ## Consequences
 
-- **Delivery becomes at-most-once on the wire.** The transport's own retries are turned off on
-  this family, because a retried batch the receiver already wrote is a duplicate that cannot be
-  deleted, while a dropped batch is recoverable: the receipt says so and the offline sibling
-  completes the trace. For the same reason a root the exporter posted but could not confirm gets
-  **no** error root, only a counter and a warning. The single post is the safety argument itself,
-  so it is a run-start requirement rather than a best effort: an OpenTelemetry SDK that cannot be
-  asked for it fails the run instead of degrading to the retrying exporter.
+- **Delivery becomes at-most-once on the wire.** A batch the receiver already wrote and then sees
+  again is a duplicate that cannot be deleted, while a dropped batch is recoverable: the receipt
+  says so and the offline sibling completes the trace. For the same reason a root the exporter
+  posted but could not confirm gets **no** error root, only a counter and a warning. The single
+  post is the safety argument itself, so it is a run-start requirement rather than a best effort:
+  an OpenTelemetry SDK that cannot be asked for it fails the run instead of degrading to the
+  retrying exporter.
+- **The guarantee is about the physical request, and the stock transport repeats it in three
+  places.** Turning off the exporter's own retry loop is not enough: the SDK's `_export` re-posts
+  the same bytes in an `except ConnectionError` branch (which is precisely the lost-answer case),
+  and `requests` follows a 307 or 308 by re-sending the body while a caller-supplied session's
+  adapter may retry on its own. The exporter therefore issues the `session.post` itself, with
+  redirects refused and the endpoint's adapter mounted with no attempts, and its test counts
+  posts at the HTTP layer rather than stubbing `_export`. This was found by review on
+  2026-09-21, after the first implementation had skipped only the outer loop.
 - A re-run of the same trial under the same run id no longer corrects anything on this family: the
   observations are already there. Changing what a trace says means a new run id. The offline sibling
   reports how many ids it skipped as already present, and refuses the one command that would have

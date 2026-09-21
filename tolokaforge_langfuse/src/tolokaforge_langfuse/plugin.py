@@ -159,11 +159,13 @@ def build(
     )
     try:
         from tolokaforge_langfuse.otel import (
-            INGESTION_VERSION,
             OTelTrialObserver,
             ProjectionSettings,
-            SingleAttemptUnavailable,
             SpanQueue,
+        )
+        from tolokaforge_langfuse.otlp_transport import (
+            INGESTION_VERSION,
+            SingleAttemptUnavailable,
             make_otlp_exporter,
         )
     except ImportError as exc:

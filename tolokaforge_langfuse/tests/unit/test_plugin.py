@@ -436,7 +436,7 @@ class TestTheReceiverFamily:
         """The direct ingestion path and the single-post exporter are v4 answers: a v3 receiver
         gets neither, so its wire traffic is the one this observer has always written."""
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse.otel import INGESTION_VERSION_HEADER
+        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
         observer, _ = self._build(monkeypatch, (404, b""))
         exporter = observer._queue._exporter
@@ -445,7 +445,7 @@ class TestTheReceiverFamily:
 
     def test_the_v4_family_asks_for_the_direct_path_and_posts_once(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse.otel import INGESTION_VERSION_HEADER
+        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
         observer, _ = self._build(monkeypatch, (200, b'{"data": []}'))
         exporter = observer._queue._exporter
@@ -463,17 +463,17 @@ class TestTheReceiverFamily:
         """At-most-once on the wire is why this layout may be written at all; without it the
         run is refused at start rather than degraded to a retrying exporter."""
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse import otel
+        from tolokaforge_langfuse import otlp_transport
 
-        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
+        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
         with pytest.raises(TracingConfigError, match="writes every observation once"):
             self._build(monkeypatch, (200, b'{"data": []}'))
 
     def test_the_same_sdk_leaves_a_v3_run_alone(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse import otel
+        from tolokaforge_langfuse import otlp_transport
 
-        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
+        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
         observer, _ = self._build(monkeypatch, (404, b""))
         assert observer.run_finished().details[0]["server_api"] == "v3"
 

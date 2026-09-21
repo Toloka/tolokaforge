@@ -236,10 +236,13 @@ refused at run start.
 that failed with a connection error or a retryable status. Here that is unsafe in exactly one
 case: the receiver wrote the batch and its answer was lost, so the re-post writes every
 observation again, the root included, with no way to delete either copy. The v4 family therefore
-posts each batch once. This is the whole safety argument for writing to such a receiver, so it is
-not optional: an OpenTelemetry SDK whose exporter cannot be asked to post once fails the run at
-start rather than falling back to a retrying one. A v3 run is unaffected, because it upserts.
-The consequences are visible in the receipt:
+posts each batch **exactly once**, which takes more than turning the exporter's retry loop off:
+the SDK's own `_export` posts a second time on a lost connection, `requests` follows a 307 or 308
+by re-sending the body, and a session's adapter can retry by itself. The exporter makes the
+request itself with redirects refused and no adapter attempts. This is the whole safety argument
+for writing to such a receiver, so it is not optional: an OpenTelemetry SDK whose exporter cannot
+be asked for it fails the run at start rather than falling back to a retrying one. A v3 run is
+unaffected, because it upserts. The consequences are visible in the receipt:
 
 - a batch the queue never took (it was full, or the flush budget ran out) is certainly unwritten,
   so the trace gets its **error root** at run end;
