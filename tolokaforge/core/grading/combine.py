@@ -402,6 +402,7 @@ class GradingEngine:
                     if checks.numeric_string_fields
                     else None
                 ),
+                auto_normalize_nullables=checks.auto_normalize_nullables,
             )
             score, reason = self.state_checker.check_hash(
                 db_state,
@@ -409,10 +410,12 @@ class GradingEngine:
                     expected_initial,
                     numeric_string_fields=checks.numeric_string_fields,
                     auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                    auto_normalize_nullables=checks.auto_normalize_nullables,
                     unstable_fields=unstable_fields,
                 ),
                 numeric_string_fields=checks.numeric_string_fields,
                 auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                auto_normalize_nullables=checks.auto_normalize_nullables,
                 compare_columns=checks.compare_columns,
                 expected_state_for_pipeline=initial_state,
                 unstable_fields=unstable_fields,
@@ -441,6 +444,7 @@ class GradingEngine:
                     numeric_string_fields=checks.numeric_string_fields,
                     compare_columns=checks.compare_columns,
                     auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                    auto_normalize_nullables=checks.auto_normalize_nullables,
                     unstable_fields=unstable_fields,
                 )
             )

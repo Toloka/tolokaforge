@@ -958,6 +958,175 @@ class TestOrderingSortKeyRaisesOnUnserializableRow:
         apply_compare_columns_ordering(actual, rules)
 
 
+class TestAutoNormalizeNullables:
+    """Task-level ``state_checks.auto_normalize_nullables`` folds every scalar
+    column under the three nullable equivalences (``None`` ≡ ``[]`` ≡ ``{}``
+    ≡ ``""`` and trailing-``Z`` stripping) without per-column enumeration.
+    Symmetric on both substrates.
+    """
+
+    def test_default_off_preserves_failure_shape(self):
+        actual = {"t": [{"id": "1", "tags": None, "note": ""}]}
+        expected = {"t": [{"id": "1", "tags": [], "note": None}]}
+        assert compute_stable_hash(actual) != compute_stable_hash(expected)
+        assert state_digest(actual) != state_digest(expected)
+
+    def test_null_and_empty_list_fold_via_compute_stable_hash(self):
+        actual = {"cases": [{"id": "1", "tags": None}]}
+        expected = {"cases": [{"id": "1", "tags": []}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_null_and_empty_dict_fold_via_compute_stable_hash(self):
+        actual = {"cases": [{"id": "1", "meta": None}]}
+        expected = {"cases": [{"id": "1", "meta": {}}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_null_and_empty_string_fold_via_compute_stable_hash(self):
+        actual = {"cases": [{"id": "1", "account_id": ""}]}
+        expected = {"cases": [{"id": "1", "account_id": None}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_trailing_z_normalizes_via_compute_stable_hash(self):
+        actual = {"orders": [{"id": "1", "at": "2026-09-14T13:00:00Z"}]}
+        expected = {"orders": [{"id": "1", "at": "2026-09-14T13:00:00"}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_state_digest_agrees_with_runner_substrate(self):
+        actual = {"cases": [{"id": "1", "tags": None, "account_id": ""}]}
+        expected = {"cases": [{"id": "1", "tags": [], "account_id": None}]}
+        assert state_digest(actual, auto_normalize_nullables=True) == state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_still_fails_on_genuine_content_diff(self):
+        actual = {"cases": [{"id": "1", "status": "open", "tags": None}]}
+        expected = {"cases": [{"id": "1", "status": "closed", "tags": []}]}
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) != compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) != state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_composes_with_per_column_equivalence_declaration(self):
+        """A per-column rule that sets one of the same flags is idempotent."""
+        actual = {"cases": [{"id": "1", "tags": None, "account_id": ""}]}
+        expected = {"cases": [{"id": "1", "tags": [], "account_id": None}]}
+        rules = {
+            "cases": {
+                "tags": ColumnCompareRule(treat_null_as_empty_collection=True),
+            }
+        }
+        actual_p, expected_p = apply_compare_columns_pipeline(
+            actual, expected, rules, auto_normalize_nullables=True
+        )
+        assert compute_stable_hash(actual_p, auto_normalize_nullables=True) == compute_stable_hash(
+            expected_p, auto_normalize_nullables=True
+        )
+
+    def test_composes_with_unrelated_per_column_rule(self):
+        """A per-column rule declaring a distinct flag (subset/order) still applies on top."""
+        actual = {
+            "notify": [
+                {"id": "1", "params": {"a": 1, "b": 2}, "tags": None},
+                {"id": "2", "params": {"a": 3}, "tags": ""},
+            ]
+        }
+        expected = {
+            "notify": [
+                {"id": "1", "params": {"a": 1}, "tags": []},
+                {"id": "2", "params": {"a": 3}, "tags": None},
+            ]
+        }
+        rules = {
+            "notify": {
+                "params": ColumnCompareRule(mode="subset", extras_allowed_for=["b"]),
+            }
+        }
+        actual_p, expected_p = apply_compare_columns_pipeline(
+            actual, expected, rules, auto_normalize_nullables=True
+        )
+        assert compute_stable_hash(actual_p, auto_normalize_nullables=True) == compute_stable_hash(
+            expected_p, auto_normalize_nullables=True
+        )
+
+    def test_leaves_non_row_dict_values_alone(self):
+        """Top-level dict-row values fold key-by-key; keys stay, only nullable scalars collapse."""
+        actual = {"metadata": {"schema_version": 1, "tags": None}}
+        folded = compute_stable_hash(actual, auto_normalize_nullables=True)
+        assert isinstance(folded, str)
+        assert len(folded) == 64
+
+
+class TestRealPackShapes_AutoNormalize:
+    """State-pair shapes drawn from the arena's nullable-normalization
+    breaking set. The auto-normalize task bool folds them without
+    per-column enumeration.
+    """
+
+    def test_pharma_custom_tags_null_vs_empty_list(self):
+        """``d365_cases.custom_tags`` — golden ``null`` vs actual ``[]`` on a
+        nullable-collection column.
+        """
+        actual = {
+            "d365_cases": [
+                {"case_id": "CS-1", "title": "reagent shortfall", "custom_tags": []},
+                {"case_id": "CS-2", "title": "compliance flag", "custom_tags": []},
+            ]
+        }
+        expected = {
+            "d365_cases": [
+                {"case_id": "CS-1", "title": "reagent shortfall", "custom_tags": None},
+                {"case_id": "CS-2", "title": "compliance flag", "custom_tags": None},
+            ]
+        }
+        assert compute_stable_hash(actual) != compute_stable_hash(expected)
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) == state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+    def test_marketplace_custom_corporate_account_id_empty_string_vs_null(self):
+        """``d365_api_cases.custom_corporate_account_id`` — prompt says
+        "Leave empty", one side stores ``""`` and the other ``null``.
+        """
+        actual = {
+            "d365_api_cases": [
+                {
+                    "case_id": "CA-1",
+                    "custom_corporate_account_id": "",
+                    "priority": "low",
+                },
+            ]
+        }
+        expected = {
+            "d365_api_cases": [
+                {
+                    "case_id": "CA-1",
+                    "custom_corporate_account_id": None,
+                    "priority": "low",
+                },
+            ]
+        }
+        assert compute_stable_hash(actual) != compute_stable_hash(expected)
+        assert compute_stable_hash(actual, auto_normalize_nullables=True) == compute_stable_hash(
+            expected, auto_normalize_nullables=True
+        )
+        assert state_digest(actual, auto_normalize_nullables=True) == state_digest(
+            expected, auto_normalize_nullables=True
+        )
+
+
 class TestStateDigestHonorsUnstableFields:
     """``state_digest`` accepts a pack-declared ``unstable_fields`` list and
     applies it symmetrically with the runner substrate's ``compute_stable_hash``.

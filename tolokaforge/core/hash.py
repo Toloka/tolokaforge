@@ -270,6 +270,57 @@ def _fold_column_value(value: Any, rule: "ColumnCompareRule") -> Any:
     return value
 
 
+#: Sentinel rule applied by :func:`apply_global_nullable_normalize` when a
+#: pack sets ``state_checks.auto_normalize_nullables: true``. Sets every
+#: nullable-equivalence flag :class:`ColumnCompareRule` recognises so a single
+#: :func:`_fold_column_value` pass covers every scalar in the state.
+_GLOBAL_NULLABLE_RULE: "ColumnCompareRule" = ColumnCompareRule(
+    treat_null_as_empty_collection=True,
+    normalize_timezone_suffix=True,
+    treat_empty_string_as_null=True,
+)
+
+
+def apply_global_nullable_normalize(
+    state: dict[str, Any],
+    enabled: bool,
+) -> dict[str, Any]:
+    """Return ``state`` with every scalar column folded under the three
+    nullable equivalences (``None ≡ [] ≡ {} ≡ ""`` and trailing-``Z``
+    stripping) when ``enabled`` is True.
+
+    Task-level bool grading config
+    ``state_checks.auto_normalize_nullables``. Composes with per-column
+    :class:`ColumnCompareRule` declarations — this pass runs first, so a
+    per-column rule that sets one of the same flags is idempotent, and a
+    per-column rule that sets a distinct flag (e.g. ``mode: subset``,
+    ``order: unordered``) still applies afterwards.
+
+    Symmetric by design: every caller applies it to both trial and golden
+    before hashing.
+
+    Table entries that are not row lists (single dicts, or non-collection
+    scalars at the top level) are folded key-by-key; anything else passes
+    through unchanged. Returns a shallow copy; unchanged tables share list
+    / dict references with the input.
+    """
+    if not enabled:
+        return state
+
+    def _fold_row(row: Any) -> Any:
+        if not isinstance(row, dict):
+            return row
+        return {key: _fold_column_value(value, _GLOBAL_NULLABLE_RULE) for key, value in row.items()}
+
+    result = dict(state)
+    for table, table_data in state.items():
+        if isinstance(table_data, list):
+            result[table] = [_fold_row(row) for row in table_data]
+        elif isinstance(table_data, dict):
+            result[table] = _fold_row(table_data)
+    return result
+
+
 def apply_compare_columns_equivalences(
     state: dict[str, Any],
     compare_columns: dict[str, dict[str, "ColumnCompareRule"]] | None,
@@ -389,14 +440,21 @@ def apply_compare_columns_pipeline(
     compare_columns: dict[str, dict[str, "ColumnCompareRule"]] | None,
     *,
     numeric_string_fields: frozenset[str] | None = None,
+    auto_normalize_nullables: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Apply the state-hash comparator's per-column pipeline to both sides.
 
     Order matters and this function owns it:
 
+    0. Global nullable normalization
+       (:func:`apply_global_nullable_normalize`) runs first on both sides
+       when the task sets ``state_checks.auto_normalize_nullables: true`` —
+       every scalar collapses under ``None ≡ [] ≡ {} ≡ ""`` and
+       trailing-``Z`` stripping before per-column rules see the values.
     1. Equivalence folds (:func:`apply_compare_columns_equivalences`) run
-       first on both sides — two values a rule declared equivalent collapse
-       to one token before anything else sees them.
+       next on both sides — two values a rule declared equivalent collapse
+       to one token before anything else sees them. Idempotent with the
+       global pass; per-column rules setting distinct flags still apply.
     2. Ordering (:func:`apply_compare_columns_ordering`) then sorts the
        row list of any table a rule declared ``unordered`` on both sides.
        Extras filtering pairs rows positionally, so the sort must happen
@@ -414,10 +472,12 @@ def apply_compare_columns_pipeline(
     ordering step so an ID column the pack declared numeric folds
     ``"1"`` and ``"1.0"`` into the same sort position on both sides.
     """
-    if not compare_columns:
+    if not compare_columns and not auto_normalize_nullables:
         return actual, expected
-    actual_folded = apply_compare_columns_equivalences(actual, compare_columns)
-    expected_folded = apply_compare_columns_equivalences(expected, compare_columns)
+    actual_normalized = apply_global_nullable_normalize(actual, auto_normalize_nullables)
+    expected_normalized = apply_global_nullable_normalize(expected, auto_normalize_nullables)
+    actual_folded = apply_compare_columns_equivalences(actual_normalized, compare_columns)
+    expected_folded = apply_compare_columns_equivalences(expected_normalized, compare_columns)
     actual_sorted = apply_compare_columns_ordering(
         actual_folded, compare_columns, numeric_string_fields=numeric_string_fields
     )
@@ -718,6 +778,7 @@ def compute_stable_hash(
     canonicalize_numbers: bool = True,
     numeric_string_fields: Iterable[str] | None = None,
     auto_mask_clock_columns: bool = False,
+    auto_normalize_nullables: bool = False,
 ) -> str:
     """
     Compute a stable SHA-256 hash of the state dictionary.
@@ -764,6 +825,12 @@ def compute_stable_hash(
             hashing. Composes with ``unstable_fields`` — pack-declared masks
             still apply on top of this one. Grading config
             ``state_checks.auto_mask_clock_columns``.
+        auto_normalize_nullables: When True, fold every scalar column under
+            the three nullable equivalences (``None ≡ [] ≡ {} ≡ ""`` and
+            trailing-``Z`` stripping) before hashing. Symmetric with the core
+            substrate's ``state_digest`` flag so the two continue to agree
+            on which states are equal. Grading config
+            ``state_checks.auto_normalize_nullables``.
 
     Returns:
         Hexadecimal string of the SHA-256 hash
@@ -784,6 +851,12 @@ def compute_stable_hash(
     # Auto-mask conventional write-time clock columns (opt-in).
     if auto_mask_clock_columns:
         state = apply_auto_clock_mask(state)
+
+    # Global nullable normalization (opt-in): fold every scalar column
+    # under None ≡ [] ≡ {} ≡ "" and trailing-Z stripping so a pack does
+    # not have to enumerate every nullable column in compare_columns.
+    if auto_normalize_nullables:
+        state = apply_global_nullable_normalize(state, True)
 
     # Convert datetime objects to strings
     serializable_state = _convert_datetime_to_str(state)

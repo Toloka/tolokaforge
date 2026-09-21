@@ -532,6 +532,14 @@ class StateChecksConfig(BaseModel):
     # applies; this covers the clock columns it forgot. See
     # :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
     auto_mask_clock_columns: bool = False
+    # Opt-in: fold every scalar column under the three nullable equivalences
+    # (``None ≡ [] ≡ {} ≡ ""`` and trailing-``Z`` stripping) before hashing.
+    # Task-level alternative to enumerating each column in
+    # ``compare_columns``; composes with per-column rules (this pass runs
+    # first, and per-column declarations still apply on top). Applied
+    # symmetrically to both trial and golden. See
+    # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
+    auto_normalize_nullables: bool = False
 
     @model_validator(mode="before")
     @classmethod

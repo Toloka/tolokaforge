@@ -22,6 +22,7 @@ from tolokaforge.core.hash import (
     ColumnCompareRule,
     apply_auto_clock_mask,
     apply_compare_columns_pipeline,
+    apply_global_nullable_normalize,
     canonical_number,
     filter_unstable_fields,
 )
@@ -105,6 +106,7 @@ def state_digest(
     *,
     numeric_string_fields: list[str] | None = None,
     auto_mask_clock_columns: bool = False,
+    auto_normalize_nullables: bool = False,
     unstable_fields: list[str] | None = None,
 ) -> str:
     """The digest core writes a state in, for either side of one comparison.
@@ -126,6 +128,13 @@ def state_digest(
     before hashing. Symmetric with the runner's ``compute_stable_hash`` flag so
     the two substrates continue to agree on which states are equal.
 
+    ``auto_normalize_nullables`` (opt-in) folds every scalar column under the
+    three nullable equivalences (``None ≡ [] ≡ {} ≡ ""`` and trailing-``Z``
+    stripping) before hashing, without per-column enumeration. Applied
+    symmetrically on both sides of one comparison and on both substrates so
+    the two continue to agree on which states are equal. Grading config
+    ``state_checks.auto_normalize_nullables``.
+
     ``unstable_fields`` (opt-in) drops author-declared columns from every row
     before hashing. Each entry is a dotted ``table.field`` path, matching the
     shape :func:`tolokaforge.core.hash.filter_unstable_fields` accepts and the
@@ -136,6 +145,8 @@ def state_digest(
         state = filter_unstable_fields(state, unstable_fields)
     if auto_mask_clock_columns:
         state = apply_auto_clock_mask(state)
+    if auto_normalize_nullables:
+        state = apply_global_nullable_normalize(state, True)
     string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
     return consistent_hash(to_hashable(state, string_fields))
 
@@ -403,6 +414,7 @@ class StateChecker:
         *,
         numeric_string_fields: list[str] | None = None,
         auto_mask_clock_columns: bool = False,
+        auto_normalize_nullables: bool = False,
         compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
         expected_state_for_pipeline: dict[str, Any] | None = None,
         unstable_fields: list[str] | None = None,
@@ -438,7 +450,9 @@ class StateChecker:
             (score 0 or 1, reason)
         """
         try:
-            if compare_columns and expected_state_for_pipeline is not None:
+            if (
+                compare_columns or auto_normalize_nullables
+            ) and expected_state_for_pipeline is not None:
                 state, _ = apply_compare_columns_pipeline(
                     state,
                     expected_state_for_pipeline,
@@ -446,11 +460,13 @@ class StateChecker:
                     numeric_string_fields=(
                         frozenset(numeric_string_fields) if numeric_string_fields else None
                     ),
+                    auto_normalize_nullables=auto_normalize_nullables,
                 )
             actual_hash = state_digest(
                 state,
                 numeric_string_fields=numeric_string_fields,
                 auto_mask_clock_columns=auto_mask_clock_columns,
+                auto_normalize_nullables=auto_normalize_nullables,
                 unstable_fields=unstable_fields,
             )
 
@@ -578,6 +594,7 @@ class StateChecker:
         numeric_string_fields: list[str] | None = None,
         compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
         auto_mask_clock_columns: bool = False,
+        auto_normalize_nullables: bool = False,
         unstable_fields: list[str] | None = None,
     ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
         """
@@ -638,6 +655,7 @@ class StateChecker:
             expected_state,
             compare_columns,
             numeric_string_fields=frozenset(numeric_string_fields or ()),
+            auto_normalize_nullables=auto_normalize_nullables,
         )
 
         # Compute hashes
@@ -645,12 +663,14 @@ class StateChecker:
             expected_state_folded,
             numeric_string_fields=numeric_string_fields,
             auto_mask_clock_columns=auto_mask_clock_columns,
+            auto_normalize_nullables=auto_normalize_nullables,
             unstable_fields=unstable_fields,
         )
         actual_hash = state_digest(
             db_state_folded,
             numeric_string_fields=numeric_string_fields,
             auto_mask_clock_columns=auto_mask_clock_columns,
+            auto_normalize_nullables=auto_normalize_nullables,
             unstable_fields=unstable_fields,
         )
 

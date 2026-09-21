@@ -451,6 +451,17 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         ),
     ),
     _WireKey(
+        path="grading.state_checks.auto_normalize_nullables",
+        emitted_for="grading.state_checks",
+        wire_shape="bool",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="state_checks.auto_normalize_nullables",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `state_checks.auto_normalize_nullables: true`",
+        ),
+    ),
+    _WireKey(
         path="grading.state_checks.id_fields",
         emitted_for="grading.state_checks",
         wire_shape="dict[str, str | list[str]]",
