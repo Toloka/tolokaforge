@@ -14,8 +14,8 @@ source-qualified key (``log:<i>``, ``guard:<i>``, ...). No component may be empt
 surrounding whitespace or contain ``|``. The namespace never changes; a change of the formula is
 a new contract version.
 
-**Preview kinds.** A receiver whose observations are append-only (Langfuse v4 ``events_only``)
-cannot take a live row and a final row under one id, so every kind a running trial can report
+**Preview kinds.** A receiver whose observations are append-only (a re-sent id is a second row,
+not an update) cannot take a live row and a final row under one id, so every kind a running trial can report
 has a preview twin named ``p`` + the kind: ``proot`` (key ``-``), ``pgen``, ``pugen``, ``ptool``,
 ``pjgen``, ``pjtool``. The formula is the same, so no existing id moves; a preview id can never
 collide with a final one because the kind is part of the name. What the loop reports while the

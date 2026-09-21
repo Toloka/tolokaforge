@@ -68,8 +68,8 @@ class TrialIdentity:
 class ExportReceipt(BaseModel):
     """Process-local delivery counts, with opaque plugin details (ADR-0047).
 
-    Plugins namespace their additive ``extra`` counters (for example,
-    ``langfuse.attachments_uploaded``). ``details`` preserves each receiver's
+    Plugins namespace their additive ``extra`` counters under their own plugin
+    name (``<plugin>.<counter>``). ``details`` preserves each receiver's
     non-additive facts separately when several observers are composed.
     """
 
