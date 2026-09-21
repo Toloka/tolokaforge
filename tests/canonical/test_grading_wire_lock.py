@@ -791,6 +791,26 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
         ),
     ),
+    _WireKey(
+        path="grading.llm_judge.episode_timeout_s",
+        emitted_for="grading.llm_judge",
+        wire_shape="float | None [gt=0.0]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.episode_timeout_s",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
+    _WireKey(
+        path="grading.llm_judge.max_turns",
+        emitted_for="grading.llm_judge",
+        wire_shape="int | None [ge=1]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.max_turns",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
 )
 
 _RETIRED_WIRE_KEYS: tuple[_RetiredWireKey, ...] = (

@@ -156,6 +156,8 @@ def run_judge_only_for_trajectory(
             include_agent_resolved if include_agent_resolved is not None else True
         ),
         kind_config=llm_judge_config.kind_config,
+        episode_timeout_s=llm_judge_config.episode_timeout_s,
+        max_turns=llm_judge_config.max_turns,
         logger=logger,
     )
     if result.status is JudgeRunStatus.ERRORED:

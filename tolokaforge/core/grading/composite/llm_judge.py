@@ -99,6 +99,8 @@ def grade_llm_judge(
         custom_system_prompt=custom_system_prompt,
         include_agent_system_prompt=include_agent_system_prompt,
         kind_config=kind_config,
+        episode_timeout_s=config.episode_timeout_s,
+        max_turns=config.max_turns,
         logger=logger,
     )
 

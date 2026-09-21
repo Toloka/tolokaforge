@@ -74,5 +74,7 @@ class JudgeKind(Protocol):
         custom_system_prompt: str | None,
         include_agent_system_prompt: bool,
         kind_config: Mapping[str, Any] | None,
+        episode_timeout_s: float | None,
+        max_turns: int | None,
         logger: StructuredLogger,
     ) -> JudgeResult: ...

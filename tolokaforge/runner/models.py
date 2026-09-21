@@ -2096,6 +2096,14 @@ class LLMJudgeConfig(BaseModel):
     customization: JudgeCustomization | None = None
     judge_kind: str = "single_shot_rubric"
     kind_config: dict[str, Any] | None = None
+    episode_timeout_s: float | None = Field(default=None, gt=0.0)
+    """Wall-time budget for one judge episode, in seconds. ``None`` (unset)
+    leaves the engine default in effect (:data:`~tolokaforge.core.grading.judge.DEFAULT_JUDGE_EPISODE_TIMEOUT_S`).
+    Env var ``TOLOKAFORGE_JUDGE_EPISODE_TIMEOUT_S`` wins over this per-config
+    value so an eval-side override doesn't require a pack edit."""
+    max_turns: int | None = Field(default=None, ge=1)
+    """Turn cap for one judge episode. ``None`` (unset) leaves the engine
+    default in effect (:data:`~tolokaforge.core.grading.judge.DEFAULT_JUDGE_MAX_TURNS`)."""
 
     model_config = {"extra": "forbid"}
 

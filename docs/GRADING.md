@@ -1358,6 +1358,8 @@ reject it.
 | `search.plane` | every pack | `unreleased` | new engine → old image |
 | `grading.llm_judge.judge_kind` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
+| `grading.llm_judge.episode_timeout_s` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
+| `grading.llm_judge.max_turns` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 
 `emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing

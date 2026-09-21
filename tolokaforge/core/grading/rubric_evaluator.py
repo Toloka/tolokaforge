@@ -88,6 +88,13 @@ class RubricEvaluatorContext:
     disable_knowledge_search: bool = False
     custom_system_prompt: str | None = None
     include_agent_system_prompt: bool = True
+    episode_timeout_s: float | None = None
+    """Wall-time budget the evaluator forwards to :class:`LLMJudge`. ``None``
+    (unset) leaves the engine default in effect. Sourced from
+    :class:`LLMJudgeConfig.episode_timeout_s` at construction; env var
+    ``TOLOKAFORGE_JUDGE_EPISODE_TIMEOUT_S`` still wins at judge runtime."""
+    max_turns: int | None = None
+    """Turn cap the evaluator forwards to :class:`LLMJudge`. Same shape."""
 
 
 RubricEvaluatorFactory = Callable[[RubricEvaluatorContext], RubricEvaluator]

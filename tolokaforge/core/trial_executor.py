@@ -304,8 +304,8 @@ class ProvisioningTrialExecutor:
     def _maybe_flag_missing_judge_verdict(
         self, trajectory: Trajectory, task_id: str, trial_idx: int
     ) -> None:
-        """Amend ``metrics.yaml`` with ``error_stage=judge_missing_verdict`` when
-        the grading pipeline finished without a usable judge verdict.
+        """Amend ``metrics.yaml`` with an ``error_stage`` label when the
+        grading pipeline finished without a usable judge verdict.
 
         Two shapes reach this state:
 
@@ -321,17 +321,46 @@ class ProvisioningTrialExecutor:
         stage is voided by a single missing verdict. Recording the
         ``error_stage`` at this level lets the aggregator rejudge only the
         affected trials instead of re-running the cluster.
+
+        Two labels distinguish the cause: ``judge_timeout`` when the judge
+        loop hit :attr:`TerminationReason.TIMEOUT` (wall-clock budget
+        exhausted; retrying with a larger ``episode_timeout_s`` may
+        recover), otherwise ``judge_missing_verdict`` (crash,
+        max-turns-exhaustion, malformed verdict — retrying the same call
+        is unlikely to help). ``trajectory.termination_reason`` is the
+        primary signal; a fallback string-match on the errored grade's
+        ``reasons`` covers older bundles where the trajectory does not
+        record the reason.
         """
         grade = trajectory.grade
         judge_errored = grade is not None and grade.judge_status is JudgeStatus.ERRORED
         grading_raised = grade is None and trajectory.grading_error is not None
         if not (judge_errored or grading_raised):
             return
+        error_stage = (
+            "judge_timeout" if self._is_judge_timeout(trajectory) else "judge_missing_verdict"
+        )
         self._amend_trial_metrics(
             task_id,
             trial_idx,
-            {"error_stage": "judge_missing_verdict"},
+            {"error_stage": error_stage},
         )
+
+    @staticmethod
+    def _is_judge_timeout(trajectory: Trajectory) -> bool:
+        """Whether an errored grade traces to a judge wall-clock timeout.
+
+        Prefers the trajectory's recorded ``termination_reason``; falls back
+        to a substring match on ``grade.reasons`` for older bundles that
+        did not carry the reason on the trajectory itself.
+        """
+        if trajectory.termination_reason is TerminationReason.TIMEOUT:
+            return True
+        grade = trajectory.grade
+        if grade is None:
+            return False
+        reasons = grade.reasons or ""
+        return f"termination={TerminationReason.TIMEOUT}" in reasons
 
     def _amend_trial_metrics(self, task_id: str, trial_idx: int, updates: dict[str, Any]) -> None:
         """Merge ``updates`` into the trial's ``metrics.yaml`` as top-level keys.

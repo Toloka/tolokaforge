@@ -385,6 +385,10 @@ class ReplayInputs:
     kb_search: KnowledgeSearch | None = None
     extra_read_tools: list[Tool] = field(default_factory=list)
     workspace_dir: Path | None = None
+    #: Judge episode budget overrides sourced from the bundle's recorded
+    #: ``LLMJudgeConfig``. ``None`` leaves the engine default in effect.
+    episode_timeout_s: float | None = None
+    max_turns: int | None = None
 
 
 def _parse_yaml(path: Path) -> Any:
@@ -555,6 +559,50 @@ def _resolve_judge_kind(
             f"recorded grading_config.llm_judge.kind_config is not a mapping: {raw_kind_config!r}"
         )
     return judge_kind, kind_config, ProvenanceSource.RECORDED
+
+
+def _resolve_judge_episode_budget(
+    task: dict[str, Any] | None,
+) -> tuple[float | None, int | None]:
+    """Resolve recorded judge episode budget overrides.
+
+    Reads ``episode_timeout_s`` and ``max_turns`` off
+    ``task.yaml.grading_config.llm_judge``. ``None`` on either field leaves the
+    engine default in effect at replay time. A wrong-shape value fails loud so a
+    hand-edited bundle never silently substitutes a default.
+    """
+    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
+    if not isinstance(llm_judge, dict):
+        return None, None
+    raw_episode = llm_judge.get("episode_timeout_s")
+    if raw_episode is None:
+        episode_timeout_s: float | None = None
+    elif (
+        isinstance(raw_episode, (int, float))
+        and not isinstance(raw_episode, bool)
+        and raw_episode > 0
+    ):
+        episode_timeout_s = float(raw_episode)
+    else:
+        raise MissingReplayInputError(
+            "recorded grading_config.llm_judge.episode_timeout_s is not a positive number: "
+            f"{raw_episode!r}"
+        )
+    raw_max_turns = llm_judge.get("max_turns")
+    if raw_max_turns is None:
+        max_turns: int | None = None
+    elif (
+        isinstance(raw_max_turns, int)
+        and not isinstance(raw_max_turns, bool)
+        and raw_max_turns >= 1
+    ):
+        max_turns = raw_max_turns
+    else:
+        raise MissingReplayInputError(
+            "recorded grading_config.llm_judge.max_turns is not a positive integer: "
+            f"{raw_max_turns!r}"
+        )
+    return episode_timeout_s, max_turns
 
 
 def _resolve_bundle_judge_prompt(
@@ -749,6 +797,7 @@ def read_replay_inputs(
     rubric_override = grading_override.rubric if grading_override is not None else None
     rubric, rubric_source = _resolve_rubric(task, rubric_override)
     judge_kind, kind_config, judge_kind_source = _resolve_judge_kind(task)
+    episode_timeout_s, max_turns = _resolve_judge_episode_budget(task)
     explicit_system_prompt, judge_prompt_source = _resolve_bundle_judge_prompt(trial_dir, prompts)
     if explicit_system_prompt is not None:
         # Bundle-recorded composed prompt wins over any legacy customization: the
@@ -819,6 +868,8 @@ def read_replay_inputs(
         extra_read_tools=extra_read_tools,
         workspace_dir=None,
         provenance=provenance,
+        episode_timeout_s=episode_timeout_s,
+        max_turns=max_turns,
     )
 
 
@@ -857,6 +908,8 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
             custom_system_prompt=inputs.custom_system_prompt,
             explicit_system_prompt=inputs.explicit_system_prompt,
             include_agent_system_prompt=inputs.include_agent_system_prompt,
+            episode_timeout_s=inputs.episode_timeout_s,
+            max_turns=inputs.max_turns,
             llm_client=judge_client,
         )
         return judge.run(
@@ -891,6 +944,8 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
         custom_system_prompt=inputs.custom_system_prompt,
         include_agent_system_prompt=inputs.include_agent_system_prompt,
         kind_config=inputs.kind_config,
+        episode_timeout_s=inputs.episode_timeout_s,
+        max_turns=inputs.max_turns,
         logger=get_logger("tolokaforge.core.grading.replay"),
     )
 

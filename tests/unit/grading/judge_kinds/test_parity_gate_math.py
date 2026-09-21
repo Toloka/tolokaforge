@@ -337,6 +337,8 @@ class _ScriptedFixtureKind:
         custom_system_prompt: str | None,  # noqa: ARG002
         include_agent_system_prompt: bool,  # noqa: ARG002
         kind_config: Mapping[str, Any] | None,  # noqa: ARG002
+        episode_timeout_s: float | None,  # noqa: ARG002
+        max_turns: int | None,  # noqa: ARG002
         logger: StructuredLogger,  # noqa: ARG002
     ) -> JudgeResult:
         verdicts = self._results[self._call_index]
