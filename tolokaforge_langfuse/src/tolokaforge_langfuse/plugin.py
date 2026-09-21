@@ -162,6 +162,7 @@ def build(
             INGESTION_VERSION,
             OTelTrialObserver,
             ProjectionSettings,
+            SingleAttemptUnavailable,
             SpanQueue,
             make_otlp_exporter,
         )
@@ -208,19 +209,24 @@ def build(
         endpoint=endpoint,
         headers=headers,
         environment=environment,
-        # on a write-once receiver the manifest is part of the root observation (D-v4-8), and a
-        # legacy trace-create update would be refused anyway
+        # on a write-once receiver the manifest is part of the root observation, and a legacy
+        # trace-create update would be refused anyway
         send_manifest_event=server_api == SERVER_V3,
     )
-    queue = SpanQueue(
-        make_otlp_exporter(
+    try:
+        exporter = make_otlp_exporter(
             endpoint,
             headers=headers,
             # the direct ingestion path is a v4 route; the v3 family is written exactly as before
             ingestion_version=INGESTION_VERSION if server_api == SERVER_V4 else None,
             # a retried batch the receiver already wrote is a duplicate it cannot delete
             retry=server_api != SERVER_V4,
-        ),
+        )
+    except SingleAttemptUnavailable as exc:
+        # the write-once guarantee is the reason this run may write to that receiver at all
+        raise TracingConfigError(f"this receiver writes every observation once: {exc}") from exc
+    queue = SpanQueue(
+        exporter,
         max_size=tracing.queue_size,
         batch_size=tracing.export_batch_size,
         interval_s=tracing.export_interval_s,
@@ -476,7 +482,7 @@ def merge_tag_sources(
 def resolve_server_family(
     settings: LangfuseConfig, endpoint: str, headers: dict[str, str] | None
 ) -> str:
-    """Which receiver family this run writes for (D-v4-5), resolved once, at run start.
+    """Which receiver family this run writes for, resolved once, at run start.
 
     ``options.langfuse.server_api`` decides when it names a family; ``auto`` asks the receiver
     by capability (``GET /api/public/v2/observations``), never by the version it reports, because

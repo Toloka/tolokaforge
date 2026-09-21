@@ -162,7 +162,7 @@ PRIMARY_GRADING_SCORE = "primary_grading"
 
 
 def primary_grading_score(trace_id: str, grading_id: str, *, at: str | None = None) -> dict:
-    """The trace-level score naming the grading the mirror belongs to (ADR-0048, D-v4-3).
+    """The trace-level score naming the grading the mirror belongs to (ADR-0048).
 
     It is what a reader has instead of the trace metadata's ``primary_grading`` on a receiver that
     writes the trace once: the metadata pointer is as of the root's single write, this score is

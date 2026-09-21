@@ -8,20 +8,20 @@ rides ambient context, and a full queue drops (counted) rather than blocking the
 Attribute names follow the Langfuse OpenTelemetry conventions so a Langfuse receiver renders the
 same trace the offline uploader produces; any OTLP collector still receives valid spans.
 
-**Two write shapes, chosen by the receiver's family** (D-v4-5, detected once per run and passed
-in as ``server_api``):
+**Two write shapes, chosen by the receiver's family** (detected once per run and passed in as
+``server_api``):
 
 - ``v3``: what this module always did. The per-call spans carry the contract's final ids, the
   root is provisional at trial start and complete at trial end, and the trial-end pass re-sends
   every record through the ingestion API, where the receiver upserts.
-- ``v4``: observations are append-only, so every id is written **once** (D-v4-2, shape C). The
-  live spans become declared **previews** under the preview kinds, children of a preview root
-  whose parent is the final root, marked ``preview: true`` and named ``preview: ...``; nothing
-  live is ever re-sent or completed. At ``trial_persisted`` the bundle's projection is converted
+- ``v4``: observations are append-only, so every id is written **once**. The live spans become
+  declared **previews** under the preview kinds, children of a preview root whose parent is the
+  final root, marked ``preview: true`` and named ``preview: ...``; nothing live is ever re-sent
+  or completed. At ``trial_persisted`` the bundle's projection is converted
   to spans by :mod:`tolokaforge_langfuse.otlp_spans` and written once, **the root last**, after
   the media upload, with the complete manifest in the root's metadata; the scores keep the
   ingestion route. A trial whose final root can no longer come gets one minimal error root at
-  ``run_finished`` (D-v4-10), so no trace is left without a root.
+  ``run_finished``, so no trace is left without a root.
 """
 
 from __future__ import annotations
@@ -48,6 +48,10 @@ from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
 from tolokaforge_langfuse.attachments import AttachCounts
+
+# the receiver families this observer writes for: `media` owns the names because the capability
+# probe lives there, and a run resolves its family there once, never from the version a receiver
+# reports
 from tolokaforge_langfuse.media import SERVER_V3, SERVER_V4
 from tolokaforge_langfuse.model_names import (
     NONE,
@@ -77,15 +81,12 @@ HARNESS_TAG = "harness:tolokaforge"
 # a trial observer traces trials: the source is the producer's fact (vocabulary.SOURCE_TRIAL)
 SOURCE_TAG = f"source:{SOURCE_TRIAL}"
 TRACE_TIME_SOURCE = "live"
-# the receiver families this observer writes for (imported above from `media`, which owns the
-# names because the capability probe lives there) are resolved at run start, never from the
-# version a receiver reports
-# Langfuse v4 takes OTLP on the documented direct path behind this header; step 00 could not
-# measure a latency benefit on an idle deployment (F14), the vendor documents it as the path
+# Langfuse v4 takes OTLP on the documented direct path behind this header; a measurement on an
+# idle deployment found no latency benefit, but the vendor documents it as the path
 INGESTION_VERSION_HEADER = "x-langfuse-ingestion-version"
 INGESTION_VERSION = "4"
-# what a preview row says about itself (D-v4-2): a marker in its metadata and a name a reader
-# recognises without looking the id up
+# what a preview row says about itself: a marker in its metadata and a name a reader recognises
+# without looking the id up
 PREVIEW_METADATA_KEY = "preview"
 PREVIEW_NAME_PREFIX = "preview: "
 
@@ -115,6 +116,10 @@ def _scope() -> InstrumentationScope:
     return InstrumentationScope("tolokaforge.observability", engine_version)
 
 
+class SingleAttemptUnavailable(RuntimeError):
+    """This OpenTelemetry SDK cannot be asked to post a batch once."""
+
+
 def _single_attempt_exporter_class() -> type | None:
     """An ``OTLPSpanExporter`` that posts a batch **once**, or None when the SDK has moved on.
 
@@ -125,7 +130,8 @@ def _single_attempt_exporter_class() -> type | None:
     (ADR-0048). A dropped batch is recoverable there (the run says so in its receipt and the
     offline uploader completes the trace), a duplicate is not, so the v4 family trades the
     retries away. It touches the SDK's internals, so a version that no longer offers them
-    leaves the caller on the stock exporter."""
+    returns None here, and :func:`make_otlp_exporter` refuses the run rather than falling back
+    to a retrying exporter."""
     try:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             OTLPSpanExporter,
@@ -171,7 +177,10 @@ def make_otlp_exporter(
     set.
 
     ``retry=False`` posts each batch once (:func:`_single_attempt_exporter_class`), which is what
-    a write-once receiver needs."""
+    a write-once receiver needs. When this SDK no longer offers the internals that requires, it
+    raises :class:`SingleAttemptUnavailable` instead of returning a retrying exporter: a
+    duplicate on such a receiver cannot be deleted, so the run has to stop rather than risk
+    one."""
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
     merged = dict(headers) if headers else {}
@@ -181,12 +190,12 @@ def make_otlp_exporter(
     if not retry:
         single = _single_attempt_exporter_class()
         if single is None:
-            _log.warning(
-                "the OTLP exporter of this SDK cannot be asked to post once; a retried batch "
-                "the receiver already wrote would be a duplicate there"
+            raise SingleAttemptUnavailable(
+                "the OTLP exporter of this OpenTelemetry SDK cannot be asked to post a batch "
+                "once, and a retried batch the receiver already wrote would be a duplicate it "
+                "cannot delete: pin an SDK this package supports, or write for the v3 family"
             )
-        else:
-            exporter_class = single
+        exporter_class = single
     return exporter_class(endpoint=endpoint, headers=merged or None)
 
 
@@ -201,7 +210,7 @@ class SpanQueue:
     A span may be handed a ``track`` key: the queue then reports whether that span reached the
     exporter (:meth:`lost_tracked`). Only the write-once roots are tracked, so the set stays one
     entry per trial, and a root that never arrived can still be answered with an error root
-    before the run ends (D-v4-10).
+    before the run ends.
     """
 
     def __init__(
@@ -367,7 +376,7 @@ class _PersistContext:
     """What a trial's end leaves for its ``trial_persisted`` pass, after the state is dropped.
 
     ``identity`` and ``error`` are also what an error root is written from when the final root
-    can no longer come (D-v4-10)."""
+    can no longer come."""
 
     started_at: datetime | None = None
     status: str | None = None
@@ -419,7 +428,7 @@ class OTelTrialObserver:
         self._attachments = attachments
         self._gradings = gradings
         self._projection = projection or ProjectionSettings()
-        # the receiver family this run writes for (D-v4-5): on v4 every observation is written
+        # the receiver family this run writes for: on v4 every observation is written
         # once, the live rows are declared previews and the record comes from the bundle
         self._server_api = server_api
         self._write_once = server_api == SERVER_V4
@@ -994,8 +1003,8 @@ class OTelTrialObserver:
             if context is not None and root_queued:
                 context.root_sent = True
             if root_queued and manifest is not None:
-                # on this receiver the manifest is part of the root's metadata (D-v4-8); the
-                # attachment step sent nothing, so the trace's manifest is counted here
+                # on this receiver the manifest is part of the root's metadata; the attachment
+                # step sent nothing, so the trace's manifest is counted here
                 self._attach_counts.manifests_sent += 1
             elif manifest is not None:
                 self._attach_counts.manifests_failed += 1
@@ -1070,7 +1079,7 @@ class OTelTrialObserver:
     def run_finished(self) -> ExportReceipt:
         if self._write_once:
             # the queue is drained first: a root that never reached the exporter is only known
-            # afterwards, and an error root for it still has to get out (D-v4-10)
+            # afterwards, and an error root for it still has to get out
             self._queue.flush(self._flush_timeout_s)
             self._write_error_roots()
         flushed = self._queue.shutdown(self._flush_timeout_s)
@@ -1115,10 +1124,10 @@ class OTelTrialObserver:
         )
 
     def _write_error_roots(self) -> None:
-        """One minimal root for every trace whose real root can no longer come (D-v4-10): the
-        trial died before its bundle was written, the bundle pass wrote no root, or the root
-        span never reached the receiver. Written once, at run end, so every trace of the run is
-        in the trace list and the broken ones say so. Carries no manifest and no verdict."""
+        """One minimal root for every trace whose real root can no longer come: the trial died
+        before its bundle was written, the bundle pass wrote no root, or the root span never
+        reached the receiver. Written once, at run end, so every trace of the run is in the
+        trace list and the broken ones say so. Carries no manifest and no verdict."""
         unsent = self._queue.unsent_tracked()
         unconfirmed = self._queue.failed_tracked()
         with self._states_lock:
@@ -1242,8 +1251,8 @@ class OTelTrialObserver:
         return attributes
 
     def _identity_attributes(self, identity: TrialIdentity) -> dict[str, Any]:
-        """The trace metadata keys every row carries, so a child can be found by them alone
-        (D-v4-4); the values are the projection's, so a preview and the final row agree."""
+        """The trace metadata keys every row carries, so a child can be found by them alone;
+        the values are the projection's, so a preview and the final row agree."""
         values: dict[str, Any] = {
             "task_id": identity.task_id,
             "trial_index": identity.trial_index,

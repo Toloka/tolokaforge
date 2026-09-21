@@ -357,7 +357,7 @@ def test_without_an_attachment_step_trial_persisted_is_a_no_op(tmp_path) -> None
     )
 
 
-# -- the write-once shape of a v4 receiver (ADR-0048, D-v4-2 shape C) ---------------------------
+# -- the write-once shape of a v4 receiver (ADR-0048) -------------------------------------------
 
 
 class _V4Attachments:
@@ -746,6 +746,29 @@ class TestHowManyTimesABatchIsPosted:
         posts = self._refusing(exporter)
         assert exporter.export([]) is SpanExportResult.FAILURE
         assert len(posts) == 1, "a refused batch may not be posted again"
+
+    def test_an_sdk_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
+        """The single post is the whole safety argument for writing to an append-only receiver.
+        A future SDK that no longer offers the internals it needs must stop the run, not hand
+        back the retrying exporter and let it write duplicates nothing can delete."""
+        from tolokaforge_langfuse import otel
+
+        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
+        with pytest.raises(otel.SingleAttemptUnavailable, match="cannot delete"):
+            otel.make_otlp_exporter(
+                "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
+            )
+
+    def test_the_same_sdk_still_serves_a_retrying_exporter(self, monkeypatch) -> None:
+        """Only the write-once family pays for the missing internals; v3 upserts, so a retry is
+        safe there and the run goes on."""
+        from tolokaforge_langfuse import otel
+
+        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
+        exporter = otel.make_otlp_exporter(
+            "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}
+        )
+        assert type(exporter).__name__ == "OTLPSpanExporter"
 
 
 class TestTheIngestionHeader:

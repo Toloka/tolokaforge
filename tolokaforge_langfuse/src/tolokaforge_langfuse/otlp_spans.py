@@ -15,17 +15,16 @@ What it does, and nothing else:
 - every observation body becomes one span under its own id, with its parent, clocks, level,
   status message, input, output, model, usage and cost, and its own metadata;
 - the trace's name, session, tags, native fields and **identity** metadata keys ride on every
-  span, because a v4 receiver stores and filters them per observation (D-v4-4);
-- the **root span is last**: a child may arrive before its root (F16), and until the root lands
+  span, because a v4 receiver stores and filters them per observation;
+- the **root span is last**: a child may arrive before its root, and until the root lands
   the trace has no root row at all, so nothing can read a half-written trace as finished;
 - ``score-create`` events are not spans. Scores keep the ingestion route on v4 and are returned
   untouched by :func:`score_events`.
 
-Values follow the receiver's OTLP mapping measured in step 00: a nested metadata value travels as
-a JSON string and is parsed back into an object (F17), ``usage_details`` / ``cost_details`` JSON
-strings become the typed maps, and an attribute cannot be null, so a metadata key whose value is
-``None`` travels as the string ``none`` (the value the projection itself writes for an absent
-fact).
+Values follow the receiver's measured OTLP mapping: a nested metadata value travels as a JSON
+string and is parsed back into an object, ``usage_details`` / ``cost_details`` JSON strings
+become the typed maps, and an attribute cannot be null, so a metadata key whose value is ``None``
+travels as the string ``none`` (the value the projection itself writes for an absent fact).
 
 Engine-free by construction: it reads bodies, not trials, so the offline connector imports it
 next to any engine pin, or with none.
@@ -119,7 +118,7 @@ def score_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def observation_bodies(events: Sequence[Mapping[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
-    """``(event type, body)`` of every observation, **the root last** (D-v4-2)."""
+    """``(event type, body)`` of every observation, **the root last**."""
     children: list[tuple[str, dict[str, Any]]] = []
     roots: list[tuple[str, dict[str, Any]]] = []
     for event in events:
@@ -139,7 +138,7 @@ def span_attributes(
     A root carries the whole trace metadata and, as its own input and output, the trace's; a
     child carries the identity keys and its own body alone. Trace metadata wins over an
     observation metadata key of the same name: both land in one flat namespace on the receiver's
-    side (F7), so only one may be written.
+    side, so only one may be written.
     """
     attributes: dict[str, Any] = {
         "langfuse.observation.type": OBSERVATION_EVENTS[event_type],
@@ -192,7 +191,7 @@ def spans_from_events(
     resource: Resource | None = None,
     scope: InstrumentationScope | None = None,
 ) -> list[ReadableSpan]:
-    """Every observation of a projection as a finished span, the root last (D-v4-2).
+    """Every observation of a projection as a finished span, the root last.
 
     ``environment`` / ``release`` / ``version`` are the deployment's native fields; when a value
     is ``None`` the trace body's own is used. Scores are not spans (:func:`score_events`).
@@ -228,7 +227,7 @@ def _set(attributes: dict[str, Any], key: str, value: Any) -> None:
 
 def _metadata_value(value: Any) -> Any:
     """A metadata value as an OTLP attribute: scalars as they are, a nested value as a JSON
-    string the receiver parses back (F17), an absent value as the projection's own ``none``."""
+    string the receiver parses back, an absent value as the projection's own ``none``."""
     if value is None:
         return NONE
     if isinstance(value, (str, bool, int, float)):

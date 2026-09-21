@@ -172,7 +172,7 @@ class TestBuildGradingEvents:
             "trace_check:gate",
             "trace_check:no_refund",
         ]
-        # the mirror is the same set plus the pointer naming the grading it mirrors (D-v4-3)
+        # the mirror is the same set plus the pointer naming the grading it mirrors
         assert sorted(s["name"] for s in mirror) == sorted([*names, "primary_grading"])
         pointer = next(s for s in mirror if s["name"] == "primary_grading")
         assert pointer["value"] == grading_id and pointer["dataType"] == "CATEGORICAL"

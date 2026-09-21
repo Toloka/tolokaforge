@@ -40,10 +40,9 @@ its strict `LangfuseConfig` before contacting the receiver. All receiver-specifi
 (`expect_project`, `attach`, `gradings`, `projection`, `attach_*`, `profile`, `environment`,
 `model_name_*`) live in that namespace. Defaults and environment precedence are unchanged.
 
-**Migration (plugin API 3):** move those settings from `observability.tracing` into
-`observability.tracing.options.langfuse`. The old top-level keys and unknown keys inside the
-Langfuse namespace are errors; they are never silently ignored. Upgrade the engine and plugin
-together for this contract change. Later Langfuse-only option additions need no engine release.
+A receiver setting left at the tracing block's top level, and an unknown key inside the Langfuse
+namespace, are both errors at config load; they are never silently ignored. Adding a
+Langfuse-only option needs no engine release.
 
 
 Install the observer: `pip install 'tolokaforge[otel]'` (the extra resolves to the `tolokaforge-langfuse`
@@ -237,7 +236,10 @@ refused at run start.
 that failed with a connection error or a retryable status. Here that is unsafe in exactly one
 case: the receiver wrote the batch and its answer was lost, so the re-post writes every
 observation again, the root included, with no way to delete either copy. The v4 family therefore
-posts each batch once. The consequences are visible in the receipt:
+posts each batch once. This is the whole safety argument for writing to such a receiver, so it is
+not optional: an OpenTelemetry SDK whose exporter cannot be asked to post once fails the run at
+start rather than falling back to a retrying one. A v3 run is unaffected, because it upserts.
+The consequences are visible in the receipt:
 
 - a batch the queue never took (it was full, or the flush budget ran out) is certainly unwritten,
   so the trace gets its **error root** at run end;
@@ -395,7 +397,7 @@ or a plugin that cannot be imported, is a configuration error at run start; so i
 plugin produced an observer, so a run never proceeds silently without the traces it asked for. The
 pairing is checked
 by the plugin: the engine's `PLUGIN_API_VERSION` (the `build` signature, the observer hooks and the
-id, configuration and receipt contracts, currently version **3**) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
+id, configuration and receipt contracts, currently version **4**) must equal the plugin's `__api_version__`, and a mismatch names both versions. So a
 fix to the projection, the profile or the attachment step reaches a deployment by moving the
 `tolokaforge-langfuse` pin while the engine pin stays; a change to the hooks or the ids moves both,
 engine first. `observability.tracing.options.<plugin>` carries receiver-owned settings.
@@ -435,8 +437,7 @@ receiver facts live in `details`, for example:
 `details` is a list, preserving each observer's facts even when two target different projects.
 `CompositeTrialObserver` sums common and plugin counters, ANDs `flushed`, and concatenates
 `details` without interpreting receiver keys. A missing receipt counts as an export failure
-and leaves `flushed: false`. API version 2 moves the Langfuse-specific fields from the receipt's
-top level into `extra` and `details`; consumers must update their field paths.
+and leaves `flushed: false`.
 
 A receipt covers one process. `ExportReceipt.merge` applies the same reduction to receipts
 collected from distinct workers; the caller must deduplicate workers and retain partial/final

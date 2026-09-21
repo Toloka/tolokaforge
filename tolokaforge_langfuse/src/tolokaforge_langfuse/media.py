@@ -154,11 +154,11 @@ def detect_server_family(
     timeout_s: float = 30.0,
     opener: Opener | None = None,
 ) -> str:
-    """Which receiver family answers at ``api_base``, by capability, never by version (D-v4-5).
+    """Which receiver family answers at ``api_base``, by capability, never by version.
 
     ``GET /api/public/v2/observations?limit=1`` answers 200 on a v4 server in **every** write
     mode and 404 on 3.205.1; the health endpoint cannot decide, because a v4 server reports
-    ``4.x`` in the legacy and dual modes too (step 00, ``write_mode_probe.json``). A read-only
+    ``4.x`` in the legacy and dual modes too, which is why the version is not read. A read-only
     probe: nothing is written into the destination project. Any other answer is reported as the
     v3 family, which is what every deployment runs today, and the caller logs it.
     """
@@ -246,7 +246,7 @@ class LangfuseAttachments:
         # a trace's environment at the first write it sees; the manifest update may be it)
         self._environment = environment
         # on a v4 family receiver the manifest rides on the root observation, written once after
-        # this step (D-v4-8), and a ``trace-create`` update would be refused anyway (F1)
+        # this step, and a ``trace-create`` update would be refused anyway
         self._send_manifest_event = send_manifest_event
 
     @property

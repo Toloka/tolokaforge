@@ -170,7 +170,7 @@ class TestGoldenParity:
         # the image block of the tool message became a placeholder, never raw base64
         assert "iVBOR" not in json.dumps(tool["output"])
         # the grading's scores, the trace-level mirror of the same, plus the mirror's
-        # primary_grading pointer (D-v4-3)
+        # primary_grading pointer
         assert projection.stats.scores == 2 * 8 + 1
         assert projection.stats.user_generations == 2 and projection.stats.grading_id
         assert projection.stats.usage_match == "generation_id"

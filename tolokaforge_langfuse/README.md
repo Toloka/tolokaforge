@@ -16,7 +16,7 @@ knows no receiver. Everything Langfuse-shaped lives here and releases on its own
 (`langfuse-vX.Y.Z` tags, see [`docs/RELEASING.md`](../docs/RELEASING.md)), so a fix to the
 projection, the profile or the attachment step reaches a deployment by moving this package's pin
 while the engine pin stays where it is. The pairing is checked at run start: the engine's
-`PLUGIN_API_VERSION` (currently **3**, including the neutral config and receipt shapes) must equal this package's `__api_version__`, and a mismatch names both.
+`PLUGIN_API_VERSION` (currently **4**, including the neutral config and receipt shapes) must equal this package's `__api_version__`, and a mismatch names both.
 
 ## Install
 
@@ -60,11 +60,9 @@ observation comes from the bundle, and the current verdict lives in the `scope: 
 `attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
 `environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
 invalid values before any receiver work starts; other plugins' namespaces remain opaque.
-Plugin API 3 moved these fields out of the engine config: old top-level keys are rejected,
-so move them under `options.langfuse` when upgrading the engine and plugin. The wheel now declares
-plugin API **4** (the write-once layout), and an engine and a plugin of different API versions
-refuse to pair. Defaults and
-environment precedence are unchanged. A second backend need not declare any Langfuse fields.
+A receiver setting left at the engine's tracing top level is rejected, not silently ignored.
+Defaults and environment precedence are unchanged. A second backend need not declare any
+Langfuse fields.
 
 A launcher can also supply settings through these variables:
 

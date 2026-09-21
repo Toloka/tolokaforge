@@ -111,7 +111,9 @@ the family in `details`. The first three count what was queued; what left is the
   this family, because a retried batch the receiver already wrote is a duplicate that cannot be
   deleted, while a dropped batch is recoverable: the receipt says so and the offline sibling
   completes the trace. For the same reason a root the exporter posted but could not confirm gets
-  **no** error root, only a counter and a warning.
+  **no** error root, only a counter and a warning. The single post is the safety argument itself,
+  so it is a run-start requirement rather than a best effort: an OpenTelemetry SDK that cannot be
+  asked for it fails the run instead of degrading to the retrying exporter.
 - A re-run of the same trial under the same run id no longer corrects anything on this family: the
   observations are already there. Changing what a trace says means a new run id. The offline sibling
   reports how many ids it skipped as already present, and refuses the one command that would have
@@ -136,5 +138,4 @@ the family in `details`. The first three count what was queued; what left is the
   `otel.py` (the preview rows, the single write, the error roots), `gradings.py` (the score
   timestamps and the primary pointer), `docs/OBSERVABILITY.md`
 - External references: Langfuse v4 write modes and the OpenTelemetry ingestion attribute
-  conventions; the workspace plan `docs/TECHDEL-497-langfuse-integration/V4_MIGRATION_PLAN.md` and
-  its layout note, where the measured receiver facts and the per-step proofs live
+  conventions

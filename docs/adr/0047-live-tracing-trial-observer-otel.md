@@ -355,7 +355,8 @@ former `tolokaforge/observability/{otel,langfuse_projection,langfuse_gradings,la
 attachments,profile,model_names}.py` named in the amendments above); the engine's `otel` extra
 resolves to it. The plugin decides enablement (`exporter: otlp` or `LANGFUSE_TRACING_ENABLED`),
 the engine composes what the plugins return and refuses a run that asks for an exporter no plugin
-provides. The pairing is a versioned contract (`PLUGIN_API_VERSION` = `__api_version__` = 3, including the configuration and receipt contracts)
+provides. The pairing is a versioned contract (`PLUGIN_API_VERSION` = `__api_version__`, including the
+configuration and receipt contracts)
 checked at run start, not a pip dependency: like the models wheel (ADR-0030) the plugin declares
 no `tolokaforge` requirement, so the same wheel installs next to any engine pin and fails loud,
 with both versions in the message, when the contract moved. `TracingConfig` stays in the engine
@@ -469,7 +470,6 @@ consequences are [ADR-0048](0048-write-once-observations-append-only-receiver.md
   wheel), `tolokaforge/core/loop.py`, `tolokaforge/core/conductor.py`,
   `tolokaforge/core/orchestrator.py`, `.importlinter` (contract `trial-observer-seam`),
   `docs/OBSERVABILITY.md`, `docs/RELEASING.md`
-- External references: Langfuse OpenTelemetry ingestion attribute conventions; the workspace plan
-  `docs/TECHDEL-497-langfuse-integration/PLAN.md` sections 3.10 to 3.12 and 8; the offline
+- External references: Langfuse OpenTelemetry ingestion attribute conventions; the offline
   connector `tolokaforge-tools/tools/langfuse-connector` (id contract v2 in `ids.py`, the
   reference projection `mapping.py`, `verify-parity`).

@@ -240,7 +240,7 @@ class TestReceiverFromTheEnvironment:
         def opener(method, url, headers, body, timeout):
             calls.append((method, url, dict(headers)))
             if media.V2_OBSERVATIONS_PATH in url:
-                # the receiver-family probe (D-v4-5); a v3 server 404s it
+                # the receiver-family probe; a v3 server 404s it
                 return family_answer
             if isinstance(answer, Exception):
                 raise answer
@@ -382,7 +382,7 @@ class TestReceiverFromTheEnvironment:
 
 
 class TestTheReceiverFamily:
-    """D-v4-5: by capability, once per run, never by the version the receiver reports."""
+    """By capability, once per run, never by the version the receiver reports."""
 
     def _build(self, monkeypatch, family_answer, options=None):
         from tolokaforge_langfuse import media
@@ -457,6 +457,24 @@ class TestTheReceiverFamily:
         for a receiver would put the whole run on the write-once layout against a v3 one."""
         pytest.importorskip("opentelemetry.sdk")
         observer, _ = self._build(monkeypatch, (200, b"<html><body>Sign in</body></html>"))
+        assert observer.run_finished().details[0]["server_api"] == "v3"
+
+    def test_a_v4_run_stops_when_the_sdk_cannot_post_once(self, monkeypatch) -> None:
+        """At-most-once on the wire is why this layout may be written at all; without it the
+        run is refused at start rather than degraded to a retrying exporter."""
+        pytest.importorskip("opentelemetry.sdk")
+        from tolokaforge_langfuse import otel
+
+        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
+        with pytest.raises(TracingConfigError, match="writes every observation once"):
+            self._build(monkeypatch, (200, b'{"data": []}'))
+
+    def test_the_same_sdk_leaves_a_v3_run_alone(self, monkeypatch) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from tolokaforge_langfuse import otel
+
+        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
+        observer, _ = self._build(monkeypatch, (404, b""))
         assert observer.run_finished().details[0]["server_api"] == "v3"
 
     def test_a_write_once_receiver_needs_the_full_projection(self, monkeypatch) -> None:

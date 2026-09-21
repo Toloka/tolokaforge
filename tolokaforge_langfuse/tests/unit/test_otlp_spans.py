@@ -114,7 +114,7 @@ class TestTheTraceFacts:
     def test_the_manifest_travels_as_a_json_string(self, golden_events) -> None:
         root = rows(golden_events)[-1]["attributes"]
         attachments = root["langfuse.trace.metadata.attachments"]
-        # OTLP carries no nested value; the receiver parses a JSON string back (F17). The golden
+        # OTLP carries no nested value; the receiver parses a JSON string back. The golden
         # bundle is projected without a manifest, so the object it carries is the empty one.
         assert isinstance(attachments, str) and json.loads(attachments) == {}
         assert isinstance(root["langfuse.trace.metadata.attachments_skipped"], str)
