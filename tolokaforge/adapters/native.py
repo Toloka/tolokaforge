@@ -89,6 +89,32 @@ class NativeAdapterMisconfigurationError(ValueError):
     """
 
 
+def _read_unstable_field_specs(task_dir: Path, spec_cls: type) -> list:
+    """Read ``<task_dir>/fixtures/unstable_fields.json`` as a list of specs.
+
+    Bundle-writer output puts pack-authored unstable-field declarations at
+    ``fixtures/unstable_fields.json`` (see
+    :func:`tolokaforge.adapters.bundle_writer.write_bundle`), shaped as a
+    JSON list of ``{"table_name", "field_name", "reason"}`` objects. The
+    runner-side ``UnstableFieldSpec`` validates each entry. Missing file
+    returns ``[]``; a malformed file raises so the pack sees a loud fixture
+    error rather than silently getting no filter.
+
+    ``spec_cls`` is the ``UnstableFieldSpec`` model; passed in to keep the
+    runner import at the call site rather than at module import time.
+    """
+    path = task_dir / "fixtures" / "unstable_fields.json"
+    if not path.is_file():
+        return []
+    with path.open() as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{path}: expected a JSON list of unstable-field specs, got {type(raw).__name__}"
+        )
+    return [spec_cls.model_validate(entry) for entry in raw]
+
+
 def _detect_converted_pack_signature(task_dir: Path) -> str | None:
     """Relative path of a `_domain/tools/**` directory near *task_dir*, or ``None``.
 
@@ -844,6 +870,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             TaskDescription,
             TraceChecksConfig,
             TranscriptRulesConfig,
+            UnstableFieldSpec,
         )
 
         logger.info(
@@ -1046,7 +1073,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         initial_state = RunnerInitialStateConfig(
             tables=initial_tables,
             schemas=[],
-            unstable_fields=[],
+            unstable_fields=_read_unstable_field_specs(task_dir, UnstableFieldSpec),
             filesystem=initial_filesystem,
         )
 

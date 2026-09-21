@@ -8,7 +8,8 @@ model up in its own map. For most providers that decision is generic, but a
 vendor-native one narrows it by the entry: measured on 1.96.0, the `meta` route
 admits 32 parameters for a model the map carries and 26 for one it does not,
 and the six it withholds are exactly ``function_call``, ``functions``,
-``parallel_tool_calls``, ``reasoning_effort``, ``tool_choice`` and ``tools``.
+``parallel_tool_calls``, ``reasoning_effort``, ``tool_choice`` and ``tools`` —
+the last four of which this engine emits when a config asks for them.
 Temperature, max_tokens, top_p, seed and the rest pass untouched - which is why
 the error names only the tool parameters, and why it is rejected before any
 request leaves the process::
@@ -69,17 +70,17 @@ __all__ = ["DECLARABLE_FLAGS", "FLAG_PARAMS", "allowed_openai_params"]
 
 
 #: Declared capability -> the OpenAI parameters it admits. Every flag here
-#: admits something this engine actually sends: `tool_choice` is only ever set
-#: alongside `tools`, and `parallel_tool_calls` is never set at all, so flags
-#: for those would validate cleanly, admit a parameter no request carries, and
-#: leave the run refused on the one it needed. Extending this map is a decision
-#: about what we are willing to assert, and about what we actually send.
+#: admits something this engine actually sends: ``tool_choice`` is only ever
+#: set alongside ``tools``, and ``parallel_tool_calls`` is sent when a
+#: :class:`ModelConfig` sets it (again alongside ``tools``). Extending this
+#: map is a decision about what we are willing to assert, and about what we
+#: actually send.
 #:
 #: ``supports_reasoning`` is here because a config that sets
 #: ``models.agent.reasoning`` sends ``reasoning_effort``, which litellm refuses
 #: for an unmapped model exactly as it refuses ``tools``.
 FLAG_PARAMS: dict[str, tuple[str, ...]] = {
-    "supports_function_calling": ("tools", "tool_choice"),
+    "supports_function_calling": ("tools", "tool_choice", "parallel_tool_calls"),
     "supports_reasoning": ("reasoning_effort",),
 }
 

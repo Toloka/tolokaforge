@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from tolokaforge.core.grading.state_checks import state_digest
+from tolokaforge.core.grading.state_checks import load_task_unstable_fields, state_digest
 from tolokaforge.core.hash import (
     AUTO_MASKED_CLOCK_COLUMNS,
     ColumnCompareRule,
@@ -956,3 +956,97 @@ class TestOrderingSortKeyRaisesOnUnserializableRow:
         # sanity: the well-behaved unserializable row (str fallback catches it)
         # does not raise.
         apply_compare_columns_ordering(actual, rules)
+
+
+class TestStateDigestHonorsUnstableFields:
+    """``state_digest`` accepts a pack-declared ``unstable_fields`` list and
+    applies it symmetrically with the runner substrate's ``compute_stable_hash``.
+    """
+
+    def test_default_off_still_fails_on_masked_column_diff(self):
+        actual = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        expected = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "ok"}]}
+        assert state_digest(actual) != state_digest(expected)
+
+    def test_declared_folds_differing_masked_column(self):
+        actual = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        expected = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "ok"}]}
+        mask = ["responses.response_id"]
+        assert state_digest(actual, unstable_fields=mask) == state_digest(
+            expected, unstable_fields=mask
+        )
+
+    def test_declared_still_fails_on_unmasked_content_diff(self):
+        actual = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        expected = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "changed"}]}
+        mask = ["responses.response_id"]
+        assert state_digest(actual, unstable_fields=mask) != state_digest(
+            expected, unstable_fields=mask
+        )
+
+    def test_core_and_runner_substrates_mask_the_same_columns(self):
+        """Cross-substrate parity: with the same mask, both substrates hash
+        an identical filtered state, so equivalent-modulo-mask states are
+        equivalent under both.
+        """
+        state_a = {"responses": [{"id": "r1", "response_id": "auto-A", "body": "ok"}]}
+        state_b = {"responses": [{"id": "r1", "response_id": "auto-B", "body": "ok"}]}
+        mask = ["responses.response_id"]
+        # Core substrate agrees on both.
+        assert state_digest(state_a, unstable_fields=mask) == state_digest(
+            state_b, unstable_fields=mask
+        )
+        # Runner substrate agrees on both.
+        assert compute_stable_hash(state_a, mask) == compute_stable_hash(state_b, mask)
+        # And the two substrates continue to label states differently
+        # (the portability invariant :file:`test_expected_state_hash_is_not_portable.py`
+        # enforces).
+        assert state_digest(state_a, unstable_fields=mask) != compute_stable_hash(state_a, mask)
+
+
+class TestLoadTaskUnstableFields:
+    """``load_task_unstable_fields`` reads ``fixtures/unstable_fields.json``
+    from a task directory and returns dotted ``table.field`` paths.
+    """
+
+    def test_missing_task_dir_returns_empty(self):
+        assert load_task_unstable_fields(None) == []
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert load_task_unstable_fields(tmp_path) == []
+
+    def test_reads_valid_file(self, tmp_path):
+        import json as _json
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(
+            _json.dumps(
+                [
+                    {"table_name": "responses", "field_name": "response_id", "reason": "auto_id"},
+                    {"table_name": "tickets", "field_name": "updated_at", "reason": "timestamp"},
+                ]
+            )
+        )
+        assert load_task_unstable_fields(tmp_path) == [
+            "responses.response_id",
+            "tickets.updated_at",
+        ]
+
+    def test_refuses_non_list(self, tmp_path):
+        import json as _json
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(_json.dumps({"not": "a list"}))
+        with pytest.raises(ValueError, match="expected a JSON list"):
+            load_task_unstable_fields(tmp_path)
+
+    def test_refuses_entry_missing_field_name(self, tmp_path):
+        import json as _json
+
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "unstable_fields.json").write_text(_json.dumps([{"table_name": "t"}]))
+        with pytest.raises(ValueError, match="required non-empty strings"):
+            load_task_unstable_fields(tmp_path)

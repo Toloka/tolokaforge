@@ -41,6 +41,14 @@ class ModelConfig(BaseModel):
     temperature: float = 0.0
     max_tokens: int | None = None
     seed: int | None = None
+    # Suppress the provider's parallel tool-call behavior: when ``False``
+    # the engine sends ``parallel_tool_calls=False`` on requests that also
+    # carry ``tools``, requesting a single tool call per turn (some
+    # analysis-agent workflows depend on serial tool calls). ``None`` is
+    # the default and omits the parameter, letting the provider's default
+    # apply. The overlay's ``supports_function_calling`` capability admits
+    # this parameter alongside ``tools`` and ``tool_choice``.
+    parallel_tool_calls: bool | None = None
     # Coding-harness selector. When set, the trial's LLM loop is replaced by a
     # single invocation of the named vendor CLI (``claude-code``, ``codex``,
     # ``gemini-cli``, ``kimi-code``, ``opencode``, ``grok-build`` — see the

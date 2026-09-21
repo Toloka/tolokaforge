@@ -266,7 +266,9 @@ def _normalise_value_rules(
 #: rule on anything else would be accepted and then never read, so it is
 #: refused: that is a typo, not a decision. Adding a parameter here means
 #: adding the site that consults it.
-RULABLE_PARAMS: Final[frozenset[str]] = frozenset({"reasoning_effort", "tool_choice"})
+RULABLE_PARAMS: Final[frozenset[str]] = frozenset(
+    {"reasoning_effort", "tool_choice", "parallel_tool_calls"}
+)
 
 
 class RuleAction(str, Enum):

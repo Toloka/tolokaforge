@@ -23,6 +23,7 @@ from tolokaforge.core.hash import (
     apply_auto_clock_mask,
     apply_compare_columns_pipeline,
     canonical_number,
+    filter_unstable_fields,
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
@@ -104,6 +105,7 @@ def state_digest(
     *,
     numeric_string_fields: list[str] | None = None,
     auto_mask_clock_columns: bool = False,
+    unstable_fields: list[str] | None = None,
 ) -> str:
     """The digest core writes a state in, for either side of one comparison.
 
@@ -123,11 +125,59 @@ def state_digest(
     :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS` from every table row
     before hashing. Symmetric with the runner's ``compute_stable_hash`` flag so
     the two substrates continue to agree on which states are equal.
+
+    ``unstable_fields`` (opt-in) drops author-declared columns from every row
+    before hashing. Each entry is a dotted ``table.field`` path, matching the
+    shape :func:`tolokaforge.core.hash.filter_unstable_fields` accepts and the
+    shape the runner substrate's ``compute_stable_hash`` reads. Both sides of
+    one comparison must pass the same list.
     """
+    if unstable_fields:
+        state = filter_unstable_fields(state, unstable_fields)
     if auto_mask_clock_columns:
         state = apply_auto_clock_mask(state)
     string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
     return consistent_hash(to_hashable(state, string_fields))
+
+
+def load_task_unstable_fields(task_dir: Path | None) -> list[str]:
+    """Read ``<task_dir>/fixtures/unstable_fields.json`` as dotted paths.
+
+    The fixtures file is a list of ``{"table_name", "field_name", "reason"}``
+    objects (see :class:`tolokaforge.runner.models.UnstableFieldSpec` and
+    :func:`tolokaforge.adapters.bundle_writer.write_bundle`). This loader
+    returns them in the dotted ``table.field`` shape
+    :func:`tolokaforge.core.hash.filter_unstable_fields` accepts, so the
+    core-substrate grader and the runner substrate apply an identical mask.
+
+    Missing file, missing directory, or an empty list all return ``[]``.
+    Malformed JSON or entries missing ``table_name`` / ``field_name`` are
+    refused loudly so a fixture typo does not silently degrade to no
+    filter (a repeat of the class of bug this loader was added to close).
+    """
+    if task_dir is None:
+        return []
+    path = Path(task_dir) / "fixtures" / "unstable_fields.json"
+    if not path.is_file():
+        return []
+    with path.open() as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{path}: expected a JSON list of unstable-field specs, got {type(raw).__name__}"
+        )
+    dotted: list[str] = []
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}[{index}]: expected a JSON object, got {type(entry).__name__}")
+        table = entry.get("table_name")
+        field = entry.get("field_name")
+        if not isinstance(table, str) or not isinstance(field, str) or not table or not field:
+            raise ValueError(
+                f"{path}[{index}]: 'table_name' and 'field_name' are required non-empty strings"
+            )
+        dotted.append(f"{table}.{field}")
+    return dotted
 
 
 def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
@@ -355,6 +405,7 @@ class StateChecker:
         auto_mask_clock_columns: bool = False,
         compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
         expected_state_for_pipeline: dict[str, Any] | None = None,
+        unstable_fields: list[str] | None = None,
     ) -> tuple[float, str]:
         """
         Check state hash against expected using tau-bench algorithm
@@ -377,6 +428,11 @@ class StateChecker:
                 that provides ``expected_hash`` derived from a stored digest
                 (``expect_initial_state`` path) also holds this state and
                 threads it here.
+            unstable_fields: Dotted ``table.field`` paths the pack declared as
+                unstable (auto-ids, timestamps, random). Both sides of one
+                comparison must pass the same list, and the caller that
+                derived ``expected_hash`` from a stored digest also
+                pre-applied this filter on that side.
 
         Returns:
             (score 0 or 1, reason)
@@ -395,6 +451,7 @@ class StateChecker:
                 state,
                 numeric_string_fields=numeric_string_fields,
                 auto_mask_clock_columns=auto_mask_clock_columns,
+                unstable_fields=unstable_fields,
             )
 
             if actual_hash == expected_hash:
@@ -521,6 +578,7 @@ class StateChecker:
         numeric_string_fields: list[str] | None = None,
         compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
         auto_mask_clock_columns: bool = False,
+        unstable_fields: list[str] | None = None,
     ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
@@ -543,6 +601,10 @@ class StateChecker:
                 (``updated_at``, ``last_modified_date``, ...) from every row on
                 both sides before hashing. Composes with pack-declared
                 ``unstable_fields``; see :data:`tolokaforge.core.hash.AUTO_MASKED_CLOCK_COLUMNS`.
+            unstable_fields: Dotted ``table.field`` paths the pack declared as
+                unstable (auto-generated ids, timestamps, random values).
+                Applied to both ``db_state`` and the replayed expected state
+                so the mask is symmetric across the comparison.
 
         Returns:
             (score 0 or 1, reason, diff_result dict or None, replay record). The verdict
@@ -583,11 +645,13 @@ class StateChecker:
             expected_state_folded,
             numeric_string_fields=numeric_string_fields,
             auto_mask_clock_columns=auto_mask_clock_columns,
+            unstable_fields=unstable_fields,
         )
         actual_hash = state_digest(
             db_state_folded,
             numeric_string_fields=numeric_string_fields,
             auto_mask_clock_columns=auto_mask_clock_columns,
+            unstable_fields=unstable_fields,
         )
 
         # Calculate diff if states don't match

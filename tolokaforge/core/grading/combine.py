@@ -42,6 +42,7 @@ from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, componen
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
     extract_db_state,
+    load_task_unstable_fields,
     state_digest,
 )
 from tolokaforge.core.grading.state_composition import (
@@ -376,6 +377,7 @@ class GradingEngine:
             return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
+        unstable_fields = load_task_unstable_fields(self.task_dir)
         score: float | None
         diff_result: dict[str, Any] | None = None
         replay: GoldenReplayRecord | None = None
@@ -407,11 +409,13 @@ class GradingEngine:
                     expected_initial,
                     numeric_string_fields=checks.numeric_string_fields,
                     auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                    unstable_fields=unstable_fields,
                 ),
                 numeric_string_fields=checks.numeric_string_fields,
                 auto_mask_clock_columns=checks.auto_mask_clock_columns,
                 compare_columns=checks.compare_columns,
                 expected_state_for_pipeline=initial_state,
+                unstable_fields=unstable_fields,
             )
             reasons = [reason]
         elif not hash_config.golden_actions:
@@ -437,6 +441,7 @@ class GradingEngine:
                     numeric_string_fields=checks.numeric_string_fields,
                     compare_columns=checks.compare_columns,
                     auto_mask_clock_columns=checks.auto_mask_clock_columns,
+                    unstable_fields=unstable_fields,
                 )
             )
             reasons = [reason]
