@@ -700,9 +700,30 @@ _RULES: tuple[_Rule, ...] = (
         channel="advisories",
         message="severity: gate with default on_missing: fail",
     ),
+    _Rule(
+        label="a_graded_criterion_with_no_expected_anchor_is_a_hint",
+        task=_HELPDESK,
+        grading={
+            "llm_judge": {
+                "model": "claude-sonnet-5",
+                "rubric": {
+                    "criteria": [
+                        {
+                            "id": "clarity",
+                            "description": "the answer reads clearly",
+                            "kind": "graded",
+                        }
+                    ]
+                },
+            }
+        },
+        checker="_check_graded_criteria_have_expected_anchor",
+        channel="hints",
+        message="kind: graded with no 'expected:' anchor",
+    ),
 )
 
-_FINDING_CHANNELS = ("errors", "advisories")
+_FINDING_CHANNELS = ("errors", "advisories", "hints")
 
 
 def _texts(report: AuthoringReport, channel: str) -> list[str]:
@@ -783,7 +804,7 @@ def _recording(name: str, answered: set[str]):
 
     def wrapper(*args: Any, **kwargs: Any) -> AuthoringReport:
         report = original(*args, **kwargs)
-        if report.errors or report.advisories or report.unchecked:
+        if report.errors or report.advisories or report.unchecked or report.hints:
             answered.add(name)
         return report
 
@@ -4220,3 +4241,79 @@ def test_the_types_no_reference_can_correlate_with_text_are_read_off_the_table()
     never_text = frozenset({"integer", "number", "boolean", "array", "object"})
 
     assert never_text == _UNCORRELATABLE_JSON_TYPES
+
+
+# ---------------------------------------------------------------------------
+# hints: kind: graded without an ``expected:`` anchor is the author's nudge
+# ---------------------------------------------------------------------------
+
+
+def _rubric_grading(*criteria: dict[str, Any]) -> dict[str, Any]:
+    """A grading block carrying one ``llm_judge`` rubric with the given criteria."""
+    return {
+        "llm_judge": {
+            "model": "claude-sonnet-5",
+            "rubric": {"criteria": list(criteria)},
+        }
+    }
+
+
+def test_a_graded_criterion_without_expected_is_a_hint() -> None:
+    """A ``kind: graded`` criterion with no ``expected:`` field reports one hint.
+
+    The hint names the criterion by its dotted address, cites the anchoring
+    guideline, and lands in :attr:`AuthoringReport.hints` — never in ``errors``
+    or ``advisories``, because a missing anchor is a judgement call the engine
+    cannot decide for the author and the pack still grades correctly.
+    """
+    grading = _rubric_grading(
+        {"id": "clarity", "description": "the answer reads clearly", "kind": "graded"}
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.hints] == ["llm_judge.rubric.criteria.clarity"]
+    assert "kind: graded with no 'expected:' anchor" in report.hints[0].message
+    assert "docs/GRADING.md" in report.hints[0].message
+    assert report.errors == ()
+    assert report.advisories == ()
+
+
+def test_a_graded_criterion_with_expected_is_silent() -> None:
+    """An ``expected:`` field on a ``graded`` criterion silences the hint.
+
+    Same rubric shape as the fired case, with an anchor added — the rule reads
+    the presence of a truthy ``expected`` and reports nothing.
+    """
+    grading = _rubric_grading(
+        {
+            "id": "clarity",
+            "description": "the answer reads clearly",
+            "kind": "graded",
+            "expected": "A short answer in one paragraph, plain English, no jargon.",
+        }
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert report.hints == ()
+    assert report.errors == ()
+    assert report.advisories == ()
+
+
+def test_a_binary_criterion_without_expected_is_silent() -> None:
+    """A ``kind: binary`` criterion is out of scope for the rule regardless of ``expected``.
+
+    Binary criteria are met/not-met with no gradient — the pass/fail semantics
+    are self-anchored and the AutoRubric-style variance the rule guards against
+    does not apply.
+    """
+    grading = _rubric_grading(
+        {"id": "returns_json", "description": "the answer is valid JSON", "kind": "binary"}
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert report.hints == ()
+    assert report.errors == ()
+    assert report.advisories == ()
