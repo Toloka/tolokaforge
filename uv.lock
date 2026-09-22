@@ -382,14 +382,21 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+otel = [
+    { name = "tolokaforge-langfuse" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0.0,<8.2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "tolokaforge", editable = "." },
+    { name = "tolokaforge-langfuse", marker = "extra == 'otel'", editable = "tolokaforge_langfuse" },
     { name = "typer", specifier = ">=0.12.5,<0.13" },
 ]
+provides-extras = ["otel"]
 
 [[package]]
 name = "backports-asyncio-runner"
