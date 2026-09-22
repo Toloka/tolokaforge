@@ -20,6 +20,10 @@ SHARED = (
     "tolokaforge_langfuse.otlp_spans",
     # the single-attempt transport shared by the v4 producers
     "tolokaforge_langfuse.otlp_transport",
+    # the outbound sentinel and the coding-agent transcript path: read, gate and project agent
+    # output, which an offline uploader does with no engine installed at all
+    "tolokaforge_langfuse.safety",
+    "tolokaforge_langfuse.transcripts",
 )
 
 PROBE = """
