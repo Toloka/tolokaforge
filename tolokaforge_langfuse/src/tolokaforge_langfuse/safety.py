@@ -13,12 +13,15 @@ keys. So every payload a producer sends, ingestion events and media alike, is sc
   (``pk-lf-``, ``sk-lf-``, ``sk-or-``, ``sk-ant-``, ``ghp_``, ``github_pat_``, ``xox?-``,
   ``AKIA``, ``AIza``, ``glpat-``), JWTs, and secret-named JSON / YAML fields holding a long
   opaque value;
-- **file-type allowlist** for attachments (yaml, json, md, log, txt, and gzip of those).
 
 On a hit the bytes are **never rewritten** (an attachment must stay byte-exact): the caller skips
 the file and names it in its receipt, or stops; a hit in the structured events blocks the send
 outright. Findings name the rule and a masked excerpt (first four characters, never the tail),
 never the value.
+
+What an ATTACHMENT may be is a different question and lives with the attachments:
+:func:`tolokaforge_langfuse.attachments.allowed_attachment`. Two allowlists under one name in
+one package is how they drift apart.
 
 Engine-free by construction, so both producers ship the same gate: the live path's automation
 uploader and the offline uploader scan with one implementation and one set of fixtures.
@@ -28,7 +31,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,9 +41,6 @@ SECRET_NAME = re.compile(
 # names that look secret-like but never hold a secret value
 _NOT_SECRET_NAMES = re.compile(r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_NAME$|_HEADER$)", re.I)
 MIN_SECRET_VALUE = 8
-
-ALLOWED_SUFFIXES = frozenset({".yaml", ".yml", ".json", ".md", ".log", ".txt"})
-ALLOWED_COMPRESSED = frozenset({".gz"})
 
 SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
@@ -167,24 +167,3 @@ def _mask(value: bytes) -> str:
     text = value.decode("utf-8", "replace").strip()
     head = text[:4] if len(text) > 12 else ""
     return f"{head}**** ({len(text)} chars)"
-
-
-def allowed_attachment(name: str) -> bool:
-    """The attachment file-type allowlist: yaml, json, md, log, txt, and gzip of those."""
-    path = Path(name)
-    suffixes = [s.lower() for s in path.suffixes[-2:]]
-    if not suffixes:
-        return False
-    if suffixes[-1] in ALLOWED_COMPRESSED:
-        return len(suffixes) == 2 and suffixes[0] in ALLOWED_SUFFIXES
-    return suffixes[-1] in ALLOWED_SUFFIXES
-
-
-def scan_all(gate: SafetyGate, payloads: Iterable[tuple[str, bytes]]) -> dict[str, list[Finding]]:
-    """Scan several named payloads; returns the findings per name (clean names absent)."""
-    out: dict[str, list[Finding]] = {}
-    for name, payload in payloads:
-        findings = gate.scan(payload, what=name)
-        if findings:
-            out[name] = findings
-    return out
