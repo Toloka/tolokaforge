@@ -1959,6 +1959,7 @@ class Rubric(BaseModel):
     # build_submit_report_tool must keep these in sync.
     _RESERVED_OVERALL_KEY = "reasons"
     _JUSTIFICATION_SUFFIX = "_justification"
+    _INTERPRETATION_SUFFIX = "_interpretation"
     _SAFE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
 
     @model_validator(mode="after")
@@ -2002,14 +2003,27 @@ class Rubric(BaseModel):
                     f"'{self._JUSTIFICATION_SUFFIX}' — that suffix is reserved for the "
                     f"per-criterion justification fields in the submit_report schema."
                 )
+            if cid.endswith(self._INTERPRETATION_SUFFIX):
+                raise ValueError(
+                    f"Rubric criterion id {cid!r} must not end with "
+                    f"'{self._INTERPRETATION_SUFFIX}' — that suffix is reserved for the "
+                    f"per-criterion interpretation fields in the submit_report schema "
+                    f"(emitted for graded criteria without an 'expected:' anchor)."
+                )
 
         id_set = set(ids)
         for cid in ids:
-            derived = f"{cid}{self._JUSTIFICATION_SUFFIX}"
-            if derived in id_set:
+            derived_justification = f"{cid}{self._JUSTIFICATION_SUFFIX}"
+            if derived_justification in id_set:
                 raise ValueError(
-                    f"Rubric criterion id {derived!r} collides with the derived "
-                    f"justification key for criterion {cid!r}. Rename one of them."
+                    f"Rubric criterion id {derived_justification!r} collides with the "
+                    f"derived justification key for criterion {cid!r}. Rename one of them."
+                )
+            derived_interpretation = f"{cid}{self._INTERPRETATION_SUFFIX}"
+            if derived_interpretation in id_set:
+                raise ValueError(
+                    f"Rubric criterion id {derived_interpretation!r} collides with the "
+                    f"derived interpretation key for criterion {cid!r}. Rename one of them."
                 )
 
         return self

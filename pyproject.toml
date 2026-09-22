@@ -253,6 +253,7 @@ test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGra
 # register alternative kinds (agentic, downstream-specific) alongside without
 # a framework PR. See :mod:`tolokaforge.core.grading.judge_kinds`.
 [project.entry-points."tolokaforge.judge_kinds"]
+auto_anchored_rubric = "tolokaforge.core.grading.judge_kinds.auto_anchored:AutoAnchoredRubricJudgeKind"
 chunked_rubric = "tolokaforge.core.grading.judge_kinds.chunked:ChunkedRubricJudgeKind"
 jury_rubric = "tolokaforge.core.grading.judge_kinds.jury:JuryRubricJudgeKind"
 per_criterion_rubric = "tolokaforge.core.grading.judge_kinds.per_criterion:PerCriterionRubricJudgeKind"

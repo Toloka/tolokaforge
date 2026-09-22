@@ -322,6 +322,13 @@ def _build_rubric_brief(rubric: Rubric) -> str:
     The per-criterion pass-conditions are *also* inlined in the ``submit_report``
     schema (see ``build_submit_report_tool``); this brief gives the judge the
     holistic picture (overall reference + the list it must score) up front.
+
+    Graded criteria without an author-written ``expected:`` anchor also get a
+    schema-level ``<id>_interpretation`` field the judge must fill BEFORE the
+    justification — see ``build_submit_report_tool``. That field commits the
+    judge to a specific reading of what "met" looks like for the criterion
+    before the reasoning runs, absorbing the between-sample interpretation
+    drift that per-sample voting alone does not fix.
     """
     parts: list[str] = []
     if rubric.reference:

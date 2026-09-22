@@ -13,7 +13,7 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-Five kinds ship in the reference distribution: `single_shot_rubric`
+Six kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
 `LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
 invocation per chunk of the rubric's criteria, optionally grouped by
@@ -26,10 +26,13 @@ self-variance — see § Voted kind), `jury_rubric` (wraps any
 registered kind and dispatches to a cross-family panel of N different
 judge models instead of K samples of one model, folding the
 per-criterion verdicts through the same robust aggregator — see § Jury
-kind), and `per_criterion_rubric` (a thin specialisation of
+kind), `per_criterion_rubric` (a thin specialisation of
 `chunked_rubric` that hard-pins `chunk_size=1` — one `LLMJudge` call
 per criterion, the strictest isolation of them all — see § Per-criterion
-kind). Downstream packages register further alternatives (e.g.
+kind), and `auto_anchored_rubric` (wraps any registered kind; runs one
+cached warm-up judge call per unique rubric to auto-generate
+`expected:` anchors for graded criteria the author left unanchored,
+then delegates to the wrapped kind — see § Auto-anchored kind). Downstream packages register further alternatives (e.g.
 agentic) alongside without a framework PR.
 
 The `JudgeKind` Protocol and registry seam decision is recorded in
@@ -592,6 +595,64 @@ same K× cost. Every fail-loud guarantee `chunked_rubric` carries
 (per-chunk COMPLETED status, missing-verdict detection, whole-trial
 ERRORED with `chunk_boundaries` populated for offline retry) applies
 here too — the underlying merge path is the same.
+
+## Auto-anchored kind
+
+`auto_anchored_rubric` is a wrapper kind that closes the "fuzzy criterion
+wording" drift class without pushing work onto rubric authors. Before
+delegating to its wrapped kind (default `single_shot_rubric`, configurable
+via `kind_config.wrapped_kind`), it runs a **single warm-up judge call per
+unique (rubric, judge_model) tuple** that asks the judge to produce a
+one-sentence anchor for each `kind: graded` criterion the author left
+with `expected: None`. Those anchors are cached in-process, folded into a
+synthetic `Rubric` (author-written `expected:` anchors pass through
+unchanged), and the wrapped kind is dispatched with that anchored rubric.
+
+Motivation: on the M50 A/B (2026-09-21) `voted_rubric` absorbed sampling-
+noise flapping on a 30-criterion subjective rubric but `addressed_to_user`
+stayed κ=0 even under voted+chunked. The criterion's description alone
+under-specifies "met", so the judge inferred a different anchor on each
+sample. `auto_anchored_rubric` commits every trial in the flight to ONE
+shared anchor so subsequent grades score against the same standard.
+
+Opt-in via:
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: auto_anchored_rubric
+    kind_config:
+      wrapped_kind: single_shot_rubric   # or voted_rubric / chunked_rubric / …
+```
+
+Composability — every M50 kind wraps cleanly underneath:
+
+- `auto_anchored_rubric wrapping voted_rubric` — auto-anchors + K-sample
+  noise absorption. Full stack for high-stakes subjective grading.
+- `auto_anchored_rubric wrapping chunked_rubric` — auto-anchors + chunk
+  coverage for large rubrics.
+- `auto_anchored_rubric wrapping per_criterion_rubric` — auto-anchors +
+  strictest isolation.
+
+Fail-loud contract: any warm-up call that returns non-JSON, is missing an
+anchor for one of the unanchored criterion ids, or hands back a
+non-string / empty anchor raises `PerRubricAnchorGeneratorError` before
+any wrapped-kind dispatch. Author-written anchors pass through unchanged
+so a mixed rubric (some anchored, some auto-anchored) grades against a
+consistent mix of author and judge-authored `expected:` fields.
+
+Audit trail: every auto-anchor lands in `JudgeResult.reasons` prefixed
+with `auto_anchored_rubric warm-up anchors:` so a reader can see what
+the harness told the judge "met" looks like. The auto-anchor text also
+lands in each criterion's `expected:` inside the wrapped-kind's dispatch,
+prefixed with `auto-anchor: `, so downstream schema dumps show the anchor
+came from the harness rather than the author.
+
+Cost: **+1 judge call per unique (rubric, judge_model)** — amortised
+across every trial in the process that uses the same rubric + judge.
+On a 50-trial flight sharing one rubric that is 1 extra call spread over
+50 grades: effectively free. The cache is in-process only (no disk
+persistence at v1); a follow-up may add per-rubric anchor persistence.
 
 ## Grade-injection defenses
 

@@ -38,7 +38,7 @@ dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
 [GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
-Five built-ins ship: `single_shot_rubric` (the shipping reference impl
+Six built-ins ship: `single_shot_rubric` (the shipping reference impl
 wrapping today's `LLMJudge` in one shot), `chunked_rubric` (one
 `LLMJudge` invocation per chunk of the rubric's criteria, optionally
 grouped by `Criterion.chunk_group` — the alternative kind for large
@@ -48,11 +48,16 @@ per-criterion verdicts robustly to reduce judge-model self-variance),
 `jury_rubric` (wraps any registered kind and dispatches to N
 different judge models in one cross-family panel, aggregating the
 per-criterion verdicts robustly — see
-[JUDGE_KINDS.md § Jury kind](JUDGE_KINDS.md#jury-kind)), and
+[JUDGE_KINDS.md § Jury kind](JUDGE_KINDS.md#jury-kind)),
 `per_criterion_rubric` (a specialisation of `chunked_rubric` that
 hard-pins `chunk_size=1` — one `LLMJudge` call per criterion, the
 strictest isolation; see
-[JUDGE_KINDS.md § Per-criterion kind](JUDGE_KINDS.md#per-criterion-kind)). Per-kind options ride on
+[JUDGE_KINDS.md § Per-criterion kind](JUDGE_KINDS.md#per-criterion-kind)),
+and `auto_anchored_rubric` (wraps any registered kind; runs one cached
+warm-up judge call per unique rubric to auto-generate `expected:`
+anchors for graded criteria the author left unanchored — the
+author-free way to close the fuzzy-wording drift class; see
+[JUDGE_KINDS.md § Auto-anchored kind](JUDGE_KINDS.md#auto-anchored-kind)). Per-kind options ride on
 `task.grading.llm_judge.kind_config` — an opaque `dict[str, Any]` the
 framework never inspects; each kind validates its own slice inside
 `evaluate`. Unknown `judge_kind` names are refused at parse time with a

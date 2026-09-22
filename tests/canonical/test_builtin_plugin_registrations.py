@@ -35,6 +35,7 @@ from tolokaforge.core.grading.grading_method import (
     TestExecutionGradingMethod,
 )
 from tolokaforge.core.grading.judge_kinds import (
+    AutoAnchoredRubricJudgeKind,
     ChunkedRubricJudgeKind,
     JuryRubricJudgeKind,
     PerCriterionRubricJudgeKind,
@@ -221,6 +222,7 @@ def test_grader_kind_names_resolve_to_their_class(name: str, expected_cls: type)
 @pytest.mark.parametrize(
     ("name", "expected_cls"),
     [
+        ("auto_anchored_rubric", AutoAnchoredRubricJudgeKind),
         ("chunked_rubric", ChunkedRubricJudgeKind),
         ("jury_rubric", JuryRubricJudgeKind),
         ("per_criterion_rubric", PerCriterionRubricJudgeKind),
@@ -254,6 +256,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_grading_methods() == ["composite", "test_execution"]
     assert available_grader_kinds() == ["composite", "test_execution"]
     assert available_judge_kinds() == [
+        "auto_anchored_rubric",
         "chunked_rubric",
         "jury_rubric",
         "per_criterion_rubric",
@@ -296,6 +299,7 @@ def test_raw_entry_point_probe_lists_grader_kinds() -> None:
 def test_raw_entry_point_probe_lists_judge_kinds() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=JUDGE_KINDS_GROUP))
     assert names == [
+        "auto_anchored_rubric",
         "chunked_rubric",
         "jury_rubric",
         "per_criterion_rubric",
