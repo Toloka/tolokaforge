@@ -133,6 +133,20 @@ AN_ADAPTER_SUPPLIED_HASH = {
     "state_checks": {"hash": {"enabled": True, "weight": 1.0}},
 }
 
+# A rubric with one ``kind: graded`` criterion whose ``expected:`` is unset —
+# the shape the parse-time hint fires on. Weighted so ``llm_judge`` is the only
+# configured component and the gate's weight rules do not raise on the side.
+AN_UNANCHORED_GRADED_CRITERION: dict[str, Any] = {
+    "combine": {"weights": {"llm_judge": 1.0}},
+    "llm_judge": {
+        "rubric": {
+            "criteria": [
+                {"id": "clarity", "description": "the answer reads clearly", "kind": "graded"}
+            ]
+        }
+    },
+}
+
 _MCP_TOOLS_FIXTURE = [
     {
         "name": "add_note",
@@ -733,6 +747,32 @@ def test_what_the_gate_could_not_check_is_logged_beside_the_task(
         ("TASK-UNCHECKABLE", "trace_checks.the_agent_called_the_tool.present.match.args.json.q")
     ]
     assert "first segment only" in uncheckable[0].reason
+    assert len(conductor.call_log.runs) == 1
+
+
+def test_a_graded_criterion_without_an_expected_anchor_is_logged_as_a_hint(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The pre-flight surfaces the parse-time hint beside the task and grades on.
+
+    A ``kind: graded`` criterion missing ``expected:`` cannot fail the pre-flight
+    (``AuthoringReport.fatal`` never returns hints at any severity), so the run
+    proceeds and the conductor executes one trial. The pack owner sees the nudge
+    in the run's log even if they never invoked ``tolokaforge validate``.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-UNANCHORED-GRADED", AN_UNANCHORED_GRADED_CRITERION)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    hinted = [record for record in caplog.records if "authoring hint" in record.getMessage()]
+    assert [(record.task_id, record.where) for record in hinted] == [
+        ("TASK-UNANCHORED-GRADED", "llm_judge.rubric.criteria.clarity")
+    ]
+    assert "kind: graded with no 'expected:' anchor" in hinted[0].hint_message
+    assert "docs/GRADING.md" in hinted[0].hint_message
     assert len(conductor.call_log.runs) == 1
 
 

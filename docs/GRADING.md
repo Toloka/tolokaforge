@@ -38,11 +38,26 @@ dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
 [GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
-Two built-ins ship: `single_shot_rubric` (the shipping reference impl
-wrapping today's `LLMJudge` in one shot) and `chunked_rubric` (one
-`LLMJudge` invocation per fixed-K chunk — the alternative kind for large
-rubrics where a single `submit_report` would truncate; see
-[JUDGE_KINDS.md](JUDGE_KINDS.md)). Per-kind options ride on
+Six built-ins ship: `single_shot_rubric` (the shipping reference impl
+wrapping today's `LLMJudge` in one shot), `chunked_rubric` (one
+`LLMJudge` invocation per chunk of the rubric's criteria, optionally
+grouped by `Criterion.chunk_group` — the alternative kind for large
+rubrics where a single `submit_report` would truncate), `voted_rubric`
+(wraps any registered kind and samples it K times, aggregating the
+per-criterion verdicts robustly to reduce judge-model self-variance),
+`jury_rubric` (wraps any registered kind and dispatches to N
+different judge models in one cross-family panel, aggregating the
+per-criterion verdicts robustly — see
+[JUDGE_KINDS.md § Jury kind](JUDGE_KINDS.md#jury-kind)),
+`per_criterion_rubric` (a specialisation of `chunked_rubric` that
+hard-pins `chunk_size=1` — one `LLMJudge` call per criterion, the
+strictest isolation; see
+[JUDGE_KINDS.md § Per-criterion kind](JUDGE_KINDS.md#per-criterion-kind)),
+and `auto_anchored_rubric` (wraps any registered kind; runs one cached
+warm-up judge call per unique rubric to auto-generate `expected:`
+anchors for graded criteria the author left unanchored — the
+author-free way to close the fuzzy-wording drift class; see
+[JUDGE_KINDS.md § Auto-anchored kind](JUDGE_KINDS.md#auto-anchored-kind)). Per-kind options ride on
 `task.grading.llm_judge.kind_config` — an opaque `dict[str, Any]` the
 framework never inspects; each kind validates its own slice inside
 `evaluate`. Unknown `judge_kind` names are refused at parse time with a
@@ -3702,7 +3717,61 @@ grading:
           description: "Reply is polite and professional"
           kind: graded
           weight: 0.5
+          chunk_group: tone      # optional; chunked_rubric groups same-name criteria into one chunk (see JUDGE_KINDS.md)
 ```
+
+### Rubric authoring: anchor subjective criteria
+
+`kind: graded` asks the judge for a 0–1 gradient; `kind: binary` asks for
+met/not-met. Graded criteria without an author-written `expected:` are the
+highest-self-variance rubric cell tolokaforge ships — on rubrics whose
+subjective criteria carry only a `description:`, we observe κ near zero
+between judge runs on those criteria even when unrelated binary criteria
+on the same run score κ near one. AutoRubric (Rao & Callison-Burch,
+*Autorubric: A Unifying Framework for Rubric-Based LLM Evaluation on
+Non-Verifiable Tasks*, arXiv:2603.00077, §4.3) reports the same shape on
+the CHARM-100 benchmark: a binary criterion (factual accuracy) reached
+87.0% exact-agreement between judges, while four 5-level ordinal criteria
+reached only 38–58% exact-agreement (adjacent-agreement stayed 85–93%,
+i.e. the judge is usually within one step of ground truth but clusters
+toward scale extremes). The practical lesson is the same either way: a
+subjective criterion the author does not anchor leaves the judge to infer
+what "correct" looks like from `description:` alone, and that inference
+is where the flapping comes from.
+
+**Rule.** For every `kind: graded` criterion, write an `expected:` field
+naming what a correct answer looks like:
+
+```yaml
+# Before — the judge has to infer what "clear" means from `description` alone.
+- id: clarity
+  description: "the reply reads clearly"
+  kind: graded
+  weight: 0.5
+
+# After — the anchor pins the judge to the shape the author wants scored.
+- id: clarity
+  description: "the reply reads clearly"
+  expected: "A single paragraph, plain English, no jargon, ending with an actionable next step."
+  kind: graded
+  weight: 0.5
+```
+
+**Escape hatch.** If the criterion is truly self-anchored — met/not-met
+with no gradient, such as "the reply quotes the correct refund amount" —
+lower it to `kind: binary` and drop the anchor. Binary carries its
+anchor in the pass/fail semantics; a graded scale on the same criterion
+would ask the judge to invent gradations that were never part of the
+author's intent.
+
+**Parse-time nudge.** `tolokaforge validate` prints a yellow `⚠` line for
+every `kind: graded` criterion with no `expected:` field, and the run
+pre-flight logs the same nudge at WARNING level. The nudge never fails
+validation and never affects the run's exit code — it is a hint, not a
+gate. When anchoring alone is not enough to tame variance on a subjective
+criterion, the [JudgeKind guide](JUDGE_KINDS.md) covers the cost picture
+for the variance-reduction kinds (`voted_rubric`, `chunked_rubric`,
+`jury_rubric`) that absorb sampling-noise flapping across judge samples.
 
 ### How the judge works
 

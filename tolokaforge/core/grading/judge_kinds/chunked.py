@@ -1,10 +1,18 @@
 """Chunked-rubric impl of :class:`JudgeKind` — one :class:`LLMJudge` per chunk.
 
 Registered under the name ``chunked_rubric`` in the
-``tolokaforge.judge_kinds`` entry-point group. Splits the rubric's criteria
-into fixed-size contiguous chunks of ``chunk_size`` (default 5), runs one
+``tolokaforge.judge_kinds`` entry-point group. Partitions the rubric's
+criteria into chunks of at most ``chunk_size`` — first grouping criteria
+that share a ``Criterion.chunk_group`` name into the same chunk (or
+consecutive chunks when a group's size exceeds ``chunk_size``), then
+packing every other criterion (and every complete group block that
+fits) in first-appearance order. When ``kind_config`` omits
+``chunk_size``, the effective size is derived from
+``judge_model_config.max_tokens`` via :func:`_adaptive_chunk_size` so a
+large-context judge degenerates to a single call when the whole rubric
+fits in its output-token headroom. Runs one
 :class:`LLMJudge` per chunk against a scoped sub-rubric (sharing the
-original ``reference``), and merges the per-chunk
+original ``reference``) and merges the per-chunk
 :class:`~tolokaforge.runner.models.CriterionResult` maps above
 :class:`~tolokaforge.core.grading.judge._SubmitReportTermination` before
 folding them through :func:`aggregate_rubric` on the ORIGINAL full rubric.
@@ -28,12 +36,18 @@ bundle persistence and offline replay can retry only the failing chunk.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge import LLMJudge
-from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_kinds._shared import (
+    CONSTRUCTION_FIELDS,
+    assert_construction_fields_match,
+    member_failure_reason,
+    sum_usage,
+)
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.rubric import aggregate_rubric
 from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
 
@@ -46,28 +60,27 @@ if TYPE_CHECKING:
     from tolokaforge.tools.registry import Tool
 
 __all__ = [
-    "DEFAULT_CHUNK_SIZE",
+    "FALLBACK_MAX_TOKENS",
+    "HEADROOM_FRACTION",
+    "TOKENS_PER_CRITERION_ESTIMATE",
     "ChunkedRubricJudgeKind",
 ]
 
-#: Default number of criteria per chunk when ``kind_config`` omits ``chunk_size``.
-DEFAULT_CHUNK_SIZE = 5
+#: Per-criterion verdict output-token estimate the adaptive heuristic uses.
+TOKENS_PER_CRITERION_ESTIMATE = 200
+
+#: Fraction of ``ModelConfig.max_tokens`` the adaptive heuristic packs criteria
+#: into. The complement (40 %) is reserved for the judge's reasoning tokens and
+#: a retry buffer.
+HEADROOM_FRACTION = 0.6
+
+#: Conservative stand-in when ``ModelConfig.max_tokens`` is ``None`` (unset).
+#: Combined with the defaults above this yields six criteria per chunk on the
+#: fallback path.
+FALLBACK_MAX_TOKENS = 2048
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
 _ACCEPTED_KIND_CONFIG_KEYS = frozenset({"chunk_size"})
-
-#: Per-chunk fields that MUST be constant across chunks (pure functions of the
-#: ``evaluate`` inputs). A mismatch is a defensive lock catching a future kind
-#: refactor that accidentally per-chunks one of these inputs.
-_CONSTRUCTION_FIELDS = (
-    "kb_tools_offered",
-    "kb_tools_withheld",
-    "knowledge_search_disabled",
-    "custom_system_prompt",
-    "include_agent_system_prompt",
-    "read_tools_offered",
-    "state_diff",
-)
 
 
 class ChunkedRubricJudgeKind:
@@ -94,11 +107,8 @@ class ChunkedRubricJudgeKind:
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
-        chunk_size = _resolve_chunk_size(kind_config)
-        chunks: list[list[Criterion]] = [
-            list(rubric.criteria[i : i + chunk_size])
-            for i in range(0, len(rubric.criteria), chunk_size)
-        ]
+        chunk_size = _resolve_chunk_size(kind_config, judge_model_config)
+        chunks = _chunk_boundaries(rubric.criteria, chunk_size)
         chunk_boundaries: tuple[tuple[str, ...], ...] = tuple(
             tuple(c.id for c in chunk) for chunk in chunks
         )
@@ -125,7 +135,7 @@ class ChunkedRubricJudgeKind:
                 state_diff=state_diff,
             )
             chunk_results.append(chunk_result)
-            failure = _chunk_failure_reason(chunk_result, chunk_boundaries[chunk_index])
+            failure = member_failure_reason(chunk_result, chunk_boundaries[chunk_index])
             if failure is not None:
                 return _errored_trial(
                     chunk_results=chunk_results,
@@ -142,14 +152,20 @@ class ChunkedRubricJudgeKind:
         )
 
 
-def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
+def _resolve_chunk_size(
+    kind_config: Mapping[str, Any] | None,
+    judge_model_config: ModelConfig,
+) -> int:
     """Validate ``kind_config`` and return the effective chunk size.
 
+    When ``kind_config`` omits ``chunk_size`` (or is itself ``None``), the size
+    is derived from the judge model's output-token headroom via
+    :func:`_adaptive_chunk_size`. An explicit ``chunk_size`` always wins.
     Raises :class:`ValueError` on any unknown key or a non-positive
     ``chunk_size`` before any judge dispatch runs.
     """
     if kind_config is None:
-        return DEFAULT_CHUNK_SIZE
+        return _adaptive_chunk_size(judge_model_config)
     unknown = set(kind_config) - _ACCEPTED_KIND_CONFIG_KEYS
     if unknown:
         raise ValueError(
@@ -158,7 +174,7 @@ def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
         )
     raw = kind_config.get("chunk_size")
     if raw is None:
-        return DEFAULT_CHUNK_SIZE
+        return _adaptive_chunk_size(judge_model_config)
     if not isinstance(raw, int) or isinstance(raw, bool):
         raise ValueError(
             f"chunked_rubric chunk_size must be an int; got {type(raw).__name__} {raw!r}."
@@ -168,15 +184,71 @@ def _resolve_chunk_size(kind_config: Mapping[str, Any] | None) -> int:
     return raw
 
 
-def _chunk_failure_reason(chunk_result: JudgeResult, chunk_ids: tuple[str, ...]) -> str | None:
-    """Return a failure reason string if the chunk did not COMPLETE cleanly."""
-    if chunk_result.status is not JudgeStatus.COMPLETED:
-        return f"status={chunk_result.status.value}: {chunk_result.reasons}"
-    covered = {cr.id for cr in chunk_result.criterion_results}
-    missing = [cid for cid in chunk_ids if cid not in covered]
-    if missing:
-        return f"missing verdicts for criterion ids {missing}: {chunk_result.reasons}"
-    return None
+def _adaptive_chunk_size(judge_model_config: ModelConfig) -> int:
+    """Derive ``chunk_size`` from the judge model's output-token headroom.
+
+    Packs criteria into :data:`HEADROOM_FRACTION` of the model's
+    ``max_tokens`` at :data:`TOKENS_PER_CRITERION_ESTIMATE` tokens per
+    criterion. Falls back to :data:`FALLBACK_MAX_TOKENS` when ``max_tokens``
+    is unset. The ``max(1, ...)`` floor guarantees a legal partition even
+    under pathological configs (e.g. a user setting ``max_tokens=100``).
+    """
+    max_tokens = judge_model_config.max_tokens
+    if max_tokens is None:
+        max_tokens = FALLBACK_MAX_TOKENS
+    return max(1, int((max_tokens * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE))
+
+
+def _chunk_boundaries(criteria: Sequence[Criterion], chunk_size: int) -> list[list[Criterion]]:
+    """Partition ``criteria`` into chunks of at most ``chunk_size`` criteria.
+
+    Two-phase, deterministic, no I/O. First groups criteria sharing a
+    ``Criterion.chunk_group`` name into one block anchored at that name's
+    first-occurrence position; criteria with ``chunk_group is None`` are
+    each their own singleton block. Then packs the ordered blocks into
+    chunks: a block that fits in the current chunk's remaining room is
+    appended; a block that does not fit but is itself ``<= chunk_size``
+    flushes the current chunk and starts a new one with that block; a
+    block whose own size exceeds ``chunk_size`` flushes the current
+    chunk, then is sliced on its own into consecutive ``chunk_size``
+    runs (never combined with another block).
+
+    When no criterion declares ``chunk_group``, every block is a
+    singleton in original order, packing degenerates to plain fixed-K
+    runs, and the output is identical to
+    ``criteria[i : i + chunk_size]`` slicing — the byte-parity anchor
+    the κ-parity gate depends on.
+    """
+    blocks: list[list[Criterion]] = []
+    group_block_index: dict[str, int] = {}
+    for criterion in criteria:
+        if criterion.chunk_group is None:
+            blocks.append([criterion])
+            continue
+        existing_index = group_block_index.get(criterion.chunk_group)
+        if existing_index is None:
+            group_block_index[criterion.chunk_group] = len(blocks)
+            blocks.append([criterion])
+        else:
+            blocks[existing_index].append(criterion)
+
+    chunks: list[list[Criterion]] = []
+    current: list[Criterion] = []
+    for block in blocks:
+        if len(block) > chunk_size:
+            if current:
+                chunks.append(current)
+                current = []
+            for start in range(0, len(block), chunk_size):
+                chunks.append(list(block[start : start + chunk_size]))
+            continue
+        if len(current) + len(block) > chunk_size:
+            chunks.append(current)
+            current = []
+        current.extend(block)
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _errored_trial(
@@ -190,13 +262,13 @@ def _errored_trial(
     """Compose the whole-trial ERRORED :class:`JudgeResult` for a chunk failure.
 
     ``chunk_boundaries`` carries every boundary attempted (including chunks
-    that never ran) so #1569 can persist them and offline replay can retry
-    only the failing chunk. Usage is summed across every chunk that dispatched
-    so the errored trial still records real cost.
+    that never ran) so the persistence layer can record them and offline
+    replay can retry only the failing chunk. Usage is summed across every
+    chunk that dispatched so the errored trial still records real cost.
     """
     return JudgeResult(
         status=JudgeStatus.ERRORED,
-        usage=_sum_usage(chunk_results),
+        usage=sum_usage(chunk_results),
         reasons=(
             f"chunked_rubric failed on chunk {failing_index} "
             f"(criterion ids {list(failing_ids)}): {reason}"
@@ -217,21 +289,12 @@ def _merge_chunk_results(
 
     Every chunk here is COMPLETED and covers its own criterion ids (the fail-loud
     guard ran before this call). The construction-time fields listed in
-    :data:`_CONSTRUCTION_FIELDS` MUST match across chunks — a mismatch raises
+    :data:`CONSTRUCTION_FIELDS` MUST match across chunks — a mismatch raises
     :class:`RuntimeError` naming the field and the divergent values.
     """
-    for field in _CONSTRUCTION_FIELDS:
-        head_value = getattr(chunk_results[0], field)
-        for chunk_index, chunk_result in enumerate(chunk_results[1:], start=1):
-            other_value = getattr(chunk_result, field)
-            if other_value != head_value:
-                raise RuntimeError(
-                    f"chunked_rubric construction-field mismatch across chunks: "
-                    f"{field!r} on chunk 0 is {head_value!r} but chunk "
-                    f"{chunk_index} is {other_value!r}. Every chunk shares the "
-                    f"same evaluate inputs; a divergence signals a kind refactor "
-                    f"that accidentally per-chunks a construction input."
-                )
+    assert_construction_fields_match(
+        chunk_results, CONSTRUCTION_FIELDS, kind_label="chunked_rubric", unit_noun="chunk"
+    )
 
     by_id: dict[str, CriterionResult] = {}
     for chunk_result in chunk_results:
@@ -243,7 +306,7 @@ def _merge_chunk_results(
     head = chunk_results[0]
     return JudgeResult(
         status=JudgeStatus.COMPLETED,
-        usage=_sum_usage(chunk_results),
+        usage=sum_usage(chunk_results),
         reasons="\n\n".join(cr.reasons for cr in chunk_results),
         score=aggregate.score,
         binary_pass=aggregate.binary_pass,
@@ -259,17 +322,4 @@ def _merge_chunk_results(
         state_diff=head.state_diff,
         transcript=tuple(turn for cr in chunk_results for turn in cr.transcript),
         chunk_boundaries=chunk_boundaries,
-    )
-
-
-def _sum_usage(chunk_results: list[JudgeResult]) -> JudgeUsage:
-    """Field-wise sum of per-chunk :class:`JudgeUsage`."""
-    return JudgeUsage(
-        calls=sum(cr.usage.calls for cr in chunk_results),
-        prompt_tokens=sum(cr.usage.prompt_tokens for cr in chunk_results),
-        completion_tokens=sum(cr.usage.completion_tokens for cr in chunk_results),
-        reasoning_tokens=sum(cr.usage.reasoning_tokens for cr in chunk_results),
-        cost_usd=sum(cr.usage.cost_usd for cr in chunk_results),
-        tool_calls=sum(cr.usage.tool_calls for cr in chunk_results),
-        consistency_rejections=sum(cr.usage.consistency_rejections for cr in chunk_results),
     )

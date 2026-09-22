@@ -114,10 +114,14 @@ class TestBuildSubmitReportTool:
         # Reason-then-answer: each criterion's justification field is emitted
         # before its verdict field so a schema-ordered generator writes the
         # reasoning before committing the verdict token. reasons stays last.
+        # Unanchored graded criteria additionally emit an optional
+        # `<id>_interpretation` slot BEFORE justification (M51 Layer 1) — kept
+        # optional so legacy cassettes and weaker models degrade cleanly.
         params = build_submit_report_tool(_mixed_rubric())["function"]["parameters"]
         assert list(params["properties"]) == [
             "refund_amount_justification",
             "refund_amount",
+            "tone_interpretation",
             "tone_justification",
             "tone",
             "reasons",
@@ -632,3 +636,56 @@ class TestRubricIdValidation:
             ]
         )
         assert [c.id for c in rubric.criteria] == ["refund_amount", "Tone2"]
+
+
+# ===================================================================
+# Criterion.chunk_group — additive optional hint (see JUDGE_KINDS.md)
+# ===================================================================
+
+
+class TestCriterionChunkGroup:
+    def test_default_is_none(self) -> None:
+        criterion = Criterion(id="a", description="x")
+        assert criterion.chunk_group is None
+
+    def test_explicit_value_round_trips(self) -> None:
+        criterion = Criterion(id="a", description="x", chunk_group="wifi")
+        assert criterion.chunk_group == "wifi"
+
+    def test_rubric_payload_mixes_grouped_and_ungrouped(self) -> None:
+        # Loading a grading.yaml payload with chunk_group set on some criteria
+        # and omitted on others must parse without error and preserve both the
+        # declared group names and the None defaults.
+        rubric = Rubric.model_validate(
+            {
+                "criteria": [
+                    {"id": "wifi_speed", "description": "wifi is fast", "chunk_group": "wifi"},
+                    {
+                        "id": "wifi_reach",
+                        "description": "wifi reaches rooms",
+                        "chunk_group": "wifi",
+                    },
+                    {"id": "checkin_easy", "description": "check-in is smooth"},
+                    {
+                        "id": "breakfast_ok",
+                        "description": "breakfast served",
+                        "chunk_group": "food",
+                    },
+                ]
+            }
+        )
+        by_id = {c.id: c.chunk_group for c in rubric.criteria}
+        assert by_id == {
+            "wifi_speed": "wifi",
+            "wifi_reach": "wifi",
+            "checkin_easy": None,
+            "breakfast_ok": "food",
+        }
+
+    def test_extra_field_still_rejected(self) -> None:
+        # chunk_group is additive but the model_config extra="forbid" guard
+        # still rejects unknown fields — a typo like "chunk_groups" must not
+        # slip through as a silent no-op.
+        with pytest.raises(ValueError) as exc:
+            Criterion.model_validate({"id": "a", "description": "x", "chunk_groups": "wifi"})
+        assert "chunk_groups" in str(exc.value)

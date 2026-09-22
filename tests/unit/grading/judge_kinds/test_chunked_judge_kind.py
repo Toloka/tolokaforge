@@ -20,7 +20,14 @@ import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import ChunkedRubricJudgeKind
-from tolokaforge.core.grading.judge_kinds.chunked import DEFAULT_CHUNK_SIZE
+from tolokaforge.core.grading.judge_kinds import chunked as _chunked_module
+from tolokaforge.core.grading.judge_kinds.chunked import (
+    FALLBACK_MAX_TOKENS,
+    HEADROOM_FRACTION,
+    TOKENS_PER_CRITERION_ESTIMATE,
+    _adaptive_chunk_size,
+    _chunk_boundaries,
+)
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
@@ -87,6 +94,7 @@ def _evaluate(
     *,
     provider: _QueuedProvider,
     kind_config: dict[str, Any] | None,
+    judge_model_config: ModelConfig = _JUDGE_MODEL,
 ) -> JudgeResult:
     """Drive :meth:`ChunkedRubricJudgeKind.evaluate` with a minimal input surface."""
     kind = ChunkedRubricJudgeKind()
@@ -99,7 +107,7 @@ def _evaluate(
         workspace_dir=None,
         extra_read_tools=[],
         state_diff=None,
-        judge_model_config=_JUDGE_MODEL,
+        judge_model_config=judge_model_config,
         judge_model_provider=provider,
         disable_knowledge_search=False,
         custom_system_prompt=None,
@@ -242,7 +250,10 @@ def test_kind_config_schema(
     """``kind_config`` is validated at ``evaluate`` entry before any judge call."""
     rubric = _binary_rubric(7)
     if expected_error_fragment is None:
-        chunk_size = 3 if kind_config == {"chunk_size": 3} else DEFAULT_CHUNK_SIZE
+        if kind_config == {"chunk_size": 3}:
+            chunk_size = 3
+        else:
+            chunk_size = _adaptive_chunk_size(_JUDGE_MODEL)
         provider = _QueuedProvider(_clients(_chunk_scripts(rubric, chunk_size=chunk_size)))
         result = _evaluate(rubric, provider=provider, kind_config=kind_config)
         assert result.status is JudgeStatus.COMPLETED
@@ -285,7 +296,7 @@ def test_fail_loud_on_missing_verdict_in_chunk() -> None:
     that guards the missing-verdict shape after a hypothetical judge succeeded
     on a partial rubric.
     """
-    from tolokaforge.core.grading.judge_kinds.chunked import _chunk_failure_reason
+    from tolokaforge.core.grading.judge_kinds._shared import member_failure_reason
 
     chunk_result = JudgeResult(
         status=JudgeStatus.COMPLETED,
@@ -295,7 +306,237 @@ def test_fail_loud_on_missing_verdict_in_chunk() -> None:
             CriterionResult(id="c0", met=True, score=1.0, justification="j\nVERDICT: MET"),
         ),
     )
-    reason = _chunk_failure_reason(chunk_result, ("c0", "c1"))
+    reason = member_failure_reason(chunk_result, ("c0", "c1"))
     assert reason is not None
     assert "missing verdicts" in reason
     assert "c1" in reason
+
+
+# ===================================================================
+# _adaptive_chunk_size — headroom-derived default
+# ===================================================================
+
+
+def test_adaptive_chunk_size_large_max_tokens() -> None:
+    """``max_tokens=8192`` packs ``floor(8192 * 0.6 / 200)`` criteria per chunk."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=8192)
+
+    assert _adaptive_chunk_size(config) == int(
+        (8192 * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE
+    )
+
+
+def test_adaptive_chunk_size_moderate_max_tokens() -> None:
+    """``max_tokens=2048`` yields ``floor(2048 * 0.6 / 200) = 6`` criteria per chunk."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=2048)
+
+    assert _adaptive_chunk_size(config) == int(
+        (2048 * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE
+    )
+
+
+def test_adaptive_chunk_size_unset_max_tokens_uses_fallback() -> None:
+    """``max_tokens=None`` stands in the ``FALLBACK_MAX_TOKENS`` constant."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=None)
+
+    assert _adaptive_chunk_size(config) == int(
+        (FALLBACK_MAX_TOKENS * HEADROOM_FRACTION) // TOKENS_PER_CRITERION_ESTIMATE
+    )
+
+
+def test_adaptive_chunk_size_pathological_config_clamps_to_one() -> None:
+    """A ``max_tokens`` too small to fit one criterion clamps to ``1``."""
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=100)
+
+    assert _adaptive_chunk_size(config) == 1
+
+
+def test_adaptive_chunk_size_constants_are_monkeypatchable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overriding a module-level constant changes the derived chunk size."""
+    monkeypatch.setattr(_chunked_module, "TOKENS_PER_CRITERION_ESTIMATE", 100)
+    config = ModelConfig(provider="openai", name="gpt-4o", max_tokens=2048)
+
+    assert _chunked_module._adaptive_chunk_size(config) == int((2048 * HEADROOM_FRACTION) // 100)
+
+
+def test_omitted_kind_config_fires_heuristic_single_chunk() -> None:
+    """20 criteria + ``max_tokens=8192`` → adaptive size ≥ 20 → 1 chunk."""
+    rubric = _binary_rubric(20)
+    judge_model = ModelConfig(provider="openai", name="gpt-4o", max_tokens=8192)
+    effective_size = _adaptive_chunk_size(judge_model)
+    scripts = _chunk_scripts(rubric, chunk_size=effective_size)
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config=None,
+        judge_model_config=judge_model,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert len(result.chunk_boundaries) == 1
+    assert len(result.chunk_boundaries[0]) == len(rubric.criteria)
+
+
+def test_omitted_kind_config_small_max_tokens_forces_multiple_chunks() -> None:
+    """30 criteria + ``max_tokens=2048`` → adaptive size 6 → 5 chunks."""
+    rubric = _binary_rubric(30)
+    judge_model = ModelConfig(provider="openai", name="gpt-4o", max_tokens=2048)
+    effective_size = _adaptive_chunk_size(judge_model)
+    scripts = _chunk_scripts(rubric, chunk_size=effective_size)
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config=None,
+        judge_model_config=judge_model,
+    )
+
+    expected_chunks = (len(rubric.criteria) + effective_size - 1) // effective_size
+    assert result.status is JudgeStatus.COMPLETED
+    assert len(result.chunk_boundaries) == expected_chunks
+
+
+def test_explicit_chunk_size_overrides_heuristic() -> None:
+    """``kind_config={"chunk_size": 5}`` wins even when the heuristic would return 24."""
+    rubric = _binary_rubric(20)
+    judge_model = ModelConfig(provider="openai", name="gpt-4o", max_tokens=8192)
+    scripts = _chunk_scripts(rubric, chunk_size=5)
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(
+        rubric,
+        provider=provider,
+        kind_config={"chunk_size": 5},
+        judge_model_config=judge_model,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert len(result.chunk_boundaries) == 4
+    assert all(len(chunk) == 5 for chunk in result.chunk_boundaries)
+
+
+# ===================================================================
+# _chunk_boundaries — pure partition function
+# ===================================================================
+
+
+def _ids(chunks: list[list[Criterion]]) -> list[list[str]]:
+    return [[c.id for c in chunk] for chunk in chunks]
+
+
+@pytest.mark.parametrize(
+    ("n", "chunk_size"),
+    [(7, 3), (12, 5), (30, 5), (1, 5), (5, 5)],
+)
+def test_chunk_boundaries_ungrouped_matches_fixed_k_slicing(n: int, chunk_size: int) -> None:
+    """No criterion declares chunk_group → output is identical to
+    ``criteria[i:i+chunk_size]`` slicing. This is the byte-parity anchor
+    the 20-fixture κ-parity gate depends on."""
+    rubric = _binary_rubric(n)
+    expected = [
+        list(rubric.criteria[i : i + chunk_size])
+        for i in range(0, len(rubric.criteria), chunk_size)
+    ]
+
+    assert _chunk_boundaries(rubric.criteria, chunk_size) == expected
+
+
+def test_chunk_boundaries_group_cohesion_fits_one_chunk() -> None:
+    """Three criteria sharing one group plus two ungrouped fillers all land
+    in the same chunk when chunk_size=5."""
+    criteria = [
+        Criterion(id="g1", description="g1", chunk_group="wifi"),
+        Criterion(id="g2", description="g2", chunk_group="wifi"),
+        Criterion(id="g3", description="g3", chunk_group="wifi"),
+        Criterion(id="f1", description="f1"),
+        Criterion(id="f2", description="f2"),
+    ]
+
+    assert _ids(_chunk_boundaries(criteria, 5)) == [["g1", "g2", "g3", "f1", "f2"]]
+
+
+def test_chunk_boundaries_oversize_group_splits_across_consecutive_chunks() -> None:
+    """A group whose size exceeds chunk_size flushes into consecutive
+    chunk_size-runs on its own; no other group's criterion joins either
+    slice (8 criteria sharing one group, chunk_size=5 → lengths [5, 3])."""
+    criteria = [Criterion(id=f"x{i}", description=f"x{i}", chunk_group="x") for i in range(8)]
+    criteria.append(Criterion(id="other", description="other"))
+
+    chunks = _ids(_chunk_boundaries(criteria, 5))
+
+    assert chunks[:2] == [["x0", "x1", "x2", "x3", "x4"], ["x5", "x6", "x7"]]
+    assert "other" in chunks[-1]
+    assert not any("other" in chunk for chunk in chunks[:2])
+
+
+def test_chunk_boundaries_non_contiguous_group_reordered_to_first_anchor() -> None:
+    """Non-contiguous same-group criteria are silently pulled together at
+    the group's first-occurrence position (plan default: silent reorder,
+    no validation)."""
+    criteria = [
+        Criterion(id="a", description="a"),
+        Criterion(id="b", description="b", chunk_group="x"),
+        Criterion(id="c", description="c"),
+        Criterion(id="d", description="d", chunk_group="x"),
+        Criterion(id="e", description="e"),
+    ]
+
+    assert _ids(_chunk_boundaries(criteria, 3)) == [["a", "b", "d"], ["c", "e"]]
+
+
+def test_chunk_boundaries_three_declared_groups_pack_together() -> None:
+    """Three distinct chunk_group names, each small enough to share a chunk
+    with neighbours, produce chunks where every group's members are
+    contiguous and no group is split unless it individually exceeds
+    chunk_size (mirrors the issue's literal 3-group ask)."""
+    criteria = [
+        Criterion(id="wifi_speed", description="w1", chunk_group="wifi"),
+        Criterion(id="food_var", description="f1", chunk_group="food"),
+        Criterion(id="wifi_reach", description="w2", chunk_group="wifi"),
+        Criterion(id="staff_polite", description="s1", chunk_group="staff"),
+        Criterion(id="food_hot", description="f2", chunk_group="food"),
+        Criterion(id="staff_quick", description="s2", chunk_group="staff"),
+        Criterion(id="loose", description="l1"),
+    ]
+
+    chunks = _ids(_chunk_boundaries(criteria, 5))
+
+    for chunk in chunks:
+        for group in ("wifi", "food", "staff"):
+            group_positions = [i for i, cid in enumerate(chunk) if cid.startswith(group)]
+            if len(group_positions) >= 2:
+                assert group_positions == list(
+                    range(group_positions[0], group_positions[0] + len(group_positions))
+                ), f"group {group!r} split across chunk {chunk!r}"
+    all_ids = [cid for chunk in chunks for cid in chunk]
+    assert sorted(all_ids) == sorted(c.id for c in criteria)
+
+
+def test_chunk_boundaries_end_to_end_matches_chunk_size_shape() -> None:
+    """A rubric with declared chunk_group hints run through the full public
+    ``evaluate`` path lands the grouped criteria in the same
+    ``chunk_boundaries`` tuple end-to-end (locks the wire between
+    ``_chunk_boundaries`` and the evaluate loop)."""
+    rubric = Rubric(
+        criteria=[
+            Criterion(id="w1", description="w1", chunk_group="wifi"),
+            Criterion(id="w2", description="w2", chunk_group="wifi"),
+            Criterion(id="loose1", description="loose1"),
+            Criterion(id="loose2", description="loose2"),
+            Criterion(id="w3", description="w3", chunk_group="wifi"),
+        ]
+    )
+    grouped_chunks = _chunk_boundaries(rubric.criteria, 3)
+    scripts = [[_submit_call(chunk)] for chunk in grouped_chunks]
+    provider = _QueuedProvider(_clients(scripts))
+
+    result = _evaluate(rubric, provider=provider, kind_config={"chunk_size": 3})
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.chunk_boundaries == (("w1", "w2", "w3"), ("loose1", "loose2"))
+    assert [cr.id for cr in result.criterion_results] == [c.id for c in rubric.criteria]

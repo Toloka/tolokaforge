@@ -310,6 +310,7 @@ class Criterion(BaseModel):
     kind: Literal["binary", "graded"] = "binary"  # 0/1 vs 0–1 gradient
     required: bool = False                        # pure gate: failed → rubric fails
     expected: str | None = None                   # optional per-criterion author reference
+    chunk_group: str | None = None                # optional hint: chunked_rubric groups same-name criteria into one chunk
 
 
 class Rubric(BaseModel):

@@ -250,11 +250,15 @@ test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGra
 # include_agent_system_prompt, kind_config, logger) -> JudgeResult``. The
 # runner-side composite dispatch resolves this loader to reach the LLM-judge
 # implementation registered as ``single_shot_rubric``; downstream packages
-# register alternative kinds (jury, downstream-specific) alongside without a
-# framework PR. See :mod:`tolokaforge.core.grading.judge_kinds`.
+# register alternative kinds (agentic, downstream-specific) alongside without
+# a framework PR. See :mod:`tolokaforge.core.grading.judge_kinds`.
 [project.entry-points."tolokaforge.judge_kinds"]
+auto_anchored_rubric = "tolokaforge.core.grading.judge_kinds.auto_anchored:AutoAnchoredRubricJudgeKind"
 chunked_rubric = "tolokaforge.core.grading.judge_kinds.chunked:ChunkedRubricJudgeKind"
+jury_rubric = "tolokaforge.core.grading.judge_kinds.jury:JuryRubricJudgeKind"
+per_criterion_rubric = "tolokaforge.core.grading.judge_kinds.per_criterion:PerCriterionRubricJudgeKind"
 single_shot_rubric = "tolokaforge.core.grading.judge_kinds.single_shot:SingleShotRubricJudgeKind"
+voted_rubric = "tolokaforge.core.grading.judge_kinds.voted:VotedRubricJudgeKind"
 
 # ADR-0044 composition-plan adapter Protocols
 # (``tolokaforge/core/composition_runtime.py``). Each entry point resolves

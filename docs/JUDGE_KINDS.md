@@ -13,14 +13,27 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-Two kinds ship in the reference distribution: `single_shot_rubric`
-(wraps `LLMJudge` in one shot, byte-identical with the pre-seam
-`LLMJudgeRubricEvaluator`) and `chunked_rubric` (one `LLMJudge`
-invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
-for large rubrics where a single `submit_report` payload would exceed
-the judge model's output-token ceiling). Downstream packages
-register further alternatives (e.g. jury, agentic) alongside without a
-framework PR.
+Six kinds ship in the reference distribution: `single_shot_rubric`
+(wraps `LLMJudge` in one shot, byte-identical with the direct
+`LLMJudgeRubricEvaluator` path), `chunked_rubric` (one `LLMJudge`
+invocation per chunk of the rubric's criteria, optionally grouped by
+`Criterion.chunk_group` — the opt-in kind for large rubrics where a
+single `submit_report` payload would exceed the judge model's
+output-token ceiling), `voted_rubric` (wraps any
+registered kind and samples it K times, folding the per-criterion
+verdicts through a robust aggregator to reduce judge-model
+self-variance — see § Voted kind), `jury_rubric` (wraps any
+registered kind and dispatches to a cross-family panel of N different
+judge models instead of K samples of one model, folding the
+per-criterion verdicts through the same robust aggregator — see § Jury
+kind), `per_criterion_rubric` (a thin specialisation of
+`chunked_rubric` that hard-pins `chunk_size=1` — one `LLMJudge` call
+per criterion, the strictest isolation of them all — see § Per-criterion
+kind), and `auto_anchored_rubric` (wraps any registered kind; runs one
+cached warm-up judge call per unique rubric to auto-generate
+`expected:` anchors for graded criteria the author left unanchored,
+then delegates to the wrapped kind — see § Auto-anchored kind). Downstream packages register further alternatives (e.g.
+agentic) alongside without a framework PR.
 
 The `JudgeKind` Protocol and registry seam decision is recorded in
 [`docs/adr/0046-judgekind-protocol-and-registry.md`](adr/0046-judgekind-protocol-and-registry.md).
@@ -139,8 +152,8 @@ grading:
 No `kind_config` — the kind receives it on the Protocol and discards it
 unread. One `LLMJudge` call produces the whole rubric's verdict in a
 single `submit_report`; this is the default, byte-identical with the
-pre-seam evaluator, and every task pack that predates the `JudgeKind`
-seam runs this kind unchanged.
+direct `LLMJudgeRubricEvaluator` path, and every task pack with no
+`judge_kind` field runs this kind unchanged.
 
 ### `chunked_rubric`
 
@@ -159,11 +172,58 @@ Opt in for rubrics whose single `submit_report` payload would overflow
 the judge model's output-token ceiling — see § Chunked kind for the
 fail-loud and persistence contract.
 
+### `voted_rubric`
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: voted_rubric
+    kind_config:
+      n_samples: 3
+      aggregator: geometric_median
+      wrapped_kind: single_shot_rubric
+```
+
+Runs `single_shot_rubric` (or any other registered kind named by
+`wrapped_kind`) three times against the same rubric evidence and folds
+the three per-criterion verdicts through the geometric-median
+aggregator. Opt in to reduce judge-model self-variance on
+subjective/graded criteria — see § Voted kind for the config schema,
+the fail-loud contract, and the aggregator trade-offs.
+
+### `jury_rubric`
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: jury_rubric
+    kind_config:
+      panel:
+        - {provider: openrouter, name: openai/gpt-4o-mini, temperature: 0.0}
+        - {provider: openrouter, name: anthropic/claude-3-haiku, temperature: 0.0}
+        - {provider: openrouter, name: google/gemini-2.0-flash, temperature: 0.0}
+      aggregator: geometric_median
+      wrapped_kind: single_shot_rubric
+```
+
+Runs `single_shot_rubric` (or any other registered kind named by
+`wrapped_kind`) once per panel member — each member a DIFFERENT judge
+model, not a repeated sample of one model — and folds the per-criterion
+verdicts through the same geometric-median aggregator `voted_rubric`
+uses. Opt in when cross-family model diversity outweighs the cost of a
+same-model K-sample vote (PoLL evidence) — see § Jury kind for the
+config schema, the credential-preflight contract, and the fail-loud
+contract.
+
 ## Chunked kind
 
-`chunked_rubric` splits the rubric's criteria into fixed-K contiguous
-chunks (`rubric.criteria[i*K:(i+1)*K]`), runs one `LLMJudge` per chunk
-against a scoped sub-rubric (each chunk sees the original `reference`
+`chunked_rubric` partitions the rubric's criteria into chunks of at
+most `chunk_size` criteria — first grouping criteria that share a
+`Criterion.chunk_group` name (in first-appearance order) into one
+block, then packing every block in order into chunks of size
+`chunk_size`, with a group whose own size exceeds `chunk_size` spanning
+consecutive chunks on its own — runs one `LLMJudge` per chunk against
+a scoped sub-rubric (each chunk sees the original `reference`
 verbatim), and merges the per-chunk `CriterionResult` maps into the
 original full rubric — folded through `aggregate_rubric` on the
 original rubric so `score` / `binary_pass` / `gate_failed` come out of
@@ -173,11 +233,88 @@ the same math the single-shot kind uses. Opt in via
 
 `kind_config` schema: `{"chunk_size": int}`. `chunk_size` must be `>= 1`
 (a `chunk_size >= len(criteria)` degenerates to a single call, which is
-deliberate). Missing key or a `None` config → `DEFAULT_CHUNK_SIZE = 5`;
-follow-up [#1581](https://github.com/Toloka/tolokaforge/issues/1581)
-tunes this default from live measurement. Any unknown key or a
+deliberate). When `kind_config` omits `chunk_size` (or is itself
+`None`), the effective size is derived from the judge model's
+output-token headroom: `max(1, floor(max_tokens * 0.6 / 200))`, where
+`max_tokens` is read off `judge_model_config.max_tokens`, `200` is the
+per-criterion verdict token estimate
+(`TOKENS_PER_CRITERION_ESTIMATE`), and the `0.6` factor
+(`HEADROOM_FRACTION`) reserves 40 % of `max_tokens` for the judge's
+reasoning tokens and a retry buffer. When `max_tokens` is unset
+(`None`), a conservative `FALLBACK_MAX_TOKENS = 2048` stands in
+(yielding six criteria per chunk on the fallback path). This lets a
+large-context judge degenerate to a single call when the whole rubric
+fits in headroom while still chunking large rubrics against the
+truncation failure class the kind exists to remove. All three
+constants are module-level in
+[`chunked.py`](../tolokaforge/core/grading/judge_kinds/chunked.py) so a
+downstream deployment can monkeypatch them without adding new
+`kind_config` plumbing; per-model conditional branching is deliberately
+absent (one estimator across every judge model). Any unknown key or a
 non-positive `chunk_size` raises `ValueError` inside `evaluate` before
 any judge call runs.
+
+### chunk_group grouping
+
+Each `Criterion` may declare a free-form `chunk_group: <name>` (default
+`None`). `chunked_rubric` groups criteria sharing the same name into
+the same chunk (or, when the group exceeds `chunk_size`, consecutive
+chunks that hold only that group's criteria) before packing everything
+else in first-appearance order. The algorithm is deterministic and
+pure:
+
+1. **Group blocks, first-appearance order.** Walk `rubric.criteria`
+   once. A criterion with `chunk_group is None` becomes its own
+   singleton block anchored at its position. A criterion with
+   `chunk_group = "x"` joins block `"x"`, anchored at `"x"`'s
+   first-occurrence position; non-contiguous same-group criteria are
+   silently pulled together at that anchor.
+2. **Pack blocks into chunks of ≤ `chunk_size`.** Walk the ordered
+   blocks. A block that fits in the current chunk's remaining room is
+   appended. A block that does not fit but is itself `<= chunk_size`
+   flushes the current chunk and starts a new one with that block. A
+   block whose own size exceeds `chunk_size` flushes the current chunk,
+   then is sliced on its own into consecutive `chunk_size`-runs (never
+   combined with another block).
+
+Worked example — a 5-criterion hotel-review rubric with three declared
+groups (`wifi`, `staff`, `food`) at `chunk_size = 3`:
+
+```yaml
+criteria:
+  - id: wifi_speed
+    chunk_group: wifi
+  - id: food_variety
+    chunk_group: food
+  - id: wifi_reach
+    chunk_group: wifi
+  - id: staff_polite
+    chunk_group: staff
+  - id: food_hot
+    chunk_group: food
+```
+
+Phase 1 groups blocks by first-occurrence anchor: `wifi` block
+`[wifi_speed, wifi_reach]`, `food` block `[food_variety, food_hot]`,
+`staff` block `[staff_polite]`. Phase 2 packs in order: `wifi` (2)
+plus `food` (2) overflows chunk 0 (2 + 2 > 3) → chunk 0 =
+`[wifi_speed, wifi_reach]`; `food` (2) plus `staff` (1) fits →
+chunk 1 = `[food_variety, food_hot, staff_polite]`.
+
+Oversize group example — 8 criteria sharing one group, `chunk_size = 5`:
+the group's own size (8) exceeds `chunk_size`, so it flushes into
+consecutive chunks of shape `[5, 3]` on its own, and no other group's
+criterion joins either slice.
+
+`chunk_group` names are free-form and scoped to the rubric they're
+declared on — the same name in another task's rubric means nothing.
+Rubrics that declare no `chunk_group` degenerate to plain fixed-K runs
+identical to `criteria[i : i + chunk_size]` slicing — the byte-parity
+anchor the κ-parity gate depends on. Reordering happens inside
+`_chunk_boundaries` only; `_merge_chunk_results` re-indexes
+`criterion_results` back to `rubric.criteria`'s original order, so a
+rubric's final `criterion_results` order is unaffected by grouping —
+only which criteria share a judge call.
 
 Per-chunk fail-loud (#1471): any chunk whose `JudgeResult.status` is
 not `COMPLETED` — or whose `criterion_results` is missing one of its
@@ -210,9 +347,11 @@ encoding — the host materialiser maps it to `None`.
 
 Bundle-side: `chunk_boundaries` is a judge OUTPUT, not a grading INPUT,
 so it lives on the grade side (`grade.yaml`), not on the v1.1 bundle.
-The bundle's `grading_config.json` records `kind_config.chunk_size` from
-which the chunked kind re-derives the same boundaries deterministically
-on regrade.
+The bundle's `grading_config.json` records `kind_config` and the
+recorded `judge_model_config.json` (its `max_tokens` feeds the adaptive
+`chunk_size` when `kind_config` omits one) — the chunked kind re-derives
+the same boundaries deterministically on regrade from either the
+explicit `kind_config.chunk_size` or the same adaptive computation.
 
 ### Replay routing
 
@@ -253,6 +392,286 @@ Cost note: a rubric split into N chunks consumes up to `N ×` the
 single-shot per-trial wall-clock and system-prompt tokens. This is the
 acknowledged cost of removing the truncation failure class; the trade
 between chunk size and reliability is measured in follow-up #1581.
+
+## Voted kind
+
+`voted_rubric` wraps any other registered `JudgeKind` (default
+`single_shot_rubric`), calls its `evaluate` `n_samples` times (default
+3) against the SAME rubric evidence — the wrapped kind always receives
+`kind_config=None`, so a nested config on the wrapped kind (e.g. a
+non-default `chunk_size` on a wrapped `chunked_rubric`) is not
+supported — and folds the K per-criterion verdicts through a robust
+aggregator (`tolokaforge.core.grading.judge_kinds.aggregators`) before
+re-folding the merged results through `aggregate_rubric` on the
+original rubric, exactly as every other kind does. Opt in via
+`grading.llm_judge.judge_kind: voted_rubric`; the default remains
+`single_shot_rubric`.
+
+`kind_config` schema: `{"n_samples": int, "aggregator": "majority" |
+"median" | "geometric_median", "wrapped_kind": str}`. All three keys
+are optional — `n_samples` defaults to 3, `aggregator` defaults to
+`geometric_median`, `wrapped_kind` defaults to `single_shot_rubric`.
+`n_samples` must be a non-`bool` `int` `>= 2` (K<2 makes voting
+undefined). `aggregator="majority"` additionally requires an odd
+`n_samples` (no implicit tie-break) and an all-`binary` rubric (a
+majority vote over a graded 0–1 criterion has no defined threshold).
+`wrapped_kind` must resolve via `load_judge_kind` — an unknown name
+raises the registry's own `UnknownImplementationError` naming the
+registered set. Any unknown `kind_config` key, or a violation of the
+above, raises `ValueError` before any judge dispatch runs.
+
+**Aggregators:**
+
+- `"median"` — per-criterion `statistics.median` over the K samples'
+  scores for that criterion, independently per criterion.
+- `"majority"` — per-criterion boolean vote at the 0.5 threshold
+  (requires an odd `n_samples` and an all-binary rubric, enforced
+  above).
+- `"geometric_median"` (default) — treats each sample as ONE point in
+  R^n_criteria (a full per-sample verdict vector) and returns the point
+  minimizing the sum of Euclidean distances to the K sample points
+  (Weiszfeld/Vardi-Zhang, `MAX_ITERATIONS = 100`,
+  `CONVERGENCE_TOLERANCE = 1e-8`). This is what makes it distinct from
+  `"median"`: a sample whose ENTIRE verdict set is contaminated
+  (sycophancy, mode collapse) is down-weighted as a unit rather than
+  diluted criterion-by-criterion. Fails loud with `RuntimeError` naming
+  the iteration cap, the tolerance, and the last iterate if the
+  algorithm does not converge — never a silent stale midpoint.
+
+Per-sample fail-loud (mirrors `chunked_rubric`'s per-chunk contract,
+renamed to per-sample): any sample whose `JudgeResult.status` is not
+`COMPLETED` — or whose `criterion_results` is missing one of the
+rubric's criterion ids — yields a whole-trial `JudgeResult` with
+`status=ERRORED`, `score=None`, `criterion_results=()`, and a `reasons`
+naming the failing sample index and the underlying reason. Iteration
+stops at the first failing sample (later samples are never dispatched);
+`usage` is still summed across every sample that DID dispatch.
+
+**Justification audit trail.** Each merged `CriterionResult.justification`
+records the aggregator name, K, the raw per-sample scores for that
+criterion, the resulting aggregate, and then every sample's own
+justification labelled by index — so a reviewer can see exactly which
+sample(s) drove (or were down-weighted out of) the final verdict.
+
+`chunk_boundaries` is always `()` — `voted_rubric` never chunks, so
+persistence and replay treat it exactly like `single_shot_rubric` for
+that field.
+
+Cost note: K samples consume up to `K ×` the wrapped kind's per-trial
+wall-clock, tokens, and cost. This is the acknowledged cost of reducing
+judge-model self-variance; the K vs. reliability trade is measured in
+the umbrella issue's live A/B report (see § Live A/B below).
+
+## Jury kind
+
+`jury_rubric` wraps any other registered `JudgeKind` (default
+`single_shot_rubric`) exactly like `voted_rubric`, but where
+`voted_rubric` samples ONE model K times, `jury_rubric` dispatches to a
+cross-family PANEL of N DIFFERENT judge models — each panel member
+supplies its own `provider`/`name` (and optional `temperature`), so a
+task author gets model diversity instead of repeated-sampling variance
+reduction from the same model. The wrapped kind always receives
+`kind_config=None` on every panel dispatch, same restriction as
+`voted_rubric`. Opt in via `grading.llm_judge.judge_kind: jury_rubric`;
+the default remains `single_shot_rubric`.
+
+`kind_config` schema: `{"panel": list[{"provider": str, "name": str,
+"temperature": float}], "aggregator": "majority" | "median" |
+"geometric_median", "wrapped_kind": str}`. All three keys are optional.
+`panel` defaults to a 3-member cross-family panel, all routed through
+OpenRouter: `openai/gpt-4o-mini`, `anthropic/claude-3-haiku`, and
+`google/gemini-2.0-flash`, each at `temperature: 0.0`. Every panel
+entry requires a non-empty `provider` and `name`; `temperature` is
+optional and must be a non-`bool` `int`/`float` when present; any
+unrecognised entry key raises `ValueError` naming the entry index.
+`aggregator` defaults to `geometric_median` and `wrapped_kind` defaults
+to `single_shot_rubric`, with the same validation `voted_rubric` uses
+(§ Voted kind) — panel size stands in for `n_samples`: `len(panel) >= 2`
+(K<2 makes voting undefined), and `aggregator="majority"` additionally
+requires an odd panel size and an all-`binary` rubric. Any unknown
+top-level `kind_config` key, or a violation of the above, raises
+`ValueError` before any judge dispatch runs.
+
+**Credential preflight.** Before any panel member is dispatched, every
+DISTINCT `provider` across the panel is checked against
+`tolokaforge.core.llm.providers.credential_env_names` and
+`SecretManager.has_secret` — a provider whose every candidate
+credential name is absent accumulates into ONE `ValueError` naming
+EVERY missing provider at once (not just the first), since a task
+author fixing panel credentials wants the whole list in one pass. A
+provider with no known credential-name mapping (an out-of-tree
+provider `credential_env_names` cannot resolve) is skipped —
+preflighting it is impossible, so it fails loud at the LLM call itself
+instead, exactly as it does today without `jury_rubric`.
+
+Reuses `tolokaforge.core.grading.judge_kinds.aggregators` unchanged —
+the same `"median"` / `"majority"` / `"geometric_median"` aggregators
+`voted_rubric` uses, with identical semantics (§ Voted kind lists them).
+
+Per-member fail-loud (mirrors `voted_rubric`'s per-sample contract,
+renamed to per-panel-member): any panel member whose
+`JudgeResult.status` is not `COMPLETED` — or whose `criterion_results`
+is missing one of the rubric's criterion ids — yields a whole-trial
+`JudgeResult` with `status=ERRORED`, `score=None`,
+`criterion_results=()`, and a `reasons` naming the failing member's
+INDEX plus its `provider`/`name` — panel members are heterogeneous, so
+naming which model failed is the point, not just which position in the
+list. Iteration stops at the first failing member (later members are
+never dispatched); `usage` is still summed across every member that DID
+dispatch.
+
+**Justification audit trail.** Each merged `CriterionResult.justification`
+records the aggregator name, N, the raw per-member scores for that
+criterion, the resulting aggregate, and then every member's own
+justification labelled by its panel `provider/name` (not a bare index,
+since a reviewer needs to know WHICH model produced which verdict in a
+heterogeneous panel).
+
+`chunk_boundaries` is always `()` — `jury_rubric` never chunks, same as
+`voted_rubric`.
+
+Cost note: N panel members consume up to `N ×` the wrapped kind's
+per-trial wall-clock, tokens, and cost — the same acknowledged
+multiplier `voted_rubric`'s `K ×` carries. The trade `jury_rubric`
+offers over `voted_rubric` is diversity, not a cheaper cost model: pick
+`voted_rubric` when the goal is damping one model's own self-variance
+cheaply, and `jury_rubric` when cross-family diversity outweighs that
+cost per PoLL (Panel of LLM evaluators) evidence.
+
+## Composing kinds
+
+`voted_rubric` and `jury_rubric` both take a `wrapped_kind` field on
+`kind_config`; the wrapped kind is dispatched once per sample / panel
+member. Composition is a first-class extension point:
+
+- **`voted_rubric` wrapping `chunked_rubric`** — K samples of the whole
+  rubric, each sample itself chunked into ≤ `chunk_size` criterion
+  groups. Fits when the rubric is large AND you want K-sample
+  variance reduction on top. Cost = K × chunked's per-trial cost.
+
+- **`jury_rubric` wrapping `chunked_rubric`** — a cross-family panel
+  where each member's grade is itself chunked. This is the
+  recommended composition for `jury_rubric` on rubrics of ≥ 6
+  criteria: the weakest panel member (typically the smallest
+  cheap-tier model) is the truncation floor for the whole panel, and
+  wrapping it in `chunked_rubric` narrows each panel-member call to a
+  sub-rubric that fits well inside every family's output-token
+  ceiling. Without this wrapping, a single member's truncated
+  `submit_report` on a large rubric fails the whole panel loud per
+  `jury_rubric`'s per-member contract. Example:
+
+  ```yaml
+  grading:
+    llm_judge:
+      judge_kind: jury_rubric
+      kind_config:
+        wrapped_kind: chunked_rubric
+  ```
+
+Wrapped-kind ergonomics: the wrapper always passes `kind_config=None`
+into the wrapped kind, so the wrapped kind uses its own defaults —
+`chunked_rubric`'s adaptive `chunk_size` heuristic (per this milestone)
+picks the effective chunk size from the judge model's `max_tokens`
+headroom, so no explicit `chunk_size` needs to be threaded through the
+outer composition.
+
+## Per-criterion kind
+
+`per_criterion_rubric` is a thin specialisation of `chunked_rubric` that
+hard-pins `chunk_size = 1`: every criterion is graded by its own
+`LLMJudge` call, so each `submit_report` payload carries exactly one
+verdict and cross-criterion halo/recency drift cannot occur by
+construction. Opt in via `grading.llm_judge.judge_kind:
+per_criterion_rubric`; `kind_config` accepts no keys (an explicit
+`chunk_size` here would be silently overridden, so unknown keys fail
+loud eagerly).
+
+Cost note: N criteria = N judge dispatches per grade. This is the
+strictest isolation and the most expensive kind — reach for it on
+graded/subjective rubrics of six or more criteria where the M50
+drift-report identified cross-chunk context loss as a real source of
+drift, and where you would otherwise reach for `voted_rubric` at the
+same K× cost. Every fail-loud guarantee `chunked_rubric` carries
+(per-chunk COMPLETED status, missing-verdict detection, whole-trial
+ERRORED with `chunk_boundaries` populated for offline retry) applies
+here too — the underlying merge path is the same.
+
+## Auto-anchored kind
+
+`auto_anchored_rubric` is a wrapper kind that closes the "fuzzy criterion
+wording" drift class without pushing work onto rubric authors. Before
+delegating to its wrapped kind (default `single_shot_rubric`, configurable
+via `kind_config.wrapped_kind`), it runs a **single warm-up judge call per
+unique (rubric, judge_model) tuple** that asks the judge to produce a
+one-sentence anchor for each `kind: graded` criterion the author left
+with `expected: None`. Those anchors are cached in-process, folded into a
+synthetic `Rubric` (author-written `expected:` anchors pass through
+unchanged), and the wrapped kind is dispatched with that anchored rubric.
+
+Motivation: on the M50 A/B (2026-09-21) `voted_rubric` absorbed sampling-
+noise flapping on a 30-criterion subjective rubric but `addressed_to_user`
+stayed κ=0 even under voted+chunked. The criterion's description alone
+under-specifies "met", so the judge inferred a different anchor on each
+sample. `auto_anchored_rubric` commits every trial in the flight to ONE
+shared anchor so subsequent grades score against the same standard.
+
+Opt-in via:
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: auto_anchored_rubric
+    kind_config:
+      wrapped_kind: single_shot_rubric   # or voted_rubric / chunked_rubric / …
+```
+
+Composability — every M50 kind wraps cleanly underneath:
+
+- `auto_anchored_rubric wrapping voted_rubric` — auto-anchors + K-sample
+  noise absorption. Full stack for high-stakes subjective grading.
+- `auto_anchored_rubric wrapping chunked_rubric` — auto-anchors + chunk
+  coverage for large rubrics.
+- `auto_anchored_rubric wrapping per_criterion_rubric` — auto-anchors +
+  strictest isolation.
+
+Fail-loud contract: any warm-up call that returns non-JSON, is missing an
+anchor for one of the unanchored criterion ids, or hands back a
+non-string / empty anchor raises `PerRubricAnchorGeneratorError` before
+any wrapped-kind dispatch. Author-written anchors pass through unchanged
+so a mixed rubric (some anchored, some auto-anchored) grades against a
+consistent mix of author and judge-authored `expected:` fields.
+
+Audit trail: every auto-anchor lands in `JudgeResult.reasons` prefixed
+with `auto_anchored_rubric warm-up anchors:` so a reader can see what
+the harness told the judge "met" looks like. The auto-anchor text also
+lands in each criterion's `expected:` inside the wrapped-kind's dispatch,
+prefixed with `auto-anchor: `, so downstream schema dumps show the anchor
+came from the harness rather than the author.
+
+Cost: **+1 judge call per unique (rubric, judge_model)** — amortised
+across every trial in the process that uses the same rubric + judge.
+On a 50-trial flight sharing one rubric that is 1 extra call spread over
+50 grades: effectively free. The cache is in-process only (no disk
+persistence at v1); a follow-up may add per-rubric anchor persistence.
+
+## Grade-injection defenses
+
+Model-controlled slots (`agent_system_prompt`, each transcript
+message's `content`, tool-call `arguments`) are neutralised at
+interpolation time before they land in the judge prompt. The exact
+fence strings the judge prompt uses to fence untrusted evidence
+(`===== TRANSCRIPT =====`, `===== END TRANSCRIPT =====`) are replaced
+with a spaced/zero-width-space variant if they appear inside those
+slots, so a payload that replays the fence cannot break out of the
+transcript block and inject fake instructions into what the judge
+reads as harness text. Free-form Markdown (`---`, triple-backtick) is
+NOT neutralised — those are common in honest agent output and blanket-
+neutralising them would garble every trial. The defense is a
+byte-level string replacement in
+[`tolokaforge/core/grading/judge.py::_neutralise_judge_delimiters`](../tolokaforge/core/grading/judge.py);
+honest trials see no change (the fence strings never appear in normal
+output), and payloads that carry the fence keep their content in the
+prompt but lose the anchor.
 
 ## Parity gate
 
