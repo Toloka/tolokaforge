@@ -135,17 +135,28 @@ class Receiver:
 
 
 def _extra_headers(raw: str | None) -> dict[str, str]:
-    """Headers a network admission layer in front of the receiver needs, as a JSON object. The
-    values are credentials, so a malformed value is an error rather than a warning that scrolls."""
+    """Headers a network admission layer in front of the receiver needs: ``k=v,k2=v2``.
+
+    The spelling is the live observer's (``tolokaforge_langfuse.plugin``), because both read the
+    same variable and a CI job sets it once for whatever writes from that runner. A malformed
+    item is skipped there, and skipped here, so neither is stricter than the other about what it
+    accepts. What IS an error is a value that yields no header at all: the variable exists only
+    because something in front of the receiver refuses requests without it, and the refusal that
+    follows a typo is an unexplained 403 in a job log.
+    """
     if not raw or not raw.strip():
         return {}
-    try:
-        parsed = json.loads(raw)
-    except ValueError as exc:
-        raise UploadError(f"LANGFUSE_EXTRA_HEADERS is not JSON: {exc}") from exc
-    if not isinstance(parsed, Mapping):
-        raise UploadError("LANGFUSE_EXTRA_HEADERS must be a JSON object of header names to values")
-    return {str(name): str(value) for name, value in parsed.items()}
+    headers: dict[str, str] = {}
+    for item in raw.split(","):
+        name, separator, value = item.partition("=")
+        if separator and name.strip():
+            headers[name.strip()] = value.strip()
+    if not headers:
+        raise UploadError(
+            f"LANGFUSE_EXTRA_HEADERS={raw!r} yields no header; it is a comma-separated list of "
+            "name=value pairs"
+        )
+    return headers
 
 
 def transcript_id_for(path: Path) -> str:

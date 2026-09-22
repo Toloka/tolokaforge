@@ -160,27 +160,46 @@ class TestTheReceiver:
             lu.Receiver.from_environment(env)
 
     def test_the_admission_header_rides_along(self) -> None:
-        receiver = lu.Receiver.from_environment(
+        """The gateway in front of the receiver refuses a request without it, so it has to
+        survive all the way to the exporter."""
+        receiver = self._with_headers("X-GitHub-Runner-Key=admission-value")
+        assert receiver.headers["X-GitHub-Runner-Key"] == "admission-value"
+        assert receiver.headers["Authorization"].startswith("Basic ")
+
+    def test_the_format_is_the_one_the_live_observer_already_reads(self) -> None:
+        """Both read LANGFUSE_EXTRA_HEADERS, and a CI job sets it once for the whole runner, so
+        a second spelling of the same variable would be a silent 403 waiting to happen."""
+        from tolokaforge_langfuse.plugin import _parse_headers
+
+        for raw in (
+            "X-GitHub-Runner-Key=abc",
+            "X-A=1,X-B=2",
+            " X-A = 1 , X-B = 2 ",
+            "X-A=",
+            "X-A=1,skipped-without-an-equals",
+        ):
+            assert lu._extra_headers(raw) == _parse_headers(raw), raw
+
+    @pytest.mark.parametrize("raw", ["", "   ", None])
+    def test_an_unset_variable_means_no_extra_header(self, raw: str | None) -> None:
+        assert lu._extra_headers(raw) == {}
+
+    @pytest.mark.parametrize("raw", ["not-a-pair", ",,,", "=novalue"])
+    def test_a_value_that_yields_no_header_at_all_is_an_error(self, raw: str) -> None:
+        """The lenient parser would send nothing and the gateway would answer 403 with no hint."""
+        with pytest.raises(lu.UploadError, match="yields no header"):
+            lu._extra_headers(raw)
+
+    @staticmethod
+    def _with_headers(raw: str) -> lu.Receiver:
+        return lu.Receiver.from_environment(
             {
                 "LANGFUSE_BASE_URL": "https://h",
                 "LANGFUSE_PUBLIC_KEY": "p",
                 "LANGFUSE_SECRET_KEY": "s",
-                "LANGFUSE_EXTRA_HEADERS": '{"X-Admission": "value"}',
+                "LANGFUSE_EXTRA_HEADERS": raw,
             }
         )
-        assert receiver.headers["X-Admission"] == "value"
-
-    @pytest.mark.parametrize("raw", ["not json", '["a list"]'])
-    def test_a_malformed_header_set_is_an_error(self, raw: str) -> None:
-        with pytest.raises(lu.UploadError, match="LANGFUSE_EXTRA_HEADERS"):
-            lu.Receiver.from_environment(
-                {
-                    "LANGFUSE_BASE_URL": "https://h",
-                    "LANGFUSE_PUBLIC_KEY": "p",
-                    "LANGFUSE_SECRET_KEY": "s",
-                    "LANGFUSE_EXTRA_HEADERS": raw,
-                }
-            )
 
 
 class TestTheUpload:
