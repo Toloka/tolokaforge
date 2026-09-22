@@ -2415,24 +2415,22 @@ class Orchestrator:
             reason=reason,
         )
 
-    def _warn_grading_hint(self, task_id: str, where: str, reason: str) -> None:
+    def _warn_grading_hint(self, task_id: str, where: str, hint_message: str) -> None:
         """Report one author-facing hint the gate raised beside the task it read.
 
         A hint is non-fatal by construction (``AuthoringReport.fatal`` never
         returns it, at any :class:`GradingFindingSeverity`), so it never affects
         the pre-flight return value. Surfaced through the same warning logger as
         ``unchecked`` so a pack owner who ignores ``tolokaforge validate`` still
-        sees the nudge in the run's log. ``reason`` here carries the
-        ``Finding.message`` text — the parameter name mirrors
-        ``_warn_grading_unchecked`` for grep-compatibility rather than
-        matching ``Finding``'s own field name (``message`` collides with
-        :attr:`logging.LogRecord.message`, so structlog would refuse it).
+        sees the nudge in the run's log. ``hint_message`` names what it holds
+        (``Finding.message``); the bare name ``message`` would collide with
+        :attr:`logging.LogRecord.message`.
         """
         self.logger.warning(
             "Grading validation raised an authoring hint on this task's block",
             task_id=task_id,
             where=where,
-            reason=reason,
+            hint_message=hint_message,
         )
 
     def _build_agent_client(self, agent_config: ModelConfig) -> LLMClient:

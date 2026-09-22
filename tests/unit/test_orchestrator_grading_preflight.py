@@ -771,8 +771,8 @@ def test_a_graded_criterion_without_an_expected_anchor_is_logged_as_a_hint(
     assert [(record.task_id, record.where) for record in hinted] == [
         ("TASK-UNANCHORED-GRADED", "llm_judge.rubric.criteria.clarity")
     ]
-    assert "kind: graded with no 'expected:' anchor" in hinted[0].reason
-    assert "docs/GRADING.md" in hinted[0].reason
+    assert "kind: graded with no 'expected:' anchor" in hinted[0].hint_message
+    assert "docs/GRADING.md" in hinted[0].hint_message
     assert len(conductor.call_log.runs) == 1
 
 
