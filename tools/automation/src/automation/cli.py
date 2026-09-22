@@ -6,8 +6,10 @@ the logic stays unit-testable and the GitHub Actions workflow is a thin caller.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import typer
 
@@ -17,6 +19,7 @@ from automation import (
     cost_summary,
     gateway_catalog,
     greencheck,
+    langfuse_upload,
     model_resolver,
     observe,
     poller,
@@ -294,6 +297,66 @@ def resolve_models(
     gateway_entries = gateway_catalog.fetch_configured_catalog()
     resolutions = model_resolver.resolve_all(request, catalog, gateway_entries=gateway_entries)
     typer.echo(json.dumps([model_resolver.as_dict(r) for r in resolutions], indent=2))
+
+
+@app.command("langfuse-upload")
+def langfuse_upload_cmd(
+    directory: str = typer.Argument(
+        ..., help="a directory of claude -p output files (or one such file)"
+    ),
+    run_id: str = typer.Option(..., "--run-id", help="the run this session belongs to"),
+    label: str = typer.Option(..., "--label", help="what the agents worked on (the trace name)"),
+    session: str | None = typer.Option(None, "--session", help="default: the run id"),
+    run_tag: str = typer.Option(
+        langfuse_upload.DEFAULT_RUN_TAG, "--run-tag", help="the id contract's run tag"
+    ),
+    environment: str | None = typer.Option(
+        None, "--environment", help="default: LANGFUSE_ENVIRONMENT"
+    ),
+    project: str | None = typer.Option(None, "--project", help="default: LANGFUSE_PROJECT"),
+    tag: list[str] = typer.Option(
+        [], "--tag", help="a caller tag, prefix:value (team and run_kind are required)"
+    ),
+    metadata: list[str] = typer.Option(
+        [], "--metadata", help="free trace metadata, key=value (the stage, the iteration, ...)"
+    ),
+    tool_io: str = typer.Option(
+        "drop",
+        "--tool-io",
+        help="what happens to tool arguments and results: drop (default) or scrub",
+    ),
+    receipt: str | None = typer.Option(None, "--receipt", help="write the report JSON here"),
+    summary: str | None = typer.Option(
+        None, "--summary", help="append the report here (default: GITHUB_STEP_SUMMARY)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="read, gate and project, but send nothing and need no key"
+    ),
+) -> None:
+    """Send the agents' own transcripts to the tracing receiver (read, gate, project, send)."""
+    try:
+        report = langfuse_upload.upload(
+            Path(directory),
+            run_id=run_id,
+            label=label,
+            session=session,
+            run_tag=run_tag,
+            environment=environment or os.environ.get("LANGFUSE_ENVIRONMENT"),
+            project=project or os.environ.get("LANGFUSE_PROJECT"),
+            caller_tags=langfuse_upload.parse_pairs(tag, ":", "--tag"),
+            metadata=langfuse_upload.parse_pairs(metadata, "=", "--metadata"),
+            tool_io=tool_io,
+            dry_run=dry_run,
+        )
+    except langfuse_upload.UploadError as exc:
+        # tracing never fails the pipeline: say what is missing and leave the step to decide
+        typer.echo(f"agent transcripts not sent: {exc}", err=True)
+        raise typer.Exit(1) from None
+    if receipt:
+        Path(receipt).write_text(json.dumps(report.as_dict(), indent=2) + "\n", encoding="utf-8")
+    langfuse_upload.write_summary(report, summary)
+    typer.echo(report.as_markdown())
+    raise typer.Exit(0 if report.ok else 1)
 
 
 if __name__ == "__main__":
