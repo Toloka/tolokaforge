@@ -432,3 +432,68 @@ class TestTheEnvironmentGuard:
         assert "test-automation" in report.mismatched[0]["reason"]
         assert not report.ok
         assert "already in another environment" in report.as_markdown()
+
+
+class TestWhatReachesTheWire:
+    """The admission header is what gets a request past the gateway in front of the receiver, and
+    a header that is built but not sent looks exactly like one that is. So this asserts on the
+    real HTTP request, through the real exporter, against a local socket: no network, no service,
+    and no credential that means anything."""
+
+    @staticmethod
+    def _capture(tmp_path: Path, extra: str | None) -> tuple[lu.UploadReport, dict[str, str]]:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        seen: list[dict[str, str]] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                seen.append({k.lower(): v for k, v in self.headers.items()})
+                self.rfile.read(int(self.headers.get("content-length") or 0))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            environment = {
+                "LANGFUSE_OTLP_ENDPOINT": f"http://127.0.0.1:{server.server_address[1]}/v1/traces",
+                "LANGFUSE_PUBLIC_KEY": "public-not-real",
+                "LANGFUSE_SECRET_KEY": "secret-not-real",
+            }
+            if extra:
+                environment["LANGFUSE_EXTRA_HEADERS"] = extra
+            write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+            report = upload(
+                tmp_path, dry_run=False, receiver=lu.Receiver.from_environment(environment)
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+        return report, (seen[0] if seen else {})
+
+    def test_the_admission_header_is_on_the_request_itself(self, tmp_path: Path) -> None:
+        report, headers = self._capture(tmp_path, "X-GitHub-Runner-Key=admission-not-real")
+        assert report.ok, report.as_dict()
+        assert headers.get("x-github-runner-key") == "admission-not-real"
+        assert headers.get("authorization", "").startswith("Basic ")
+        # the receiver selects its direct ingestion path on this header, so it rides along too
+        assert headers.get("x-langfuse-ingestion-version") == "4"
+        assert headers.get("content-type") == "application/x-protobuf"
+
+    def test_without_the_variable_the_request_carries_no_admission_header(
+        self, tmp_path: Path
+    ) -> None:
+        """The send still succeeds against a receiver with no gateway in front of it, which is
+        exactly why this cannot be caught by watching for failures."""
+        report, headers = self._capture(tmp_path, None)
+        assert report.ok
+        assert "x-github-runner-key" not in headers
+        assert headers.get("authorization", "").startswith("Basic ")
