@@ -310,7 +310,10 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
             fn = tc.get("function", tc) if isinstance(tc, dict) else {}
             name = fn.get("name", "?")
             args = fn.get("arguments", "")
-            lines.append(f"  -> tool_call {name}({_neutralise_judge_delimiters(str(args))})")
+            lines.append(
+                f"  -> tool_call {_neutralise_judge_delimiters(str(name))}"
+                f"({_neutralise_judge_delimiters(str(args))})"
+            )
         if msg.get("tool_call_id") and not content:
             lines.append(f"{role}: (tool result)")
     return "\n".join(lines) if lines else "(empty transcript)"

@@ -184,10 +184,10 @@ def test_warmup_call_fires_once_and_anchors_land_in_wrapped_rubric(register_capt
     assert provider.model.call_count == 1  # warm-up call fired
     assert capture.rubric_seen is not None
     by_id = {c.id: c for c in capture.rubric_seen.criteria}
-    assert by_id["clarity"].expected == "auto-anchor: A clear reply is one paragraph."
-    assert by_id["tone"].expected == (
-        "auto-anchor: A professional tone is neither casual nor stiff."
-    )
+    # No synthetic prefix in the judge-facing rubric — the judge would otherwise
+    # see and bias on the tag. Provenance lives in JudgeResult.reasons audit trail.
+    assert by_id["clarity"].expected == "A clear reply is one paragraph."
+    assert by_id["tone"].expected == "A professional tone is neither casual nor stiff."
     # Author-written anchor (binary) untouched; it had no expected so it stays None.
     assert by_id["mentions_id"].expected is None
 
@@ -219,7 +219,7 @@ def test_author_written_anchor_is_passed_through_unchanged(register_capture_kind
     AutoAnchoredRubricJudgeKind().evaluate(**_evaluate_kwargs(rubric, provider))
     by_id = {c.id: c for c in capture.rubric_seen.criteria}
     assert by_id["tone"].expected == "AUTHOR-WRITTEN ANCHOR"
-    assert by_id["clarity"].expected == "auto-anchor: auto-def"
+    assert by_id["clarity"].expected == "auto-def"
 
 
 def test_warmup_usage_folded_into_returned_judge_result(register_capture_kind):
@@ -304,4 +304,4 @@ def test_warmup_response_strips_code_fence(register_capture_kind):
     rubric = _rubric_with_two_graded_one_binary()
     AutoAnchoredRubricJudgeKind().evaluate(**_evaluate_kwargs(rubric, provider))
     by_id = {c.id: c for c in capture.rubric_seen.criteria}
-    assert by_id["clarity"].expected == "auto-anchor: one paragraph"
+    assert by_id["clarity"].expected == "one paragraph"

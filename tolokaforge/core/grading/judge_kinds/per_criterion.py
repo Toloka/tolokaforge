@@ -11,8 +11,8 @@ construction.
 The kind exists as an explicit "isolate every criterion" opt-in for
 task authors who care about per-criterion stability more than cost. It
 is the recommended kind for graded/subjective rubrics of six or more
-criteria where the M50 drift-report identified cross-chunk context loss
-as a real source of drift.
+criteria where cross-chunk context loss is a real source of judge
+drift.
 
 ``kind_config`` accepts no keys — an explicit ``chunk_size`` here would
 be silently ignored, so unknown keys fail loud eagerly. Every fail-loud

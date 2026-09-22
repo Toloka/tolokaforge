@@ -77,7 +77,9 @@ DEFAULT_PANEL: tuple[Mapping[str, Any], ...] = (
 )
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
-_ACCEPTED_KIND_CONFIG_KEYS = frozenset({"panel", "aggregator", "wrapped_kind"})
+_ACCEPTED_KIND_CONFIG_KEYS = frozenset(
+    {"panel", "aggregator", "wrapped_kind", "wrapped_kind_config"}
+)
 
 #: Accepted keys per ``panel`` entry; every other key raises ``ValueError``.
 _ACCEPTED_PANEL_ENTRY_KEYS = frozenset({"provider", "name", "temperature"})
@@ -107,7 +109,9 @@ class JuryRubricJudgeKind:
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
-        panel, aggregator, wrapped_kind_name = _resolve_kind_config(kind_config)
+        panel, aggregator, wrapped_kind_name, wrapped_kind_config = _resolve_kind_config(
+            kind_config
+        )
         aggregators.validate_sample_count(len(panel), aggregator=aggregator)
         if aggregator == "majority":
             aggregators.require_binary_only(rubric.criteria)
@@ -140,7 +144,7 @@ class JuryRubricJudgeKind:
                 disable_knowledge_search=disable_knowledge_search,
                 custom_system_prompt=custom_system_prompt,
                 include_agent_system_prompt=include_agent_system_prompt,
-                kind_config=None,
+                kind_config=wrapped_kind_config,
                 logger=logger,
             )
             member_results.append(member_result)
@@ -160,17 +164,19 @@ class JuryRubricJudgeKind:
 
 def _resolve_kind_config(
     kind_config: Mapping[str, Any] | None,
-) -> tuple[tuple[Mapping[str, Any], ...], str, str]:
-    """Validate ``kind_config`` and return ``(panel, aggregator, wrapped_kind)``.
+) -> tuple[tuple[Mapping[str, Any], ...], str, str, Mapping[str, Any] | None]:
+    """Validate ``kind_config`` and return
+    ``(panel, aggregator, wrapped_kind, wrapped_kind_config)``.
 
     Raises :class:`ValueError` on any unknown top-level or panel-entry key, a
-    malformed panel entry, or an unrecognised ``aggregator`` — before any
-    judge dispatch runs. Does NOT validate panel size or majority/binary-rubric
-    compatibility; the caller runs :func:`aggregators.validate_sample_count` /
-    :func:`aggregators.require_binary_only` on the returned values.
+    malformed panel entry, a non-``str``/empty ``wrapped_kind``, a
+    non-mapping ``wrapped_kind_config``, or an unrecognised ``aggregator`` —
+    before any judge dispatch runs. ``wrapped_kind_config`` is forwarded
+    verbatim to the wrapped kind so a caller can tune the inner kind (e.g.
+    an explicit ``chunk_size`` when wrapping ``chunked_rubric``).
     """
     if kind_config is None:
-        return DEFAULT_PANEL, DEFAULT_AGGREGATOR, DEFAULT_WRAPPED_KIND
+        return DEFAULT_PANEL, DEFAULT_AGGREGATOR, DEFAULT_WRAPPED_KIND, None
 
     unknown = set(kind_config) - _ACCEPTED_KIND_CONFIG_KEYS
     if unknown:
@@ -185,8 +191,20 @@ def _resolve_kind_config(
     aggregators.validate_aggregator_name(aggregator)
 
     wrapped_kind = kind_config.get("wrapped_kind", DEFAULT_WRAPPED_KIND)
+    if not isinstance(wrapped_kind, str) or not wrapped_kind:
+        raise ValueError(
+            f"jury_rubric wrapped_kind must be a non-empty str; got "
+            f"{type(wrapped_kind).__name__} {wrapped_kind!r}."
+        )
 
-    return panel, aggregator, wrapped_kind
+    wrapped_kind_config = kind_config.get("wrapped_kind_config")
+    if wrapped_kind_config is not None and not isinstance(wrapped_kind_config, Mapping):
+        raise ValueError(
+            f"jury_rubric wrapped_kind_config must be a mapping or None; got "
+            f"{type(wrapped_kind_config).__name__} {wrapped_kind_config!r}."
+        )
+
+    return panel, aggregator, wrapped_kind, wrapped_kind_config
 
 
 def _validate_panel(raw_panel: Any) -> tuple[Mapping[str, Any], ...]:
@@ -388,5 +406,10 @@ def _merge_member_results(
         read_tools_offered=head.read_tools_offered,
         state_diff=head.state_diff,
         transcript=tuple(turn for cr in member_results for turn in cr.transcript),
-        chunk_boundaries=(),
+        # Preserve chunk_boundaries from the head member when the wrapped
+        # kind is a chunking kind — every panel member sees the same rubric,
+        # so the boundaries are identical. Downstream offline-replay routes
+        # on this field; erasing it would strip the signal on composed
+        # (jury+chunked) configurations.
+        chunk_boundaries=head.chunk_boundaries,
     )

@@ -21,11 +21,8 @@ __all__ = [
 ]
 
 
-#: Per-dispatch fields that MUST be constant across every dispatch of a
-#: multi-client ``JudgeKind`` (pure functions of the ``evaluate`` inputs). A
-#: mismatch across chunks / samples / panel members is a defensive lock
-#: catching a future kind refactor that accidentally per-dispatches one of
-#: these inputs.
+#: Per-dispatch fields that must be constant across every dispatch of a
+#: multi-client ``JudgeKind`` (chunks / samples / panel members).
 CONSTRUCTION_FIELDS: tuple[str, ...] = (
     "kb_tools_offered",
     "kb_tools_withheld",

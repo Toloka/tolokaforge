@@ -10,13 +10,13 @@ those anchors in-process, and then dispatches the wrapped kind with a
 synthetic :class:`Rubric` whose ``expected:`` fields are filled with the
 judge-authored anchors.
 
-The design attacks the "fuzzy criterion wording" class of judge drift the
-M50 A/B (2026-09-21) identified: on that eval, ``voted_rubric`` absorbed
-sampling-noise flapping but could not fix ``addressed_to_user`` (κ=0)
-because the criterion's description alone under-specifies "met" and the
-judge inferred it differently on each sample. Baking one shared anchor
-into the rubric for the whole flight makes every subsequent grade score
-against the SAME reading of the criterion.
+The design attacks the "fuzzy criterion wording" drift class:
+``voted_rubric``-style K-sample aggregation cannot fix a criterion whose
+description alone under-specifies "met", because the judge infers a
+different reading of the criterion on each sample. Baking one shared
+anchor into the rubric for the whole flight pins every subsequent grade
+to the SAME reading of the criterion, closing the gap K-sample voting
+leaves open.
 
 Fail-loud: any warm-up-call failure (non-2xx, truncated JSON, missing
 criterion in the anchor map, non-string anchor value) raises
@@ -36,6 +36,7 @@ import dataclasses
 import hashlib
 import json
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -54,10 +55,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_WRAPPED_KIND",
-    "PerRubricAnchorCache",
-    "PerRubricAnchorCacheEntry",
     "PerRubricAnchorGeneratorError",
-    "PerRubricAnchorGeneratorTimestamp",
     "AutoAnchoredRubricJudgeKind",
     "clear_anchor_cache",
 ]
@@ -87,23 +85,23 @@ _AnchorMap = dict[str, str]
 
 _CacheKey = tuple[str, str]
 
+#: Max distinct (rubric, judge_model) tuples retained in the process-lifetime
+#: anchor cache. OrderedDict-backed LRU: eviction drops the least-recently-used
+#: entry on overflow, bounding memory on long-running graders that see many
+#: distinct rubrics. Sized to comfortably cover a large evaluation flight; a
+#: cache miss only costs one extra judge call, so overshooting the bound is
+#: correctness-safe.
+_ANCHOR_CACHE_MAX_ENTRIES = 256
+
 # In-process cache: {(rubric_hash, model_hash): (anchor_map, warmup_usage)}.
-# One warm-up call per unique (rubric, judge_model) tuple, amortised across
-# every trial in the process. Not persisted to disk; a follow-up may add
-# `grade_bundles/`-level persistence if flights show it matters.
-_ANCHOR_CACHE: dict[_CacheKey, tuple[_AnchorMap, JudgeUsage]] = {}
+# LRU-bounded so long-running graders don't accumulate entries without bound.
+# Not persisted to disk.
+_ANCHOR_CACHE: OrderedDict[_CacheKey, tuple[_AnchorMap, JudgeUsage]] = OrderedDict()
 _ANCHOR_CACHE_LOCK = threading.Lock()
 
 
 class PerRubricAnchorGeneratorError(RuntimeError):
     """Warm-up call produced no usable anchor map — fail loud."""
-
-
-# Vestige-safe aliases for internal callers that need to introspect the cache
-# in tests. Exposed via ``__all__`` deliberately.
-PerRubricAnchorCache = dict
-PerRubricAnchorCacheEntry = tuple
-PerRubricAnchorGeneratorTimestamp = float
 
 
 def clear_anchor_cache() -> None:
@@ -196,9 +194,9 @@ class AutoAnchoredRubricJudgeKind:
 def _resolve_kind_config(kind_config: Mapping[str, Any] | None) -> str:
     """Validate ``kind_config`` and return ``wrapped_kind``.
 
-    Raises :class:`ValueError` on any unknown key, matching the eager-
-    validation stance of the other wrapper kinds (``voted_rubric``,
-    ``jury_rubric``).
+    Raises :class:`ValueError` on any unknown key or a non-string
+    ``wrapped_kind``, matching the eager-validation stance of the other
+    wrapper kinds (``voted_rubric``, ``jury_rubric``).
     """
     if kind_config is None:
         return DEFAULT_WRAPPED_KIND
@@ -208,7 +206,13 @@ def _resolve_kind_config(kind_config: Mapping[str, Any] | None) -> str:
             f"auto_anchored_rubric kind_config contains unknown key(s): "
             f"{sorted(unknown)}. Accepted keys: {sorted(_ACCEPTED_KIND_CONFIG_KEYS)}."
         )
-    return kind_config.get("wrapped_kind", DEFAULT_WRAPPED_KIND)
+    wrapped_kind = kind_config.get("wrapped_kind", DEFAULT_WRAPPED_KIND)
+    if not isinstance(wrapped_kind, str) or not wrapped_kind:
+        raise ValueError(
+            f"auto_anchored_rubric wrapped_kind must be a non-empty str; "
+            f"got {type(wrapped_kind).__name__} {wrapped_kind!r}."
+        )
+    return wrapped_kind
 
 
 def _cache_key(rubric: Rubric, judge_model_config: ModelConfig) -> _CacheKey:
@@ -228,21 +232,29 @@ def _load_or_generate_anchors(
     judge_model_config: ModelConfig,
     judge_model_provider: JudgeModelProvider,
 ) -> tuple[_AnchorMap, JudgeUsage]:
-    """Return the cached anchor map for this (rubric, judge_model) or generate + cache one."""
+    """Return the cached anchor map for this (rubric, judge_model) or generate + cache one.
+
+    Check-generate-write runs under a single lock so two concurrent
+    ``evaluate`` calls on the same key share exactly one warm-up call.
+    On cache overflow, LRU eviction drops the least-recently-used entry.
+    """
     key = _cache_key(rubric, judge_model_config)
     with _ANCHOR_CACHE_LOCK:
         cached = _ANCHOR_CACHE.get(key)
-    if cached is not None:
-        return cached
+        if cached is not None:
+            _ANCHOR_CACHE.move_to_end(key)
+            return cached
 
-    anchor_map, warmup_usage = _generate_anchors(
-        rubric=rubric,
-        unanchored_ids=unanchored_ids,
-        judge_model_config=judge_model_config,
-        judge_model_provider=judge_model_provider,
-    )
-    with _ANCHOR_CACHE_LOCK:
+        anchor_map, warmup_usage = _generate_anchors(
+            rubric=rubric,
+            unanchored_ids=unanchored_ids,
+            judge_model_config=judge_model_config,
+            judge_model_provider=judge_model_provider,
+        )
         _ANCHOR_CACHE[key] = (anchor_map, warmup_usage)
+        _ANCHOR_CACHE.move_to_end(key)
+        while len(_ANCHOR_CACHE) > _ANCHOR_CACHE_MAX_ENTRIES:
+            _ANCHOR_CACHE.popitem(last=False)
     return anchor_map, warmup_usage
 
 
@@ -333,24 +345,21 @@ def _parse_anchor_response(text: str, unanchored_ids: tuple[str, ...]) -> _Ancho
     return anchor_map
 
 
-_ANCHOR_PREFIX = "auto-anchor: "
-
-
 def _apply_anchors(rubric: Rubric, anchor_map: _AnchorMap) -> Rubric:
     """Build a synthetic ``Rubric`` with the auto-anchors filled in.
 
-    Author-written ``expected:`` is untouched. The auto-anchor is prefixed with
-    ``auto-anchor: `` so a downstream reader who inspects the rendered rubric
-    can tell the anchor came from the harness, not the author.
+    Author-written ``expected:`` is untouched. The anchor text is written
+    verbatim into ``expected:`` — no synthetic prefix leaks into the judge
+    prompt (the judge would otherwise see and bias on the tag). Provenance
+    for the audit trail lives in ``JudgeResult.reasons`` via
+    :func:`_render_anchor_audit`, which lists every auto-generated anchor.
     """
     if not anchor_map:
         return rubric
     new_criteria: list[Criterion] = []
     for c in rubric.criteria:
         if c.id in anchor_map and c.expected is None:
-            new_criteria.append(
-                c.model_copy(update={"expected": f"{_ANCHOR_PREFIX}{anchor_map[c.id]}"})
-            )
+            new_criteria.append(c.model_copy(update={"expected": anchor_map[c.id]}))
         else:
             new_criteria.append(c)
     return Rubric(criteria=new_criteria, reference=rubric.reference)

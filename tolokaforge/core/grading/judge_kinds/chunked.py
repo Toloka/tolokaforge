@@ -66,8 +66,7 @@ __all__ = [
     "ChunkedRubricJudgeKind",
 ]
 
-#: Per-criterion verdict output-token estimate. Module-level so callers can
-#: monkeypatch it in tests; production code treats it as fixed.
+#: Per-criterion verdict output-token estimate the adaptive heuristic uses.
 TOKENS_PER_CRITERION_ESTIMATE = 200
 
 #: Fraction of ``ModelConfig.max_tokens`` the adaptive heuristic packs criteria
@@ -263,9 +262,9 @@ def _errored_trial(
     """Compose the whole-trial ERRORED :class:`JudgeResult` for a chunk failure.
 
     ``chunk_boundaries`` carries every boundary attempted (including chunks
-    that never ran) so #1569 can persist them and offline replay can retry
-    only the failing chunk. Usage is summed across every chunk that dispatched
-    so the errored trial still records real cost.
+    that never ran) so the persistence layer can record them and offline
+    replay can retry only the failing chunk. Usage is summed across every
+    chunk that dispatched so the errored trial still records real cost.
     """
     return JudgeResult(
         status=JudgeStatus.ERRORED,

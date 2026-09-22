@@ -163,15 +163,29 @@ def get_provider_binding(provider: str) -> ProviderBinding:
 
 #: Credential env-var names for providers litellm authenticates directly from
 #: process env — ``providers.yaml`` carries no ``api_key_env``/``api_keys_env``
-#: for these, so :func:`credential_env_names` falls back here. Mirrors the
-#: exact name set ``tolokaforge/dx/cli/main.py`` and
-#: ``tolokaforge/runner/__main__.py`` mirror into ``os.environ`` at startup.
+#: for these, so :func:`credential_env_names` falls back here.
 _CREDENTIAL_ENV_NAME_FALLBACKS: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY",),
     "gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
 }
+
+#: Every credential env-var name the CLI + runner mirror into ``os.environ``
+#: at startup so litellm can authenticate. This tuple is the source of truth
+#: shared by both mirror sites, so a new provider added here reaches every
+#: startup export path in one edit. Consumed by
+#: ``tolokaforge/dx/cli/main.py`` and ``tolokaforge/runner/__main__.py``.
+CLI_EXPORTED_CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEYS",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "NOVA_API_KEY",
+    "TYPESENSE_API_KEY",
+)
 
 
 def credential_env_names(provider: str) -> tuple[str, ...]:

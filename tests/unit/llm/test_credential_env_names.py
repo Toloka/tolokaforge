@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.llm.providers import credential_env_names
+from tolokaforge.core.llm.providers import (
+    _CREDENTIAL_ENV_NAME_FALLBACKS,
+    CLI_EXPORTED_CREDENTIAL_ENV_NAMES,
+    credential_env_names,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -40,3 +44,23 @@ def test_unrecognised_provider_returns_empty_tuple() -> None:
 def test_mock_provider_has_no_credential_to_validate() -> None:
     """``mock``'s binding has every field at its inert default — nothing to check."""
     assert credential_env_names("mock") == ()
+
+
+def test_fallback_providers_all_covered_by_cli_export_list() -> None:
+    """Every env-var name the fallbacks resolve to must appear in the CLI export list.
+
+    The CLI mirrors ``CLI_EXPORTED_CREDENTIAL_ENV_NAMES`` into ``os.environ``
+    at startup so litellm can authenticate. If a new provider is added to
+    ``_CREDENTIAL_ENV_NAME_FALLBACKS`` without updating the CLI list, jury's
+    per-provider preflight would silently pass while the runtime call
+    later fails on a missing env var. Lock the two lists in a single test.
+    """
+    exported = set(CLI_EXPORTED_CREDENTIAL_ENV_NAMES)
+    for provider, names in _CREDENTIAL_ENV_NAME_FALLBACKS.items():
+        missing = [n for n in names if n not in exported]
+        assert not missing, (
+            f"provider {provider!r} needs env var(s) {missing} that are not in "
+            f"CLI_EXPORTED_CREDENTIAL_ENV_NAMES; the CLI startup mirror will "
+            f"not populate them, so preflight would silently pass but the "
+            f"real litellm call would fail on a missing env var."
+        )

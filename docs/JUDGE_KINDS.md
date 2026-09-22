@@ -14,8 +14,8 @@ the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
 Six kinds ship in the reference distribution: `single_shot_rubric`
-(wraps `LLMJudge` in one shot, byte-identical with the pre-seam
-`LLMJudgeRubricEvaluator`), `chunked_rubric` (one `LLMJudge`
+(wraps `LLMJudge` in one shot, byte-identical with the direct
+`LLMJudgeRubricEvaluator` path), `chunked_rubric` (one `LLMJudge`
 invocation per chunk of the rubric's criteria, optionally grouped by
 `Criterion.chunk_group` — the opt-in kind for large rubrics where a
 single `submit_report` payload would exceed the judge model's
@@ -152,8 +152,8 @@ grading:
 No `kind_config` — the kind receives it on the Protocol and discards it
 unread. One `LLMJudge` call produces the whole rubric's verdict in a
 single `submit_report`; this is the default, byte-identical with the
-pre-seam evaluator, and every task pack that predates the `JudgeKind`
-seam runs this kind unchanged.
+direct `LLMJudgeRubricEvaluator` path, and every task pack with no
+`judge_kind` field runs this kind unchanged.
 
 ### `chunked_rubric`
 
