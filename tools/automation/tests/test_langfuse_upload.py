@@ -334,3 +334,82 @@ class TestThePairParsing:
     def test_a_malformed_pair_is_an_error(self, value: str) -> None:
         with pytest.raises(lu.UploadError, match="must be name"):
             lu.parse_pairs([value], ":", "--tag")
+
+
+class TestTheEnvironmentGuard:
+    """A v4 receiver merges observations by id alone, so the same trace re-sent under a second
+    environment is a silent no-op reported as success. One read before the write catches it."""
+
+    @staticmethod
+    def receiver_answering(pages: list[Any]) -> lu.Receiver:
+        receiver = lu.Receiver(endpoint="https://h/v1/traces", base_url="https://h")
+        answers = iter(pages)
+        object.__setattr__(receiver, "_get", lambda path: next(answers, None))
+        return receiver
+
+    def test_it_reads_the_environment_of_every_row(self) -> None:
+        receiver = self.receiver_answering(
+            [{"data": [{"id": "a", "environment": "test"}, {"id": "b", "environment": "test"}]}]
+        )
+        assert receiver.environments_of("trace") == {"test"}
+
+    def test_a_row_without_an_environment_sits_in_the_default(self) -> None:
+        receiver = self.receiver_answering([{"data": [{"id": "a"}]}])
+        assert receiver.environments_of("trace") == {"default"}
+
+    def test_a_trace_nobody_wrote_answers_with_nothing(self) -> None:
+        receiver = self.receiver_answering([{"data": []}])
+        assert receiver.environments_of("trace") == set()
+
+    def test_it_walks_the_pages_and_stops_on_a_short_one(self) -> None:
+        full = {
+            "data": [{"id": str(i), "environment": "test"} for i in range(lu.READ_PAGE)],
+            "meta": {"cursor": "next"},
+        }
+        receiver = self.receiver_answering(
+            [full, {"data": [{"id": "last", "environment": "production-automation"}]}]
+        )
+        assert receiver.environments_of("trace") == {"test", "production-automation"}
+
+    def test_a_receiver_whose_rest_api_is_unreachable_says_so(self) -> None:
+        """``None`` is "could not ask", which is not the same as "nowhere"."""
+        assert self.receiver_answering([None]).environments_of("trace") is None
+
+    @pytest.mark.parametrize(
+        ("found", "environment", "expected"),
+        [
+            ({"test"}, "production-automation", {"test"}),
+            ({"production-automation"}, "production-automation", set()),
+            ({"default"}, None, set()),
+            (set(), "production-automation", set()),
+            (None, "production-automation", set()),
+        ],
+    )
+    def test_only_a_real_difference_counts(
+        self, found: set[str] | None, environment: str | None, expected: set[str]
+    ) -> None:
+        receiver = lu.Receiver(endpoint="https://h/v1/traces", base_url="https://h")
+        object.__setattr__(receiver, "environments_of", lambda trace_id: found)
+        assert lu._held_elsewhere(receiver, "trace", environment) == expected
+
+    def test_no_receiver_means_no_question_to_ask(self) -> None:
+        assert lu._held_elsewhere(None, "trace", "production-automation") == set()
+
+    def test_a_trace_already_elsewhere_is_not_sent(self, tmp_path: Path) -> None:
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        receiver = self.receiver_answering(
+            [{"data": [{"id": "a", "environment": "test-automation"}]}]
+        )
+        exporter = FakeExporter()
+        import tolokaforge_langfuse.otlp_transport as transport
+
+        original = transport.make_otlp_exporter
+        transport.make_otlp_exporter = lambda *a, **k: exporter  # type: ignore[assignment]
+        try:
+            report = upload(tmp_path, dry_run=False, receiver=receiver)
+        finally:
+            transport.make_otlp_exporter = original  # type: ignore[assignment]
+        assert report.sent == [] and exporter.batches == []
+        assert "test-automation" in report.mismatched[0]["reason"]
+        assert not report.ok
+        assert "already in another environment" in report.as_markdown()

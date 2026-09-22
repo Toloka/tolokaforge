@@ -37,11 +37,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 OTLP_PATH = "/api/public/otel/v1/traces"
 PROJECTS_PATH = "/api/public/projects"
+OBSERVATIONS_PATH = "/api/public/v2/observations"
+# ``core`` alone has no environment and ``basic`` brings it in the same request, no second round trip
+OBSERVATION_FIELDS = "core,basic"
+READ_PAGE = 100
+# a row the receiver filed under no environment of its own sits in its default
+DEFAULT_ENVIRONMENT = "default"
 DEFAULT_RUN_TAG = "v1"
-PROJECT_TIMEOUT_S = 10.0
+READ_TIMEOUT_S = 10.0
 
 # ``agent_iter_3.jsonl`` is the third resolve iteration; ``agent_finalize.jsonl`` is the finalize
 # step. Anything else keeps its own stem, so a new agent step needs no change here to be traced.
@@ -75,23 +82,56 @@ class Receiver:
         headers.update(_extra_headers(env.get("LANGFUSE_EXTRA_HEADERS")))
         return cls(endpoint=endpoint, headers=headers, base_url=base or None)
 
-    def project_name(self) -> str | None:
-        """The receiver's own name for the project these keys open, or ``None`` when it cannot be
-        asked (an alias in front of the receiver may not route the REST API at all)."""
+    def _get(self, path: str) -> Any:
+        """One REST read, or ``None`` when the receiver's REST API cannot be reached: an alias in
+        front of it may route the OTLP endpoint and nothing else."""
         if not self.base_url:
             return None
-        request = urllib.request.Request(f"{self.base_url}{PROJECTS_PATH}", headers=self.headers)
+        request = urllib.request.Request(f"{self.base_url}{path}", headers=self.headers)
         try:
-            with urllib.request.urlopen(request, timeout=PROJECT_TIMEOUT_S) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(request, timeout=READ_TIMEOUT_S) as response:
+                return json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, ValueError, OSError):
             return None
+
+    def project_name(self) -> str | None:
+        """The receiver's own name for the project these keys open, or ``None`` when it cannot be
+        asked."""
+        payload = self._get(PROJECTS_PATH)
         projects = payload.get("data") if isinstance(payload, Mapping) else None
         if isinstance(projects, Sequence) and projects:
             first = projects[0]
             if isinstance(first, Mapping):
                 return str(first.get("name") or "") or None
         return None
+
+    def environments_of(self, trace_id: str) -> set[str] | None:
+        """Every environment the receiver already holds rows of this trace in.
+
+        A v4 receiver merges observations **by id alone**: re-sending a trace under a second
+        environment is a silent no-op that reports success and leaves every row where it first
+        landed. So the environment a trace already lives in is the one fact worth a read before a
+        write. ``None`` means the question could not be asked, which is not the same as "nowhere".
+        """
+        found: set[str] = set()
+        cursor = ""
+        while True:
+            query = (
+                f"traceId={quote(trace_id, safe='')}&fields={OBSERVATION_FIELDS}&limit={READ_PAGE}"
+            )
+            if cursor:
+                query += f"&cursor={quote(cursor, safe='')}"
+            payload = self._get(f"{OBSERVATIONS_PATH}?{query}")
+            if payload is None:
+                return None
+            rows = (payload.get("data") if isinstance(payload, Mapping) else None) or []
+            page = [row for row in rows if isinstance(row, Mapping)]
+            found.update(str(row.get("environment") or DEFAULT_ENVIRONMENT) for row in page)
+            meta = (payload.get("meta") or {}) if isinstance(payload, Mapping) else {}
+            cursor = str(meta.get("cursor") or "")
+            # a short page ends the walk whatever the cursor says: this read must never spin
+            if not cursor or len(page) < READ_PAGE:
+                return found
 
 
 def _extra_headers(raw: str | None) -> dict[str, str]:
@@ -126,12 +166,13 @@ class UploadReport:
     sent: list[dict[str, Any]] = field(default_factory=list)
     refused: list[dict[str, str]] = field(default_factory=list)
     blocked: list[dict[str, str]] = field(default_factory=list)
+    mismatched: list[dict[str, str]] = field(default_factory=list)
     failed: list[dict[str, str]] = field(default_factory=list)
     dry_run: bool = False
 
     @property
     def ok(self) -> bool:
-        return not (self.refused or self.blocked or self.failed)
+        return not (self.refused or self.blocked or self.mismatched or self.failed)
 
     @property
     def spans(self) -> int:
@@ -145,6 +186,7 @@ class UploadReport:
             "sent": self.sent,
             "refused": self.refused,
             "blocked": self.blocked,
+            "mismatched": self.mismatched,
             "failed": self.failed,
             "ok": self.ok,
         }
@@ -159,6 +201,7 @@ class UploadReport:
         for label, entries in (
             ("refused by the reader", self.refused),
             ("blocked by the safety gate", self.blocked),
+            ("already in another environment", self.mismatched),
             ("not sent", self.failed),
         ):
             if entries:
@@ -238,6 +281,18 @@ def upload(
             report.blocked.append({"file": name, "reason": ", ".join(str(f) for f in findings)})
             continue
 
+        elsewhere = _held_elsewhere(receiver, built.trace_id, environment)
+        if elsewhere:
+            report.mismatched.append(
+                {
+                    "file": name,
+                    "reason": f"the receiver already holds this trace in "
+                    f"{', '.join(sorted(elsewhere))}; sending it as "
+                    f"{environment or DEFAULT_ENVIRONMENT} would be a silent no-op",
+                }
+            )
+            continue
+
         spans = otlp_spans.spans_from_events(built.events, environment=environment)
         if exporter is None:
             report.sent.append(
@@ -266,6 +321,21 @@ def upload(
             }
         )
     return report
+
+
+def _held_elsewhere(receiver: Receiver | None, trace_id: str, environment: str | None) -> set[str]:
+    """The environments this trace already lives in, other than the one we are about to write.
+
+    Empty when there is nothing there, when the question cannot be asked, or when there is no
+    receiver at all (a dry run). Not a substitute for the deployment pinning one environment per
+    set of keys: a guard against the one failure mode a v4 receiver makes invisible.
+    """
+    if receiver is None:
+        return set()
+    found = receiver.environments_of(trace_id)
+    if found is None:
+        return set()
+    return found - {environment or DEFAULT_ENVIRONMENT}
 
 
 def write_summary(report: UploadReport, path: str | None = None) -> None:
