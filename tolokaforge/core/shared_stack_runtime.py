@@ -1411,8 +1411,12 @@ class SharedStackRuntimeBackend:
         (empty ``trial_stack_handles``) skips capture because the
         run-scope handles are torn down at :meth:`close`, not
         :meth:`teardown`.
+
+        Gated per the :class:`~tolokaforge.core.runtime.RuntimeBackend`
+        Protocol: writes only when ``capture_worthy`` (the executor's
+        diagnostics verdict) or the config's ``on_success`` debug policy is
+        set; otherwise returns ``{}`` without touching disk.
         """
-        del capture_worthy  # signal only — presence in kwargs is the trigger
         if self._env_manifest is None and not self._per_trial_mode:
             return {}
         from tolokaforge.core.composition_runtime import ComposedEnvHandle
@@ -1420,6 +1424,13 @@ class SharedStackRuntimeBackend:
         if not isinstance(handle, ComposedEnvHandle) or not handle.trial_stack_handles:
             return {}
         if self.log_capture is None:
+            return {}
+        # Gate on the executor's verdict OR the on-success debug policy — the
+        # RuntimeBackend Protocol contract (see ``capture_service_logs`` there).
+        # A completed-and-passing trial with the default ``on_success=False``
+        # keeps the output dir bounded; the mere presence of the kwarg is not
+        # itself the trigger.
+        if not (capture_worthy or self.log_capture.on_success):
             return {}
         from tolokaforge.core.compose_materialisation import trial_services_dir
 

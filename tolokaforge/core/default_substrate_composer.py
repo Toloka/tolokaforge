@@ -27,6 +27,7 @@ from tolokaforge.core.compose_materialisation import (
     LogCaptureConfig,
     run_services_dir,
     trial_services_dir,
+    write_capture_manifest,
 )
 from tolokaforge.core.composition_runtime import (
     ComposedEnvHandle,
@@ -195,6 +196,11 @@ class DefaultSubstrateComposer:
         try:
             self._apply_reset_recipes(manifest, [h for _, h in newly], run_sub.seeds, spec.trial_id)
         except BaseException:
+            # The stacks came up healthy; a reset-recipe failure leaves real
+            # service logs worth capturing for diagnosis before teardown.
+            _capture_provision_failure_logs(
+                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec.trial_id
+            )
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise
 
@@ -288,6 +294,9 @@ class DefaultSubstrateComposer:
             runner_handle, runner_decl.runner_service or "", manifest.runner_port
         )
         if runner_endpoint is None:
+            _capture_provision_failure_logs(
+                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec.trial_id
+            )
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise ProvisionError(
                 trial_id=spec.trial_id,
@@ -314,6 +323,9 @@ class DefaultSubstrateComposer:
                 timeout=self.connect_timeout,
             )
         except ProvisionError:
+            _capture_provision_failure_logs(
+                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec.trial_id
+            )
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise
         endpoints = _resolve_env_endpoints(
@@ -778,6 +790,48 @@ def _find_runner_owner(
         if decl.runner_service is not None:
             return handle, decl
     return None, None
+
+
+def _capture_provision_failure_logs(
+    materialiser: ComposeMaterialiser,
+    handles: list[StackHandle],
+    log_capture: LogCaptureConfig | None,
+    trial_id: str,
+) -> None:
+    """Best-effort per-service log capture on a provision-stage failure that
+    happens *after* the trial stacks are up (reset-recipe, readiness gate,
+    runner-endpoint-not-exposed), before the partial stacks are torn down.
+
+    No-op when capture is disabled. Writes the per-service ``.log`` files plus a
+    ``services/_capture.yaml`` durable record (``capture_reason="provision_error"``)
+    — the provision path never reaches ``conductor.run``, so there is no
+    ``metrics.yaml`` to amend. Never raises: the materialiser's ``capture_logs``
+    swallows its own errors and the manifest write is guarded, so a capture
+    failure can never mask the :class:`ProvisionError` the caller is about to
+    raise. Materialise-time (stack-never-came-up) failures are captured by the
+    materialiser itself with ``capture_reason="materialise_error"``.
+    """
+    if log_capture is None:
+        return
+    dest_dir = trial_services_dir(log_capture.output_root, trial_id)
+    totals: dict[str, int] = {}
+    for handle in handles:
+        service_names = tuple(getattr(handle, "service_names", ()))
+        if not service_names:
+            continue
+        captured = materialiser.capture_logs(handle, service_names, dest_dir, log_capture.tail)
+        for name, size in captured.items():
+            totals[name] = totals.get(name, 0) + size
+    if not totals:
+        return
+    try:
+        write_capture_manifest(dest_dir, log_capture.tail, totals, capture_reason="provision_error")
+    except Exception:  # noqa: BLE001 — fail-safe: must never mask the ProvisionError
+        logger.exception(
+            "DefaultSubstrateComposer: provision-failure capture manifest write "
+            "failed for trial %r",
+            trial_id,
+        )
 
 
 def _teardown_handles_best_effort(
