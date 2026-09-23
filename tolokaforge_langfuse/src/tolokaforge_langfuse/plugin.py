@@ -9,7 +9,7 @@ where it is, how to authenticate, which deployment profile applies, and returns 
 ``None`` when nothing asks for it. It raises the engine's ``TracingConfigError`` for a configuration
 it cannot honour, at run start, before any service starts; nothing raises into a trial later.
 
-A launcher that owns the receiver (the Langfuse connector's ``with-destination``) injects the
+A launcher that owns the receiver (the Langfuse connector's ``with-environment``) injects the
 endpoint, the headers, extra tags (``TOLOKAFORGE_TRACING_TAGS``) and the project the credentials
 must open (``TOLOKAFORGE_TRACING_EXPECT_PROJECT``); ``expect_project`` is checked against the
 receiver before the first export and a mismatch refuses to trace (ADR-0047, destinations
@@ -23,15 +23,15 @@ for attachments and gradings is ``<base>``), ``LANGFUSE_PUBLIC_KEY`` / ``LANGFUS
 ``LANGFUSE_EXTRA_HEADERS`` (``k=v,k2=v2``, a gateway's own header) and optional
 ``LANGFUSE_PROJECT`` (the project the keys must open; also the ``project:`` tag).
 
-The deployment profile (ADR-0047, parity amendment; ``profile``):
-``observability.tracing.options.langfuse.profile`` or ``TOLOKAFORGE_TRACING_PROFILE`` names a TOML
-this module validates and applies without knowing any value: the native ``environment`` rule
-(``LANGFUSE_ENVIRONMENT`` or the config's
-``environment`` literal override it), fixed tags and metadata, the profile version that joins
-the native ``version`` field, optionally the model-name rules. ``TOLOKAFORGE_TRACING_METADATA``
-(``key=value,...``) carries the per-run metadata the offline command receives as ``--metadata``;
-a key the projection writes itself is a configuration error at run start, as is a profile that
-does not load or an environment outside the receiver's alphabet.
+The deployment's configuration (ADR-0047, parity and configuration amendments) is the block
+``observability.tracing.options.langfuse``, usually under ``run_defaults`` of the enclosing
+``project.yaml``: the profile (inline, or a TOML / YAML path; ``TOLOKAFORGE_TRACING_PROFILE``
+without one), the one ``project`` the credentials must open and its native ``environments`` with
+what each accepts. :func:`tolokaforge_langfuse.preflight.resolve_plan` turns the block and the
+launcher's variables into the run's tags, metadata and environment without any network or engine
+call, the same code the offline connector and the CI pre-check run; this module adds the
+receiver: endpoint, credentials, the project check, the receiver family and the observer.
+Relative paths in the block anchor to the nearest ``project.yaml`` above the working directory.
 
 The pairing with the engine is checked once per run (:func:`check_engine_api`): the engine's
 ``PLUGIN_API_VERSION`` must equal this package's ``__api_version__``; a mismatch is a
@@ -45,11 +45,9 @@ import base64
 import logging
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-from pydantic import ValidationError
 
 from tolokaforge.observability.factory import RunIdentity, TracingConfigError, engine_version
 from tolokaforge.observability.observer import TrialObserver
@@ -60,26 +58,15 @@ from tolokaforge_langfuse.config import LangfuseConfig
 # behaviour behind them (the capability probe, the bundle projection). Neither pulls the
 # OpenTelemetry SDK in, which is why they can be imported here and the observer cannot.
 from tolokaforge_langfuse.media import SERVER_V3, SERVER_V4
-from tolokaforge_langfuse.model_names import (
-    NONE,
-    ModelNameResolver,
-    ModelNameResolverError,
-    build_model_name_resolver,
-)
-from tolokaforge_langfuse.profile import (
-    ENVIRONMENT_ENV,
-    METADATA_ENV,
-    NO_PROFILE,
-    PROFILE_ENV,
-    TracingProfile,
-    TracingProfileError,
-    check_caller_inputs,
-    check_environment,
-    load_tracing_profile,
-    parse_metadata_variable,
+from tolokaforge_langfuse.preflight import (
+    PreflightError,
+    TracingPlan,
+    anchor_directory,
+    producer_version,
+    read_settings,
+    resolve_plan,
 )
 from tolokaforge_langfuse.projection import PROJECTION_FULL
-from tolokaforge_langfuse.vocabulary import VocabularyError, validate_caller_tag
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import TracingConfig
@@ -87,8 +74,6 @@ if TYPE_CHECKING:
 # the standard OTel receiver variables (the SDK's own names) and the engine's launcher variables
 OTLP_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
-TRACING_TAGS_ENV = "TOLOKAFORGE_TRACING_TAGS"
-TRACING_EXPECT_PROJECT_ENV = "TOLOKAFORGE_TRACING_EXPECT_PROJECT"
 TRACING_SESSION_ID_ENV = "TOLOKAFORGE_TRACING_SESSION_ID"
 TRACING_LABEL_ENV = "TOLOKAFORGE_TRACING_LABEL"
 # the one switch and the plain Langfuse receiver variables
@@ -96,7 +81,6 @@ LANGFUSE_ENABLED_ENV = "LANGFUSE_TRACING_ENABLED"
 LANGFUSE_BASE_URL_ENV = "LANGFUSE_BASE_URL"
 LANGFUSE_PUBLIC_KEY_SECRET = "LANGFUSE_PUBLIC_KEY"
 LANGFUSE_SECRET_KEY_SECRET = "LANGFUSE_SECRET_KEY"
-LANGFUSE_PROJECT_ENV = "LANGFUSE_PROJECT"
 LANGFUSE_EXTRA_HEADERS_SECRET = "LANGFUSE_EXTRA_HEADERS"
 LANGFUSE_OTEL_PATH = "/api/public/otel/v1/traces"
 _TRUE = frozenset({"1", "true", "yes", "on"})
@@ -120,16 +104,6 @@ def check_engine_api() -> None:
         )
 
 
-def validate_tag(tag: str, profile: TracingProfile = NO_PROFILE) -> str:
-    """A caller tag: ``<prefix>:<value>`` under a caller prefix of the vocabulary (the launcher's
-    ``project`` admitted), the value inside the closed list when the prefix has one; the
-    prefixes the producers derive themselves are refused."""
-    try:
-        return validate_caller_tag(tag, profile_values=profile.values, launcher=True)
-    except VocabularyError as exc:
-        raise TracingConfigError(f"tracing tag: {exc}") from exc
-
-
 def build(
     tracing: TracingConfig | None,
     identity: RunIdentity,
@@ -147,16 +121,10 @@ def build(
     if tracing is None or tracing.exporter != "otlp":
         return None
     check_engine_api()  # only a run that traces needs the contract to hold
-    settings = read_config(tracing.options)
+    plan = plan_run(tracing)
+    settings = plan.settings
     run_id = identity.run_id
     endpoint = resolve_endpoint(tracing.endpoint)
-    profile = load_profile(settings.profile)
-    tags, origins = merge_tag_sources(
-        ("config", tracing.tags),
-        ("launcher", environment_tags()),
-        ("profile", profile.fixed_tags),
-        profile=profile,
-    )
     try:
         from tolokaforge_langfuse.otel import (
             OTelTrialObserver,
@@ -172,23 +140,10 @@ def build(
         raise TracingConfigError(
             "tolokaforge-langfuse needs the OpenTelemetry SDK it depends on: reinstall the package"
         ) from exc
-    resolver = resolve_model_names(settings, profile)
     headers = receiver_headers()
-    expect_project = (
-        settings.expect_project
-        or _env(TRACING_EXPECT_PROJECT_ENV)
-        or _env(LANGFUSE_PROJECT_ENV)
-        or None
-    )
     project_verified = PROJECT_UNCHECKED
-    if expect_project:
-        project_verified = check_expected_project(settings, endpoint, headers, expect_project)
-        # the project tag mirrors the destination (ADR-0047): the declared project, once checked
-        if not any(tag.startswith("project:") for tag in tags):
-            tags, origins = merge_tag_sources(
-                *[(origins[t.partition(":")[0]], [t]) for t in tags],
-                ("receiver", [f"project:{expect_project}"]),
-            )
+    if plan.expect_project:
+        project_verified = check_expected_project(settings, endpoint, headers, plan.expect_project)
     server_api = resolve_server_family(settings, endpoint, headers)
     if server_api == SERVER_V4 and settings.projection != PROJECTION_FULL:
         raise TracingConfigError(
@@ -196,21 +151,14 @@ def build(
             "be used with the v4 write-once layout: a trace's root "
             "observation comes from the persisted bundle and only projection='full' writes one"
         )
-    environment = resolve_environment(settings.environment, profile, tags)
-    metadata = merge_metadata(tracing.metadata, profile)
-    # the vocabulary's and the profile's discipline over the launcher's inputs, at run start
-    try:
-        check_caller_inputs(profile, tags, metadata=metadata.keys(), launcher=True)
-    except TracingProfileError as exc:
-        raise TracingConfigError(str(exc)) from exc
     release = engine_release()
     producer = producer_identity()
-    version = producer_version(producer, resolver.rules_version, profile)
+    version = producer_version(producer, plan.resolver.rules_version, plan.profile)
     attachments = build_attachments(
         settings,
         endpoint=endpoint,
         headers=headers,
-        environment=environment,
+        environment=plan.environment,
         # in the v4 layout the manifest is part of the root observation, and a legacy
         # trace-create update would be refused anyway
         send_manifest_event=server_api == SERVER_V3,
@@ -236,101 +184,58 @@ def build(
     )
     return OTelTrialObserver(
         queue=queue,
-        resolver=resolver,
+        resolver=plan.resolver,
         label=tracing.label
         or _env(TRACING_LABEL_ENV)
         or (Path(output_dir).name if output_dir else engine_run_id),
         session_id=tracing.session_id or _env(TRACING_SESSION_ID_ENV) or run_id,
-        tags=tags,
-        metadata=metadata,
+        tags=plan.tags,
+        metadata=plan.metadata,
         service_name=tracing.service_name,
         attribute_max_chars=tracing.attribute_max_chars,
         context_messages=tracing.context_messages,
         flush_timeout_s=tracing.flush_timeout_s,
         attachments=attachments,
         gradings=settings.gradings,
-        expect_project=expect_project,
+        expect_project=plan.expect_project,
         project_verified=project_verified,
+        profile_version=plan.profile.version if plan.profile.present else None,
         projection=ProjectionSettings(
             mode=settings.projection,
-            environment=environment,
+            environment=plan.environment,
             release=release,
             version=version,
             producer=producer,
-            derived_groups=profile.derived_groups,
+            derived_groups=plan.profile.derived_groups,
         ),
         server_api=server_api,
     )
 
 
-def read_config(options: Mapping[str, Any]) -> LangfuseConfig:
-    """Validate only this plugin's namespace before starting any receiver-side work."""
-    try:
-        return LangfuseConfig.model_validate(options.get("langfuse", {}))
-    except ValidationError as exc:
-        raise TracingConfigError(f"observability.tracing.options.langfuse: {exc}") from exc
-
-
-def resolve_model_names(settings: LangfuseConfig, profile: TracingProfile) -> ModelNameResolver:
-    """Explicit normalizer rules override the deployment profile's rules."""
-    # the profile's rules select the normalizer unless the config names its own
-    normalizer_kind = settings.model_name_normalizer
-    rules = settings.model_name_rules
-    if rules is None and profile.model_name_rules is not None:
-        normalizer_kind, rules = "toloka", profile.model_name_rules
-    try:
-        return build_model_name_resolver(normalizer_kind, rules)
-    except ModelNameResolverError as exc:
-        raise TracingConfigError(str(exc)) from exc
-
-
-def load_profile(configured: str | None) -> TracingProfile:
-    """The deployment profile in force: the config's ``profile`` path, else
-    ``TOLOKAFORGE_TRACING_PROFILE``, else none; a file that does not load is a configuration
-    error at run start."""
-    path = configured or _env(PROFILE_ENV)
-    if not path:
-        return NO_PROFILE
-    try:
-        return load_tracing_profile(path)
-    except TracingProfileError as exc:
-        raise TracingConfigError(str(exc)) from exc
-
-
-def resolve_environment(
-    configured: str | None, profile: TracingProfile, tags: Sequence[str]
-) -> str | None:
-    """The receiver's native ``environment``: ``LANGFUSE_ENVIRONMENT`` wins, then the config's
-    literal, then the profile's rule over the trace's tags; None leaves the receiver's default.
-    The value must sit inside the receiver's alphabet."""
-    value = _env(ENVIRONMENT_ENV) or configured or profile.environment.resolve(tags)
-    if value is None:
-        return None
-    try:
-        return check_environment(value)
-    except TracingProfileError as exc:
-        raise TracingConfigError(str(exc)) from exc
-
-
-def merge_metadata(configured: Mapping[str, Any], profile: TracingProfile) -> dict[str, Any]:
-    """The caller's trace metadata: the profile's fixed keys, the config's, then
-    ``TOLOKAFORGE_TRACING_METADATA`` (the launcher's per-run values, which win). A key the
-    projection writes itself is a configuration error: it would silently be overwritten or
-    would overwrite a fact of the trial."""
+def plan_run(tracing: TracingConfig) -> TracingPlan:
+    """The run's plan from the engine's merged ``observability.tracing`` and the process
+    environment (:func:`tolokaforge_langfuse.preflight.resolve_plan`); relative paths anchor to
+    the nearest ``project.yaml`` above the working directory. A plan that cannot be honoured is
+    a configuration error at run start."""
     from tolokaforge_langfuse.projection import schema_keys
 
     try:
-        launcher = parse_metadata_variable(_env(METADATA_ENV))
-    except TracingProfileError as exc:
-        raise TracingConfigError(str(exc)) from exc
-    merged: dict[str, Any] = {**profile.fixed_metadata, **configured, **launcher}
-    clashes = sorted(set(merged) & schema_keys())
-    if clashes:
-        raise TracingConfigError(
-            "tracing metadata may not use the keys the projection writes itself: "
-            + ", ".join(clashes)
+        plan = resolve_plan(
+            tracing, os.environ, anchor_directory(), reserved_metadata=schema_keys()
         )
-    return merged
+    except PreflightError as exc:
+        raise TracingConfigError(str(exc)) from exc
+    for warning in plan.warnings:
+        _log.warning("%s", warning)
+    return plan
+
+
+def read_config(options: Mapping[str, Any]) -> LangfuseConfig:
+    """Validate only this plugin's namespace before starting any receiver-side work."""
+    try:
+        return read_settings(options)
+    except PreflightError as exc:
+        raise TracingConfigError(str(exc)) from exc
 
 
 def engine_release() -> str:
@@ -342,17 +247,6 @@ def producer_identity() -> str:
     """The ``uploader_version`` metadata value and the head of the native ``version`` field: this
     package, the code that projects the bundle (the engine's own version is ``release``)."""
     return f"tolokaforge-langfuse-{__version__}"
-
-
-def producer_version(producer: str, rules_version: str, profile: TracingProfile) -> str:
-    """The native ``version`` field: the producer's identity plus the model-name rules and the
-    deployment profile it ran under (differs by producer, by design)."""
-    text = producer
-    if rules_version and rules_version != NONE:
-        text += f"+{rules_version}"
-    if profile.version != NONE:
-        text += f"+{profile.version}"
-    return text
 
 
 def resolve_endpoint(configured: str | None) -> str:
@@ -438,48 +332,6 @@ def receiver_headers() -> dict[str, str] | None:
             )
         return headers
     return langfuse_headers()
-
-
-def environment_tags() -> list[str]:
-    """``TOLOKAFORGE_TRACING_TAGS``: comma-separated ``<prefix>:<value>`` tags a launcher adds."""
-    raw = os.environ.get(TRACING_TAGS_ENV, "")
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def merge_tags(
-    configured: Sequence[str], extra: Sequence[str], profile: TracingProfile = NO_PROFILE
-) -> list[str]:
-    """Config tags plus environment tags, validated; a prefix carrying two different values is a
-    configuration error (a trace never carries two values under one prefix)."""
-    merged, _ = merge_tag_sources(("config", configured), ("launcher", extra), profile=profile)
-    return merged
-
-
-def merge_tag_sources(
-    *sources: tuple[str, Sequence[str]], profile: TracingProfile = NO_PROFILE
-) -> tuple[list[str], dict[str, str]]:
-    """Tags from several sources (``(origin, tags)`` pairs, in precedence order), validated and
-    deduplicated, plus where each prefix's value came from (the origin ranks a later source
-    against the receiver's project tag); a prefix carrying two different values is a
-    configuration error."""
-    merged: list[str] = []
-    values: dict[str, str] = {}
-    origins: dict[str, str] = {}
-    for origin, tags in sources:
-        for tag in tags:
-            validate_tag(tag, profile)
-            prefix, _, value = tag.partition(":")
-            if prefix in values and values[prefix] != value:
-                raise TracingConfigError(
-                    f"tracing tag prefix {prefix!r} given twice with different values: "
-                    f"{values[prefix]!r} and {value!r}"
-                )
-            if prefix not in values:
-                origins[prefix] = origin
-            values[prefix] = value
-            if tag not in merged:
-                merged.append(tag)
-    return merged, origins
 
 
 def resolve_server_family(

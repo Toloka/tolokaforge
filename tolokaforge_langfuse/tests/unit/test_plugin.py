@@ -13,7 +13,8 @@ from tolokaforge_langfuse.model_names import (
     RawModelNameResolver,
     build_model_name_resolver,
 )
-from tolokaforge_langfuse.plugin import merge_tags, resolve_endpoint, validate_tag
+from tolokaforge_langfuse.plugin import resolve_endpoint
+from tolokaforge_langfuse.preflight import PreflightError, merge_tag_sources, validate_tag
 
 from tolokaforge.core.models import ObservabilityConfig, TracingConfig
 from tolokaforge.observability.factory import (
@@ -135,7 +136,7 @@ class TestFactory:
         "tag", ["demo", "model:x/y", "harness:other", "task:T-1", "Config:stem", "a:b c"]
     )
     def test_tags_are_validated(self, tag: str) -> None:
-        with pytest.raises(TracingConfigError):
+        with pytest.raises(PreflightError):
             validate_tag(tag)
 
     def test_good_tags_pass(self) -> None:
@@ -221,14 +222,17 @@ class TestReceiverFromTheEnvironment:
         )
 
     def test_environment_tags_merge_and_a_prefix_never_carries_two_values(self) -> None:
-        assert merge_tags(["team:pilot"], ["project:pilot-dev", "team:pilot"]) == [
+        def merge(configured, extra):
+            return merge_tag_sources(("config", configured), ("launcher", extra))[0]
+
+        assert merge(["team:pilot"], ["project:pilot-dev", "team:pilot"]) == [
             "team:pilot",
             "project:pilot-dev",
         ]
-        with pytest.raises(TracingConfigError, match="given twice"):
-            merge_tags(["project:pilot"], ["project:pilot-dev"])
-        with pytest.raises(TracingConfigError):
-            merge_tags([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
+        with pytest.raises(PreflightError, match="given twice"):
+            merge(["project:pilot"], ["project:pilot-dev"])
+        with pytest.raises(PreflightError):
+            merge([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
 
     def _projects(
         self, monkeypatch, answer, family_answer=(404, b"")
