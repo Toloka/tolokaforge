@@ -480,6 +480,16 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_evaluator=RUNNER_HASH_EVALUATOR,
     ),
     GradingKey(
+        author_key="state_checks.auto_normalize_nullables",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field="StateChecksConfig.auto_normalize_nullables",
+        runner_field="RunnerStateChecksConfig.auto_normalize_nullables",
+        core_evaluator="tolokaforge.core.hash.compute_stable_hash",
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
+    ),
+    GradingKey(
         author_key="state_checks.id_fields",
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
