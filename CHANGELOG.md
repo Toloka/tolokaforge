@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.27.1 (2026-09-23)
+
+### Feat
+
+- **langfuse**: read the deployment's block from the run configuration (#1626)
+
+### Fix
+
+- **observability**: enforce single-attempt OTLP exports and reject redirects (#1622)
+
 ## v0.27.0 (2026-09-21)
 
 ### Feat
