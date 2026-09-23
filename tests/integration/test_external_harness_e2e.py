@@ -52,6 +52,7 @@ _FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "tolokaforge_plugin_f
 _GOLDEN = Path(__file__).parent.parent / "data" / "run_trial_capstone_golden.jsonl"
 _RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"]
 _AGENT_MODEL = {"provider": "openai", "name": "gpt-4"}
+_USER_MODEL = {"provider": "openai", "name": "gpt-4"}
 _TASK_ID = "capstone"
 
 # Runs run_trial over the three fixture seams, builds an Orchestrator baseline
@@ -81,13 +82,14 @@ from tolokaforge_plugin_fixture import FixtureConductor, FixtureGrader, FixtureR
 
 base_dir, out_file, orch_out = sys.argv[1], sys.argv[2], sys.argv[3]
 agent = {"provider": "openai", "name": "gpt-4"}
+user = {"provider": "openai", "name": "gpt-4"}
 
 adapter = NativeAdapter({"base_dir": base_dir, "tasks_glob": "tasks/**/task.yaml"})
 task = adapter.get_task("capstone")
 
 result = run_trial(
     task=task,
-    models={"agent": agent},
+    models={"agent": agent, "user": user},
     runtime="fixture_backend",
     grader="fixture_grader",
     conductor="fixture_conductor",
@@ -96,7 +98,7 @@ result = run_trial(
 assert isinstance(result, TrialResult), type(result)
 
 config = RunConfig(
-    models={"agent": ModelConfig(**agent)},
+    models={"agent": ModelConfig(**agent), "user": ModelConfig(**user)},
     orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
     evaluation=EvaluationConfig(output_dir=orch_out),
 )
@@ -223,7 +225,7 @@ def test_run_trial_cli_over_downstream_plugins(
         "v": 1,
         "type": "start",
         "task": task.model_dump(mode="json"),
-        "models": {"agent": _AGENT_MODEL},
+        "models": {"agent": _AGENT_MODEL, "user": _USER_MODEL},
         "runtime": "fixture_backend",
         "grader": "fixture_grader",
         "conductor": "fixture_conductor",
