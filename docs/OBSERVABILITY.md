@@ -414,10 +414,12 @@ profile and model-rules versions, the native `version`) with the plugin's own co
 network, prints it and exits 2 on the first error: no block, no `project`, no `environments`, an
 undeclared environment or one that accepts no trial, a tag conflict, a missing required tag, a
 metadata key outside the profile's list, or an engine without the trial-observer seam (a pin older
-than 0.27.0). It warns on an `options` namespace no installed plugin claims. `--offline` reads one
-YAML file (a `project.yaml`, or a run config) without the engine, the offline connector's view;
-a CI launcher runs it over the exact config file the run receives and degrades to an offline
-upload rather than failing the run. `python -m tolokaforge_langfuse.profile <file> [--tags ...]
+than 0.27.0). It warns on an `options` namespace no installed plugin claims. `--offline` needs no
+engine: over a `project.yaml` it reads the block alone (the offline connector's view), over a run
+config it layers the nearest `project.yaml`'s tracing section under the run config's with the
+engine's rule, so a config's own tags are checked where no engine is installed. A CI launcher runs
+it over the exact config file the run receives and degrades to an offline upload rather than
+failing the run. `python -m tolokaforge_langfuse.profile <file> [--tags ...]
 [--metadata ...]` still validates a single profile file.
 
 The producers validate the shape and apply the profile mechanically. A profile that does not

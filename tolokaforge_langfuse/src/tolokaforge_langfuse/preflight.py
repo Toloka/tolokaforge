@@ -19,8 +19,10 @@ only the command below reaches for the engine, lazily, to layer a run config the
 [--tags a:b,...] [--metadata k=v,...] [--offline]`` prints the plan a run would trace under and
 exits 2 on the first error: no block, no ``project``, no ``environments``, an undeclared
 environment or one that accepts no trial, a tag conflict, a missing required tag, or an engine
-without the trial-observer seam. ``--offline`` reads one YAML file (a ``project.yaml`` or a run
-config) without the engine, the way the connector does.
+without the trial-observer seam. ``--offline`` needs no engine: over a ``project.yaml`` it reads
+the block alone, the way the connector does; over a run config it layers the nearest
+``project.yaml``'s tracing section under the run config's with the engine's rule (maps merge key
+by key, lists replace), so a config's own tags are checked too.
 """
 
 from __future__ import annotations
@@ -265,17 +267,6 @@ def load_langfuse_block(path: str | Path) -> LangfuseBlock:
     except ValidationError as exc:
         raise PreflightError(f"{path}: {where}.options.langfuse: {exc}") from exc
     return LangfuseBlock(config=config, base_dir=path.resolve().parent)
-
-
-def _block_section(path: Path) -> _Section:
-    """The tracing section beside the block, for the offline plan (tags and metadata of the
-    same document; a launcher passes its own as flags)."""
-    section, _ = _tracing_section(_read_yaml(path), path)
-    tags = section.get("tags") or []
-    metadata = section.get("metadata") or {}
-    if not isinstance(tags, list) or not isinstance(metadata, Mapping):
-        raise PreflightError(f"{path}: observability.tracing tags must be a list, metadata a map")
-    return _Section(tags=list(tags), metadata=dict(metadata), options=section.get("options") or {})
 
 
 def read_settings(options: Mapping[str, Any]) -> LangfuseConfig:
@@ -595,16 +586,65 @@ def _engine_plan(config: Path, environ: Mapping[str, str], out: list[str]) -> Tr
     return resolve_plan(tracing, environ, base_dir, reserved_metadata=schema_keys())
 
 
+def _merge(base: Any, delta: Any) -> Any:
+    """The engine's layering rule for the tracing section: maps merge key by key, lists and
+    scalars replace."""
+    if isinstance(base, Mapping) and isinstance(delta, Mapping):
+        merged = dict(base)
+        for key, value in delta.items():
+            merged[key] = _merge(base.get(key), value) if key in base else value
+        return merged
+    return delta
+
+
+def _is_project_file(path: Path, data: Any) -> bool:
+    return path.name == PROJECT_FILENAME or (isinstance(data, Mapping) and "run_defaults" in data)
+
+
+def _layered_section(config: Path, out: list[str]) -> tuple[Mapping[str, Any], Path, str]:
+    """The tracing section a run under ``config`` sees, without the engine: a project file's own
+    ``run_defaults`` section, or the nearest ``project.yaml``'s under the run config's."""
+    data = _read_yaml(config)
+    if _is_project_file(config, data):
+        section, where = _tracing_section(data, config)
+        return section, config.resolve().parent, f"{config}: {where}"
+    if not isinstance(data, Mapping):
+        raise PreflightError(f"{config}: the document must be a mapping")
+    run_section = (data.get("observability") or {}).get("tracing") or {}
+    project_file = find_project_yaml(config)
+    base: Mapping[str, Any] = {}
+    if project_file is not None:
+        try:
+            base, _ = _tracing_section(_read_yaml(project_file), project_file)
+        except PreflightError as exc:
+            out.append(f"NOTE {exc}")
+    layered = _merge(base, run_section) if isinstance(run_section, Mapping) else run_section
+    anchor = project_file.parent if project_file is not None else config.resolve().parent
+    source = f"{config} over {project_file}" if project_file is not None else str(config)
+    if not isinstance(layered, Mapping):
+        raise PreflightError(f"{source}: observability.tracing must be a mapping")
+    return layered, anchor, source
+
+
 def _offline_plan(config: Path, environ: Mapping[str, str], out: list[str]) -> TracingPlan:
-    """The connector's view: one YAML file, read as written, anchored to its own directory."""
-    block = load_langfuse_block(config)
-    _require_deployment(block.config, str(config))
-    section = _block_section(config)
-    if section.tags or section.metadata:
-        out.append(
-            "WARN observability.tracing tags / metadata beside the block are not read offline;"
-            " the connector takes them as --tag / --metadata"
+    """The engine-free view: a project file alone (the connector's view of the block), or a run
+    config layered over the nearest ``project.yaml`` the way the engine layers it (for the
+    tracing section only), anchored to the project's directory."""
+    section, anchor, source = _layered_section(config, out)
+    options = section.get("options")
+    if not isinstance(options, Mapping) or "langfuse" not in options:
+        raise PreflightError(f"{source}: no observability.tracing.options.langfuse block")
+    found = _placeholders(options["langfuse"], "observability.tracing.options.langfuse")
+    if found:
+        raise PreflightError(
+            f"{source}: ${{...}} placeholders are not allowed in the Langfuse block"
+            f" ({', '.join(found)})"
         )
+    _require_deployment(read_settings(options), source)
+    tags = section.get("tags") or []
+    metadata = section.get("metadata") or {}
+    if not isinstance(tags, list) or not isinstance(metadata, Mapping):
+        raise PreflightError(f"{source}: observability.tracing tags must be a list, metadata a map")
     try:
         from tolokaforge_langfuse.projection import schema_keys
 
@@ -613,9 +653,9 @@ def _offline_plan(config: Path, environ: Mapping[str, str], out: list[str]) -> T
         reserved = ()
         out.append("NOTE the engine is not installed: the metadata schema-key check is skipped")
     return resolve_plan(
-        _Section(tags=[], metadata={}, options=section.options),
+        _Section(tags=list(tags), metadata=dict(metadata), options=options),
         environ,
-        block.base_dir,
+        anchor,
         reserved_metadata=reserved,
     )
 

@@ -372,6 +372,38 @@ class TestPreflightCommand:
         expected = self.golden(repo, "offline", Path("project.yaml"), "domain:billing (launcher), ")
         assert out == expected
 
+    def test_offline_over_a_run_config_layers_the_project_file_under_it(
+        self, repo: Path, capsys
+    ) -> None:
+        """The merge job's view: no engine, the config's own domain tag checked like the live
+        path checks it."""
+        config = Path("config/billing/agent.yaml")
+        code, out, err = self.run(
+            capsys,
+            "--config",
+            str(config),
+            "--offline",
+            "--environment",
+            "test",
+            "--tags",
+            LAUNCHER_TAGS,
+            "--metadata",
+            "model_stem=agent",
+        )
+        assert code == 0, err
+        assert out == self.golden(repo, "offline", config, "domain:billing (config), ")
+        code, _, err = self.run(
+            capsys,
+            "--config",
+            str(config),
+            "--offline",
+            "--environment",
+            "test",
+            "--tags",
+            LAUNCHER_TAGS + ",domain:support",
+        )
+        assert code == 2 and "'billing' (config) and 'support' (launcher)" in err
+
     @pytest.mark.parametrize(
         ("args", "message"),
         [
