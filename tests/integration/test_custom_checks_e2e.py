@@ -8,18 +8,29 @@ extracts the artifacts and validates `interface_version`), and
 the DB state the executed tool calls leave behind.
 
 The pack's `initial_state.json` seeds `customers[0].balance = 500` (the
-unreconciled opening balance). Only an agent (or the test acting as the
-agent) that issues the correct `db_update` call raises the balance to
-`700` (= `500 + 260 - 60`). This makes every graded dimension gate on
-real agent behaviour — no dimension trivially passes on the initial
-state.
+unreconciled opening balance). Only a run that raises the balance to
+`700` (= `500 + 260 - 60`) in the trial's own state passes the state and
+arithmetic dimensions. This makes every graded dimension gate on real
+work — no dimension trivially passes on the initial state.
+
+Reconciliation is driven through the trial-scoped db-service mutate
+endpoint (`PATCH /trials/{trial_id}/state/customers`), the same surface
+`test_docker_grading_jsonpath.py` uses to move a trial's DB state
+between registration and grading. It deliberately does *not* go through
+the runner's builtin `db_update` tool: that tool posts to the flat,
+non-trial-scoped legacy `/update` endpoint (the `__default__` store),
+which `RegisterTrial` never seeds and `GradeTrial` never reads, so a
+`db_update` mutation is invisible to trial-scoped grading. Driving the
+mutate endpoint directly reconciles the store grading actually reads —
+`customers[0].balance` under `$.db.*` for the state check and
+`final_state.data.customers` for the arithmetic custom check.
 
 Two cases lock the seam:
 
-- **Positive** — the test drives one `db_update` tool call to reconcile
-  `balance` to `700`, then grades with a transcript enumerating every
-  credit transaction id and a `db_query` call. State-check `equals 700`
-  passes, both custom checks pass: `custom_checks == 1.0`. Combined with
+- **Positive** — the test reconciles `balance` to `700` on the trial's
+  state, then grades with a transcript enumerating every credit
+  transaction id and a `db_query` call. State-check `equals 700` passes,
+  both custom checks pass: `custom_checks == 1.0`. Combined with
   `state_checks: 0.4` * 1.0 + `custom_checks: 0.6` * 1.0 == 1.0
   (`binary_pass`).
 
@@ -33,8 +44,8 @@ Two cases lock the seam:
   the declared `custom_checks` weight is applied to the final score,
   not silently dropped.
 
-Deterministic and network-free: the test drives `register_trial` +
-`execute_tool` + `grade_trial` directly (like
+Deterministic and network-free: the test drives `register_trial` + a
+trial-scoped state mutation + `grade_trial` directly (like
 `test_docker_grading_jsonpath.py`) rather than running an agent loop,
 so no LLM provider key is required. The runner's `db_client.get_state`
 output feeds the shared `build_check_context` helper — this is the
@@ -50,6 +61,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from tolokaforge.adapters.native import NativeAdapter
@@ -115,6 +127,19 @@ def runner_client(runner_container) -> GrpcRunnerClient:
     client.close()
 
 
+@pytest.fixture
+def db_service_url(json_db_container) -> str:
+    """Host-reachable base URL of the containerized db-service HTTP API.
+
+    The runner reaches the same service over the ``runner-net`` alias
+    (``http://db-service:8000``); the test reaches it on the published
+    port to drive trial-scoped state directly.
+    """
+    host = json_db_container.get_container_host_ip()
+    port = json_db_container.get_exposed_port(8000)
+    return f"http://{host}:{port}"
+
+
 _ASSISTANT_ENUMERATION_TEXT = (
     "Transactions for C-1: credits T-1 (+120), T-3 (+60), T-5 (+80) sum to 260. "
     "Debits T-2 (-45), T-4 (-15) sum to 60. Net 200. Reconciled balance = 500 + 200 = 700."
@@ -139,7 +164,12 @@ def _synthetic_llm_messages_positive() -> list[dict[str, Any]]:
                 }
             ],
         },
-        {"role": "tool", "name": "db_query", "content": "[…transaction rows…]"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "db_query",
+            "content": "[…transaction rows…]",
+        },
         {"role": "assistant", "content": _ASSISTANT_ENUMERATION_TEXT},
     ]
 
@@ -152,8 +182,30 @@ def _synthetic_llm_messages_negative() -> list[dict[str, Any]]:
     ]
 
 
+def _reconcile_balance(db_service_url: str, trial_id: str) -> None:
+    """Raise ``customers[0].balance`` from the seeded 500 to the reconciled 700.
+
+    Applied through the trial-scoped mutate endpoint so the write lands in
+    the store ``GradeTrial`` reads (``db_client.get_state(trial_id)``),
+    which the flat legacy ``/update`` the ``db_update`` tool posts to does
+    not — see the module docstring.
+    """
+    with httpx.Client(base_url=db_service_url, timeout=10.0) as db:
+        resp = db.patch(
+            f"/trials/{trial_id}/state/customers",
+            json={
+                "operations": [
+                    {"op": "update", "filter": {"id": "C-1"}, "set": {"balance": 700}},
+                ]
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["affected_rows"] == 1, resp.text
+
+
 def _register_and_grade(
     runner_client: GrpcRunnerClient,
+    db_service_url: str,
     trial_id: str,
     trial_spec_json: str,
     llm_messages: list[dict[str, Any]],
@@ -162,26 +214,16 @@ def _register_and_grade(
 ) -> dict[str, Any]:
     """Register the trial, optionally reconcile the DB, then grade.
 
-    ``reconcile_balance=True`` drives a single ``db_update`` tool call to
-    raise ``customers[0].balance`` from the seeded 500 to the reconciled
-    700 — the transformation an agent would perform. Skipping it leaves
-    the DB at the seeded value so the grade dimensions reflect a no-op.
+    ``reconcile_balance=True`` raises ``customers[0].balance`` from the
+    seeded 500 to the reconciled 700 — the outcome an agent's reconciliation
+    would leave in the trial's state. Skipping it leaves the DB at the
+    seeded value so the grade dimensions reflect a no-op.
     """
     registered = runner_client.register_trial(trial_id=trial_id, trial_spec_json=trial_spec_json)
     assert registered["success"] is True, registered["error"]
     try:
         if reconcile_balance:
-            tool_result = runner_client.execute_tool(
-                trial_id=trial_id,
-                tool_name="db_update",
-                arguments={
-                    "ops": [
-                        {"op": "replace", "path": "$.customers[0].balance", "value": 700},
-                    ]
-                },
-                call_id="call_reconcile_balance",
-            )
-            assert tool_result.success is True, tool_result.error
+            _reconcile_balance(db_service_url, trial_id)
         result = runner_client.grade_trial(
             trial_id=trial_id, llm_messages_json=json.dumps(llm_messages)
         )
@@ -197,12 +239,14 @@ class TestCustomChecksE2E:
     def test_positive_case_scores_green_with_custom_checks_weight_applied(
         self,
         runner_client: GrpcRunnerClient,
+        db_service_url: str,
         task_description,
     ) -> None:
         """Reconcile the DB + enumerate credits → both dimensions pass."""
         trial_id = f"{_TASK_ID}_pos:0"
         grade = _register_and_grade(
             runner_client,
+            db_service_url,
             trial_id,
             _trial_spec_json(task_description, trial_id),
             _synthetic_llm_messages_positive(),
@@ -227,12 +271,14 @@ class TestCustomChecksE2E:
     def test_negative_case_failing_checks_drag_weighted_score_below_threshold(
         self,
         runner_client: GrpcRunnerClient,
+        db_service_url: str,
         task_description,
     ) -> None:
         """No reconciliation, no transcript enumeration — every dimension fails."""
         trial_id = f"{_TASK_ID}_neg:0"
         grade = _register_and_grade(
             runner_client,
+            db_service_url,
             trial_id,
             _trial_spec_json(task_description, trial_id),
             _synthetic_llm_messages_negative(),
