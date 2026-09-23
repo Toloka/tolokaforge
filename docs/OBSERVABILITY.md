@@ -25,7 +25,9 @@ observability:
         attach: all                        # all | core | none: trial files as media
         gradings: true                     # include grading transcript and scores
         projection: full                   # full | gradings | none: trial-end records
-        profile: deploy/langfuse_tracing.toml  # or TOLOKAFORGE_TRACING_PROFILE
+        profile: deploy/langfuse_tracing.toml  # a path, the profile inline, or TOLOKAFORGE_TRACING_PROFILE
+        # project: pilot                   # the deployment block: "The deployment profile" below
+        # environments: {test: {accepts: [trial]}}
         # environment: development         # LANGFUSE_ENVIRONMENT wins
         # attach_api_base: https://langfuse.example  # default: derived from endpoint
         # attach_timeout_s: 60              # per-request timeout
@@ -37,8 +39,8 @@ service name, tags, metadata, queue/flush limits and span content limits. `expor
 installed plugin's supported exporter. `options` is an opaque mapping keyed by plugin name;
 the engine passes it through unchanged. The Langfuse plugin validates `options.langfuse` against
 its strict `LangfuseConfig` before contacting the receiver. All receiver-specific settings below
-(`expect_project`, `attach`, `gradings`, `projection`, `attach_*`, `profile`, `environment`,
-`model_name_*`) live in that namespace. Defaults and environment precedence are unchanged.
+(`expect_project`, `project`, `project_id`, `environments`, `attach`, `gradings`, `projection`,
+`attach_*`, `profile`, `environment`, `model_name_*`) live in that namespace. Defaults and environment precedence are unchanged.
 
 A receiver setting left at the tracing block's top level, and an unknown key inside the Langfuse
 namespace, are both errors at config load; they are never silently ignored. Adding a
@@ -74,15 +76,15 @@ records `expect_project` and `project_verified` in its `details` entry with `exp
 | `LANGFUSE_PROJECT` | the project the keys must open (checked before the first export) and the trace's `project:` tag |
 | `LANGFUSE_EXTRA_HEADERS` | `k=v,k2=v2`, extra request headers (a gateway's own header) |
 | `TOLOKAFORGE_TRACING_RUN_ID`, `_RUN_TAG`, `_SESSION_ID`, `_LABEL` | the run's identity when the config carries none |
-| `TOLOKAFORGE_TRACING_PROFILE`, `LANGFUSE_ENVIRONMENT`, `TOLOKAFORGE_TRACING_METADATA` | the deployment profile, the environment override and the per-run metadata (the profile section below) |
+| `TOLOKAFORGE_TRACING_PROFILE`, `LANGFUSE_ENVIRONMENT`, `TOLOKAFORGE_TRACING_METADATA` | a profile file when the config names none, the environment (the selector when the config declares `environments`) and the per-run metadata (the profile section below) |
 
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` keep precedence when set.
 
-This is how a deployment keeps its project names out of the engine: the Langfuse connector
-(tolokaforge-tools, `langfuse-connector with-destination <name> -- tolokaforge run ...`) resolves
-a named destination from its own registry file, checks the keys, and injects the endpoint, the
-header, the attachment API base, the `project:<name>` tag and the expected project into the
-engine's environment, printing nothing. A config that names its own `endpoint` keeps it.
+This is how a deployment keeps its credentials out of its configuration: the Langfuse connector
+(tolokaforge-tools, `langfuse-connector with-environment <name> --config project.yaml --
+tolokaforge run ...`) reads the deployment's block, checks the keys open its project, and injects
+the endpoint, the header, the attachment API base, the environment and the expected project into
+the engine's environment, printing nothing. A config that names its own `endpoint` keeps it.
 
 ## What a trace looks like
 
@@ -317,42 +319,106 @@ follows the vocabulary's rule unless a profile or `LANGFUSE_ENVIRONMENT` says ot
 
 ## The deployment profile
 
-Everything a deployment decides about its traces, and neither producer may know as a value,
-arrives at run time in one TOML file: the live observer reads it through
-`observability.tracing.options.langfuse.profile` or `TOLOKAFORGE_TRACING_PROFILE`, the offline uploader through its
-`--tag-profile` flag (`tolokaforge_langfuse/src/tolokaforge_langfuse/profile.py`;
-`python -m tolokaforge_langfuse.profile <file> [--tags a:b,...] [--metadata k=v,...]` validates one,
-and a launcher's inputs against it). Neutral example:
+Everything a deployment decides about its traces, and neither producer may know as a value, is
+one **profile**, and it lives in the tolokaforge run configuration next to the rest of the
+deployment's settings: inline in the Langfuse block, normally once for every run under
+`run_defaults` of the deployment's `project.yaml` (`docs/PROJECTS.md`). The block may instead name
+a TOML or YAML profile file; `TOLOKAFORGE_TRACING_PROFILE` names one when the block names none,
+and the offline connector's `--tag-profile` overrides it for one upload. The live observer reads
+the block from the engine's merged run config, the offline connector reads the same block from
+`project.yaml` through the wheel's engine-free reader, so both producers apply one document
+(`tolokaforge_langfuse/src/tolokaforge_langfuse/profile.py` validates the profile,
+`preflight.py` reads the block). Neutral example:
 
-```toml
-schema = 2
-version = "acme-2026.09.17.1"              # joins the native `version` field
-
-[environment]                              # the receiver's native environment (default: the vocabulary's rule)
-from_tag = "run_kind"                      # or: literal = "development"
-default = "development"
-[environment.values]
-eval = "production"
-
-[tags]
-fixed = ["team:pilot"]                     # tags every trace of the deployment carries; a caller may not contradict them
-# derived = ["model_facets", "reasoning", "route"]   # the bundle-derived groups the producers emit (default: all)
-[tags.values]                              # closed lists for caller prefixes (narrow the engine's, or list a free-form one)
-dataset = ["v1", "v3"]
-[tags.required]                            # what a source's traces must carry beyond the vocabulary's required set
-trial = ["domain", "config"]
-
-[derive.dataset]                           # the offline command's --derive: launcher input -> tag (fnmatch, first match)
-"eval/pilot-v3*" = "v3"
-
-[metadata]
-keys = ["campaign"]                        # the per-run metadata keys a caller may set (--metadata, TOLOKAFORGE_TRACING_METADATA)
-[metadata.fixed]                           # metadata every trace carries
-deployment = "pilot"
-
-[models]
-rules = "model_name_rules.toml"            # selects the toloka normalizer with these rules (relative to this file)
+```yaml
+# project.yaml at the deployment's root
+name: pilot
+run_defaults:
+  observability:
+    tracing:
+      options:
+        langfuse:
+          model_name_normalizer: toloka
+          profile:
+            schema: 2
+            version: pilot-2026.10.01.1          # joins the native `version` field
+            tags:
+              fixed: [team:pilot]                # every trace carries them; a caller may not contradict them
+              # derived: [model_facets, reasoning, route]   # the bundle-derived groups (default: all)
+              values:                            # closed lists for caller prefixes
+                dataset: [v1, v3]
+                domain: [billing, support]
+              required:                          # beyond the vocabulary's required set
+                trial: [dataset, scope, domain, config]
+            derive:                              # the offline command's --derive (fnmatch, first match)
+              scope: {full: full, sample: sample}
+            metadata:
+              keys: [campaign]                   # the per-run metadata keys a caller may set
+              # fixed: {deployment: pilot}        # metadata every trace carries
+            models:
+              rules: deploy/model_name_rules.toml  # selects the toloka normalizer with these rules
+          project: pilot                         # the one receiver project the credentials must open
+          project_id: pilot-project-id           # its id, where a launcher can compare it
+          environments:                          # the project's native environments
+            test: {accepts: [trial]}
+            test-automation: {accepts: [transcript]}
+            production: {accepts: [trial]}
+            production-automation: {accepts: [transcript]}
 ```
+
+A profile file carries the same keys (TOML: `schema = 2`, `[tags]`, `[tags.values]`,
+`[derive.<prefix>]`, `[metadata]`, `[models]`; YAML: the mapping above), and schema 1 files
+(environment, fixed tags and metadata, models) still load. A deployment without an
+`environments` block may also give an `[environment]` rule: a `literal`, or `from_tag` a prefix
+with `values` and a `default` (the vocabulary's own rule is `production` for `run_kind:eval`,
+`development` otherwise).
+
+**Names, never values.** The block holds names and paths only: the credentials, the base URL and
+a gateway's header stay in the environment and are read through the `SecretManager`. The offline
+reader refuses a `${...}` placeholder inside the block, because it reads the file as written.
+
+**The project and its environments.** `project` is the one receiver project of the deployment:
+the credentials must open it (checked before the first export, the fail-closed check above), it
+is the default of `expect_project` and it gives the trace its `project:` tag. A launcher variable
+(`TOLOKAFORGE_TRACING_EXPECT_PROJECT`, `LANGFUSE_PROJECT`) naming a different project is a
+configuration error. `environments` declares the project's native environments and what each
+accepts: `trial` (benchmark data), `transcript` (an agent's own transcript) or `any`. With the
+block declared, `LANGFUSE_ENVIRONMENT` is the selector and it is required: it must name a declared
+environment, and that environment's `accepts` must admit a trial, or the run is refused at start.
+The block's `environment` literal is refused next to `environments`, and a profile's environment
+rule is not used there (a warning says so). `tracing_receipt.json` records the environment and
+the profile version in the `details` entry.
+
+**One anchoring rule.** Every relative path in the block (a profile path, the inline profile's
+`models.rules`, `model_name_rules`) anchors to the directory of the `project.yaml` that supplied
+it. The live observer receives the merged block without the file it came from, so it walks up
+from the working directory to the nearest `project.yaml` (the engine loader's walk: the start
+directory and eight parents), else it uses the working directory; the offline connector anchors
+to the file it reads. A file named by `TOLOKAFORGE_TRACING_PROFILE` keeps its own directory for
+its `[models] rules`.
+
+**Layering.** `project.run_defaults` merges under the run config: maps key by key, lists replace.
+So a tag every trace of the deployment carries belongs in the profile's `fixed` list, never in
+`run_defaults`' `tracing.tags`, which a run config's own `tags` would replace; a run config may
+add `tags` (a generator can write each config's `domain:` tag there). A run config that changes
+the Langfuse block makes the two producers read different documents: keep the block in
+`project.yaml` alone. The project loader ignores unknown keys below the top level, so a misspelt
+parent key (`run_default:`, `observabilty:`) drops the whole block silently; the preflight below
+fails closed on that.
+
+**The preflight.** `python -m tolokaforge_langfuse.preflight --config <run config>
+[--environment <name>] [--tags a:b,...] [--metadata k=v,...]` layers `project.run_defaults`
+under the run config the way `tolokaforge run` does, computes the plan the live observer would
+run under (the tags with their origins, the metadata keys, the environment, the project, the
+profile and model-rules versions, the native `version`) with the plugin's own code and no
+network, prints it and exits 2 on the first error: no block, no `project`, no `environments`, an
+undeclared environment or one that accepts no trial, a tag conflict, a missing required tag, a
+metadata key outside the profile's list, or an engine without the trial-observer seam (a pin older
+than 0.27.0). It warns on an `options` namespace no installed plugin claims. `--offline` reads one
+YAML file (a `project.yaml`, or a run config) without the engine, the offline connector's view;
+a CI launcher runs it over the exact config file the run receives and degrades to an offline
+upload rather than failing the run. `python -m tolokaforge_langfuse.profile <file> [--tags ...]
+[--metadata ...]` still validates a single profile file.
 
 The producers validate the shape and apply the profile mechanically. A profile that does not
 load, an environment outside the receiver's alphabet (lowercase letters, digits, `-`, `_`, at most
@@ -360,16 +426,16 @@ load, an environment outside the receiver's alphabet (lowercase letters, digits,
 under one prefix, a value outside a closed list or a metadata key the projection writes itself is a
 configuration error at run start. Under a profile the required set is enforced at run start too
 (the vocabulary's `team`, `run_kind`, `dataset`, `scope` plus the profile's), the same rule the
-offline uploader applies before it uploads; a CI launcher pre-checks its inputs with the module
-entry and degrades to an offline upload rather than failing the run. Schema 1 files (environment,
-fixed tags and metadata, models) still load.
+offline uploader applies before it uploads.
 
-**Per-run values from the launcher.** `LANGFUSE_ENVIRONMENT` (a literal) overrides the profile's
-rule and the config's `environment`; `TOLOKAFORGE_TRACING_METADATA` (`key=value,...`) carries the
-per-run metadata the offline command receives as `--metadata` (profile fixed keys < config
-`metadata` < the variable; a key of the fixed schema, or outside the profile's `keys`, is refused).
-The Langfuse connector's `with-destination` speaks this dialect (`--tag-profile`, `--metadata`,
-the registry entry's `environment`), so one launcher serves a local run and the CI.
+**Per-run values from the launcher.** `LANGFUSE_ENVIRONMENT` selects the environment (with
+`environments` declared) or overrides the profile's rule and the config's `environment` (without);
+`TOLOKAFORGE_TRACING_METADATA` (`key=value,...`) carries the per-run metadata the offline command
+receives as `--metadata` (profile fixed keys < config `metadata` < the variable; a key of the fixed
+schema, or outside the profile's `keys`, is refused). The Langfuse connector's
+`with-environment <name> --config project.yaml -- tolokaforge run ...` injects the receiver, the
+environment and the expected project; the child engine reads the profile from its own run
+configuration, so one launcher serves a local run and the CI.
 
 **Native fields.** `environment` rides on every span (the receiver fixes a trace's environment at
 the first write it sees, verified on Langfuse 3.205.1 on 2026-09-17: a trace written without it
@@ -436,7 +502,8 @@ live under `extra`, with namespaced keys such as `langfuse.projections_sent`. No
 receiver facts live in `details`, for example:
 
 ```json
-{"exporter": "langfuse", "expect_project": "pilot", "project_verified": "verified"}
+{"exporter": "langfuse", "expect_project": "pilot", "project_verified": "verified",
+ "server_api": "v4", "environment": "test", "profile_version": "pilot-2026.10.01.1"}
 ```
 
 `details` is a list, preserving each observer's facts even when two target different projects.

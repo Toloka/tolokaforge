@@ -25,6 +25,9 @@ pip install 'tolokaforge[otel]'      # the engine's extra resolves to this packa
 pip install tolokaforge-langfuse     # or on its own, next to an installed engine
 ```
 
+No release of this package is on PyPI yet (`docs/RELEASING.md`): until the first `langfuse-v*`
+tag, install it from this repository (`subdirectory = "tolokaforge_langfuse"` of a git source).
+
 The engine discovers the observer through the `tolokaforge.trial_observers` entry-point group
 (`langfuse = tolokaforge_langfuse.plugin:build`). Nothing else is registered; a run without
 `observability.tracing.exporter: otlp` and without `LANGFUSE_TRACING_ENABLED` gets no observer.
@@ -47,8 +50,14 @@ observability:
         gradings: true
         projection: full
         server_api: auto
-        profile: deploy/langfuse_tracing.toml
+        profile: deploy/langfuse_tracing.toml   # or the profile inline
 ```
+
+A deployment usually puts the block once under `run_defaults` of its `project.yaml`, with its one
+`project` and that project's `environments` (what each accepts); `LANGFUSE_ENVIRONMENT` then
+selects one. `python -m tolokaforge_langfuse.preflight --config <run config>` prints the plan a
+run would trace under and exits 2 on a missing block, an undeclared environment or a tag
+conflict (`docs/OBSERVABILITY.md`, "The deployment profile").
 
 `server_api` says which receiver family to write for: `auto` (the default) asks the receiver once
 at run start, by capability, and a Langfuse v4 receiver gets the **write-once layout** (declared
@@ -57,7 +66,7 @@ preview rows while the trial runs, the record written once from the bundle, the 
 before configuring a run on that family: `projection` must be `full`, because the trace's root
 observation comes from the bundle, and the current verdict lives in the `scope: primary` scores
 (the trace metadata is frozen at its single write). `config.LangfuseConfig` also owns
-`attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
+`project`, `project_id`, `environments`, `attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
 `environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
 invalid values before any receiver work starts; other plugins' namespaces remain opaque.
 A receiver setting left at the engine's tracing top level is rejected, not silently ignored.
@@ -72,7 +81,7 @@ A launcher can also supply settings through these variables:
 | `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_EXTRA_HEADERS`, `LANGFUSE_PROJECT` | the receiver, its credentials (read through the engine's `SecretManager`) and the project the keys must open |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | the standard OpenTelemetry receiver variables, when a launcher owns the receiver |
 | `TOLOKAFORGE_TRACING_TAGS`, `TOLOKAFORGE_TRACING_EXPECT_PROJECT`, `TOLOKAFORGE_TRACING_SESSION_ID`, `TOLOKAFORGE_TRACING_LABEL` | the launcher's tags, project expectation, session and label |
-| `TOLOKAFORGE_TRACING_PROFILE`, `TOLOKAFORGE_TRACING_METADATA`, `LANGFUSE_ENVIRONMENT` | the deployment profile (TOML, validated at run start), the per-run metadata, the native environment override |
+| `TOLOKAFORGE_TRACING_PROFILE`, `TOLOKAFORGE_TRACING_METADATA`, `LANGFUSE_ENVIRONMENT` | a profile file when the config names none (TOML or YAML, validated at run start), the per-run metadata, the native environment (the selector when the config declares `environments`) |
 
 The engine resolves `TOLOKAFORGE_TRACING_RUN_ID` / `TOLOKAFORGE_TRACING_RUN_TAG` itself and hands
 the identity over. A deployment's values (its tags, project names, environment rule, model-name
@@ -89,7 +98,8 @@ normalizer (`model_generation`, `model_tier`, `model_variant`, `model_size`, `mo
 order and the default environment rule. `profile.py` reads a deployment's schema-2 profile (the
 environment rule, fixed tags, derived-tag groups, value lists, required prefixes, derivations,
 metadata keys, fixed metadata, model rules) and validates a launcher's tags and metadata against
-it; `vocabulary.py`, `profile.py` and `model_names.py` import no engine module, so the offline
+it; `vocabulary.py`, `profile.py`, `model_names.py`, `config.py` and `preflight.py` import no
+engine module, so the offline
 uploader can use them next to any engine pin. Details and a full example:
 [`docs/OBSERVABILITY.md`](../docs/OBSERVABILITY.md), "The trace vocabulary" and "The deployment
 profile".
@@ -98,7 +108,8 @@ profile".
 
 | Module | What it does |
 |---|---|
-| `config.py` | the strict, engine-independent `options.langfuse` schema |
+| `config.py` | the strict, engine-independent `options.langfuse` schema (profile, project, environments) |
+| `preflight.py` | the engine-free reader of the block, the run's plan (tags, metadata, environment, project) both producers compute, and the preflight command |
 | `plugin.py` | the entry point: enablement, receiver, credentials, profile, project check, the observer |
 | `otel.py` | the OTLP span exporter and the `TrialObserver` implementation |
 | `projection.py` | the default projection of a persisted trial bundle (the connector's `mapping.py` is the reference) |

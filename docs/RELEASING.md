@@ -200,9 +200,15 @@ contract. They are not maintained by `cz bump`. Bump both, in the same PR, only 
 changes; cut the engine release first, then the plugin's, so a deployment that moves one pin at a
 time sees a clear run-start error naming both versions rather than a mid-run failure. The engine's
 `otel` extra pins `tolokaforge-langfuse>=0.1.0,<1.0.0`: raise the lower bound in the engine
-release that changes the contract. The very first release is the exception to "engine first": an
-engine whose `otel` extra names `tolokaforge-langfuse` cannot resolve that extra until
-`langfuse-v0.1.0` is on PyPI, so publish the plugin first (or the two together).
+release that changes the contract.
+
+**No plugin release exists yet.** The engine's `otel` extra is on PyPI (since 0.27.0) while
+`tolokaforge-langfuse` is not: no `langfuse-v*` tag has been cut and the PyPI project does not
+exist, so `pip install 'tolokaforge[otel]'` does not resolve from PyPI alone. Until the first
+release a consumer maps the wheel to this repository through its resolver, e.g. with uv:
+`tolokaforge-langfuse = { git = "https://github.com/Toloka/tolokaforge.git", subdirectory =
+"tolokaforge_langfuse", tag = "langfuse-vX.Y.Z" }` (a branch until a tag exists). The one-time
+PyPI setup above comes before the first tag.
 
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 

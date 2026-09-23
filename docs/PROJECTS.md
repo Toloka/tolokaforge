@@ -761,6 +761,7 @@ run_defaults:
     queue:    { backend: "sqlite" }
   observability:
     tracing: { exporter: "none" }
+    # tracing: { options: { langfuse: { ... } } }   # a plugin's deployment block (docs/OBSERVABILITY.md)
     metrics: { exporter: "none" }
     logging: { level: "INFO", exporter: "stdout" }
   orchestrator:
