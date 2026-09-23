@@ -1,12 +1,12 @@
 # 0047. Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra
 
-- **Status:** Proposed (amended through 2026-09-18; "Where the decision stands" below is the current shape)
-- **Date:** 2026-09-15, last amended 2026-09-18
+- **Status:** Proposed (amended through 2026-09-23; "Where the decision stands" below is the current shape)
+- **Date:** 2026-09-15, last amended 2026-09-23
 - **Deciders:** @bberkes-toloka (proposer), @CiroGamboa (engine owner, review pending)
 - **Supersedes:** —
 - **Superseded by:** —
 
-## Where the decision stands (2026-09-18)
+## Where the decision stands (2026-09-23)
 
 The Decision and Consequences sections record the first cut of 2026-09-15; the amendments follow
 them in date order. Read together they leave the decision here:
@@ -36,8 +36,10 @@ them in date order. Read together they leave the decision here:
 - **Enablement and receiver:** `observability.tracing.exporter: otlp`, or the one switch
   `LANGFUSE_TRACING_ENABLED`; the receiver from the config, the standard `OTEL_EXPORTER_OTLP_*`
   variables or the plain `LANGFUSE_*` ones; the project checked fail-closed before the first
-  export; the deployment's values in a profile file. A switch that is on while no plugin produced
-  an observer refuses the run start.
+  export; the deployment's values in the run configuration's `options.langfuse` block (its
+  profile, its one project and that project's environments; configuration amendment), which the
+  offline connector reads too. A switch that is on while no plugin produced an observer refuses
+  the run start.
 - **What a live trace carries** has grown past the Decision's "scores stay outside the engine" and
   the Consequences' "judge generations are not exported live" and "media stays outside the
   engine": at `trial_persisted` the plugin attaches the trial's files and completes the trace from
@@ -460,6 +462,58 @@ minimal error root at run end for a trace whose real root can no longer come. Th
 **4**. The v3 family keeps everything above unchanged. The decision, its options and its
 consequences are [ADR-0048](0048-write-once-observations-append-only-receiver.md); the layout is in
 `docs/OBSERVABILITY.md`.
+
+## Amendment 2026-09-23: the deployment's configuration is the run configuration's Langfuse block
+
+A deployment kept its Langfuse settings in files outside the tolokaforge configuration: a TOML
+profile both producers read, a destination registry only the offline connector read (named
+aliases, each with a project, what it accepts, the names of its key variables and a forced
+environment), and the model-name rules. The engine already has the layering such settings belong
+in: `project.run_defaults`, merged under every run config, and the plugin namespace
+`observability.tracing.options.<plugin>`, which the engine passes through unchanged. Four things
+stood in the way. The profile could only be a path, and its relative rules path anchored to the
+profile file. An inline profile would have switched off its own required-tag check, which keyed
+on a file being present. The connector depends on the wheel, never on the engine, and read no run
+configuration. And nothing checked, before a run, that the block the engine would see was the
+one intended: the project loader ignores unknown keys below the top level, so a misspelt parent
+key drops the whole block silently.
+
+Decision. The block is the deployment's configuration.
+
+- `profile` is a TOML or YAML path, or the profile inline; an inline profile is in force exactly
+  like a file (its required set is enforced).
+- `project` and `project_id` name the one receiver project. `environments` declares that
+  project's native environments with what each accepts (`trial`, `transcript`, `any`). With
+  `environments` declared, `LANGFUSE_ENVIRONMENT` is the required selector: it must name a
+  declared environment whose `accepts` admits a trial, and the block's `environment` literal is
+  refused next to it. The splits between evaluation data and automation transcripts, and between
+  production and test, become native environments of one project opened by one key pair, instead
+  of a project per alias.
+- `expect_project` defaults to `project`; a launcher variable naming another project is refused.
+- One anchoring rule: every relative path in the block anchors to the directory of the
+  `project.yaml` that supplied it. The plugin receives the merged block without provenance and
+  finds that file by the engine loader's own walk from the working directory; the connector knows
+  the file it reads.
+- `tolokaforge_langfuse.preflight` holds the engine-free reader of the block
+  (`load_langfuse_block`, which the connector calls), the pure plan (`resolve_plan`: tags with
+  origins, metadata, environment, profile, model-name resolver, expected project), which the
+  plugin's `build` and the connector's pre-check both run, and a command that layers a run config
+  the way `tolokaforge run` does and fails closed (exit 2) on a missing block, project or
+  environments, an environment the block does not admit, a tag conflict, a missing required tag,
+  or an engine without the trial-observer seam. The plan lives in that module rather than in
+  `plugin.py` because the offline pre-check must run where no engine is installed.
+- The receipt records the environment and the profile version in the Langfuse `details` entry;
+  `ExportReceipt` itself is unchanged.
+
+Consequences. One committed source per deployment branch, read by both producers; the destination
+registry retires. A mistyped block, an undeclared environment or a contradicting tag is refused
+before any service starts, with the same message from the live and the offline path. The plugin
+anchors relative paths by walking from the working directory, so a run started outside the
+project tree misses them, loudly, at run start. A run config that changes the block makes the two
+producers read different documents; the preflight warns, and only a deployment-side check can
+forbid it. A profile path (TOML included) and `TOLOKAFORGE_TRACING_PROFILE` keep working, and a
+deployment without `environments` keeps the previous environment precedence. `TracingConfig`,
+the receipt model, the seam and the plugin API version (**4**) do not change.
 
 ## Links
 

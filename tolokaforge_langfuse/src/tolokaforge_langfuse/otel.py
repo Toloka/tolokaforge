@@ -334,6 +334,7 @@ class OTelTrialObserver:
         gradings: bool = True,
         expect_project: str | None = None,
         project_verified: str = "none",
+        profile_version: str | None = None,
         projection: ProjectionSettings | None = None,
         server_api: str = SERVER_V3,
     ) -> None:
@@ -365,6 +366,7 @@ class OTelTrialObserver:
         }
         self._expect_project = expect_project
         self._project_verified = project_verified
+        self._profile_version = profile_version
         self._attach_counts = AttachCounts()
         # trial start, final status, the judge / user model names and the tags by trace id, kept
         # from trial_finished to trial_persisted: the manifest update re-sends start and status,
@@ -1032,6 +1034,9 @@ class OTelTrialObserver:
                     "expect_project": self._expect_project,
                     "project_verified": self._project_verified,
                     "server_api": self._server_api,
+                    # the receiver's native environment and the deployment profile of the run
+                    "environment": self._projection.environment,
+                    "profile_version": self._profile_version,
                 },
             ),
         )

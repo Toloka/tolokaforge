@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 from tolokaforge_langfuse.config import LangfuseConfig
-from tolokaforge_langfuse.plugin import (
+from tolokaforge_langfuse.preflight import (
+    PreflightError,
     merge_metadata,
     merge_tag_sources,
     producer_version,
@@ -164,34 +165,33 @@ class TestMetadataVariable:
 
     def test_merge_order_and_the_clash_check(self, monkeypatch, tmp_path: Path) -> None:
         profile = load_tracing_profile(write_profile(tmp_path))
-        monkeypatch.setenv("TOLOKAFORGE_TRACING_METADATA", "deployment=launcher,run_label=x")
-        merged = merge_metadata({"deployment": "config", "stem": "s"}, profile)
+        from tolokaforge_langfuse.projection import schema_keys
+
+        environ = {"TOLOKAFORGE_TRACING_METADATA": "deployment=launcher,run_label=x"}
+        merged = merge_metadata({"deployment": "config", "stem": "s"}, profile, environ)
         # profile < config < launcher
         assert merged == {"deployment": "launcher", "stem": "s", "run_label": "x"}
-        monkeypatch.setenv("TOLOKAFORGE_TRACING_METADATA", "task_id=forged")
-        with pytest.raises(TracingConfigError, match="task_id"):
-            merge_metadata({}, profile)
-        monkeypatch.delenv("TOLOKAFORGE_TRACING_METADATA")
+        environ = {"TOLOKAFORGE_TRACING_METADATA": "task_id=forged"}
+        with pytest.raises(PreflightError, match="task_id"):
+            merge_metadata({}, profile, environ, schema_keys())
         # the verdict keys are the projection's
-        with pytest.raises(TracingConfigError, match="score"):
-            merge_metadata({"score": 1}, profile)
+        with pytest.raises(PreflightError, match="score"):
+            merge_metadata({"score": 1}, profile, {}, schema_keys())
 
 
 class TestEnvironmentPrecedence:
-    def test_variable_over_config_over_profile_rule(self, monkeypatch, tmp_path: Path) -> None:
+    def test_variable_over_config_over_profile_rule(self, tmp_path: Path) -> None:
         profile = load_tracing_profile(write_profile(tmp_path))
-        monkeypatch.delenv("LANGFUSE_ENVIRONMENT", raising=False)
-        assert resolve_environment(None, profile, ["run_kind:eval"]) == "production"
-        assert resolve_environment("staging", profile, ["run_kind:eval"]) == "staging"
-        monkeypatch.setenv("LANGFUSE_ENVIRONMENT", "development")
-        assert resolve_environment("staging", profile, ["run_kind:eval"]) == "development"
-        monkeypatch.setenv("LANGFUSE_ENVIRONMENT", "Not Valid")
-        with pytest.raises(TracingConfigError, match="not a valid environment"):
-            resolve_environment(None, profile, [])
-        monkeypatch.delenv("LANGFUSE_ENVIRONMENT")
+        bare, literal = LangfuseConfig(), LangfuseConfig(environment="staging")
+        assert resolve_environment(bare, profile, ["run_kind:eval"], {}) == "production"
+        assert resolve_environment(literal, profile, ["run_kind:eval"], {}) == "staging"
+        chosen = {"LANGFUSE_ENVIRONMENT": "development"}
+        assert resolve_environment(literal, profile, ["run_kind:eval"], chosen) == "development"
+        with pytest.raises(PreflightError, match="not a valid environment"):
+            resolve_environment(bare, profile, [], {"LANGFUSE_ENVIRONMENT": "Not Valid"})
         # without a profile the vocabulary's default rule decides
-        assert resolve_environment(None, NO_PROFILE, ["run_kind:eval"]) == "production"
-        assert resolve_environment(None, NO_PROFILE, []) == "development"
+        assert resolve_environment(bare, NO_PROFILE, ["run_kind:eval"], {}) == "production"
+        assert resolve_environment(bare, NO_PROFILE, [], {}) == "development"
 
 
 class TestTagSources:
@@ -203,7 +203,7 @@ class TestTagSources:
         )
         assert merged == ["dataset:v1", "config:stem", "team:pilot"]
         assert origins == {"dataset": "config", "config": "launcher", "team": "profile"}
-        with pytest.raises(TracingConfigError, match="twice"):
+        with pytest.raises(PreflightError, match="twice"):
             merge_tag_sources(("config", ["dataset:v1"]), ("profile", ["dataset:v3"]))
 
 
