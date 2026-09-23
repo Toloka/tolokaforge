@@ -206,7 +206,7 @@ class TestAttachmentStep:
 
 
 class TestReceiverFromTheEnvironment:
-    """A launcher (the connector's with-destination) injects the receiver; the config may stay
+    """A launcher (the connector's with-environment) injects the receiver; the config may stay
     vendor-neutral and endpoint-free."""
 
     def test_endpoint_resolution_order(self, monkeypatch) -> None:
@@ -567,10 +567,11 @@ class TestPluginOptions:
             build(config, RunIdentity("run-1"), engine_run_id="run-1")
 
     def test_another_plugins_options_are_opaque(self):
-        from tolokaforge_langfuse.plugin import read_config
+        # the reader the live path runs (build -> plan_run -> resolve_plan -> read_settings)
+        from tolokaforge_langfuse.preflight import read_settings
 
-        assert read_config({"archive": {"compression": "gzip"}}) == LangfuseConfig()
-        assert read_config({"langfuse": {"attach": "core"}, "archive": None}).attach == "core"
+        assert read_settings({"archive": {"compression": "gzip"}}) == LangfuseConfig()
+        assert read_settings({"langfuse": {"attach": "core"}, "archive": None}).attach == "core"
 
     def test_unselected_plugin_does_not_validate_options(self, monkeypatch):
         from tolokaforge_langfuse.plugin import build

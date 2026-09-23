@@ -45,7 +45,6 @@ import base64
 import logging
 import os
 import re
-from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -63,7 +62,6 @@ from tolokaforge_langfuse.preflight import (
     TracingPlan,
     anchor_directory,
     producer_version,
-    read_settings,
     resolve_plan,
 )
 from tolokaforge_langfuse.projection import PROJECTION_FULL
@@ -228,14 +226,6 @@ def plan_run(tracing: TracingConfig) -> TracingPlan:
     for warning in plan.warnings:
         _log.warning("%s", warning)
     return plan
-
-
-def read_config(options: Mapping[str, Any]) -> LangfuseConfig:
-    """Validate only this plugin's namespace before starting any receiver-side work."""
-    try:
-        return read_settings(options)
-    except PreflightError as exc:
-        raise TracingConfigError(str(exc)) from exc
 
 
 def engine_release() -> str:
