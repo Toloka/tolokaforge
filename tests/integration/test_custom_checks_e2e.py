@@ -176,7 +176,7 @@ def _register_and_grade(
                 tool_name="db_update",
                 arguments={
                     "ops": [
-                        {"op": "replace", "path": "/customers/0/balance", "value": 700},
+                        {"op": "replace", "path": "$.customers[0].balance", "value": 700},
                     ]
                 },
                 call_id="call_reconcile_balance",
