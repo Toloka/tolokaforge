@@ -499,10 +499,13 @@ class TestProvision:
         assert err.stage == "provision"
         assert err.trial_id == spec.trial_id
         assert "channel not ready" in err.reason
-        # The composer-side readiness gate raises without a docker-inspection
-        # diagnostic payload — the failing-probe details in the reason cover
-        # the same signal.
-        assert err.diagnostic is None
+        # The composer-side readiness gate attaches a DiagnosticPayload naming the
+        # probed service, kind, resolved endpoint, and probe outcome.
+        assert err.diagnostic is not None
+        assert err.diagnostic.service == "default"
+        assert err.diagnostic.kind == "grpc"
+        assert err.diagnostic.endpoint is not None
+        assert err.diagnostic.result.ok is False
         # No orphan handle is cached: the gate runs before the client is built.
         assert spec.trial_id not in backend._delegate._env_handles
 
