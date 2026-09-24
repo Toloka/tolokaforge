@@ -1,8 +1,14 @@
-"""End-to-end lock: ``fix-billing-holds`` under the per-trial substrate.
+"""End-to-end lock: ``fix-billing-holds`` under the composed substrate.
 
-The bracket the orchestrator would run for one terminal-bench trial,
-driven directly against ``PerTrialRuntimeBackend`` so no LLM key is
-required:
+A terminal-bench task resolves to a MULTI_SCOPE composition plan: a
+run-scope ``engine`` stack that owns the runner + db-service, plus a
+trial-scope ``task`` stack. That is the shape the orchestrator routes
+through ``SharedStackRuntimeBackend`` in env_manifest mode — the run-scope
+``engine`` manifest is materialised once at ``connect`` and each trial's
+``task`` stack comes up at ``provision``. ``PerTrialRuntimeBackend`` cannot
+host this plan (per-trial mode never materialises run-scope stacks), so
+these brackets construct ``SharedStackRuntimeBackend`` directly. No LLM key
+is required:
 
 1. materialise the adapter's staging directory and resolve the manifest;
 2. build the engine images with the docker CLI baked in and alias them
@@ -14,15 +20,19 @@ required:
    step ``Orchestrator._perform_declared_compose_image_builds`` runs
    next. The test drives the substrate directly rather than
    ``Orchestrator.run()``, so it performs these steps itself;
-3. ``provision`` → ``endpoints`` → ``register_trial`` → ``execute_tool``
-   asserting ``/tests/test.sh``, ``/logs/verifier`` and ``/logs/agent``
-   are present inside the container the runner will exec into;
+3. ``connect`` (materialise the run-scope engine + connect the runner
+   client) → ``provision`` → ``endpoints`` → ``register_trial`` →
+   ``execute_tool`` asserting ``/tests/test.sh``, ``/logs/verifier`` and
+   ``/logs/agent`` are present inside the container the runner execs into;
 4. ``grade_trial`` — a real ``bash test.sh`` run against the unsolved
    baseline: some tests pass, most fail, so the reward is strictly
    between 0 and 1;
-5. ``teardown`` — the compose project's containers are gone.
+5. ``teardown`` (trial-scope task stack) then ``close`` (run-scope engine
+   stack) — the compose projects' containers are gone.
 
-The concurrency case provisions the same task twice. Because the
+The concurrency case still uses ``PerTrialRuntimeBackend``: it provisions
+the same task twice and asserts only per-trial container isolation, never
+reaching ``register_trial``, so it needs no runner client. Because the
 per-task agent image build ran once in the module-level fixture, this
 exercises per-trial isolation rather than racing two builds of the same
 tag.
@@ -50,6 +60,7 @@ from tolokaforge.core.composition_runtime import ComposedEnvHandle
 from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.docker.image import ImageError
 from tolokaforge.docker.stacks.core import core_stack
@@ -179,16 +190,34 @@ class TestTerminalBenchPerTrialBracket:
     """The full ``fix-billing-holds`` bracket against a real daemon."""
 
     def test_bracket_runs_end_to_end(self, prebuilt_environment: dict[str, Any]) -> None:
+        # ``fix-billing-holds`` resolves to a MULTI_SCOPE plan: a run-scope
+        # ``engine`` stack that owns the runner + db-service, plus a
+        # trial-scope ``task`` stack. That is the shape the orchestrator
+        # routes through ``SharedStackRuntimeBackend`` (env_manifest mode) —
+        # ``_extract_run_env_manifest`` hands the run-scope engine manifest to
+        # the backend, ``connect`` → ``materialise_run`` brings the engine up
+        # once, and each ``provision`` brings up the trial-scope task stack.
+        # ``PerTrialRuntimeBackend`` cannot host this plan: per-trial mode
+        # never materialises run-scope stacks, so no runner client exists.
         # ``mount_docker_socket=True`` mirrors what
-        # ``Orchestrator._construct_runtime_backend`` sets for
-        # terminal-bench runs — the runner-side bash tool ``docker exec``s
-        # into the sibling agent container via the mounted socket.
-        backend = PerTrialRuntimeBackend(mount_docker_socket=True)
-        spec = _make_trial_spec(prebuilt_environment["task"], f"{_TASK_ID}:0")
-        handle = backend.provision(spec)
-        stack = _stack_handle(handle)
+        # ``Orchestrator._construct_runtime_backend`` sets for terminal-bench
+        # runs — the runner-side bash tool ``docker exec``s into the sibling
+        # agent container via the mounted socket.
+        task = prebuilt_environment["task"]
+        backend = SharedStackRuntimeBackend(
+            env_manifest=task.environment_manifest,
+            run_id=_RUN_ID,
+            mount_docker_socket=True,
+        )
+        spec = _make_trial_spec(task, f"{_TASK_ID}:0")
+        stack: _DockerComposeStackHandle | None = None
         container_ids_at_provision: list[str] = []
         try:
+            # Brings up the run-scope engine stack (runner + db-service) and
+            # connects the run-owned runner client.
+            backend.connect()
+            handle = backend.provision(spec)
+            stack = _stack_handle(handle)
             container_ids_at_provision = [c.ID for c in stack.compose.get_containers() if c.ID]
             assert container_ids_at_provision, "compose stack came up with no containers"
 
@@ -238,9 +267,15 @@ class TestTerminalBenchPerTrialBracket:
             )
 
             backend.cleanup_trial(trial_id=spec.trial_id)
-        finally:
+            # ``teardown`` removes the trial-scope task stack; the run-scope
+            # engine stack lives until ``close``.
             backend.teardown(handle)
+        finally:
+            # Tears down the run-scope engine stack (and any leftover trial
+            # stack if an assertion above aborted before teardown ran).
+            backend.close()
 
+        assert stack is not None
         assert not stack.temp_dir.exists()
         # Every container that came up during provision is gone.
         listed = subprocess.run(
@@ -310,8 +345,14 @@ set -eu
 [ -n "${3:-}" ] || { echo "stub: no version" >&2; exit 1; }
 cat > /usr/local/bin/claude <<'CLI'
 #!/bin/sh
+# The claude-code harness pipes the instruction on stdin and forces the model
+# through ANTHROPIC_MODEL (not a --model flag), so echo both channels back so
+# the test can assert the instruction and the de-prefixed model reached the CLI.
+harness_stdin=$(cat)
 echo "harness-stub argv: $*"
+echo "harness-stub stdin: $harness_stdin"
 echo "harness-stub provider-env: ${ANTHROPIC_API_KEY:-unset}"
+echo "harness-stub model-env: ${ANTHROPIC_MODEL:-unset}"
 printf 'Hello, World!\\n' > /tmp/hello.txt
 CLI
 chmod +x /usr/local/bin/claude
@@ -374,18 +415,33 @@ class TestTerminalBenchHarnessMode:
         The assertions walk the chain the layering exists to support: the CLI
         is on ``PATH`` (harness layer built and installed), the task's own
         tooling survived underneath it (the layer did not replace the base),
-        the forwarded credential reached the container's environment, and the
+        the instruction reached the CLI on stdin, the forwarded credential
+        reached the container's environment, the declared model reached the CLI
+        through ``ANTHROPIC_MODEL`` (de-prefixed of its litellm route), and the
         command the adapter published is what actually ran.
         """
-        backend = PerTrialRuntimeBackend(mount_docker_socket=True)
+        # Same MULTI_SCOPE routing as the fix-billing-holds bracket: the
+        # run-scope engine stack owns the runner, so this drives
+        # ``SharedStackRuntimeBackend`` (env_manifest mode) rather than
+        # ``PerTrialRuntimeBackend``, which never materialises run scope.
         task = prebuilt_harness_environment["task"]
+        backend = SharedStackRuntimeBackend(
+            env_manifest=task.environment_manifest,
+            run_id=_RUN_ID,
+            mount_docker_socket=True,
+        )
         spec = _make_trial_spec(task, f"{_HARNESS_TASK_ID}:0")
-        handle = backend.provision(spec)
         try:
+            backend.connect()
+            handle = backend.provision(spec)
             _stack_handle(handle)  # Verify composer-produced handle shape.
+            # The per-tool timeout is set once at registration (execute_tool
+            # takes no per-call timeout); the task's bash tool declares 60s,
+            # which covers both the CLI probe and the harness invocation.
             register = backend.register_trial(
                 trial_id=spec.trial_id,
                 trial_spec_json=spec.model_dump_json(exclude={"task": {"environment_manifest"}}),
+                default_tool_timeout_s=task.agent_tools[0].timeout_s,
             )
             assert register["success"] is True, register.get("error")
 
@@ -394,7 +450,6 @@ class TestTerminalBenchHarnessMode:
                 trial_id=spec.trial_id,
                 tool_name="bash",
                 arguments={"command": "command -v claude && python3 -m pytest --version"},
-                timeout_seconds=60.0,
                 call_id="probe-cli",
             )
             assert probe.success is True, probe.error
@@ -405,17 +460,19 @@ class TestTerminalBenchHarnessMode:
                 trial_id=spec.trial_id,
                 tool_name="bash",
                 arguments={"command": harness_command},
-                timeout_seconds=task.agent_tools[0].timeout_s,
                 call_id="harness-1",
             )
             assert invocation.success is True, invocation.error
+            # The instruction reached the CLI on stdin (the harness pipes it there).
             assert 'Create a file /tmp/hello.txt containing the text "Hello, World!"' in (
                 invocation.output
             ), invocation.output
             assert f"provider-env: {_FAKE_PROVIDER_KEY}" in invocation.output, invocation.output
-            # The vendor CLI reaches OpenRouter via ANTHROPIC_BASE_URL, so the
-            # litellm route prefix must not be on the model it was given.
-            assert "--model anthropic/claude-sonnet-4-6" in invocation.output, invocation.output
+            # The declared model reached the CLI through ANTHROPIC_MODEL (the harness
+            # forces the model via env, not a --model flag). The vendor CLI reaches
+            # OpenRouter via ANTHROPIC_BASE_URL, so the litellm route prefix must not
+            # be on the model it was given.
+            assert "model-env: anthropic/claude-sonnet-4-6" in invocation.output, invocation.output
             assert "openrouter/" not in invocation.output, invocation.output
 
             grade_result = backend.grade_trial(
@@ -431,8 +488,11 @@ class TestTerminalBenchHarnessMode:
             )
 
             backend.cleanup_trial(trial_id=spec.trial_id)
-        finally:
             backend.teardown(handle)
+        finally:
+            # Tears down the run-scope engine stack (and any leftover trial
+            # stack if an assertion above aborted before teardown ran).
+            backend.close()
 
     def test_provider_credentials_never_enter_the_image_or_compose_file(
         self, prebuilt_harness_environment: dict[str, Any]
