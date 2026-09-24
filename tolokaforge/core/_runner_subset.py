@@ -126,6 +126,7 @@ base wheel."""
 
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/actors/turn_policy.py",
+    "tolokaforge/core/actors/user_stop.py",
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/bundle.py",
     "tolokaforge/core/grading/bundle_producer.py",
@@ -155,7 +156,9 @@ runner-side ``TrialRunner`` (orchestrator-owned) dispatches on
 orchestrator-only. The runner container never resolves a policy: the
 orchestrator does that before handing a :class:`TrialRunner` to the
 conductor, and the runner-side wire protocol carries only the resolved
-per-turn artefacts.
+per-turn artefacts. ``core.actors.user_stop`` is the stop rule the same
+``TrialRunner`` applies to a user reply; the runner container never reads a
+simulator reply at all.
 
 Seven grading-side files (``core.grading.combine``,
 ``core.grading.corpus_curation``, ``core.grading.migration_declaration``,

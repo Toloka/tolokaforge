@@ -9,7 +9,9 @@
           "content": "Please calculate 17 times 23 and save the answer to a file called result.txt.",
           "role": "user"
         }
-      ]
+      ],
+      "stop_tokens": null,
+      "stop_with_text": null
     }
   },
   "adapter_settings": null,

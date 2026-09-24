@@ -153,6 +153,89 @@ class TestActorsUserDrivesSimulator:
         assert len(deprecations) == 1
 
 
+class TestStopRuleDeclaration:
+    """``actors.user.stop_tokens`` / ``stop_with_text`` reach the resolved
+    simulator through every layer, and a list that cannot end a dialogue is
+    refused at load rather than on the first trial."""
+
+    _TAU_TOKENS = ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]
+
+    def test_declared_fields_reach_the_resolved_simulator(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"stop_tokens": self._TAU_TOKENS, "stop_with_text": "end"}}),
+        )
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.stop_tokens == self._TAU_TOKENS
+        assert sim.stop_with_text == "end"
+
+    def test_undeclared_fields_resolve_to_the_legacy_rule(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"mode": "llm"}}))
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.stop_tokens == ["###STOP###"]
+        assert sim.stop_with_text == "deliver"
+
+    def test_a_project_list_and_a_task_mode_compose(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"stop_with_text": "end"}}))
+        task, _ = _load(
+            task_path,
+            project_task_defaults={"actors": {"user": {"stop_tokens": self._TAU_TOKENS}}},
+        )
+        sim = task.resolve_user_simulator()
+        assert sim.stop_tokens == self._TAU_TOKENS
+        assert sim.stop_with_text == "end"
+
+    @pytest.mark.parametrize(
+        ("tokens", "match"),
+        [
+            ([], "stop_tokens is empty"),
+            (["###STOP###", " "], "blank token"),
+            (["###STOP###", "###STOP###"], "more than once"),
+        ],
+    )
+    def test_a_list_that_cannot_end_a_dialogue_is_refused(
+        self, tmp_path: Path, tokens: list[str], match: str
+    ) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"stop_tokens": tokens}}))
+        with pytest.raises(ValueError, match=match):
+            load_task_yaml(task_path)
+
+    def test_an_llm_simulator_without_the_prompted_token_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path, _task_body(actors={"user": {"mode": "llm", "stop_tokens": ["###DONE###"]}})
+        )
+        with pytest.raises(ValueError, match="built-in user-simulator prompt"):
+            load_task_yaml(task_path)
+
+    def test_the_prompted_token_is_required_whichever_layer_sets_the_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """The task sets only the list; the resolved mode defaults to ``llm``."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"stop_tokens": ["###DONE###"]}}))
+        with pytest.raises(ValueError, match="built-in user-simulator prompt"):
+            load_task_yaml(task_path)
+
+    def test_a_scripted_simulator_may_use_any_token(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"mode": "scripted", "stop_tokens": ["###DONE###"]}}),
+        )
+        assert load_task_yaml(task_path)[0].resolve_user_simulator().stop_tokens == ["###DONE###"]
+
+    def test_an_unknown_stop_with_text_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"stop_with_text": "later"}}))
+        with pytest.raises(ValueError, match="stop_with_text"):
+            load_task_yaml(task_path)
+
+
 class TestFirstMessageSpellingRefused:
     """An opener declared on the user actor is refused, whatever the spelling.
 

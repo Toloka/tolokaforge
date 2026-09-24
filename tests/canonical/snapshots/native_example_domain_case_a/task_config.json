@@ -4,7 +4,9 @@
       "backstory": null,
       "mode": "llm",
       "persona": "cooperative",
-      "scripted_flow": null
+      "scripted_flow": null,
+      "stop_tokens": null,
+      "stop_with_text": null
     }
   },
   "adapter_settings": null,

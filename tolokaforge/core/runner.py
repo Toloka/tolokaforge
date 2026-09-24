@@ -18,6 +18,7 @@ from tolokaforge_coding_harnesses.usage_log import (
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
+from tolokaforge.core.actors.user_stop import UserStop, UserStopRule
 from tolokaforge.core.llm import (
     SIMULATOR_GREETING,
     GenerationResult,
@@ -167,6 +168,7 @@ class TrialRunner:
         interaction_mode: InteractionMode = "conversational",
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
         loop_observer: "LoopObserver | None" = None,
+        user_stop: UserStopRule = UserStopRule(),
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -191,6 +193,7 @@ class TrialRunner:
         self._probe_stats = probe_stats
         # Live tracing (ADR-0047): the trial's observer bound to the agent role, or None.
         self._loop_observer = loop_observer
+        self._user_stop = user_stop
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
@@ -229,12 +232,12 @@ class TrialRunner:
         # One entry per dispatched user turn the reply guard did not accept on
         # its first generation, carried onto the trajectory.
         self._user_reply_guard_events: list[UserReplyGuardEvent] = []
-        # Set when the simulator emits a substantive final reply glued to the
-        # ``###STOP###`` token in the same message. On the next user turn the
-        # runner terminates before calling the simulator so the agent gets
-        # exactly one more turn to act on the delivered reply, then the loop
-        # ends with ``USER_STOP``.
-        self._user_stop_pending: bool = False
+        # Set when the simulator emits a substantive final reply glued to a stop
+        # token in the same message and the rule says ``deliver``. On the next
+        # user turn the runner terminates before calling the simulator so the
+        # agent gets exactly one more turn to act on the delivered reply, then
+        # the loop ends with ``USER_STOP``.
+        self._pending_user_stop: UserStop | None = None
 
     @property
     def effective_system_prompt(self) -> str | None:
@@ -1027,8 +1030,8 @@ class TrialRunner:
 
         Returns the opening message text with any tool results inlined, and the
         calls that produced them. Only the tool-call half of a user turn is
-        shared with :meth:`_dispatch_user_actor`: turn 0 keeps its own
-        ``###STOP###`` reading, which seeds the token literally rather than
+        shared with :meth:`_dispatch_user_actor`: turn 0 does not read stop
+        tokens, so a token in the opening is seeded literally rather than
         terminating the trial before the agent has spoken.
 
         Probe mode collapses this to one attempt. The retry loop only ever
@@ -1177,31 +1180,33 @@ class TrialRunner:
         return self._dispatch_user_actor(decision.actor, messages)
 
     def _dispatch_user_actor(self, actor: Actor, messages: list[Message]) -> UserTurnResult:
-        """Run one user actor turn: reply, ``###STOP###`` detection, user tools.
+        """Run one user actor turn: reply, stop-token detection, user tools.
 
-        Stop-token handling has two shapes:
+        The trial's :class:`UserStopRule` names the tokens; the earliest one in the
+        reply decides. Stop-token handling has three shapes:
 
-        * Bare ``###STOP###`` (or the token with only whitespace before it) —
-          terminate immediately with ``USER_STOP``.
-        * Substantive text glued to ``###STOP###`` in one message — deliver the
-          pre-token text as a normal USER message, set a pending flag, and
-          terminate on the following user turn. Guarantees the agent sees the
-          final reply (e.g. a backstory-mandated verbal decline) before the
-          dialogue ends.
+        * A bare token (or the token with only whitespace before it) — terminate
+          immediately with ``USER_STOP``.
+        * Substantive text before the token, under ``stop_with_text: deliver`` —
+          deliver the pre-token text as a normal USER message, hold the stop
+          pending, and terminate on the following user turn. Guarantees the agent
+          sees the final reply (e.g. a backstory-mandated verbal decline) before
+          the dialogue ends.
+        * Substantive text before the token, under ``stop_with_text: end`` —
+          record the pre-token text as the dialogue's last USER message and
+          terminate in the same turn, so the agent never answers it.
         """
-        if self._user_stop_pending:
-            self.logger.info("User signaled completion (###STOP### after final reply)")
-            self._user_stop_pending = False
+        if self._pending_user_stop is not None:
+            stop = self._pending_user_stop
+            self.logger.info(f"User signaled completion ({stop.token} after final reply)")
+            self._pending_user_stop = None
             return UserTurnResult(
-                termination=TerminationDecision(
-                    reason=TerminationReason.USER_STOP,
-                    system_message="User signaled stop (###STOP### after final reply). Dialogue ended.",
-                )
+                termination=self._user_stop_decision(stop, after_final_reply=True)
             )
 
         # Read before the dispatch: this is the position the turn's USER message
-        # will occupy, and on a stop token or a refusal the loop puts its own
-        # SYSTEM message there instead.
+        # will occupy, and on a bare stop token or a refusal the loop puts its
+        # own SYSTEM message there instead.
         message_index = len(messages)
         try:
             user_result = actor.reply(messages, observation=self._user_observation)
@@ -1218,37 +1223,47 @@ class TrialRunner:
             rejected=user_result.guard_rejections,
         )
 
-        if "###STOP###" in user_result.text:
-            pre_stop_text, _, _ = user_result.text.partition("###STOP###")
-            pre_stop_text = pre_stop_text.rstrip()
-            if not pre_stop_text:
-                self.logger.info(
-                    "User signaled completion (###STOP###)",
-                    dropped_tool_calls=len(user_result.tool_calls or []),
-                )
-                return UserTurnResult(
-                    termination=TerminationDecision(
-                        reason=TerminationReason.USER_STOP,
-                        system_message="User signaled stop (###STOP###). Dialogue ended.",
-                    )
-                )
+        stop = self._user_stop.find(user_result.text)
+        if stop is not None and not stop.text:
             self.logger.info(
-                "User sent final reply with ###STOP### — delivering reply, stop pending"
+                f"User signaled completion ({stop.token})",
+                dropped_tool_calls=len(user_result.tool_calls or []),
             )
-            self._user_stop_pending = True
-            user_result.text = pre_stop_text
+            return UserTurnResult(termination=self._user_stop_decision(stop))
+        if stop is not None:
+            user_result.text = stop.text
 
         user_message_text, executed_calls = self._run_user_tool_calls(
             user_result.text, user_result.tool_calls
         )
+        message = Message(
+            role=MessageRole.USER,
+            content=user_message_text,
+            tool_calls=executed_calls if executed_calls else None,
+            ts=datetime.now(tz=timezone.utc),
+        )
 
-        return UserTurnResult(
-            message=Message(
-                role=MessageRole.USER,
-                content=user_message_text,
-                tool_calls=executed_calls if executed_calls else None,
-                ts=datetime.now(tz=timezone.utc),
+        if stop is None:
+            return UserTurnResult(message=message)
+        if self._user_stop.with_text == "end":
+            self.logger.info(
+                f"User sent final reply with {stop.token} — recording reply, dialogue ends"
             )
+            return UserTurnResult(message=message, termination=self._user_stop_decision(stop))
+        self.logger.info(
+            f"User sent final reply with {stop.token} — delivering reply, stop pending"
+        )
+        self._pending_user_stop = stop
+        return UserTurnResult(message=message)
+
+    @staticmethod
+    def _user_stop_decision(
+        stop: UserStop, *, after_final_reply: bool = False
+    ) -> TerminationDecision:
+        when = " after final reply" if after_final_reply else ""
+        return TerminationDecision(
+            reason=TerminationReason.USER_STOP,
+            system_message=f"User signaled stop ({stop.token}{when}). Dialogue ended.",
         )
 
     def _run_user_tool_calls(

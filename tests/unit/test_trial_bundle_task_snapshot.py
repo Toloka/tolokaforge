@@ -70,8 +70,9 @@ def _written_snapshot(tmp_path: Path, task: TaskConfig) -> dict[str, Any]:
 
 
 def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
-    """All four ``UserSimulatorConfig`` fields, scripted flow included — a trial
-    whose user turns were scripted has no other record of what was said."""
+    """Every ``UserSimulatorConfig`` field, scripted flow and stop rule included — a
+    trial whose user turns were scripted has no other record of what was said, nor
+    of which token ended it."""
     flow = [{"role": "user", "content": "Hi, I need to replace my season pass."}]
     task = make_task_config(
         "conversational_declared",
@@ -81,6 +82,8 @@ def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
                 persona="frustrated commuter",
                 backstory="I lost my season pass last week.",
                 scripted_flow=flow,
+                stop_tokens=["###DONE###"],
+                stop_with_text="end",
             )
         },
     )
@@ -93,6 +96,8 @@ def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
         "persona": "frustrated commuter",
         "backstory": "I lost my season pass last week.",
         "scripted_flow": flow,
+        "stop_tokens": ["###DONE###"],
+        "stop_with_text": "end",
     }
     assert list(snapshot) == [
         "task_id",
@@ -121,6 +126,8 @@ def test_a_task_declaring_no_user_actor_records_the_resolution_the_run_used(
         "persona": "cooperative",
         "backstory": None,
         "scripted_flow": None,
+        "stop_tokens": ["###STOP###"],
+        "stop_with_text": "deliver",
     }
 
 

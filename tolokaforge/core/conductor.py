@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from tolokaforge_coding_harnesses.adapter_support import HARNESS_USAGE_LOG_METADATA_KEY
 
 from tolokaforge.adapters import BaseAdapter
+from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
@@ -836,8 +837,10 @@ class InProcessConductor:
         # ``AgentOnlyTurnPolicy`` factory ignores ``TurnPolicyContext.user_simulator``.
         rate_limit_probe = self.config.orchestrator.rate_limit_probe
         user_simulator: UserSimulator | None
+        user_stop = UserStopRule()
         if task.interaction_mode == "conversational":
             sim = task.resolve_user_simulator()
+            user_stop = UserStopRule.from_config(sim)
             user_llm_config = user_config if sim.mode == "llm" else None
             # The simulator hits the same provider quota as the agent, so a probe
             # run has to cover it too — otherwise a simulator 429 kills the trial
@@ -938,6 +941,7 @@ class InProcessConductor:
                 if identity is not None and not isinstance(self.trial_observer, NullTrialObserver)
                 else None
             ),
+            user_stop=user_stop,
         )
 
         # "" is the runner's "caller supplied nothing" seed: turn 0 is routed

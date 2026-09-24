@@ -4,7 +4,9 @@
       "backstory": "You are customer Alex Torres (C-101) checking that the assistant can correctly use the shop tools to place your order and process payment. Confirm when the assistant tells you the order is placed and paid, then end the conversation with ###STOP###.\n",
       "mode": "llm",
       "persona": "cooperative",
-      "scripted_flow": null
+      "scripted_flow": null,
+      "stop_tokens": null,
+      "stop_with_text": null
     }
   },
   "adapter_settings": null,
