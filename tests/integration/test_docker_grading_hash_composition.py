@@ -440,12 +440,11 @@ def test_a_golden_action_that_raised_is_named_on_the_grade_it_produced(
     The action names an order the initial state does not hold, so it resolves, runs, and
     raises out of the tau wrapper — the one failure shape either substrate can see. The
     replay therefore leaves a partial golden world the runner refuses to hash against:
-    #816's old "full-marks hash verdict over a world never built" is gone — the hash is
-    left *unscored*, so ``state_checks`` falls back to the JSONPath score alone and the
-    declared ``hash.weight`` goes unconsulted (the inert-weight reason names it). What
-    this case pins is that the sentence naming the missing action still travels with the
-    grade over gRPC, under the prefix #599's consumer matches, alongside the unscored-hash
-    fallback.
+    the hash is left *unscored*, so ``state_checks`` falls back to the JSONPath score
+    alone and the declared ``hash.weight`` goes unconsulted (the inert-weight reason
+    names it). What this case pins is that the sentence naming the missing action still
+    travels with the grade over gRPC, under the prefix the downstream consumer matches,
+    alongside the unscored-hash fallback.
     """
     trial_id = f"{_TASK_ID}_raising:0"
     weight = _HASH_WEIGHTS[0]
