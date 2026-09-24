@@ -195,6 +195,32 @@ class TestConstructRuntimeBackend:
             )
             assert isinstance(backend, SharedStackRuntimeBackend)
 
+    def test_env_manifest_constructs_shared_stack_in_env_manifest_mode(self) -> None:
+        """Given a run-scope env_manifest — the path a MULTI_SCOPE plan routes
+        through (`_extract_run_env_manifest` returns the run-scope engine
+        manifest, then this method is called with it) —
+        ``_construct_runtime_backend`` builds a ``SharedStackRuntimeBackend`` in
+        **env_manifest mode** (the engine stack is materialised once at
+        ``connect``), not per-trial. This is the core runtime-routing contract
+        the terminal-bench adapter relies on; the adapter's own e2e (in its
+        package) exercises it end-to-end against a real daemon, and
+        ``_extract_run_env_manifest`` itself is locked by
+        ``tests/unit/test_orchestrator_extract_run_env_manifest.py``."""
+        tasks = [_task_stub("t1")]
+        task_descs = {
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared())
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+
+        backend = orch._construct_runtime_backend(
+            runner_address="sentinel:50051",
+            env_manifest=_manifest_all_shared(),
+            run_id="test-run",
+        )
+        assert isinstance(backend, SharedStackRuntimeBackend)
+        assert backend._env_manifest is not None  # env_manifest mode
+        assert backend._per_trial_mode is False  # run-scope engine, not per-trial
+
     def test_explicit_override_wins_and_warns(self) -> None:
         tasks = [_task_stub("t1")]
         task_descs = {

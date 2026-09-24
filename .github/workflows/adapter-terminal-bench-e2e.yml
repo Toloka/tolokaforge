@@ -1,0 +1,58 @@
+name: Terminal-bench adapter e2e
+
+# The terminal-bench adapter's Docker e2e (builds engine + agent images, drives a
+# real per-trial bracket) is expensive (~15-20 min). It runs when the ADAPTER
+# changes — not on every core-engine change — plus nightly and on demand. Core
+# keeps the cheap adapter-free routing coverage (tests/unit/test_backend_selection.py).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'external_adapters/tolokaforge-adapter-terminal-bench/**'
+      - '.github/workflows/adapter-terminal-bench-e2e.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'external_adapters/tolokaforge-adapter-terminal-bench/**'
+      - '.github/workflows/adapter-terminal-bench-e2e.yml'
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terminal-bench-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python (pinned in .python-version)
+        run: uv python install "$(cat .python-version)"
+
+      - name: Install dependencies
+        run: uv sync --dev --locked
+
+      - name: Docker daemon check
+        run: docker info
+
+      # The adapter e2e drives the substrate directly (no LLM key needed) and the
+      # test fixtures self-build the CLI-baked engine images, so no separate
+      # `tolokaforge docker build` step is required.
+      - name: Run terminal-bench adapter e2e
+        run: |
+          cd external_adapters/tolokaforge-adapter-terminal-bench
+          uv run pytest tests/ -m requires_docker -v --tb=short -p no:cacheprovider
