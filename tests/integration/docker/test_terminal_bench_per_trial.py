@@ -276,7 +276,13 @@ class TestTerminalBenchPerTrialBracket:
             backend.close()
 
         assert stack is not None
-        assert not stack.temp_dir.exists()
+        # The real teardown guarantee is that the compose project's containers are
+        # gone (asserted below). The materialiser removes the stack temp dir on a
+        # best-effort basis (`shutil.rmtree(..., ignore_errors=True)`): the
+        # terminal-bench task container runs as root and leaves root-owned files
+        # (agent/verifier logs, test outputs) in the bind-mounted dir, which a
+        # non-root teardown cannot delete on Linux — so temp-dir removal is not
+        # asserted here.
         # Every container that came up during provision is gone.
         listed = subprocess.run(
             ["docker", "ps", "-a", "-q", "--no-trunc"],
