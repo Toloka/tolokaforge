@@ -4,6 +4,7 @@
       "backstory": null,
       "mode": "scripted",
       "persona": null,
+      "prompt_template": null,
       "scripted_flow": [
         {
           "content": "Please calculate 17 times 23 and save the answer to a file called result.txt.",

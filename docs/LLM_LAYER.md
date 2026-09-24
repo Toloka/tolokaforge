@@ -491,7 +491,19 @@ holds the prompt body to the generation it is stamped with.
 
 ### The prompt body
 
-The system prompt is a fixed opening line, the task's `Instruction` when the
+A task can replace the whole body with its own text through
+`actors.user.prompt_template` — a file, relative to the task root, that carries
+the placeholder `{backstory}` exactly once. The prompt is then that file with the
+backstory substituted and nothing else: no opening line, no `Rules:` block, no
+tool guidance. This is how a task reproduces another harness's simulator prompt
+byte for byte (e.g. a guidelines document followed by
+`<scenario>\n{backstory}\n</scenario>`). The load refuses a missing file, a
+placeholder count other than one, a template without a backstory, and a template
+on a scripted simulator. `simulator_schema_version` keeps dating the built-in body
+below; a templated trial is identified by `user_actor.prompt_template` and its
+rendered prompt in `prompts.yaml`.
+
+Without a template, the system prompt is a fixed opening line, the task's `Instruction` when the
 task supplied a backstory, and a `Rules:` block of twelve rules, with four more
 appended when the simulator holds tool schemas. Those four are the text the
 builder currently renders rather than a contract: they are written in one task

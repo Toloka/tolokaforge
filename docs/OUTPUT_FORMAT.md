@@ -243,6 +243,7 @@ user_actor:                                  # resolved UserSimulatorConfig, or 
   scripted_flow: null                        # full flow when mode is scripted
   stop_tokens: ["###STOP###"]                # tokens that ended or could end the dialogue
   stop_with_text: "deliver"                  # deliver | end
+  prompt_template: null                      # task-root path of an authored simulator prompt, or null
 grading_config:
   state_checks: {...}
   transcript_rules: {...}
@@ -300,7 +301,7 @@ the bundle alone, without re-reading the task pack at the commit the run used.
 |---|---|---|
 | `interaction_mode` | `conversational` \| `agent_only` | Turn-loop shape. `agent_only` never dispatches a user actor. |
 | `initial_user_message` | string \| `null` | The task's pinned opener, verbatim — leading and trailing whitespace included, since this is the text delivered as message index 0. `null` when the task pinned no opener. |
-| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `stop_tokens`, `stop_with_text`. `null` under `agent_only`, which resolves no simulator at all. |
+| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `stop_tokens`, `stop_with_text`, `prompt_template`. `null` under `agent_only`, which resolves no simulator at all. |
 
 `interaction_mode` is what makes a `null` actor readable: it is the only thing
 in the bundle that separates "no user actor by design" from a defect, since
@@ -1830,7 +1831,7 @@ evidence about us, and our own defects stay counted. See
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
-| `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
+| `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. A task-authored `actors.user.prompt_template` replaces the body with text the engine does not write, so it is identified by `user_actor.prompt_template` and `prompts.yaml`, not by this stamp |
 | `metrics.yaml` | `schema_version` | `5` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |

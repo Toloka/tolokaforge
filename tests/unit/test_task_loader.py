@@ -241,6 +241,8 @@ class TestDeepMerge:
         ["tools", "user", "mcp_server"],
         ["initial_state", "json_db"],
         ["initial_state", "system_prompt"],
+        ["actors", "user", "prompt_template"],
+        ["user_simulator", "prompt_template"],
     ],
 )
 def test_rewrite_string_path_fields_covers_all(tmp_path: Path, field_path: list[str]) -> None:

@@ -4,6 +4,7 @@
       "backstory": "You are an operations manager validating that the assistant can use tools to update ticket state safely and summarize next actions. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s).",
       "mode": null,
       "persona": null,
+      "prompt_template": null,
       "scripted_flow": null,
       "stop_tokens": null,
       "stop_with_text": null
