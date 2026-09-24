@@ -59,6 +59,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
+from tolokaforge.core.actors.prompt_template import read_prompt_template
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
     source_context,
@@ -623,7 +624,20 @@ def load_task_yaml(
 
     task = construct_config(TaskConfig, task_data, source=task_path)
     task._source_dir = task_root
+    _refuse_an_unusable_user_prompt_template(task, task_root)
     return task, task_root
+
+
+def _refuse_an_unusable_user_prompt_template(task: TaskConfig, task_root: Path) -> None:
+    """Read ``actors.user.prompt_template`` at load, so ``validate`` refuses a bad one.
+
+    The conductor reads the same file when it builds the simulator; without this a
+    missing file or a template without its placeholder would surface only then,
+    once per trial.
+    """
+    template_path = task.resolve_user_simulator().prompt_template
+    if template_path is not None:
+        read_prompt_template(task_root, template_path)
 
 
 def load_task(
@@ -1482,6 +1496,8 @@ _PATH_FIELD_REWRITERS: tuple[_FieldRewriter, ...] = (
     _rewrite_string_field("tools", "user", "mcp_server"),
     _rewrite_string_field("initial_state", "json_db"),
     _rewrite_string_field("initial_state", "system_prompt"),
+    _rewrite_string_field("actors", "user", "prompt_template"),
+    _rewrite_string_field("user_simulator", "prompt_template"),
     _rewrite_filesystem_copy,
 )
 

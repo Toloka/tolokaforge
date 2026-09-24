@@ -4,6 +4,7 @@
       "backstory": null,
       "mode": "llm",
       "persona": "cooperative",
+      "prompt_template": null,
       "scripted_flow": null,
       "stop_tokens": null,
       "stop_with_text": null

@@ -603,30 +603,33 @@ class TestTrialToolSurfacePartition:
         assert _names(written) == ["agent_read", "user_probe"]
 
 
+def _trial_runner_kwargs(tmp_path: Path, task: TaskConfig) -> dict[str, Any]:
+    """The keyword arguments ``_run_agent_loop`` builds ``TrialRunner`` with, for *task*
+    run from the task root *tmp_path*."""
+    conductor = _conductor_registering(tmp_path, _register_result([], []))
+    setup = _TrialSetup(
+        trial_id="t1:0",
+        trial_idx=0,
+        task_dir=tmp_path,
+        trial_dir=tmp_path / "trials" / "t1" / "0",
+        env_state=MagicMock(),
+        adapter_env=MagicMock(),
+        tool_schemas=[],
+        tool_executor=MagicMock(),
+        user_tool_schemas=[],
+        user_tool_executor=None,
+    )
+    with (
+        patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+        patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+    ):
+        conductor._run_agent_loop(_make_spec(), task, setup)
+    return runner_cls.call_args.kwargs
+
+
 class TestUserStopRuleReachesTheRunner:
     """The stop tokens the engine listens for come from the task's own
     ``actors.user`` declaration — the same one that tells the simulator what to send."""
-
-    def _runner_kwargs(self, tmp_path: Path, task: TaskConfig) -> dict[str, Any]:
-        conductor = _conductor_registering(tmp_path, _register_result([], []))
-        setup = _TrialSetup(
-            trial_id="t1:0",
-            trial_idx=0,
-            task_dir=tmp_path,
-            trial_dir=tmp_path / "trials" / "t1" / "0",
-            env_state=MagicMock(),
-            adapter_env=MagicMock(),
-            tool_schemas=[],
-            tool_executor=MagicMock(),
-            user_tool_schemas=[],
-            user_tool_executor=None,
-        )
-        with (
-            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
-            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
-        ):
-            conductor._run_agent_loop(_make_spec(), task, setup)
-        return runner_cls.call_args.kwargs
 
     def test_a_declared_rule_is_the_one_the_runner_reads(self, tmp_path: Path) -> None:
         tokens = ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]
@@ -642,14 +645,56 @@ class TestUserStopRuleReachesTheRunner:
             },
         )
 
-        rule = self._runner_kwargs(tmp_path, task)["user_stop"]
+        rule = _trial_runner_kwargs(tmp_path, task)["user_stop"]
 
         assert rule == UserStopRule(tokens=tuple(tokens), with_text="end")
 
     def test_an_undeclared_rule_is_the_legacy_one(self, tmp_path: Path) -> None:
-        rule = self._runner_kwargs(tmp_path, TaskConfig(task_id="t1", description="d"))["user_stop"]
+        rule = _trial_runner_kwargs(tmp_path, TaskConfig(task_id="t1", description="d"))[
+            "user_stop"
+        ]
 
         assert rule == UserStopRule(tokens=("###STOP###",), with_text="deliver")
+
+
+class TestUserPromptTemplateReachesTheSimulator:
+    """The conductor reads the template from the task root and hands the text, not
+    the path, to the simulator it builds."""
+
+    def test_the_simulator_renders_the_task_root_template(self, tmp_path: Path) -> None:
+        (tmp_path / "sim").mkdir()
+        (tmp_path / "sim" / "prompt.md").write_text(
+            "Guidelines.\n\n<scenario>\n{backstory}\n</scenario>", encoding="utf-8"
+        )
+        task = TaskConfig(
+            task_id="t1",
+            description="d",
+            actors={
+                "user": ActorSpec(backstory="Move my booking.", prompt_template="sim/prompt.md")
+            },
+        )
+
+        simulator = _trial_runner_kwargs(tmp_path, task)["user_simulator"]
+
+        assert simulator._build_system_prompt() == (
+            "Guidelines.\n\n<scenario>\nMove my booking.\n</scenario>"
+        )
+
+    def test_a_template_missing_from_the_task_root_fails_the_trial_build(
+        self, tmp_path: Path
+    ) -> None:
+        """A task built in Python by an adapter never passes the loader's check, so
+        the conductor's own read is the guard that fires for it."""
+        task = TaskConfig(
+            task_id="t1",
+            description="d",
+            actors={
+                "user": ActorSpec(backstory="Move my booking.", prompt_template="sim/prompt.md")
+            },
+        )
+
+        with pytest.raises(FileNotFoundError, match="prompt_template"):
+            _trial_runner_kwargs(tmp_path, task)
 
 
 class TestTrialSetupToolOutputMaxCharsWiring:

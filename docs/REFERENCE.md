@@ -99,6 +99,7 @@ actors:
       - default: "Please proceed."
     stop_tokens: ["###STOP###"]     # Tokens that end the dialogue
     stop_with_text: "deliver"       # "deliver" (agent answers the final reply) or "end"
+    prompt_template: "sim/user.md"  # Replaces the built-in simulator prompt; carries {backstory} once
 
 policies:
   disallowed_actions:

@@ -196,6 +196,9 @@ class UserSimulatorConfig(BaseModel):
     """Substrings that end the dialogue when a user reply carries one."""
     stop_with_text: UserStopWithText = "deliver"
     """See :data:`UserStopWithText`."""
+    prompt_template: str | None = None
+    """Path, relative to the task root, of a file whose text replaces the built-in
+    simulator prompt, with the backstory placed at its ``{backstory}``."""
 
     @model_validator(mode="before")
     @classmethod
@@ -208,6 +211,30 @@ class UserSimulatorConfig(BaseModel):
         return validate_stop_tokens(value)
 
     @model_validator(mode="after")
+    def _refuse_a_template_nothing_can_render(self) -> Self:
+        """A prompt template needs an LLM simulator to prompt and a backstory to place.
+
+        A scripted simulator sends no prompt at all, so the template would be
+        read and never used; without a backstory the placeholder would render
+        empty and the model would get a scenario section with nothing in it.
+        """
+        if self.prompt_template is None:
+            return self
+        if self.mode != "llm":
+            raise ValueError(
+                f"prompt_template is {self.prompt_template!r}, but the user simulator "
+                "resolves to mode scripted, which sends no prompt. Write mode: llm, or drop "
+                "prompt_template."
+            )
+        if not self.backstory:
+            raise ValueError(
+                f"prompt_template is {self.prompt_template!r}, but the user actor has no "
+                "backstory, so the template's {backstory} placeholder would render empty. "
+                "Give the actor a backstory."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _refuse_stop_tokens_the_prompt_does_not_match(self) -> Self:
         """An LLM simulator's stop tokens and its prompt must name the same tokens.
 
@@ -216,16 +243,19 @@ class UserSimulatorConfig(BaseModel):
         that token lets the model's stop pass as ordinary text to the agent and the
         dialogue go on. Any other listed token can only be taught by the backstory,
         and one the backstory never names can never fire. Scripted replies are
-        authored text, so a scripted simulator may use any token.
+        authored text, so a scripted simulator may use any token. A task that
+        authors the prompt through ``prompt_template`` replaces the built-in prompt,
+        so these two rules do not describe it.
         """
-        if self.mode != "llm":
+        if self.mode != "llm" or self.prompt_template is not None:
             return self
         if SIMULATOR_STOP_TOKEN not in self.stop_tokens:
             raise ValueError(
                 f"stop_tokens is {self.stop_tokens!r}, but the built-in user-simulator prompt "
                 f"instructs the model to end the dialogue with {SIMULATOR_STOP_TOKEN!r}, so "
                 "that stop would reach the agent as ordinary text. Add "
-                f"{SIMULATOR_STOP_TOKEN!r} to the list."
+                f"{SIMULATOR_STOP_TOKEN!r} to the list, or author the prompt that names the "
+                "tokens through prompt_template."
             )
         unprompted = [
             token
@@ -267,6 +297,7 @@ class ActorSpec(BaseModel):
     scripted_flow: list[dict[str, str]] | None = None
     stop_tokens: list[str] | None = None
     stop_with_text: UserStopWithText | None = None
+    prompt_template: str | None = None
 
     model_config = {"extra": "ignore"}
 
@@ -593,6 +624,7 @@ class TaskConfig(BaseModel):
             persona=spec.persona or "cooperative",
             backstory=spec.backstory,
             scripted_flow=spec.scripted_flow,
+            prompt_template=spec.prompt_template,
             **stop_fields,
         )
 
