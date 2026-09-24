@@ -315,7 +315,8 @@ policy corpus to derive it.
 The exit token belongs to the **user simulator**. The engine reads it from
 simulator output only — a dispatched user reply that is the bare token ends the
 trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
-it delivers that text first and stops on the next turn. The opening turn is the
+it delivers that text first and stops on the next turn (both are configurable, see
+[Declaring the stop tokens](#declaring-the-stop-tokens)). The opening turn is the
 exception: a bootstrap reply carrying the token seeds it literally, rather than
 ending a trial before the agent has spoken. Write it into the
 `backstory` (or a scripted flow), never into a task's agent-facing prompt: the
@@ -323,6 +324,30 @@ agent is never asked for the token and its output is never checked for it, so a
 prompt that instructed it would promise a signal nothing consumes.
 [`tests/canonical/test_agent_prompt_exit_token.py`](../tests/canonical/test_agent_prompt_exit_token.py)
 builds every example pack's agent system prompt and fails if one carries it.
+
+#### Declaring the stop tokens
+
+`actors.user` names the tokens the engine listens for and what happens to text
+written before one:
+
+```yaml
+actors:
+  user:
+    stop_tokens: ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]  # default: ["###STOP###"]
+    stop_with_text: end    # default: deliver
+```
+
+- **`stop_tokens`** — the earliest listed token in a reply fires, and the
+  termination message names it (`User signaled stop (###TRANSFER###). Dialogue
+  ended.`). The reason is `USER_STOP` for every token. The list must be
+  non-empty, without blank or repeated tokens. An `llm` simulator's list must
+  contain `###STOP###`, because the built-in prompt tells the model to send that
+  token and no other; a `scripted` simulator may list any tokens.
+- **`stop_with_text`** — `deliver` hands the text before the token to the agent,
+  lets it answer, and ends the trial on the next user turn. `end` records that
+  text as the last user message and ends the trial at once, so the agent never
+  answers it — the reference τ³-bench harness (`sierra-research/tau2-bench`)
+  behaves this way. A bare token ends the trial at once under either value.
 
 The agent's own completion is **structural**, not a phrase it emits: a trial ends
 with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls

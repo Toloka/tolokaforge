@@ -43,6 +43,7 @@ __all__ = [
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
     "SEED_KIND_BY_EXTENSION",
+    "SIMULATOR_STOP_TOKEN",
     "SeedKind",
     "SeedRef",
     "StateChecksConfig",
@@ -55,6 +56,7 @@ __all__ = [
     "TimeoutDefaults",
     "ToolsConfig",
     "UserSimulatorConfig",
+    "UserStopWithText",
 ]
 
 
@@ -131,6 +133,42 @@ def _refuse_first_message(data: Any) -> Any:
     return data
 
 
+SIMULATOR_STOP_TOKEN = "###STOP###"
+"""The exit token the built-in simulator prompt instructs the model to send."""
+
+UserStopWithText = Literal["deliver", "end"]
+"""What a user reply carrying text before its stop token does.
+
+``deliver`` hands the text to the agent, lets the agent answer it, and ends the
+dialogue on the next user turn. ``end`` records the text as the dialogue's last
+user turn and ends the dialogue at once, so the agent never answers it."""
+
+
+def _refuse_unusable_stop_tokens(tokens: list[str]) -> list[str]:
+    """Reject a stop-token list that cannot end a dialogue the way it reads.
+
+    An empty list leaves the simulator no way to end the dialogue, so every trial
+    would run to its turn budget. A blank token matches every reply, and a
+    repeated one says nothing the first spelling did not.
+    """
+    if not tokens:
+        raise ValueError(
+            "stop_tokens is empty, so no user reply can end the dialogue and every trial "
+            f"would run to its turn budget. Omit the key to keep {SIMULATOR_STOP_TOKEN!r}, "
+            "or list the tokens the simulator is told to send."
+        )
+    blank = [token for token in tokens if not token.strip()]
+    if blank:
+        raise ValueError(
+            f"stop_tokens carries blank token(s) {blank!r}; a blank token is found in "
+            "every reply and would end the dialogue on the first user turn."
+        )
+    repeated = sorted({token for token in tokens if tokens.count(token) > 1})
+    if repeated:
+        raise ValueError(f"stop_tokens lists {repeated!r} more than once.")
+    return tokens
+
+
 class UserSimulatorConfig(BaseModel):
     """User simulator configuration"""
 
@@ -140,11 +178,38 @@ class UserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str | None = None  # User instruction for tau-bench parity
     scripted_flow: list[dict[str, str]] | None = None
+    stop_tokens: list[str] = Field(default_factory=lambda: [SIMULATOR_STOP_TOKEN])
+    """Substrings that end the dialogue when a user reply carries one."""
+    stop_with_text: UserStopWithText = "deliver"
+    """See :data:`UserStopWithText`."""
 
     @model_validator(mode="before")
     @classmethod
     def _reject_first_message(cls, data: Any) -> Any:
         return _refuse_first_message(data)
+
+    @field_validator("stop_tokens")
+    @classmethod
+    def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
+        return _refuse_unusable_stop_tokens(value)
+
+    @model_validator(mode="after")
+    def _refuse_stop_tokens_the_prompt_never_asks_for(self) -> Self:
+        """An LLM simulator must be able to send a token the engine listens for.
+
+        The built-in prompt tells the model to send ``###STOP###`` and nothing
+        else, so a list without it is one the model is never asked to produce:
+        the dialogue would only ever end on the turn budget. Scripted replies are
+        authored text, so a scripted simulator may use any token.
+        """
+        if self.mode != "llm" or SIMULATOR_STOP_TOKEN in self.stop_tokens:
+            return self
+        raise ValueError(
+            f"stop_tokens is {self.stop_tokens!r}, but the built-in user-simulator prompt "
+            f"instructs the model to end the dialogue with {SIMULATOR_STOP_TOKEN!r} only, "
+            "so no generated reply would ever carry a listed token. Add "
+            f"{SIMULATOR_STOP_TOKEN!r} to the list."
+        )
 
 
 _RESERVED_ACTOR_NAMES = frozenset({"agent", "judge"})
@@ -171,6 +236,8 @@ class ActorSpec(BaseModel):
     persona: str | None = None
     backstory: str | None = None
     scripted_flow: list[dict[str, str]] | None = None
+    stop_tokens: list[str] | None = None
+    stop_with_text: UserStopWithText | None = None
 
     model_config = {"extra": "ignore"}
 
@@ -178,6 +245,11 @@ class ActorSpec(BaseModel):
     @classmethod
     def _reject_first_message(cls, data: Any) -> Any:
         return _refuse_first_message(data)
+
+    @field_validator("stop_tokens")
+    @classmethod
+    def _refuse_unusable_stop_tokens(cls, value: list[str] | None) -> list[str] | None:
+        return value if value is None else _refuse_unusable_stop_tokens(value)
 
 
 def _validate_actors_map(
@@ -416,6 +488,19 @@ class TaskConfig(BaseModel):
         )
 
     @model_validator(mode="after")
+    def _refuse_an_unresolvable_user_actor(self) -> Self:
+        """Resolve ``actors.user`` at load, so a contradiction fails ``validate``.
+
+        Some rules need the resolved actor rather than one layer's spec — the
+        stop tokens an LLM simulator can send depend on its mode, which another
+        layer may set — so without this they would surface only when the first
+        trial builds its simulator.
+        """
+        if self.actors and "user" in self.actors:
+            self.resolve_user_simulator()
+        return self
+
+    @model_validator(mode="after")
     def _refuse_user_tools_no_turn_can_call(self) -> Self:
         """Refuse a ``tools.user.enabled`` no user turn of this task can ever call.
 
@@ -466,11 +551,20 @@ class TaskConfig(BaseModel):
         spec = (self.actors or {}).get("user")
         if spec is None:
             return UserSimulatorConfig()
+        stop_fields = {
+            name: value
+            for name, value in (
+                ("stop_tokens", spec.stop_tokens),
+                ("stop_with_text", spec.stop_with_text),
+            )
+            if value is not None
+        }
         return UserSimulatorConfig(
             mode=spec.mode or "llm",
             persona=spec.persona or "cooperative",
             backstory=spec.backstory,
             scripted_flow=spec.scripted_flow,
+            **stop_fields,
         )
 
 

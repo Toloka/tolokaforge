@@ -9,7 +9,9 @@
           "content": "Please open the test.html file in the browser and find the secret code displayed on the page. Save the secret code to a file called secret.txt.",
           "role": "user"
         }
-      ]
+      ],
+      "stop_tokens": null,
+      "stop_with_text": null
     }
   },
   "adapter_settings": null,
