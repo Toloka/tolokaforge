@@ -55,7 +55,6 @@ from typing import Any
 import pytest
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
-from tests.utils.docker_helpers import is_docker_daemon_available
 from tolokaforge.core.composition_runtime import ComposedEnvHandle
 from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
 from tolokaforge.core.models import ModelConfig
@@ -66,6 +65,21 @@ from tolokaforge.docker.image import ImageError
 from tolokaforge.docker.stacks.core import core_stack
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker, pytest.mark.requires_docker]
+
+
+def is_docker_daemon_available() -> bool:
+    """Docker daemon reachable and operational (ping + credential-store access)."""
+    try:
+        import docker
+
+        client = docker.from_env()
+        client.ping()
+        # image builds read the credential store; a broken credsStore fails here
+        docker.auth.load_config().get_all_credentials()
+        return True
+    except Exception:
+        return False
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _EXAMPLES_ROOT = _REPO_ROOT / "examples" / "terminal_bench"
