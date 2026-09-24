@@ -97,6 +97,8 @@ actors:
       - if_assistant_contains: "name"
         user: "My name is Alice."
       - default: "Please proceed."
+    stop_tokens: ["###STOP###"]     # Tokens that end the dialogue
+    stop_with_text: "deliver"       # "deliver" (agent answers the final reply) or "end"
 
 policies:
   disallowed_actions:

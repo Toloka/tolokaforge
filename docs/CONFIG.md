@@ -537,6 +537,8 @@ actors:
       - default: "Please continue."
     # simulator: "builtin"      # which registered simulator produces the dialogue
     # simulator_config: {}      # opaque config for a non-builtin simulator
+    stop_tokens: ["###STOP###"]  # tokens that end the dialogue (see docs/TASKS.md)
+    stop_with_text: "deliver"    # "deliver" or "end"
 
 policies:
   guidance:
