@@ -2068,6 +2068,19 @@ class JudgeCustomization(BaseModel):
         return value
 
 
+#: Rubric criterion count at or above which an omitted ``judge_kind`` on
+#: :class:`LLMJudgeConfig` auto-resolves to ``"chunked_rubric"``. Below this
+#: threshold the default stays ``"single_shot_rubric"``. Packs that explicitly
+#: name a ``judge_kind`` on either side of the threshold are honoured verbatim,
+#: so this policy only fires when the pack did not choose. The threshold pairs
+#: with the shipped ``chunked_rubric`` (``chunk_size=5``): a 20-criterion
+#: rubric splits into 4 chunks, each well under the model output ceilings a
+#: single-shot ``submit_report`` overflows on 30+ criteria.
+#:
+#: See GH #1524 for the ``chunked_rubric`` design.
+RUBRIC_CRITERIA_CHUNKED_THRESHOLD = 20
+
+
 class LLMJudgeConfig(BaseModel):
     """LLM-based grading configuration.
 
@@ -2084,10 +2097,15 @@ class LLMJudgeConfig(BaseModel):
     seam the runner dispatches to (registered names live in the
     ``tolokaforge.judge_kinds`` entry-point group; read the current set with
     :func:`~tolokaforge.core.plugin_registry.available_judge_kinds`). Unknown
-    names are refused at parse time. ``kind_config`` is an opaque per-kind
-    options bag — the framework performs zero shape checks on it; each kind
-    validates its own slice inside :meth:`JudgeKind.evaluate`. Note that
-    :func:`~tolokaforge.secrets.expand_secret_refs` is never walked over
+    names are refused at parse time. When the field is omitted from the input,
+    it auto-resolves to ``"chunked_rubric"`` on rubrics with
+    :data:`RUBRIC_CRITERIA_CHUNKED_THRESHOLD` or more criteria (large rubrics
+    overflow a single-shot ``submit_report`` and produce truncated JSON with no
+    verdict — see GH #1524) and to ``"single_shot_rubric"`` otherwise; an
+    explicitly named kind is always honoured. ``kind_config`` is an opaque
+    per-kind options bag — the framework performs zero shape checks on it;
+    each kind validates its own slice inside :meth:`JudgeKind.evaluate`. Note
+    that :func:`~tolokaforge.secrets.expand_secret_refs` is never walked over
     ``kind_config``; a kind that stores ``${secret:NAME}`` values must
     expand them itself.
     """
@@ -2168,6 +2186,46 @@ class LLMJudgeConfig(BaseModel):
                 "delete the `output_schema` field from grading.llm_judge."
             )
         return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _auto_select_judge_kind_on_large_rubrics(cls, data: Any) -> Any:
+        """Resolve an omitted ``judge_kind`` against the rubric size.
+
+        With :data:`RUBRIC_CRITERIA_CHUNKED_THRESHOLD` or more criteria the
+        auto-selected kind is ``"chunked_rubric"``; below it stays
+        ``"single_shot_rubric"``. An explicit ``judge_kind`` in the input is
+        honoured on either side of the threshold — packs that name the kind
+        keep whatever they chose. Runs on the raw input so ``"judge_kind" in
+        data`` distinguishes an explicit value from the field default.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "judge_kind" in data:
+            return data
+        rubric = data.get("rubric")
+        criteria = _read_rubric_criteria_list(rubric)
+        if criteria is None:
+            return data
+        if len(criteria) >= RUBRIC_CRITERIA_CHUNKED_THRESHOLD:
+            data["judge_kind"] = "chunked_rubric"
+        return data
+
+
+def _read_rubric_criteria_list(rubric: Any) -> list[Any] | None:
+    """Return the criterion list from a rubric-shaped value, or ``None``.
+
+    Handles both an unvalidated ``dict`` (input to
+    :class:`LLMJudgeConfig`) and an already-validated :class:`Rubric` model
+    (the config re-parsed from a serialized snapshot).
+    """
+    if isinstance(rubric, Rubric):
+        return list(rubric.criteria)
+    if isinstance(rubric, dict):
+        criteria = rubric.get("criteria")
+        if isinstance(criteria, list):
+            return criteria
+    return None
 
 
 class RunnerGradingConfig(BaseModel):

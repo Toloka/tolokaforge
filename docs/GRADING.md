@@ -49,6 +49,20 @@ framework never inspects; each kind validates its own slice inside
 message naming the registered set — mirrors `grading_method`'s
 resolution shape.
 
+**Auto-selected default on large rubrics.** When `judge_kind` is omitted
+from the input, it resolves to `chunked_rubric` on rubrics with
+`RUBRIC_CRITERIA_CHUNKED_THRESHOLD` (20) or more criteria and to
+`single_shot_rubric` otherwise. A pack that names either kind is
+honoured verbatim on either side of the threshold — the auto-select is
+a default resolver, not an override. Set
+`task.grading.llm_judge.judge_kind: single_shot_rubric` on a large
+rubric to force one-shot dispatch; set
+`task.grading.llm_judge.judge_kind: chunked_rubric` on a small rubric
+to force chunking. The 20-criterion threshold pairs with the shipped
+`chunked_rubric` (`chunk_size=5`): a 20-criterion rubric splits into
+four chunks, each well under the model-output ceilings a single-shot
+`submit_report` overflows on rubrics of ~30+ criteria (GH #1524).
+
 Cross-kind trust — whether a candidate kind's verdicts actually agree
 with the reference kind, on both the committed cassette corpus and real
 trials — is not asserted here. See
