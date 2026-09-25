@@ -19,6 +19,23 @@ All notable changes to this project are documented in this file.
 
 - **grading**: `auto_anchored_rubric` warm-up prompt tightened — the system prompt now binds the generated anchor to be at least as strict as the criterion description, explicitly rejects non-responsive outputs (empty replies, error messages, off-topic content, hedged non-answers, generic filler), and requires concrete observable evidence rather than fuzzy adjectives alone. When the rubric carries a `reference`, the warm-up user prompt prepends a reference-solution calibration block so the auto-anchor snaps toward the task author's ground truth without copying it verbatim. Addresses live regression evidence where the softer warm-up produced anchors looser than the criterion description and diverged from `single_shot_rubric` on unanchored graded criteria.
 
+## v0.27.2 (2026-09-24)
+
+### Fix
+
+- **integration**: green the integration lane + move terminal-bench e2e to the adapter (#1628)
+- **release**: green the release gate (checkout depth + missing grading key) (#1627)
+
+## v0.27.1 (2026-09-23)
+
+### Feat
+
+- **langfuse**: read the deployment's block from the run configuration (#1626)
+
+### Fix
+
+- **observability**: enforce single-attempt OTLP exports and reject redirects (#1622)
+
 ## v0.27.0 (2026-09-21)
 
 ### Feat

@@ -13,7 +13,8 @@ from tolokaforge_langfuse.model_names import (
     RawModelNameResolver,
     build_model_name_resolver,
 )
-from tolokaforge_langfuse.plugin import merge_tags, resolve_endpoint, validate_tag
+from tolokaforge_langfuse.plugin import resolve_endpoint
+from tolokaforge_langfuse.preflight import PreflightError, merge_tag_sources, validate_tag
 
 from tolokaforge.core.models import ObservabilityConfig, TracingConfig
 from tolokaforge.observability.factory import (
@@ -135,7 +136,7 @@ class TestFactory:
         "tag", ["demo", "model:x/y", "harness:other", "task:T-1", "Config:stem", "a:b c"]
     )
     def test_tags_are_validated(self, tag: str) -> None:
-        with pytest.raises(TracingConfigError):
+        with pytest.raises(PreflightError):
             validate_tag(tag)
 
     def test_good_tags_pass(self) -> None:
@@ -205,7 +206,7 @@ class TestAttachmentStep:
 
 
 class TestReceiverFromTheEnvironment:
-    """A launcher (the connector's with-destination) injects the receiver; the config may stay
+    """A launcher (the connector's with-environment) injects the receiver; the config may stay
     vendor-neutral and endpoint-free."""
 
     def test_endpoint_resolution_order(self, monkeypatch) -> None:
@@ -221,14 +222,17 @@ class TestReceiverFromTheEnvironment:
         )
 
     def test_environment_tags_merge_and_a_prefix_never_carries_two_values(self) -> None:
-        assert merge_tags(["team:pilot"], ["project:pilot-dev", "team:pilot"]) == [
+        def merge(configured, extra):
+            return merge_tag_sources(("config", configured), ("launcher", extra))[0]
+
+        assert merge(["team:pilot"], ["project:pilot-dev", "team:pilot"]) == [
             "team:pilot",
             "project:pilot-dev",
         ]
-        with pytest.raises(TracingConfigError, match="given twice"):
-            merge_tags(["project:pilot"], ["project:pilot-dev"])
-        with pytest.raises(TracingConfigError):
-            merge_tags([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
+        with pytest.raises(PreflightError, match="given twice"):
+            merge(["project:pilot"], ["project:pilot-dev"])
+        with pytest.raises(PreflightError):
+            merge([], ["model:x/y"])  # reserved prefixes stay reserved for injected tags
 
     def _projects(
         self, monkeypatch, answer, family_answer=(404, b"")
@@ -436,7 +440,7 @@ class TestTheReceiverFamily:
         """The direct ingestion path and the single-post exporter are v4 answers: a v3 receiver
         gets neither, so its wire traffic is the one this observer has always written."""
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse.otel import INGESTION_VERSION_HEADER
+        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
         observer, _ = self._build(monkeypatch, (404, b""))
         exporter = observer._queue._exporter
@@ -445,7 +449,7 @@ class TestTheReceiverFamily:
 
     def test_the_v4_family_asks_for_the_direct_path_and_posts_once(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse.otel import INGESTION_VERSION_HEADER
+        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
         observer, _ = self._build(monkeypatch, (200, b'{"data": []}'))
         exporter = observer._queue._exporter
@@ -460,20 +464,19 @@ class TestTheReceiverFamily:
         assert observer.run_finished().details[0]["server_api"] == "v3"
 
     def test_a_v4_run_stops_when_the_sdk_cannot_post_once(self, monkeypatch) -> None:
-        """At-most-once on the wire is why this layout may be written at all; without it the
-        run is refused at start rather than degraded to a retrying exporter."""
+        """The v4 producer's single-attempt policy is required at run start."""
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse import otel
+        from tolokaforge_langfuse import otlp_transport
 
-        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
-        with pytest.raises(TracingConfigError, match="writes every observation once"):
+        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
+        with pytest.raises(TracingConfigError, match="requires a single attempt"):
             self._build(monkeypatch, (200, b'{"data": []}'))
 
     def test_the_same_sdk_leaves_a_v3_run_alone(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
-        from tolokaforge_langfuse import otel
+        from tolokaforge_langfuse import otlp_transport
 
-        monkeypatch.setattr(otel, "_single_attempt_exporter_class", lambda: None)
+        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
         observer, _ = self._build(monkeypatch, (404, b""))
         assert observer.run_finished().details[0]["server_api"] == "v3"
 
@@ -564,10 +567,11 @@ class TestPluginOptions:
             build(config, RunIdentity("run-1"), engine_run_id="run-1")
 
     def test_another_plugins_options_are_opaque(self):
-        from tolokaforge_langfuse.plugin import read_config
+        # the reader the live path runs (build -> plan_run -> resolve_plan -> read_settings)
+        from tolokaforge_langfuse.preflight import read_settings
 
-        assert read_config({"archive": {"compression": "gzip"}}) == LangfuseConfig()
-        assert read_config({"langfuse": {"attach": "core"}, "archive": None}).attach == "core"
+        assert read_settings({"archive": {"compression": "gzip"}}) == LangfuseConfig()
+        assert read_settings({"langfuse": {"attach": "core"}, "archive": None}).attach == "core"
 
     def test_unselected_plugin_does_not_validate_options(self, monkeypatch):
         from tolokaforge_langfuse.plugin import build

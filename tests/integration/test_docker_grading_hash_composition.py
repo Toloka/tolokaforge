@@ -435,15 +435,16 @@ def test_an_unresolvable_golden_action_fails_the_grade_and_leaves_the_trial_alon
 def test_a_golden_action_that_raised_is_named_on_the_grade_it_produced(
     runner_client: GrpcRunnerClient,
 ) -> None:
-    """An action that resolved and raised still yields a verdict, and the wire says so.
+    """An action that resolved and raised still yields a grade, and the wire says so.
 
     The action names an order the initial state does not hold, so it resolves, runs, and
     raises out of the tau wrapper — the one failure shape either substrate can see. The
-    replay therefore leaves the trial's own database, which is what the trial holds too,
-    so the hash *matches*: the grade is a full-marks hash verdict over a golden world
-    that was never built. That wrong verdict is #816's question and it is asserted here
-    as the current answer; what this case pins is that the sentence naming the missing
-    action travels with it over gRPC, under the prefix #599's consumer matches.
+    replay therefore leaves a partial golden world the runner refuses to hash against:
+    the hash is left *unscored*, so ``state_checks`` falls back to the JSONPath score
+    alone and the declared ``hash.weight`` goes unconsulted (the inert-weight reason
+    names it). What this case pins is that the sentence naming the missing action still
+    travels with the grade over gRPC, under the prefix the downstream consumer matches,
+    alongside the unscored-hash fallback.
     """
     trial_id = f"{_TASK_ID}_raising:0"
     weight = _HASH_WEIGHTS[0]
@@ -467,10 +468,13 @@ def test_a_golden_action_that_raised_is_named_on_the_grade_it_produced(
     assert "GOLDEN REPLAY ERRORS: 1 of 1" in reasons, reasons
     assert _TOOL_NAME in reasons, reasons
     assert _ABSENT_ORDER in reasons, reasons
-    assert "State: hash match" in reasons, reasons
+    # The partial golden world is left unscored, not hashed to a match.
+    assert "hash match" not in reasons, reasons
+    assert "declared but not consulted" in reasons, reasons
 
-    expected = _JSONPATH_SCORE * (1.0 - weight) + 1.0 * weight
-    assert grade["components"]["state_checks"] == pytest.approx(expected), grade
+    # Hash unscored → the fold passes the JSONPath score through untouched and the
+    # declared weight divides nothing.
+    assert grade["components"]["state_checks"] == pytest.approx(_JSONPATH_SCORE), grade
 
 
 def test_the_two_weights_score_the_same_trial_differently(graded_cells) -> None:

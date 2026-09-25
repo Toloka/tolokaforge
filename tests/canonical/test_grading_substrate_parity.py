@@ -356,6 +356,7 @@ _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
         "combine.pass_threshold",
         "state_checks.auto_mask_clock_columns",
+        "state_checks.auto_normalize_nullables",
         "state_checks.compare_columns",
         "state_checks.hash.description",
         "state_checks.id_fields",

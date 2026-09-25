@@ -36,6 +36,12 @@ state_checks:
   # presence of the key is what proves the adapter translation carries it end
   # to end.
   auto_mask_clock_columns: true
+  # auto_normalize_nullables is declared here so the manifest-coverage gate for
+  # state_checks.auto_normalize_nullables is satisfied. This pack's widget table
+  # has no null-vs-absent scalar divergence, so the folding is inert for this
+  # trial — presence of the key is what proves the adapter translation carries
+  # it end to end.
+  auto_normalize_nullables: true
   # compare_columns is declared here so the manifest-coverage gate for
   # state_checks.compare_columns is satisfied. This pack's expect_initial_state
   # source does not hash the widgets.details column asymmetrically, so the rule
