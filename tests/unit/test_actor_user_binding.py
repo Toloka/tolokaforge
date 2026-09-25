@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.core.models import TaskDefaults
+from tolokaforge.core.models.task_config import UserSimulatorConfig
 
 pytestmark = pytest.mark.unit
 
@@ -330,6 +331,59 @@ class TestSamplingDeclaration:
         task_path = tmp_path / "task.yaml"
         _write_yaml(task_path, _task_body(actors={"user": {"mode": "scripted"}}))
         assert load_task_yaml(task_path)[0].resolve_user_simulator().mode == "scripted"
+
+    def test_a_scripted_task_drops_a_project_sampling_with_null(self, tmp_path: Path) -> None:
+        """A project-wide ``sampling`` reaches every task; a scripted task in that
+        project writes ``sampling: null``, which replaces the project's block."""
+        project = {"actors": {"user": {"sampling": {"temperature": None}}}}
+        refused = tmp_path / "refused" / "task.yaml"
+        _write_yaml(refused, _task_body(actors={"user": {"mode": "scripted"}}))
+        with pytest.raises(ValueError, match="write sampling: null in the task"):
+            _load(refused, project_task_defaults=project)
+
+        opted_out = tmp_path / "opted_out" / "task.yaml"
+        _write_yaml(opted_out, _task_body(actors={"user": {"mode": "scripted", "sampling": None}}))
+        task, _ = _load(opted_out, project_task_defaults=project)
+        assert task.resolve_user_simulator().mode == "scripted"
+
+    @pytest.mark.parametrize("mode", ["llm", "scripted"])
+    def test_the_resolved_simulator_revalidates_from_its_own_dump(
+        self, tmp_path: Path, mode: str
+    ) -> None:
+        """The bundle records the resolved simulator as ``user_actor``; that record
+        is a config its own model accepts, defaults included."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"mode": mode}}))
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+
+        assert UserSimulatorConfig(**sim.model_dump()) == sim
+
+    @pytest.mark.parametrize("temperature", [None, 0.9])
+    def test_a_flat_temperature_on_the_actor_is_refused(
+        self, tmp_path: Path, temperature: float | None
+    ) -> None:
+        """``actors.user.temperature`` mirrors ``models.<role>.temperature`` and
+        would otherwise be dropped without a word, leaving the simulator at 0.2."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path, _task_body(actors={"user": {"mode": "llm", "temperature": temperature}})
+        )
+        with pytest.raises(ValueError, match="sampling: {temperature"):
+            load_task_yaml(task_path)
+
+    def test_a_flat_temperature_in_project_defaults_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body())
+        with pytest.raises(ValueError, match="not a field on the user actor"):
+            TaskDefaults(actors={"user": {"temperature": None}})
+        with pytest.raises(ValueError, match="not a field on the user actor"):
+            _load(task_path, project_task_defaults={"actors": {"user": {"temperature": None}}})
+
+    def test_a_flat_temperature_in_the_legacy_block_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(user_simulator={"mode": "llm", "temperature": 0.0}))
+        with pytest.raises(ValueError, match="not a field on the user actor"):
+            load_task_yaml(task_path)
 
     @pytest.mark.parametrize(
         ("sampling", "match"),

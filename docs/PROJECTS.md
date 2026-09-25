@@ -1049,7 +1049,10 @@ An `ActorSpec` carries:
 - the stop rule, `stop_tokens` and `stop_with_text` (see
   [Declaring the stop tokens](TASKS.md#declaring-the-stop-tokens));
 - `prompt_template`, a task-authored simulator prompt. A project-level value is
-  anchored to the project directory (see [TASKS.md](TASKS.md)).
+  anchored to the project directory (see [TASKS.md](TASKS.md));
+- `sampling`, the simulator's `temperature` (see
+  [Simulator sampling](TASKS.md#simulator-sampling)). A project-level `sampling`
+  applies to every task, so a scripted task writes `sampling: null` to drop it.
 
 The project declares the shared defaults under
 `task_defaults.actors.user`; each task overrides field-by-field

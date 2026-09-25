@@ -136,6 +136,24 @@ def _refuse_first_message(data: Any) -> Any:
     return data
 
 
+def _refuse_a_flat_temperature(data: Any) -> Any:
+    """Reject ``temperature`` written directly on the user actor.
+
+    The spelling mirrors ``models.<role>.temperature`` and reads as if it would
+    work, but the actor's sampling lives in the ``sampling`` block; with
+    ``extra="ignore"`` and no unknown-key warning for a nested key, the value
+    would be dropped and the simulator would keep sampling at
+    :data:`SIMULATOR_TEMPERATURE` with no complaint.
+    """
+    if isinstance(data, dict) and "temperature" in data:
+        raise ValueError(
+            f"temperature is not a field on the user actor (it is {data['temperature']!r}). "
+            "The simulator's temperature is declared in its sampling block: write "
+            "sampling: {temperature: <number or null>}."
+        )
+    return data
+
+
 SIMULATOR_STOP_TOKEN = "###STOP###"
 """The exit token the built-in simulator prompt instructs the model to send."""
 
@@ -229,28 +247,27 @@ class UserSimulatorConfig(BaseModel):
     sampling: UserSamplingConfig = Field(
         default_factory=lambda: UserSamplingConfig(temperature=SIMULATOR_TEMPERATURE)
     )
-    """How an LLM simulator samples; defaults to :data:`SIMULATOR_TEMPERATURE`."""
+    """How an LLM simulator samples; defaults to :data:`SIMULATOR_TEMPERATURE`.
+
+    A scripted simulator carries the default too and ignores it. Whether a
+    task *declared* ``sampling`` on a scripted actor is decided where the
+    declaration is visible, in :meth:`TaskConfig.resolve_user_simulator`, so this
+    resolved config re-validates from its own dump."""
 
     @model_validator(mode="before")
     @classmethod
     def _reject_first_message(cls, data: Any) -> Any:
         return _refuse_first_message(data)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_a_flat_temperature(cls, data: Any) -> Any:
+        return _refuse_a_flat_temperature(data)
+
     @field_validator("stop_tokens")
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
         return validate_stop_tokens(value)
-
-    @model_validator(mode="after")
-    def _refuse_sampling_nothing_can_apply(self) -> Self:
-        """A scripted simulator sends no request, so a declared ``sampling`` would
-        never apply. Only a declared block is refused: the default is always there."""
-        if self.mode == "scripted" and "sampling" in self.model_fields_set:
-            raise ValueError(
-                f"sampling is {self.sampling.model_dump()!r}, but the user simulator resolves "
-                "to mode scripted, which samples nothing. Write mode: llm, or drop sampling."
-            )
-        return self
 
     @model_validator(mode="after")
     def _refuse_a_template_nothing_can_render(self) -> Self:
@@ -348,6 +365,11 @@ class ActorSpec(BaseModel):
     @classmethod
     def _reject_first_message(cls, data: Any) -> Any:
         return _refuse_first_message(data)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_a_flat_temperature(cls, data: Any) -> Any:
+        return _refuse_a_flat_temperature(data)
 
     @field_validator("stop_tokens")
     @classmethod
@@ -654,6 +676,8 @@ class TaskConfig(BaseModel):
         spec = (self.actors or {}).get("user")
         if spec is None:
             return UserSimulatorConfig()
+        mode = spec.mode or "llm"
+        _refuse_a_declaration_the_mode_ignores(spec, mode)
         # Passed only when declared, so the simulator config keeps its own defaults
         # and knows which fields the task set.
         declared = {
@@ -666,12 +690,29 @@ class TaskConfig(BaseModel):
             if value is not None
         }
         return UserSimulatorConfig(
-            mode=spec.mode or "llm",
+            mode=mode,
             persona=spec.persona or "cooperative",
             backstory=spec.backstory,
             scripted_flow=spec.scripted_flow,
             prompt_template=spec.prompt_template,
             **declared,
+        )
+
+
+def _refuse_a_declaration_the_mode_ignores(spec: ActorSpec, mode: str) -> None:
+    """Refuse an ``actors.user`` key the resolved simulator mode would never read.
+
+    Decided on the merged actor spec, where a declared key is still told apart
+    from a default, rather than on the resolved :class:`UserSimulatorConfig`,
+    which carries every default and must re-validate from its own dump. A key a
+    project's ``task_defaults`` set reaches the task too; the task writes the key
+    as ``null`` to drop it.
+    """
+    if mode == "scripted" and spec.sampling is not None:
+        raise ValueError(
+            f"sampling is {spec.sampling.model_dump()!r}, but the user simulator resolves to "
+            "mode scripted, which samples nothing. Write mode: llm, or drop sampling "
+            "(declared in a project's task_defaults, write sampling: null in the task)."
         )
 
 
