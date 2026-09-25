@@ -479,6 +479,8 @@ def _evaluate_kwargs(
         "custom_system_prompt": entry.custom_system_prompt,
         "include_agent_system_prompt": entry.include_agent_system_prompt,
         "kind_config": kind_config,
+        "episode_timeout_s": None,
+        "max_turns": None,
         "logger": logger,
     }
 

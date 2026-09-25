@@ -441,6 +441,130 @@ class TestJudgeMissingVerdictErrorStage:
         assert metrics["error_stage"] == "judge_missing_verdict"
 
 
+class TestJudgeTimeoutErrorStage:
+    """A trial whose judge loop hit :attr:`TerminationReason.TIMEOUT` gets
+    ``error_stage: judge_timeout`` — distinct from ``judge_missing_verdict``
+    so the aggregator can decide whether raising ``episode_timeout_s`` is
+    the right recovery, vs. a rejudge that will hit the same wall.
+    """
+
+    def _make_trajectory(
+        self,
+        *,
+        termination_reason: TerminationReason,
+        judge_status: JudgeStatus = JudgeStatus.ERRORED,
+        grade_reasons: str | None = None,
+        grade: bool = True,
+        grading_error: str | None = None,
+    ) -> Trajectory:
+        from datetime import UTC, datetime
+
+        from tolokaforge.core.models import Message
+
+        return Trajectory(
+            task_id="task-1",
+            trial_index=0,
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
+            status=TrialStatus.COMPLETED,
+            termination_reason=termination_reason,
+            messages=[Message(role=MessageRole.USER, content="hello")],
+            metrics=Metrics(),
+            grade=(
+                Grade(
+                    binary_pass=False,
+                    score=0.0,
+                    components=GradeComponents(state_checks=0.0),
+                    reasons=grade_reasons or "state 0.0",
+                    judge_status=judge_status,
+                )
+                if grade
+                else None
+            ),
+            grading_error=grading_error,
+        )
+
+    def test_metrics_amended_with_judge_timeout_when_trajectory_reports_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        trial_dir = tmp_path / "trials" / "task-1" / "0"
+        trial_dir.mkdir(parents=True)
+        trajectory = self._make_trajectory(termination_reason=TerminationReason.TIMEOUT)
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=InMemoryConductor(trajectory_factory=lambda *_: trajectory),
+            logger=MagicMock(),
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        executor._maybe_flag_missing_judge_verdict(trajectory, "task-1", 0)
+
+        import yaml
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert metrics["error_stage"] == "judge_timeout"
+
+    def test_metrics_amended_with_judge_timeout_via_reasons_fallback(self, tmp_path: Path) -> None:
+        """Older bundles may not carry the termination reason on the
+        trajectory itself; a substring match on the errored grade's
+        ``reasons`` recovers the timeout label from the judge's own
+        diagnostic string."""
+        trial_dir = tmp_path / "trials" / "task-1" / "0"
+        trial_dir.mkdir(parents=True)
+        trajectory = self._make_trajectory(
+            termination_reason=TerminationReason.AGENT_DONE,
+            grade_reasons=(
+                "Judge did not call submit_report "
+                f"(termination={TerminationReason.TIMEOUT}, status=TIMEOUT)."
+            ),
+        )
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=InMemoryConductor(trajectory_factory=lambda *_: trajectory),
+            logger=MagicMock(),
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        executor._maybe_flag_missing_judge_verdict(trajectory, "task-1", 0)
+
+        import yaml
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert metrics["error_stage"] == "judge_timeout"
+
+    def test_metrics_amended_with_judge_missing_verdict_when_reason_is_not_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression net: an errored grade whose termination is neither
+        TIMEOUT nor a timeout-flavoured reasons string stays labelled
+        ``judge_missing_verdict``."""
+        trial_dir = tmp_path / "trials" / "task-1" / "0"
+        trial_dir.mkdir(parents=True)
+        trajectory = self._make_trajectory(
+            termination_reason=TerminationReason.MAX_TURNS,
+            grade_reasons="Judge did not call submit_report (termination=MAX_TURNS, status=MAX_TURNS).",
+        )
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=InMemoryConductor(trajectory_factory=lambda *_: trajectory),
+            logger=MagicMock(),
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        executor._maybe_flag_missing_judge_verdict(trajectory, "task-1", 0)
+
+        import yaml
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert metrics["error_stage"] == "judge_missing_verdict"
+
+
 class TestEmptyCompletionRoutesToInfrastructureAbort:
     """``TerminationReason.EMPTY_COMPLETION`` classifies as
     ``INFRASTRUCTURE_ABORT`` — the provider returned no text and no tool

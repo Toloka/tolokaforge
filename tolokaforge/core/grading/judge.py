@@ -99,6 +99,45 @@ DEFAULT_JUDGE_EPISODE_TIMEOUT_S = 240
 DEFAULT_SUBMIT_REPORT_RETRIES = 2
 
 
+def _resolve_judge_episode_timeout(
+    configured: float | int | None,
+    logger: StructuredLogger | None = None,
+) -> float:
+    """Resolve the judge episode wall-time budget in seconds.
+
+    Priority: env var ``TOLOKAFORGE_JUDGE_EPISODE_TIMEOUT_S`` (operational
+    override, matches the ``TOLOKAFORGE_LLM_API_CALL_TIMEOUT_S`` pattern) →
+    ``configured`` (per-task or per-project value from
+    :class:`LLMJudgeConfig` / :class:`LLMJudgeDefaults`) →
+    :data:`DEFAULT_JUDGE_EPISODE_TIMEOUT_S`.
+    """
+    from tolokaforge.core.env_var import parse_env_positive_float
+
+    env_value = parse_env_positive_float(
+        "TOLOKAFORGE_JUDGE_EPISODE_TIMEOUT_S",
+        default=None,
+        logger=logger,
+    )
+    if env_value is not None:
+        return env_value
+    if configured is not None:
+        return float(configured)
+    return float(DEFAULT_JUDGE_EPISODE_TIMEOUT_S)
+
+
+def _resolve_judge_max_turns(configured: int | None) -> int:
+    """Resolve the judge episode turn budget.
+
+    Priority: ``configured`` (from :class:`LLMJudgeConfig` /
+    :class:`LLMJudgeDefaults`) → :data:`DEFAULT_JUDGE_MAX_TURNS`. No env
+    override — the turn cap protects against a looping judge and should
+    remain a config-level knob rather than an eval-side lever.
+    """
+    if configured is not None:
+        return configured
+    return DEFAULT_JUDGE_MAX_TURNS
+
+
 # ---------------------------------------------------------------------------
 # Read-side bridge contract (sync; runner adapts its async DB client to this)
 # ---------------------------------------------------------------------------
@@ -561,8 +600,8 @@ class LLMJudge:
         self,
         model_config: ModelConfig,
         *,
-        max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
-        episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
+        max_turns: int | None = None,
+        episode_timeout_s: float | int | None = None,
         submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
         disable_knowledge_search: bool = False,
         custom_system_prompt: str | None = None,
@@ -581,8 +620,8 @@ class LLMJudge:
                 "customization and --grading overrides use the latter."
             )
         self._model_config = model_config
-        self._max_turns = max_turns
-        self._episode_timeout_s = episode_timeout_s
+        self._max_turns = _resolve_judge_max_turns(max_turns)
+        self._episode_timeout_s = _resolve_judge_episode_timeout(episode_timeout_s, logger)
         self._submit_report_retries = submit_report_retries
         self._disable_knowledge_search = disable_knowledge_search
         self._custom_system_prompt = custom_system_prompt

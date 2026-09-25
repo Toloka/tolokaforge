@@ -675,12 +675,21 @@ class GradingConfig(BaseModel):
 class LLMJudgeDefaults(BaseModel):
     """Project-level judge defaults under ``grading_defaults.llm_judge``.
 
-    Carries only ``customization`` — a project default never carries a rubric
-    (that is required per-task on :class:`LLMJudgeConfig`). ``customization``
-    deep-merges under each task's own ``llm_judge.customization``, tri-state
-    preserved (an unset task key never overrides a set project key)."""
+    Carries ``customization`` (deep-merges under each task's own
+    ``llm_judge.customization``, tri-state preserved so an unset task key
+    never overrides a set project key), and the judge episode budget knobs
+    ``episode_timeout_s`` / ``max_turns`` (task-level overrides on
+    :class:`~tolokaforge.runner.models.LLMJudgeConfig` win)."""
 
     customization: JudgeCustomization | None = None
+    episode_timeout_s: float | None = Field(default=None, gt=0.0)
+    """Project-level wall-time budget for one judge episode, in seconds. A
+    task's own ``llm_judge.episode_timeout_s`` overrides. ``None`` on both
+    layers leaves the engine default in effect
+    (:data:`~tolokaforge.core.grading.judge.DEFAULT_JUDGE_EPISODE_TIMEOUT_S`).
+    Env var ``TOLOKAFORGE_JUDGE_EPISODE_TIMEOUT_S`` wins over both."""
+    max_turns: int | None = Field(default=None, ge=1)
+    """Project-level turn cap for one judge episode. Same override chain."""
 
     model_config = {"extra": "forbid"}
 

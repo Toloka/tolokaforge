@@ -57,6 +57,8 @@ class SingleShotRubricJudgeKind:
         custom_system_prompt: str | None,
         include_agent_system_prompt: bool,
         kind_config: Mapping[str, Any] | None,
+        episode_timeout_s: float | None,
+        max_turns: int | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
         del kind_config  # reserved on the Protocol for downstream kinds
@@ -66,6 +68,8 @@ class SingleShotRubricJudgeKind:
             disable_knowledge_search=disable_knowledge_search,
             custom_system_prompt=custom_system_prompt,
             include_agent_system_prompt=include_agent_system_prompt,
+            episode_timeout_s=episode_timeout_s,
+            max_turns=max_turns,
             llm_client=judge_model,
             logger=logger,
         ).run(

@@ -105,6 +105,8 @@ def _evaluate(
         custom_system_prompt=None,
         include_agent_system_prompt=True,
         kind_config=kind_config,
+        episode_timeout_s=None,
+        max_turns=None,
         logger=StructuredLogger(name="test-chunked"),
     )
 

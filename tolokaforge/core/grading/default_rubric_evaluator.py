@@ -55,12 +55,16 @@ class LLMJudgeRubricEvaluator:
         disable_knowledge_search: bool = False,
         custom_system_prompt: str | None = None,
         include_agent_system_prompt: bool = True,
+        episode_timeout_s: float | None = None,
+        max_turns: int | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
         self._judge_model_provider = judge_model_provider
         self._disable_knowledge_search = disable_knowledge_search
         self._custom_system_prompt = custom_system_prompt
         self._include_agent_system_prompt = include_agent_system_prompt
+        self._episode_timeout_s = episode_timeout_s
+        self._max_turns = max_turns
         self._logger = logger
 
     def evaluate(
@@ -80,6 +84,8 @@ class LLMJudgeRubricEvaluator:
             disable_knowledge_search=self._disable_knowledge_search,
             custom_system_prompt=self._custom_system_prompt,
             include_agent_system_prompt=self._include_agent_system_prompt,
+            episode_timeout_s=self._episode_timeout_s,
+            max_turns=self._max_turns,
             llm_client=judge_model,
             logger=self._logger,
         ).run(
@@ -104,5 +110,7 @@ def _llm_judge_rubric_evaluator_factory(
         disable_knowledge_search=ctx.disable_knowledge_search,
         custom_system_prompt=ctx.custom_system_prompt,
         include_agent_system_prompt=ctx.include_agent_system_prompt,
+        episode_timeout_s=ctx.episode_timeout_s,
+        max_turns=ctx.max_turns,
         logger=ctx.logger,
     )
