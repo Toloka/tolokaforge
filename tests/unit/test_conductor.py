@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.conductor import (
     DEFAULT_MAX_TURNS,
     ConductorCallLog,
@@ -29,6 +30,7 @@ from tolokaforge.core.conductor import (
 )
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
+    ActorSpec,
     EvaluationConfig,
     Metrics,
     ModelConfig,
@@ -426,6 +428,37 @@ def _names(schemas: list[dict[str, Any]]) -> list[str]:
     return [schema["function"]["name"] for schema in schemas]
 
 
+def _conductor_registering(tmp_path: Path, register_result: dict[str, Any]) -> InProcessConductor:
+    """A conductor whose runtime backend answers ``register_trial`` with *register_result*."""
+    adapter = MagicMock()
+    adapter.get_task_dir.return_value = tmp_path / "task"
+    adapter.create_environment.return_value = MagicMock(data={})
+    adapter.get_grading_config.return_value = None
+
+    runtime_backend = MagicMock()
+    runtime_backend.register_trial.return_value = register_result
+
+    agent_client = MagicMock()
+    agent_client.config = ModelConfig(provider="openai", name="gpt-4")
+    agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+    agent_client.capabilities.default_max_turns = None
+
+    return InProcessConductor(
+        adapter=adapter,
+        artifact_writer=FileArtifactWriter(),
+        config=RunConfig(
+            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+            orchestrator=OrchestratorConfig(auto_start_services=False),
+            evaluation=EvaluationConfig(output_dir=str(tmp_path)),
+        ),
+        logger=StructuredLogger("test-tool-surface"),
+        agent_client=agent_client,
+        runtime_backend=runtime_backend,
+        trial_grader=MagicMock(),
+        output_dir=tmp_path,
+    )
+
+
 class TestTrialToolSurfacePartition:
     """``RegisterTrialResponse`` carries both actors' tools in one list. The
     conductor slices it at ``num_agent_tools`` and offers each actor only its
@@ -434,33 +467,7 @@ class TestTrialToolSurfacePartition:
     """
 
     def _conductor(self, tmp_path: Path, register_result: dict[str, Any]) -> InProcessConductor:
-        adapter = MagicMock()
-        adapter.get_task_dir.return_value = tmp_path / "task"
-        adapter.create_environment.return_value = MagicMock(data={})
-        adapter.get_grading_config.return_value = None
-
-        runtime_backend = MagicMock()
-        runtime_backend.register_trial.return_value = register_result
-
-        agent_client = MagicMock()
-        agent_client.config = ModelConfig(provider="openai", name="gpt-4")
-        agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
-        agent_client.capabilities.default_max_turns = None
-
-        return InProcessConductor(
-            adapter=adapter,
-            artifact_writer=FileArtifactWriter(),
-            config=RunConfig(
-                models={"agent": ModelConfig(provider="openai", name="gpt-4")},
-                orchestrator=OrchestratorConfig(auto_start_services=False),
-                evaluation=EvaluationConfig(output_dir=str(tmp_path)),
-            ),
-            logger=StructuredLogger("test-tool-surface"),
-            agent_client=agent_client,
-            runtime_backend=runtime_backend,
-            trial_grader=MagicMock(),
-            output_dir=tmp_path,
-        )
+        return _conductor_registering(tmp_path, register_result)
 
     def _setup(self, tmp_path: Path, agent: list[str], user: list[str]) -> _TrialSetup:
         conductor = self._conductor(tmp_path, _register_result(agent, user))
@@ -594,6 +601,55 @@ class TestTrialToolSurfacePartition:
 
         written = yaml.safe_load((trial_dir / "tools_schemas.yaml").read_text())
         assert _names(written) == ["agent_read", "user_probe"]
+
+
+class TestUserStopRuleReachesTheRunner:
+    """The stop tokens the engine listens for come from the task's own
+    ``actors.user`` declaration — the same one that tells the simulator what to send."""
+
+    def _runner_kwargs(self, tmp_path: Path, task: TaskConfig) -> dict[str, Any]:
+        conductor = _conductor_registering(tmp_path, _register_result([], []))
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[],
+            user_tool_executor=None,
+        )
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+        ):
+            conductor._run_agent_loop(_make_spec(), task, setup)
+        return runner_cls.call_args.kwargs
+
+    def test_a_declared_rule_is_the_one_the_runner_reads(self, tmp_path: Path) -> None:
+        tokens = ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]
+        task = TaskConfig(
+            task_id="t1",
+            description="d",
+            actors={
+                "user": ActorSpec(
+                    backstory="Send ###TRANSFER### or ###OUT-OF-SCOPE### when they apply.",
+                    stop_tokens=tokens,
+                    stop_with_text="end",
+                )
+            },
+        )
+
+        rule = self._runner_kwargs(tmp_path, task)["user_stop"]
+
+        assert rule == UserStopRule(tokens=tuple(tokens), with_text="end")
+
+    def test_an_undeclared_rule_is_the_legacy_one(self, tmp_path: Path) -> None:
+        rule = self._runner_kwargs(tmp_path, TaskConfig(task_id="t1", description="d"))["user_stop"]
+
+        assert rule == UserStopRule(tokens=("###STOP###",), with_text="deliver")
 
 
 class TestTrialSetupToolOutputMaxCharsWiring:

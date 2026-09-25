@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tolokaforge.core.actors.user_stop import UserStop, UserStopRule
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
@@ -457,7 +458,7 @@ class TestTrialRunnerRun:
         assert user_sim.reply.call_count == 1
         # The pending flag must reset after the terminating turn so an
         # (unlikely) re-use of the runner instance doesn't abort turn 1.
-        assert runner._user_stop_pending is False
+        assert runner._pending_user_stop is None
 
     def test_user_stop_whitespace_only_pre_token_terminates_immediately(self) -> None:
         """Whitespace-only text before the token routes through the bare-stop
@@ -482,7 +483,7 @@ class TestTrialRunnerRun:
 
         assert traj.termination_reason == TerminationReason.USER_STOP
         assert traj.metrics.api_calls == 1  # Only the initial agent turn
-        assert runner._user_stop_pending is False
+        assert runner._pending_user_stop is None
 
     def test_user_stop_first_token_wins_when_multiple(self) -> None:
         """When the simulator reply contains ``###STOP###`` more than once,
@@ -885,7 +886,7 @@ class TestUserSimulatorIntegration:
 
         assert traj.messages[0].role == MessageRole.USER
         assert traj.messages[0].content == "I need help with my order ###STOP###"
-        assert runner._user_stop_pending is False
+        assert runner._pending_user_stop is None
 
     def test_empty_bootstrap_first_message_fails_loud(self) -> None:
         """A simulator bootstrap that returns empty/whitespace text raises.
@@ -924,3 +925,190 @@ class TestUserSimulatorIntegration:
 
         with pytest.raises(RuntimeError, match="empty first message"):
             runner._bootstrap_via_simulator()
+
+
+# ===================================================================
+# Configured stop rule
+# ===================================================================
+
+_TAU_STOP_TOKENS = ("###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###")
+
+
+def _agent_turns(*texts: str) -> MagicMock:
+    return _make_agent_client(
+        [
+            GenerationResult(
+                text=text,
+                tool_calls=[],
+                usage=Usage(prompt_tokens=10, completion_tokens=5),
+            )
+            for text in texts
+        ]
+    )
+
+
+def _user_replies(*replies: GenerationResult) -> MagicMock:
+    user_sim = MagicMock()
+    user_sim.reply.side_effect = list(replies)
+    return user_sim
+
+
+def _texts(traj: Trajectory, role: MessageRole) -> list[str]:
+    return [message.content for message in traj.messages if message.role == role]
+
+
+@pytest.mark.unit
+class TestConfiguredStopRule:
+    """The runner stops on the tokens the trial's ``UserStopRule`` names, and the
+    rule's ``with_text`` decides whether the agent answers a final reply."""
+
+    @pytest.mark.parametrize("token", _TAU_STOP_TOKENS)
+    def test_every_listed_token_ends_the_dialogue(self, token: str) -> None:
+        user_sim = _user_replies(GenerationResult(text=token, tool_calls=[]))
+        runner = _make_runner(
+            agent_client=_agent_turns("How can I help?"),
+            user_simulator=user_sim,
+            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS),
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert traj.termination_reason == TerminationReason.USER_STOP
+        assert traj.messages[-1].content == f"User signaled stop ({token}). Dialogue ended."
+
+    def test_a_token_the_rule_does_not_list_is_ordinary_text(self) -> None:
+        """The default rule listens for ``###STOP###`` only, so another token is
+        delivered to the agent like any other words."""
+        user_sim = _user_replies(
+            GenerationResult(text="Please transfer me. ###TRANSFER###", tool_calls=[]),
+            GenerationResult(text="###STOP###", tool_calls=[]),
+        )
+        runner = _make_runner(
+            agent_client=_agent_turns("How can I help?", "Transferring you."),
+            user_simulator=user_sim,
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert "Please transfer me. ###TRANSFER###" in _texts(traj, MessageRole.USER)
+        assert traj.metrics.api_calls == 2
+
+    def test_the_default_rule_keeps_the_legacy_system_messages(self) -> None:
+        """A trial that declares nothing writes the bytes it always wrote."""
+        user_sim = _user_replies(GenerationResult(text="Thanks. ###STOP###", tool_calls=[]))
+        runner = _make_runner(
+            agent_client=_agent_turns("Done.", "Glad to help."), user_simulator=user_sim
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert traj.messages[-1].content == (
+            "User signaled stop (###STOP### after final reply). Dialogue ended."
+        )
+
+    def test_the_earliest_token_decides_which_one_fired_and_what_is_delivered(self) -> None:
+        user_sim = _user_replies(
+            GenerationResult(text="I'll wait. ###TRANSFER### then ###STOP###", tool_calls=[])
+        )
+        runner = _make_runner(
+            agent_client=_agent_turns("Anything else?", "Goodbye."),
+            user_simulator=user_sim,
+            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS),
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert _texts(traj, MessageRole.USER)[-1] == "I'll wait."
+        assert traj.messages[-1].content == (
+            "User signaled stop (###TRANSFER### after final reply). Dialogue ended."
+        )
+
+    def test_deliver_lets_the_agent_answer_the_final_reply(self) -> None:
+        user_sim = _user_replies(
+            GenerationResult(text="That covers it. ###OUT-OF-SCOPE###", tool_calls=[])
+        )
+        runner = _make_runner(
+            agent_client=_agent_turns("Here is your answer.", "You're welcome."),
+            user_simulator=user_sim,
+            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS, with_text="deliver"),
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert traj.metrics.api_calls == 2
+        assert _texts(traj, MessageRole.ASSISTANT)[-1] == "You're welcome."
+        assert traj.termination_reason == TerminationReason.USER_STOP
+
+    def test_end_records_the_final_reply_and_the_agent_never_answers_it(self) -> None:
+        user_sim = _user_replies(GenerationResult(text="That covers it. ###STOP###", tool_calls=[]))
+        agent = _agent_turns("Here is your answer.", "an answer that must never be generated")
+        runner = _make_runner(
+            agent_client=agent,
+            user_simulator=user_sim,
+            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS, with_text="end"),
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert traj.termination_reason == TerminationReason.USER_STOP
+        assert agent.generate.call_count == 1
+        assert [m.role for m in traj.messages[-2:]] == [MessageRole.USER, MessageRole.SYSTEM]
+        assert traj.messages[-2].content == "That covers it."
+        assert traj.messages[-1].content == "User signaled stop (###STOP###). Dialogue ended."
+        assert runner._pending_user_stop is None
+        assert user_sim.reply.call_count == 1
+
+    def test_end_still_runs_and_records_the_final_replys_tool_calls(self) -> None:
+        call = ToolCall(id="uc1", name="user_lookup", arguments={"id": "42"})
+        user_sim = _user_replies(
+            GenerationResult(text="Checked, thanks. ###STOP###", tool_calls=[call])
+        )
+        runner = _make_runner(
+            agent_client=_agent_turns("Please check your app."),
+            user_simulator=user_sim,
+            user_tool_executor=_EchoingUserToolExecutor(),
+            user_stop=UserStopRule(with_text="end"),
+        )
+
+        traj = runner.run("System", "Hi")
+
+        final_reply = traj.messages[-2]
+        assert final_reply.role == MessageRole.USER
+        assert [c.id for c in final_reply.tool_calls or []] == ["uc1"]
+        assert [r.call_id for r in traj.tool_log] == ["uc1"]
+        assert traj.termination_reason == TerminationReason.USER_STOP
+
+    def test_a_bare_token_ends_at_once_under_either_rule(self) -> None:
+        for with_text in ("deliver", "end"):
+            agent = _agent_turns("Anything else?")
+            runner = _make_runner(
+                agent_client=agent,
+                user_simulator=_user_replies(GenerationResult(text="  ###STOP###", tool_calls=[])),
+                user_stop=UserStopRule(with_text=with_text),
+            )
+
+            traj = runner.run("System", "Hi")
+
+            assert agent.generate.call_count == 1, with_text
+            assert traj.messages[-1].role == MessageRole.SYSTEM, with_text
+            assert _texts(traj, MessageRole.USER) == ["Hi"], with_text
+
+
+@pytest.mark.unit
+class TestUserStopRuleFind:
+    def test_no_token_is_no_stop(self) -> None:
+        assert UserStopRule(tokens=_TAU_STOP_TOKENS).find("Thanks, bye.") is None
+
+    def test_the_text_before_the_earliest_token_is_right_stripped(self) -> None:
+        stop = UserStopRule(tokens=_TAU_STOP_TOKENS).find("Bye now. \n###OUT-OF-SCOPE### x")
+
+        assert stop == UserStop(token="###OUT-OF-SCOPE###", text="Bye now.")
+
+    def test_a_bare_token_leaves_no_text(self) -> None:
+        assert UserStopRule().find("\n###STOP###") == UserStop(token="###STOP###", text="")
+
+    def test_a_rule_built_in_code_refuses_a_token_inside_another(self) -> None:
+        """``find`` relies on no two tokens starting at one position; the rule holds
+        that invariant itself rather than trusting the caller to have validated."""
+        with pytest.raises(ValueError, match="inside"):
+            UserStopRule(tokens=("###STOP###", "###STOP"))

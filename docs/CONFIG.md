@@ -534,6 +534,8 @@ actors:
       - if_assistant_contains: "done"
         user: "Thanks!"
       - default: "Please continue."
+    stop_tokens: ["###STOP###"]  # tokens that end the dialogue (see docs/TASKS.md)
+    stop_with_text: "deliver"    # "deliver" or "end"
 
 policies:
   guidance:

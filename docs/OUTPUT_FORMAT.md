@@ -241,6 +241,8 @@ user_actor:                                  # resolved UserSimulatorConfig, or 
   persona: "frustrated commuter"
   backstory: "I lost my season pass last week."
   scripted_flow: null                        # full flow when mode is scripted
+  stop_tokens: ["###STOP###"]                # tokens that ended or could end the dialogue
+  stop_with_text: "deliver"                  # deliver | end
 grading_config:
   state_checks: {...}
   transcript_rules: {...}
@@ -298,7 +300,7 @@ the bundle alone, without re-reading the task pack at the commit the run used.
 |---|---|---|
 | `interaction_mode` | `conversational` \| `agent_only` | Turn-loop shape. `agent_only` never dispatches a user actor. |
 | `initial_user_message` | string \| `null` | The task's pinned opener, verbatim — leading and trailing whitespace included, since this is the text delivered as message index 0. `null` when the task pinned no opener. |
-| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`. `null` under `agent_only`, which resolves no simulator at all. |
+| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `stop_tokens`, `stop_with_text`. `null` under `agent_only`, which resolves no simulator at all. |
 
 `interaction_mode` is what makes a `null` actor readable: it is the only thing
 in the bundle that separates "no user actor by design" from a defect, since
@@ -307,7 +309,8 @@ in the bundle that separates "no user actor by design" from a defect, since
 
 `user_actor` records the resolution the run used, not what the pack declared —
 a task declaring no `actors.user` records the defaults that applied
-(`mode: llm`, `persona: cooperative`), the same way `tools`, `policies` and
+(`mode: llm`, `persona: cooperative`, `stop_tokens: ["###STOP###"]`,
+`stop_with_text: deliver`), the same way `tools`, `policies` and
 `model_config.<role>.resolved.*` read. `scripted_flow` is recorded in full: it
 drove the conversation, and a trial whose user turns were scripted has no other
 record of what was said.

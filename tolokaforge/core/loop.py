@@ -212,9 +212,10 @@ class TerminationPolicy(Protocol):
 class UserTurnResult:
     """Outcome of an optional user turn.
 
-    Either the loop terminates (``termination`` set — e.g. ``###STOP###``) or a
-    user :class:`Message` is appended and the loop continues (``message`` set).
-    Exactly one is populated.
+    ``message`` alone appends a user :class:`Message` and the loop continues.
+    ``termination`` alone stops the loop (e.g. a bare stop token). Both together
+    append the message as the dialogue's last turn and then stop, so the agent
+    never answers it. Neither advances to the next agent turn.
     """
 
     message: Message | None = None
@@ -843,12 +844,12 @@ class ToolCallingLoop:
             return None, None, False
 
         outcome = self.user_turn(messages)
+        if outcome.message is not None:
+            self._append_both(messages, outcome.message)
+
         if outcome.termination is not None:
             self._append_both(messages, self._system_message(outcome.termination.system_message))
             return outcome.termination.status, outcome.termination.reason, True
-
-        if outcome.message is not None:
-            self._append_both(messages, outcome.message)
         return None, None, False
 
     def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
