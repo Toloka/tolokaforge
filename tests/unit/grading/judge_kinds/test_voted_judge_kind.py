@@ -157,7 +157,6 @@ def test_merges_composition_and_gate_fields() -> None:
     assert result.state_diff is None
     assert len(result.transcript) == 3 * 3  # 3 messages per sample loop turn
     assert result.transcript[0]["role"] == "user"
-    assert result.chunk_boundaries == ()
     justification = result.criterion_results[0].justification
     assert "aggregator=geometric_median" in justification
     assert "K=3" in justification

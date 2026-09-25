@@ -20,9 +20,9 @@ rubric:
 agent_system_prompt: You are a customer-service assistant. (small_rubrics_case_05)
 transcript:
 - role: user
-  content: "Hi, I need help with order 42 \u2014 I never got the refund. (small_rubrics_case_05)"
+  content: Hi, I need help with order 42 — I never got the refund. (small_rubrics_case_05)
 - role: assistant
-  content: "Confirmed \u2014 the refund of $19.99 is processed. Anything else?"
+  content: Confirmed — the refund of $19.99 is processed. Anything else?
 state_diff: null
 disable_knowledge_search: false
 custom_system_prompt: null
@@ -31,7 +31,7 @@ judge_scripts:
   single_shot_rubric:
   - - name: submit_report
       arguments:
-        reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+        reasons: overall summary — fixture-authored deterministic verdict
         sla_within: 0.2
         sla_within_justification: 'because sla_within
 
@@ -48,140 +48,3 @@ judge_scripts:
         tone_justification: 'because tone
 
           SCORE: 0.2'
-judge_scripts_per_chunk:
-  chunked_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 chunked"
-          sla_within: 0.2
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.2'
-          greeting_present: false
-          greeting_present_justification: 'because greeting_present
-
-            VERDICT: NOT MET'
-          refund_done: false
-          refund_done_justification: 'because refund_done
-
-            VERDICT: NOT MET'
-          tone: 0.2
-          tone_justification: 'because tone
-
-            SCORE: 0.2'
-  voted_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          sla_within: 0.2
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.2'
-          greeting_present: false
-          greeting_present_justification: 'because greeting_present
-
-            VERDICT: NOT MET'
-          refund_done: false
-          refund_done_justification: 'because refund_done
-
-            VERDICT: NOT MET'
-          tone: 0.2
-          tone_justification: 'because tone
-
-            SCORE: 0.2'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          sla_within: 0.2
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.2'
-          greeting_present: false
-          greeting_present_justification: 'because greeting_present
-
-            VERDICT: NOT MET'
-          refund_done: false
-          refund_done_justification: 'because refund_done
-
-            VERDICT: NOT MET'
-          tone: 0.2
-          tone_justification: 'because tone
-
-            SCORE: 0.2'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          sla_within: 0.2
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.2'
-          greeting_present: false
-          greeting_present_justification: 'because greeting_present
-
-            VERDICT: NOT MET'
-          refund_done: false
-          refund_done_justification: 'because refund_done
-
-            VERDICT: NOT MET'
-          tone: 0.2
-          tone_justification: 'because tone
-
-            SCORE: 0.2'
-  jury_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          sla_within: 0.2
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.2'
-          greeting_present: false
-          greeting_present_justification: 'because greeting_present
-
-            VERDICT: NOT MET'
-          refund_done: false
-          refund_done_justification: 'because refund_done
-
-            VERDICT: NOT MET'
-          tone: 0.2
-          tone_justification: 'because tone
-
-            SCORE: 0.2'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          sla_within: 0.2
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.2'
-          greeting_present: false
-          greeting_present_justification: 'because greeting_present
-
-            VERDICT: NOT MET'
-          refund_done: false
-          refund_done_justification: 'because refund_done
-
-            VERDICT: NOT MET'
-          tone: 0.2
-          tone_justification: 'because tone
-
-            SCORE: 0.2'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          sla_within: 0.2
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.2'
-          greeting_present: false
-          greeting_present_justification: 'because greeting_present
-
-            VERDICT: NOT MET'
-          refund_done: false
-          refund_done_justification: 'because refund_done
-
-            VERDICT: NOT MET'
-          tone: 0.2
-          tone_justification: 'because tone
-
-            SCORE: 0.2'

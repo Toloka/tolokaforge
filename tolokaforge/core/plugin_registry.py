@@ -570,20 +570,11 @@ def load_judge_kind(name: str) -> type[JudgeKind]:
     Returns the class object itself, matching :func:`load_grader_kind`.
     The runner-side composite dispatch resolves this loader to reach the
     LLM-judge implementation named by ``grading.llm_judge.judge_kind``.
-    Six built-ins ship under this group: ``single_shot_rubric`` (wraps
-    :class:`LLMJudge` byte-identically — the default), ``chunked_rubric``
-    (one :class:`LLMJudge` invocation per chunk of the rubric's
-    criteria), ``voted_rubric`` (wraps any registered kind and samples
-    it K times, aggregating the per-criterion verdicts robustly),
-    ``jury_rubric`` (wraps any registered kind and dispatches to a
-    cross-family panel of N different judge models, aggregating the
-    per-criterion verdicts through the same robust-aggregator module),
-    ``per_criterion_rubric`` (specialisation of ``chunked_rubric`` with
-    ``chunk_size=1`` — one :class:`LLMJudge` call per criterion), and
-    ``auto_anchored_rubric`` (wraps any registered kind; before dispatch,
-    runs one cached warm-up judge call per unique rubric to auto-generate
-    ``expected:`` anchors for graded criteria the author left unanchored,
-    then delegates to the wrapped kind with the synthetic anchored rubric).
+    Five kinds ship under this group: three user-facing
+    (``single_shot_rubric``, ``multi_turn_rubric``, ``auto_rubric``) plus
+    two internal building blocks (``voted_rubric``, ``auto_anchored_rubric``)
+    that user code should not select via ``judge_kind:`` — the built-in
+    composite kinds compose them.
     Downstream packages register alternative kinds (agentic,
     downstream-specific) under this group.
 

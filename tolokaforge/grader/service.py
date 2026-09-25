@@ -23,7 +23,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from tolokaforge.core.grading.chunk_boundaries_wire import encode_chunk_boundaries
 from tolokaforge.core.models import (
     Grade,
     JudgeStatus,
@@ -144,7 +143,6 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
     transcript = grade.judge_transcript
     custom_prompt = grade.judge_custom_prompt
     include_agent_prompt = grade.judge_agent_prompt_included
-    chunk_boundaries = grade.judge_chunk_boundaries
     if all(
         value is None
         for value in (
@@ -154,7 +152,6 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
             transcript,
             custom_prompt,
             include_agent_prompt,
-            chunk_boundaries,
         )
     ):
         return
@@ -181,10 +178,6 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
         report.custom_system_prompt = custom_prompt
     if include_agent_prompt is not None:
         report.include_agent_system_prompt = include_agent_prompt
-    if chunk_boundaries is not None:
-        report.chunk_boundaries_json = encode_chunk_boundaries(
-            tuple(tuple(chunk) for chunk in chunk_boundaries)
-        )
 
 
 def _trace_constraint_to_wire(r: TraceConstraintResult) -> grader_pb2.TraceConstraintResult:

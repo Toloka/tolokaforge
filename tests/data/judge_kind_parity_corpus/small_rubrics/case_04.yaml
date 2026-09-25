@@ -16,9 +16,9 @@ rubric:
 agent_system_prompt: You are a customer-service assistant. (small_rubrics_case_04)
 transcript:
 - role: user
-  content: "Hi, I need help with order 42 \u2014 I never got the refund. (small_rubrics_case_04)"
+  content: Hi, I need help with order 42 — I never got the refund. (small_rubrics_case_04)
 - role: assistant
-  content: "Confirmed \u2014 the refund of $19.99 is processed. Anything else?"
+  content: Confirmed — the refund of $19.99 is processed. Anything else?
 state_diff: null
 disable_knowledge_search: false
 custom_system_prompt: null
@@ -27,7 +27,7 @@ judge_scripts:
   single_shot_rubric:
   - - name: submit_report
       arguments:
-        reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+        reasons: overall summary — fixture-authored deterministic verdict
         intent_clarified: true
         intent_clarified_justification: 'because intent_clarified
 
@@ -40,112 +40,3 @@ judge_scripts:
         sla_within_justification: 'because sla_within
 
           SCORE: 0.9'
-judge_scripts_per_chunk:
-  chunked_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 chunked"
-          intent_clarified: true
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: MET'
-          escalation_appropriate: true
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: MET'
-          sla_within: 0.9
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.9'
-  voted_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          intent_clarified: true
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: MET'
-          escalation_appropriate: true
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: MET'
-          sla_within: 0.9
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.9'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          intent_clarified: true
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: MET'
-          escalation_appropriate: true
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: MET'
-          sla_within: 0.9
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.9'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          intent_clarified: true
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: MET'
-          escalation_appropriate: true
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: MET'
-          sla_within: 0.9
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.9'
-  jury_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          intent_clarified: true
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: MET'
-          escalation_appropriate: true
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: MET'
-          sla_within: 0.9
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.9'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          intent_clarified: true
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: MET'
-          escalation_appropriate: true
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: MET'
-          sla_within: 0.9
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.9'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          intent_clarified: true
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: MET'
-          escalation_appropriate: true
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: MET'
-          sla_within: 0.9
-          sla_within_justification: 'because sla_within
-
-            SCORE: 0.9'

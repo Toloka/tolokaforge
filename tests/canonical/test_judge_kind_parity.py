@@ -14,18 +14,16 @@ here:
 monkeypatched at :mod:`tolokaforge.core.grading.default_judge_model_provider`
 to a :class:`ScriptedLLMClient` seeded from each fixture's
 ``judge_scripts[<kind_name>]`` cassette. The whole lane runs keyless,
-network-free, and under a hard runtime budget (inner-sum < 60 s, full
-wall-clock < 90 s).
+network-free, and under a hard runtime budget.
 
 **Live mode** (``pytest --live-parity``) drives every corpus entry and
 every kind under test against a real judge model, records each turn
 via :class:`~tests.utils.recording_llm_client.RecordingLLMClient`, and
-rewrites the fixture's ``judge_scripts``/``judge_scripts_per_chunk``
-cassette in place, preserving every other key. Requires
-``OPENAI_API_KEY`` or ``ANTHROPIC_API_KEY``; see
-``test_live_mode_writeback`` (``@pytest.mark.integration``, never runs
-in CI — see that test's docstring). The writeback mechanics themselves
-are locked keyless by two ``unit``-tier tests:
+rewrites the fixture's ``judge_scripts`` cassette in place, preserving
+every other key. Requires ``OPENAI_API_KEY`` or ``ANTHROPIC_API_KEY``;
+see ``test_live_mode_writeback`` (``@pytest.mark.integration``, never
+runs in CI — see that test's docstring). The writeback mechanics
+themselves are locked keyless by two ``unit``-tier tests:
 :mod:`tests.utils.test_recording_llm_client` (script-capture fidelity)
 and ``test_writeback_rewrites_cassette_preserving_other_keys`` below
 (YAML rewrite mechanics against a scripted, not live, recorder).
@@ -37,6 +35,7 @@ this contract refuses.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -51,14 +50,15 @@ import yaml
 from tests.utils.recording_llm_client import RecordingLLMClient
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import (
-    ChunkedRubricJudgeKind,
+    AutoAnchoredRubricJudgeKind,
+    AutoRubricJudgeKind,
     JudgeKind,
-    JuryRubricJudgeKind,
+    MultiTurnRubricJudgeKind,
     SingleShotRubricJudgeKind,
     VotedRubricJudgeKind,
 )
+from tolokaforge.core.grading.judge_kinds.auto_anchored import clear_anchor_cache
 from tolokaforge.core.grading.judge_kinds.parity import (
-    CalibrationReport,
     ParityCorpusEntry,
     ParityGateThresholds,
     _evaluate_kwargs,
@@ -66,13 +66,12 @@ from tolokaforge.core.grading.judge_kinds.parity import (
     measure_cross_kind_agreement,
     measure_self_consistency,
 )
+from tolokaforge.core.grading.judge_kinds.voted import DEFAULT_N_SAMPLES
 from tolokaforge.core.grading.judge_model_provider import JudgeModel, JudgeModelProvider
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.runner.models import CriterionResult, Rubric
-from tolokaforge.secrets import SecretManager, init_default_from
-from tolokaforge.secrets import manager as secrets_manager_module
 
 pytestmark = pytest.mark.canonical
 
@@ -85,23 +84,6 @@ _LIVE_API_KEYS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 # corpus load and CI jitter.
 _INNER_SUM_BUDGET_S = 60.0
 _FULL_WALLCLOCK_BUDGET_S = 90.0
-
-#: Fixed value the parity-lane pins for cassette determinism; the adaptive
-#: default is deliberately bypassed here so byte-parity anchors hold.
-_CHUNK_SIZE = 5
-_CHUNKED_KIND_CONFIG: dict[str, Any] = {"chunk_size": _CHUNK_SIZE}
-
-#: K the parity-lane voted measurements use. Matches
-#: ``VotedRubricJudgeKind``'s ``DEFAULT_N_SAMPLES = 3``; every corpus
-#: fixture's ``judge_scripts_per_chunk.voted_rubric`` cassette carries
-#: exactly this many scripts.
-_VOTED_N_SAMPLES = 3
-
-#: Panel size the parity-lane jury measurements use. Matches
-#: ``JuryRubricJudgeKind``'s ``len(DEFAULT_PANEL) == 3``; every corpus
-#: fixture's ``judge_scripts_per_chunk.jury_rubric`` cassette carries
-#: exactly this many scripts.
-_JURY_PANEL_SIZE = 3
 
 
 # ---------------------------------------------------------------------------
@@ -150,18 +132,11 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
     the fixture kind's script still loads (kind-specific scripts, like
     fixture kinds such as ``_FlakyJudgeKind``, are authored inline in
     the test file; corpus YAML ships ``single_shot_rubric`` only).
-    ``judge_scripts_per_chunk`` (optional) carries one script per chunk
-    for kinds that dispatch a fresh client per chunk (``chunked_rubric``).
     """
     data = yaml.safe_load(path.read_text())
     raw_scripts = data.get("judge_scripts", {}) or {}
     normalised_scripts = {
         kind_name: _normalise_cassette(list(script)) for kind_name, script in raw_scripts.items()
-    }
-    raw_per_chunk = data.get("judge_scripts_per_chunk", {}) or {}
-    normalised_per_chunk = {
-        kind_name: [_normalise_cassette(list(script)) for script in scripts]
-        for kind_name, scripts in raw_per_chunk.items()
     }
     return ParityCorpusEntry(
         entry_id=str(data["entry_id"]),
@@ -173,7 +148,6 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
         custom_system_prompt=data.get("custom_system_prompt"),
         include_agent_system_prompt=bool(data.get("include_agent_system_prompt", True)),
         judge_scripts=normalised_scripts,
-        judge_scripts_per_chunk=normalised_per_chunk,
     )
 
 
@@ -218,28 +192,14 @@ def _serialise_cassette_step(step: Any) -> Any:
 def _write_cassette(
     yaml_path: Path,
     kind_name: str,
-    recorded_scripts: list[list[Any]],
-    *,
-    per_chunk: bool,
+    recorded_script: list[Any],
 ) -> None:
-    """Rewrite one fixture's ``judge_scripts[kind_name]`` (or
-    ``judge_scripts_per_chunk[kind_name]`` for a per-chunk kind) cassette
-    in place, preserving every other top-level key.
-
-    ``recorded_scripts`` carries one script per
-    :meth:`JudgeModelProvider.build` call the kind made — matching
-    :func:`_entry_client_scripts`'s shape, a single-client kind supplies
-    exactly one script and a per-chunk kind supplies one per chunk."""
+    """Rewrite one fixture's ``judge_scripts[kind_name]`` cassette in
+    place, preserving every other top-level key."""
     data = yaml.safe_load(yaml_path.read_text())
-    if per_chunk:
-        data.setdefault("judge_scripts_per_chunk", {})[kind_name] = [
-            [_serialise_cassette_step(step) for step in script] for script in recorded_scripts
-        ]
-    else:
-        (script,) = recorded_scripts
-        data.setdefault("judge_scripts", {})[kind_name] = [
-            _serialise_cassette_step(step) for step in script
-        ]
+    data.setdefault("judge_scripts", {})[kind_name] = [
+        _serialise_cassette_step(step) for step in recorded_script
+    ]
     yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
@@ -261,20 +221,6 @@ class _ScriptedJudgeModelProvider:
         return self._client
 
 
-def _entry_client_scripts(entry: ParityCorpusEntry, kind_name: str) -> list[list[Any]]:
-    """Return one client-script per :meth:`JudgeModelProvider.build` call
-    the kind will make on this entry.
-
-    Dispatches on cassette shape (NOT on kind name), so the harness stays
-    kind-agnostic: an entry carrying ``judge_scripts_per_chunk[kind_name]``
-    yields N scripts (one per chunk); otherwise it yields one script from
-    ``judge_scripts[kind_name]`` — the single-client shape.
-    """
-    if kind_name in entry.judge_scripts_per_chunk:
-        return list(entry.judge_scripts_per_chunk[kind_name])
-    return [_cassette_for(entry, kind_name)]
-
-
 def _cassette_provider_factory(
     corpus: list[ParityCorpusEntry], kind_name: str
 ) -> Callable[[int], JudgeModelProvider]:
@@ -285,18 +231,13 @@ def _cassette_provider_factory(
     The harness calls the returned factory ONCE per replay and reuses the
     provider for every entry in that replay; the factory delegates to a
     provider whose :meth:`build` pops the next scripted client off a
-    per-replay pool. The pool is flat-mapped from
-    :func:`_entry_client_scripts` for each entry — one client per
-    :meth:`build` call the kind is expected to make — so replay N's
-    client stream is a byte-for-byte clone of replay 0's.
+    per-replay pool. The pool is one client per entry (single-client kind
+    shape), so replay N's client stream is a byte-for-byte clone of
+    replay 0's.
     """
 
     def _factory(_replay_index: int) -> JudgeModelProvider:
-        remaining = [
-            ScriptedLLMClient(script)
-            for entry in corpus
-            for script in _entry_client_scripts(entry, kind_name)
-        ]
+        remaining = [ScriptedLLMClient(_cassette_for(entry, kind_name)) for entry in corpus]
 
         class _PoolProvider:
             def build(self, model_config: ModelConfig) -> JudgeModel:  # noqa: ARG002
@@ -313,12 +254,52 @@ def _cassette_provider(corpus: list[ParityCorpusEntry], kind_name: str) -> Judge
     return _cassette_provider_factory(corpus, kind_name)(0)
 
 
+def _wrapped_kind_provider_factory(
+    corpus: list[ParityCorpusEntry],
+    wrapped_cassette_name: str,
+    builds_per_entry: int,
+) -> Callable[[int], JudgeModelProvider]:
+    """Provider factory for a wrapper kind whose wrapped kind calls
+    ``build()`` exactly once per ``evaluate``.
+
+    ``voted_rubric`` calls its wrapped kind K times per corpus entry;
+    each wrapped call pops one client. All K samples share the SAME
+    cassette (``entry.judge_scripts[wrapped_cassette_name]``), so the K
+    per-sample results are byte-identical and cross-kind κ against the
+    wrapped kind's own single-shot replay lands at 1.0 — the invariant
+    the deleted parity assertions locked.
+    """
+
+    def _factory(_replay_index: int) -> JudgeModelProvider:
+        remaining = [
+            ScriptedLLMClient(_cassette_for(entry, wrapped_cassette_name))
+            for entry in corpus
+            for _ in range(builds_per_entry)
+        ]
+
+        class _PoolProvider:
+            def build(self, model_config: ModelConfig) -> JudgeModel:  # noqa: ARG002
+                return remaining.pop(0)
+
+        return _PoolProvider()
+
+    return _factory
+
+
+def _wrapped_kind_provider(
+    corpus: list[ParityCorpusEntry],
+    wrapped_cassette_name: str,
+    builds_per_entry: int,
+) -> JudgeModelProvider:
+    """Single-replay peer of :func:`_wrapped_kind_provider_factory` for
+    cross-kind dispatch."""
+    return _wrapped_kind_provider_factory(corpus, wrapped_cassette_name, builds_per_entry)(0)
+
+
 class _RecordingJudgeModelProvider:
     """:class:`JudgeModelProvider` that wraps a real (live) provider so
     every :meth:`build` call's client is a :class:`RecordingLLMClient`,
-    collected in call order — matching :func:`_entry_client_scripts`'s
-    one-recorder-per-build-call convention (one for a single-client kind,
-    one per chunk for ``chunked_rubric``)."""
+    collected in call order."""
 
     def __init__(self, delegate: JudgeModelProvider) -> None:
         self._delegate = delegate
@@ -330,18 +311,16 @@ class _RecordingJudgeModelProvider:
         return recorder
 
 
-def _record_live_scripts(
+def _record_live_script(
     entry: ParityCorpusEntry,
     kind: JudgeKind,
     *,
     judge_model_config: ModelConfig,
     kind_config: Mapping[str, Any] | None,
     logger: StructuredLogger,
-) -> list[list[Any]]:
+) -> list[Any]:
     """Drive ``kind.evaluate()`` against a real (live) judge model for one
-    corpus entry, recording every dispatched client's turns. Returns one
-    script per :meth:`JudgeModelProvider.build` call the kind made, in
-    the shape :func:`_write_cassette` expects."""
+    corpus entry, recording the single dispatched client's turns."""
     from tolokaforge.core.plugin_registry import load_judge_model_provider
 
     provider = _RecordingJudgeModelProvider(load_judge_model_provider("litellm")())
@@ -358,7 +337,8 @@ def _record_live_scripts(
             logger=logger,
         )
     )
-    return [recorder.recorded_script for recorder in provider.recorders]
+    (recorder,) = provider.recorders
+    return recorder.recorded_script
 
 
 class _FlakyJudgeKind:
@@ -436,61 +416,14 @@ class _InnerBudget:
 def test_corpus_has_twenty_entries() -> None:
     """Twenty fixtures, every one parses cleanly into
     :class:`ParityCorpusEntry`, every one ships a
-    ``judge_scripts.single_shot_rubric`` cassette, a
-    ``judge_scripts_per_chunk.chunked_rubric`` cassette with the
-    correct chunk count for ``chunk_size=5``, a
-    ``judge_scripts_per_chunk.voted_rubric`` cassette with exactly 3
-    scripts (K=3, the default ``n_samples``), AND a
-    ``judge_scripts_per_chunk.jury_rubric`` cassette with exactly 3
-    scripts (the default panel size). A malformed rubric fails Pydantic
-    validation right here — never at replay time."""
+    ``judge_scripts.single_shot_rubric`` cassette. A malformed rubric
+    fails Pydantic validation right here — never at replay time."""
     corpus = _load_corpus()
     assert len(corpus) == 20, f"corpus size drift: {len(corpus)} entries"
     for entry in corpus:
         assert entry.rubric.criteria, f"{entry.entry_id}: empty rubric"
         missing_cassette_msg = f"{entry.entry_id}: missing single_shot_rubric cassette"
         assert "single_shot_rubric" in entry.judge_scripts, missing_cassette_msg
-        missing_chunked_msg = f"{entry.entry_id}: missing chunked_rubric per-chunk cassette"
-        assert "chunked_rubric" in entry.judge_scripts_per_chunk, missing_chunked_msg
-        expected_chunks = (len(entry.rubric.criteria) + _CHUNK_SIZE - 1) // _CHUNK_SIZE
-        actual_chunks = len(entry.judge_scripts_per_chunk["chunked_rubric"])
-        chunk_count_msg = (
-            f"{entry.entry_id}: chunked_rubric cassette has {actual_chunks} scripts, "
-            f"expected {expected_chunks} for chunk_size={_CHUNK_SIZE} over "
-            f"{len(entry.rubric.criteria)} criteria"
-        )
-        assert actual_chunks == expected_chunks, chunk_count_msg
-        missing_voted_msg = f"{entry.entry_id}: missing voted_rubric per-chunk cassette"
-        assert "voted_rubric" in entry.judge_scripts_per_chunk, missing_voted_msg
-        actual_samples = len(entry.judge_scripts_per_chunk["voted_rubric"])
-        sample_count_msg = (
-            f"{entry.entry_id}: voted_rubric cassette has {actual_samples} scripts, "
-            f"expected {_VOTED_N_SAMPLES}"
-        )
-        assert actual_samples == _VOTED_N_SAMPLES, sample_count_msg
-        missing_jury_msg = f"{entry.entry_id}: missing jury_rubric per-chunk cassette"
-        assert "jury_rubric" in entry.judge_scripts_per_chunk, missing_jury_msg
-        actual_panel_scripts = len(entry.judge_scripts_per_chunk["jury_rubric"])
-        panel_count_msg = (
-            f"{entry.entry_id}: jury_rubric cassette has {actual_panel_scripts} scripts, "
-            f"expected {_JURY_PANEL_SIZE}"
-        )
-        assert actual_panel_scripts == _JURY_PANEL_SIZE, panel_count_msg
-
-
-def test_missing_chunked_cassette_raises_with_entry_and_kind_name() -> None:
-    """Constructing a pool provider for a kind the entry never authored
-    a chunked cassette for → :func:`_cassette_for` (fallback path) raises
-    with both the entry_id and the kind name. Silent skips are the
-    failure mode the parity contract refuses — a new chunking kind whose
-    cassette is missing must fail lane collection, not silently pair a
-    zero-turn judge against a real one."""
-    corpus = _load_corpus()
-    with pytest.raises(KeyError) as excinfo:
-        _entry_client_scripts(corpus[0], "no_such_chunked_kind")
-    message = str(excinfo.value)
-    assert corpus[0].entry_id in message
-    assert "no_such_chunked_kind" in message
 
 
 def test_missing_cassette_raises_with_entry_and_kind_name() -> None:
@@ -507,8 +440,7 @@ def test_missing_cassette_raises_with_entry_and_kind_name() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cassette-mode gate behaviour — four measurements: cross-kind ships,
-# cross-kind blocks, self-consistency ships, self-consistency blocks.
+# Cassette-mode gate behaviour.
 # ---------------------------------------------------------------------------
 
 
@@ -520,54 +452,12 @@ def _single_shot_kind() -> SingleShotRubricJudgeKind:
     return SingleShotRubricJudgeKind()
 
 
-def _chunked_kind() -> ChunkedRubricJudgeKind:
-    return ChunkedRubricJudgeKind()
-
-
-def _voted_kind() -> VotedRubricJudgeKind:
-    return VotedRubricJudgeKind()
-
-
-def _jury_kind() -> JuryRubricJudgeKind:
-    return JuryRubricJudgeKind()
-
-
 @contextmanager
 def _cassette_credentials() -> Iterator[None]:
-    """Seed a fake ``OPENROUTER_API_KEY`` into a fresh ``SecretManager``
-    singleton so ``jury_rubric``'s credential preflight passes without a
-    real key or network call — same keyless, network-free invariant every
-    other cassette-mode measurement in this lane holds. Restores whatever
-    singleton state preceded the call on exit."""
-    original = secrets_manager_module._default_manager
-    init_default_from(SecretManager.from_dict({"OPENROUTER_API_KEY": "sk-cassette-test"}))
-    try:
-        yield
-    finally:
-        secrets_manager_module._default_manager = original
-
-
-def _measure_jury_self(corpus: list[ParityCorpusEntry]) -> CalibrationReport:
-    with _cassette_credentials():
-        return measure_self_consistency(
-            kind_factory=lambda _i: _jury_kind(),
-            corpus=corpus,
-            replays=5,
-            judge_model_config=_JUDGE_MODEL,
-            provider_factory=_cassette_provider_factory(corpus, "jury_rubric"),
-        )
-
-
-def _measure_jury_vs_single_shot(corpus: list[ParityCorpusEntry]) -> CalibrationReport:
-    with _cassette_credentials():
-        return measure_cross_kind_agreement(
-            reference_kind=_single_shot_kind(),
-            candidate_kind=_jury_kind(),
-            corpus=corpus,
-            judge_model_config=_JUDGE_MODEL,
-            reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
-            candidate_provider=_cassette_provider(corpus, "jury_rubric"),
-        )
+    """Placeholder credential seam preserved for kinds whose preflight
+    checks a credential (none today under this pared-down parity lane).
+    """
+    yield
 
 
 def test_single_shot_self_parity_ships() -> None:
@@ -654,131 +544,453 @@ def test_cross_kind_flaky_vs_single_shot_blocks() -> None:
     assert decision.blocking_criteria, "flaky-vs-single_shot must land at least one block"
 
 
-def test_chunked_self_parity_ships() -> None:
-    """Five deterministic replays of ``chunked_rubric`` (K=5) on the
-    corpus produce identical per-criterion verdicts across replays —
-    per-criterion κ = 1.0, the self-consistency arm ships. Locks that
-    the chunked kind is deterministic under the cassette contract."""
-    corpus = _load_corpus()
-    report = measure_self_consistency(
-        kind_factory=lambda _i: _chunked_kind(),
-        corpus=corpus,
-        replays=5,
-        judge_model_config=_JUDGE_MODEL,
-        provider_factory=_cassette_provider_factory(corpus, "chunked_rubric"),
-        kind_config=_CHUNKED_KIND_CONFIG,
-    )
-    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
-    self_blocked_msg = f"chunked self-parity blocked on {decision.blocking_criteria!r}"
-    assert decision.shippable is True, self_blocked_msg
-    assert decision.blocking_criteria == ()
-    assert decision.warning_criteria == ()
-
-
-def test_cross_kind_chunked_vs_single_shot_ships() -> None:
-    """``chunked_rubric`` (K=5) vs ``single_shot_rubric`` on the same
-    corpus — the per-chunk cassettes carry the identical per-criterion
-    verdicts the single-shot cassettes carry, so cross-kind κ = 1.0
-    everywhere and the gate ships. Locks that the chunked kind
-    surfaces the same verdicts the reference kind does on identical
-    evidence."""
-    corpus = _load_corpus()
-    report = measure_cross_kind_agreement(
-        reference_kind=_single_shot_kind(),
-        candidate_kind=_chunked_kind(),
-        corpus=corpus,
-        judge_model_config=_JUDGE_MODEL,
-        reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
-        candidate_provider=_cassette_provider(corpus, "chunked_rubric"),
-        kind_config=_CHUNKED_KIND_CONFIG,
-    )
-    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="cross_kind")
-    cross_blocked_msg = (
-        f"chunked vs single-shot cross-kind blocked on {decision.blocking_criteria!r}"
-    )
-    assert decision.shippable is True, cross_blocked_msg
-    assert decision.blocking_criteria == ()
-
-
 def test_voted_self_parity_ships() -> None:
-    """Five deterministic replays of ``voted_rubric`` (default config,
-    K=3) on the corpus produce identical per-criterion verdicts across
-    replays — the 3 per-sample scripts within a replay are identical
-    cassette content, so the aggregate is byte-identical every replay —
-    per-criterion κ = 1.0, the self-consistency arm ships. Locks that
-    the voted kind is deterministic under the cassette contract."""
+    """Five deterministic replays of ``voted_rubric`` (K=3 wrapping
+    ``single_shot_rubric``) on the corpus produce per-criterion κ = 1.0
+    across the whole pool — every K sample within one replay is
+    byte-identical (all K clients seeded from the same
+    ``judge_scripts.single_shot_rubric`` cassette), so replays produce
+    the same aggregated verdicts. Positive lock on the shipped kind."""
     corpus = _load_corpus()
     report = measure_self_consistency(
-        kind_factory=lambda _i: _voted_kind(),
+        kind_factory=lambda _i: VotedRubricJudgeKind(),
         corpus=corpus,
         replays=5,
         judge_model_config=_JUDGE_MODEL,
-        provider_factory=_cassette_provider_factory(corpus, "voted_rubric"),
+        provider_factory=_wrapped_kind_provider_factory(
+            corpus, "single_shot_rubric", builds_per_entry=DEFAULT_N_SAMPLES
+        ),
     )
     decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
-    self_blocked_msg = f"voted self-parity blocked on {decision.blocking_criteria!r}"
-    assert decision.shippable is True, self_blocked_msg
+    assert decision.shippable is True, f"self-parity blocked on {decision.blocking_criteria!r}"
     assert decision.blocking_criteria == ()
     assert decision.warning_criteria == ()
 
 
 def test_cross_kind_voted_vs_single_shot_ships() -> None:
-    """``voted_rubric`` (K=3, default ``geometric_median``) vs
-    ``single_shot_rubric`` on the same corpus — the 3 per-sample
-    cassettes carry the identical per-criterion verdicts the
-    single-shot cassette carries, so the aggregate is exactly that
-    verdict on every criterion and cross-kind κ = 1.0. Satisfies the
-    issue's κ ≥ 0.9 acceptance bar as the κ=1.0 identical-sample special
-    case (the relationship ``test_cross_kind_identity_ships`` documents
-    for byte-parity)."""
+    """``voted_rubric`` (K=3 wrapping ``single_shot_rubric``) vs
+    ``single_shot_rubric`` produces per-criterion κ = 1.0 in cassette
+    mode — the wrapped kind's K samples all share the reference's
+    cassette, so the aggregated verdict matches the reference verdict
+    byte-for-byte. This is the invariant the deleted cross-kind
+    assertion locked."""
     corpus = _load_corpus()
     report = measure_cross_kind_agreement(
         reference_kind=_single_shot_kind(),
-        candidate_kind=_voted_kind(),
+        candidate_kind=VotedRubricJudgeKind(),
         corpus=corpus,
         judge_model_config=_JUDGE_MODEL,
         reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
-        candidate_provider=_cassette_provider(corpus, "voted_rubric"),
+        candidate_provider=_wrapped_kind_provider(
+            corpus, "single_shot_rubric", builds_per_entry=DEFAULT_N_SAMPLES
+        ),
     )
     decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="cross_kind")
-    cross_blocked_msg = f"voted vs single-shot cross-kind blocked on {decision.blocking_criteria!r}"
-    assert decision.shippable is True, cross_blocked_msg
+    assert decision.shippable is True, f"cross-kind blocked on {decision.blocking_criteria!r}"
     assert decision.blocking_criteria == ()
 
 
-def test_jury_self_parity_ships() -> None:
-    """Five deterministic replays of ``jury_rubric`` (default config —
-    default panel, default aggregator) on the corpus produce identical
-    per-criterion verdicts across replays — the 3 per-member scripts
-    within a replay are identical cassette content (mirroring
-    ``single_shot_rubric``'s script), so the aggregate is byte-identical
-    every replay — per-criterion κ = 1.0, the self-consistency arm
-    ships. Seeds a fake OpenRouter credential so the panel's preflight
-    passes without a real key (see :func:`_cassette_credentials`)."""
-    corpus = _load_corpus()
-    report = _measure_jury_self(corpus)
+def _build_auto_anchored_corpus() -> list[ParityCorpusEntry]:
+    """Three inline fixtures for the auto-anchored parity lane.
+
+    Each fixture carries a unique rubric with one unanchored ``graded``
+    criterion so ``auto_anchored_rubric`` triggers its warm-up call
+    every time (the process-wide anchor cache is keyed on rubric hash;
+    distinct rubrics guarantee cache misses per fixture rather than
+    hits, so build-call counts stay predictable across fixtures).
+
+    Two scoring cassettes ship per fixture:
+
+    - ``single_shot_rubric`` — includes the ``<id>_interpretation``
+      slot the schema requires when a graded criterion is unanchored
+      (``expected is None``).
+    - ``auto_anchored_wrapped`` — omits the interpretation slot,
+      because ``auto_anchored_rubric``'s warm-up fills the
+      criterion's ``expected`` field before dispatching the wrapped
+      kind, and the wrapped-kind schema then rejects the (now
+      unknown) interpretation key.
+    """
+    from tolokaforge.runner.models import Criterion  # local import — narrow, in-test only
+
+    entries: list[ParityCorpusEntry] = []
+    for i in range(3):
+        # Shared criterion ids across fixtures so per-criterion κ pools
+        # observations (Cohen's κ is undefined for n=1). Descriptions
+        # carry the fixture index so each rubric hashes to a distinct
+        # key in the process-wide anchor cache, keeping the build-call
+        # count predictable per replay.
+        criteria = [
+            Criterion(
+                id="aa_binary",
+                description=f"binary criterion (fixture {i})",
+                kind="binary",
+                weight=1.0,
+            ),
+            Criterion(
+                id="aa_graded",
+                description=f"graded criterion (fixture {i})",
+                kind="graded",
+                weight=1.0,
+            ),
+        ]
+        rubric = Rubric(criteria=criteria)
+        # Vary the fixture-level verdict so the pooled per-criterion κ
+        # has label variation across the corpus — κ's chance-agreement
+        # denominator collapses to zero when every observation carries
+        # the same label, and the gate would then read "undefined"
+        # rather than "identical".
+        binary_met = i % 2 == 0
+        graded_score = 0.9 if i % 2 == 0 else 0.2
+        entries.append(
+            ParityCorpusEntry(
+                entry_id=f"auto_anchored_synth_{i:02d}",
+                rubric=rubric,
+                agent_system_prompt=f"synthetic agent prompt {i}",
+                transcript=[{"role": "user", "content": f"synthetic user turn {i}"}],
+                state_diff=None,
+                disable_knowledge_search=False,
+                custom_system_prompt=None,
+                include_agent_system_prompt=True,
+                judge_scripts={
+                    "single_shot_rubric": [
+                        _submit_scoring_step(
+                            criteria,
+                            include_interpretation=True,
+                            binary_met=binary_met,
+                            graded_score=graded_score,
+                        )
+                    ],
+                    "auto_anchored_wrapped": [
+                        _submit_scoring_step(
+                            criteria,
+                            include_interpretation=False,
+                            binary_met=binary_met,
+                            graded_score=graded_score,
+                        )
+                    ],
+                },
+            )
+        )
+    return entries
+
+
+def _submit_scoring_step(
+    criteria: list[Any],
+    *,
+    include_interpretation: bool,
+    binary_met: bool = True,
+    graded_score: float = 0.9,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Build a scripted ``submit_report`` step covering every criterion id.
+
+    Binary criteria get ``met=True`` + a ``VERDICT: MET`` justification;
+    graded criteria get ``score=0.9`` + a ``SCORE: 0.9`` justification.
+    ``include_interpretation`` toggles the per-criterion interpretation
+    slot the unanchored-graded schema requires; a caller emitting the
+    scoring turn for a wrapped judge whose rubric has been anchored by
+    ``auto_anchored_rubric`` must pass ``False``, because the anchored
+    schema no longer allows the key."""
+    args: dict[str, Any] = {"reasons": "overall summary — synthetic fixture"}
+    for c in criteria:
+        if c.kind == "graded":
+            args[c.id] = graded_score
+            args[f"{c.id}_justification"] = f"because {c.id}\nSCORE: {graded_score}"
+        else:
+            marker = "MET" if binary_met else "NOT MET"
+            args[c.id] = binary_met
+            args[f"{c.id}_justification"] = f"because {c.id}\nVERDICT: {marker}"
+        if include_interpretation and c.kind == "graded" and c.expected is None:
+            args[f"{c.id}_interpretation"] = f"interpretation for {c.id}"
+    return [("submit_report", args)]
+
+
+def _auto_anchored_provider_factory(
+    corpus: list[ParityCorpusEntry],
+) -> Callable[[int], JudgeModelProvider]:
+    """Provider factory for ``auto_anchored_rubric`` self-consistency.
+
+    Two clients per entry: a warm-up client whose single turn is a JSON
+    anchor map covering every unanchored graded criterion, then a
+    wrapped scoring client seeded from the entry's
+    ``judge_scripts.single_shot_rubric`` cassette. The anchor cache is
+    cleared in the ``_auto_anchored_cache`` fixture on the test and
+    :func:`_auto_anchored_kind_factory` clears it again per replay so
+    every replay drives both build calls."""
+
+    def _factory(_replay_index: int) -> JudgeModelProvider:
+        remaining: list[ScriptedLLMClient] = []
+        for entry in corpus:
+            unanchored = tuple(
+                c.id for c in entry.rubric.criteria if c.kind == "graded" and c.expected is None
+            )
+            if unanchored:
+                anchor_map = {cid: f"one-sentence anchor for {cid}" for cid in unanchored}
+                remaining.append(ScriptedLLMClient([json.dumps(anchor_map)]))
+            remaining.append(ScriptedLLMClient(_cassette_for(entry, "auto_anchored_wrapped")))
+
+        class _PoolProvider:
+            def build(self, model_config: ModelConfig) -> JudgeModel:  # noqa: ARG002
+                return remaining.pop(0)
+
+        return _PoolProvider()
+
+    return _factory
+
+
+def _auto_anchored_kind_factory(_replay_index: int) -> AutoAnchoredRubricJudgeKind:
+    """Clear the process-wide anchor cache before each replay so every
+    replay drives the warm-up call (otherwise replay 0 populates the
+    cache and replays 1..N-1 skip the warm-up, and the build-call pool
+    the sibling provider factory constructs runs long)."""
+    clear_anchor_cache()
+    return AutoAnchoredRubricJudgeKind()
+
+
+@pytest.fixture
+def _auto_anchored_cache() -> Iterator[None]:
+    """Test-scope guard around ``auto_anchored_rubric``'s process-wide
+    anchor cache — cleared before and after so a test never inherits a
+    warm cache or leaks one to its neighbour."""
+    clear_anchor_cache()
+    try:
+        yield
+    finally:
+        clear_anchor_cache()
+
+
+def test_auto_anchored_self_parity_ships(_auto_anchored_cache: None) -> None:  # noqa: ARG001
+    """Two replays of ``auto_anchored_rubric`` (default wrapping
+    ``single_shot_rubric``) on a 3-fixture synthetic corpus produce
+    per-criterion κ = 1.0 — the warm-up cassette lands a deterministic
+    anchor map and the wrapped scoring cassette is byte-identical
+    across replays. Uses a synthetic in-line corpus because adding
+    warm-up + wrapped scripts to all 20 canonical fixtures would balloon
+    the fix pass (see :mod:`auto_anchored` for the warm-up + wrapped
+    dispatch shape this test locks)."""
+    corpus = _build_auto_anchored_corpus()
+    report = measure_self_consistency(
+        kind_factory=_auto_anchored_kind_factory,
+        corpus=corpus,
+        replays=2,
+        judge_model_config=_JUDGE_MODEL,
+        provider_factory=_auto_anchored_provider_factory(corpus),
+    )
     decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
-    self_blocked_msg = f"jury self-parity blocked on {decision.blocking_criteria!r}"
-    assert decision.shippable is True, self_blocked_msg
+    assert decision.shippable is True, f"self-parity blocked on {decision.blocking_criteria!r}"
     assert decision.blocking_criteria == ()
     assert decision.warning_criteria == ()
 
 
-def test_cross_kind_jury_vs_single_shot_ships() -> None:
-    """``jury_rubric`` (default panel size 3, default ``geometric_median``)
-    vs ``single_shot_rubric`` on the same corpus — the 3 per-member
-    cassettes carry the identical per-criterion verdicts the
-    single-shot cassette carries, so the aggregate is exactly that
-    verdict on every criterion and cross-kind κ = 1.0. Satisfies the
-    issue's acceptance bar as the κ=1.0 identical-sample special case,
-    the same relationship ``test_cross_kind_voted_vs_single_shot_ships``
-    documents for ``voted_rubric``."""
-    corpus = _load_corpus()
-    report = _measure_jury_vs_single_shot(corpus)
+def test_cross_kind_auto_anchored_vs_single_shot_ships(
+    _auto_anchored_cache: None,  # noqa: ARG001
+) -> None:
+    """``auto_anchored_rubric`` (default wrapping ``single_shot_rubric``)
+    vs ``single_shot_rubric`` on the synthetic corpus lands
+    per-criterion κ = 1.0. The wrapped scoring client is seeded from
+    the same cassette both legs draw from, so the aggregated verdicts
+    match byte-for-byte — the auto-anchor step only rewrites the
+    prompt fed to the wrapped judge, and the scripted client's output
+    is prompt-invariant."""
+    corpus = _build_auto_anchored_corpus()
+    report = measure_cross_kind_agreement(
+        reference_kind=_single_shot_kind(),
+        candidate_kind=AutoAnchoredRubricJudgeKind(),
+        corpus=corpus,
+        judge_model_config=_JUDGE_MODEL,
+        reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
+        candidate_provider=_auto_anchored_provider_factory(corpus)(0),
+    )
     decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="cross_kind")
-    cross_blocked_msg = f"jury vs single-shot cross-kind blocked on {decision.blocking_criteria!r}"
-    assert decision.shippable is True, cross_blocked_msg
+    assert decision.shippable is True, f"cross-kind blocked on {decision.blocking_criteria!r}"
     assert decision.blocking_criteria == ()
+
+
+def _multi_turn_provider_factory(
+    corpus: list[ParityCorpusEntry],
+) -> Callable[[int], JudgeModelProvider]:
+    """Provider factory for ``multi_turn_rubric`` self-consistency.
+
+    The stack is ``voted(K=3) → auto_anchored → single_shot``. Per
+    fixture per replay, the anchor cache is cleared upstream so the
+    first sample runs the warm-up (2 builds: warmup + wrapped scoring)
+    and the remaining K-1 samples hit the cache (1 build each: wrapped
+    scoring only). Total: 1 warm-up client + K wrapped scoring clients.
+    """
+
+    def _factory(_replay_index: int) -> JudgeModelProvider:
+        remaining: list[ScriptedLLMClient] = []
+        for entry in corpus:
+            unanchored = tuple(
+                c.id for c in entry.rubric.criteria if c.kind == "graded" and c.expected is None
+            )
+            if unanchored:
+                anchor_map = {cid: f"one-sentence anchor for {cid}" for cid in unanchored}
+                remaining.append(ScriptedLLMClient([json.dumps(anchor_map)]))
+            for _ in range(DEFAULT_N_SAMPLES):
+                remaining.append(ScriptedLLMClient(_cassette_for(entry, "auto_anchored_wrapped")))
+
+        class _PoolProvider:
+            def build(self, model_config: ModelConfig) -> JudgeModel:  # noqa: ARG002
+                return remaining.pop(0)
+
+        return _PoolProvider()
+
+    return _factory
+
+
+def _multi_turn_kind_factory(_replay_index: int) -> MultiTurnRubricJudgeKind:
+    """Clear the process-wide anchor cache before each replay so both
+    replays drive the warm-up call and the sibling provider factory's
+    pooled client stream matches the observed build order."""
+    clear_anchor_cache()
+    return MultiTurnRubricJudgeKind()
+
+
+def test_multi_turn_self_parity_ships(_auto_anchored_cache: None) -> None:  # noqa: ARG001
+    """Two replays of ``multi_turn_rubric`` on the synthetic corpus
+    produce per-criterion κ = 1.0 — the warm-up cassette lands a
+    deterministic anchor map and all K wrapped scoring cassettes are
+    byte-identical across samples and replays, so voted's aggregated
+    verdict is identical in every replay. Uses the same synthetic
+    inline corpus as ``test_auto_anchored_self_parity_ships`` to keep
+    the fix pass narrow (see plan Step 6)."""
+    corpus = _build_auto_anchored_corpus()
+    report = measure_self_consistency(
+        kind_factory=_multi_turn_kind_factory,
+        corpus=corpus,
+        replays=2,
+        judge_model_config=_JUDGE_MODEL,
+        provider_factory=_multi_turn_provider_factory(corpus),
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
+    assert decision.shippable is True, f"self-parity blocked on {decision.blocking_criteria!r}"
+    assert decision.blocking_criteria == ()
+    assert decision.warning_criteria == ()
+
+
+def _build_auto_selector_corpus() -> list[ParityCorpusEntry]:
+    """Two-family corpus for ``auto_rubric`` parity: fully-anchored and
+    unanchored fixtures interleaved so both selection branches fire and
+    the per-criterion label pool stays label-variant."""
+    from tolokaforge.runner.models import Criterion  # local — narrow, in-test only
+
+    entries: list[ParityCorpusEntry] = []
+    for i in range(3):
+        anchored = i % 2 == 0
+        binary_met = i % 2 == 0
+        graded_score = 0.9 if i % 2 == 0 else 0.2
+        graded = Criterion(
+            id="aa_graded",
+            description=f"graded criterion (fixture {i})",
+            kind="graded",
+            weight=1.0,
+            expected=f"anchor for fixture {i}" if anchored else None,
+        )
+        criteria = [
+            Criterion(
+                id="aa_binary",
+                description=f"binary criterion (fixture {i})",
+                kind="binary",
+                weight=1.0,
+            ),
+            graded,
+        ]
+        entries.append(
+            ParityCorpusEntry(
+                entry_id=f"auto_selector_synth_{i:02d}",
+                rubric=Rubric(criteria=criteria),
+                agent_system_prompt=f"synthetic agent prompt {i}",
+                transcript=[{"role": "user", "content": f"synthetic user turn {i}"}],
+                state_diff=None,
+                disable_knowledge_search=False,
+                custom_system_prompt=None,
+                include_agent_system_prompt=True,
+                judge_scripts={
+                    # single_shot's own cassette — used by auto_rubric when the
+                    # rubric is fully anchored, and by auto_anchored's wrapped
+                    # dispatch (which itself sees no interpretation slot).
+                    "single_shot_rubric": [
+                        _submit_scoring_step(
+                            criteria,
+                            include_interpretation=False,
+                            binary_met=binary_met,
+                            graded_score=graded_score,
+                        )
+                    ],
+                    "auto_anchored_wrapped": [
+                        _submit_scoring_step(
+                            criteria,
+                            include_interpretation=False,
+                            binary_met=binary_met,
+                            graded_score=graded_score,
+                        )
+                    ],
+                },
+            )
+        )
+    return entries
+
+
+def _auto_selector_provider_factory(
+    corpus: list[ParityCorpusEntry],
+) -> Callable[[int], JudgeModelProvider]:
+    """Provider factory covering both ``auto_rubric`` dispatch branches.
+
+    For each fixture in order: an anchored fixture routes to
+    ``single_shot_rubric`` (1 build per replay); an unanchored fixture
+    routes to ``multi_turn_rubric`` (1 warm-up + K wrapped scoring
+    builds per replay)."""
+
+    def _factory(_replay_index: int) -> JudgeModelProvider:
+        remaining: list[ScriptedLLMClient] = []
+        for entry in corpus:
+            unanchored = tuple(
+                c.id for c in entry.rubric.criteria if c.kind == "graded" and c.expected is None
+            )
+            if unanchored:
+                anchor_map = {cid: f"one-sentence anchor for {cid}" for cid in unanchored}
+                remaining.append(ScriptedLLMClient([json.dumps(anchor_map)]))
+                for _ in range(DEFAULT_N_SAMPLES):
+                    remaining.append(
+                        ScriptedLLMClient(_cassette_for(entry, "auto_anchored_wrapped"))
+                    )
+            else:
+                remaining.append(ScriptedLLMClient(_cassette_for(entry, "single_shot_rubric")))
+
+        class _PoolProvider:
+            def build(self, model_config: ModelConfig) -> JudgeModel:  # noqa: ARG002
+                return remaining.pop(0)
+
+        return _PoolProvider()
+
+    return _factory
+
+
+def _auto_selector_kind_factory(_replay_index: int) -> AutoRubricJudgeKind:
+    """Clear the process-wide anchor cache before each replay so the
+    unanchored-rubric branch drives the warm-up call on every replay."""
+    clear_anchor_cache()
+    return AutoRubricJudgeKind()
+
+
+def test_auto_self_parity_ships(_auto_anchored_cache: None) -> None:  # noqa: ARG001
+    """Two replays of ``auto_rubric`` on a mixed anchored/unanchored
+    synthetic corpus produce per-criterion κ = 1.0 across both dispatch
+    branches. The selector is deterministic (rubric shape only), so a
+    fixture routes to the same wrapped kind on every replay; both wrapped
+    kinds are byte-deterministic on their cassettes."""
+    corpus = _build_auto_selector_corpus()
+    report = measure_self_consistency(
+        kind_factory=_auto_selector_kind_factory,
+        corpus=corpus,
+        replays=2,
+        judge_model_config=_JUDGE_MODEL,
+        provider_factory=_auto_selector_provider_factory(corpus),
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
+    assert decision.shippable is True, f"self-parity blocked on {decision.blocking_criteria!r}"
+    assert decision.blocking_criteria == ()
+    assert decision.warning_criteria == ()
 
 
 def test_report_reports_per_criterion_not_aggregate() -> None:
@@ -809,11 +1021,11 @@ def test_report_reports_per_criterion_not_aggregate() -> None:
 
 
 def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
-    """Runs the ten cassette measurements above end-to-end and asserts
+    """Runs the four cassette measurements above end-to-end and asserts
     two thresholds:
 
-    - **Inner sum** < 60 s across the ten ``measure_*`` calls (kind
-      work only, excludes corpus load).
+    - **Inner sum** < 60 s across the ``measure_*`` calls (kind work
+      only, excludes corpus load).
     - **Full wall-clock** < 90 s including corpus load + YAML parse.
 
     Both assertions are skipped under ``--live-parity`` because live
@@ -867,52 +1079,6 @@ def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
             candidate_provider=MagicMock(spec=JudgeModelProvider),
         ),
     )
-    budget.measure(
-        "chunked_self",
-        lambda: measure_self_consistency(
-            kind_factory=lambda _i: _chunked_kind(),
-            corpus=corpus,
-            replays=5,
-            judge_model_config=_JUDGE_MODEL,
-            provider_factory=_cassette_provider_factory(corpus, "chunked_rubric"),
-            kind_config=_CHUNKED_KIND_CONFIG,
-        ),
-    )
-    budget.measure(
-        "cross_kind_chunked_vs_single_shot",
-        lambda: measure_cross_kind_agreement(
-            reference_kind=_single_shot_kind(),
-            candidate_kind=_chunked_kind(),
-            corpus=corpus,
-            judge_model_config=_JUDGE_MODEL,
-            reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
-            candidate_provider=_cassette_provider(corpus, "chunked_rubric"),
-            kind_config=_CHUNKED_KIND_CONFIG,
-        ),
-    )
-    budget.measure(
-        "voted_self",
-        lambda: measure_self_consistency(
-            kind_factory=lambda _i: _voted_kind(),
-            corpus=corpus,
-            replays=5,
-            judge_model_config=_JUDGE_MODEL,
-            provider_factory=_cassette_provider_factory(corpus, "voted_rubric"),
-        ),
-    )
-    budget.measure(
-        "cross_kind_voted_vs_single_shot",
-        lambda: measure_cross_kind_agreement(
-            reference_kind=_single_shot_kind(),
-            candidate_kind=_voted_kind(),
-            corpus=corpus,
-            judge_model_config=_JUDGE_MODEL,
-            reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
-            candidate_provider=_cassette_provider(corpus, "voted_rubric"),
-        ),
-    )
-    budget.measure("jury_self", lambda: _measure_jury_self(corpus))
-    budget.measure("cross_kind_jury_vs_single_shot", lambda: _measure_jury_vs_single_shot(corpus))
 
     wall_elapsed = time.perf_counter() - wall_start
     inner_budget_s = _INNER_SUM_BUDGET_S
@@ -932,10 +1098,10 @@ def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
 
 def test_writeback_rewrites_cassette_preserving_other_keys(tmp_path: Path) -> None:
     """:func:`_write_cassette` rewrites only ``judge_scripts[kind_name]``
-    (or ``judge_scripts_per_chunk[kind_name]``) and leaves every other
-    top-level key byte-for-byte equal to the source fixture — the
-    contract the live ``--live-parity`` writeback path depends on to
-    avoid clobbering unrelated cassettes when it refreshes one kind."""
+    and leaves every other top-level key byte-for-byte equal to the
+    source fixture — the contract the live ``--live-parity`` writeback
+    path depends on to avoid clobbering unrelated cassettes when it
+    refreshes one kind."""
     source_path = _load_corpus_paths()[0]
     original = yaml.safe_load(source_path.read_text())
     working_copy = tmp_path / source_path.name
@@ -949,7 +1115,7 @@ def test_writeback_rewrites_cassette_preserving_other_keys(tmp_path: Path) -> No
     for _ in script:
         recorder.generate(system="sys", messages=[], tools=[])
 
-    _write_cassette(working_copy, "single_shot_rubric", [recorder.recorded_script], per_chunk=False)
+    _write_cassette(working_copy, "single_shot_rubric", recorder.recorded_script)
 
     rewritten = yaml.safe_load(working_copy.read_text())
     assert rewritten["judge_scripts"]["single_shot_rubric"] == [
@@ -960,10 +1126,6 @@ def test_writeback_rewrites_cassette_preserving_other_keys(tmp_path: Path) -> No
         if key == "judge_scripts":
             continue
         assert rewritten[key] == original[key], f"unrelated key {key!r} was rewritten"
-    for kind_name in original.get("judge_scripts", {}):
-        if kind_name == "single_shot_rubric":
-            continue
-        assert rewritten["judge_scripts"][kind_name] == original["judge_scripts"][kind_name]
 
 
 # ---------------------------------------------------------------------------
@@ -980,7 +1142,7 @@ def test_live_mode_writeback(request: pytest.FixtureRequest) -> None:
 
     Skips unless both ``--live-parity`` is passed AND one of
     ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` is set — never runs in CI.
-    Drives every corpus entry through every kind under test against a
+    Drives every corpus entry through ``single_shot_rubric`` against a
     real judge model, rewrites each fixture's cassette, then repeats the
     whole pass a second time and asserts the second pass's recorded
     scripts equal the first pass's — the writeback is idempotent under
@@ -993,25 +1155,23 @@ def test_live_mode_writeback(request: pytest.FixtureRequest) -> None:
     corpus_paths = _load_corpus_paths()
     kinds: list[tuple[str, JudgeKind, Mapping[str, Any] | None]] = [
         ("single_shot_rubric", _single_shot_kind(), None),
-        ("chunked_rubric", _chunked_kind(), _CHUNKED_KIND_CONFIG),
     ]
     logger = StructuredLogger(name="test-judge-kind-parity-live")
 
-    def _run_pass() -> dict[tuple[str, str], list[list[Any]]]:
-        recorded: dict[tuple[str, str], list[list[Any]]] = {}
+    def _run_pass() -> dict[tuple[str, str], list[Any]]:
+        recorded: dict[tuple[str, str], list[Any]] = {}
         for path in corpus_paths:
             entry = _load_corpus_entry(path)
             for kind_name, kind, kind_config in kinds:
-                per_chunk = kind_name in entry.judge_scripts_per_chunk
-                scripts = _record_live_scripts(
+                script = _record_live_script(
                     entry,
                     kind,
                     judge_model_config=_JUDGE_MODEL,
                     kind_config=kind_config,
                     logger=logger,
                 )
-                _write_cassette(path, kind_name, scripts, per_chunk=per_chunk)
-                recorded[(entry.entry_id, kind_name)] = scripts
+                _write_cassette(path, kind_name, script)
+                recorded[(entry.entry_id, kind_name)] = script
         return recorded
 
     first_pass = _run_pass()

@@ -1,6 +1,5 @@
 """Helpers shared by ``JudgeKind`` implementations that dispatch multiple
-judge clients per ``evaluate`` call (``chunked_rubric``, ``voted_rubric``,
-``jury_rubric``).
+judge clients per ``evaluate`` call (``voted_rubric``).
 """
 
 from __future__ import annotations

@@ -18,7 +18,7 @@ transcript:
 - role: user
   content: I want to cancel my subscription. (multi_turn_case_01)
 - role: assistant
-  content: "I can help. Which subscription \u2014 the Basic or the Pro plan?"
+  content: I can help. Which subscription — the Basic or the Pro plan?
 - role: user
   content: The Pro plan.
 - role: assistant
@@ -33,7 +33,7 @@ judge_scripts:
   single_shot_rubric:
   - - name: submit_report
       arguments:
-        reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+        reasons: overall summary — fixture-authored deterministic verdict
         question_answered: 0.2
         question_answered_justification: 'because question_answered
 
@@ -46,112 +46,3 @@ judge_scripts:
         escalation_appropriate_justification: 'because escalation_appropriate
 
           VERDICT: NOT MET'
-judge_scripts_per_chunk:
-  chunked_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 chunked"
-          question_answered: 0.2
-          question_answered_justification: 'because question_answered
-
-            SCORE: 0.2'
-          intent_clarified: false
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: NOT MET'
-          escalation_appropriate: false
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: NOT MET'
-  voted_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          question_answered: 0.2
-          question_answered_justification: 'because question_answered
-
-            SCORE: 0.2'
-          intent_clarified: false
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: NOT MET'
-          escalation_appropriate: false
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          question_answered: 0.2
-          question_answered_justification: 'because question_answered
-
-            SCORE: 0.2'
-          intent_clarified: false
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: NOT MET'
-          escalation_appropriate: false
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          question_answered: 0.2
-          question_answered_justification: 'because question_answered
-
-            SCORE: 0.2'
-          intent_clarified: false
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: NOT MET'
-          escalation_appropriate: false
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: NOT MET'
-  jury_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          question_answered: 0.2
-          question_answered_justification: 'because question_answered
-
-            SCORE: 0.2'
-          intent_clarified: false
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: NOT MET'
-          escalation_appropriate: false
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          question_answered: 0.2
-          question_answered_justification: 'because question_answered
-
-            SCORE: 0.2'
-          intent_clarified: false
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: NOT MET'
-          escalation_appropriate: false
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          question_answered: 0.2
-          question_answered_justification: 'because question_answered
-
-            SCORE: 0.2'
-          intent_clarified: false
-          intent_clarified_justification: 'because intent_clarified
-
-            VERDICT: NOT MET'
-          escalation_appropriate: false
-          escalation_appropriate_justification: 'because escalation_appropriate
-
-            VERDICT: NOT MET'

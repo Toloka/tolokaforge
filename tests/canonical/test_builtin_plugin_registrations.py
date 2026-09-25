@@ -36,9 +36,8 @@ from tolokaforge.core.grading.grading_method import (
 )
 from tolokaforge.core.grading.judge_kinds import (
     AutoAnchoredRubricJudgeKind,
-    ChunkedRubricJudgeKind,
-    JuryRubricJudgeKind,
-    PerCriterionRubricJudgeKind,
+    AutoRubricJudgeKind,
+    MultiTurnRubricJudgeKind,
     SingleShotRubricJudgeKind,
     VotedRubricJudgeKind,
 )
@@ -223,9 +222,8 @@ def test_grader_kind_names_resolve_to_their_class(name: str, expected_cls: type)
     ("name", "expected_cls"),
     [
         ("auto_anchored_rubric", AutoAnchoredRubricJudgeKind),
-        ("chunked_rubric", ChunkedRubricJudgeKind),
-        ("jury_rubric", JuryRubricJudgeKind),
-        ("per_criterion_rubric", PerCriterionRubricJudgeKind),
+        ("auto_rubric", AutoRubricJudgeKind),
+        ("multi_turn_rubric", MultiTurnRubricJudgeKind),
         ("single_shot_rubric", SingleShotRubricJudgeKind),
         ("voted_rubric", VotedRubricJudgeKind),
     ],
@@ -257,9 +255,8 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_grader_kinds() == ["composite", "test_execution"]
     assert available_judge_kinds() == [
         "auto_anchored_rubric",
-        "chunked_rubric",
-        "jury_rubric",
-        "per_criterion_rubric",
+        "auto_rubric",
+        "multi_turn_rubric",
         "single_shot_rubric",
         "voted_rubric",
     ]
@@ -300,9 +297,8 @@ def test_raw_entry_point_probe_lists_judge_kinds() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=JUDGE_KINDS_GROUP))
     assert names == [
         "auto_anchored_rubric",
-        "chunked_rubric",
-        "jury_rubric",
-        "per_criterion_rubric",
+        "auto_rubric",
+        "multi_turn_rubric",
         "single_shot_rubric",
         "voted_rubric",
     ]

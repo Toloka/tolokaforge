@@ -16,9 +16,9 @@ rubric:
 agent_system_prompt: You are a customer-service assistant. (small_rubrics_case_07)
 transcript:
 - role: user
-  content: "Hi, I need help with order 42 \u2014 I never got the refund. (small_rubrics_case_07)"
+  content: Hi, I need help with order 42 — I never got the refund. (small_rubrics_case_07)
 - role: assistant
-  content: "Confirmed \u2014 the refund of $19.99 is processed. Anything else?"
+  content: Confirmed — the refund of $19.99 is processed. Anything else?
 state_diff: null
 disable_knowledge_search: false
 custom_system_prompt: null
@@ -27,7 +27,7 @@ judge_scripts:
   single_shot_rubric:
   - - name: submit_report
       arguments:
-        reasons: "overall summary \u2014 fixture-authored deterministic verdict"
+        reasons: overall summary — fixture-authored deterministic verdict
         policy_check: false
         policy_check_justification: 'because policy_check
 
@@ -40,112 +40,3 @@ judge_scripts:
         stock_updated_justification: 'because stock_updated
 
           VERDICT: NOT MET'
-judge_scripts_per_chunk:
-  chunked_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 chunked"
-          policy_check: false
-          policy_check_justification: 'because policy_check
-
-            VERDICT: NOT MET'
-          identity_verified: false
-          identity_verified_justification: 'because identity_verified
-
-            VERDICT: NOT MET'
-          stock_updated: false
-          stock_updated_justification: 'because stock_updated
-
-            VERDICT: NOT MET'
-  voted_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          policy_check: false
-          policy_check_justification: 'because policy_check
-
-            VERDICT: NOT MET'
-          identity_verified: false
-          identity_verified_justification: 'because identity_verified
-
-            VERDICT: NOT MET'
-          stock_updated: false
-          stock_updated_justification: 'because stock_updated
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          policy_check: false
-          policy_check_justification: 'because policy_check
-
-            VERDICT: NOT MET'
-          identity_verified: false
-          identity_verified_justification: 'because identity_verified
-
-            VERDICT: NOT MET'
-          stock_updated: false
-          stock_updated_justification: 'because stock_updated
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          policy_check: false
-          policy_check_justification: 'because policy_check
-
-            VERDICT: NOT MET'
-          identity_verified: false
-          identity_verified_justification: 'because identity_verified
-
-            VERDICT: NOT MET'
-          stock_updated: false
-          stock_updated_justification: 'because stock_updated
-
-            VERDICT: NOT MET'
-  jury_rubric:
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          policy_check: false
-          policy_check_justification: 'because policy_check
-
-            VERDICT: NOT MET'
-          identity_verified: false
-          identity_verified_justification: 'because identity_verified
-
-            VERDICT: NOT MET'
-          stock_updated: false
-          stock_updated_justification: 'because stock_updated
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          policy_check: false
-          policy_check_justification: 'because policy_check
-
-            VERDICT: NOT MET'
-          identity_verified: false
-          identity_verified_justification: 'because identity_verified
-
-            VERDICT: NOT MET'
-          stock_updated: false
-          stock_updated_justification: 'because stock_updated
-
-            VERDICT: NOT MET'
-  - - - name: submit_report
-        arguments:
-          reasons: "overall summary \u2014 fixture-authored deterministic verdict"
-          policy_check: false
-          policy_check_justification: 'because policy_check
-
-            VERDICT: NOT MET'
-          identity_verified: false
-          identity_verified_justification: 'because identity_verified
-
-            VERDICT: NOT MET'
-          stock_updated: false
-          stock_updated_justification: 'because stock_updated
-
-            VERDICT: NOT MET'

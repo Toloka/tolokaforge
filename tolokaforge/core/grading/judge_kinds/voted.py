@@ -146,8 +146,9 @@ def _resolve_kind_config(
     ``n_samples``, a non-``str`` / empty ``wrapped_kind``, a non-mapping
     ``wrapped_kind_config``, or an unrecognised ``aggregator`` — before any
     judge dispatch runs. ``wrapped_kind_config`` is forwarded verbatim to
-    the wrapped kind so a caller can tune the inner kind (e.g. an explicit
-    ``chunk_size`` when wrapping ``chunked_rubric``).
+    the wrapped kind so a caller can tune the inner kind (e.g.
+    ``kind_config={"wrapped_kind": "single_shot_rubric"}`` on
+    ``auto_anchored_rubric``).
     """
     if kind_config is None:
         return DEFAULT_N_SAMPLES, DEFAULT_AGGREGATOR, DEFAULT_WRAPPED_KIND, None
@@ -291,10 +292,4 @@ def _merge_sample_results(
         read_tools_offered=head.read_tools_offered,
         state_diff=head.state_diff,
         transcript=tuple(turn for cr in sample_results for turn in cr.transcript),
-        # Preserve chunk_boundaries from the head sample when the wrapped
-        # kind is a chunking kind — all K samples share the same rubric, so
-        # the boundaries are identical. Downstream offline-replay routes on
-        # this field; erasing it in the wrapper would strip that signal on
-        # every composed (voted+chunked) configuration.
-        chunk_boundaries=head.chunk_boundaries,
     )

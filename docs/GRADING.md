@@ -38,31 +38,24 @@ dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
 [GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
-Six built-ins ship: `single_shot_rubric` (the shipping reference impl
-wrapping today's `LLMJudge` in one shot), `chunked_rubric` (one
-`LLMJudge` invocation per chunk of the rubric's criteria, optionally
-grouped by `Criterion.chunk_group` — the alternative kind for large
-rubrics where a single `submit_report` would truncate), `voted_rubric`
-(wraps any registered kind and samples it K times, aggregating the
-per-criterion verdicts robustly to reduce judge-model self-variance),
-`jury_rubric` (wraps any registered kind and dispatches to N
-different judge models in one cross-family panel, aggregating the
-per-criterion verdicts robustly — see
-[JUDGE_KINDS.md § Jury kind](JUDGE_KINDS.md#jury-kind)),
-`per_criterion_rubric` (a specialisation of `chunked_rubric` that
-hard-pins `chunk_size=1` — one `LLMJudge` call per criterion, the
-strictest isolation; see
-[JUDGE_KINDS.md § Per-criterion kind](JUDGE_KINDS.md#per-criterion-kind)),
-and `auto_anchored_rubric` (wraps any registered kind; runs one cached
-warm-up judge call per unique rubric to auto-generate `expected:`
-anchors for graded criteria the author left unanchored — the
-author-free way to close the fuzzy-wording drift class; see
-[JUDGE_KINDS.md § Auto-anchored kind](JUDGE_KINDS.md#auto-anchored-kind)). Per-kind options ride on
-`task.grading.llm_judge.kind_config` — an opaque `dict[str, Any]` the
-framework never inspects; each kind validates its own slice inside
-`evaluate`. Unknown `judge_kind` names are refused at parse time with a
-message naming the registered set — mirrors `grading_method`'s
-resolution shape.
+Three user-facing kinds ship: `single_shot_rubric` (the shipping
+reference impl wrapping today's `LLMJudge` in one shot),
+`multi_turn_rubric` (a baked-in `voted → auto_anchored → single_shot`
+composition — see
+[JUDGE_KINDS.md § Choosing a kind](JUDGE_KINDS.md#choosing-a-kind)),
+and `auto_rubric` (per-rubric deterministic router between the two
+above). Two additional kinds — `voted_rubric` and `auto_anchored_rubric`
+— ship as internal building blocks the composite user-facing kinds
+compose; user task configs should not select them via `judge_kind:`
+directly (see
+[JUDGE_KINDS.md § Internal building blocks](JUDGE_KINDS.md#internal-building-blocks)).
+Per-kind options ride on `task.grading.llm_judge.kind_config` — an
+opaque `dict[str, Any]` the framework never inspects; each kind
+validates its own slice inside `evaluate`. `multi_turn_rubric` and
+`auto_rubric` accept no `kind_config` — passing a non-empty mapping to
+either raises `ValueError`. Unknown `judge_kind` names are refused at
+parse time with a message naming the registered set — mirrors
+`grading_method`'s resolution shape.
 
 Cross-kind trust — whether a candidate kind's verdicts actually agree
 with the reference kind, on both the committed cassette corpus and real
@@ -3717,7 +3710,6 @@ grading:
           description: "Reply is polite and professional"
           kind: graded
           weight: 0.5
-          chunk_group: tone      # optional; chunked_rubric groups same-name criteria into one chunk (see JUDGE_KINDS.md)
 ```
 
 ### Rubric authoring: anchor subjective criteria
@@ -3769,9 +3761,9 @@ every `kind: graded` criterion with no `expected:` field, and the run
 pre-flight logs the same nudge at WARNING level. The nudge never fails
 validation and never affects the run's exit code — it is a hint, not a
 gate. When anchoring alone is not enough to tame variance on a subjective
-criterion, the [JudgeKind guide](JUDGE_KINDS.md) covers the cost picture
-for the variance-reduction kinds (`voted_rubric`, `chunked_rubric`,
-`jury_rubric`) that absorb sampling-noise flapping across judge samples.
+criterion, the [JudgeKind guide](JUDGE_KINDS.md#choosing-a-kind) covers
+the cost picture for `multi_turn_rubric`, which stacks auto-anchor
+generation with K-sample geometric-median aggregation.
 
 ### How the judge works
 

@@ -22,6 +22,10 @@
           "minimum": 0.0,
           "type": "number"
         },
+        "tone_interpretation": {
+          "description": "One-sentence statement of what a response would need to demonstrate to fully satisfy criterion 'tone' (description: 'Reply is polite and professional'). Commit to this interpretation before reasoning about the response, so your score reflects that anchor rather than a fresh inference on each judgement.",
+          "type": "string"
+        },
         "tone_justification": {
           "description": "Evidence-based justification for criterion 'tone'. Reason through the evidence first, then end with a final line 'SCORE: <value in [0,1]>' stating the verdict the reasoning leads to.",
           "type": "string"

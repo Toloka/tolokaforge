@@ -447,8 +447,7 @@ runs entirely from committed cassettes under
 or `ANTHROPIC_API_KEY` present, live mode drives every corpus entry against a
 real `LiteLLMJudgeModelProvider`-backed `RecordingLLMClient` for every kind
 under test, then rewrites the recorded script back into the originating
-fixture's `judge_scripts.<kind_name>` block (or `judge_scripts_per_chunk.
-<kind_name>` block for a multi-client kind) in place — every other key in
+fixture's `judge_scripts.<kind_name>` block in place — every other key in
 the fixture file is preserved byte-identical. The keyless `unit`-tier
 `tests/utils/test_recording_llm_client.py` and the canonical
 `test_writeback_rewrites_cassette_preserving_other_keys` lock this recording

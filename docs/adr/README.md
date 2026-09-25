@@ -78,6 +78,7 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0043](0043-detached-mode-grader-and-typed-grader-kinds.md) | Detached-mode grader, typed grader kinds, adapter grading contract | Accepted |
 | [0044](0044-composition-plan-runtime.md) | Composition-plan runtime — redesigned `SharedStackRuntimeBackend` with per-stack lifecycle scopes and detachable adapters | Proposed |
 | [0045](0045-content-loop-heuristic-deleted.md) | StuckDetector runs one heuristic — repeated identical result | Accepted |
-| [0046](0046-judgekind-protocol-and-registry.md) | The `JudgeKind` Protocol and entry-point registry | Accepted |
+| [0046](0046-judgekind-protocol-and-registry.md) | The `JudgeKind` Protocol and entry-point registry | Superseded by ADR-0049 |
 | [0047](0047-live-tracing-trial-observer-otel.md) | Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra (amended: the Langfuse observer is the `tolokaforge-langfuse` plugin wheel) | Proposed, amended 2026-09-17 |
 | [0048](0048-write-once-observations-append-only-receiver.md) | Write-once observations on an append-only receiver (preview rows while a trial runs, the record written once from the bundle) | Proposed |
+| [0049](0049-judgekind-registry-consolidation.md) | JudgeKind registry consolidation — three user-facing kinds (`single_shot_rubric`, `multi_turn_rubric`, `auto_rubric`) plus two internal building blocks (`voted_rubric`, `auto_anchored_rubric`) | Accepted |

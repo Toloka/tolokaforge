@@ -22,8 +22,10 @@ from typing import Any
 import pytest
 
 from tolokaforge.core.grading.judge_kinds.auto_anchored import (
+    _ANCHOR_SYSTEM_PROMPT,
     AutoAnchoredRubricJudgeKind,
     PerRubricAnchorGeneratorError,
+    _anchor_prompt,
     clear_anchor_cache,
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
@@ -305,3 +307,41 @@ def test_warmup_response_strips_code_fence(register_capture_kind):
     AutoAnchoredRubricJudgeKind().evaluate(**_evaluate_kwargs(rubric, provider))
     by_id = {c.id: c for c in capture.rubric_seen.criteria}
     assert by_id["clarity"].expected == "one paragraph"
+
+
+def test_warmup_system_prompt_pins_strictness_and_failure_modes() -> None:
+    """The warm-up system prompt MUST bind anchors to be at least as strict
+    as the description and MUST explicitly reject non-responsive outputs.
+    Locks the strict-and-failure-mode-aware rewrite so a future edit that
+    softens the prompt gets caught here."""
+    prompt = _ANCHOR_SYSTEM_PROMPT
+    assert "at least as strict" in prompt
+    for failure_mode in ("empty", "error", "off-topic", "hedged"):
+        assert failure_mode in prompt, f"prompt missing failure-mode token {failure_mode!r}"
+    assert "reject" in prompt
+    assert "concrete observable evidence" in prompt
+
+
+def test_warmup_user_prompt_includes_reference_block_when_present() -> None:
+    """When ``rubric.reference`` is a non-empty string, the warm-up user
+    prompt prepends a reference block so the judge grounds anchor
+    generation on the task author's ground truth."""
+    rubric = Rubric(
+        criteria=[Criterion(id="clarity", description="Reads clearly.", kind="graded")],
+        reference="THE-REFERENCE-SOLUTION",
+    )
+    by_id = {c.id: c for c in rubric.criteria}
+    prompt = _anchor_prompt(("clarity",), by_id, reference=rubric.reference)
+    assert "Reference solution" in prompt
+    assert "THE-REFERENCE-SOLUTION" in prompt
+    assert "DO NOT copy verbatim" in prompt
+
+
+def test_warmup_user_prompt_omits_reference_block_when_absent() -> None:
+    """No ``rubric.reference`` → no reference block in the prompt."""
+    rubric = Rubric(
+        criteria=[Criterion(id="clarity", description="Reads clearly.", kind="graded")],
+    )
+    by_id = {c.id: c for c in rubric.criteria}
+    prompt = _anchor_prompt(("clarity",), by_id, reference=rubric.reference)
+    assert "Reference solution" not in prompt

@@ -74,11 +74,18 @@ _ANCHOR_SYSTEM_PROMPT = (
     "You are helping calibrate a rubric-based evaluation. For each criterion "
     "listed below, write ONE sentence describing what a fully-satisfying "
     "response would demonstrate for THAT criterion — a specific, observable "
-    "anchor that a downstream judge will score against. Do NOT judge any "
-    "response, do NOT invent unrelated requirements, and do NOT hedge. "
-    "Respond with a single JSON object on one line whose keys are the "
-    "criterion ids given below and whose values are the one-sentence "
-    "anchors. Emit nothing before or after that JSON object."
+    "anchor that a downstream judge will score against. Each anchor MUST be "
+    "at least as strict as the criterion description — never grant leniency "
+    "the description does not, and never soften a stated requirement. Each "
+    "anchor MUST explicitly reject non-responsive outputs: an empty reply, "
+    "an error message, off-topic content, a hedged non-answer, or generic "
+    "filler is NOT met. Name concrete observable evidence — a specific fact, "
+    "a required structural element, or a named behavior the response must "
+    "exhibit — not fuzzy adjectives alone. Do NOT judge any response, do NOT "
+    "invent unrelated requirements, and do NOT hedge. Respond with a single "
+    "JSON object on one line whose keys are the criterion ids given below "
+    "and whose values are the one-sentence anchors. Emit nothing before or "
+    "after that JSON object."
 )
 
 _AnchorMap = dict[str, str]
@@ -196,7 +203,7 @@ def _resolve_kind_config(kind_config: Mapping[str, Any] | None) -> str:
 
     Raises :class:`ValueError` on any unknown key or a non-string
     ``wrapped_kind``, matching the eager-validation stance of the other
-    wrapper kinds (``voted_rubric``, ``jury_rubric``).
+    wrapper kinds (``voted_rubric``).
     """
     if kind_config is None:
         return DEFAULT_WRAPPED_KIND
@@ -267,7 +274,7 @@ def _generate_anchors(
 ) -> tuple[_AnchorMap, JudgeUsage]:
     """One warm-up judge call → JSON anchor map. Fail loud on any parse error."""
     by_id = {c.id: c for c in rubric.criteria}
-    prompt = _anchor_prompt(unanchored_ids, by_id)
+    prompt = _anchor_prompt(unanchored_ids, by_id, reference=rubric.reference)
     judge_model = judge_model_provider.build(judge_model_config)
     result = judge_model.generate(
         system=_ANCHOR_SYSTEM_PROMPT,
@@ -288,8 +295,21 @@ def _generate_anchors(
     return anchor_map, warmup_usage
 
 
-def _anchor_prompt(unanchored_ids: tuple[str, ...], by_id: dict[str, Criterion]) -> str:
-    lines = ["Criteria that need a one-sentence anchor:"]
+def _anchor_prompt(
+    unanchored_ids: tuple[str, ...],
+    by_id: dict[str, Criterion],
+    *,
+    reference: str | None,
+) -> str:
+    lines: list[str] = []
+    if reference:
+        lines.append(
+            "Reference solution (for anchor calibration only; DO NOT copy verbatim "
+            "into the anchor):"
+        )
+        lines.append(reference)
+        lines.append("")
+    lines.append("Criteria that need a one-sentence anchor:")
     for cid in unanchored_ids:
         lines.append(f"  - id: {cid}")
         lines.append(f"    description: {by_id[cid].description}")
