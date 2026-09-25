@@ -25,11 +25,14 @@ class UserStop:
     """A stop token found in a user reply.
 
     ``text`` is what the reply says before the token, right-stripped; empty when
-    the reply is the bare token. Whatever follows the token is never delivered.
+    the reply is the bare token. ``dropped`` is what follows the token, stripped:
+    it is never delivered, and the runner logs its length so a discarded tail is
+    visible in the trial log.
     """
 
     token: str
     text: str
+    dropped: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,4 +64,9 @@ class UserStopRule:
         if not found:
             return None
         position = min(found)
-        return UserStop(token=found[position], text=reply_text[:position].rstrip())
+        token = found[position]
+        return UserStop(
+            token=token,
+            text=reply_text[:position].rstrip(),
+            dropped=reply_text[position + len(token) :].strip(),
+        )
