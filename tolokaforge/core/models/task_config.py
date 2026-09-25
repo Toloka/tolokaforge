@@ -33,6 +33,7 @@ from tolokaforge.runner.models import (
 __all__ = [
     "ActorSpec",
     "AssetsConfig",
+    "DEFAULT_MAX_USER_TOOL_STEPS",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -57,6 +58,7 @@ __all__ = [
     "ToolsConfig",
     "UserSimulatorConfig",
     "UserStopWithText",
+    "UserToolTurns",
     "validate_stop_tokens",
 ]
 
@@ -146,6 +148,19 @@ it, and ends the dialogue on the next user turn; a bare token ends it at once.
 user turn and ends the dialogue at once, so the agent never answers it."""
 
 
+UserToolTurns = Literal["shared", "isolated"]
+"""How a user simulator's own tool calls take part in the dialogue.
+
+``shared`` runs a reply's calls and appends their results to the reply's text,
+which the agent reads; the simulator gets one generation per turn. ``isolated``
+records each call and its results as a step only the simulator sees, then asks
+it again, until it replies with text alone; that reply is all the agent reads.
+"""
+
+DEFAULT_MAX_USER_TOOL_STEPS = 10
+"""Tool steps one ``isolated`` user turn may take before the dialogue ends."""
+
+
 def validate_stop_tokens(tokens: list[str]) -> list[str]:
     """Reject a stop-token list that cannot end a dialogue the way it reads.
 
@@ -199,6 +214,11 @@ class UserSimulatorConfig(BaseModel):
     """Substrings that end the dialogue when a user reply carries one."""
     stop_with_text: UserStopWithText = "deliver"
     """See :data:`UserStopWithText`."""
+    tool_turns: UserToolTurns = "shared"
+    """See :data:`UserToolTurns`."""
+    max_tool_steps: int = Field(default=DEFAULT_MAX_USER_TOOL_STEPS, ge=1)
+    """Tool steps an ``isolated`` user turn may take; one more ends the dialogue
+    with ``USER_TOOL_LOOP_LIMIT`` and runs none of that step's calls."""
 
     @model_validator(mode="before")
     @classmethod
@@ -209,6 +229,18 @@ class UserSimulatorConfig(BaseModel):
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
         return validate_stop_tokens(value)
+
+    @model_validator(mode="after")
+    def _refuse_a_step_limit_nothing_loops_under(self) -> Self:
+        """``shared`` gives the simulator one generation per turn, so no step count
+        can reach a limit; only a declared limit is refused, the default is always there."""
+        if self.tool_turns == "shared" and "max_tool_steps" in self.model_fields_set:
+            raise ValueError(
+                f"max_tool_steps is {self.max_tool_steps}, but tool_turns resolves to shared, "
+                "where a user turn is one generation and never loops. Write tool_turns: "
+                "isolated, or drop max_tool_steps."
+            )
+        return self
 
     @model_validator(mode="after")
     def _refuse_stop_tokens_the_prompt_does_not_match(self) -> Self:
@@ -275,6 +307,8 @@ class ActorSpec(BaseModel):
     simulator_config: dict[str, Any] | None = None
     stop_tokens: list[str] | None = None
     stop_with_text: UserStopWithText | None = None
+    tool_turns: UserToolTurns | None = None
+    max_tool_steps: int | None = Field(default=None, ge=1)
 
     model_config = {"extra": "ignore"}
 
@@ -593,6 +627,8 @@ class TaskConfig(BaseModel):
             for name, value in (
                 ("stop_tokens", spec.stop_tokens),
                 ("stop_with_text", spec.stop_with_text),
+                ("tool_turns", spec.tool_turns),
+                ("max_tool_steps", spec.max_tool_steps),
             )
             if value is not None
         }

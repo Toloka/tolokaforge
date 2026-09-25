@@ -539,6 +539,8 @@ actors:
     # simulator_config: {}      # opaque config for a non-builtin simulator
     stop_tokens: ["###STOP###"]  # tokens that end the dialogue (see docs/TASKS.md)
     stop_with_text: "deliver"    # "deliver" or "end"
+    tool_turns: "shared"         # "shared" or "isolated" (see docs/TASKS.md)
+    # max_tool_steps: 10         # isolated only
 
 policies:
   guidance:

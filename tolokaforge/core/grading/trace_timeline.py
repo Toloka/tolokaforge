@@ -35,6 +35,7 @@ from typing import Any
 # and the matcher vocabulary that selects on it name one enum. This module cannot
 # own it: ``runner.models`` declares ``TraceMatcher`` and reaching in here for the
 # kind would close a cycle through ``core.models``.
+from tolokaforge.core.actors.tool_turns import is_user_tool_step, user_tool_step_call_ids
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind as TraceEventKind
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
@@ -201,7 +202,7 @@ def build_trial_timeline(
     # The record wins wherever both views describe one call, so the message-side
     # results are read only in its absence.
     message_results = {} if records else _index_message_results(messages, declared)
-    builder = _TimelineBuilder(records, message_results)
+    builder = _TimelineBuilder(records, message_results, user_tool_step_call_ids(messages))
     if turns:
         builder.emit_message_view(turns, declared)
     else:
@@ -411,10 +412,14 @@ class _TimelineBuilder:
     """Accumulates events, assigning ``position`` and ``turn_index`` as it goes."""
 
     def __init__(
-        self, records: dict[str, RecordedToolCall], message_results: dict[str, str]
+        self,
+        records: dict[str, RecordedToolCall],
+        message_results: dict[str, str],
+        user_tool_step_call_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._records = records
         self._message_results = message_results
+        self._user_tool_step_call_ids = user_tool_step_call_ids
         self._events: list[TraceEvent] = []
         self._generations = 0
 
@@ -442,7 +447,10 @@ class _TimelineBuilder:
     def _emit_turn(self, message: Message, declared: Sequence[_DeclaredCall]) -> None:
         if message.role is MessageRole.ASSISTANT:
             self._generations += 1
-        self._append(kind=_KIND_BY_ROLE[message.role], text=message.content)
+        # A user's isolated tool step is addressed to the environment and nobody
+        # in the dialogue reads it, so only its calls are events, not the message.
+        if not is_user_tool_step(message, self._user_tool_step_call_ids):
+            self._append(kind=_KIND_BY_ROLE[message.role], text=message.content)
         for entry in _execution_order(declared, self._records):
             self._emit_call(entry)
 

@@ -496,6 +496,18 @@ body or to this context shape bumps `Trajectory.simulator_schema_version`
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
 holds the prompt body to the generation it is stamped with.
 
+Under `actors.user.tool_turns: isolated` the context is built by
+[`simulator_view`](../tolokaforge/core/actors/tool_turns.py) instead. The
+simulator's own tool steps replay as `assistant` messages carrying their
+`tool_calls` — and the step's reasoning, so a thinking model gets its signed blocks
+back with the tool use they preceded — and their results as `tool` messages. An
+agent message that calls tools is dropped whole, text included, and only adjacent
+text turns are joined. Invariant 2 then admits a trailing `tool` message: the
+simulator reads a step's results and goes on. A tool-call reply is never given the
+filler text, since it is a step rather than a dialogue turn. The shape of this
+context is new only under `isolated`, so `simulator_schema_version` stays; a trial
+that ran it is identified by `user_actor.tool_turns`.
+
 ### The prompt body
 
 The system prompt is a fixed opening line, the task's `Instruction` when the
