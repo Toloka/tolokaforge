@@ -44,6 +44,7 @@ __all__ = [
     "RETIRED_STATE_CHECK_KEYS",
     "SEED_KIND_BY_EXTENSION",
     "SIMULATOR_STOP_TOKEN",
+    "SIMULATOR_TEMPERATURE",
     "SeedKind",
     "SeedRef",
     "StateChecksConfig",
@@ -55,6 +56,7 @@ __all__ = [
     "TaskMetadata",
     "TimeoutDefaults",
     "ToolsConfig",
+    "UserSamplingConfig",
     "UserSimulatorConfig",
     "UserStopWithText",
     "validate_stop_tokens",
@@ -144,6 +146,29 @@ UserStopWithText = Literal["deliver", "end"]
 dialogue on the next user turn. ``end`` records the text as the dialogue's last
 user turn and ends the dialogue at once, so the agent never answers it."""
 
+SIMULATOR_TEMPERATURE = 0.2
+"""The temperature an LLM simulator samples at when its actor declares no ``sampling``.
+
+``models.user.temperature`` does not move it: the simulator has always sent this
+value in its place, and the run configs that set that key rely on what they get."""
+
+
+class UserSamplingConfig(BaseModel):
+    """Sampling parameters of the LLM user simulator's requests.
+
+    A block of its own rather than a field beside ``mode``: on the actor, an unset
+    field is ``None``, and project ``task_defaults`` reach tasks through a
+    ``model_dump(exclude_defaults=True)`` that drops ``None``. ``temperature`` is
+    required here, so ``sampling: {temperature: null}`` survives every layer and
+    means what ``models.<role>.temperature: null`` means.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    temperature: float | None
+    """The value sent as ``temperature``; ``None`` sends none, so the provider's
+    default applies. A preset's ``fixed_temperature`` still overrides it."""
+
 
 def validate_stop_tokens(tokens: list[str]) -> list[str]:
     """Reject a stop-token list that cannot end a dialogue the way it reads.
@@ -201,6 +226,10 @@ class UserSimulatorConfig(BaseModel):
     backstory placed at its ``{backstory}``. A relative path is read from the task
     root; a project's ``task_defaults`` value arrives anchored to the project
     directory, as an absolute path."""
+    sampling: UserSamplingConfig = Field(
+        default_factory=lambda: UserSamplingConfig(temperature=SIMULATOR_TEMPERATURE)
+    )
+    """How an LLM simulator samples; defaults to :data:`SIMULATOR_TEMPERATURE`."""
 
     @model_validator(mode="before")
     @classmethod
@@ -211,6 +240,17 @@ class UserSimulatorConfig(BaseModel):
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
         return validate_stop_tokens(value)
+
+    @model_validator(mode="after")
+    def _refuse_sampling_nothing_can_apply(self) -> Self:
+        """A scripted simulator sends no request, so a declared ``sampling`` would
+        never apply. Only a declared block is refused: the default is always there."""
+        if self.mode == "scripted" and "sampling" in self.model_fields_set:
+            raise ValueError(
+                f"sampling is {self.sampling.model_dump()!r}, but the user simulator resolves "
+                "to mode scripted, which samples nothing. Write mode: llm, or drop sampling."
+            )
+        return self
 
     @model_validator(mode="after")
     def _refuse_a_template_nothing_can_render(self) -> Self:
@@ -300,6 +340,7 @@ class ActorSpec(BaseModel):
     stop_tokens: list[str] | None = None
     stop_with_text: UserStopWithText | None = None
     prompt_template: str | None = None
+    sampling: UserSamplingConfig | None = None
 
     model_config = {"extra": "ignore"}
 
@@ -613,11 +654,14 @@ class TaskConfig(BaseModel):
         spec = (self.actors or {}).get("user")
         if spec is None:
             return UserSimulatorConfig()
-        stop_fields = {
+        # Passed only when declared, so the simulator config keeps its own defaults
+        # and knows which fields the task set.
+        declared = {
             name: value
             for name, value in (
                 ("stop_tokens", spec.stop_tokens),
                 ("stop_with_text", spec.stop_with_text),
+                ("sampling", spec.sampling),
             )
             if value is not None
         }
@@ -627,7 +671,7 @@ class TaskConfig(BaseModel):
             backstory=spec.backstory,
             scripted_flow=spec.scripted_flow,
             prompt_template=spec.prompt_template,
-            **stop_fields,
+            **declared,
         )
 
 

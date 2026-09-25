@@ -244,6 +244,7 @@ user_actor:                                  # resolved UserSimulatorConfig, or 
   stop_tokens: ["###STOP###"]                # tokens that ended or could end the dialogue
   stop_with_text: "deliver"                  # deliver | end
   prompt_template: null                      # task-root path of an authored simulator prompt, or null
+  sampling: {temperature: 0.2}               # null temperature: the request carried none
 grading_config:
   state_checks: {...}
   transcript_rules: {...}
@@ -301,7 +302,7 @@ the bundle alone, without re-reading the task pack at the commit the run used.
 |---|---|---|
 | `interaction_mode` | `conversational` \| `agent_only` | Turn-loop shape. `agent_only` never dispatches a user actor. |
 | `initial_user_message` | string \| `null` | The task's pinned opener, verbatim — leading and trailing whitespace included, since this is the text delivered as message index 0. `null` when the task pinned no opener. |
-| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `stop_tokens`, `stop_with_text`, `prompt_template`. `null` under `agent_only`, which resolves no simulator at all. |
+| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `stop_tokens`, `stop_with_text`, `prompt_template`, `sampling`. `null` under `agent_only`, which resolves no simulator at all. |
 
 `interaction_mode` is what makes a `null` actor readable: it is the only thing
 in the bundle that separates "no user actor by design" from a defect, since
@@ -311,8 +312,8 @@ in the bundle that separates "no user actor by design" from a defect, since
 `user_actor` records the resolution the run used, not what the pack declared —
 a task declaring no `actors.user` records the defaults that applied
 (`mode: llm`, `persona: cooperative`, `stop_tokens: ["###STOP###"]`,
-`stop_with_text: deliver`), the same way `tools`, `policies` and
-`model_config.<role>.resolved.*` read. `scripted_flow` is recorded in full: it
+`stop_with_text: deliver`, `sampling: {temperature: 0.2}`), the same way
+`tools`, `policies` and `model_config.<role>.resolved.*` read. `scripted_flow` is recorded in full: it
 drove the conversation, and a trial whose user turns were scripted has no other
 record of what was said.
 

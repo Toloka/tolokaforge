@@ -489,6 +489,14 @@ body or to this context shape bumps `Trajectory.simulator_schema_version`
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
 holds the prompt body to the generation it is stamped with.
 
+The request's `temperature` is the actor's `sampling.temperature`: `0.2` unless the
+task sets it, and none at all for `null`. The simulator builds its client on its own
+copy of `models.user` with that value in place — it never reads
+`models.user.temperature` — because only the config can say "send none": a `None`
+per-call override means "use the config". A preset's `fixed_temperature` still
+wins. Sampling is outside `simulator_schema_version`; a trial's value is recorded
+in the bundle's `user_actor.sampling`.
+
 ### The prompt body
 
 A task can replace the whole body with its own text through

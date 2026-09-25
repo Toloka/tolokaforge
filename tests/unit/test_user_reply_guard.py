@@ -110,7 +110,6 @@ class _FakeWireClient:
         messages: list[Message] | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
-        temperature: float | None = None,
         observation: LLMCallObservation | None = None,
     ) -> GenerationResult:
         self.calls += 1

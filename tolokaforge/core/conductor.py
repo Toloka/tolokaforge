@@ -858,6 +858,7 @@ class InProcessConductor:
                 tool_schemas=setup.user_tool_schemas or None,
                 rate_limit_probe=rate_limit_probe.for_simulator(),
                 system_prompt=render_user_prompt_template(setup.task_dir, sim),
+                temperature=sim.sampling.temperature,
             )
         else:
             user_simulator = None

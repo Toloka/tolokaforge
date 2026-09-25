@@ -99,6 +99,7 @@ def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
         "stop_tokens": ["###DONE###"],
         "stop_with_text": "end",
         "prompt_template": None,
+        "sampling": {"temperature": 0.2},
     }
     assert list(snapshot) == [
         "task_id",
@@ -130,6 +131,7 @@ def test_a_task_declaring_no_user_actor_records_the_resolution_the_run_used(
         "stop_tokens": ["###STOP###"],
         "stop_with_text": "deliver",
         "prompt_template": None,
+        "sampling": {"temperature": 0.2},
     }
 
 

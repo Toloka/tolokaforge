@@ -41,6 +41,7 @@ from tolokaforge.core.models import (
     TaskConfig,
     Trajectory,
     TrialStatus,
+    UserSamplingConfig,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
@@ -603,10 +604,13 @@ class TestTrialToolSurfacePartition:
         assert _names(written) == ["agent_read", "user_probe"]
 
 
-def _trial_runner_kwargs(tmp_path: Path, task: TaskConfig) -> dict[str, Any]:
+def _trial_runner_kwargs(
+    tmp_path: Path, task: TaskConfig, *, user_model_config: ModelConfig | None = None
+) -> dict[str, Any]:
     """The keyword arguments ``_run_agent_loop`` builds ``TrialRunner`` with, for *task*
     run from the task root *tmp_path*."""
     conductor = _conductor_registering(tmp_path, _register_result([], []))
+    spec = _make_spec().model_copy(update={"user_model_config": user_model_config})
     setup = _TrialSetup(
         trial_id="t1:0",
         trial_idx=0,
@@ -623,7 +627,7 @@ def _trial_runner_kwargs(tmp_path: Path, task: TaskConfig) -> dict[str, Any]:
         patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
         patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
     ):
-        conductor._run_agent_loop(_make_spec(), task, setup)
+        conductor._run_agent_loop(spec, task, setup)
     return runner_cls.call_args.kwargs
 
 
@@ -695,6 +699,31 @@ class TestUserPromptTemplateReachesTheSimulator:
 
         with pytest.raises(FileNotFoundError, match="prompt_template"):
             _trial_runner_kwargs(tmp_path, task)
+
+
+class TestUserSamplingReachesTheSimulator:
+    """The simulator's client samples at the actor's temperature, and the run's
+    ``models.user`` config is left as the operator wrote it."""
+
+    _USER_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
+
+    def _simulator_client_temperature(self, tmp_path: Path, actor: ActorSpec) -> float | None:
+        task = TaskConfig(task_id="t1", description="d", actors={"user": actor})
+        kwargs = _trial_runner_kwargs(tmp_path, task, user_model_config=self._USER_MODEL)
+        return kwargs["user_simulator"].llm_client.config.temperature
+
+    def test_an_actor_without_sampling_samples_at_the_legacy_temperature(
+        self, tmp_path: Path
+    ) -> None:
+        assert self._simulator_client_temperature(tmp_path, ActorSpec(mode="llm")) == 0.2
+        assert self._USER_MODEL.temperature == 0.0
+
+    @pytest.mark.parametrize("temperature", [0.7, None])
+    def test_a_declared_temperature_is_the_one_the_client_sends(
+        self, tmp_path: Path, temperature: float | None
+    ) -> None:
+        actor = ActorSpec(sampling=UserSamplingConfig(temperature=temperature))
+        assert self._simulator_client_temperature(tmp_path, actor) == temperature
 
 
 class TestTrialSetupToolOutputMaxCharsWiring:

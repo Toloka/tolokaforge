@@ -38,7 +38,10 @@ class ModelConfig(BaseModel):
 
     provider: str
     name: str
-    temperature: float = 0.0
+    # ``None`` sends no ``temperature``, so the provider's default applies; a
+    # preset's ``fixed_temperature`` still overrides either. The user simulator
+    # does not read ``models.user.temperature`` — see ``actors.user.sampling``.
+    temperature: float | None = 0.0
     max_tokens: int | None = None
     seed: int | None = None
     # Suppress the provider's parallel tool-call behavior: when ``False``

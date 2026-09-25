@@ -18,6 +18,7 @@ import yaml
 from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.core.models import TaskDefaults
 
 pytestmark = pytest.mark.unit
 
@@ -271,6 +272,75 @@ class TestStopRuleDeclaration:
         task_path = tmp_path / "task.yaml"
         _write_yaml(task_path, _task_body(actors={"user": {"stop_with_text": "later"}}))
         with pytest.raises(ValueError, match="stop_with_text"):
+            load_task_yaml(task_path)
+
+
+class TestSamplingDeclaration:
+    """``actors.user.sampling`` reaches the resolved simulator through every layer,
+    ``null`` included, and leaving it out keeps the simulator's 0.2."""
+
+    def test_undeclared_sampling_resolves_to_the_legacy_temperature(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"mode": "llm"}}))
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.sampling.temperature == 0.2
+
+    @pytest.mark.parametrize("temperature", [0.0, 0.7, None])
+    def test_a_declared_temperature_reaches_the_resolved_simulator(
+        self, tmp_path: Path, temperature: float | None
+    ) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path, _task_body(actors={"user": {"sampling": {"temperature": temperature}}})
+        )
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.sampling.temperature == temperature
+
+    def test_a_project_null_survives_the_orchestrator_s_task_defaults_dump(
+        self, tmp_path: Path
+    ) -> None:
+        """The orchestrator hands ``task_defaults`` to the adapter through
+        ``model_dump(exclude_defaults=True)``, which drops a ``None`` that equals the
+        field default; a required ``temperature`` inside the block is not dropped."""
+        defaults = TaskDefaults(actors={"user": {"sampling": {"temperature": None}}})
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body())
+        task, _ = _load(task_path, project_task_defaults=defaults.model_dump(exclude_defaults=True))
+        assert task.resolve_user_simulator().sampling.temperature is None
+
+    def test_a_task_value_overrides_a_project_null(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"sampling": {"temperature": 0.5}}}))
+        task, _ = _load(
+            task_path,
+            project_task_defaults={"actors": {"user": {"sampling": {"temperature": None}}}},
+        )
+        assert task.resolve_user_simulator().sampling.temperature == 0.5
+
+    def test_sampling_on_a_scripted_simulator_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"mode": "scripted", "sampling": {"temperature": 0.0}}}),
+        )
+        with pytest.raises(ValueError, match="samples nothing"):
+            load_task_yaml(task_path)
+
+    def test_a_scripted_simulator_without_sampling_loads(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"mode": "scripted"}}))
+        assert load_task_yaml(task_path)[0].resolve_user_simulator().mode == "scripted"
+
+    @pytest.mark.parametrize(
+        ("sampling", "match"),
+        [({}, "temperature"), ({"temperature": 0.0, "top_k": 5}, "top_k")],
+    )
+    def test_a_block_that_does_not_say_what_to_send_is_refused(
+        self, tmp_path: Path, sampling: dict, match: str
+    ) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"sampling": sampling}}))
+        with pytest.raises(ValueError, match=match):
             load_task_yaml(task_path)
 
 

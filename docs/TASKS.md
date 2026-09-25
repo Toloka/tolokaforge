@@ -285,6 +285,25 @@ instruction the simulator needs, its stop tokens included: the load refuses a
 still defaults to `["###STOP###"]`, so a template that teaches other tokens
 declares the list. See [LLM_LAYER.md § The prompt body](LLM_LAYER.md#the-prompt-body).
 
+### Simulator sampling
+
+An LLM simulator samples at `temperature` 0.2. `sampling` sets another value, or
+`null` to send no temperature so the provider's default applies:
+
+```yaml
+actors:
+  user:
+    sampling:
+      temperature: null   # default: 0.2
+```
+
+The run config's `models.user.temperature` does not change it: the simulator has
+always sent 0.2 in that key's place, and run configs that set it rely on what they
+get. A model preset's `fixed_temperature` still overrides the value, as it does for
+the agent. `temperature` is required inside the block, so `sampling: {}` is refused
+rather than read as either value, and `sampling` on a scripted simulator is refused,
+since nothing is sampled.
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in

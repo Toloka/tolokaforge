@@ -75,6 +75,7 @@ from tolokaforge.core.models import (
     ReplyDefect,
     ToolCall,
 )
+from tolokaforge.core.models.task_config import SIMULATOR_TEMPERATURE
 from tolokaforge.core.pricing import estimate_cost, resolve_pricing
 from tolokaforge.core.run_display_events import LLMCallObservation
 
@@ -2486,6 +2487,7 @@ class UserSimulator(Actor):
         *,
         rate_limit_probe: RateLimitProbeConfig | None = None,
         system_prompt: str | None = None,
+        temperature: float | None = SIMULATOR_TEMPERATURE,
     ):
         # A task-authored system prompt — ``actors.user.prompt_template`` as the
         # conductor renders it — replaces the built-in one whole; ``None`` keeps
@@ -2501,8 +2503,14 @@ class UserSimulator(Actor):
         self.scripted_flow = scripted_flow or []
         self.tool_schemas = tool_schemas or []
         self._task_system_prompt = system_prompt
+        # The simulator's temperature is the actor's, not ``models.user``'s, so it
+        # goes on the client's own copy of the config: ``None`` there is what
+        # sends no temperature at all, which a per-call override cannot say.
         self.llm_client = (
-            LLMClient(llm_config, rate_limit_probe=rate_limit_probe)
+            LLMClient(
+                llm_config.model_copy(update={"temperature": temperature}),
+                rate_limit_probe=rate_limit_probe,
+            )
             if llm_config and mode == "llm"
             else None
         )
@@ -2711,7 +2719,6 @@ Rules:
                 messages=sim_context,
                 tools=self.tool_schemas if self.tool_schemas else None,
                 tool_choice="auto" if self.tool_schemas else None,
-                temperature=0.2,
                 observation=observation,
             )
             # The one substitution the reply guard wraps rather than forbids, and
