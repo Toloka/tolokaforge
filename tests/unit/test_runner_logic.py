@@ -1106,3 +1106,9 @@ class TestUserStopRuleFind:
 
     def test_a_bare_token_leaves_no_text(self) -> None:
         assert UserStopRule().find("\n###STOP###") == UserStop(token="###STOP###", text="")
+
+    def test_a_rule_built_in_code_refuses_a_token_inside_another(self) -> None:
+        """``find`` relies on no two tokens starting at one position; the rule holds
+        that invariant itself rather than trusting the caller to have validated."""
+        with pytest.raises(ValueError, match="inside"):
+            UserStopRule(tokens=("###STOP###", "###STOP"))

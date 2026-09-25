@@ -633,7 +633,13 @@ class TestUserStopRuleReachesTheRunner:
         task = TaskConfig(
             task_id="t1",
             description="d",
-            actors={"user": ActorSpec(stop_tokens=tokens, stop_with_text="end")},
+            actors={
+                "user": ActorSpec(
+                    backstory="Send ###TRANSFER### or ###OUT-OF-SCOPE### when they apply.",
+                    stop_tokens=tokens,
+                    stop_with_text="end",
+                )
+            },
         )
 
         rule = self._runner_kwargs(tmp_path, task)["user_stop"]

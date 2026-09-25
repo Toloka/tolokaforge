@@ -340,9 +340,12 @@ actors:
 - **`stop_tokens`** — the earliest listed token in a reply fires, and the
   termination message names it (`User signaled stop (###TRANSFER###). Dialogue
   ended.`). The reason is `USER_STOP` for every token. The list must be
-  non-empty, without blank or repeated tokens. An `llm` simulator's list must
-  contain `###STOP###`, because the built-in prompt tells the model to send that
-  token and no other; a `scripted` simulator may list any tokens.
+  non-empty, without blank or repeated tokens, and no token may contain another.
+  The engine listens for the list and the model sends what its prompt tells it
+  to, so for an `llm` simulator the two must agree: the list must contain
+  `###STOP###`, which the built-in prompt instructs, and every other listed token
+  must be named in the backstory, which is where the model learns when to send
+  it. A `scripted` simulator may list any tokens.
 - **`stop_with_text`** — `deliver` hands the text before the token to the agent,
   lets it answer, and ends the trial on the next user turn. `end` records that
   text as the last user message and ends the trial at once, so the agent never
