@@ -159,12 +159,25 @@ class TestStopRuleDeclaration:
     refused at load rather than on the first trial."""
 
     _TAU_TOKENS = ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]
+    # The built-in prompt teaches ###STOP### only; the backstory teaches the rest.
+    _TAU_BACKSTORY = (
+        "Send ###TRANSFER### once the agent transfers you, and ###OUT-OF-SCOPE### when "
+        "the scenario does not say how to answer."
+    )
 
     def test_declared_fields_reach_the_resolved_simulator(self, tmp_path: Path) -> None:
         task_path = tmp_path / "task.yaml"
         _write_yaml(
             task_path,
-            _task_body(actors={"user": {"stop_tokens": self._TAU_TOKENS, "stop_with_text": "end"}}),
+            _task_body(
+                actors={
+                    "user": {
+                        "backstory": self._TAU_BACKSTORY,
+                        "stop_tokens": self._TAU_TOKENS,
+                        "stop_with_text": "end",
+                    }
+                }
+            ),
         )
         sim = load_task_yaml(task_path)[0].resolve_user_simulator()
         assert sim.stop_tokens == self._TAU_TOKENS
@@ -179,7 +192,12 @@ class TestStopRuleDeclaration:
 
     def test_a_project_list_and_a_task_mode_compose(self, tmp_path: Path) -> None:
         task_path = tmp_path / "task.yaml"
-        _write_yaml(task_path, _task_body(actors={"user": {"stop_with_text": "end"}}))
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={"user": {"backstory": self._TAU_BACKSTORY, "stop_with_text": "end"}}
+            ),
+        )
         task, _ = _load(
             task_path,
             project_task_defaults={"actors": {"user": {"stop_tokens": self._TAU_TOKENS}}},
@@ -194,6 +212,8 @@ class TestStopRuleDeclaration:
             ([], "stop_tokens is empty"),
             (["###STOP###", " "], "blank token"),
             (["###STOP###", "###STOP###"], "more than once"),
+            (["###STOP###", "###STOP"], "'###STOP' inside '###STOP###'"),
+            (["###STOP###", "STOP"], "'STOP' inside '###STOP###'"),
         ],
     )
     def test_a_list_that_cannot_end_a_dialogue_is_refused(
@@ -219,6 +239,24 @@ class TestStopRuleDeclaration:
         task_path = tmp_path / "task.yaml"
         _write_yaml(task_path, _task_body(actors={"user": {"stop_tokens": ["###DONE###"]}}))
         with pytest.raises(ValueError, match="built-in user-simulator prompt"):
+            load_task_yaml(task_path)
+
+    def test_a_token_the_prompt_never_names_is_refused(self, tmp_path: Path) -> None:
+        """Neither the built-in prompt nor this backstory tells the model to send
+        ###TRANSFER###, so listening for it could never end a dialogue."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={
+                    "user": {
+                        "backstory": "Move my booking to Friday.",
+                        "stop_tokens": ["###STOP###", "###TRANSFER###"],
+                    }
+                }
+            ),
+        )
+        with pytest.raises(ValueError, match=r"\['###TRANSFER###'\].*never told"):
             load_task_yaml(task_path)
 
     def test_a_scripted_simulator_may_use_any_token(self, tmp_path: Path) -> None:

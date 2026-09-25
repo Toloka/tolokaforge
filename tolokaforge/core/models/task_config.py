@@ -57,6 +57,7 @@ __all__ = [
     "ToolsConfig",
     "UserSimulatorConfig",
     "UserStopWithText",
+    "validate_stop_tokens",
 ]
 
 
@@ -144,12 +145,15 @@ dialogue on the next user turn. ``end`` records the text as the dialogue's last
 user turn and ends the dialogue at once, so the agent never answers it."""
 
 
-def _refuse_unusable_stop_tokens(tokens: list[str]) -> list[str]:
+def validate_stop_tokens(tokens: list[str]) -> list[str]:
     """Reject a stop-token list that cannot end a dialogue the way it reads.
 
     An empty list leaves the simulator no way to end the dialogue, so every trial
     would run to its turn budget. A blank token matches every reply, and a
-    repeated one says nothing the first spelling did not.
+    repeated one says nothing the first spelling did not. A token that contains
+    another fires the shorter one wherever it fires itself, so which token ended
+    the dialogue would depend on a tie-break rather than on what the model wrote;
+    refusing the pair also leaves no two tokens that can start at one position.
     """
     if not tokens:
         raise ValueError(
@@ -166,6 +170,16 @@ def _refuse_unusable_stop_tokens(tokens: list[str]) -> list[str]:
     repeated = sorted({token for token in tokens if tokens.count(token) > 1})
     if repeated:
         raise ValueError(f"stop_tokens lists {repeated!r} more than once.")
+    nested = sorted(
+        (inner, outer) for inner in tokens for outer in tokens if inner != outer and inner in outer
+    )
+    if nested:
+        pairs = ", ".join(f"{inner!r} inside {outer!r}" for inner, outer in nested)
+        raise ValueError(
+            f"stop_tokens has a token inside another ({pairs}): a reply carrying the longer "
+            "one also carries the shorter, so the two cannot be told apart. List tokens "
+            "that do not contain each other."
+        )
     return tokens
 
 
@@ -191,25 +205,40 @@ class UserSimulatorConfig(BaseModel):
     @field_validator("stop_tokens")
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
-        return _refuse_unusable_stop_tokens(value)
+        return validate_stop_tokens(value)
 
     @model_validator(mode="after")
-    def _refuse_stop_tokens_the_prompt_never_asks_for(self) -> Self:
-        """An LLM simulator must be able to send a token the engine listens for.
+    def _refuse_stop_tokens_the_prompt_does_not_match(self) -> Self:
+        """An LLM simulator's stop tokens and its prompt must name the same tokens.
 
-        The built-in prompt tells the model to send ``###STOP###`` and nothing
-        else, so a list without it is one the model is never asked to produce:
-        the dialogue would only ever end on the turn budget. Scripted replies are
+        The engine listens for ``stop_tokens``; the model sends what its prompt tells
+        it to. The built-in prompt tells it to send ``###STOP###``, so a list without
+        that token lets the model's stop pass as ordinary text to the agent and the
+        dialogue go on. Any other listed token can only be taught by the backstory,
+        and one the backstory never names can never fire. Scripted replies are
         authored text, so a scripted simulator may use any token.
         """
-        if self.mode != "llm" or SIMULATOR_STOP_TOKEN in self.stop_tokens:
+        if self.mode != "llm":
             return self
-        raise ValueError(
-            f"stop_tokens is {self.stop_tokens!r}, but the built-in user-simulator prompt "
-            f"instructs the model to end the dialogue with {SIMULATOR_STOP_TOKEN!r} only, "
-            "so no generated reply would ever carry a listed token. Add "
-            f"{SIMULATOR_STOP_TOKEN!r} to the list."
-        )
+        if SIMULATOR_STOP_TOKEN not in self.stop_tokens:
+            raise ValueError(
+                f"stop_tokens is {self.stop_tokens!r}, but the built-in user-simulator prompt "
+                f"instructs the model to end the dialogue with {SIMULATOR_STOP_TOKEN!r}, so "
+                "that stop would reach the agent as ordinary text. Add "
+                f"{SIMULATOR_STOP_TOKEN!r} to the list."
+            )
+        unprompted = [
+            token
+            for token in self.stop_tokens
+            if token != SIMULATOR_STOP_TOKEN and token not in (self.backstory or "")
+        ]
+        if unprompted:
+            raise ValueError(
+                f"stop_tokens lists {unprompted!r}, which neither the built-in user-simulator "
+                "prompt nor the backstory names, so the model is never told to send them. "
+                "Say in the backstory when to send each one, or drop them from the list."
+            )
+        return self
 
 
 _RESERVED_ACTOR_NAMES = frozenset({"agent", "judge"})
@@ -249,7 +278,7 @@ class ActorSpec(BaseModel):
     @field_validator("stop_tokens")
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str] | None) -> list[str] | None:
-        return value if value is None else _refuse_unusable_stop_tokens(value)
+        return value if value is None else validate_stop_tokens(value)
 
 
 def _validate_actors_map(
