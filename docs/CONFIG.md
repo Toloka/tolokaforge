@@ -774,3 +774,20 @@ output_dir/
 See `docs/OUTPUT_FORMAT.md` for details.
 For runner operations and queue workflows, see `docs/RUNNER.md`.
 For metrics and attribution interpretation, see `docs/ANALYTICS.md`.
+
+## Preflight opt-outs
+
+Two checks run before a coding-harness run spends anything, and each has an
+environment-variable escape hatch for the case it cannot judge.
+
+| Variable | Turns off | When you want it |
+|---|---|---|
+| `TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT` | Probing that the CLI's provider endpoint answers an authorised caller before the run starts. | An air-gapped or record-replay run, or a gateway reachable only from inside the trial container. |
+| `TOLOKAFORGE_SKIP_PRICING_FRESHNESS` | Comparing the bundled pricing table's rates against the source it names, when the table is older than its staleness window. | A run not being compared on spend, or one deliberately pinned to a historical table. |
+
+Both refuse the run when they find a problem rather than warning, because
+neither failure has a reading under which the run's numbers mean anything: a
+dead endpoint produces trials scored against untouched tasks, and a drifted
+rate produces a cost comparison computed from prices nobody charges. Neither
+refuses when it *cannot* form an opinion — an unreachable source, a scheme the
+probe does not speak, or a model neither side prices all leave the run alone.

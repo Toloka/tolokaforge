@@ -137,6 +137,11 @@ def _response_payloads(body: bytes) -> list[dict[str, Any]]:
         payload = None
     if isinstance(payload, dict):
         return [payload]
+    # ``streamGenerateContent`` without ``alt=sse`` answers with a JSON array
+    # of the same chunks, which is neither a single object nor an SSE stream.
+    # Unhandled, the tap writes nothing and the trial is silently unmetered.
+    if isinstance(payload, list):
+        return [chunk for chunk in payload if isinstance(chunk, dict)]
 
     payloads: list[dict[str, Any]] = []
     for line in body.splitlines():
@@ -155,14 +160,66 @@ def _response_payloads(body: bytes) -> list[dict[str, Any]]:
 def _extract_token_counts(body: bytes) -> dict[str, int | None] | None:
     """Token counts *body* reports, or ``None`` when it reports none.
 
-    A streamed response repeats ``usage`` as ``null`` on every chunk but the
-    final one, so the last payload carrying real counts wins.
+    A streamed response repeats its usage block as ``null`` on every chunk
+    but the final one, so the last payload carrying real counts wins.
+
+    Two wire shapes, because the proxy meters whatever the harness routes
+    through it: OpenAI Chat Completions reports ``usage``, and Google's
+    ``generateContent`` reports ``usageMetadata``. A response carries one or
+    the other, never both.
     """
     for payload in reversed(_response_payloads(body)):
         counts = _token_counts(payload.get("usage"))
         if counts is not None:
             return counts
+        counts = _gemini_token_counts(payload.get("usageMetadata"))
+        if counts is not None:
+            return counts
     return None
+
+
+def _gemini_token_counts(usage: Any) -> dict[str, int | None] | None:
+    """Token counts from a Google ``generateContent`` ``usageMetadata`` block.
+
+    Normalised onto the same basis the OpenAI shape reports, so a record's
+    meaning does not depend on which CLI produced it:
+
+    * ``promptTokenCount`` is already the whole prompt, cached part included,
+      and ``cachedContentTokenCount`` names the cached portion of it — the
+      same relationship OpenAI's ``prompt_tokens`` has to its
+      ``cached_tokens`` detail.
+    * ``candidatesTokenCount`` **excludes** thinking tokens, where OpenAI's
+      ``completion_tokens`` includes them. They are added back here, so a
+      consumer summing completion tokens is not silently under-counting the
+      part of the answer the model charged for but did not show.
+
+    ``None`` when *usage* is missing or carries no integer count anywhere: a
+    zero-filled record would claim the request spent nothing, which is a
+    different and false claim from "this request's usage was not reported".
+    """
+    if not isinstance(usage, dict):
+        return None
+    prompt = _as_token_count(usage.get("promptTokenCount"))
+    candidates = _as_token_count(usage.get("candidatesTokenCount"))
+    total = _as_token_count(usage.get("totalTokenCount"))
+    reasoning = _as_token_count(usage.get("thoughtsTokenCount"))
+    cached = _as_token_count(usage.get("cachedContentTokenCount"))
+    if all(count is None for count in (prompt, candidates, total, reasoning, cached)):
+        return None
+    # Thinking tokens are part of what the model charged for. A block that
+    # reports them without a candidates count would otherwise leave them out
+    # of the completion total entirely, and the caller prices completion —
+    # not reasoning, which every dialect already counts inside it.
+    completion = candidates
+    if reasoning is not None:
+        completion = reasoning if completion is None else completion + reasoning
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "cache_read_input_tokens": cached,
+        "reasoning_tokens": reasoning,
+    }
 
 
 def _request_model(request_body: bytes) -> str | None:
@@ -254,6 +311,12 @@ def _make_handler(
                 headers = list(exc.headers.items()) if exc.headers else []
                 body = exc.read()
             except urllib_error.URLError as exc:
+                # Record it before relaying the error. A provider that refuses
+                # the connection outright — DNS gone, port shut, gateway down —
+                # is the plainest form of the failure the usage log exists to
+                # make legible, and returning here without a record left the
+                # trial reporting "not checked" and being scored anyway.
+                self._tap_usage(request_body, b"", 502)
                 self.send_error(502, f"upstream unreachable: {exc}")
                 return
 
@@ -278,23 +341,29 @@ def _make_handler(
 
             Token counts and the model only. The bodies passing through carry
             the trial's prompts and travel with the provider credential.
+
+            **One record per provider response, whatever it reported.** A
+            response that carried no usage block still happened, and a trial
+            whose every request was refused is the case that otherwise reads
+            as an agent that worked and did badly: the CLI writes its error
+            to stdout, the tool call returns, and the trial is scored against
+            an untouched repository. The counts are merged in when present, so
+            a reader summing tokens still sees only the requests that reported
+            them.
             """
             if usage_log is None:
                 return
             try:
+                record: dict[str, Any] = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "path": self.path,
+                    "status": status,
+                    "model": _request_model(request_body),
+                }
                 counts = _extract_token_counts(response_body)
-                if counts is None:
-                    return
-                _append_usage_record(
-                    usage_log,
-                    {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "path": self.path,
-                        "status": status,
-                        "model": _request_model(request_body),
-                        **counts,
-                    },
-                )
+                if counts is not None:
+                    record.update(counts)
+                _append_usage_record(usage_log, record)
             except Exception as exc:
                 print(f"middleware_proxy: usage tap failed: {exc}", file=sys.stderr)
 

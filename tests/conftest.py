@@ -261,3 +261,21 @@ __all__ = [
     # Docker-extra fixtures (only available when the ``[docker]`` extra is installed)
     *_DOCKER_EXTRA_FIXTURES,
 ]
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Keep the pricing-freshness check off the network for the whole session.
+
+    The check asks the pricing table's source whether its rates still hold, and
+    only reaches for it when the shipped table is older than its staleness
+    window — so an ordinary run never touches the network. That makes
+    hermeticity a property of *when someone last refreshed a file*, which is
+    not something a suite should depend on; setting the opt-out makes it a
+    property of the suite.
+
+    Set here rather than in an autouse fixture on purpose. An autouse fixture
+    requesting ``monkeypatch`` pulls that fixture into the setup of all ~11,000
+    tests and moves its teardown relative to every other fixture in the run —
+    a suite-wide reordering to express a constant.
+    """
+    os.environ.setdefault("TOLOKAFORGE_SKIP_PRICING_FRESHNESS", "1")
