@@ -11,9 +11,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tolokaforge.core.models.task_config import UserSimulatorConfig
+
 __all__ = [
     "BACKSTORY_PLACEHOLDER",
     "read_prompt_template",
+    "read_user_prompt_template",
     "render_prompt_template",
 ]
 
@@ -35,6 +38,34 @@ def read_prompt_template(task_dir: Path, relative_path: str) -> str:
         )
     template = path.read_text(encoding="utf-8")
     _require_one_placeholder(template, source=str(path))
+    return template
+
+
+def read_user_prompt_template(task_dir: Path, config: UserSimulatorConfig) -> str | None:
+    """The template *config* names, checked against the actor it prompts, or ``None``.
+
+    Beyond :func:`read_prompt_template`, every listed stop token must appear in the
+    prompt the template renders to: the engine listens for ``stop_tokens`` and the
+    model sends what its prompt tells it to, so a token the prompt never names can
+    never end a dialogue. The other direction — a token the prompt teaches but the
+    list omits — cannot be read out of free text, so a task keeps both in one place.
+
+    Raises:
+        FileNotFoundError: No file is at the resolved path.
+        ValueError: The placeholder is not there exactly once, or a listed stop
+            token appears in neither the template nor the backstory.
+    """
+    if config.prompt_template is None:
+        return None
+    template = read_prompt_template(task_dir, config.prompt_template)
+    prompt = render_prompt_template(template, config.backstory or "")
+    unnamed = [token for token in config.stop_tokens if token not in prompt]
+    if unnamed:
+        raise ValueError(
+            f"stop_tokens lists {unnamed!r}, which the prompt rendered from "
+            f"{config.prompt_template!r} never names, so the model is never told to send "
+            "them. Name each one in the template or the backstory, or drop it from the list."
+        )
     return template
 
 
