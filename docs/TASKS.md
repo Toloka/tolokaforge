@@ -333,13 +333,19 @@ written before one:
 ```yaml
 actors:
   user:
+    mode: llm
+    backstory: |
+      You want to move your booking to Friday. If the agent hands you over to a
+      person, reply ###TRANSFER###. If it cannot help with the request at all,
+      reply ###OUT-OF-SCOPE###.
     stop_tokens: ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]  # default: ["###STOP###"]
     stop_with_text: end    # default: deliver
 ```
 
 - **`stop_tokens`** — the earliest listed token in a reply fires, and the
   termination message names it (`User signaled stop (###TRANSFER###). Dialogue
-  ended.`). The reason is `USER_STOP` for every token. The list must be
+  ended.`). Whatever the reply says after that token is discarded; the trial
+  log records how much. The reason is `USER_STOP` for every token. The list must be
   non-empty, without blank or repeated tokens, and no token may contain another.
   The engine listens for the list and the model sends what its prompt tells it
   to, so for an `llm` simulator the two must agree: the list must contain
@@ -351,6 +357,11 @@ actors:
   text as the last user message and ends the trial at once, so the agent never
   answers it — the reference τ³-bench harness (`sierra-research/tau2-bench`)
   behaves this way. A bare token ends the trial at once under either value.
+- **A reply that also calls tools** still stops. The calls on a reply with text
+  run and are recorded on that message before the stop applies; a bare token
+  ends the trial without running them. The τ³-bench harness differs here: it
+  never treats a reply that calls tools as a stop, it runs the calls and asks
+  the user again.
 
 The agent's own completion is **structural**, not a phrase it emits: a trial ends
 with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls

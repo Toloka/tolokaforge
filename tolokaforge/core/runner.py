@@ -1625,6 +1625,11 @@ class TrialRunner:
         )
 
         stop = self._user_stop.find(user_result.text)
+        if stop is not None and stop.dropped:
+            self.logger.info(
+                f"Dropped the text after {stop.token} in the user reply",
+                dropped_chars=len(stop.dropped),
+            )
         if stop is not None and not stop.text:
             self.logger.info(
                 f"User signaled completion ({stop.token})",

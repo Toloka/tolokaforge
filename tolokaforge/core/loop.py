@@ -240,7 +240,8 @@ class UserTurnResult:
     ``message`` alone appends a user :class:`Message` and the loop continues.
     ``termination`` alone stops the loop (e.g. a bare stop token). Both together
     append the message as the dialogue's last turn and then stop, so the agent
-    never answers it. Neither advances to the next agent turn.
+    never answers it. With neither set, the loop moves on to the next agent turn
+    without a user message.
     """
 
     message: Message | None = None

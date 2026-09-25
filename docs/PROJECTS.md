@@ -1042,9 +1042,14 @@ model; `models` is already an open map, not a fixed
 agent/user/judge trio. The legacy root-level `user_simulator`
 block is read as an alias for `actors.user` until M5 retires it.
 
-An `ActorSpec` carries `mode` (`llm` or `scripted`), `persona`,
-`backstory` (a path to a backstory file, or inline text), and
-`scripted_flow`. The project declares the shared defaults under
+An `ActorSpec` carries:
+
+- `mode` (`llm` or `scripted`), `persona`, `backstory` (inline text) and
+  `scripted_flow`;
+- the stop rule, `stop_tokens` and `stop_with_text` (see
+  [Declaring the stop tokens](TASKS.md#declaring-the-stop-tokens)).
+
+The project declares the shared defaults under
 `task_defaults.actors.user`; each task overrides field-by-field
 (delta-wins), so a task that adds only a `backstory` inherits the
 project's `mode` and `persona`:
