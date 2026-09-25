@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.27.3 (2026-09-25)
+
+### Feat
+
+- **coding-harness**: meter every shipped harness, refuse a dead provider, and stop a wrong price passing as a number (#1618)
+
 ## v0.27.2 (2026-09-24)
 
 ### Fix
