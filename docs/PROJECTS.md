@@ -710,7 +710,7 @@ task_defaults:
     user:                          # the conventional counterpart actor; more can be added
       mode: "llm"
       persona: "curious engineer"
-      backstory: "./shared/user_backstory.md"  # shared user backstory; each task may override
+      backstory: "You are a returning customer."  # shared user backstory; each task may override
       # simulator: "builtin"       # which registered simulator produces the dialogue
       #                            # (tolokaforge.user_simulators group; default "builtin")
       # simulator_config: {}       # opaque config the engine passes to a non-builtin
@@ -1064,14 +1064,14 @@ actors:
   user:
     mode: "llm"
     persona: "customer"
-    backstory: "./shared/user_backstory.md"
+    backstory: "You are a returning customer of the shop."
 ```
 
 ```yaml
 # tasks/MAN-34/task.yaml
 actors:
   user:
-    backstory: "./tasks/MAN-34/backstory.md"
+    backstory: "Your desk arrived damaged. Ask for a replacement, not a refund."
 ```
 
 A task's `backstory` replaces the project default wholesale (same
