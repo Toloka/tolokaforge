@@ -14,6 +14,7 @@ from tolokaforge.core.models.task_config import (
     SIMULATOR_STOP_TOKEN,
     UserSimulatorConfig,
     UserStopWithText,
+    validate_stop_tokens,
 )
 
 __all__ = ["UserStop", "UserStopRule"]
@@ -38,6 +39,11 @@ class UserStopRule:
     tokens: tuple[str, ...] = (SIMULATOR_STOP_TOKEN,)
     with_text: UserStopWithText = "deliver"
 
+    def __post_init__(self) -> None:
+        # The same rules the config enforces, so a rule built in code cannot hold a
+        # pair of tokens :meth:`find` could not tell apart.
+        validate_stop_tokens(list(self.tokens))
+
     @classmethod
     def from_config(cls, config: UserSimulatorConfig) -> UserStopRule:
         return cls(tokens=tuple(config.stop_tokens), with_text=config.stop_with_text)
@@ -46,12 +52,13 @@ class UserStopRule:
         """The earliest stop token in *reply_text*, or ``None`` when it carries none.
 
         Earliest by position, so a reply naming two tokens stops on the one the
-        model wrote first, and the text delivered is exactly what preceded it.
+        model wrote first, and the text delivered is exactly what preceded it. No
+        two tokens can start at one position: none contains another.
         """
-        found = [
-            (position, token) for token in self.tokens if (position := reply_text.find(token)) != -1
-        ]
+        found = {
+            position: token for token in self.tokens if (position := reply_text.find(token)) != -1
+        }
         if not found:
             return None
-        position, token = min(found)
-        return UserStop(token=token, text=reply_text[:position].rstrip())
+        position = min(found)
+        return UserStop(token=found[position], text=reply_text[:position].rstrip())
