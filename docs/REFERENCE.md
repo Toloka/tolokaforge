@@ -99,6 +99,8 @@ actors:
       - default: "Please proceed."
     stop_tokens: ["###STOP###"]     # Tokens that end the dialogue
     stop_with_text: "deliver"       # "deliver" (agent answers the final reply) or "end"
+    tool_turns: "isolated"          # "shared" (default) or "isolated": user tool steps the agent never sees
+    max_tool_steps: 10              # Isolated only: tool steps one user turn may take
 
 policies:
   disallowed_actions:

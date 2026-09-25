@@ -15,6 +15,12 @@ The three renderings are the coverage boundary: between them they exercise the
 opening line, the ``Instruction:`` framing, the ``Rules:`` block and the
 tool-guidance block — every conditional segment ``_build_system_prompt`` has. A
 fourth conditional segment needs a fourth rendering here, or it moves unguarded.
+
+``actors.user.tool_turns: isolated`` builds the simulator's context by another
+function, which only an opted-in trial runs and ``user_actor.tool_turns``
+identifies; ``tests/unit/test_user_tool_turns.py`` pins that context. A
+non-built-in simulator (``actors.user.simulator``) writes its own prompt, which
+this stamp does not date.
 """
 
 from __future__ import annotations

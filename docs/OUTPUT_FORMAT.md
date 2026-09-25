@@ -243,6 +243,8 @@ user_actor:                                  # resolved UserSimulatorConfig, or 
   scripted_flow: null                        # full flow when mode is scripted
   stop_tokens: ["###STOP###"]                # tokens that ended or could end the dialogue
   stop_with_text: "deliver"                  # deliver | end
+  tool_turns: "shared"                       # shared | isolated
+  max_tool_steps: 10                         # tool steps an isolated turn may take
 grading_config:
   state_checks: {...}
   transcript_rules: {...}
@@ -300,7 +302,7 @@ the bundle alone, without re-reading the task pack at the commit the run used.
 |---|---|---|
 | `interaction_mode` | `conversational` \| `agent_only` | Turn-loop shape. `agent_only` never dispatches a user actor. |
 | `initial_user_message` | string \| `null` | The task's pinned opener, verbatim — leading and trailing whitespace included, since this is the text delivered as message index 0. `null` when the task pinned no opener. |
-| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `stop_tokens`, `stop_with_text`. `null` under `agent_only`, which resolves no simulator at all. |
+| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `simulator`, `simulator_config`, `stop_tokens`, `stop_with_text`, `tool_turns`, `max_tool_steps`. `null` under `agent_only`, which resolves no simulator at all. |
 
 `interaction_mode` is what makes a `null` actor readable: it is the only thing
 in the bundle that separates "no user actor by design" from a defect, since
@@ -310,8 +312,9 @@ in the bundle that separates "no user actor by design" from a defect, since
 `user_actor` records the resolution the run used, not what the pack declared —
 a task declaring no `actors.user` records the defaults that applied
 (`mode: llm`, `persona: cooperative`, `stop_tokens: ["###STOP###"]`,
-`stop_with_text: deliver`), the same way `tools`, `policies` and
-`model_config.<role>.resolved.*` read. `scripted_flow` is recorded in full: it
+`stop_with_text: deliver`, `tool_turns: shared`, `max_tool_steps: 10`), the same
+way `tools`, `policies` and `model_config.<role>.resolved.*` read. `scripted_flow`
+is recorded in full: it
 drove the conversation, and a trial whose user turns were scripted has no other
 record of what was said.
 
@@ -438,6 +441,33 @@ The `reasoning` block is extracted by the provider-specific `ReasoningCodec`
 registered on the preset (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) § `reasoning_codec`). Non-reasoning
 models emit `reasoning: null`.
+
+### A user's tool steps in `messages`
+
+How a user simulator's own tool calls appear depends on its actor's `tool_turns`
+([TASKS.md § User tool turns](TASKS.md#user-tool-turns)). Under `shared`, a user
+message carries its `tool_calls` and its `content` ends with the results; no
+`role: tool` message follows. Under `isolated`, each tool step is a user message
+carrying the calls — its `content` is whatever text the model wrote with them,
+often `""` — followed by one `role: tool` message per call, joined by
+`tool_call_id` the way the agent's are:
+
+```yaml
+- role: "user"
+  content: ""
+  tool_calls:
+    - {id: "call_7", name: "check_balance", arguments: {}}
+  reasoning: null            # the step's own reasoning, when the model produced any
+- role: "tool"
+  content: "balance: 12.50"  # "Error: …" when the call failed
+  tool_call_id: "call_7"
+- role: "user"
+  content: "It says 12.50."  # the turn the agent read
+```
+
+The agent was sent neither message of the step. A step's results are not capped by
+`tool_output_max_chars`, which bounds what the agent's model reads. `tool_log.yaml`
+records the step's calls with `executor: user`.
 
 ### `messages[*].openrouter_generation_id`
 
@@ -1831,6 +1861,7 @@ evidence about us, and our own defects stay counted. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
+| `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
 | `metrics.yaml` | `schema_version` | `5` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |

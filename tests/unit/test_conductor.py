@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from tolokaforge.core.actors.tool_turns import UserToolTurnRule
 from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.conductor import (
     DEFAULT_MAX_TURNS,
@@ -35,6 +36,7 @@ from tolokaforge.core.models import (
     Metrics,
     ModelConfig,
     OrchestratorConfig,
+    RateLimitProbeConfig,
     ResetSpec,
     RunConfig,
     ServiceSpec,
@@ -603,6 +605,39 @@ class TestTrialToolSurfacePartition:
         assert _names(written) == ["agent_read", "user_probe"]
 
 
+def _trial_runner_kwargs(
+    tmp_path: Path,
+    task: TaskConfig,
+    *,
+    user_model_config: ModelConfig | None = None,
+    rate_limit_probe: RateLimitProbeConfig | None = None,
+) -> dict[str, Any]:
+    """The keyword arguments ``_run_agent_loop`` builds ``TrialRunner`` with, for *task*
+    run from the task root *tmp_path*."""
+    conductor = _conductor_registering(tmp_path, _register_result([], []))
+    if rate_limit_probe is not None:
+        conductor.config.orchestrator.rate_limit_probe = rate_limit_probe
+    spec = _make_spec().model_copy(update={"user_model_config": user_model_config})
+    setup = _TrialSetup(
+        trial_id="t1:0",
+        trial_idx=0,
+        task_dir=tmp_path,
+        trial_dir=tmp_path / "trials" / "t1" / "0",
+        env_state=MagicMock(),
+        adapter_env=MagicMock(),
+        tool_schemas=[],
+        tool_executor=MagicMock(),
+        user_tool_schemas=[],
+        user_tool_executor=None,
+    )
+    with (
+        patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+        patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+    ):
+        conductor._run_agent_loop(spec, task, setup)
+    return runner_cls.call_args.kwargs
+
+
 class TestUserStopRuleReachesTheRunner:
     """The stop tokens the engine listens for come from the task's own
     ``actors.user`` declaration — the same one that tells the simulator what to send."""
@@ -650,6 +685,47 @@ class TestUserStopRuleReachesTheRunner:
         rule = self._runner_kwargs(tmp_path, TaskConfig(task_id="t1", description="d"))["user_stop"]
 
         assert rule == UserStopRule(tokens=("###STOP###",), with_text="deliver")
+
+
+class TestUserToolTurnsReachTheRunner:
+    """The runner and the simulator run the user's tool calls the way its actor says."""
+
+    def test_the_resolved_rule_reaches_the_runner_and_the_simulator(self, tmp_path: Path) -> None:
+        task = TaskConfig(
+            task_id="t1",
+            description="d",
+            actors={"user": ActorSpec(tool_turns="isolated", max_tool_steps=3)},
+        )
+
+        kwargs = _trial_runner_kwargs(tmp_path, task)
+
+        assert kwargs["user_tool_turns"] == UserToolTurnRule("isolated", 3)
+        assert kwargs["user_simulator"].tool_turns == "isolated"
+
+    def test_a_task_that_declares_nothing_keeps_shared_turns(self, tmp_path: Path) -> None:
+        task = TaskConfig(task_id="t1", description="d")
+
+        kwargs = _trial_runner_kwargs(tmp_path, task)
+
+        assert kwargs["user_tool_turns"] == UserToolTurnRule()
+        assert kwargs["user_simulator"].tool_turns == "shared"
+
+    def test_isolated_turns_under_the_rate_limit_probe_refuse_the_trial(
+        self, tmp_path: Path
+    ) -> None:
+        """The probe's per-turn budget covers one user reply; an isolated turn asks
+        its simulator once per step and again for the reply."""
+        task = TaskConfig(
+            task_id="t1", description="d", actors={"user": ActorSpec(tool_turns="isolated")}
+        )
+
+        with (
+            patch("tolokaforge.core.conductor.validate_rate_limit_probe_budget"),
+            pytest.raises(ValueError, match="rate_limit_probe is enabled"),
+        ):
+            _trial_runner_kwargs(
+                tmp_path, task, rate_limit_probe=RateLimitProbeConfig(enabled=True)
+            )
 
 
 class TestTrialSetupToolOutputMaxCharsWiring:
