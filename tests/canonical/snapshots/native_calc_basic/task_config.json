@@ -2,6 +2,7 @@
   "actors": {
     "user": {
       "backstory": null,
+      "max_tool_steps": null,
       "mode": "scripted",
       "persona": null,
       "prompt_template": null,
@@ -13,7 +14,8 @@
         }
       ],
       "stop_tokens": null,
-      "stop_with_text": null
+      "stop_with_text": null,
+      "tool_turns": null
     }
   },
   "adapter_settings": null,

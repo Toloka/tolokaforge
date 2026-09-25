@@ -398,6 +398,61 @@ class TestSamplingDeclaration:
             load_task_yaml(task_path)
 
 
+class TestToolTurnsDeclaration:
+    """``actors.user.tool_turns`` / ``max_tool_steps`` reach the resolved simulator
+    through every layer, and a step limit nothing can reach is refused."""
+
+    def test_undeclared_fields_resolve_to_shared_turns(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"mode": "llm"}}))
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert (sim.tool_turns, sim.max_tool_steps) == ("shared", 10)
+
+    def test_declared_fields_reach_the_resolved_simulator(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"tool_turns": "isolated", "max_tool_steps": 3}}),
+        )
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert (sim.tool_turns, sim.max_tool_steps) == ("isolated", 3)
+
+    def test_a_project_mode_and_a_task_limit_compose(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"max_tool_steps": 4}}))
+        defaults = TaskDefaults(actors={"user": {"tool_turns": "isolated"}})
+        task, _ = _load(task_path, project_task_defaults=defaults.model_dump(exclude_defaults=True))
+        sim = task.resolve_user_simulator()
+        assert (sim.tool_turns, sim.max_tool_steps) == ("isolated", 4)
+
+    def test_isolated_turns_without_user_tools_load(self, tmp_path: Path) -> None:
+        """An adapter can declare the mode on every task, tools or not."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"tool_turns": "isolated"}}))
+        assert load_task_yaml(task_path)[0].resolve_user_simulator().tool_turns == "isolated"
+
+    def test_a_step_limit_under_shared_turns_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": {"max_tool_steps": 3}}))
+        with pytest.raises(ValueError, match="never loops"):
+            load_task_yaml(task_path)
+
+    @pytest.mark.parametrize(
+        ("user", "match"),
+        [
+            ({"tool_turns": "isolated", "max_tool_steps": 0}, "max_tool_steps"),
+            ({"tool_turns": "loop"}, "tool_turns"),
+        ],
+    )
+    def test_a_value_that_cannot_run_is_refused(
+        self, tmp_path: Path, user: dict, match: str
+    ) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body(actors={"user": user}))
+        with pytest.raises(ValueError, match=match):
+            load_task_yaml(task_path)
+
+
 class TestFirstMessageSpellingRefused:
     """An opener declared on the user actor is refused, whatever the spelling.
 

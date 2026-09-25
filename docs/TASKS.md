@@ -307,6 +307,44 @@ rather than read as either value. `temperature` written directly on the actor
 that sets `sampling` in its `task_defaults` sets it for every task, so a scripted
 task in that project writes `sampling: null` to drop it.
 
+### User tool turns
+
+A user with tools of its own (`tools.user.enabled`) runs them one of two ways, set by
+`tool_turns`:
+
+```yaml
+actors:
+  user:
+    tool_turns: isolated   # default: shared
+    max_tool_steps: 10     # isolated only; this is the default
+```
+
+- **`shared`** (default) — the simulator gets one generation per turn. Its calls run,
+  and their results are appended to the text of its reply, which the agent reads. A
+  reply that is only calls is given the text "Let me check that." (#1089).
+- **`isolated`** — a reply that calls tools is a *tool step*. The calls, and a TOOL
+  message with each result, are recorded in the transcript but never sent to the
+  agent, and the simulator is asked again with the results in view, until it replies
+  with text alone. That text is the turn the agent reads. The simulator sees its own
+  steps and none of the agent's tool traffic: an agent message that calls tools is
+  left out of the simulator's view whole, text included. This is how the τ³-bench
+  harness runs its users.
+  - A stop token inside a tool step is not a stop.
+  - A step beyond `max_tool_steps` ends the dialogue with `user_tool_loop_limit`, and
+    none of that step's calls run. The reason is graded, like `max_turns`.
+  - The episode timeout is checked between steps.
+  - The opening turn follows the same rule: steps taken before the first message are
+    recorded ahead of it, and more than `max_tool_steps` of them refuse the trial.
+  - A run with `orchestrator.rate_limit_probe` enabled refuses `isolated` tasks: the
+    probe budgets one simulator reply per turn.
+
+`max_tool_steps` under `shared` is refused, since a shared turn never loops. `isolated`
+without user tools loads, so an adapter can declare it on every task. In grading, a
+tool step's calls and results are timeline events and the step itself is not a
+`user_message` (see [GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline));
+a custom check's `transcript.user_messages` still lists it, as a user message
+carrying `tool_calls`.
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in

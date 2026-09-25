@@ -33,6 +33,7 @@ from tolokaforge_coding_harnesses.adapter_support import HARNESS_USAGE_LOG_METAD
 
 from tolokaforge.adapters import BaseAdapter
 from tolokaforge.core.actors.prompt_template import render_user_prompt_template
+from tolokaforge.core.actors.tool_turns import UserToolTurnRule
 from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
@@ -839,9 +840,11 @@ class InProcessConductor:
         rate_limit_probe = self.config.orchestrator.rate_limit_probe
         user_simulator: UserSimulator | None
         user_stop = UserStopRule()
+        user_tool_turns = UserToolTurnRule()
         if task.interaction_mode == "conversational":
             sim = task.resolve_user_simulator()
             user_stop = UserStopRule.from_config(sim)
+            user_tool_turns = UserToolTurnRule.from_config(sim)
             user_llm_config = user_config if sim.mode == "llm" else None
             # The simulator hits the same provider quota as the agent, so a probe
             # run has to cover it too — otherwise a simulator 429 kills the trial
@@ -859,6 +862,7 @@ class InProcessConductor:
                 rate_limit_probe=rate_limit_probe.for_simulator(),
                 system_prompt=render_user_prompt_template(setup.task_dir, sim),
                 temperature=sim.sampling.temperature,
+                tool_turns=sim.tool_turns,
             )
         else:
             user_simulator = None
@@ -919,6 +923,15 @@ class InProcessConductor:
             episode_timeout_s,
             source=f"task {task.task_id}",
         )
+        # The budget above allows one user reply per turn, and an isolated user
+        # turn asks its simulator once per tool step and again for the reply.
+        if rate_limit_probe.enabled and user_tool_turns.isolated:
+            raise ValueError(
+                f"task {task.task_id}: actors.user.tool_turns is isolated, and "
+                "orchestrator.rate_limit_probe is enabled. The probe's per-turn budget covers "
+                "one user reply, while an isolated user turn asks its simulator up to "
+                f"{user_tool_turns.max_steps + 1} times. Disable the probe for this run."
+            )
 
         runner = TrialRunner(
             task_id=task.task_id,
@@ -953,6 +966,7 @@ class InProcessConductor:
                 else None
             ),
             user_stop=user_stop,
+            user_tool_turns=user_tool_turns,
         )
 
         # "" is the runner's "caller supplied nothing" seed: turn 0 is routed

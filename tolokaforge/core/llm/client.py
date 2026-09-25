@@ -45,6 +45,7 @@ from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
+from tolokaforge.core.actors.tool_turns import simulator_view
 from tolokaforge.core.env_var import parse_env_non_negative_int, parse_env_positive_float
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import (
@@ -75,7 +76,7 @@ from tolokaforge.core.models import (
     ReplyDefect,
     ToolCall,
 )
-from tolokaforge.core.models.task_config import SIMULATOR_TEMPERATURE
+from tolokaforge.core.models.task_config import SIMULATOR_TEMPERATURE, UserToolTurns
 from tolokaforge.core.pricing import estimate_cost, resolve_pricing
 from tolokaforge.core.run_display_events import LLMCallObservation
 
@@ -2488,6 +2489,7 @@ class UserSimulator(Actor):
         rate_limit_probe: RateLimitProbeConfig | None = None,
         system_prompt: str | None = None,
         temperature: float | None = SIMULATOR_TEMPERATURE,
+        tool_turns: UserToolTurns = "shared",
     ):
         # A task-authored system prompt — ``actors.user.prompt_template`` as the
         # conductor renders it — replaces the built-in one whole; ``None`` keeps
@@ -2498,6 +2500,7 @@ class UserSimulator(Actor):
                 f"is {mode!r} and sends no prompt."
             )
         self.mode = mode
+        self.tool_turns = tool_turns
         self.persona = persona
         self.backstory = backstory
         self.scripted_flow = scripted_flow or []
@@ -2664,21 +2667,32 @@ Rules:
         # Adjacent same-role turns are coalesced so the request alternates
         # strictly — a skipped turn can leave two dialogue turns of the same
         # party back to back, which strict-alternation providers reject.
+        #
+        # Under ``isolated`` tool turns the simulator's own tool steps stay in
+        # view as assistant tool calls and tool results, and every agent message
+        # that calls tools is dropped whole; see
+        # :func:`~tolokaforge.core.actors.tool_turns.simulator_view`.
         sim_context: list[Message] = []
-        flip = {MessageRole.USER: MessageRole.ASSISTANT, MessageRole.ASSISTANT: MessageRole.USER}
-        for msg in context:
-            if not msg.content.strip():
-                continue
-            role = flip.get(msg.role)
-            if role is None:
-                continue
-            if sim_context and sim_context[-1].role == role:
-                previous = sim_context[-1]
-                sim_context[-1] = Message(
-                    role=role, content=f"{previous.content}\n\n{msg.content}", ts=msg.ts
-                )
-            else:
-                sim_context.append(Message(role=role, content=msg.content, ts=msg.ts))
+        if self.tool_turns == "isolated":
+            sim_context = simulator_view(context)
+        else:
+            flip = {
+                MessageRole.USER: MessageRole.ASSISTANT,
+                MessageRole.ASSISTANT: MessageRole.USER,
+            }
+            for msg in context:
+                if not msg.content.strip():
+                    continue
+                role = flip.get(msg.role)
+                if role is None:
+                    continue
+                if sim_context and sim_context[-1].role == role:
+                    previous = sim_context[-1]
+                    sim_context[-1] = Message(
+                        role=role, content=f"{previous.content}\n\n{msg.content}", ts=msg.ts
+                    )
+                else:
+                    sim_context.append(Message(role=role, content=msg.content, ts=msg.ts))
 
         # Providers require the first message to be user-role, and the trial's
         # seeded opening flips to ``assistant`` at index 0. Prepend a synthetic
@@ -2700,7 +2714,14 @@ Rules:
         # own words (the provider continues it), and an empty list is
         # unanswerable — both mean no agent dialogue turn is awaiting a
         # reply, so surface that instead of letting the simulator improvise.
-        if not sim_context or sim_context[-1].role != MessageRole.USER:
+        # A tool step's results are answerable too: the simulator reads them
+        # and goes on.
+        answerable = (
+            (MessageRole.USER, MessageRole.TOOL)
+            if self.tool_turns == "isolated"
+            else (MessageRole.USER,)
+        )
+        if not sim_context or sim_context[-1].role not in answerable:
             raise RuntimeError(
                 "User simulator dispatched with no agent dialogue turn to answer "
                 f"(flipped context roles: {[m.role.value for m in sim_context]}; "
@@ -2728,8 +2749,9 @@ Rules:
             # semantics need the model's own text (the bootstrap seed the agent
             # is graded against) read ``result.filler_substituted`` and refuse.
             # TODO(#1089): remove it — a universal filler is hazardous (AGENTS.md
-            # gotcha 23), so the removal carries its own analysis.
-            if result.tool_calls and not result.text.strip():
+            # gotcha 23), so the removal carries its own analysis. An isolated
+            # tool step is never a dialogue turn, so it keeps the model's own text.
+            if self.tool_turns == "shared" and result.tool_calls and not result.text.strip():
                 result.text = "Let me check that."
                 result.filler_substituted = True
             return result

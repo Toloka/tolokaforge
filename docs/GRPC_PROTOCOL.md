@@ -797,7 +797,8 @@ or fails the RPC naming the accepted set — an unrecognised value is never
 coerced to "not reported", which would make a skewed engine look like a healthy
 trial. An empty value means the engine reported no reason, which is valid.
 
-Only three reasons reach this RPC — `agent_done`, `user_stop` and `max_turns`.
+Only four reasons reach this RPC — `agent_done`, `user_stop`, `max_turns` and
+`user_tool_loop_limit`.
 Each names a trial the agent drove to an end the harness planned for, and task
 grading is meaningful for exactly those. The host grader answers every other
 trial itself, without an RPC: a task grade describes how the agent performed the

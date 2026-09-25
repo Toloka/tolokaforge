@@ -20,6 +20,9 @@ A task's ``actors.user.prompt_template`` is not a segment of this body: it
 replaces the body with task-authored text and the engine adds none of its own,
 so there is no engine prompt for a generation to date.
 ``tests/unit/test_user_prompt_template.py`` pins that rendering byte for byte.
+Likewise ``actors.user.tool_turns: isolated`` builds the simulator's context by
+another function, which only an opted-in trial runs and ``user_actor.tool_turns``
+identifies; ``tests/unit/test_user_tool_turns.py`` pins that context.
 """
 
 from __future__ import annotations

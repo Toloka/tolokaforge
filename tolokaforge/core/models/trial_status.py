@@ -25,6 +25,7 @@ class TerminationReason(str, Enum):
     STUCK_DETECTED = "stuck_detected"  # Stuck condition detected
     TIMEOUT = "timeout"  # Episode timeout reached
     MAX_TURNS = "max_turns"  # Maximum turns limit reached
+    USER_TOOL_LOOP_LIMIT = "user_tool_loop_limit"  # Isolated user turn took too many tool steps
     ERROR = "error"  # Runtime error occurred
     RATE_LIMIT = "rate_limit"  # API rate limit error
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
