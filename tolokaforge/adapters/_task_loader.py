@@ -59,7 +59,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
-from tolokaforge.core.actors.prompt_template import read_prompt_template
+from tolokaforge.core.actors.prompt_template import read_user_prompt_template
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
     source_context,
@@ -632,12 +632,10 @@ def _refuse_an_unusable_user_prompt_template(task: TaskConfig, task_root: Path) 
     """Read ``actors.user.prompt_template`` at load, so ``validate`` refuses a bad one.
 
     The conductor reads the same file when it builds the simulator; without this a
-    missing file or a template without its placeholder would surface only then,
-    once per trial.
+    missing file, a template without its placeholder, or a stop token the prompt
+    never names would surface only then, once per trial.
     """
-    template_path = task.resolve_user_simulator().prompt_template
-    if template_path is not None:
-        read_prompt_template(task_root, template_path)
+    read_user_prompt_template(task_root, task.resolve_user_simulator())
 
 
 def load_task(

@@ -278,7 +278,8 @@ actors:
 
 The engine substitutes the backstory and adds nothing else — the built-in rules
 and tool guidance are not appended — so the template must carry every instruction
-the simulator needs, its stop tokens included. See
+the simulator needs, its stop tokens included: the load refuses a `stop_tokens`
+entry that neither the template nor the backstory names. See
 [LLM_LAYER.md § The prompt body](LLM_LAYER.md#the-prompt-body).
 
 ### Authoring the opening turn
@@ -370,8 +371,9 @@ actors:
   to, so for an `llm` simulator on the built-in prompt the two must agree: the
   list must contain `###STOP###`, which that prompt instructs, and every other
   listed token must be named in the backstory, which is where the model learns
-  when to send it. A `scripted` simulator may list any tokens, and a simulator
-  whose prompt comes from `prompt_template` is not held to these two rules.
+  when to send it. A `scripted` simulator may list any tokens. A simulator whose
+  prompt comes from `prompt_template` is held to one rule instead: every listed
+  token must appear in the prompt the template renders to.
 - **`stop_with_text`** — `deliver` hands the text before the token to the agent,
   lets it answer, and ends the trial on the next user turn; a bare token ends the
   trial at once. `end` records the reply as the simulator wrote it — the token,

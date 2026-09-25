@@ -27,7 +27,10 @@ pytestmark = pytest.mark.unit
 # A guidelines document followed by a scenario envelope — the shape the τ³-bench
 # harness builds its simulator prompt in. Braces in the guidelines must reach the
 # model untouched.
-_GUIDELINES = '# User simulation\nStay in role. Reply as JSON like {"ok": true} only when asked.'
+_GUIDELINES = (
+    '# User simulation\nStay in role. Reply as JSON like {"ok": true} only when asked.\n'
+    "When your goal is met, send '###STOP###'."
+)
 _TEMPLATE = _GUIDELINES + "\n\n<scenario>\n{backstory}\n</scenario>"
 _BACKSTORY = "Instructions:\n\tYou want to move your booking to Friday."
 _RENDERED = _GUIDELINES + "\n\n<scenario>\n" + _BACKSTORY + "\n</scenario>"
@@ -177,6 +180,37 @@ class TestLoad:
                 "prompt_template": "sim/prompt.md",
                 "stop_tokens": ["###DONE###"],
             },
+            template="Send '###DONE###' when finished.\n\n<scenario>\n{backstory}\n</scenario>",
         )
 
         assert load_task_yaml(task_path)[0].resolve_user_simulator().stop_tokens == ["###DONE###"]
+
+    def test_a_stop_token_the_rendered_prompt_never_names_is_refused(self, tmp_path: Path) -> None:
+        """The template teaches ###STOP### only, so listening for ###TRANSFER### could
+        never end a dialogue."""
+        task_path = _write_task(
+            tmp_path,
+            {
+                "backstory": _BACKSTORY,
+                "prompt_template": "sim/prompt.md",
+                "stop_tokens": ["###STOP###", "###TRANSFER###"],
+            },
+        )
+        with pytest.raises(ValueError, match=r"\['###TRANSFER###'\].*never names"):
+            load_task_yaml(task_path)
+
+    def test_a_stop_token_the_backstory_names_counts_as_named(self, tmp_path: Path) -> None:
+        """The check reads the rendered prompt, so the backstory can teach a token."""
+        task_path = _write_task(
+            tmp_path,
+            {
+                "backstory": _BACKSTORY + " If the agent transfers you, send ###TRANSFER###.",
+                "prompt_template": "sim/prompt.md",
+                "stop_tokens": ["###STOP###", "###TRANSFER###"],
+            },
+        )
+
+        assert load_task_yaml(task_path)[0].resolve_user_simulator().stop_tokens == [
+            "###STOP###",
+            "###TRANSFER###",
+        ]

@@ -664,7 +664,7 @@ class TestUserPromptTemplateReachesTheSimulator:
     def test_the_simulator_renders_the_task_root_template(self, tmp_path: Path) -> None:
         (tmp_path / "sim").mkdir()
         (tmp_path / "sim" / "prompt.md").write_text(
-            "Guidelines.\n\n<scenario>\n{backstory}\n</scenario>", encoding="utf-8"
+            "Send ###STOP### when done.\n\n<scenario>\n{backstory}\n</scenario>", encoding="utf-8"
         )
         task = TaskConfig(
             task_id="t1",
@@ -677,7 +677,7 @@ class TestUserPromptTemplateReachesTheSimulator:
         simulator = _trial_runner_kwargs(tmp_path, task)["user_simulator"]
 
         assert simulator._build_system_prompt() == (
-            "Guidelines.\n\n<scenario>\nMove my booking.\n</scenario>"
+            "Send ###STOP### when done.\n\n<scenario>\nMove my booking.\n</scenario>"
         )
 
     def test_a_template_missing_from_the_task_root_fails_the_trial_build(
