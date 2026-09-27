@@ -145,6 +145,9 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
+    "tolokaforge/tools/tmux_terminal/__init__.py",
+    "tolokaforge/tools/tmux_terminal/pure.py",
+    "tolokaforge/tools/tmux_terminal/session.py",
 )
 """Files that live under a shared-spine subpackage but are orchestrator-only.
 
@@ -218,6 +221,13 @@ test-time code only: no runner boot-closure module reaches it, and the
 package-level :mod:`tolokaforge.core.grading.judge_kinds` init deliberately
 does not re-export the parity surface so importing the package on the
 slim image does not drag ``agreement`` in transitively.
+
+``tools.tmux_terminal`` is the persistent tmux terminal: a backend seam,
+its session engine, and the pure helpers under it. Nothing dispatches to it
+— no tool schema names it and no wrapper constructs it — so the runner
+container reaches none of the three files and they would ship as dead
+weight. They move out of this tuple in the same change that gives the
+terminal a caller.
 """
 
 
