@@ -615,12 +615,14 @@ presets:
   # preset to make the capability reliable). All three also surface a
   # reasoning_content summary the ``openai`` codec lands in the logs.
   # Live 2026-06-05.
+  # The Kimi K2 line carries the same wire-shape recovery from its own
+  # ``moonshot_kimi_k2`` preset below, which restates these four policies
+  # alongside the turn budget that line needs. Matching is first-match-wins
+  # over whole entries, so the K2 globs live in exactly one preset.
   openrouter_dict_stringify_recovery:
     match:
       - "xiaomi/mimo*"
       - "*mimo-v2*"
-      - "moonshotai/kimi-k2*"
-      - "*kimi-k2*"
       - "deepseek/deepseek-v4*"
       - "*deepseek-v4*"
       - "z-ai/glm-5*"
@@ -633,6 +635,47 @@ presets:
     response_policy: json_coerce
     prompt_policy: dict_map_hints
     reasoning_codec: openai
+
+  # moonshotai/kimi-k2 (K2.6, K2.7-code, …) — the wire-shape recovery the
+  # ``openrouter_dict_stringify_recovery`` preset gives the rest of its
+  # lineup, restated here so this line can also carry a turn budget sized
+  # to how it works.
+  #
+  # ``default_max_turns: 90`` is the same lift, for the same reason, that
+  # ``gemini_31_pro_preview`` carries: turn budget is a function of how much
+  # a model does per turn, and the 50-turn engine default is sized for
+  # coarse-grained models. K2's edit style is the finest-grained in the P0
+  # set — median 260 completion tokens per turn, against 419 for
+  # claude-sonnet-4.6 and 756 for gpt-5.6-sol on the same ten tasks — so it
+  # converges in proportionally more steps and exhausts the same absolute
+  # budget earlier. Live evidence, 2026-09-25 T-Bench 10-task sweep at 5
+  # repeats: 37/50 trials ended ``termination_reason: max_turns`` at exactly
+  # turn 50, and 27 of those 37 were still writing files in their final ten
+  # turns — mid-productive at the cutoff, not looping. The two trials that
+  # did converge took 23 and 50 turns. Same sweep, same tasks: gpt-5.6-sol
+  # finished all 50 trials in a median of 10 turns.
+  #
+  # ``empty_retry_count: 1`` covers the reasoning-only completion class the
+  # K3 sibling opts into on the same grounds — a turn that spends its whole
+  # output budget on reasoning returns no text and no tool calls, which is
+  # otherwise trial-fatal. Two trials in that sweep died this way.
+  #
+  # NOT opted in here, deliberately: the ``openrouter_defaults`` Moonshot
+  # pin. K3 pairs that pin with an empty-assistant filler because Moonshot
+  # direct rejects empty-content assistant turns; pinning K2.x without a
+  # filler it has no live repro for (issue #1286) would trade a routing
+  # concern for a 400 class. The sweep above ran free-routed and its losses
+  # were turn exhaustion, not routing.
+  moonshot_kimi_k2:
+    match:
+      - "moonshotai/kimi-k2*"
+      - "*kimi-k2*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai
+    default_max_turns: 90
+    empty_retry_count: 1
 
   # moonshotai/kimi-k3 — Moonshot direct rejects assistant turns whose
   # ``content`` is empty when ``tool_calls`` is present:
@@ -694,16 +737,15 @@ presets:
   # bounded. The trial's recorder and the grader still read the full
   # untruncated text upstream of the cap.
   #
-  # K2.x is DELIBERATELY NOT in this preset. The
-  # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
-  # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
-  # we have no live 400 repro for the K2 line on Moonshot direct yet.
-  # Issue #1286 tracks the K2 filler-on decision, gated on a repro.
+  # K2.x is DELIBERATELY NOT in this preset. The ``moonshot_kimi_k2``
+  # preset above covers that line and ships ``message_assembly_policy``
+  # unset (→ ``null``); we have no live 400 repro for the K2 line on
+  # Moonshot direct yet. Issue #1286 tracks the K2 filler-on decision,
+  # gated on a repro, and the pin stays off K2 until it lands.
   #
-  # Placed AFTER ``openrouter_dict_stringify_recovery`` (Moonshot
-  # siblings clustered). No glob overlap: ``moonshotai/kimi-k3`` does
-  # not match ``*kimi-k2*`` (K2 slugs carry a dot before the version:
-  # ``kimi-k2.6``, ``kimi-k2.7-code``).
+  # No glob overlap: ``moonshotai/kimi-k3`` does not match ``*kimi-k2*``
+  # (K2 slugs carry a dot before the version: ``kimi-k2.6``,
+  # ``kimi-k2.7-code``).
   #
   # ``max_context_tokens: 128000`` + ``context_watermark: 8000`` are the
   # fourth defence — a first-class engine seam for context-window
