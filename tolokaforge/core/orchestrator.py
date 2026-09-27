@@ -3403,7 +3403,15 @@ class Orchestrator:
             # Publish completeness and generate reports before stamping the
             # run as completed, so ``run_state.json``'s completion gates are
             # derived from the published counts.
-            if not (budget_exhausted and remaining > 0):
+            if budget_exhausted and remaining > 0:
+                # A paused run publishes completeness too. The field is defined
+                # over ``self.results`` — the attempts this process ran, never
+                # the planned trial set — so it reports honestly over a shorter
+                # denominator, and every caller of :meth:`run` reads it
+                # unconditionally. Reports and the completed stamp stay skipped:
+                # resume detection reads ``status`` alone.
+                self._publish_grading_completeness()
+            else:
                 self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()

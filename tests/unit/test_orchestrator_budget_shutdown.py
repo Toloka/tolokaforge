@@ -409,3 +409,80 @@ def test_natural_completion_records_run_completed(tmp_path: Path) -> None:
     state = RunStateManager(output_dir).load_state()
     assert state is not None
     assert state.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# grading_completeness is published on every path that returns from run()
+# ---------------------------------------------------------------------------
+
+
+def test_grading_completeness_published_on_budget_pause(tmp_path: Path) -> None:
+    """A budget-paused ``run()`` still binds ``grading_completeness``.
+
+    Every caller of :meth:`Orchestrator.run` reads the attribute
+    unconditionally — ``dx.cli.main`` feeds it to the completeness gates
+    straight after ``run()`` returns — so leaving it unbound turns a clean
+    budget stop into an ``AttributeError`` and a failed run.
+
+    The counts must describe the attempts that actually ran, not the trial
+    set that was planned: a paused run is truncated by construction.
+    """
+    budget = CompositeBudget([SampleBudget(limit=1)])
+    orch, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB", "taskC"],
+        budget=budget,
+        cost_per_trial=0.01,
+    )
+
+    output_dir = orch.run()
+
+    completeness = orch.grading_completeness
+    assert completeness.total_attempts == len(orch.results)
+    assert completeness.total_attempts < 3, "the budget did not truncate the run"
+
+    from tolokaforge.core.resume import RunStateManager
+
+    state = RunStateManager(output_dir).load_state()
+    assert state is not None
+    assert state.status == "paused", "publishing must not stamp a paused run completed"
+
+
+def test_grading_completeness_published_when_budget_exhausted_at_start(
+    tmp_path: Path,
+) -> None:
+    """The degenerate pause — the cap is already spent, so nothing is scheduled.
+
+    ``run()`` returns through the same paused branch with zero results, which
+    is the one case where publishing could plausibly be skipped as pointless.
+    It cannot be: the caller reads the attribute either way, and
+    ``total_attempts == 0`` is what keeps ``zero_coverage`` from firing on a
+    run that never had trials to measure.
+    """
+    budget = CompositeBudget([SampleBudget(limit=0)])
+    orch, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=budget,
+        cost_per_trial=0.01,
+    )
+
+    orch.run()
+
+    completeness = orch.grading_completeness
+    assert completeness.total_attempts == 0
+    assert completeness.zero_coverage is False
+
+
+def test_natural_completion_still_publishes_grading_completeness(tmp_path: Path) -> None:
+    """The unpaused path keeps publishing — the pause branch is additive."""
+    orch, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=None,
+        cost_per_trial=0.0,
+    )
+
+    orch.run()
+
+    assert orch.grading_completeness.total_attempts == 2
