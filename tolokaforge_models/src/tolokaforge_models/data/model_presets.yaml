@@ -660,6 +660,23 @@ presets:
   # output budget on reasoning returns no text and no tool calls, which is
   # otherwise trial-fatal. Two trials in that sweep died this way.
   #
+  # ``max_context_tokens: 120000`` + ``context_watermark: 8000`` arm the
+  # summarize-and-handoff seam, and they are what makes the turn lift safe
+  # rather than merely longer. Without them a
+  # ``ContextWindowExceededError`` is terminal, and more turns means more
+  # context: measured on the sweep above, a trial's largest single request
+  # grew ~700 tokens per turn, reaching a median 32 K and a worst case
+  # 111 K by turn 50. Extrapolated to turn 90 that is ~60 K median and
+  # ~139 K worst case.
+  #
+  # 120 K is chosen against the SMALLEST window these globs match, not the
+  # largest: ``moonshotai/kimi-k2`` is a 128 K route while ``kimi-k2.5``,
+  # ``kimi-k2.6`` and ``kimi-k2.7-code`` are 256 K. A ceiling picked for the
+  # 256 K members would let the 128 K one run past its window and die. Set
+  # below the floor, the seam summarises instead — on the heaviest
+  # trajectories only, since a median trial never approaches it. Same
+  # posture as the K3 sibling, which caps at 128 K on a 1 M-window model.
+  #
   # NOT opted in here, deliberately: the ``openrouter_defaults`` Moonshot
   # pin. K3 pairs that pin with an empty-assistant filler because Moonshot
   # direct rejects empty-content assistant turns; pinning K2.x without a
@@ -676,6 +693,8 @@ presets:
     reasoning_codec: openai
     default_max_turns: 90
     empty_retry_count: 1
+    max_context_tokens: 120000
+    context_watermark: 8000
 
   # moonshotai/kimi-k3 — Moonshot direct rejects assistant turns whose
   # ``content`` is empty when ``tool_calls`` is present:
