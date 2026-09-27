@@ -196,8 +196,10 @@ class TrialRunner:
         self.verbose = verbose
         self.strict = strict
         self.interaction_mode = interaction_mode
-        # Name in the ``tolokaforge.agent_loops`` entry-point group; resolved
-        # per trial in :meth:`run` to the loop that drives the agent's turns.
+        # Name in the ``tolokaforge.agent_loops`` entry-point group. :meth:`run`
+        # resolves it to the loop that drives the agent's turns before the turn
+        # cycle starts; the orchestrator refuses an unregistered name at run
+        # start, ahead of any trial.
         self.agent_loop = agent_loop
         self._events = events
         self.tool_output_max_chars_by_tool = tool_output_max_chars_by_tool
@@ -379,16 +381,21 @@ class TrialRunner:
                 probe_stats=self._probe_stats,
             )
 
-            try:
-                # Deferred import: the plugin registry pulls the conductor
-                # protocol, which pulls this runner module — an eager top-level
-                # import would loop.
-                from tolokaforge.core.plugin_registry import (
-                    TurnPolicyContext,
-                    load_agent_loop,
-                    load_turn_policy,
-                )
+            # Deferred import: the plugin registry pulls the conductor
+            # protocol, which pulls this runner module — an eager top-level
+            # import would loop.
+            from tolokaforge.core.plugin_registry import (
+                TurnPolicyContext,
+                load_agent_loop,
+                load_turn_policy,
+            )
 
+            # Resolved outside the ``except Exception`` below: an unregistered
+            # name is a config fault, and reporting it as this trial's status
+            # would price it as a scored agent failure.
+            loop_factory = load_agent_loop(self.agent_loop)
+
+            try:
                 policy = load_turn_policy(self.interaction_mode)(
                     TurnPolicyContext(user_simulator=self.user_simulator)
                 )
@@ -411,7 +418,7 @@ class TrialRunner:
                     and capabilities.context_watermark is not None
                 ):
                     summarize_policy = LLMSummarizer(self.agent_client, agent_metrics_sink)
-                loop = load_agent_loop(self.agent_loop)(
+                loop = loop_factory(
                     AgentLoopContext(
                         llm_client=self.agent_client,
                         tool_executor=self.tool_executor,

@@ -84,19 +84,40 @@ def run(self, system_prompt: str, messages: list[Message], start_time: float) ->
 `messages` is mutated in place — the caller owns the list and assembles the
 trajectory from it.
 
-**The Protocol's docstring pins the one hard contract**, because it is
-otherwise invisible: an assistant `Message` the loop appends must carry
-`ToolCall` objects whose `id` equals the `call_id` handed to
-`recorder.record(...)` and `tool_executor.execute(..., call_id=...)` for the
-same call. `build_trial_timeline` joins the message view to the record view by
-that id alone, and `_require_records_reconcile` raises
-`TimelineInconsistencyError` when a record answers no declaration or names a
-tool its declaration did not
-(`tolokaforge/core/grading/trace_timeline.py`). A loop whose action format is
-text rather than provider `tool_calls` therefore normalises each parsed action
-into a `ToolCall` carrying that id *before* appending the assistant message.
-Emitting prose and recording separately produces an ungradeable trial, not a
-degraded one.
+**The Protocol's docstring pins the contracts grading enforces and the type
+checker does not**, because they are otherwise invisible. Three of them:
+
+1. **Every call id comes from `context.call_ids.assign(...)`** and is used
+   identically as the assistant `Message`'s `ToolCall.id`, as
+   `recorder.record(call_id=...)` and as
+   `tool_executor.execute(..., call_id=...)`. Agreeing on a raw provider id is
+   *not* sufficient: `build_trial_timeline` re-derives keys per view with
+   `episode_unique_call_ids` — declaration order for the messages, execution
+   order for the records — so a provider that repeats a raw id within an
+   episode (`moonshotai/kimi-k3`'s `<tool>:<index>` shape) plus out-of-order
+   parallel execution makes the two derivations disagree.
+   `_require_records_reconcile` raises `TimelineInconsistencyError` when the
+   mis-paired calls name different tools, and the join is silently wrong when
+   they name the same one. Pre-assigned ids are already episode-unique, so both
+   derivations are the identity and ordering cannot matter.
+   `ToolCallingLoop._assign_call_ids` is where the built-in satisfies this.
+2. **A failed tool call's `role: tool` message content carries
+   `TOOL_ERROR_MESSAGE_PREFIX`.** The message view records no status, so a
+   trial re-graded from messages alone recovers the result text by stripping
+   that prefix (`_append_message_result`). A loop that formats tool errors any
+   other way makes every failed call read as successful to `result:` trace
+   checks — a wrong grade, not an error. The constant is declared in the
+   stdlib-only leaf `core/tool_message_format.py` and imported by both
+   `core/loop.py` and `core/grading/trace_timeline.py`, so producer and
+   consumer cannot drift — and the grading path keeps the import footprint
+   that makes `tolokaforge retrace` incapable of reaching an LLM client.
+3. **`metrics`, `should_terminate` and a supplied `user_turn` are
+   obligations.** See `AgentLoopContext` below.
+
+A loop whose action format is text rather than provider `tool_calls` therefore
+normalises each parsed action into a `ToolCall` carrying the assigned id
+*before* appending the assistant message. Emitting prose and recording
+separately produces an ungradeable trial, not a degraded one.
 
 ### `AgentLoopContext` + registry
 
@@ -105,8 +126,18 @@ trial-scoped dependencies the runner supplies today: the LLM client, the tool
 executor and its schemas, the loop budget, the metrics sink, the termination
 and user-turn seams, the tool-call recorder, the episode call-id assigner, the
 rate limiter, the error classifier, the trial logger, and the display /
-observability observation sinks. A factory ignores what its loop does not
-read.
+observability observation sinks.
+
+A factory ignores the genuinely optional fields — the rate limiter, the
+argument normaliser, the two observation sinks, the validation schemas, the
+per-tool output cap — and the cost is a visibly degraded run. Four are not
+optional whatever the annotations allow, because ignoring them is silent:
+`metrics` (the run's spend accumulator sums the trials' `metrics.cost_usd`, so
+an unfed sink leaves the run's cost limit (`compute.max_budget_usd`) unable
+to fire however much the run costs), `should_terminate` (the trial's stuck detection), a supplied
+`user_turn` (ignoring it runs a `conversational` trial agent-only, collapsing
+the orthogonality this ADR relies on), and the `recorder` / `call_ids` pair
+that carries obligation 1.
 
 Loops register under a new entry-point group **`tolokaforge.agent_loops`**,
 resolved by `load_agent_loop(name)` and listed by `available_agent_loops()` —
@@ -114,10 +145,14 @@ the same fail-loud `discover_entry_points` / `_load` machinery every sibling
 loader uses, with `UnknownImplementationError` naming the known registrations
 on a typo.
 
-The context lives beside the Protocol rather than in `plugin_registry`,
-matching `RubricEvaluatorFactory` / `StateCheckBackendFactory`: the seam's
-whole contract stays in one module and `plugin_registry` keeps only the group
-constant, the loader and the listing.
+The Protocol, the context and the factory alias are *declared* beside each
+other in `core/loop.py`, matching `RubricEvaluatorFactory` /
+`StateCheckBackendFactory`: the seam's whole contract stays in one module and
+`plugin_registry` owns only the group constant, the loader and the listing.
+`plugin_registry` re-exports all three names, so an implementer reaches the
+agent-loop seam the same way the turn-policy seam is reached
+(`TurnPolicyContext` + `TurnPolicyFactory`) rather than having to know which
+module declares which half.
 
 ### The built-in registers like anything else
 
@@ -145,6 +180,16 @@ coding-harness branch.
 
 `OrchestratorConfig.agent_loop: str = "engine-loop"`, threaded conductor-side
 into the `TrialRunner` constructor the way `interaction_mode` already is.
+
+The name is checked twice, and neither check is inside a trial.
+`Orchestrator.load_tasks` resolves it once before any trial work, beside the
+run's other refusals, so a typo — or an editable install whose `.dist-info`
+predates the group — is one error naming the registered loops instead of one
+scored failure per trial after each container is already up. The static
+`tolokaforge config validate` path checks it too, beside the equivalent
+`orchestrator.runtime` check. `TrialRunner.run` resolves the factory before
+the `except Exception` that classifies trial faults, so a resolution failure
+can never be priced as an agent failure.
 
 Rejected alternative: `models.agent.loop`. `ModelConfig` is the LLM-invocation
 wire type — provider, name, sampling parameters — and it is shared by the
@@ -176,6 +221,12 @@ orchestrator-only loop implementation stays out of the partition entirely;
 - The declared-id / recorded-id contract is written down where an implementer
   reads it, instead of being discovered as a `TimelineInconsistencyError` in a
   smoke run.
+- The tool-error prefix the grading timeline parses is a constant both sides
+  import, so the loop seam cannot silently change what a failed call looks
+  like to a trace check.
+- `orchestrator.agent_loop` resolves once at run start, so an unregistered
+  name is one refusal naming the known registrations rather than one scored
+  trial failure per trial after each container is already up.
 - ADR-0011's first named follow-up lift is closed with the pattern ADR-0011
   itself prescribes.
 

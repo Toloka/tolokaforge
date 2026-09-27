@@ -52,7 +52,7 @@ The groups:
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
-* ``tolokaforge.agent_loops`` → :data:`~tolokaforge.core.loop.AgentLoopFactory`
+* ``tolokaforge.agent_loops`` → :data:`AgentLoopFactory`
 * ``tolokaforge.grading_methods`` → ``type[GradingMethod]``
 * ``tolokaforge.grader_kinds`` → ``type[GraderKind]``
 * ``tolokaforge.judge_kinds`` → ``type[JudgeKind]``
@@ -101,7 +101,7 @@ from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactor
 from tolokaforge.core.grading.substrate import GradingSubstrate
 from tolokaforge.core.grading.trace_check_operator import TraceCheckOperator
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
-from tolokaforge.core.loop import AgentLoopFactory
+from tolokaforge.core.loop import AgentLoop, AgentLoopContext, AgentLoopFactory
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 
@@ -135,6 +135,8 @@ if TYPE_CHECKING:
 # the concrete class.
 
 __all__ = [
+    "AgentLoop",
+    "AgentLoopContext",
     "AgentLoopFactory",
     "ConductorFactory",
     "CustomCheckExecutorFactory",

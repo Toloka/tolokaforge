@@ -696,7 +696,7 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-Nine swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (four seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
+Nine swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (five seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
@@ -710,7 +710,7 @@ Nine swappable seams are each exposed as an `importlib.metadata` entry-point gro
 | `tolokaforge.service_lifecycle_dispatchers` | `type[ServiceLifecycleDispatcher]` | *no context* — one class per `ServiceIsolation` label; the class's `isolation` ClassVar names the label the composer looks it up by |
 | `tolokaforge.substrate_composers` | `type[SubstrateComposer]` | *no context* — the backend instantiates the composer and injects its own materialiser + dispatcher registry |
 
-A factory is free to ignore context fields it does not need. The runtime-backend, trial-grader, and readiness-probe context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
+A factory ignores the context fields its implementation does not read — except where a seam's own contract names a field as an obligation (the agent-loop seam does; see `AgentLoopContext`). The runtime-backend, trial-grader, readiness-probe, turn-policy, and agent-loop context/factory types are imported from `tolokaforge.core.plugin_registry` (`AgentLoop`, `AgentLoopContext` and `AgentLoopFactory` are re-exported there from `tolokaforge.core.loop`, which is also importable directly); the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
 **Runtime backend** — `mypkg/runtime.py`:
 
@@ -795,7 +795,8 @@ tolokaforge ships `conversational` (two-party user-plus-agent) as a built-in und
 **Agent loop** — `mypkg/loop.py`. An agent loop drives one trial's turn cycle: generate, act, observe, decide whether to continue. It appends to the caller-owned `messages` list in place and returns a `LoopOutcome`. The loop is looked up by `orchestrator.agent_loop`:
 
 ```python
-from tolokaforge.core.loop import AgentLoopContext, LoopOutcome
+from tolokaforge.core.plugin_registry import AgentLoopContext
+from tolokaforge.core.loop import LoopOutcome
 from tolokaforge.core.models import Message
 
 class MyAgentLoop:
@@ -814,7 +815,7 @@ def my_loop_factory(ctx: AgentLoopContext) -> MyAgentLoop:
 my_loop = "mypkg.loop:my_loop_factory"
 ```
 
-An assistant `Message` the loop appends must carry `ToolCall` objects whose `id` equals the `call_id` it passed to `recorder.record(...)` and `tool_executor.execute(..., call_id=...)` — the grading timeline joins the message view to the record view by that id and refuses a mismatch. A loop with a text action format normalises each parsed action into a `ToolCall` before appending. See [ADR-0049](adr/0049-agent-loop-protocol-and-registry.md).
+The `AgentLoop` docstring carries the three obligations grading enforces and the type checker does not: every call id comes from `context.call_ids.assign(...)` and is used identically on the assistant `Message`, in `recorder.record(...)` and in `tool_executor.execute(...)`; a failed tool call's message content carries `tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`; and `metrics`, `should_terminate` and a supplied `user_turn` are fed, not optional. A loop with a text action format normalises each parsed action into a `ToolCall` before appending. See [ADR-0049](adr/0049-agent-loop-protocol-and-registry.md).
 
 tolokaforge ships `engine-loop` (the built-in `ToolCallingLoop`) as a built-in under this group; it resolves through the registry like any third-party loop.
 

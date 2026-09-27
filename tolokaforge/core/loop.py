@@ -89,6 +89,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.summarize_policy import SummarizePolicy, SummarizerFailedError
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
 from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
@@ -376,20 +377,47 @@ class AgentLoop(Protocol):
     ``messages`` in place, records each tool call it executes, and returns a
     :class:`LoopOutcome`.
 
-    **The declared call id and the recorded call id are one join key.** An
-    assistant :class:`~tolokaforge.core.models.Message` an implementation
-    appends MUST carry :class:`~tolokaforge.core.models.ToolCall` objects whose
-    ``id`` equals the ``call_id`` handed to ``recorder.record(...)`` and to
-    ``tool_executor.execute(..., call_id=...)`` for that same call.
+    Three obligations are enforced downstream, in grading, rather than by the
+    type checker. Each is silent or fatal at grade time, never at write time.
+
+    **1. Every call id comes from the context's assigner.** An implementation
+    MUST key each tool call by ``context.call_ids.assign(<provider id>)`` and
+    use that one key in all three places: the ``id`` of the
+    :class:`~tolokaforge.core.models.ToolCall` on the assistant
+    :class:`~tolokaforge.core.models.Message` it appends, the ``call_id`` handed
+    to ``recorder.record(...)``, and the ``call_id`` handed to
+    ``tool_executor.execute(...)``.
     :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline` joins
     the message view to the record view by that id alone — never by position —
     and ``_require_records_reconcile`` raises
     :class:`~tolokaforge.core.grading.trace_timeline.TimelineInconsistencyError`
     when a record answers no declaration, or names a tool its declaration did
-    not. An implementation whose action format is text rather than provider
-    ``tool_calls`` therefore normalises every parsed action into a ``ToolCall``
-    carrying that id *before* appending the assistant message; prose plus a
-    separate record leaves the trial ungradeable.
+    not. Agreeing on a *raw* provider id is not enough: each view re-derives its
+    keys with :func:`~tolokaforge.core.tool_call_ids.episode_unique_call_ids`
+    over its own ordering — declaration order for the messages, execution order
+    for the records — so a provider that repeats a raw id within an episode (the
+    ``<tool>:<index within the turn>`` shape in
+    :mod:`tolokaforge.core.tool_call_ids`) plus calls executed out of
+    declaration order makes the two derivations disagree. The disagreement
+    raises when the mis-paired calls name different tools and mis-joins silently
+    when they name the same one. Pre-assigned ids are already episode-unique, so
+    both derivations are the identity and the order cannot matter.
+
+    An implementation whose action format is text rather than provider
+    ``tool_calls`` normalises every parsed action into a ``ToolCall`` carrying
+    that id *before* appending the assistant message; prose plus a separate
+    record leaves the trial ungradeable.
+
+    **2. A failed tool call's message content carries**
+    :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`. The
+    message view records no status, so a trial re-graded from messages alone
+    recovers the result text by stripping that prefix. A loop that formats tool
+    errors any other way makes every failed call read as a successful one to
+    ``result:`` trace checks — a wrong grade, not an error.
+
+    **3. The non-optional context fields are obligations, not offers.** See
+    :class:`AgentLoopContext` for which fields an implementation may ignore and
+    what ignoring the rest costs.
 
     :class:`ToolCallingLoop` satisfies this contract; implementations resolve
     through the ``tolokaforge.agent_loops`` entry-point group.
@@ -409,14 +437,38 @@ class AgentLoop(Protocol):
 class AgentLoopContext:
     """The trial-scoped dependencies an agent-loop factory receives.
 
-    The union of what a loop over the trial's agent may need. A factory is free
-    to ignore fields its implementation does not read.
+    The union of what a loop over the trial's agent may need.
 
-    ``recorder`` and ``call_ids`` are the two halves of the join key the
-    :class:`AgentLoop` contract pins: the recorder is the trial's ordered
-    tool-call record, and the assigner is the episode-wide id sequence both the
-    agent's loop and the trial's second actor draw from, so one actor's raw
-    provider id is disambiguated rather than recorded twice.
+    **Optional to read**: ``request_limiter``, ``normalize_tool_arguments``,
+    ``call_observation``, ``observer``, ``validation_schemas_by_tool``,
+    ``tool_output_max_chars_by_tool``. Ignoring one costs the run a rate-limit
+    bound, an argument-shape repair, a display or tracing signal, or a
+    defensive cap — degraded, and visible as such.
+
+    **Not optional**, whatever the type annotations allow:
+
+    ``metrics``
+        Every generation's usage and cost must reach the sink. The run's
+        accumulated spend is the sum of the trials' ``metrics.cost_usd``, so a
+        loop that never feeds it reports zero for every trial and the run's
+        cost limit (``compute.max_budget_usd``) never fires however much the
+        run actually spends.
+    ``should_terminate``
+        Called after the assistant message is appended and before tool
+        execution. It is the trial's stuck detection; skipping the call
+        disables it silently.
+    ``user_turn``
+        ``None`` only when the trial's turn policy dispatches no user — the
+        caller decides that, not the loop. When it is supplied, a loop that
+        never calls it runs a ``conversational`` trial agent-only, and per
+        ADR-0049 the interaction-mode axis and the loop axis are orthogonal.
+    ``recorder`` and ``call_ids``
+        The two halves of the join key the :class:`AgentLoop` contract pins:
+        the recorder is the trial's ordered tool-call record, and the assigner
+        is the episode-wide id sequence both the agent's loop and the trial's
+        second actor draw from, so one actor's raw provider id is
+        disambiguated rather than recorded twice. A ``None`` ``recorder`` is
+        the judge's read-only shape, not a licence to execute tools unrecorded.
     """
 
     llm_client: LoopLLMClient
@@ -965,7 +1017,7 @@ class ToolCallingLoop:
             raw_content = (
                 tool_result.output
                 if tool_result.success
-                else f"Error: {resolve_tool_output(tool_result)}"
+                else f"{TOOL_ERROR_MESSAGE_PREFIX}{resolve_tool_output(tool_result)}"
             )
             content = self._cap_tool_message_content(tc.name, raw_content)
 

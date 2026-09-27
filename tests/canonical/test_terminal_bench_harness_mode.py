@@ -196,6 +196,9 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         config.grader = None
 
         runtime = _RecordingRuntime(tools)
+        # Exposed on the fixture callable so a case whose conductor call raises
+        # can still assert what did (and did not) reach the runtime.
+        _run.runtime = runtime
         grader = _RecordingGrader()
         agent_client = MagicMock()
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
@@ -301,16 +304,15 @@ class TestHarnessModeSelection:
     def test_a_task_without_the_command_keeps_the_turn_loop(self, harness_trial):
         """No ``agent_harness_command`` routes to the turn loop, as before.
 
-        The sentinel loop raises, which ``TrialRunner.run`` records as an
-        initialization error — that recorded message is the evidence the
-        branch was taken, and the run-level default stays the LLM path.
+        The sentinel raises when the trial resolves its agent loop, and that
+        raise reaching the caller is the evidence the branch was taken: the
+        run-level default stays the LLM path. Nothing reaches the runtime,
+        because the turn loop never ran the harness command.
         """
-        result, runtime, _ = harness_trial(metadata={"agent_harness": "engine-loop"})
-        assert result.trajectory.status is TrialStatus.ERROR
-        assert any(
-            "an agent loop was resolved" in (m.content or "") for m in result.trajectory.messages
-        )
-        assert runtime.executed_tools == []
+        with pytest.raises(AssertionError, match="an agent loop was resolved"):
+            harness_trial(metadata={"agent_harness": "engine-loop"})
+
+        assert harness_trial.runtime.executed_tools == []
 
     def test_multiple_agent_tools_are_refused(self, harness_trial):
         with pytest.raises(RuntimeError, match="runs through exactly one"):

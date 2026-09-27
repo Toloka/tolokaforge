@@ -1,6 +1,6 @@
 """Runner ↔ ``AgentLoop`` wiring lock — the ``tolokaforge.agent_loops`` seam.
 
-Three invariants this file locks:
+Five invariants this file locks:
 
 * A loop registered by a third party under the ``tolokaforge.agent_loops``
   entry-point group and named by ``TrialRunner(agent_loop=...)`` is the loop
@@ -8,21 +8,29 @@ Three invariants this file locks:
   appends land in the produced :class:`~tolokaforge.core.models.Trajectory`,
   its :class:`~tolokaforge.core.loop.LoopOutcome` becomes the trial's verdict,
   and the built-in :class:`~tolokaforge.core.loop.ToolCallingLoop` never runs.
+* ``orchestrator.agent_loop`` is the only way a user reaches that kwarg, so the
+  config → conductor → runner path is locked end-to-end: the conductor drives
+  the loop the run config names.
 * The built-in loop is not special-cased: ``engine-loop`` resolves through the
   same registry to a :class:`~tolokaforge.core.loop.ToolCallingLoop`, and the
   runner's default drives it.
 * An unregistered name is refused with :class:`UnknownImplementationError`
   listing the known names, like every other seam in the registry.
+* That refusal lands before any trial work — at run start, naming the config
+  field — rather than as one scored trial failure per trial.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.conductor import InProcessConductor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.logging import StructuredLogger
@@ -36,12 +44,22 @@ from tolokaforge.core.loop import (
     classify_loop_error,
 )
 from tolokaforge.core.models import (
+    EvaluationConfig,
+    Grade,
+    GradeComponents,
+    InitialStateConfig,
     Message,
     MessageRole,
     Metrics,
+    ModelConfig,
+    OrchestratorConfig,
+    RunConfig,
+    TaskConfig,
     TerminationReason,
+    ToolsConfig,
     TrialStatus,
 )
+from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.plugin_registry import (
     AGENT_LOOPS_GROUP,
     UnknownImplementationError,
@@ -51,6 +69,8 @@ from tolokaforge.core.plugin_registry import (
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.runner.models import TaskDescription
 from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
 
 pytestmark = pytest.mark.canonical
@@ -63,6 +83,8 @@ class _NeverCalledAgent:
 
     def __init__(self) -> None:
         self.capabilities = ModelCapabilities()
+        # Read by the conductor's artifact-write phase, never by a generation.
+        self.config = ModelConfig(provider="openai", name="gpt-4")
 
     def generate(
         self,
@@ -245,3 +267,168 @@ def test_unknown_loop_name_is_refused() -> None:
         load_agent_loop("this_loop_is_not_registered")
     assert AGENT_LOOPS_GROUP in str(excinfo.value)
     assert "engine-loop" in str(excinfo.value)
+
+
+class _StubAdapter:
+    """Adapter surface ``Orchestrator.load_tasks`` reaches, and nothing else."""
+
+    def get_task_ids(self) -> list[str]:
+        return []
+
+    def get_task(self, task_id: str) -> Any:  # pragma: no cover - no ids to load
+        raise AssertionError("no task should be loaded past the agent-loop refusal")
+
+
+def _run_config(agent_loop: str, output_dir: str) -> RunConfig:
+    return RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(
+            workers=1,
+            repeats=1,
+            auto_start_services=False,
+            agent_loop=agent_loop,
+        ),
+        evaluation=EvaluationConfig(output_dir=output_dir),
+    )
+
+
+class TestAnUnregisteredNameFailsBeforeTheTrial:
+    """A name no package registers is a config fault, not a trial outcome.
+
+    Resolved per trial, an unregistered name costs one ``TrialStatus.ERROR``
+    per trial — after that trial's container is provisioned, and priced as a
+    scored agent failure. Both of these lock the resolution out of that path.
+    """
+
+    def test_the_run_refuses_before_any_task_is_loaded(self, tmp_path: Path) -> None:
+        orchestrator = Orchestrator(_run_config("engine_loop", str(tmp_path)))
+        orchestrator.adapter = _StubAdapter()
+
+        with pytest.raises(RuntimeError) as excinfo:
+            orchestrator.load_tasks()
+
+        message = str(excinfo.value)
+        assert "orchestrator.agent_loop" in message, (
+            "the refusal must name the config field the operator typed the name in; "
+            f"got {message!r}"
+        )
+        assert "engine_loop" in message
+        assert "engine-loop" in message, "the refusal must list the registered names"
+
+    def test_the_default_name_passes_the_gate(self, tmp_path: Path) -> None:
+        orchestrator = Orchestrator(_run_config("engine-loop", str(tmp_path)))
+        orchestrator.adapter = _StubAdapter()
+
+        orchestrator.load_tasks()
+
+        assert orchestrator.tasks == []
+
+    def test_the_runner_raises_rather_than_scoring_a_trial_error(self) -> None:
+        """Resolution sits outside the runner's trial-fault classifier."""
+        with pytest.raises(UnknownImplementationError):
+            _run_trial("this_loop_is_not_registered")
+
+
+class _NullRuntime:
+    """Runtime backend fake: registers a tool-less trial and reads empty state."""
+
+    def register_trial(self, **kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "num_agent_tools": 0, "tool_schemas": []}
+
+    def get_state(self, trial_id: str, **kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "state_json": "{}"}
+
+
+class _PassGrader:
+    """Trial grader fake — the grading phase is not what this file locks."""
+
+    def grade(self, spec: TrialSpec, trajectory: Any, system_prompt: str) -> Grade:
+        return Grade(binary_pass=True, score=1.0, components=GradeComponents(), reasons="ok")
+
+
+_CONDUCTOR_TASK_ID = "agent-loop-conductor"
+
+
+def _conductor_task_config() -> TaskConfig:
+    return TaskConfig(
+        task_id=_CONDUCTOR_TASK_ID,
+        name=_CONDUCTOR_TASK_ID,
+        category="test",
+        description="config → conductor → runner wiring",
+        initial_user_message="Do the task.",
+        initial_state=InitialStateConfig(),
+        tools=ToolsConfig(agent={"enabled": []}, user={"enabled": []}),
+        interaction_mode="agent_only",
+    )
+
+
+def _conductor_spec() -> TrialSpec:
+    return TrialSpec(
+        trial_id=f"{_CONDUCTOR_TASK_ID}:0",
+        run_id="agent-loop-wiring",
+        task=TaskDescription(
+            task_id=_CONDUCTOR_TASK_ID,
+            name=_CONDUCTOR_TASK_ID,
+            category="test",
+            description="config → conductor → runner wiring",
+            adapter_type="native",
+            system_prompt="",
+            agent_tools=[],
+        ),
+        agent_model_config=ModelConfig(provider="openai", name="gpt-4"),
+        env_endpoints=EnvEndpoints(db_url="http://db:8000", runner_url="http://runner:50051"),
+    )
+
+
+def test_the_run_config_name_reaches_the_runner_through_the_conductor(
+    stub_loops: list[_StubAgentLoop], tmp_path: Path
+) -> None:
+    """``orchestrator.agent_loop`` is the only way a user reaches the kwarg.
+
+    Every other case here names the loop on ``TrialRunner`` directly, so the
+    conductor could stop passing ``agent_loop=`` and each of them would still
+    pass while every real run silently fell back to ``engine-loop``. This drives
+    :meth:`InProcessConductor.run` from a real :class:`RunConfig` instead.
+    """
+    adapter = MagicMock()
+    adapter.get_task_dir.return_value = tmp_path
+    adapter.create_environment.return_value = MagicMock(data={}, task_dir=tmp_path)
+    adapter.get_grading_config.return_value = None
+
+    conductor = InProcessConductor(
+        adapter=adapter,
+        artifact_writer=MagicMock(),
+        config=_run_config("stub_loop", str(tmp_path)),
+        logger=StructuredLogger("agent-loop-conductor-wiring"),
+        agent_client=_NeverCalledAgent(),
+        runtime_backend=_NullRuntime(),
+        trial_grader=_PassGrader(),
+        output_dir=tmp_path / "out",
+    )
+
+    result = conductor.run(_conductor_spec(), _conductor_task_config())
+
+    assert len(stub_loops) == 1, (
+        "the conductor did not thread ``orchestrator.agent_loop`` into the "
+        "TrialRunner — the run silently fell back to the built-in loop"
+    )
+    assert any(message.content == _STUB_REPLY for message in result.trajectory.messages)
+
+
+def test_the_seam_types_are_reachable_from_the_plugin_registry() -> None:
+    """A loop author follows the turn-policy precedent and must not hit an ImportError.
+
+    ``TurnPolicyContext`` and ``TurnPolicyFactory`` both resolve from
+    ``tolokaforge.core.plugin_registry``, so the agent-loop seam exposes its
+    Protocol, context and factory alias there too — the same objects
+    ``tolokaforge.core.loop`` declares, not copies.
+    """
+    from tolokaforge.core import loop as loop_module
+    from tolokaforge.core import plugin_registry
+
+    for name in ("AgentLoop", "AgentLoopContext", "AgentLoopFactory"):
+        assert name in plugin_registry.__all__, (
+            f"{name} is part of the agent-loop seam and must be re-exported "
+            "beside TurnPolicyContext / TurnPolicyFactory"
+        )
+        assert getattr(plugin_registry, name) is getattr(loop_module, name)
