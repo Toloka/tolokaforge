@@ -3,12 +3,12 @@
 A task whose ``TaskDescription.metadata`` carries ``agent_harness_command``
 brings its own agent — a vendor coding-harness CLI that plans and edits
 inside the trial's container. The conductor runs that command once instead
-of driving :class:`~tolokaforge.core.loop.ToolCallingLoop`.
+of resolving an :class:`~tolokaforge.core.loop.AgentLoop`.
 
 The three properties locked here are what make that safe:
 
-* no ``ToolCallingLoop`` is constructed — the CLI is the only agent, and a
-  second one on top of it would spend LLM budget re-solving the task;
+* no agent loop is resolved — the CLI is the only agent, and a second one
+  on top of it would spend LLM budget re-solving the task;
 * exactly one tool call reaches the runtime, carrying the adapter-built
   command and the harness deadline;
 * the grading phase still fires, because it reads the trajectory and the
@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core import runner as runner_module
+from tolokaforge.core import plugin_registry
 from tolokaforge.core.conductor import InProcessConductor
 from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
@@ -172,11 +172,11 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
         def _no_loop(*args: Any, **kwargs: Any):
             raise AssertionError(
-                "ToolCallingLoop was constructed on the harness path — the CLI is "
+                "an agent loop was resolved on the harness path — the CLI is "
                 "the only agent the trial may run"
             )
 
-        monkeypatch.setattr(runner_module, "ToolCallingLoop", _no_loop)
+        monkeypatch.setattr(plugin_registry, "load_agent_loop", _no_loop)
 
         adapter = MagicMock()
         adapter.get_task_dir.return_value = tmp_path
@@ -308,8 +308,7 @@ class TestHarnessModeSelection:
         result, runtime, _ = harness_trial(metadata={"agent_harness": "engine-loop"})
         assert result.trajectory.status is TrialStatus.ERROR
         assert any(
-            "ToolCallingLoop was constructed" in (m.content or "")
-            for m in result.trajectory.messages
+            "an agent loop was resolved" in (m.content or "") for m in result.trajectory.messages
         )
         assert runtime.executed_tools == []
 

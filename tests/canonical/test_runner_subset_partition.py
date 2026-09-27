@@ -656,6 +656,7 @@ _LOADER_TO_GROUP: dict[str, str] = {
     "load_conductor": "tolokaforge.conductors",
     "load_readiness_probe": "tolokaforge.service_readiness_probes",
     "load_turn_policy": "tolokaforge.turn_policies",
+    "load_agent_loop": "tolokaforge.agent_loops",
     "load_custom_check_executor": "tolokaforge.custom_check_executors",
     "load_judge_model_provider": "tolokaforge.judge_model_providers",
     "load_rubric_evaluator": "tolokaforge.rubric_evaluators",

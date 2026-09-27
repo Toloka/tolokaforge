@@ -31,10 +31,10 @@ from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
+    AgentLoopContext,
     LoopConfig,
     MetricsSink,
     TerminationDecision,
-    ToolCallingLoop,
     UserTurnResult,
 )
 from tolokaforge.core.models import (
@@ -177,6 +177,7 @@ class TrialRunner:
         events: RunDisplayEvents = _NULL_EVENTS,
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
+        agent_loop: str = "engine-loop",
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
         loop_observer: "LoopObserver | None" = None,
     ):
@@ -195,6 +196,9 @@ class TrialRunner:
         self.verbose = verbose
         self.strict = strict
         self.interaction_mode = interaction_mode
+        # Name in the ``tolokaforge.agent_loops`` entry-point group; resolved
+        # per trial in :meth:`run` to the loop that drives the agent's turns.
+        self.agent_loop = agent_loop
         self._events = events
         self.tool_output_max_chars_by_tool = tool_output_max_chars_by_tool
         # Non-``None`` only under rate-limit probe mode. Shared by the agent and
@@ -381,6 +385,7 @@ class TrialRunner:
                 # import would loop.
                 from tolokaforge.core.plugin_registry import (
                     TurnPolicyContext,
+                    load_agent_loop,
                     load_turn_policy,
                 )
 
@@ -406,42 +411,45 @@ class TrialRunner:
                     and capabilities.context_watermark is not None
                 ):
                     summarize_policy = LLMSummarizer(self.agent_client, agent_metrics_sink)
-                outcome = ToolCallingLoop(
-                    llm_client=self.agent_client,
-                    tool_executor=self.tool_executor,
-                    tool_schemas=self.tool_schemas,
-                    validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
-                        self.tool_schemas
-                    ),
-                    tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
-                    config=LoopConfig(
-                        max_turns=self.max_turns,
-                        episode_timeout_s=self.episode_timeout_s,
-                        empty_retry_count=capabilities.empty_retry_count,
-                        output_length_retry_count=capabilities.output_length_retry_count,
-                        parser_error_retry_count=capabilities.parser_error_retry_count,
-                        tool_output_max_chars=capabilities.tool_output_max_chars,
-                        max_context_tokens=capabilities.max_context_tokens,
-                        context_watermark=capabilities.context_watermark,
-                        summarize_policy=summarize_policy,
-                    ),
-                    metrics=agent_metrics_sink,
-                    should_terminate=self._agent_termination,
-                    user_turn=lambda messages: self._policy_user_turn(policy, messages),
-                    recorder=self.tool_call_recorder,
-                    call_ids=self._call_ids,
-                    request_limiter=self.request_limiter,
-                    normalize_tool_arguments=self._normalize_tool_arguments,
-                    classify_error=self.agent_client.classify_loop_error,
-                    logger=self.logger,
-                    call_observation=LLMCallObservation(
-                        events=self._events,
-                        trial_id=trial_id,
-                        role="agent",
-                        probe_stats=self._probe_stats,
-                    ),
-                    observer=self._loop_observer,
-                ).run(system_prompt, self.messages, self.start_time)
+                loop = load_agent_loop(self.agent_loop)(
+                    AgentLoopContext(
+                        llm_client=self.agent_client,
+                        tool_executor=self.tool_executor,
+                        tool_schemas=self.tool_schemas,
+                        validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
+                            self.tool_schemas
+                        ),
+                        tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
+                        config=LoopConfig(
+                            max_turns=self.max_turns,
+                            episode_timeout_s=self.episode_timeout_s,
+                            empty_retry_count=capabilities.empty_retry_count,
+                            output_length_retry_count=capabilities.output_length_retry_count,
+                            parser_error_retry_count=capabilities.parser_error_retry_count,
+                            tool_output_max_chars=capabilities.tool_output_max_chars,
+                            max_context_tokens=capabilities.max_context_tokens,
+                            context_watermark=capabilities.context_watermark,
+                            summarize_policy=summarize_policy,
+                        ),
+                        metrics=agent_metrics_sink,
+                        should_terminate=self._agent_termination,
+                        user_turn=lambda messages: self._policy_user_turn(policy, messages),
+                        recorder=self.tool_call_recorder,
+                        call_ids=self._call_ids,
+                        request_limiter=self.request_limiter,
+                        normalize_tool_arguments=self._normalize_tool_arguments,
+                        classify_error=self.agent_client.classify_loop_error,
+                        logger=self.logger,
+                        call_observation=LLMCallObservation(
+                            events=self._events,
+                            trial_id=trial_id,
+                            role="agent",
+                            probe_stats=self._probe_stats,
+                        ),
+                        observer=self._loop_observer,
+                    )
+                )
+                outcome = loop.run(system_prompt, self.messages, self.start_time)
 
                 status = outcome.status
                 termination_reason = outcome.termination_reason
@@ -506,8 +514,9 @@ class TrialRunner:
         A harness CLI owns its own planning loop inside the container, so the
         engine's turn loop would be a second agent stacked on the first. The
         trial is one tool call instead: no LLM generation, no user turn, no
-        :class:`ToolCallingLoop`. The trajectory records *instruction* as the
-        user message and the CLI's output as the agent's single reply.
+        :class:`~tolokaforge.core.loop.AgentLoop`. The trajectory records
+        *instruction* as the user message and the CLI's output as the agent's
+        single reply.
 
         Args:
             tool_name: Tool the command runs through — the task's sole agent

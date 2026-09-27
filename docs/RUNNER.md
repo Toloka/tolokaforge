@@ -304,7 +304,7 @@ asserts each group's rows target modules the subset ships, and
 `load_*` seam call reachable from the subset partition and asserts its
 group is in the allowlist. The other groups (`runtime_backends`,
 `trial_graders`, `conductors`, `service_readiness_probes`,
-`turn_policies`, `grading_substrates`) point at modules the subset does
+`turn_policies`, `agent_loops`, `grading_substrates`) point at modules the subset does
 not ship — their loaders are called from `tolokaforge.core.runner` /
 `tolokaforge.grader.composite_dispatch`, which live outside the subset
 partition — and are deliberately excluded from the subset wheel.

@@ -65,7 +65,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import litellm.exceptions
 
@@ -364,6 +364,83 @@ class LoopOutcome:
     status: TrialStatus
     termination_reason: TerminationReason | None
     captured_effective_system_prompt: str | None = None
+
+
+@runtime_checkable
+class AgentLoop(Protocol):
+    """The in-process driver of one trial's agent turn cycle.
+
+    An implementation owns turn structure — generate, act, observe, decide
+    whether to continue — and reports the trial-level verdict. The caller owns
+    ``messages``, the tool-call recorder and the trajectory: the loop appends to
+    ``messages`` in place, records each tool call it executes, and returns a
+    :class:`LoopOutcome`.
+
+    **The declared call id and the recorded call id are one join key.** An
+    assistant :class:`~tolokaforge.core.models.Message` an implementation
+    appends MUST carry :class:`~tolokaforge.core.models.ToolCall` objects whose
+    ``id`` equals the ``call_id`` handed to ``recorder.record(...)`` and to
+    ``tool_executor.execute(..., call_id=...)`` for that same call.
+    :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline` joins
+    the message view to the record view by that id alone — never by position —
+    and ``_require_records_reconcile`` raises
+    :class:`~tolokaforge.core.grading.trace_timeline.TimelineInconsistencyError`
+    when a record answers no declaration, or names a tool its declaration did
+    not. An implementation whose action format is text rather than provider
+    ``tool_calls`` therefore normalises every parsed action into a ``ToolCall``
+    carrying that id *before* appending the assistant message; prose plus a
+    separate record leaves the trial ungradeable.
+
+    :class:`ToolCallingLoop` satisfies this contract; implementations resolve
+    through the ``tolokaforge.agent_loops`` entry-point group.
+    """
+
+    def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
+        """Run the turn cycle, mutating ``messages`` in place.
+
+        ``start_time`` is the ``time.time()`` epoch the episode began at — any
+        episode-timeout budget is measured against it. Returns the loop-level
+        verdict; the caller assembles the trajectory from ``messages``.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class AgentLoopContext:
+    """The trial-scoped dependencies an agent-loop factory receives.
+
+    The union of what a loop over the trial's agent may need. A factory is free
+    to ignore fields its implementation does not read.
+
+    ``recorder`` and ``call_ids`` are the two halves of the join key the
+    :class:`AgentLoop` contract pins: the recorder is the trial's ordered
+    tool-call record, and the assigner is the episode-wide id sequence both the
+    agent's loop and the trial's second actor draw from, so one actor's raw
+    provider id is disambiguated rather than recorded twice.
+    """
+
+    llm_client: LoopLLMClient
+    tool_executor: ToolExecuting
+    tool_schemas: list[dict[str, Any]]
+    config: LoopConfig
+    metrics: MetricsSink
+    should_terminate: TerminationPolicy
+    logger: StructuredLogger
+    classify_error: ErrorClassifier
+    call_ids: EpisodeUniqueCallIds
+    user_turn: UserTurn | None = None
+    recorder: ToolCallRecorder | None = None
+    request_limiter: Any | None = None
+    normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
+        None
+    )
+    call_observation: LLMCallObservation | None = None
+    observer: LoopObserver | None = None
+    validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
+    tool_output_max_chars_by_tool: dict[str, int] | None = None
+
+
+AgentLoopFactory = Callable[[AgentLoopContext], AgentLoop]
 
 
 def _now() -> datetime:
@@ -1032,3 +1109,30 @@ class ToolCallingLoop:
             "for each tool call, then try again."
         )
         return "\n".join(lines)
+
+
+def _engine_loop_factory(context: AgentLoopContext) -> ToolCallingLoop:
+    """Build the engine's built-in tool-calling loop.
+
+    Registered as ``engine-loop`` in the ``tolokaforge.agent_loops``
+    entry-point group.
+    """
+    return ToolCallingLoop(
+        llm_client=context.llm_client,
+        tool_executor=context.tool_executor,
+        tool_schemas=context.tool_schemas,
+        config=context.config,
+        metrics=context.metrics,
+        should_terminate=context.should_terminate,
+        logger=context.logger,
+        classify_error=context.classify_error,
+        user_turn=context.user_turn,
+        recorder=context.recorder,
+        request_limiter=context.request_limiter,
+        normalize_tool_arguments=context.normalize_tool_arguments,
+        call_observation=context.call_observation,
+        observer=context.observer,
+        validation_schemas_by_tool=context.validation_schemas_by_tool,
+        tool_output_max_chars_by_tool=context.tool_output_max_chars_by_tool,
+        call_ids=context.call_ids,
+    )
