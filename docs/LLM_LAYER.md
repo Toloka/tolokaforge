@@ -2149,11 +2149,14 @@ the precedence body is pinned by
 [`tests/unit/test_conductor.py`](../tests/unit/test_conductor.py)
 (`TestResolveMaxTurns`).
 
-The `gemini_31_pro_preview` preset opts in at
-`default_max_turns: 90`. Gemini 3.1 Pro's per-turn edit style is more
-granular than the framework baseline, so the same absolute budget
-exhausts earlier on tasks a coarser-grained model completes in fewer
-turns; 90 is the conservative lift over the 50-turn framework default.
+Two presets opt in at `default_max_turns: 90`, for the same reason:
+`gemini_31_pro_preview` and `moonshot_kimi_k2`. Both lines have a
+per-turn edit style more granular than the framework baseline, so the
+same absolute budget exhausts earlier on tasks a coarser-grained model
+completes in fewer turns; 90 is the conservative lift over the 50-turn
+framework default. Kimi K2 is the finer-grained of the two — median 260
+completion tokens per turn against 419 for `claude-sonnet-4.6` and 756
+for `gpt-5.6-sol` on one ten-task sample.
 The overlay carries the generic `gemini` policy trio (`reasoning_codec`,
 `schema_sanitizer`, `response_policy`) verbatim, so the preset's only
 functional divergence from the shared `gemini` route is the turn-budget

@@ -47,7 +47,9 @@ _STRINGIFY_SIBLINGS = (
     "nvidia/nemotron-3-super",
 )
 
-_QUARTET = ("schema_sanitizer", "response_policy", "prompt_policy", "reasoning_codec")
+#: What ``moonshot_kimi_k2`` adds on top of the shared recipe. Everything
+#: else it declares must still match the generic preset key for key.
+_K2_ADDITIONS = frozenset({"default_max_turns", "empty_retry_count"})
 
 
 @pytest.mark.parametrize("model", _K2_MODELS)
@@ -64,13 +66,29 @@ def test_k2_routes_to_its_own_preset(model: str) -> None:
 def test_k2_keeps_the_wire_shape_recovery_it_had(model: str) -> None:
     """The turn budget is additive — K2 must not lose stringify recovery.
 
-    ``moonshot_kimi_k2`` restates the quartet rather than inheriting it,
-    because only one preset applies. A restatement that drifts from the
-    generic preset silently changes how every K2 tool call is decoded.
+    ``moonshot_kimi_k2`` restates the shared recipe rather than inheriting
+    it, because only one preset applies per model. A restatement that
+    drifts silently changes how every K2 tool call is decoded.
+
+    Compared over the union of both presets' keys rather than a hardcoded
+    list, so a knob added to the generic preset later fails here instead
+    of quietly passing K2 by.
     """
     k2 = _match_preset(model, "openrouter")
     generic = _match_preset("xiaomi/mimo-v2-pro", "openrouter")
-    assert {k: k2.get(k) for k in _QUARTET} == {k: generic.get(k) for k in _QUARTET}
+
+    shared_keys = (set(k2) | set(generic)) - _K2_ADDITIONS
+    drifted = {
+        key: (generic.get(key), k2.get(key))
+        for key in sorted(shared_keys)
+        if k2.get(key) != generic.get(key)
+    }
+    assert not drifted, (
+        "moonshot_kimi_k2 diverges from openrouter_dict_stringify_recovery on "
+        f"{sorted(drifted)} (generic, k2): {drifted}. Either restate the new "
+        "value on the K2 preset or add the key to _K2_ADDITIONS if the "
+        "divergence is deliberate."
+    )
 
 
 @pytest.mark.parametrize("model", _K2_MODELS)
