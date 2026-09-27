@@ -127,6 +127,32 @@ class TestSchemaValidation:
         assert result.ok
         assert not [i for i in result.errors if i.path == "orchestrator.runtime"]
 
+    def test_invalid_agent_loop(self):
+        """A name no package registers is a config error, not a trial outcome."""
+        cfg = _make_config()
+        cfg["orchestrator"]["agent_loop"] = "engine_loop"
+        result = validate_run_config(cfg)
+        assert not result.ok
+        loop_errors = [
+            i
+            for i in result.errors
+            if i.path == "orchestrator.agent_loop" and "engine_loop" in i.message
+        ]
+        assert loop_errors, "expected an actionable orchestrator.agent_loop error"
+        assert "engine-loop" in loop_errors[0].message
+
+    def test_builtin_agent_loop_validates(self):
+        cfg = _make_config()
+        cfg["orchestrator"]["agent_loop"] = "engine-loop"
+        result = validate_run_config(cfg)
+        assert result.ok
+
+    def test_agent_loop_left_unset_validates(self):
+        """The field's default is a registration, so silence is not an error."""
+        result = validate_run_config(_make_config())
+        assert result.ok
+        assert not [i for i in result.issues if i.path == "orchestrator.agent_loop"]
+
 
 # ---------------------------------------------------------------------------
 # Reasoning compatibility

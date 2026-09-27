@@ -65,7 +65,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import litellm.exceptions
 
@@ -89,6 +89,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.summarize_policy import SummarizePolicy, SummarizerFailedError
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
 from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
@@ -364,6 +365,134 @@ class LoopOutcome:
     status: TrialStatus
     termination_reason: TerminationReason | None
     captured_effective_system_prompt: str | None = None
+
+
+@runtime_checkable
+class AgentLoop(Protocol):
+    """The in-process driver of one trial's agent turn cycle.
+
+    An implementation owns turn structure — generate, act, observe, decide
+    whether to continue — and reports the trial-level verdict. The caller owns
+    ``messages``, the tool-call recorder and the trajectory: the loop appends to
+    ``messages`` in place, records each tool call it executes, and returns a
+    :class:`LoopOutcome`.
+
+    Three obligations are enforced downstream, in grading, rather than by the
+    type checker. Each is silent or fatal at grade time, never at write time.
+
+    **1. Every call id comes from the context's assigner.** An implementation
+    MUST key each tool call by ``context.call_ids.assign(<provider id>)`` and
+    use that one key in all three places: the ``id`` of the
+    :class:`~tolokaforge.core.models.ToolCall` on the assistant
+    :class:`~tolokaforge.core.models.Message` it appends, the ``call_id`` handed
+    to ``recorder.record(...)``, and the ``call_id`` handed to
+    ``tool_executor.execute(...)``.
+    :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline` joins
+    the message view to the record view by that id alone — never by position —
+    and ``_require_records_reconcile`` raises
+    :class:`~tolokaforge.core.grading.trace_timeline.TimelineInconsistencyError`
+    when a record answers no declaration, or names a tool its declaration did
+    not. Agreeing on a *raw* provider id is not enough: each view re-derives its
+    keys with :func:`~tolokaforge.core.tool_call_ids.episode_unique_call_ids`
+    over its own ordering — declaration order for the messages, execution order
+    for the records — so a provider that repeats a raw id within an episode (the
+    ``<tool>:<index within the turn>`` shape in
+    :mod:`tolokaforge.core.tool_call_ids`) plus calls executed out of
+    declaration order makes the two derivations disagree. The disagreement
+    raises when the mis-paired calls name different tools and mis-joins silently
+    when they name the same one. Pre-assigned ids are already episode-unique, so
+    both derivations are the identity and the order cannot matter.
+
+    An implementation whose action format is text rather than provider
+    ``tool_calls`` normalises every parsed action into a ``ToolCall`` carrying
+    that id *before* appending the assistant message; prose plus a separate
+    record leaves the trial ungradeable.
+
+    **2. A failed tool call's message content carries**
+    :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`. The
+    message view records no status, so a trial re-graded from messages alone
+    recovers the result text by stripping that prefix. A loop that formats tool
+    errors any other way makes every failed call read as a successful one to
+    ``result:`` trace checks — a wrong grade, not an error.
+
+    **3. The non-optional context fields are obligations, not offers.** See
+    :class:`AgentLoopContext` for which fields an implementation may ignore and
+    what ignoring the rest costs.
+
+    :class:`ToolCallingLoop` satisfies this contract; implementations resolve
+    through the ``tolokaforge.agent_loops`` entry-point group.
+    """
+
+    def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
+        """Run the turn cycle, mutating ``messages`` in place.
+
+        ``start_time`` is the ``time.time()`` epoch the episode began at — any
+        episode-timeout budget is measured against it. Returns the loop-level
+        verdict; the caller assembles the trajectory from ``messages``.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class AgentLoopContext:
+    """The trial-scoped dependencies an agent-loop factory receives.
+
+    The union of what a loop over the trial's agent may need.
+
+    **Optional to read**: ``request_limiter``, ``normalize_tool_arguments``,
+    ``call_observation``, ``observer``, ``validation_schemas_by_tool``,
+    ``tool_output_max_chars_by_tool``. Ignoring one costs the run a rate-limit
+    bound, an argument-shape repair, a display or tracing signal, or a
+    defensive cap — degraded, and visible as such.
+
+    **Not optional**, whatever the type annotations allow:
+
+    ``metrics``
+        Every generation's usage and cost must reach the sink. The run's
+        accumulated spend is the sum of the trials' ``metrics.cost_usd``, so a
+        loop that never feeds it reports zero for every trial and the run's
+        cost limit (``compute.max_budget_usd``) never fires however much the
+        run actually spends.
+    ``should_terminate``
+        Called after the assistant message is appended and before tool
+        execution. It is the trial's stuck detection; skipping the call
+        disables it silently.
+    ``user_turn``
+        ``None`` only when the trial's turn policy dispatches no user — the
+        caller decides that, not the loop. When it is supplied, a loop that
+        never calls it runs a ``conversational`` trial agent-only, and per
+        ADR-0049 the interaction-mode axis and the loop axis are orthogonal.
+    ``recorder`` and ``call_ids``
+        The two halves of the join key the :class:`AgentLoop` contract pins:
+        the recorder is the trial's ordered tool-call record, and the assigner
+        is the episode-wide id sequence both the agent's loop and the trial's
+        second actor draw from, so one actor's raw provider id is
+        disambiguated rather than recorded twice. A ``None`` ``recorder`` is
+        the judge's read-only shape, not a licence to execute tools unrecorded.
+    """
+
+    llm_client: LoopLLMClient
+    tool_executor: ToolExecuting
+    tool_schemas: list[dict[str, Any]]
+    config: LoopConfig
+    metrics: MetricsSink
+    should_terminate: TerminationPolicy
+    logger: StructuredLogger
+    classify_error: ErrorClassifier
+    call_ids: EpisodeUniqueCallIds
+    user_turn: UserTurn | None = None
+    recorder: ToolCallRecorder | None = None
+    request_limiter: Any | None = None
+    normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
+        None
+    )
+    call_observation: LLMCallObservation | None = None
+    observer: LoopObserver | None = None
+    validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
+    tool_output_max_chars_by_tool: dict[str, int] | None = None
+
+
+AgentLoopFactory = Callable[[AgentLoopContext], AgentLoop]
 
 
 def _now() -> datetime:
@@ -888,7 +1017,7 @@ class ToolCallingLoop:
             raw_content = (
                 tool_result.output
                 if tool_result.success
-                else f"Error: {resolve_tool_output(tool_result)}"
+                else f"{TOOL_ERROR_MESSAGE_PREFIX}{resolve_tool_output(tool_result)}"
             )
             content = self._cap_tool_message_content(tc.name, raw_content)
 
@@ -1032,3 +1161,30 @@ class ToolCallingLoop:
             "for each tool call, then try again."
         )
         return "\n".join(lines)
+
+
+def _engine_loop_factory(context: AgentLoopContext) -> ToolCallingLoop:
+    """Build the engine's built-in tool-calling loop.
+
+    Registered as ``engine-loop`` in the ``tolokaforge.agent_loops``
+    entry-point group.
+    """
+    return ToolCallingLoop(
+        llm_client=context.llm_client,
+        tool_executor=context.tool_executor,
+        tool_schemas=context.tool_schemas,
+        config=context.config,
+        metrics=context.metrics,
+        should_terminate=context.should_terminate,
+        logger=context.logger,
+        classify_error=context.classify_error,
+        user_turn=context.user_turn,
+        recorder=context.recorder,
+        request_limiter=context.request_limiter,
+        normalize_tool_arguments=context.normalize_tool_arguments,
+        call_observation=context.call_observation,
+        observer=context.observer,
+        validation_schemas_by_tool=context.validation_schemas_by_tool,
+        tool_output_max_chars_by_tool=context.tool_output_max_chars_by_tool,
+        call_ids=context.call_ids,
+    )
