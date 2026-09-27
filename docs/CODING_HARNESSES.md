@@ -106,8 +106,8 @@ Harness mode composes with **any** grading method. Two paths:
   `tests/canonical/snapshots/tbench_echo_hello_harness/`.
 - **`state_checks` / `transcript` / `rubric`** — assemble through the
   standard combiner. When a harness-mode trial's metadata carries both
-  `agent_harness_command` and `agent_visible_dir` AND a
-  `DockerComposeExecToolWrapper` is registered for it, the runner
+  `agent_harness_command` and `agent_visible_dir` AND a tool satisfying
+  `SupportsEnvExec` is registered for it, the runner
   snapshots the container's agent-visible directory into
   `state["filesystem"]` via
   [`tolokaforge/runner/harness_state.py`](../tolokaforge/runner/harness_state.py).

@@ -119,11 +119,11 @@ def _record_compose_exec_budget(
     """Stand a recorder in for the ``docker exec`` ``execute`` hands its budget to."""
     recorded: list[float] = []
 
-    def _exec_sync(command: str, timeout: float) -> str:
-        recorded.append(timeout)
+    def exec_in_env(command: str, timeout_s: float) -> str:
+        recorded.append(timeout_s)
         return ""
 
-    wrapper._exec_sync = _exec_sync
+    wrapper.exec_in_env = exec_in_env
     return recorded
 
 
