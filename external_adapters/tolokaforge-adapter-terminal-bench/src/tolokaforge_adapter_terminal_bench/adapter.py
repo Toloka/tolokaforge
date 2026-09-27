@@ -200,6 +200,24 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         self.terminal_bench_dir = Path(params.get("terminal_bench_dir") or first_pack_str or ".")
         self.image_registry: str | None = params.get("image_registry")
         self.image_tag: str = params.get("image_tag", "local")
+        # Read once at construction: a missing file is a config error and should
+        # surface before any container is built, not once per task lookup.
+        prompt_file = params.get("agent_system_prompt_file")
+        self._agent_system_prompt: str | None = None
+        if prompt_file:
+            prompt_path = Path(prompt_file)
+            if not prompt_path.is_file():
+                raise ValueError(
+                    f"terminal-bench adapter: agent_system_prompt_file "
+                    f"{prompt_file!r} does not exist (resolved to "
+                    f"{prompt_path.resolve()})"
+                )
+            self._agent_system_prompt = prompt_path.read_text()
+            if not self._agent_system_prompt.strip():
+                raise ValueError(
+                    f"terminal-bench adapter: agent_system_prompt_file "
+                    f"{prompt_file!r} is empty — omit the key to use the default"
+                )
         self.task_id_filter: list[str] | None = params.get("task_ids")
         self.network_policy = NetworkPolicy(
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
@@ -403,6 +421,20 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     # -- prompts --------------------------------------------------------------
 
     def get_system_prompt(self, task_id: str) -> str:
+        """The agent's system prompt, or the contents of ``agent_system_prompt_file``.
+
+        The default is deliberately terse: a terminal-bench task carries its own
+        instruction, and the prompt's job is to say what the tool is.
+
+        How much a run needs beyond that is a property of the model, not of the
+        pack. A model that narrates its reasoning and signs off when it is done
+        needs nothing here; one that emits a bare tool call every turn has no
+        channel to think in and no way to say it has finished, and the same
+        default leaves it circling. The override exists so that difference can
+        be measured and carried per run rather than compiled in.
+        """
+        if self._agent_system_prompt is not None:
+            return self._agent_system_prompt
         return (
             "You are an expert developer working inside a Linux container. "
             "Use the bash tool to execute commands. "
