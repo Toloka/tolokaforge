@@ -208,7 +208,7 @@ class ToolPolicy(BaseModel):
     ``None``. ``None`` (the default) opts out of per-tool capping and defers to
     whatever the per-model cap says. The trial's tool-call record and the
     grader inputs run against the untruncated tool output — see
-    :meth:`~tolokaforge.core.loop.ToolCallingLoop._cap_tool_message_content`.
+    :meth:`~tolokaforge.core.loop.ToolCallFunnel.cap_tool_message_content`.
     """
 
 

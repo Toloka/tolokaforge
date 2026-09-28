@@ -85,6 +85,8 @@ from tolokaforge.core.output.service_log_rollup import collect_service_log_captu
 from tolokaforge.core.plugin_registry import (
     RuntimeBackendBuildContext,
     TrialGraderContext,
+    UnknownImplementationError,
+    load_agent_loop,
     load_conductor,
     load_runtime_backend,
     load_trial_grader,
@@ -2297,6 +2299,7 @@ class Orchestrator:
                 )
 
         self._warn_on_unreliable_pricing()
+        self._refuse_an_unregistered_agent_loop()
         self._refuse_an_unreachable_harness_provider()
         self._refuse_prices_it_cannot_vouch_for()
         self._refuse_an_unenforceable_cost_limit()
@@ -2321,6 +2324,26 @@ class Orchestrator:
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
+
+    def _refuse_an_unregistered_agent_loop(self) -> None:
+        """Resolve ``orchestrator.agent_loop`` once, before any trial work.
+
+        Every trial of the run drives the same loop, so the name is resolved
+        here rather than per trial: an unregistered name — a typo, or an
+        editable install whose ``.dist-info`` predates the
+        ``tolokaforge.agent_loops`` group — is one refusal naming the known
+        registrations, not one scored failure per trial after the trial's
+        container is already up.
+
+        :class:`~tolokaforge.core.plugin_registry.UnknownImplementationError`
+        carries the group and the known names; the config path is added here
+        because the operator types the name in ``orchestrator.agent_loop``.
+        """
+        name = self.config.orchestrator.agent_loop
+        try:
+            load_agent_loop(name)
+        except UnknownImplementationError as exc:
+            raise RuntimeError(f"orchestrator.agent_loop: {exc}") from exc
 
     def _refuse_an_unreachable_harness_provider(self) -> None:
         """Refuse before any container work when the CLI's provider is dead.
@@ -3423,7 +3446,22 @@ class Orchestrator:
             # Publish completeness and generate reports before stamping the
             # run as completed, so ``run_state.json``'s completion gates are
             # derived from the published counts.
-            if not (budget_exhausted and remaining > 0):
+            if budget_exhausted and remaining > 0:
+                # A paused run publishes completeness and writes its reports
+                # over the attempts it ran; only the completed stamp is
+                # withheld, because resume detection reads ``status`` alone.
+                #
+                # Both halves are load-bearing. Completeness is read
+                # unconditionally by every caller of :meth:`run`, and the
+                # reports are what the completeness gates tell the operator to
+                # go and read — a gate firing against a missing
+                # ``aggregate.json``, or against a stale one left by an earlier
+                # pass over this run directory, is worse than no gate at all.
+                # Publishing first keeps the attribute bound even if report
+                # generation raises.
+                self._publish_grading_completeness()
+                self._generate_reports(output_dir)
+            else:
                 self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()

@@ -63,8 +63,9 @@ SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
 # even though their target modules are already inside the subset
 # partition. Groups NOT listed here — ``runtime_backends``,
 # ``trial_graders``, ``conductors``, ``service_readiness_probes``,
-# ``turn_policies`` (all called from ``tolokaforge.core.runner``, which
-# lives outside the subset partition; the runner container calls
+# ``turn_policies``, ``agent_loops`` (all called from
+# ``tolokaforge.core.runner``, which lives outside the subset
+# partition; the runner container calls
 # ``tolokaforge.runner.__main__`` instead), and ``grading_substrates``
 # (runner instantiates ``InProcessGradingSubstrate`` directly; the
 # group's ``live_callback`` row targets ``substrate_live.py``, which is

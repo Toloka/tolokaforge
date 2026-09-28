@@ -696,7 +696,7 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-Eight swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (four seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
+Nine swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (five seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
@@ -705,11 +705,12 @@ Eight swappable seams are each exposed as an `importlib.metadata` entry-point gr
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
 | `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
 | `tolokaforge.turn_policies` | `Callable[[TurnPolicyContext], TurnPolicy]` | `user_simulator` (the resolved user :class:`Actor`; ``None`` for policies that dispatch no user) |
+| `tolokaforge.agent_loops` | `Callable[[AgentLoopContext], AgentLoop]` | the trial's loop dependencies (LLM client, tool executor + schemas, loop budget, metrics sink, termination + user-turn seams, tool-call recorder, call-id assigner, logger, observation sinks) |
 | `tolokaforge.compose_materialisers` | `type[ComposeMaterialiser]` | *no context* — class is instantiated by the composer |
 | `tolokaforge.service_lifecycle_dispatchers` | `type[ServiceLifecycleDispatcher]` | *no context* — one class per `ServiceIsolation` label; the class's `isolation` ClassVar names the label the composer looks it up by |
 | `tolokaforge.substrate_composers` | `type[SubstrateComposer]` | *no context* — the backend instantiates the composer and injects its own materialiser + dispatcher registry |
 
-A factory is free to ignore context fields it does not need. The runtime-backend, trial-grader, and readiness-probe context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
+A factory ignores the context fields its implementation does not read — except where a seam's own contract names a field as an obligation (the agent-loop seam does; see `AgentLoopContext`). The runtime-backend, trial-grader, readiness-probe, turn-policy, and agent-loop context/factory types are imported from `tolokaforge.core.plugin_registry` (`AgentLoop`, `AgentLoopContext` and `AgentLoopFactory` are re-exported there from `tolokaforge.core.loop`, which is also importable directly); the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
 **Runtime backend** — `mypkg/runtime.py`:
 
@@ -790,6 +791,73 @@ my_shape = "mypkg.turn_policy:my_policy_factory"
 ```
 
 tolokaforge ships `conversational` (two-party user-plus-agent) as a built-in under this group.
+
+**Agent loop** — `mypkg/loop.py`. An agent loop drives one trial's turn cycle: generate, act, observe, decide whether to continue. It appends to the caller-owned `messages` list in place and returns a `LoopOutcome`. The loop is looked up by `orchestrator.agent_loop`:
+
+```python
+from tolokaforge.core.plugin_registry import AgentLoopContext
+from tolokaforge.core.loop import LoopOutcome
+from tolokaforge.core.models import Message
+
+class MyAgentLoop:
+    def __init__(self, context: AgentLoopContext) -> None:
+        self.context = context
+
+    def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
+        ...
+
+def my_loop_factory(ctx: AgentLoopContext) -> MyAgentLoop:
+    return MyAgentLoop(ctx)
+```
+
+```toml
+[project.entry-points."tolokaforge.agent_loops"]
+my_loop = "mypkg.loop:my_loop_factory"
+```
+
+The `AgentLoop` docstring carries the four obligations the type checker does not: every call id comes from `context.call_ids.assign(...)` and is used identically on the assistant `Message`, in `recorder.record(...)` and in `tool_executor.execute(...)`; a failed tool call's message content carries `tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`; `metrics`, `should_terminate` and a supplied `user_turn` are fed, not optional; and a termination reason that excludes the trial from the measured denominator (`RATE_LIMIT`, `API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`) is emitted only with typed evidence named in `LoopOutcome.excluding_reason_evidence` — otherwise the loop emits `ERROR`, which is counted, and an unevidenced claim is downgraded to `ERROR` by the caller. Routing the exception through `context.classify_error` discharges this: the `TerminationDecision` it returns carries `excluding_reason_evidence` on exactly the typed branches, so a loop copies it onto the outcome beside the reason it takes from the same decision. A loop with a text action format normalises each parsed action into a `ToolCall` before appending. See [ADR-0050](adr/0050-agent-loop-protocol-and-registry.md).
+
+Route every tool call through `ToolCallFunnel` and the first two are discharged for you — it is the same implementation the built-in loop runs on:
+
+```python
+from tolokaforge.core.plugin_registry import AgentLoopContext, ToolCallFunnel
+
+class MyAgentLoop:
+    def __init__(self, context: AgentLoopContext) -> None:
+        self.context = context
+        self.funnel = ToolCallFunnel.from_context(context)
+
+    def _turn(self, result, messages: list[Message]) -> None:
+        # Key the turn's calls, then append the assistant message carrying them.
+        calls = self.funnel.assign_ids(result.tool_calls)
+        messages.append(assistant_message_with(calls))
+
+        def append_tool_message(message: Message) -> int:
+            messages.append(message)
+            return len(messages) - 1
+
+        self.funnel.execute_all(calls, append_tool_message, result.text)
+```
+
+`assign_ids` returns the calls the assistant message must carry; `execute` / `execute_all` run each one, record it, word a failure with the error prefix, cap the output, tick metrics and notify the observer. `execute` raises `UnassignedToolCallError` on a call whose id did not come from `assign_ids`, so the two steps cannot be inverted and the id cannot be minted elsewhere.
+
+tolokaforge ships `engine-loop` (the built-in `ToolCallingLoop`) as a built-in under this group; it resolves through the registry like any third-party loop.
+
+**Run the conformance suite against your factory.** Breaking one of those obligations does not raise — it produces a complete, plausible trajectory and a wrong grade. `tolokaforge.testing.agent_loops` ships the suite that catches it, plus `InMemoryAgentLoop`, the shortest loop that satisfies every obligation and the worked example to copy — it routes every honoured tool call through `ToolCallFunnel` and carries the classifier's evidence onto its outcome, which is what makes copying it safe. Subclass and supply one fixture:
+
+```python
+import pytest
+from tolokaforge.testing.agent_loops import AgentLoopConformanceSuite
+
+class TestMyLoopConformance(AgentLoopConformanceSuite):
+    @pytest.fixture
+    def loop_factory(self):
+        return my_loop_factory
+```
+
+The suite drives scripted episodes through your factory and asserts on what grading reads: the id join holds and `build_trial_timeline` builds; two calls to the *same* tool with different arguments keep their own results; a failed call's `role: tool` message carries the error prefix and round-trips identically with and without a `tool_log.yaml` sidecar; every generation reaches `metrics`; `should_terminate` runs once per turn, after the assistant message is appended and before the tools execute; a supplied `user_turn` runs on a tool-call-free turn; and `config.max_turns` and `config.episode_timeout_s` both bound the episode — nothing outside the loop enforces either.
+
+**Termination honesty is a rule, not just an assertion.** The reasons in `tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` (`API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`, `RATE_LIMIT`) remove the trial from the measured denominator. A loop may emit one only on **typed** evidence — an exception type, an HTTP status, or a typed empty-completion observation (`GenerationResult` with empty `text` and no `tool_calls`). Never from matching prose against an exception message: a context-window overflow and a malformed tool schema both read as "an API error", and excluding a trial the agent actually failed inflates every benchmark number with nothing in the output to show it. Route raised exceptions through `context.classify_error` rather than naming a reason yourself. The suite pins the half it can see — a clean episode must not claim an excluded reason, and a raised exception must be classified by the context — but a loop that reaches its own provider and classifies by text is beyond what any in-process suite can check.
 
 **Composition-plan adapter seams** — `mypkg/k8s.py`. ADR-0044 splits the compose-mode runtime into three detachable adapter Protocols (see [Composition-plan seams](#composition-plan-seams) above for the shape). Each entry-point group targets an impl class directly; the caller instantiates with the class's own optional injection seams:
 

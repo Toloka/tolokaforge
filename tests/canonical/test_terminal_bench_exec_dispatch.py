@@ -51,7 +51,7 @@ def _wrapper() -> DockerComposeExecToolWrapper:
 
 
 def _fake_popen(stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
-    """Enough of :class:`subprocess.Popen` for ``_exec_sync``. The wrapper
+    """Enough of :class:`subprocess.Popen` for ``exec_in_env``. The wrapper
     now streams output through ``Popen.communicate`` so a slow CLI still
     surfaces its partial stdout on TimeoutExpired — ``subprocess.run`` is
     no longer on the exec path."""
@@ -69,7 +69,7 @@ def test_exec_argv_pins_docker_exec_shape():
     wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
 
     with patch("subprocess.Popen", return_value=_fake_popen()) as popen_mock:
-        wrapper._exec_sync("echo hi", 30.0)
+        wrapper.exec_in_env("echo hi", 30.0)
 
     assert popen_mock.call_count == 1
     argv = popen_mock.call_args.args[0]

@@ -27,9 +27,16 @@ feedback turn naming the failing tools and quoting the raw arguments under
 ``LoopConfig.parser_error_retry_count`` before falling through to accept the
 ``{}``-coerced response.
 
-The loop also owns a defensive bound on tool-output size that lands in the
+Every tool call the loop makes travels through :class:`ToolCallFunnel`, the
+shared discharge point for the obligations grading enforces and the type
+checker does not — the episode-unique call id, the failed-call message
+prefix, the recorder entry, the output cap, the metrics tick and the observer
+notification. An external loop reaches the same implementation through
+``tolokaforge.core.plugin_registry``.
+
+The funnel also owns a defensive bound on tool-output size that lands in the
 message history: when ``LoopConfig.tool_output_max_chars`` is set,
-:meth:`ToolCallingLoop._execute_tool_calls` middle-elides the ``role=tool``
+:meth:`ToolCallFunnel.cap_tool_message_content` middle-elides the ``role=tool``
 message ``content`` via
 :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before the
 message is appended, so accumulated context stays predictable across turns.
@@ -62,10 +69,10 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import litellm.exceptions
 
@@ -89,9 +96,15 @@ from tolokaforge.core.models import (
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.summarize_policy import SummarizePolicy, SummarizerFailedError
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
 from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
-from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
+from tolokaforge.tools.registry import (
+    ToolExecuting,
+    ToolResult,
+    resolve_tool_output,
+    resolve_tool_status,
+)
 
 if TYPE_CHECKING:
     from tolokaforge.observability.observer import LoopObserver
@@ -148,7 +161,7 @@ class LoopConfig:
 
     ``tool_output_max_chars`` is the per-model backstop cap on the
     ``role=tool`` message ``content``.
-    :meth:`ToolCallingLoop._cap_tool_message_content` middle-elides via
+    :meth:`ToolCallFunnel.cap_tool_message_content` middle-elides via
     :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` using
     the tighter of this cap and the tool's own
     :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars` — carried
@@ -191,6 +204,18 @@ class TerminationDecision:
     reason: TerminationReason
     system_message: str
     status: TrialStatus | None = None
+    excluding_reason_evidence: str | None = None
+    """The typed observation behind a denominator-excluding ``reason``.
+
+    Non-``None`` only where ``reason`` is in
+    :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` and the
+    decision was reached from an exception type or an HTTP status rather than
+    from matching prose. :func:`classify_loop_error` fills it on exactly those
+    branches, which is what makes a classified exception self-evidencing: a
+    loop that routes its exception through ``context.classify_error`` copies
+    this onto :attr:`LoopOutcome.excluding_reason_evidence` and has earned the
+    exclusion without inspecting the exception itself.
+    """
 
 
 class TerminationPolicy(Protocol):
@@ -255,7 +280,7 @@ class MetricsSink(Protocol):
     def record_tool_output_truncated(self, omitted_chars: int) -> None:
         """Accumulate a per-trial count of characters clipped from tool outputs.
 
-        The loop calls this every time ``_cap_tool_message_content`` actually
+        The funnel calls this every time ``cap_tool_message_content`` actually
         elides a ``role=tool`` message. A trial with the cumulative count at
         zero saw no truncation, either because no cap fired or because every
         raw output fit within the effective cap. Default no-op so a sink that
@@ -283,6 +308,24 @@ The provider's rate-limit text patterns are closed over by the callable
 :func:`classify_loop_error` is the two-arg module-level implementation the
 bound method delegates to.
 """
+
+
+def _exception_type_evidence(exc: BaseException) -> str:
+    """The exception chain's type names, outermost first.
+
+    Names what the typed branches of :func:`classify_loop_error` matched on.
+    Types rather than message text, and the whole ``__cause__`` chain because
+    the client re-raises every provider error wrapped — the 429 the rate-limit
+    predicate found is a cause, not the outermost type.
+    """
+    names: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        names.append(type(current).__qualname__)
+        current = current.__cause__
+    return " <- ".join(names)
 
 
 def classify_loop_error(
@@ -326,12 +369,14 @@ def classify_loop_error(
             reason=TerminationReason.API_TIMEOUT,
             system_message=f"API timeout: {error_str}. Dialogue terminated.",
             status=TrialStatus.ERROR,
+            excluding_reason_evidence=_exception_type_evidence(exc),
         )
     if is_typed_rate_limit_exception(exc):
         return TerminationDecision(
             reason=TerminationReason.RATE_LIMIT,
             system_message=f"Rate limit error: {error_str}. Dialogue terminated.",
             status=TrialStatus.ERROR,
+            excluding_reason_evidence=_exception_type_evidence(exc),
         )
     if matches_rate_limit_text(error_str, patterns):
         return TerminationDecision(
@@ -364,10 +409,436 @@ class LoopOutcome:
     status: TrialStatus
     termination_reason: TerminationReason | None
     captured_effective_system_prompt: str | None = None
+    excluding_reason_evidence: str | None = None
+    """The typed observation behind a denominator-excluding termination reason.
+
+    Set only when :attr:`termination_reason` is one of
+    :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` and the
+    loop reached it from an exception type, an HTTP status or a typed
+    empty-completion observation — never from matching prose against an
+    exception message. The value names that observation.
+
+    A loop that routes its exceptions through ``context.classify_error`` copies
+    :attr:`TerminationDecision.excluding_reason_evidence` here and needs no
+    typing knowledge of its own.
+
+    ``None`` on every other reason, and ``None`` on an excluding reason the loop
+    cannot evidence: the caller then counts the trial as
+    :attr:`~tolokaforge.core.models.TerminationReason.ERROR` rather than
+    dropping it from the measured denominator. See obligation 4 on
+    :class:`AgentLoop`.
+    """
+
+
+@runtime_checkable
+class AgentLoop(Protocol):
+    """The in-process driver of one trial's agent turn cycle.
+
+    An implementation owns turn structure — generate, act, observe, decide
+    whether to continue — and reports the trial-level verdict. The caller owns
+    ``messages``, the tool-call recorder and the trajectory: the loop appends to
+    ``messages`` in place, records each tool call it executes, and returns a
+    :class:`LoopOutcome`.
+
+    Four obligations are enforced downstream — in grading, and in the caller's
+    accounting — rather than by the type checker. Each is silent or fatal after
+    the fact, never at write time.
+    :class:`ToolCallFunnel` discharges the first two for any implementation
+    that routes its tool calls through it — ``ToolCallFunnel.from_context(ctx)``
+    once per episode, then :meth:`ToolCallFunnel.assign_ids` before the
+    assistant message and :meth:`ToolCallFunnel.execute` after it. An
+    implementation that writes the sequence itself owes what follows.
+
+    **1. Every call id comes from the context's assigner.** An implementation
+    MUST key each tool call by ``context.call_ids.assign(<provider id>)`` and
+    use that one key in all three places: the ``id`` of the
+    :class:`~tolokaforge.core.models.ToolCall` on the assistant
+    :class:`~tolokaforge.core.models.Message` it appends, the ``call_id`` handed
+    to ``recorder.record(...)``, and the ``call_id`` handed to
+    ``tool_executor.execute(...)``.
+    :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline` joins
+    the message view to the record view by that id alone — never by position —
+    and ``_require_records_reconcile`` raises
+    :class:`~tolokaforge.core.grading.trace_timeline.TimelineInconsistencyError`
+    when a record answers no declaration, or names a tool its declaration did
+    not. Agreeing on a *raw* provider id is not enough: each view re-derives its
+    keys with :func:`~tolokaforge.core.tool_call_ids.episode_unique_call_ids`
+    over its own ordering — declaration order for the messages, execution order
+    for the records — so a provider that repeats a raw id within an episode (the
+    ``<tool>:<index within the turn>`` shape in
+    :mod:`tolokaforge.core.tool_call_ids`) plus calls executed out of
+    declaration order makes the two derivations disagree. The disagreement
+    raises when the mis-paired calls name different tools and mis-joins silently
+    when they name the same one. Pre-assigned ids are already episode-unique, so
+    both derivations are the identity and the order cannot matter.
+
+    An implementation whose action format is text rather than provider
+    ``tool_calls`` normalises every parsed action into a ``ToolCall`` carrying
+    that id *before* appending the assistant message; prose plus a separate
+    record leaves the trial ungradeable.
+
+    **2. A failed tool call's message content carries**
+    :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`. The
+    message view records no status, so a trial re-graded from messages alone
+    recovers the result text by stripping that prefix. A loop that formats tool
+    errors any other way makes every failed call read as a successful one to
+    ``result:`` trace checks — a wrong grade, not an error.
+
+    **3. The non-optional context fields are obligations, not offers.** See
+    :class:`AgentLoopContext` for which fields an implementation may ignore and
+    what ignoring the rest costs.
+
+    **4. A denominator-excluding termination reason needs typed evidence.** The
+    reasons in
+    :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` —
+    ``RATE_LIMIT``, ``API_TIMEOUT``, ``EMPTY_COMPLETION``, ``PROVISION_ERROR``
+    — take a trial out of the measured denominator *and* leave it with no
+    grade, so a loop that reaches one by matching prose against an exception
+    message deletes its own failures from the results instead of reporting
+    them. An implementation emits one of these reasons only when it reached it
+    from an exception type, an HTTP status or a typed empty-completion
+    observation, and names that observation in
+    :attr:`LoopOutcome.excluding_reason_evidence`. With no such evidence it
+    emits :attr:`~tolokaforge.core.models.TerminationReason.ERROR`, which is
+    counted. An outcome that claims an excluding reason and carries no evidence
+    is downgraded to ``ERROR`` by the caller.
+
+    Routing the exception through ``context.classify_error`` discharges this:
+    the returned :class:`TerminationDecision` carries
+    :attr:`~TerminationDecision.excluding_reason_evidence` on exactly the typed
+    branches, and an implementation copies it onto the outcome beside the
+    reason it copies from the same decision. Only a loop that reaches an
+    excluding reason on its own — an empty-completion observation of its own
+    making, say — words the evidence itself.
+
+    :class:`ToolCallingLoop` satisfies this contract; implementations resolve
+    through the ``tolokaforge.agent_loops`` entry-point group.
+    """
+
+    def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
+        """Run the turn cycle, mutating ``messages`` in place.
+
+        ``start_time`` is the ``time.time()`` epoch the episode began at — any
+        episode-timeout budget is measured against it. Returns the loop-level
+        verdict; the caller assembles the trajectory from ``messages``.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class AgentLoopContext:
+    """The trial-scoped dependencies an agent-loop factory receives.
+
+    The union of what a loop over the trial's agent may need.
+
+    **Optional to read**: ``request_limiter``, ``normalize_tool_arguments``,
+    ``call_observation``, ``observer``, ``validation_schemas_by_tool``,
+    ``tool_output_max_chars_by_tool``. Ignoring one costs the run a rate-limit
+    bound, an argument-shape repair, a display or tracing signal, or a
+    defensive cap — degraded, and visible as such.
+
+    **Not optional**, whatever the type annotations allow:
+
+    ``metrics``
+        Every generation's usage and cost must reach the sink. The run's
+        accumulated spend is the sum of the trials' ``metrics.cost_usd``, so a
+        loop that never feeds it reports zero for every trial and the run's
+        cost limit (``compute.max_budget_usd``) never fires however much the
+        run actually spends.
+    ``should_terminate``
+        Called after the assistant message is appended and before tool
+        execution. It is the trial's stuck detection; skipping the call
+        disables it silently.
+    ``user_turn``
+        ``None`` only when the trial's turn policy dispatches no user — the
+        caller decides that, not the loop. When it is supplied, a loop that
+        never calls it runs a ``conversational`` trial agent-only, and per
+        ADR-0050 the interaction-mode axis and the loop axis are orthogonal.
+    ``recorder`` and ``call_ids``
+        The two halves of the join key the :class:`AgentLoop` contract pins:
+        the recorder is the trial's ordered tool-call record, and the assigner
+        is the episode-wide id sequence both the agent's loop and the trial's
+        second actor draw from, so one actor's raw provider id is
+        disambiguated rather than recorded twice. A ``None`` ``recorder`` is
+        the judge's read-only shape, not a licence to execute tools unrecorded.
+    """
+
+    llm_client: LoopLLMClient
+    tool_executor: ToolExecuting
+    tool_schemas: list[dict[str, Any]]
+    config: LoopConfig
+    metrics: MetricsSink
+    should_terminate: TerminationPolicy
+    logger: StructuredLogger
+    classify_error: ErrorClassifier
+    call_ids: EpisodeUniqueCallIds
+    user_turn: UserTurn | None = None
+    recorder: ToolCallRecorder | None = None
+    request_limiter: Any | None = None
+    normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
+        None
+    )
+    call_observation: LLMCallObservation | None = None
+    observer: LoopObserver | None = None
+    validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
+    tool_output_max_chars_by_tool: dict[str, int] | None = None
+
+
+AgentLoopFactory = Callable[[AgentLoopContext], AgentLoop]
+
+_EMPTY_COMPLETION_EVIDENCE = (
+    "GenerationResult with empty text and no tool calls, after the empty-completion retry budget"
+)
+"""Evidence wording for the one excluding reason the loop observes itself.
+
+``EMPTY_COMPLETION`` is reached from the shape of a returned
+:class:`~tolokaforge.core.llm.client.GenerationResult`, not from an exception,
+so no classifier decision carries its evidence.
+"""
 
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+ToolMessageAppender = Callable[[Message], int]
+"""Appends a ``role: tool`` message to the caller's message list.
+
+Returns the message's index in that list. The funnel hands that index to
+:meth:`~tolokaforge.observability.observer.LoopObserver.tool_call` so a live
+span and the bundle's observation name one position.
+"""
+
+
+class UnassignedToolCallError(RuntimeError):
+    """A tool call reached :meth:`ToolCallFunnel.execute` carrying an id the
+    funnel never assigned.
+
+    :meth:`ToolCallFunnel.assign_ids` is the only source of an executable id:
+    the key it returns is what the assistant message, the executor, the
+    recorder and the ``role: tool`` message all carry. A call keyed anywhere
+    else cannot be joined back to its result at grade time.
+    """
+
+
+@dataclass
+class ToolCallFunnel:
+    """The one path from a parsed tool call to its executed, recorded result.
+
+    Every obligation the grading path enforces on a tool call and the type
+    checker does not — the episode-unique id shared by all four views, the
+    :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX` on
+    a failed call's ``role: tool`` content, the recorder entry, the output cap,
+    the metrics tick and the observer notification — is discharged here. A loop
+    that routes its calls through the funnel satisfies them by construction.
+
+    Two calls per turn, in this order:
+
+    1. :meth:`assign_ids` over the turn's parsed calls. The returned calls are
+       the ones the assistant :class:`~tolokaforge.core.models.Message` carries.
+    2. :meth:`execute` (or :meth:`execute_all`) once the assistant message is
+       appended.
+
+    :meth:`execute` refuses a call whose id did not come from
+    :meth:`assign_ids`, so the order cannot be inverted and the id cannot be
+    minted elsewhere.
+
+    One funnel per episode, built from the trial's
+    :class:`AgentLoopContext` via :meth:`from_context`: it draws from that
+    context's assigner, so the trial's second actor disambiguates against the
+    same sequence.
+    """
+
+    tool_executor: ToolExecuting
+    call_ids: EpisodeUniqueCallIds
+    metrics: MetricsSink
+    logger: StructuredLogger
+    recorder: ToolCallRecorder | None = None
+    observer: LoopObserver | None = None
+    normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
+        None
+    )
+    validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
+    tool_output_max_chars_by_tool: dict[str, int] | None = None
+    tool_output_max_chars: int | None = None
+
+    _assigned_ids: set[str] = field(default_factory=set, init=False)
+
+    @classmethod
+    def from_context(cls, context: AgentLoopContext) -> ToolCallFunnel:
+        """The funnel for a loop built over ``context``."""
+        return cls(
+            tool_executor=context.tool_executor,
+            call_ids=context.call_ids,
+            metrics=context.metrics,
+            logger=context.logger,
+            recorder=context.recorder,
+            observer=context.observer,
+            normalize_tool_arguments=context.normalize_tool_arguments,
+            validation_schemas_by_tool=context.validation_schemas_by_tool,
+            tool_output_max_chars_by_tool=context.tool_output_max_chars_by_tool,
+            tool_output_max_chars=context.config.tool_output_max_chars,
+        )
+
+    def assign_ids(self, calls: Sequence[ToolCall]) -> list[ToolCall]:
+        """Give every parsed call the episode-unique id, before anything reads it.
+
+        Returns the calls to put on the assistant message — a call whose
+        provider id was already unique is returned unchanged, so a provider
+        that mints unique ids sees its own ids back. Call this between the
+        generation and the assistant message so all four consumers downstream
+        — the assistant message, the executor (hence the runner's own record),
+        the trial recorder and the ``role: tool`` message — carry one id per
+        call.
+        """
+        assigned: list[ToolCall] = []
+        for call in calls:
+            key = self.call_ids.assign(call.id)
+            self._assigned_ids.add(key)
+            if key == call.id:
+                assigned.append(call)
+                continue
+            self.logger.warning(
+                "Provider reused a tool-call id within the episode; assigned a unique one",
+                tool=call.name,
+                provider_call_id=call.id,
+                assigned_call_id=key,
+            )
+            assigned.append(call.model_copy(update={"id": key}))
+        return assigned
+
+    def execute_all(
+        self,
+        calls: Sequence[ToolCall],
+        append_tool_message: ToolMessageAppender,
+        assistant_text: str = "",
+    ) -> None:
+        """:meth:`execute` over ``calls``, in declaration order."""
+        for call in calls:
+            self.execute(call, append_tool_message, assistant_text)
+
+    def execute(
+        self,
+        call: ToolCall,
+        append_tool_message: ToolMessageAppender,
+        assistant_text: str = "",
+    ) -> ToolResult:
+        """Execute one assigned call and write everything the call owes.
+
+        ``assistant_text`` is the turn's assistant prose, read only by the
+        optional argument-recovery seam.
+
+        Raises:
+            UnassignedToolCallError: ``call.id`` did not come from
+                :meth:`assign_ids`.
+        """
+        if call.id not in self._assigned_ids:
+            raise UnassignedToolCallError(
+                f"tool call {call.id!r} for tool {call.name!r} was not assigned by this funnel: "
+                "pass the turn's calls through ToolCallFunnel.assign_ids and put the returned "
+                "ids on the assistant message before executing any of them"
+            )
+        self._recover_arguments(call, assistant_text)
+        tool_start = time.time()
+        if self.validation_schemas_by_tool is None:
+            tool_result = self.tool_executor.execute(call.name, call.arguments, call_id=call.id)
+        else:
+            tool_result = self.tool_executor.execute(
+                call.name,
+                call.arguments,
+                call_id=call.id,
+                validation_schema=self.validation_schemas_by_tool.get(call.name),
+            )
+        tool_duration = time.time() - tool_start
+        self.metrics.record_tool_call()
+
+        if self.recorder is not None:
+            self.recorder.record(
+                call_id=call.id,
+                tool_name=call.name,
+                arguments=call.arguments or {},
+                executor=ToolExecutorIdentity.AGENT,
+                status=resolve_tool_status(tool_result),
+                output=resolve_tool_output(tool_result),
+                latency_seconds=tool_duration,
+            )
+
+        if tool_result.success:
+            self.logger.debug(
+                "Tool executed successfully", tool=call.name, duration_s=tool_duration
+            )
+        else:
+            self.logger.warning("Tool execution failed", tool=call.name, error=tool_result.error)
+
+        raw_content = (
+            tool_result.output
+            if tool_result.success
+            else f"{TOOL_ERROR_MESSAGE_PREFIX}{resolve_tool_output(tool_result)}"
+        )
+        message = Message(
+            role=MessageRole.TOOL,
+            content=self.cap_tool_message_content(call.name, raw_content),
+            content_blocks=(tool_result.content_blocks if tool_result.success else None),
+            tool_call_id=call.id,
+            ts=_now(),
+        )
+        index = append_tool_message(message)
+        if self.observer is not None:
+            ended_at = message.ts or _now()
+            self.observer.tool_call(
+                index=index,
+                call=call,
+                result=tool_result,
+                started_at=ended_at - timedelta(seconds=max(0.0, tool_duration)),
+                ended_at=ended_at,
+            )
+        return tool_result
+
+    def cap_tool_message_content(self, tool_name: str, raw: str) -> str:
+        """Apply the tighter tool-output cap to a ``role=tool`` message content.
+
+        Two axes compose here: :attr:`tool_output_max_chars` is the per-model
+        backstop and :attr:`tool_output_max_chars_by_tool` carries the tool's
+        own declared
+        :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars`. The
+        tighter set cap wins per call; ``None`` on both axes threads the
+        content through verbatim. The recorder read in :meth:`execute` runs
+        earlier against the untruncated tool result, so the trial's ordered
+        record and the grader inputs are unaffected by the cap.
+        """
+        tool_cap = (self.tool_output_max_chars_by_tool or {}).get(tool_name)
+        cap_cap = self.tool_output_max_chars
+        candidates = [x for x in (tool_cap, cap_cap) if x is not None]
+        if not candidates:
+            return raw
+        effective = min(candidates)
+        capped, omitted = keep_head_and_tail(raw, effective)
+        if omitted:
+            self.metrics.record_tool_output_truncated(omitted)
+            self.logger.info(
+                "Capped tool output before append",
+                tool=tool_name,
+                cap_chars=effective,
+                tool_cap_chars=tool_cap,
+                capability_cap_chars=cap_cap,
+                omitted_chars=omitted,
+                original_chars=len(raw),
+            )
+        return capped
+
+    def _recover_arguments(self, call: ToolCall, assistant_text: str) -> None:
+        if self.normalize_tool_arguments is None:
+            return
+        normalized_args = self.normalize_tool_arguments(call.name, call.arguments, assistant_text)
+        if normalized_args != call.arguments:
+            self.logger.warning(
+                "Recovered malformed tool arguments from assistant text",
+                tool=call.name,
+                recovered_keys=sorted(
+                    set(normalized_args.keys()) - set((call.arguments or {}).keys())
+                ),
+            )
+            call.arguments = normalized_args
 
 
 @dataclass
@@ -417,7 +888,7 @@ class ToolCallingLoop:
     # :meth:`~tolokaforge.tools.registry.ToolRegistry.output_max_chars_by_tool`.
     # Only tools that declare a cap appear; a tool absent from the map defers
     # to :attr:`LoopConfig.tool_output_max_chars`. When both axes name a cap,
-    # :meth:`_cap_tool_message_content` picks the tighter one.
+    # :meth:`ToolCallFunnel.cap_tool_message_content` picks the tighter one.
     tool_output_max_chars_by_tool: dict[str, int] | None = None
     # Bounded API-error retry sleep seam. Parallels ``LLMClient._retry_sleep``:
     # tests bind a no-op so the loop's retry backoff is instant. See
@@ -430,14 +901,37 @@ class ToolCallingLoop:
     # only against its own calls.
     call_ids: EpisodeUniqueCallIds = field(default_factory=EpisodeUniqueCallIds)
 
+    # The single path every tool call this loop makes travels: id assignment,
+    # execution, recording, error wording, output cap, metrics and observer.
+    funnel: ToolCallFunnel = field(init=False)
+
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
+    # The typed observation behind this episode's termination reason, where that
+    # reason excludes the trial from the measured denominator. Written by the
+    # two paths that can reach such a reason — the classifier's decision and the
+    # empty-completion observation — and read once, into ``LoopOutcome``.
+    _excluding_reason_evidence: str | None = field(default=None, init=False)
     # Wire message list sent to the provider. Distinct from the caller-owned
     # ``messages`` (which becomes ``Trajectory.messages``) so a summarize event
     # can rewrite the wire view while the recorded history keeps the full
     # pre-summarize timeline for grading.
     _wire_messages: list[Message] = field(default_factory=list, init=False)
+
+    def __post_init__(self) -> None:
+        self.funnel = ToolCallFunnel(
+            tool_executor=self.tool_executor,
+            call_ids=self.call_ids,
+            metrics=self.metrics,
+            logger=self.logger,
+            recorder=self.recorder,
+            observer=self.observer,
+            normalize_tool_arguments=self.normalize_tool_arguments,
+            validation_schemas_by_tool=self.validation_schemas_by_tool,
+            tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
+            tool_output_max_chars=self.config.tool_output_max_chars,
+        )
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         """Run the turn loop, mutating ``messages`` in place.
@@ -449,6 +943,7 @@ class ToolCallingLoop:
         status = TrialStatus.COMPLETED
         termination_reason: TerminationReason | None = None
         self._wire_messages = list(messages)
+        self._excluding_reason_evidence = None
 
         for turn in range(self.config.max_turns):
             outcome = self._attempt_turn(turn, system_prompt, messages, start_time)
@@ -456,6 +951,7 @@ class ToolCallingLoop:
                 self._append_both(messages, self._system_message(outcome.system_message))
                 status = outcome.status or status
                 termination_reason = outcome.reason
+                self._excluding_reason_evidence = outcome.excluding_reason_evidence
                 break
             turn_status, turn_reason, stop = outcome
             if turn_status is not None:
@@ -476,7 +972,19 @@ class ToolCallingLoop:
             status=status,
             termination_reason=termination_reason,
             captured_effective_system_prompt=self._captured_effective_prompt,
+            excluding_reason_evidence=self._excluding_reason_evidence,
         )
+
+    def _stop_on(
+        self, decision: TerminationDecision
+    ) -> tuple[TrialStatus | None, TerminationReason | None, bool]:
+        """The turn's stop triple for *decision*, with its evidence kept beside it.
+
+        The triple carries no room for the evidence, so it lands on the loop
+        and :meth:`run` reads it into the outcome alongside the reason.
+        """
+        self._excluding_reason_evidence = decision.excluding_reason_evidence
+        return decision.status, decision.reason, True
 
     def _append_both(self, messages: list[Message], message: Message) -> None:
         """Append to the caller-owned recorded list and the wire list.
@@ -566,7 +1074,7 @@ class ToolCallingLoop:
         summarize_decision = self._maybe_summarize(turn, system_prompt, messages)
         if summarize_decision is not None:
             self._append_both(messages, self._system_message(summarize_decision.system_message))
-            return summarize_decision.status, summarize_decision.reason, True
+            return self._stop_on(summarize_decision)
 
         empty_attempts = 0
         output_length_attempts = 0
@@ -580,7 +1088,7 @@ class ToolCallingLoop:
                     self._append_both(
                         messages, self._system_message(reactive_decision.system_message)
                     )
-                    return reactive_decision.status, reactive_decision.reason, True
+                    return self._stop_on(reactive_decision)
                 if not self._summarize_armed():
                     raise
                 try:
@@ -598,7 +1106,7 @@ class ToolCallingLoop:
                         TerminationReason.CONTEXT_WINDOW_EXCEEDED,
                         True,
                     )
-            self._assign_call_ids(result)
+            result.tool_calls = self.funnel.assign_ids(result.tool_calls)
             self._capture_effective_prompt(result)
             self.metrics.record_generation(result)
             if result.parser_errors:
@@ -662,6 +1170,7 @@ class ToolCallingLoop:
                         "trial terminated to keep the next request provider-legal."
                     ),
                 )
+                self._excluding_reason_evidence = _EMPTY_COMPLETION_EVIDENCE
                 return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
 
             empty_attempts += 1
@@ -687,7 +1196,7 @@ class ToolCallingLoop:
         decision = self.should_terminate(result, turn, messages)
         if decision is not None:
             self._append_both(messages, self._system_message(decision.system_message))
-            return decision.status, decision.reason, True
+            return self._stop_on(decision)
 
         if result.tool_calls:
             self._execute_tool_calls(result, messages)
@@ -794,31 +1303,6 @@ class ToolCallingLoop:
         messages.append(marker)
         return None
 
-    def _assign_call_ids(self, result: GenerationResult) -> None:
-        """Give every parsed call the episode-unique id, before anything reads it.
-
-        Placed between the generation and the assistant message so all four
-        consumers downstream — the assistant message, the executor (hence the
-        runner's own record), the trial recorder and the ``role: tool`` message —
-        carry one id per call. A provider that already mints unique ids sees its
-        own ids back, so this is a no-op for all but the providers that number
-        their calls per turn.
-        """
-        assigned: list[ToolCall] = []
-        for call in result.tool_calls:
-            key = self.call_ids.assign(call.id)
-            if key == call.id:
-                assigned.append(call)
-                continue
-            self.logger.warning(
-                "Provider reused a tool-call id within the episode; assigned a unique one",
-                tool=call.name,
-                provider_call_id=call.id,
-                assigned_call_id=key,
-            )
-            assigned.append(call.model_copy(update={"id": key}))
-        result.tool_calls = assigned
-
     def _generate(self, turn: int, system_prompt: str) -> GenerationResult:
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
@@ -845,119 +1329,23 @@ class ToolCallingLoop:
         outcome = self.user_turn(messages)
         if outcome.termination is not None:
             self._append_both(messages, self._system_message(outcome.termination.system_message))
-            return outcome.termination.status, outcome.termination.reason, True
+            return self._stop_on(outcome.termination)
 
         if outcome.message is not None:
             self._append_both(messages, outcome.message)
         return None, None, False
 
     def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
-        for tc in result.tool_calls:
-            self._maybe_recover_arguments(tc, result.text)
-            tool_start = time.time()
-            if self.validation_schemas_by_tool is None:
-                tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
-            else:
-                tool_result = self.tool_executor.execute(
-                    tc.name,
-                    tc.arguments,
-                    call_id=tc.id,
-                    validation_schema=self.validation_schemas_by_tool.get(tc.name),
-                )
-            tool_duration = time.time() - tool_start
-            self.metrics.record_tool_call()
+        self.funnel.execute_all(
+            result.tool_calls,
+            lambda message: self._append_tool_message(messages, message),
+            result.text,
+        )
 
-            if self.recorder is not None:
-                self.recorder.record(
-                    call_id=tc.id,
-                    tool_name=tc.name,
-                    arguments=tc.arguments or {},
-                    executor=ToolExecutorIdentity.AGENT,
-                    status=resolve_tool_status(tool_result),
-                    output=resolve_tool_output(tool_result),
-                    latency_seconds=tool_duration,
-                )
-
-            if tool_result.success:
-                self.logger.debug(
-                    "Tool executed successfully", tool=tc.name, duration_s=tool_duration
-                )
-            else:
-                self.logger.warning("Tool execution failed", tool=tc.name, error=tool_result.error)
-
-            raw_content = (
-                tool_result.output
-                if tool_result.success
-                else f"Error: {resolve_tool_output(tool_result)}"
-            )
-            content = self._cap_tool_message_content(tc.name, raw_content)
-
-            self._append_both(
-                messages,
-                Message(
-                    role=MessageRole.TOOL,
-                    content=content,
-                    content_blocks=(tool_result.content_blocks if tool_result.success else None),
-                    tool_call_id=tc.id,
-                    ts=_now(),
-                ),
-            )
-            if self.observer is not None:
-                ended_at = messages[-1].ts or _now()
-                self.observer.tool_call(
-                    index=len(messages) - 1,
-                    call=tc,
-                    result=tool_result,
-                    started_at=ended_at - timedelta(seconds=max(0.0, tool_duration)),
-                    ended_at=ended_at,
-                )
-
-    def _cap_tool_message_content(self, tool_name: str, raw: str) -> str:
-        """Apply the tighter tool-output cap to a ``role=tool`` message content.
-
-        Two axes compose here: :attr:`LoopConfig.tool_output_max_chars` is the
-        per-model backstop and
-        :attr:`tool_output_max_chars_by_tool` carries the tool's own declared
-        :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars`. The
-        tighter set cap wins per call; ``None`` on both axes threads the
-        content through verbatim. The recorder read at
-        :meth:`_execute_tool_calls` runs earlier against the untruncated tool
-        result, so the trial's ordered record and the grader inputs are
-        unaffected by the cap.
-        """
-        tool_cap = (self.tool_output_max_chars_by_tool or {}).get(tool_name)
-        cap_cap = self.config.tool_output_max_chars
-        candidates = [x for x in (tool_cap, cap_cap) if x is not None]
-        if not candidates:
-            return raw
-        effective = min(candidates)
-        capped, omitted = keep_head_and_tail(raw, effective)
-        if omitted:
-            self.metrics.record_tool_output_truncated(omitted)
-            self.logger.info(
-                "Capped tool output before append",
-                tool=tool_name,
-                cap_chars=effective,
-                tool_cap_chars=tool_cap,
-                capability_cap_chars=cap_cap,
-                omitted_chars=omitted,
-                original_chars=len(raw),
-            )
-        return capped
-
-    def _maybe_recover_arguments(self, tc: Any, assistant_text: str) -> None:
-        if self.normalize_tool_arguments is None:
-            return
-        normalized_args = self.normalize_tool_arguments(tc.name, tc.arguments, assistant_text)
-        if normalized_args != tc.arguments:
-            self.logger.warning(
-                "Recovered malformed tool arguments from assistant text",
-                tool=tc.name,
-                recovered_keys=sorted(
-                    set(normalized_args.keys()) - set((tc.arguments or {}).keys())
-                ),
-            )
-            tc.arguments = normalized_args
+    def _append_tool_message(self, messages: list[Message], message: Message) -> int:
+        """Append a ``role: tool`` message to both views; its index in ``messages``."""
+        self._append_both(messages, message)
+        return len(messages) - 1
 
     def _check_episode_timeout(self, start_time: float) -> TerminationDecision | None:
         elapsed = time.time() - start_time
@@ -1032,3 +1420,30 @@ class ToolCallingLoop:
             "for each tool call, then try again."
         )
         return "\n".join(lines)
+
+
+def _engine_loop_factory(context: AgentLoopContext) -> ToolCallingLoop:
+    """Build the engine's built-in tool-calling loop.
+
+    Registered as ``engine-loop`` in the ``tolokaforge.agent_loops``
+    entry-point group.
+    """
+    return ToolCallingLoop(
+        llm_client=context.llm_client,
+        tool_executor=context.tool_executor,
+        tool_schemas=context.tool_schemas,
+        config=context.config,
+        metrics=context.metrics,
+        should_terminate=context.should_terminate,
+        logger=context.logger,
+        classify_error=context.classify_error,
+        user_turn=context.user_turn,
+        recorder=context.recorder,
+        request_limiter=context.request_limiter,
+        normalize_tool_arguments=context.normalize_tool_arguments,
+        call_observation=context.call_observation,
+        observer=context.observer,
+        validation_schemas_by_tool=context.validation_schemas_by_tool,
+        tool_output_max_chars_by_tool=context.tool_output_max_chars_by_tool,
+        call_ids=context.call_ids,
+    )

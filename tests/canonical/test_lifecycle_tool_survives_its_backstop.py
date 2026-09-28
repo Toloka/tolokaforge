@@ -362,7 +362,7 @@ def test_a_tool_with_no_session_to_rebuild_does_not_claim_one_was_reset(
         time.sleep(BACKSTOP_BAND_S * 4)
         return ""
 
-    wrapper._exec_sync = _hangs_past_the_band
+    wrapper.exec_in_env = _hangs_past_the_band
     runner_service.trials[shell_trial].agent_tools["run_command"] = wrapper
 
     response = runner_service.ExecuteTool(

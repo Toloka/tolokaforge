@@ -20,6 +20,7 @@ class TerminationReason(str, Enum):
     """Reason why the dialogue was terminated"""
 
     AGENT_DONE = "agent_done"  # Agent had no further action and no party could ask for one
+    AGENT_SUBMITTED = "agent_submitted"  # Agent called a completion tool to end the episode
     USER_STOP = "user_stop"  # User signaled ###STOP###
     STUCK_DETECTED = "stuck_detected"  # Stuck condition detected
     TIMEOUT = "timeout"  # Episode timeout reached

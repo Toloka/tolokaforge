@@ -175,7 +175,7 @@ class ModelCapabilities:
     tool_output_max_chars: int | None = None
     """Loop-layer cap on the ``role=tool`` message content, in chars.
 
-    When set, ``ToolCallingLoop._execute_tool_calls`` middle-elides the
+    When set, ``ToolCallFunnel.cap_tool_message_content`` middle-elides the
     ``Message.content`` string via
     :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before
     the tool message is appended, so accumulated context stays predictable
