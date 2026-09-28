@@ -26,11 +26,12 @@ from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.llm.usage import ProviderRawCall, Usage
 from tolokaforge.core.models import (
+    MessageRole,
     Metrics,
     ParserErrorRecord,
     Trajectory,
 )
-from tolokaforge.core.runner import TrialRunner, _AgentMetricsSink
+from tolokaforge.core.runner import TrialRunner, _TrialMetricsSink
 from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
@@ -211,7 +212,7 @@ class TestTrialCostAccumulation:
 
 
 class TestToolOutputTruncationAccounting:
-    """``_AgentMetricsSink.record_tool_output_truncated`` accumulates the
+    """``_TrialMetricsSink.record_tool_output_truncated`` accumulates the
     per-trial ``tool_output_chars_truncated`` counter that
     ``ToolCallingLoop._cap_tool_message_content`` calls whenever it clips
     a ``role=tool`` message.
@@ -223,13 +224,13 @@ class TestToolOutputTruncationAccounting:
 
     def test_single_call_accumulates(self) -> None:
         metrics = Metrics()
-        sink = _AgentMetricsSink(metrics)
+        sink = _TrialMetricsSink(metrics)
         sink.record_tool_output_truncated(1_500)
         assert metrics.tool_output_chars_truncated == 1_500
 
     def test_multiple_calls_sum(self) -> None:
         metrics = Metrics()
-        sink = _AgentMetricsSink(metrics)
+        sink = _TrialMetricsSink(metrics)
         sink.record_tool_output_truncated(500)
         sink.record_tool_output_truncated(1_000)
         sink.record_tool_output_truncated(250)
@@ -237,7 +238,7 @@ class TestToolOutputTruncationAccounting:
 
 
 class TestParserErrorAccounting:
-    """``_AgentMetricsSink.record_parser_errors`` persists per-turn
+    """``_TrialMetricsSink.record_parser_errors`` persists per-turn
     parser-error records onto ``Metrics.parser_errors``, mirroring the
     ephemeral ``GenerationResult.parser_errors`` sidecar across the
     trial-bundle boundary.
@@ -249,7 +250,7 @@ class TestParserErrorAccounting:
 
     def test_one_error_appends_one_record(self) -> None:
         metrics = Metrics()
-        sink = _AgentMetricsSink(metrics)
+        sink = _TrialMetricsSink(metrics)
         sink.record_parser_errors(
             (
                 ParserError(
@@ -266,7 +267,7 @@ class TestParserErrorAccounting:
 
     def test_multiple_calls_extend(self) -> None:
         metrics = Metrics()
-        sink = _AgentMetricsSink(metrics)
+        sink = _TrialMetricsSink(metrics)
         sink.record_parser_errors(
             (
                 ParserError(tool_name="a", raw_arguments="x", reason="one"),
@@ -278,7 +279,7 @@ class TestParserErrorAccounting:
 
     def test_survives_trajectory_roundtrip(self) -> None:
         metrics = Metrics()
-        sink = _AgentMetricsSink(metrics)
+        sink = _TrialMetricsSink(metrics)
         sink.record_parser_errors((ParserError(tool_name="run", raw_arguments="{}", reason="ok"),))
         dumped = metrics.model_dump(mode="json")
         assert dumped["parser_errors"] == [
@@ -286,3 +287,114 @@ class TestParserErrorAccounting:
         ]
         rebuilt = Metrics.model_validate(dumped)
         assert rebuilt.parser_errors == metrics.parser_errors
+
+
+# --- non-agent actor spend folding -------------------------------------------
+
+
+def _user_result(cost_usd: float, gen_id: str) -> GenerationResult:
+    """A user-simulator reply that made one LLM call (role=="user")."""
+    call = ProviderRawCall(
+        role="user",
+        prompt_tokens=20,
+        completion_tokens=10,
+        cost_usd=cost_usd,
+        cost_source="litellm",
+        latency_s=0.2,
+        openrouter_generation_id=gen_id,
+    )
+    return GenerationResult(
+        text="please continue",
+        tool_calls=[],
+        usage=Usage(prompt_tokens=20, completion_tokens=10, calls=(call,)),
+        cost_usd=cost_usd,
+        openrouter_generation_id=gen_id,
+    )
+
+
+def _make_runner(user_simulator: MagicMock) -> TrialRunner:
+    agent = MagicMock()
+    agent.capabilities.max_context_tokens = None
+    agent.capabilities.context_watermark = None
+    return TrialRunner(
+        task_id="trial-001",
+        trial_index=0,
+        agent_client=agent,
+        user_simulator=user_simulator,
+        tool_executor=_make_tool_executor(),
+        tool_schemas=[{"type": "function", "function": {"name": "noop"}}],
+        max_turns=1,
+        turn_timeout_s=30,
+        episode_timeout_s=600,
+    )
+
+
+class TestActorSpendFold:
+    """``TrialRunner._record_actor_spend`` folds a non-agent actor's
+    ``GenerationResult`` into the trial ``Metrics`` only when the reply carries
+    real per-call records — the single correctness gate that keeps scripted /
+    mock replies (empty ``usage.calls``) from inflating cost / api_calls.
+    """
+
+    def test_nonempty_calls_fold_all_fields(self) -> None:
+        runner = _make_runner(_make_user_simulator_keep_going())
+        runner._record_actor_spend(_user_result(0.03, "gen-user-1"))
+
+        m = runner.metrics
+        assert m.api_calls == 1
+        assert m.cost_usd == pytest.approx(0.03)
+        assert m.openrouter_generation_ids == ["gen-user-1"]
+        assert [c.role for c in m.usage.calls] == ["user"]
+
+    def test_scripted_reply_empty_calls_is_noop(self) -> None:
+        runner = _make_runner(_make_user_simulator_keep_going())
+        runner._record_actor_spend(GenerationResult(text="please continue", tool_calls=[]))
+
+        m = runner.metrics
+        assert m.api_calls == 0
+        assert m.cost_usd is None
+        assert m.openrouter_generation_ids == []
+        assert m.usage.calls == ()
+
+
+class TestSimulatorSpendReachesTrialMetrics:
+    """The drop sites (bootstrap + per-turn user dispatch) actually call the
+    fold: a conversational trial whose simulator makes real LLM calls records
+    the user's spend into the trial ``Metrics``, while the USER ``Message``
+    keeps ``openrouter_generation_id=None``.
+    """
+
+    def test_conversational_run_accrues_user_spend(self) -> None:
+        sim = MagicMock()
+        sim.reply.return_value = _user_result(0.02, "gen-user-1")
+        agent = MagicMock()
+        agent.generate.side_effect = [_result(0.10, "litellm"), _final_result()]
+        agent.capabilities.max_context_tokens = None
+        agent.capabilities.context_watermark = None
+        runner = TrialRunner(
+            task_id="trial-001",
+            trial_index=0,
+            agent_client=agent,
+            user_simulator=sim,
+            tool_executor=_make_tool_executor(),
+            tool_schemas=[{"type": "function", "function": {"name": "noop"}}],
+            max_turns=2,
+            turn_timeout_s=30,
+            episode_timeout_s=600,
+        )
+        # Empty initial message => the conductor bootstraps turn 0 via the
+        # simulator, exercising both drop sites.
+        traj = runner.run("System", "")
+
+        user_rows = [c for c in traj.metrics.usage.calls if c.role == "user"]
+        assert user_rows, "user-simulator spend was not folded into the trial metrics"
+        assert "gen-user-1" in traj.metrics.openrouter_generation_ids
+        # Every folded result contributes its cost exactly once.
+        assert traj.metrics.cost_usd == pytest.approx(
+            sum(c.cost_usd for c in traj.metrics.usage.calls if c.cost_usd is not None)
+        )
+        # The USER Message contract is unchanged: the id rides the metrics
+        # plane, never the transcript message.
+        user_messages = [m for m in traj.messages if m.role == MessageRole.USER]
+        assert user_messages
+        assert all(m.openrouter_generation_id is None for m in user_messages)

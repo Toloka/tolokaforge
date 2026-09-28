@@ -394,7 +394,7 @@ class TrialRunner:
                 )
                 self._seed_first_user_message(task_config, policy, initial_user_message)
 
-                agent_metrics_sink = _AgentMetricsSink(
+                agent_metrics_sink = _TrialMetricsSink(
                     self.metrics,
                     events=self._events,
                     trial_id=trial_id,
@@ -1146,6 +1146,25 @@ class TrialRunner:
             )
         )
 
+    def _record_actor_spend(self, result: GenerationResult) -> None:
+        """Fold a non-agent actor's usage/cost/generation-ids into the trial
+        :class:`Metrics` via a :class:`_TrialMetricsSink`.
+
+        Guarded on non-empty ``usage.calls``: scripted / mock replies carry an
+        empty ``calls`` tuple, so the guard makes the fold a no-op for them and
+        only real LLM-backed actor spend reaches ``api_calls`` / ``cost_usd`` /
+        ``usage`` / ``openrouter_generation_ids``. Reusing the trial sink also
+        fires ``trial_progress`` so the live cost total tracks the final
+        ``metrics.yaml``.
+        """
+        if not result.usage.calls:
+            return
+        _TrialMetricsSink(
+            self.metrics,
+            events=self._events,
+            trial_id=f"{self.task_id}:{self.trial_index}",
+        ).record_generation(result)
+
     def _bootstrap_via_simulator(self) -> tuple[str, list[ToolCall]]:
         """Synthesise turn 0 by dispatching the user simulator against a canned
         agent greeting. Retries on rate limits only.
@@ -1211,6 +1230,7 @@ class TrialRunner:
                         "a blank opening cannot seed the conversation."
                     )
                 self.logger.debug("User simulator generated first message")
+                self._record_actor_spend(first_user_result)
                 return self._run_user_tool_calls(
                     first_user_result.text, first_user_result.tool_calls
                 )
@@ -1342,6 +1362,7 @@ class TrialRunner:
             outcome=UserReplyOutcome.DELIVERED,
             rejected=user_result.guard_rejections,
         )
+        self._record_actor_spend(user_result)
 
         if "###STOP###" in user_result.text:
             pre_stop_text, _, _ = user_result.text.partition("###STOP###")
@@ -1441,9 +1462,9 @@ class TrialRunner:
         return f"{reply_text}\n\n" + "\n".join(results_text), executed
 
 
-class _AgentMetricsSink(MetricsSink):
-    """Accumulates the agent's per-call usage/cost and tool counts into the
-    trial :class:`Metrics`, preserving the original field-wise semantics.
+class _TrialMetricsSink(MetricsSink):
+    """Accumulates an in-trial actor's per-call usage/cost and tool counts into
+    the trial :class:`Metrics`, preserving the original field-wise semantics.
 
     ``Usage.__add__`` is field-wise; ``calls`` concatenate (preserving per-call
     cost_source / latency_s); ``provider_raw`` is "latest wins" per the Usage

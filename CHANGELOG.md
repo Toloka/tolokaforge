@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Fix
 
 - **llm**: stamp per-call actor `role` + `model` on every `ProviderRawCall`, so per-role cost/token attribution reads off the per-call record; bump the trial-bundle schema to 6 (#1647)
+- **runner**: fold the LLM-mode user simulator's spend into the trial `Metrics`, so `metrics.yaml` `cost_usd` / `usage` / `openrouter_generation_ids` / `api_calls` include the user actor and the simulator's generation id is recoverable; scripted / `agent_only` trials record zero user spend (#1647)
 
 ## v0.27.3 (2026-09-25)
 

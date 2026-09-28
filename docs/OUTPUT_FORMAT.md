@@ -608,6 +608,17 @@ per-call tokens, `cost_usd`, `cost_source` (`"litellm"` / `"local"` /
 through an LLM gateway, else null), and `openrouter_generation_id` — the
 trial-level `cost_usd` is the sum of those entries.
 
+The trial-level `cost_usd`, `usage`, `openrouter_generation_ids`, and
+`api_calls` sum across **every in-trial actor role**, not the agent alone: an
+LLM-mode user simulator's replies are folded into the same counters, so a
+conversational trial's `cost_usd` includes the user's spend and its
+`usage.calls[]` carries the `role: "user"` rows. A scripted or mock simulator
+issues no LLM call (its reply carries an empty `calls`), so it adds nothing —
+scripted and `agent_only` trials record zero user spend. The user simulator's
+`openrouter_generation_id` is recoverable only here, via
+`openrouter_generation_ids` and the matching `usage.calls[role == "user"]` row;
+the USER transcript `Message` carries no generation id.
+
 `harness_stdout_dialect` names the coding-harness stdout dialect `turns` and
 `usage` were read from, and is `null` whenever they are the engine's own
 measurements. A harness trial runs the CLI as one tool call, so the engine

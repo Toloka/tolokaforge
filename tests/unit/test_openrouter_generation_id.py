@@ -35,7 +35,7 @@ from tolokaforge.core.llm.usage import (
 )
 from tolokaforge.core.models import Message, MessageRole, Metrics, ModelConfig, Trajectory
 from tolokaforge.core.output_writer import OutputWriter
-from tolokaforge.core.runner import _AgentMetricsSink
+from tolokaforge.core.runner import _TrialMetricsSink
 
 pytestmark = pytest.mark.unit
 
@@ -191,7 +191,7 @@ class TestMetricsAccumulation:
 
     def test_ids_accumulate_in_call_order(self) -> None:
         metrics = Metrics()
-        recorder = _AgentMetricsSink(metrics)
+        recorder = _TrialMetricsSink(metrics)
         client = _client()
         for suffix in ("a", "b"):
             headers = {f"llm_provider-{OPENROUTER_GENERATION_ID_HEADER}": f"gen-{suffix}"}
@@ -202,7 +202,7 @@ class TestMetricsAccumulation:
     def test_unrouted_calls_contribute_no_entry(self) -> None:
         """The list is shorter than ``api_calls`` rather than padded with nulls."""
         metrics = Metrics()
-        recorder = _AgentMetricsSink(metrics)
+        recorder = _TrialMetricsSink(metrics)
         client = _client()
         recorder.record_generation(
             _generate(
@@ -225,7 +225,7 @@ class TestPersistedBundle:
 
         ts = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
         metrics = Metrics()
-        recorder = _AgentMetricsSink(metrics)
+        recorder = _TrialMetricsSink(metrics)
         headers = (
             {f"llm_provider-{OPENROUTER_GENERATION_ID_HEADER}": generation_id}
             if generation_id is not None
