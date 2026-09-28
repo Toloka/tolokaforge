@@ -25,6 +25,7 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface
   check). See [`build_check`](#build_check) below.
 - `calculator`: Safe arithmetic calculator.
+- `submit`: The agent's completion signal — see [Ending an episode](#ending-an-episode).
 
 ## Browser and Mobile Action Reference
 
@@ -245,6 +246,34 @@ tools:
       port: 8001
       path: /build_check
 ```
+
+## Ending an episode
+
+A conversational task ends when the user simulator closes the dialogue, which
+it can only do on a turn the agent spent saying something rather than calling a
+tool. That makes termination depend on how the model writes: one that narrates
+and signs off reaches it, one that answers every turn with a bare tool call
+runs to the turn budget instead.
+
+`submit` gives the agent the other option. Calling it ends the trial
+immediately with termination reason `agent_submitted` — distinct from
+`user_stop` and from `agent_done`, so a trajectory can be asked whether the
+agent ended its own episode. Termination is decided before any tool on that
+turn runs, so a call made alongside `submit` does not execute.
+
+It is off unless a task lists it, and nothing but the tool's own schema tells
+the agent it exists — no system prompt mentions it. Enable it beside whatever
+the task's real tools are:
+
+```yaml
+tools:
+  agent:
+    enabled: ["bash_session", "submit"]
+```
+
+Leave it out for any task whose user simulator is meant to decide when the
+conversation is over: an agent that can stop the trial itself can stop it
+before the simulator has asked for everything it was going to ask for.
 
 ## Enabling Tools
 

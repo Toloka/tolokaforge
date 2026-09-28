@@ -76,6 +76,7 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         "tolokaforge/tools/builtin/mobile.py",
         "tolokaforge/tools/builtin/rag_search.py",
         "tolokaforge/tools/builtin/registry.py",
+        "tolokaforge/tools/builtin/submit.py",
         # ``runner.proto`` is a source-level protobuf definition, not a
         # Python module — the compiled ``runner_pb2*.py`` files carry its
         # runtime surface. Kept in the subset for repro / regeneration.

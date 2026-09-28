@@ -104,12 +104,37 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
         BuiltinToolEntry("tolokaforge.tools.str_replace_editor", "StrReplaceEditorTool"),
         Dispatch.EDITOR,
     ),
+    "submit": (
+        BuiltinToolEntry("tolokaforge.tools.builtin.submit", "SubmitTool"),
+        Dispatch.GENERIC,
+    ),
 }
+
+_COMPLETION_TOOLS: frozenset[str] = frozenset({"submit"})
+"""Builtins whose call is the agent's own end-of-episode signal.
+
+Orthogonal to :class:`Dispatch`, which names the runner-side wrapper: a
+completion tool is reconstructed like any other builtin, and what sets it
+apart happens a layer above, in the trial runner's termination policy. Naming
+the set here rather than at that policy keeps "which tool ends an episode" a
+property of the registry every caller already consults, so a second completion
+tool is one entry rather than an edit in two packages.
+"""
 
 
 def is_builtin(name: str) -> bool:
     """Return True if *name* is a known builtin tool."""
     return name in _REGISTRY
+
+
+def is_completion(name: str) -> bool:
+    """Return True if calling *name* is the agent's end-of-episode signal."""
+    return name in _COMPLETION_TOOLS
+
+
+def list_completion_tools() -> frozenset[str]:
+    """Return the set of builtin names that end an episode when called."""
+    return _COMPLETION_TOOLS
 
 
 def get_dispatch(name: str) -> Dispatch:

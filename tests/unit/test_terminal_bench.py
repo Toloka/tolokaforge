@@ -2785,3 +2785,123 @@ class TestTerminalBenchAgentToolSelection:
                 agent_harness="claude-code",
                 agent_model="m",
             )
+
+
+class TestTerminalBenchAgentCompletionTool:
+    """``adapter_params.agent_completion_tool`` offers the agent a way to stop.
+
+    Default off, and off means the emission is exactly what shipped before it
+    existed — the packs this adapter runs today end at their turn budget or at
+    a text-only turn, and neither should move because the option is available.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    # -- default off ---------------------------------------------------------
+
+    def test_default_offers_the_shell_alone(self, fixture_dir, tmp_path):
+        """Safety lock: the surface a run gets without the param."""
+        adapter = self._adapter(fixture_dir, tmp_path)
+
+        assert adapter.agent_completion_tool is False
+        assert adapter.get_task("echo-hello").tools.agent == {"enabled": ["bash"]}
+        assert [t.name for t in adapter.to_task_description("echo-hello").agent_tools] == ["bash"]
+
+    def test_explicit_false_matches_the_default(self, fixture_dir, tmp_path):
+        default = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session")
+        explicit = self._adapter(
+            fixture_dir, tmp_path, agent_tool="bash_session", agent_completion_tool=False
+        )
+
+        assert (
+            explicit.get_task("echo-hello").tools.agent
+            == default.get_task("echo-hello").tools.agent
+        )
+        assert (
+            explicit.to_task_description("echo-hello").agent_tools
+            == default.to_task_description("echo-hello").agent_tools
+        )
+
+    # -- enabled -------------------------------------------------------------
+
+    def test_enabled_adds_the_completion_tool_beside_the_shell(self, fixture_dir, tmp_path):
+        adapter = self._adapter(
+            fixture_dir, tmp_path, agent_tool="bash_session", agent_completion_tool=True
+        )
+
+        block = adapter.get_task("echo-hello").tools.agent
+        names = [t.name for t in adapter.to_task_description("echo-hello").agent_tools]
+
+        assert block["enabled"] == ["bash_session", "submit"] == names
+
+    def test_the_shell_is_unchanged_by_enabling_it(self, fixture_dir, tmp_path):
+        """The completion tool is added, not substituted: an agent that never
+        calls it must still see the same shell it would have seen."""
+        without = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session")
+        with_submit = self._adapter(
+            fixture_dir, tmp_path, agent_tool="bash_session", agent_completion_tool=True
+        )
+
+        assert (
+            with_submit.to_task_description("echo-hello").agent_tools[0]
+            == without.to_task_description("echo-hello").agent_tools[0]
+        )
+
+    def test_the_completion_schema_comes_from_the_registered_class(self, fixture_dir, tmp_path):
+        """Not from a copy in this adapter: the parameters the model is shown
+        are the ones the registered tool declares, or the two drift."""
+        from tolokaforge.tools.builtin.submit import SubmitTool
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_completion_tool=True)
+        schema = adapter.to_task_description("echo-hello").agent_tools[1]
+        function = SubmitTool().get_schema()["function"]
+
+        assert schema.name == function["name"]
+        assert schema.description == function["description"]
+        assert schema.parameters == function["parameters"]
+        assert schema.source is None
+
+    def test_the_system_prompt_is_untouched(self, fixture_dir, tmp_path):
+        """The agent learns of the tool through the tool, and nowhere else."""
+        without = self._adapter(fixture_dir, tmp_path)
+        with_submit = self._adapter(fixture_dir, tmp_path, agent_completion_tool=True)
+
+        assert with_submit.get_system_prompt("echo-hello") == without.get_system_prompt(
+            "echo-hello"
+        )
+
+    def test_no_model_name_reaches_the_emission(self, fixture_dir, tmp_path):
+        """The param is a capability, not a workaround for one model: nothing
+        about which model runs may influence what is emitted."""
+        adapter = self._adapter(fixture_dir, tmp_path, agent_completion_tool=True)
+        td = adapter.to_task_description("echo-hello")
+
+        assert [t.name for t in td.agent_tools] == ["bash", "submit"]
+        assert "model" not in td.agent_tools[1].model_dump(mode="json")["description"].lower()
+
+    # -- refusals ------------------------------------------------------------
+
+    def test_rejected_under_a_coding_harness(self, fixture_dir, tmp_path):
+        """A harness CLI runs no turn loop, so nothing would read the signal —
+        and the conductor's harness branch requires exactly one agent tool."""
+        with pytest.raises(ValueError, match=r"agent_completion_tool requires agent_harness"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                agent_completion_tool=True,
+                agent_harness="claude-code",
+                agent_model="m",
+            )

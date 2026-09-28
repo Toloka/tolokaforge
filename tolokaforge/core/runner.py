@@ -190,6 +190,21 @@ and 4.6x.
 """
 
 
+def _enabled_completion_tools(tool_schemas: list[dict[str, Any]]) -> frozenset[str]:
+    """The completion-tool names among *tool_schemas*, per the builtin registry.
+
+    Read off the tool surface the model is actually offered rather than off the
+    run config, so the termination seam and the schema list can never disagree
+    about which tools can end an episode.
+    """
+    # Deferred: importing the builtin package pulls every tool driver, and this
+    # module is on the orchestrator's import path well before any tool is built.
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    names = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
+    return frozenset(name for name in names if builtin_registry.is_completion(name))
+
+
 class TrialRunner:
     """Runs a single trial of a task"""
 
@@ -226,6 +241,11 @@ class TrialRunner:
         self.turn_timeout_s = turn_timeout_s
         self.episode_timeout_s = episode_timeout_s
         self.stuck_detector = stuck_detector
+        # The enabled agent tools whose call ends the episode. Empty unless an
+        # operator put a completion tool in ``tools.agent.enabled``, which is
+        # what keeps this seam inert for every pack that terminates through its
+        # user simulator.
+        self._completion_tools = _enabled_completion_tools(tool_schemas)
         self.user_tool_executor = user_tool_executor
         self.request_limiter = request_limiter
         self.verbose = verbose
@@ -1459,14 +1479,22 @@ class TrialRunner:
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
     ) -> TerminationDecision | None:
-        """Agent termination policy: stuck detection, and nothing else.
+        """Agent termination policy: stuck detection and the completion signal.
 
         The agent's prose is never read for a completion signal — who speaks
-        next, and whether anyone can, is the :class:`TurnPolicy`'s decision.
+        next, and whether anyone can, is the :class:`TurnPolicy`'s decision. A
+        *tool call* is read, and only a call to a tool the registry declares a
+        completion tool and the run actually enabled. That is the same shape the
+        rubric judge terminates on (``submit_report``), moved to the agent side:
+        the terminal act is an action the model takes, not a sentence it writes,
+        so a model that never narrates can still end its own episode.
+
         Stuck sets ``metrics.stuck_detected`` as a side effect, which is why it
-        lives here rather than in the policy.
+        lives here rather than in the policy. Stuck is checked first: an agent
+        that has been repeating itself has already failed, and letting a
+        ``submit`` on that turn overwrite the diagnosis would hide it.
         """
-        del result, turn, messages
+        del turn, messages
         if self.stuck_detector and self.stuck_detector.is_stuck(
             self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
         ):
@@ -1476,6 +1504,19 @@ class TrialRunner:
                 reason=TerminationReason.STUCK_DETECTED,
                 system_message="Stuck condition detected. Dialogue terminated.",
             )
+
+        if self._completion_tools:
+            for call in result.tool_calls:
+                if call.name in self._completion_tools:
+                    self.logger.info("Agent signalled completion", tool=call.name)
+                    return TerminationDecision(
+                        reason=TerminationReason.AGENT_SUBMITTED,
+                        system_message=(
+                            f"Agent called {call.name}. Episode terminated at the "
+                            "agent's own signal."
+                        ),
+                        status=TrialStatus.COMPLETED,
+                    )
 
         return None
 

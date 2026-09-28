@@ -48,6 +48,7 @@ from tolokaforge.runner.models import (
 )
 from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge.tools.builtin import registry as builtin_registry
+from tolokaforge.tools.builtin.submit import SUBMIT_TOOL_NAME
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     DEFAULT_SKILL_DELIVERY,
     PROJECT_PREFIX,
@@ -263,6 +264,13 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "runs no turn loop and the whole trial is one tool call, so a "
                 "session-lifetime shell has nothing to carry state across."
             )
+        self.agent_completion_tool: bool = bool(params.get("agent_completion_tool", False))
+        if self.agent_completion_tool and self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench adapter: agent_completion_tool requires agent_harness "
+                f"{ENGINE_LOOP!r} — a coding-harness CLI ends its own trial when the "
+                "process exits, so there is no turn loop for a completion signal to end."
+            )
         self.agent_provider_env: dict[str, str] = _resolve_provider_env(
             self.harness_spec.provider_env if self.harness_spec else {},
             params.get("agent_provider_env") or {},
@@ -469,21 +477,60 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         }
 
     def agent_tool_block(self, task_id: str) -> dict[str, Any]:
-        """The ``tools.agent`` block naming this run's single agent tool.
+        """The ``tools.agent`` block naming this run's agent tools.
 
-        Paired with :meth:`agent_tool_schema` — the name enabled here is the
-        name of the schema emitted there, and the persistent shell's per-tool
-        kwargs are the same dict the schema carries as ``tool_config``.
+        Paired with :meth:`agent_tool_schemas` — the names enabled here are the
+        names of the schemas emitted there, and the persistent shell's per-tool
+        kwargs are the same dict its schema carries as ``tool_config``.
+
+        The shell is always enabled. ``agent_completion_tool`` adds the
+        completion tool beside it, which is the whole of what that param does.
         """
         if self.agent_tool == AGENT_TOOL_BASH:
-            return {"enabled": [AGENT_TOOL_BASH]}
-        return {
-            "enabled": [AGENT_TOOL_BASH_SESSION],
-            AGENT_TOOL_BASH_SESSION: self._persistent_shell_tool_config(task_id),
-        }
+            block: dict[str, Any] = {"enabled": [AGENT_TOOL_BASH]}
+        else:
+            block = {
+                "enabled": [AGENT_TOOL_BASH_SESSION],
+                AGENT_TOOL_BASH_SESSION: self._persistent_shell_tool_config(task_id),
+            }
+        if self.agent_completion_tool:
+            block["enabled"] = [*block["enabled"], SUBMIT_TOOL_NAME]
+        return block
 
-    def agent_tool_schema(self, task_id: str) -> ToolSchema:
-        """This run's single agent tool, as the runner reconstructs it.
+    def agent_tool_schemas(self, task_id: str) -> list[ToolSchema]:
+        """Every agent tool this run offers, shell first.
+
+        One entry unless ``agent_completion_tool`` is set, which appends the
+        completion tool. Nothing downstream of the engine loop requires a
+        single agent tool: the ``!= 1`` guard that does live in the conductor
+        governs the coding-harness branch, which this param refuses to combine
+        with.
+        """
+        schemas = [self.agent_shell_tool_schema(task_id)]
+        if self.agent_completion_tool:
+            schemas.append(self.agent_completion_tool_schema())
+        return schemas
+
+    def agent_completion_tool_schema(self) -> ToolSchema:
+        """The completion tool, as the runner reconstructs it.
+
+        Sourceless like ``bash_session``: the runner's factory resolves the name
+        through the builtin registry. Its advertised parameters and description
+        come from the registered class, so the only thing the model is ever told
+        about this tool is what the tool itself declares — no prompt carries it.
+        """
+        tool = builtin_registry.get_class(SUBMIT_TOOL_NAME)()
+        function = tool.get_schema()["function"]
+        return ToolSchema(
+            name=SUBMIT_TOOL_NAME,
+            description=function["description"],
+            parameters=function["parameters"],
+            category="compute",
+            timeout_s=tool.policy.timeout_s,
+        )
+
+    def agent_shell_tool_schema(self, task_id: str) -> ToolSchema:
+        """This run's shell tool, as the runner reconstructs it.
 
         ``bash`` carries a ``docker_compose_exec`` :class:`ToolSource`, which
         the runner's factory routes to its compose-exec wrapper. ``bash_session``
@@ -568,7 +615,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             adapter_type=AdapterType.TERMINAL_BENCH,
             system_prompt=self.get_system_prompt(task_id),
             environment_manifest=manifest,
-            agent_tools=[self.agent_tool_schema(task_id)],
+            agent_tools=self.agent_tool_schemas(task_id),
             user_tools=[],
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
