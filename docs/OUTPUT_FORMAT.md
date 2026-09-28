@@ -723,6 +723,25 @@ emits per configured role. Supplying the real rates through
 both. The field is optional and absent-by-default, so it carries no bundle
 stamp bump: a bundle written before it reads `false`.
 
+`cost_by_role` and `cost_by_role_model` break the trial's `cost_usd` and tokens
+down by actor role. `cost_by_role` carries one row per role (sorted by role);
+`cost_by_role_model` resolves the same spend to `(role, model)` rows (sorted by
+role then model). Both are **derived** from `usage.calls` and then reconciled
+against `cost_usd`, so `sum(row.cost_usd for row in cost_by_role) == cost_usd` on
+every trial: a coding-harness trial issues no per-call records yet carries a
+`cost_usd` (the engine's price for the CLI-reported tokens), and that residual —
+`cost_usd` minus the summed call costs, with the matching flat-token residual —
+lands on the `agent` row at the agent model. On an engine-loop trial the residual
+is float noise and no synthetic row is added; a `null` `cost_usd` leaves both
+lists purely call-derived. These cover the **in-trial** actor roles only — the
+`agent` loop (summarizer included) and the LLM-mode `user` simulator. The judge
+is not an in-trial actor: its cost lives in [`grade.yaml`](#trialstask_idtrial_indexgradeyaml)
+`judge_usage`, not in `usage.calls`, so no `judge` row appears here — it is
+synthesised only at the run level in `aggregate.json`'s `total_cost_by_role` (see
+[`docs/ANALYTICS.md`](ANALYTICS.md:1) § `aggregate.json`). Each row's `model` is
+the client slug the calls were served by, `null` only for a call built without a
+serving client.
+
 To help analytics consumers detect schema evolution, a trial-level metrics file
 written by `write_metrics` includes a root-level `schema_version: 6` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
@@ -774,6 +793,42 @@ usage:
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
+cost_by_role:                # per-role breakdown; sum of cost_usd == cost_usd above
+  - role: agent
+    cost_usd: 0.107055
+    prompt_tokens: 1806
+    completion_tokens: 260
+    reasoning_tokens: 250
+    cached_tokens: 1920
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 1920
+  - role: user
+    cost_usd: 0.02
+    prompt_tokens: 200
+    completion_tokens: 40
+    reasoning_tokens: 0
+    cached_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+cost_by_role_model:          # the same spend resolved to (role, model) rows
+  - role: agent
+    model: openrouter/anthropic/claude-sonnet-4.6
+    cost_usd: 0.107055
+    prompt_tokens: 1806
+    completion_tokens: 260
+    reasoning_tokens: 250
+    cached_tokens: 1920
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 1920
+  - role: user
+    model: openrouter/openai/gpt-4.1-mini
+    cost_usd: 0.02
+    prompt_tokens: 200
+    completion_tokens: 40
+    reasoning_tokens: 0
+    cached_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
 harness_stdout_dialect: null       # non-null only when a coding-harness CLI reported its own totals
 harness_usage_source: null         # non-null only when the tokens were measured on the wire, not printed by the CLI
 harness_reported_cost_usd: null    # what that CLI said it billed, where it said anything

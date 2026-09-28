@@ -197,6 +197,14 @@ performance average, so it follows the measured denominator.
   - `total_cache_read_input_tokens` / `avg_cache_read_input_tokens`
     (Anthropic cache reads — Stage 6 caching observability metric)
 
+Per-trial spend is broken down by actor role in each trial's `metrics.yaml`:
+`cost_by_role` (one row per role) and `cost_by_role_model` (per `(role, model)`).
+The rows are derived from `usage.calls` and reconciled against the trial's
+`cost_usd`, so `sum(cost_by_role[*].cost_usd) == cost_usd` on every trial —
+including a coding-harness trial, whose whole cost lands on the `agent` row. These
+cover the in-trial roles (agent + user); the judge's cost is a run-level synthesis
+(see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `metrics.yaml`).
+
 ### Reliability
 
 - `tool_success_rate`

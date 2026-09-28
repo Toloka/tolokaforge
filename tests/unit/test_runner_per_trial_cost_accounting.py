@@ -398,3 +398,93 @@ class TestSimulatorSpendReachesTrialMetrics:
         user_messages = [m for m in traj.messages if m.role == MessageRole.USER]
         assert user_messages
         assert all(m.openrouter_generation_id is None for m in user_messages)
+
+
+# --- per-role cost rollup -----------------------------------------------------
+
+
+def _agent_call(cost_usd: float, model: str, prompt_tokens: int = 100) -> ProviderRawCall:
+    return ProviderRawCall(
+        role="agent",
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=50,
+        cost_usd=cost_usd,
+        cost_source="litellm",
+    )
+
+
+class TestCostByRoleRollup:
+    """``TrialRunner._apply_cost_rollup`` derives the per-role / per-(role,model)
+    breakdown from ``usage.calls`` and reconciles the residual against
+    ``cost_usd`` so ``sum(cost_by_role[*].cost_usd) == cost_usd`` on every trial.
+    """
+
+    def test_mixed_roles_sum_per_role_and_reconcile(self) -> None:
+        runner = _make_runner(_make_user_simulator_keep_going())
+        agent_a = _agent_call(0.10, "agent-model")
+        agent_b = _agent_call(0.20, "agent-model")
+        user = ProviderRawCall(
+            role="user",
+            model="user-model",
+            prompt_tokens=20,
+            completion_tokens=10,
+            cost_usd=0.03,
+            cost_source="litellm",
+        )
+        runner.metrics.usage = Usage(
+            prompt_tokens=220,
+            completion_tokens=110,
+            calls=(agent_a, agent_b, user),
+        )
+        runner.metrics.cost_usd = 0.33
+
+        runner._apply_cost_rollup()
+
+        by_role = {row.role: row for row in runner.metrics.cost_by_role}
+        assert set(by_role) == {"agent", "user"}
+        assert by_role["agent"].cost_usd == pytest.approx(0.30)
+        assert by_role["user"].cost_usd == pytest.approx(0.03)
+        assert by_role["agent"].prompt_tokens == 200
+        assert by_role["user"].prompt_tokens == 20
+        assert sum(row.cost_usd for row in runner.metrics.cost_by_role) == pytest.approx(
+            runner.metrics.cost_usd
+        )
+
+        by_pair = {(r.role, r.model): r for r in runner.metrics.cost_by_role_model}
+        assert set(by_pair) == {("agent", "agent-model"), ("user", "user-model")}
+        assert by_pair[("agent", "agent-model")].cost_usd == pytest.approx(0.30)
+
+    def test_harness_style_residual_lands_on_agent(self) -> None:
+        """Empty ``usage.calls`` + non-zero ``cost_usd`` (a coding-harness trial)
+        produces a single ``agent`` row equal to ``cost_usd``, with the flat
+        token totals attributed to it — the reconciliation lock.
+        """
+        runner = _make_runner(_make_user_simulator_keep_going())
+        runner.agent_client.model_name = "harness-model"
+        runner.metrics.usage = Usage(prompt_tokens=1000, completion_tokens=200, calls=())
+        runner.metrics.cost_usd = 0.42
+
+        runner._apply_cost_rollup()
+
+        assert len(runner.metrics.cost_by_role) == 1
+        agent_row = runner.metrics.cost_by_role[0]
+        assert agent_row.role == "agent"
+        assert agent_row.cost_usd == pytest.approx(0.42)
+        assert agent_row.prompt_tokens == 1000
+        assert agent_row.completion_tokens == 200
+        assert sum(row.cost_usd for row in runner.metrics.cost_by_role) == pytest.approx(0.42)
+
+        assert len(runner.metrics.cost_by_role_model) == 1
+        assert runner.metrics.cost_by_role_model[0].model == "harness-model"
+
+    def test_none_cost_leaves_rollup_call_derived(self) -> None:
+        """A ``None`` ``cost_usd`` emits no reconciled residual row."""
+        runner = _make_runner(_make_user_simulator_keep_going())
+        runner.metrics.usage = Usage(prompt_tokens=0, completion_tokens=0, calls=())
+        runner.metrics.cost_usd = None
+
+        runner._apply_cost_rollup()
+
+        assert runner.metrics.cost_by_role == []
+        assert runner.metrics.cost_by_role_model == []
