@@ -363,7 +363,8 @@ def _events(text: str, origin: str) -> tuple[str, list[Any]]:
         raise TranscriptError(f"{origin}: empty")
     try:
         whole = json.loads(stripped)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # not one JSON document (a stream, or a value the decoder cannot hold): read it by line
         return SHAPE_STREAM, _lines(stripped, origin)
     if isinstance(whole, list):
         return SHAPE_ARRAY, whole
@@ -382,8 +383,12 @@ def _lines(text: str, origin: str) -> list[Any]:
             continue
         try:
             events.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise TranscriptError(f"{origin}: line {number} is not JSON: {exc}") from exc
+        except (ValueError, RecursionError) as exc:
+            # a JSONDecodeError, an integer past the decoder's digit limit, or nesting past the
+            # recursion limit: none of them is a line this reader can take
+            raise TranscriptError(
+                f"{origin}: line {number} is not JSON it can read: {exc}"
+            ) from exc
     if not events:
         raise TranscriptError(f"{origin}: no events")
     return events
@@ -509,13 +514,11 @@ def _ended(
             base = datetime.fromisoformat(started.replace("Z", "+00:00"))
         except ValueError:
             return stamps[-1] if stamps else None
-        end = base.timestamp() + result.duration_ms / 1000.0
         try:
+            end = base.timestamp() + result.duration_ms / 1000.0
             ended = datetime.fromtimestamp(end, tz=timezone.utc)
         except (OverflowError, OSError, ValueError) as exc:
-            raise TranscriptRefused(
-                f"{origin}: the result's duration_ms {result.duration_ms} is out of range"
-            ) from exc
+            raise TranscriptRefused(f"{origin}: the result's duration_ms is out of range") from exc
         return ended.isoformat().replace("+00:00", "Z")
     return stamps[-1] if stamps else None
 
@@ -912,7 +915,7 @@ def _int(value: Any) -> int | None:
 def _float(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

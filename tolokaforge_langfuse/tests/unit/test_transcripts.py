@@ -229,6 +229,29 @@ class TestTheReader:
         with pytest.raises(tr.TranscriptRefused, match="duration_ms"):
             tr.read_claude_text(stream(events), transcript_id="t")
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"type": "result", "num_turns": ' + "9" * 5000 + "}",
+            '{"type": "result", "x": ' + "[" * 100_000 + "]" * 100_000 + "}",
+        ],
+        ids=["integer-past-the-digit-limit", "nesting-past-the-recursion-limit"],
+    )
+    def test_json_the_decoder_cannot_hold_refuses_rather_than_crashes(self, text: str) -> None:
+        with pytest.raises(tr.TranscriptError, match="is not JSON it can read"):
+            tr.read_claude_text(text, transcript_id="t")
+
+    def test_an_integer_past_float_range_refuses_or_reads_as_no_number(self) -> None:
+        huge = "1" + "0" * 400
+        timed = (
+            '{"type": "system", "subtype": "init", "timestamp": "2026-09-20T10:00:00Z"}\n'
+            '{"type": "result", "subtype": "success", "duration_ms": ' + huge + "}"
+        )
+        with pytest.raises(tr.TranscriptRefused, match="duration_ms is out of range"):
+            tr.read_claude_text(timed, transcript_id="t")
+        costly = '{"type": "result", "subtype": "success", "total_cost_usd": ' + huge + "}"
+        assert tr.read_claude_text(costly, transcript_id="t").result.total_cost_usd is None
+
     def test_an_infinite_number_is_no_number(self) -> None:
         text = '{"type": "result", "subtype": "success", "num_turns": Infinity, "result": "ok"}'
         assert tr.read_claude_text(text, transcript_id="t").result.num_turns is None
@@ -237,7 +260,7 @@ class TestTheReader:
         assert issubclass(tr.TranscriptRefused, tr.TranscriptError)
 
     def test_a_broken_line_names_its_line_number(self) -> None:
-        with pytest.raises(tr.TranscriptError, match="line 2 is not JSON"):
+        with pytest.raises(tr.TranscriptError, match="line 2 is not JSON it can read"):
             tr.read_claude_text('{"type":"result"}\nnot json\n', transcript_id="t")
 
     def test_empty_output_is_an_error_not_an_empty_trace(self) -> None:
