@@ -21,8 +21,8 @@ Nothing here fails the pipeline on its own: the command reports what it refused,
 and what it could not send, and the workflow step carries ``continue-on-error``. Credentials are
 read from the step's own environment, never logged, and never written to the receipt.
 
-The wheel is an optional dependency (``automation[otel]``); it is imported inside the functions so
-the rest of this tool loads without it.
+The wheel is imported inside :func:`upload`, so the tool's other commands never load the
+OpenTelemetry exporter.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ _ITERATION = re.compile(r"^agent_iter_(\d+)$")
 
 
 class UploadError(RuntimeError):
-    """The upload cannot start: no receiver, no credentials, or the wheel is not installed."""
+    """The upload cannot start: no receiver, no credentials, or a malformed input."""
 
 
 @dataclass(frozen=True)
@@ -238,14 +238,9 @@ def upload(
     dry_run: bool = False,
 ) -> UploadReport:
     """Read, gate, project and send every agent transcript under ``directory``."""
-    try:
-        from tolokaforge_langfuse import otlp_spans, otlp_transport, safety
-        from tolokaforge_langfuse import transcripts as tr
-    except ImportError as exc:  # pragma: no cover - exercised by the extra being absent
-        raise UploadError(
-            "the tolokaforge-langfuse wheel is not installed; install automation[otel]"
-        ) from exc
     from tolokaforge.observability import ids as engine_ids
+    from tolokaforge_langfuse import otlp_spans, otlp_transport, safety
+    from tolokaforge_langfuse import transcripts as tr
 
     files = tr.transcript_files(Path(directory))
     report = UploadReport(dry_run=dry_run)
