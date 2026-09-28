@@ -16,11 +16,12 @@ import yaml
 
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.core.actors.prompt_template import (
-    read_prompt_template,
     render_prompt_template,
+    render_user_prompt_template,
 )
 from tolokaforge.core.llm import UserSimulator
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.core.models.task_config import UserSimulatorConfig
 
 pytestmark = pytest.mark.unit
 
@@ -51,44 +52,79 @@ class TestRender:
             render_prompt_template(template, _BACKSTORY)
 
 
-class TestRead:
+def _templated(path: str, **fields: object) -> UserSimulatorConfig:
+    return UserSimulatorConfig(mode="llm", backstory=_BACKSTORY, prompt_template=path, **fields)
+
+
+class TestRenderUserPromptTemplate:
     def test_the_path_is_read_relative_to_the_task_root(self, tmp_path: Path) -> None:
         (tmp_path / "sim").mkdir()
         (tmp_path / "sim" / "prompt.md").write_text(_TEMPLATE, encoding="utf-8")
 
-        assert read_prompt_template(tmp_path, "sim/prompt.md") == _TEMPLATE
+        assert render_user_prompt_template(tmp_path, _templated("sim/prompt.md")) == _RENDERED
+
+    def test_an_absolute_path_is_read_as_is(self, tmp_path: Path) -> None:
+        """A project's ``task_defaults`` value reaches the task anchored to the
+        project directory, as an absolute path."""
+        shared = tmp_path / "project" / "shared" / "prompt.md"
+        shared.parent.mkdir(parents=True)
+        shared.write_text(_TEMPLATE, encoding="utf-8")
+
+        rendered = render_user_prompt_template(tmp_path / "task", _templated(str(shared)))
+
+        assert rendered == _RENDERED
+
+    def test_no_template_renders_nothing(self, tmp_path: Path) -> None:
+        config = UserSimulatorConfig(mode="llm", backstory=_BACKSTORY)
+
+        assert render_user_prompt_template(tmp_path, config) is None
 
     def test_a_missing_file_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError, match="relative to the task root"):
-            read_prompt_template(tmp_path, "sim/prompt.md")
+        with pytest.raises(FileNotFoundError, match="read from the task root"):
+            render_user_prompt_template(tmp_path, _templated("sim/prompt.md"))
 
     def test_a_file_without_the_placeholder_is_refused(self, tmp_path: Path) -> None:
         (tmp_path / "prompt.md").write_text(_GUIDELINES, encoding="utf-8")
         with pytest.raises(ValueError, match="exactly once"):
-            read_prompt_template(tmp_path, "prompt.md")
+            render_user_prompt_template(tmp_path, _templated("prompt.md"))
+
+    def test_an_undeclared_list_is_named_as_the_default(self, tmp_path: Path) -> None:
+        """A template that teaches its own token, on a task that declares no
+        ``stop_tokens``, is refused with the remedy that applies: declare the list."""
+        (tmp_path / "prompt.md").write_text(
+            "Send '###DONE###' when finished.\n\n{backstory}", encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="declares no stop_tokens.*Declare stop_tokens"):
+            render_user_prompt_template(tmp_path, _templated("prompt.md"))
+
+    def test_a_declared_list_is_told_to_name_or_drop_the_token(self, tmp_path: Path) -> None:
+        (tmp_path / "prompt.md").write_text(_TEMPLATE, encoding="utf-8")
+        config = _templated("prompt.md", stop_tokens=["###STOP###", "###TRANSFER###"])
+        with pytest.raises(ValueError, match="or drop it from the list"):
+            render_user_prompt_template(tmp_path, config)
 
 
 class TestSimulatorPrompt:
-    def test_the_template_replaces_the_built_in_prompt_whole(self) -> None:
-        sim = UserSimulator(mode="llm", backstory=_BACKSTORY, prompt_template=_TEMPLATE)
+    def test_the_task_prompt_replaces_the_built_in_prompt_whole(self) -> None:
+        sim = UserSimulator(mode="llm", backstory=_BACKSTORY, system_prompt=_RENDERED)
 
         assert sim._build_system_prompt() == _RENDERED
 
-    def test_tool_schemas_add_no_guidance_to_a_template(self) -> None:
+    def test_tool_schemas_add_no_guidance_to_a_task_prompt(self) -> None:
         """The built-in tool-guidance block is the engine's text; a template owns
         its own guidance, so holding tools changes nothing in the prompt."""
         sim = UserSimulator(
-            mode="llm", backstory=_BACKSTORY, prompt_template=_TEMPLATE, tool_schemas=[{}]
+            mode="llm", backstory=_BACKSTORY, system_prompt=_RENDERED, tool_schemas=[{}]
         )
 
         assert sim._build_system_prompt() == _RENDERED
 
-    def test_the_rendered_template_is_the_prompt_a_generation_is_sent(self) -> None:
+    def test_the_task_prompt_is_the_prompt_a_generation_is_sent(self) -> None:
         sim = UserSimulator(
             mode="llm",
             llm_config=ModelConfig(provider="mock", name="user-sim-mock"),
             backstory=_BACKSTORY,
-            prompt_template=_TEMPLATE,
+            system_prompt=_RENDERED,
         )
         ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -96,13 +132,15 @@ class TestSimulatorPrompt:
 
         assert sim.last_system_prompt == _RENDERED
 
-    def test_a_template_without_a_backstory_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="none to place"):
-            UserSimulator(mode="llm", backstory=None, prompt_template=_TEMPLATE)
+    def test_a_scripted_simulator_refuses_a_task_prompt(self) -> None:
+        """A scripted simulator never sends a prompt, so accepting one would
+        record a prompt that no request carried."""
+        with pytest.raises(ValueError, match="sends no prompt"):
+            UserSimulator(mode="scripted", backstory=_BACKSTORY, system_prompt=_RENDERED)
 
-    def test_no_template_keeps_the_built_in_prompt(self) -> None:
-        with_template = UserSimulator(backstory=_BACKSTORY, prompt_template=_TEMPLATE)
-        without = UserSimulator(backstory=_BACKSTORY)
+    def test_no_task_prompt_keeps_the_built_in_prompt(self) -> None:
+        with_template = UserSimulator(mode="llm", backstory=_BACKSTORY, system_prompt=_RENDERED)
+        without = UserSimulator(mode="llm", backstory=_BACKSTORY)
 
         assert without._build_system_prompt() != with_template._build_system_prompt()
         assert without._build_system_prompt().startswith(

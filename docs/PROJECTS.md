@@ -1047,7 +1047,9 @@ An `ActorSpec` carries:
 - `mode` (`llm` or `scripted`), `persona`, `backstory` (inline text) and
   `scripted_flow`;
 - the stop rule, `stop_tokens` and `stop_with_text` (see
-  [Declaring the stop tokens](TASKS.md#declaring-the-stop-tokens)).
+  [Declaring the stop tokens](TASKS.md#declaring-the-stop-tokens));
+- `prompt_template`, a task-authored simulator prompt. A project-level value is
+  anchored to the project directory (see [TASKS.md](TASKS.md)).
 
 The project declares the shared defaults under
 `task_defaults.actors.user`; each task overrides field-by-field

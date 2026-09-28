@@ -198,8 +198,10 @@ class UserSimulatorConfig(BaseModel):
     stop_with_text: UserStopWithText = "deliver"
     """See :data:`UserStopWithText`."""
     prompt_template: str | None = None
-    """Path, relative to the task root, of a file whose text replaces the built-in
-    simulator prompt, with the backstory placed at its ``{backstory}``."""
+    """Path of a file whose text replaces the built-in simulator prompt, with the
+    backstory placed at its ``{backstory}``. A relative path is read from the task
+    root; a project's ``task_defaults`` value arrives anchored to the project
+    directory, as an absolute path."""
 
     @model_validator(mode="before")
     @classmethod

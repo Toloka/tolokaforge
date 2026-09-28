@@ -59,7 +59,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
-from tolokaforge.core.actors.prompt_template import read_user_prompt_template
+from tolokaforge.core.actors.prompt_template import render_user_prompt_template
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
     source_context,
@@ -635,7 +635,7 @@ def _refuse_an_unusable_user_prompt_template(task: TaskConfig, task_root: Path) 
     missing file, a template without its placeholder, or a stop token the prompt
     never names would surface only then, once per trial.
     """
-    read_user_prompt_template(task_root, task.resolve_user_simulator())
+    render_user_prompt_template(task_root, task.resolve_user_simulator())
 
 
 def load_task(
