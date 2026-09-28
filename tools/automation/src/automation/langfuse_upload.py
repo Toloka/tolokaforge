@@ -198,6 +198,15 @@ def _extra_headers(raw: str | None) -> dict[str, str]:
     return headers
 
 
+def is_agent_output(path: Path) -> bool:
+    """Whether a file is one of the agents' own outputs (the names cost_summary reads too).
+
+    A stage directory also holds the compose step's ``decision.json`` and the reprobe findings,
+    which are not transcripts and must not count as refused ones.
+    """
+    return bool(_ITERATION.match(path.stem)) or path.stem == "agent_finalize"
+
+
 def transcript_id_for(path: Path) -> str:
     """The id a transcript file takes in the trace id's task position."""
     stem = path.stem
@@ -220,6 +229,8 @@ class UploadReport:
     failed: list[dict[str, str]] = field(default_factory=list)
     # sent, but the environment guard could not ask the receiver first (not a failure)
     unchecked: list[dict[str, str]] = field(default_factory=list)
+    # files in the directory that are not an agent's output (not read, not a failure)
+    ignored: list[str] = field(default_factory=list)
     dry_run: bool = False
 
     @property
@@ -241,6 +252,7 @@ class UploadReport:
             "mismatched": self.mismatched,
             "failed": self.failed,
             "unchecked": self.unchecked,
+            "ignored": self.ignored,
             "ok": self.ok,
         }
 
@@ -261,6 +273,9 @@ class UploadReport:
             if entries:
                 lines.append(f"- {label}: **{len(entries)}**")
                 lines.extend(f"  - `{e['file']}`: {e['reason']}" for e in entries)
+        if self.ignored:
+            lines.append(f"- not an agent output file, not read: **{len(self.ignored)}**")
+            lines.extend(f"  - `{name}`" for name in self.ignored)
         return "\n".join(lines) + "\n"
 
 
@@ -286,7 +301,12 @@ def upload(
     from tolokaforge_langfuse import transcripts as tr
 
     files = tr.transcript_files(Path(directory))
-    report = UploadReport(dry_run=dry_run)
+    ignored: list[str] = []
+    if Path(directory).is_dir():
+        # a named file is read as given; a directory's other files are the stage's own records
+        ignored = [path.name for path in files if not is_agent_output(path)]
+        files = [path for path in files if is_agent_output(path)]
+    report = UploadReport(dry_run=dry_run, ignored=ignored)
     if not files:
         return report
 

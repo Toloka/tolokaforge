@@ -267,6 +267,27 @@ class TestTheUpload:
         report = upload(tmp_path)
         assert report.ok and report.sent == []
 
+    def test_a_stage_directory_sends_only_the_agents_output_files(self, tmp_path: Path) -> None:
+        """The resolve directory also holds the compose step's decision.json and the reprobe
+        findings: read as transcripts they were refused, and every real run exited 1."""
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        write(tmp_path, "agent_finalize.jsonl", CLEAN_EVENTS)
+        (tmp_path / "decision.json").write_text('{"fix_targets": []}', encoding="utf-8")
+        (tmp_path / "last_reprobe.json").write_text('{"findings": []}', encoding="utf-8")
+        report = upload(tmp_path)
+        assert report.ok and report.refused == []
+        assert [e["transcript_id"] for e in report.sent] == ["finalize", "resolve/1"]
+        assert report.ignored == ["decision.json", "last_reprobe.json"]
+        assert report.as_dict()["ignored"] == ["decision.json", "last_reprobe.json"]
+        assert "`decision.json`" in report.as_markdown()
+
+    def test_a_file_named_on_the_command_line_is_read_whatever_its_name(
+        self, tmp_path: Path
+    ) -> None:
+        report = upload(write(tmp_path, "capture.jsonl", CLEAN_EVENTS))
+        assert report.ok and report.ignored == []
+        assert [e["transcript_id"] for e in report.sent] == ["capture"]
+
     def test_a_refused_file_does_not_stop_the_others(self, tmp_path: Path) -> None:
         write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
         write(tmp_path, "agent_iter_2.jsonl", [{"type": "tool_progress", "message": {}}])
