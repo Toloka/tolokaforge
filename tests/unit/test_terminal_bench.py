@@ -160,10 +160,10 @@ class TestDockerComposeExecWrapperInit:
 
 
 class TestDockerComposeExecWrapperExec:
-    def test_exec_sync_success(self, wrapper):
+    def test_exec_in_env_success(self, wrapper):
         """The wrapper spawns via ``Popen`` (not ``subprocess.run``) so a
         slow-agent timeout can surface buffered stdout — see
-        ``tool_factory._exec_sync``. This test patches ``Popen`` and
+        ``tool_factory.exec_in_env``. This test patches ``Popen`` and
         drives its ``communicate()``."""
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
         fake_proc = type(
@@ -176,7 +176,7 @@ class TestDockerComposeExecWrapperExec:
             },
         )()
         with patch("subprocess.Popen", return_value=fake_proc) as mock_popen:
-            result = wrapper._exec_sync("echo hello world", 30.0)
+            result = wrapper.exec_in_env("echo hello world", 30.0)
             assert result == "hello world\n"
             argv = mock_popen.call_args.args[0]
             assert argv == [
@@ -189,7 +189,7 @@ class TestDockerComposeExecWrapperExec:
                 "echo hello world",
             ]
 
-    def test_exec_sync_nonzero_exit(self, wrapper):
+    def test_exec_in_env_nonzero_exit(self, wrapper):
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
         fake_proc = type(
             "FakeProc",
@@ -201,19 +201,19 @@ class TestDockerComposeExecWrapperExec:
             },
         )()
         with patch("subprocess.Popen", return_value=fake_proc):
-            result = wrapper._exec_sync("bad cmd", 30.0)
+            result = wrapper.exec_in_env("bad cmd", 30.0)
             assert "partial" in result
             assert "[exit code: 1]" in result
             assert "error msg" in result
 
     def test_exec_before_start_fails_loud(self, wrapper):
         with pytest.raises(ToolExecutionError, match="container name unresolved"):
-            wrapper._exec_sync("echo hi", 30.0)
+            wrapper.exec_in_env("echo hi", 30.0)
 
     @pytest.mark.asyncio
     async def test_execute_async(self, wrapper):
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
-        with patch.object(wrapper, "_exec_sync", return_value="async result") as mock:
+        with patch.object(wrapper, "exec_in_env", return_value="async result") as mock:
             result = await wrapper.execute({"command": "ls"})
             assert result == "async result"
             mock.assert_called_once_with("ls", 60.0)

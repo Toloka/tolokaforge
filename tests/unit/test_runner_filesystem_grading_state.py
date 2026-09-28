@@ -90,35 +90,32 @@ def _tarball_b64(files: dict[str, bytes]) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-class _StubBashTool(DockerComposeExecToolWrapper):
-    """Real subclass so :func:`isinstance` recognises it; scripted ``_exec_sync``.
+class _StubBashTool:
+    """Plain object exposing the env-exec capability; scripted responses.
 
-    Inheriting instead of duck-typing keeps the routing logic honest: the
-    runner service looks for the concrete wrapper type, not just anything
-    that answers ``_exec_sync``.
+    Inherits nothing: the runner selects its grading executor on the two
+    ``SupportsEnvExec`` methods, so answering them is the whole contract.
     """
 
     def __init__(self, responses: list[str]) -> None:
-        # Skip the base ``__init__`` — its ToolSchemaModel path is out of scope
-        # here. The fields the routing consults (``_container`` for start(),
-        # ``_exec_sync`` for reads) are set explicitly.
         self._responses = list(responses)
         self.calls: list[str] = []
-        self._container = "stub_container"
-        self._trial_id = "t-1"
 
-    def _exec_sync(self, command: str, timeout: float) -> str:  # noqa: ARG002 — matches base
+    def exec_in_env(self, command: str, timeout_s: float) -> str:  # noqa: ARG002 — scripted
         self.calls.append(command)
         if not self._responses:
             raise AssertionError(f"unexpected exec call: {command!r}")
         return self._responses.pop(0)
+
+    def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
+        return 0, self.exec_in_env(command, timeout_s)
 
 
 def _harness_trial_context(
     *,
     agent_harness_command: str | None,
     agent_visible_dir: str | None,
-    bash_tool: DockerComposeExecToolWrapper | None,
+    bash_tool: _StubBashTool | None,
 ) -> MagicMock:
     """Minimal ``TrialContextRuntime`` stand-in with the two consulted attrs."""
     ctx = MagicMock()
@@ -161,6 +158,39 @@ def test_harness_trial_reads_filesystem_via_exec_wrapper() -> None:
     tar_cmd = tar_cmds[0]
     for name in AGENT_VISIBLE_EXCLUDES:
         assert f"--exclude={name}" in tar_cmd
+
+
+def test_exec_capable_object_outside_the_wrapper_class_drives_the_read(
+    redirect_work_dir: Path,
+) -> None:
+    """Any tool that can exec in the trial environment serves the read.
+
+    The stub inherits nothing from
+    :class:`~tolokaforge.runner.tool_factory.DockerComposeExecToolWrapper`, so
+    the container-side ``tar | base64`` it answers proves selection runs on the
+    capability. The decoy file under the runner's own workdir is what a
+    class-gated selection would have returned instead.
+    """
+    (redirect_work_dir / "decoy.py").write_text("runner-side fallback\n")
+    bash_tool = _StubBashTool(
+        [
+            "512\t/work\n",  # du probe
+            _tarball_b64({"./factorial.py": b"def factorial(n): return 1\n"}),
+        ]
+    )
+    assert not isinstance(bash_tool, DockerComposeExecToolWrapper)
+
+    svc = _StubRunnerServiceImpl(db_client=AsyncMock())
+    svc.trials["t-1"] = _harness_trial_context(
+        agent_harness_command="claude --print 'fix it'",
+        agent_visible_dir="/work",
+        bash_tool=bash_tool,
+    )
+
+    fs = svc._read_filesystem_for_state("t-1")
+
+    assert fs == {"/work/factorial.py": "def factorial(n): return 1\n"}
+    assert bash_tool.calls
 
 
 def test_engine_loop_trial_still_walks_the_runner_workdir(

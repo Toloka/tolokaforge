@@ -36,7 +36,7 @@ DEFAULT_MAX_TOTAL_BYTES = 100_000_000
 """Aggregate raw-bytes ceiling for one snapshot.
 
 The tarball is emitted as base64 over the exec-wrapper's stdout channel, so the
-in-memory footprint here is bounded by the receiver of ``_exec_sync`` — the
+in-memory footprint here is bounded by the receiver of ``exec_in_env`` — the
 runner service — rather than by the container's own disk. Exceeding this cap
 skips the snapshot rather than truncating it: an assertion that cannot resolve
 its target is better graded as a miss than as a match on partial state."""
@@ -58,9 +58,9 @@ the tree is too large to fit under the cap."""
 BashExec = Callable[[str, float], str]
 """Callable shape the snapshot expects.
 
-Matches :meth:`~tolokaforge.runner.tool_factory.DockerComposeExecToolWrapper.
-_exec_sync`: ``(command, timeout_s) -> stdout``. Kept structural rather than
-tied to the concrete class so tests can drive the helper with a stub."""
+Matches :meth:`~tolokaforge.runner.env_exec.SupportsEnvExec.exec_in_env`:
+``(command, timeout_s) -> stdout``. Kept structural rather than tied to a
+concrete class so tests can drive the helper with a stub."""
 
 
 class _SnapshotAborted(Exception):

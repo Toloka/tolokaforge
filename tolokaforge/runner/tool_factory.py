@@ -1169,9 +1169,13 @@ class DockerComposeExecToolWrapper(ToolWrapper):
     async def execute(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command", "")
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._exec_sync, command, self.own_budget_s)
+        return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
 
-    def _exec_sync(self, command: str, timeout: float) -> str:
+    def exec_in_env(self, command: str, timeout_s: float) -> str:
+        """Run ``command`` in the trial container and return its output.
+
+        Satisfies :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
+        """
         if self._container is None:
             raise ToolExecutionError(
                 self.name,
@@ -1188,7 +1192,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             text=True,
         )
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(timeout=timeout_s)
             timed_out = False
         except subprocess.TimeoutExpired as exc:
             proc.kill()
@@ -1213,19 +1217,20 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             timed_out = True
         output = stdout
         if timed_out:
-            output += f"\n[timed out after {timeout}s; partial output preserved]\n{stderr}"
+            output += f"\n[timed out after {timeout_s}s; partial output preserved]\n{stderr}"
         elif proc.returncode != 0:
             output += f"\n[exit code: {proc.returncode}]\n{stderr}"
         return output
 
-    def _exec_sync_with_rc(self, command: str, timeout: float) -> tuple[int, str]:
+    def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
         """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
 
-        Sibling of :meth:`_exec_sync`. The two-arg-tuple return exposes the
+        Sibling of :meth:`exec_in_env`, and the second half of
+        :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`. The two-arg-tuple return exposes the
         returncode to callers that need to render it (e.g. the substrate's
         test-suite RPC that ships the exit code on the wire) without gating on
         it. rc=0 → merged output is just stdout; rc≠0 → the same
-        ``\\n[exit code: N]\\n{stderr}`` suffix :meth:`_exec_sync` uses is
+        ``\\n[exit code: N]\\n{stderr}`` suffix :meth:`exec_in_env` uses is
         appended so callers that render the merged string in a grade's reasons
         block see the exit-code marker in the same place.
         """
@@ -1238,7 +1243,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             ["docker", "exec", "-i", self._container, "bash", "-c", command],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout_s,
         )
         merged = proc.stdout
         if proc.returncode != 0:
