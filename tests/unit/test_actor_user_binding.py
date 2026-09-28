@@ -437,6 +437,41 @@ class TestToolTurnsDeclaration:
         with pytest.raises(ValueError, match="never loops"):
             load_task_yaml(task_path)
 
+    def test_a_task_opts_out_of_a_project_step_limit_with_null(self, tmp_path: Path) -> None:
+        """A project that runs isolated turns with a limit sets both for every task; a
+        task that goes back to ``shared`` drops the project's limit with ``null``."""
+        project = {"actors": {"user": {"tool_turns": "isolated", "max_tool_steps": 5}}}
+        refused = tmp_path / "refused" / "task.yaml"
+        _write_yaml(refused, _task_body(actors={"user": {"tool_turns": "shared"}}))
+        with pytest.raises(ValueError, match="write max_tool_steps: null in the task"):
+            _load(refused, project_task_defaults=project)
+
+        opted_out = tmp_path / "opted_out" / "task.yaml"
+        _write_yaml(
+            opted_out,
+            _task_body(actors={"user": {"tool_turns": "shared", "max_tool_steps": None}}),
+        )
+        task, _ = _load(opted_out, project_task_defaults=project)
+        assert task.resolve_user_simulator().tool_turns == "shared"
+
+    def test_isolated_turns_on_a_scripted_simulator_are_refused(self, tmp_path: Path) -> None:
+        """Scripted replies are authored text and never call tools, as ``sampling``
+        and ``prompt_template`` on a scripted simulator would never apply either."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"mode": "scripted", "tool_turns": "isolated"}}),
+        )
+        with pytest.raises(ValueError, match="never call tools"):
+            load_task_yaml(task_path)
+
+    def test_the_resolved_step_limit_revalidates_from_its_own_dump(self) -> None:
+        """The bundle records the resolved simulator, default limit included, as
+        ``user_actor``; that record is a config its own model accepts."""
+        resolved = UserSimulatorConfig(mode="llm")
+
+        assert UserSimulatorConfig(**resolved.model_dump()) == resolved
+
     @pytest.mark.parametrize(
         ("user", "match"),
         [

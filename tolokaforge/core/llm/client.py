@@ -45,7 +45,7 @@ from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
-from tolokaforge.core.actors.tool_turns import simulator_view
+from tolokaforge.core.actors.tool_turns import shared_view, simulator_view
 from tolokaforge.core.env_var import parse_env_non_negative_int, parse_env_positive_float
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import (
@@ -2636,63 +2636,21 @@ Rules:
 - Keep the conversation natural and stay in the personality your Instruction describes.
 - Never mention that this is a simulation, test, benchmark, prompt, or that you are an AI/model.{tool_guidance}"""
 
-    def _llm_reply(
-        self,
-        context: list[Message],
-        *,
-        observation: LLMCallObservation | None = None,
-    ) -> GenerationResult:
-        """Generate LLM-based user reply - tau-bench compatible with tool calling.
+    def _simulator_context(self, context: list[Message]) -> list[Message]:
+        """The request messages the simulator answers: *context* from the customer's seat.
 
-        Every generation passes through
-        :class:`~tolokaforge.core.actors.reply_guard.UserReplyGuard`, which
-        regenerates a reply a detector flags rather than editing it and raises
-        :class:`~tolokaforge.core.actors.reply_guard.UserReplyRefused` once the
-        attempt budget is spent. The returned text is exactly what the accepted
-        generation produced; the discarded attempts' defects ride back on
-        ``guard_rejections``.
+        Under ``shared`` tool turns it is
+        :func:`~tolokaforge.core.actors.tool_turns.shared_view`. Under
+        ``isolated`` the simulator's own tool steps stay in view as assistant tool
+        calls and tool results, and every agent message that calls tools is
+        dropped whole (:func:`~tolokaforge.core.actors.tool_turns.simulator_view`).
+
+        Raises:
+            RuntimeError: nothing in *context* is awaiting the simulator's reply.
         """
-        if not self.llm_client:
-            raise RuntimeError("LLM client not initialized for LLM mode")
-        llm_client = self.llm_client
-
-        # The simulator converses from the customer's seat: its own past
-        # messages replay as ``assistant`` turns and the agent's as ``user``
-        # turns. Turns with no dialogue text (agent tool-call turns,
-        # whitespace-only replies) are skipped — replaying them as empty
-        # turns adds noise the simulator's provider may reject. The skip is
-        # text-only: a turn carrying ``content_blocks`` with no text would be
-        # dropped too, a latent gap no USER/ASSISTANT call site produces
-        # today (the flip has never carried blocks).
-        # Adjacent same-role turns are coalesced so the request alternates
-        # strictly — a skipped turn can leave two dialogue turns of the same
-        # party back to back, which strict-alternation providers reject.
-        #
-        # Under ``isolated`` tool turns the simulator's own tool steps stay in
-        # view as assistant tool calls and tool results, and every agent message
-        # that calls tools is dropped whole; see
-        # :func:`~tolokaforge.core.actors.tool_turns.simulator_view`.
-        sim_context: list[Message] = []
-        if self.tool_turns == "isolated":
-            sim_context = simulator_view(context)
-        else:
-            flip = {
-                MessageRole.USER: MessageRole.ASSISTANT,
-                MessageRole.ASSISTANT: MessageRole.USER,
-            }
-            for msg in context:
-                if not msg.content.strip():
-                    continue
-                role = flip.get(msg.role)
-                if role is None:
-                    continue
-                if sim_context and sim_context[-1].role == role:
-                    previous = sim_context[-1]
-                    sim_context[-1] = Message(
-                        role=role, content=f"{previous.content}\n\n{msg.content}", ts=msg.ts
-                    )
-                else:
-                    sim_context.append(Message(role=role, content=msg.content, ts=msg.ts))
+        sim_context = (
+            simulator_view(context) if self.tool_turns == "isolated" else shared_view(context)
+        )
 
         # Providers require the first message to be user-role, and the trial's
         # seeded opening flips to ``assistant`` at index 0. Prepend a synthetic
@@ -2727,6 +2685,29 @@ Rules:
                 f"(flipped context roles: {[m.role.value for m in sim_context]}; "
                 f"shared transcript roles: {[m.role.value for m in context]})."
             )
+        return sim_context
+
+    def _llm_reply(
+        self,
+        context: list[Message],
+        *,
+        observation: LLMCallObservation | None = None,
+    ) -> GenerationResult:
+        """Generate LLM-based user reply - tau-bench compatible with tool calling.
+
+        Every generation passes through
+        :class:`~tolokaforge.core.actors.reply_guard.UserReplyGuard`, which
+        regenerates a reply a detector flags rather than editing it and raises
+        :class:`~tolokaforge.core.actors.reply_guard.UserReplyRefused` once the
+        attempt budget is spent. The returned text is exactly what the accepted
+        generation produced; the discarded attempts' defects ride back on
+        ``guard_rejections``.
+        """
+        if not self.llm_client:
+            raise RuntimeError("LLM client not initialized for LLM mode")
+        llm_client = self.llm_client
+
+        sim_context = self._simulator_context(context)
 
         # Captured only for a request that is actually dispatched, so the
         # runner persists into ``prompts.yaml`` a prompt that really drove a

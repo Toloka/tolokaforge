@@ -19,7 +19,8 @@ from tolokaforge_coding_harnesses.usage_log import (
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
-from tolokaforge.core.actors.tool_turns import UserToolTurnRule, agent_view
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
+from tolokaforge.core.actors.tool_turns import agent_view
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
 from tolokaforge.core.actors.user_stop import UserStop, UserStopRule
 from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
@@ -111,6 +112,11 @@ _RECONCILIATION_DETAIL_CHARS = 400
 Enough for the first unlinkable call id and the counts around it, without
 copying an unbounded tool name or argument blob into the trial log.
 """
+
+
+def _call_names(calls: list[ToolCall]) -> str:
+    """The names of *calls*, in order, for a log line or a system message."""
+    return ", ".join(call.name for call in calls)
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -1514,8 +1520,17 @@ class TrialRunner:
         The steps are recorded into the transcript ahead of the opening message,
         in the order they happened, and each next ask sees them after the
         greeting. The rate-limit retry wraps each ask on its own, so a step whose
-        calls already ran is never run again. More steps than the rule allows
-        refuse the trial: there is no dialogue yet to end with a reason.
+        calls already ran is never run again.
+
+        More steps than the rule allows refuse the trial rather than end it with
+        ``USER_TOOL_LOOP_LIMIT``: the agent has not spoken yet, so a simulator
+        that loops before its opening is a defect of the harness's own actor,
+        not an outcome the agent could be graded on.
+
+        Like the rest of turn 0 this runs before the loop, so no episode-timeout
+        check interrupts it; ``max_tool_steps`` bounds it, its wall time is spent
+        from the episode budget, and the loop's first turn ends a trial whose
+        opening ran past that budget with ``TIMEOUT``.
         """
         opening = self._bootstrap_reply(simulator, greeting_context)
         steps = 0
@@ -1524,7 +1539,8 @@ class TrialRunner:
             if steps > self._user_tool_turns.max_steps:
                 raise RuntimeError(
                     f"User simulator took more than {self._user_tool_turns.max_steps} tool "
-                    "step(s) before its opening message; the dialogue cannot start."
+                    "step(s) before its opening message; the dialogue cannot start. The "
+                    f"next step called {_call_names(opening.tool_calls)}."
                 )
             self._record_user_tool_step(self.messages, opening)
             opening = self._bootstrap_reply(simulator, greeting_context + self.messages)
@@ -1542,7 +1558,9 @@ class TrialRunner:
         """One turn-0 ask of the simulator, retried on rate limits only.
 
         The same budget :meth:`_bootstrap_via_simulator` applies to its single
-        ask, spent per ask here.
+        ask, spent per ask here. Its probe-mode collapse to one attempt is kept in
+        step with that method, though a built trial never takes it: the conductor
+        refuses isolated tool turns under probe mode.
         """
         init_attempts = 1 if self._rate_limit_probe_active else 4
         for attempt in range(1, init_attempts + 1):
@@ -1556,18 +1574,8 @@ class TrialRunner:
                 )
                 raise
             except Exception as exc:
-                if self._is_rate_limit_error(exc) and attempt < init_attempts:
-                    wait_s = min(2**attempt, 12)
-                    self.logger.warning(
-                        "Initial user generation rate-limited; retrying",
-                        attempt=attempt,
-                        max_attempts=init_attempts,
-                        wait_s=wait_s,
-                        error=str(exc),
-                    )
-                    time.sleep(wait_s)
-                    continue
-                raise
+                self._wait_to_retry_the_opening(exc, attempt, init_attempts)
+                continue
             self._record_user_reply_guard(
                 message_index=len(self.messages),
                 outcome=UserReplyOutcome.DELIVERED,
@@ -1575,6 +1583,23 @@ class TrialRunner:
             )
             return result
         raise RuntimeError("Failed to generate initial user message")
+
+    def _wait_to_retry_the_opening(self, exc: Exception, attempt: int, init_attempts: int) -> None:
+        """Back off before the next turn-0 ask, or re-raise *exc*.
+
+        Only a rate limit is retried, and only while attempts remain.
+        """
+        if not self._is_rate_limit_error(exc) or attempt >= init_attempts:
+            raise exc
+        wait_s = min(2**attempt, 12)
+        self.logger.warning(
+            "Initial user generation rate-limited; retrying",
+            attempt=attempt,
+            max_attempts=init_attempts,
+            wait_s=wait_s,
+            error=str(exc),
+        )
+        time.sleep(wait_s)
 
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
@@ -1661,12 +1686,9 @@ class TrialRunner:
         """Run one user actor turn: reply, stop-token detection, user tools.
 
         Under ``isolated`` tool turns a reply that calls tools is a tool step,
-        not the turn's reply: the step is recorded into ``messages`` — never the
-        agent's wire — and the actor is asked again, until it replies with text
-        alone. A stop token inside a step is not a stop, since a step is
-        addressed to the environment. A step past the rule's ``max_steps`` ends
-        the dialogue with ``USER_TOOL_LOOP_LIMIT`` and runs none of its calls,
-        and the episode timeout is checked between steps.
+        not the turn's reply (see :meth:`_run_user_tool_steps`). A stop token
+        inside a step is not a stop, since a step is addressed to the
+        environment.
 
         The trial's :class:`UserStopRule` names the tokens; the earliest one in the
         reply decides. Stop-token handling has three shapes:
@@ -1692,20 +1714,10 @@ class TrialRunner:
 
         user_result = self._reply_as_user(actor, messages)
         if self._user_tool_turns.isolated:
-            steps = 0
-            while user_result.tool_calls:
-                steps += 1
-                if steps > self._user_tool_turns.max_steps:
-                    return UserTurnResult(
-                        termination=self._user_tool_loop_limit_decision(len(user_result.tool_calls))
-                    )
-                self._record_user_tool_step(messages, user_result)
-                timeout = episode_timeout_decision(
-                    self.start_time, self.episode_timeout_s, self.logger
-                )
-                if timeout is not None:
-                    return UserTurnResult(termination=timeout)
-                user_result = self._reply_as_user(actor, messages)
+            outcome = self._run_user_tool_steps(actor, messages, user_result)
+            if isinstance(outcome, TerminationDecision):
+                return UserTurnResult(termination=outcome)
+            user_result = outcome
 
         stop = self._user_stop.find(user_result.text)
         if stop is not None and stop.dropped:
@@ -1769,16 +1781,46 @@ class TrialRunner:
         )
         return user_result
 
-    def _user_tool_loop_limit_decision(self, unrun_calls: int) -> TerminationDecision:
+    def _run_user_tool_steps(
+        self, actor: Actor, messages: list[Message], reply: GenerationResult
+    ) -> GenerationResult | TerminationDecision:
+        """Record *reply*'s tool steps until *actor* answers with text alone.
+
+        Each step is recorded into *messages* — never the agent's wire — and the
+        actor is asked again with its results in view. Returns the text reply, or
+        the decision that ends the dialogue: a step past the rule's
+        ``max_steps``, none of whose calls run, or the episode timeout, which is
+        checked after every step.
+        """
+        steps = 0
+        while reply.tool_calls:
+            steps += 1
+            if steps > self._user_tool_turns.max_steps:
+                return self._user_tool_loop_limit_decision(reply.tool_calls)
+            self._record_user_tool_step(messages, reply)
+            timeout = episode_timeout_decision(self.start_time, self.episode_timeout_s, self.logger)
+            if timeout is not None:
+                return timeout
+            reply = self._reply_as_user(actor, messages)
+        return reply
+
+    def _user_tool_loop_limit_decision(self, unrun: list[ToolCall]) -> TerminationDecision:
+        """End the dialogue on a step past the limit, naming the calls it would have run.
+
+        The unrun step is not recorded into the transcript, so the log line and the
+        system message are where its calls stay visible.
+        """
         limit = self._user_tool_turns.max_steps
         self.logger.warning(
-            "User tool loop reached its step limit", max_steps=limit, unrun_calls=unrun_calls
+            "User tool loop reached its step limit",
+            max_steps=limit,
+            unrun_calls=[{"name": call.name, "arguments": call.arguments} for call in unrun],
         )
         return TerminationDecision(
             reason=TerminationReason.USER_TOOL_LOOP_LIMIT,
             system_message=(
-                f"User took {limit} tool step(s) without replying; the {unrun_calls} call(s) "
-                "of the next step were not run. Dialogue terminated."
+                f"User took {limit} tool step(s) without replying; the next step's "
+                f"{len(unrun)} call(s), {_call_names(unrun)}, were not run. Dialogue terminated."
             ),
         )
 
@@ -1826,13 +1868,7 @@ class TrialRunner:
                     call.name, call.arguments, call_id=call.id
                 )
             except Exception as exc:
-                messages.append(self._user_tool_message(call.id, f"Error: {exc}"))
-                for unrun in calls[position + 1 :]:
-                    messages.append(
-                        self._user_tool_message(
-                            unrun.id, "Error: not run, an earlier call of this step raised."
-                        )
-                    )
+                self._answer_a_failed_step(messages, calls[position:], exc)
                 raise
             tool_duration = time.time() - tool_start
             self.tool_call_recorder.record(
@@ -1856,6 +1892,18 @@ class TrialRunner:
                 else f"Error: {resolve_tool_output(tool_result)}"
             )
             messages.append(self._user_tool_message(call.id, content))
+
+    def _answer_a_failed_step(
+        self, messages: list[Message], calls: list[ToolCall], exc: Exception
+    ) -> None:
+        """TOOL messages for a step whose first remaining call raised: its error, then
+        a "not run" answer for each call after it."""
+        failed, *unrun = calls
+        messages.append(self._user_tool_message(failed.id, f"Error: {exc}"))
+        messages.extend(
+            self._user_tool_message(call.id, "Error: not run, an earlier call of this step raised.")
+            for call in unrun
+        )
 
     @staticmethod
     def _user_tool_message(call_id: str, content: str) -> Message:

@@ -43,7 +43,7 @@ from litellm.exceptions import ContextWindowExceededError, RateLimitError
 
 from tests.canonical._factories import make_task_config, make_trajectory, make_trial_spec
 from tests.canonical.test_lost_trial_attribution import drive_lost_trial
-from tolokaforge.core.actors.tool_turns import UserToolTurnRule
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.failure_attribution import (
     EXCLUDED_TYPED_REASONS,

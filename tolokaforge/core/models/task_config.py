@@ -272,7 +272,10 @@ class UserSimulatorConfig(BaseModel):
     """See :data:`UserToolTurns`."""
     max_tool_steps: int = Field(default=DEFAULT_MAX_USER_TOOL_STEPS, ge=1)
     """Tool steps an ``isolated`` user turn may take; one more ends the dialogue
-    with ``USER_TOOL_LOOP_LIMIT`` and runs none of that step's calls."""
+    with ``USER_TOOL_LOOP_LIMIT`` and runs none of that step's calls. A ``shared``
+    config carries the default and ignores it; whether a task *declared* a limit
+    nothing loops under is decided in :meth:`TaskConfig.resolve_user_simulator`, so
+    this resolved config re-validates from its own dump."""
 
     @model_validator(mode="before")
     @classmethod
@@ -288,18 +291,6 @@ class UserSimulatorConfig(BaseModel):
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
         return validate_stop_tokens(value)
-
-    @model_validator(mode="after")
-    def _refuse_a_step_limit_nothing_loops_under(self) -> Self:
-        """``shared`` gives the simulator one generation per turn, so no step count
-        can reach a limit; only a declared limit is refused, the default is always there."""
-        if self.tool_turns == "shared" and "max_tool_steps" in self.model_fields_set:
-            raise ValueError(
-                f"max_tool_steps is {self.max_tool_steps}, but tool_turns resolves to shared, "
-                "where a user turn is one generation and never loops. Write tool_turns: "
-                "isolated, or drop max_tool_steps."
-            )
-        return self
 
     @model_validator(mode="after")
     def _refuse_a_template_nothing_can_render(self) -> Self:
@@ -736,7 +727,7 @@ class TaskConfig(BaseModel):
 
 
 def _refuse_a_declaration_the_mode_ignores(spec: ActorSpec, mode: str) -> None:
-    """Refuse an ``actors.user`` key the resolved simulator mode would never read.
+    """Refuse an ``actors.user`` key the resolved simulator would never read.
 
     Decided on the merged actor spec, where a declared key is still told apart
     from a default, rather than on the resolved :class:`UserSimulatorConfig`,
@@ -749,6 +740,21 @@ def _refuse_a_declaration_the_mode_ignores(spec: ActorSpec, mode: str) -> None:
             f"sampling is {spec.sampling.model_dump()!r}, but the user simulator resolves to "
             "mode scripted, which samples nothing. Write mode: llm, or drop sampling "
             "(declared in a project's task_defaults, write sampling: null in the task)."
+        )
+    tool_turns = spec.tool_turns or "shared"
+    if mode == "scripted" and tool_turns == "isolated":
+        raise ValueError(
+            "tool_turns is isolated, but the user simulator resolves to mode scripted, whose "
+            "replies are authored text and never call tools. Write mode: llm, or drop "
+            "tool_turns (declared in a project's task_defaults, write tool_turns: null in "
+            "the task)."
+        )
+    if tool_turns == "shared" and spec.max_tool_steps is not None:
+        raise ValueError(
+            f"max_tool_steps is {spec.max_tool_steps}, but tool_turns resolves to shared, "
+            "where a user turn is one generation and never loops. Write tool_turns: "
+            "isolated, or drop max_tool_steps (declared in a project's task_defaults, write "
+            "max_tool_steps: null in the task)."
         )
 
 

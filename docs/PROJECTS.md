@@ -1052,7 +1052,10 @@ An `ActorSpec` carries:
   anchored to the project directory (see [TASKS.md](TASKS.md));
 - `sampling`, the simulator's `temperature` (see
   [Simulator sampling](TASKS.md#simulator-sampling)). A project-level `sampling`
-  applies to every task, so a scripted task writes `sampling: null` to drop it.
+  applies to every task, so a scripted task writes `sampling: null` to drop it;
+- `tool_turns` and `max_tool_steps`, how the simulator's own tool calls run (see
+  [User tool turns](TASKS.md#user-tool-turns)). A task drops a project-level value
+  the same way, with `null`.
 
 The project declares the shared defaults under
 `task_defaults.actors.user`; each task overrides field-by-field
