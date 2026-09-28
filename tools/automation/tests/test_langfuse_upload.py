@@ -312,6 +312,34 @@ class TestTheUpload:
         # the value itself is never in the report
         assert value not in json.dumps(report.as_dict())
 
+    def test_a_dotenv_line_in_the_agents_own_words_is_blocked(self, tmp_path: Path) -> None:
+        """No policy redacts what the agent says, so the sentinel is its only guard, and a
+        dotenv line matches only with its line break intact."""
+        line = "NPM_" + "TOKEN=" + "q" * 16
+        events = json.loads(json.dumps(CLEAN_EVENTS))
+        events[1]["message"]["content"][0]["text"] = f"found this in .env:\n{line}\n"
+        write(tmp_path, "agent_iter_1.jsonl", events)
+        report = upload(tmp_path)
+        assert report.sent == []
+        assert "dotenv-secret" in report.blocked[0]["reason"]
+
+    @pytest.mark.parametrize(
+        "value",
+        ['Zq"8!mK-p2wX-9', "p\u00e4ssw\u00f6rd-12345", "back\\slash-12345"],
+        ids=["quote", "non-ascii", "backslash"],
+    )
+    def test_a_known_value_json_would_escape_is_still_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("ACME_DB_PASSWORD", value)
+        events = json.loads(json.dumps(CLEAN_EVENTS))
+        events[-1]["result"] = f"the password is {value}"
+        write(tmp_path, "agent_iter_1.jsonl", events)
+        report = upload(tmp_path)
+        assert report.sent == []
+        assert "known-secret-value" in report.blocked[0]["reason"]
+        assert value not in json.dumps(report.as_dict(), ensure_ascii=False)
+
     def test_the_default_drop_policy_means_the_same_transcript_goes_through(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

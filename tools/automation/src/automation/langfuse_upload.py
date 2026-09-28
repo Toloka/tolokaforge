@@ -34,7 +34,7 @@ import re
 import urllib.error
 import urllib.request
 from base64 import b64encode
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -295,8 +295,7 @@ def upload(
             report.refused.append({"file": name, "reason": str(exc)})
             continue
 
-        payload = json.dumps(built.events, default=str).encode("utf-8")
-        findings = gate.scan(payload, what=name)
+        findings = _scan(gate, built.events, what=name)
         if findings:
             # the finding names the rule and a masked excerpt; the value never reaches the receipt
             report.blocked.append({"file": name, "reason": ", ".join(str(f) for f in findings)})
@@ -341,6 +340,33 @@ def upload(
                 }
             )
     return report
+
+
+def _scan(gate: Any, events: Sequence[Mapping[str, Any]], *, what: str) -> list[Any]:
+    """The sentinel over the events as JSON and as the raw strings the spans carry, one per line:
+    JSON escaping hides a value with a quote, a backslash or a non-ASCII character, and turns a
+    line break into two characters no line-anchored shape matches."""
+    serialised = json.dumps(events, default=str).encode("utf-8")
+    raw = "\n".join(_strings(events)).encode("utf-8", "replace")
+    found, seen = [], set()
+    for finding in gate.scan(serialised, what=what) + gate.scan(raw, what=what):
+        if (finding.rule, finding.excerpt) not in seen:
+            seen.add((finding.rule, finding.excerpt))
+            found.append(finding)
+    return found
+
+
+def _strings(value: Any) -> Iterator[str]:
+    """Every string in ``value``, the keys included, and every other scalar as text."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield str(key)
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+    elif value is not None:
+        yield str(value)
 
 
 def _project_verified(receiver: Receiver | None, project: str | None) -> bool:
