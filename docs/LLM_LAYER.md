@@ -2310,6 +2310,15 @@ path that 4.7 ignores (see
 [plans/eval_output_new_diagnosis.md](../plans/eval_output_new_diagnosis.md)
 Part 4).
 
+Because the match is whole-entry and first-match-wins, a slug that lands on a
+broad multi-vendor preset inherits that preset's silence on every budget knob
+even when a near-identical sibling slug routes to a narrower preset that
+declares several. `scripts/analysis/audit_preset_fallthrough.py` reports that
+asymmetry — resolved preset, declared knobs and OpenRouter context window per
+slug, plus the presets whose `max_context_tokens + context_watermark`
+disagrees with the smallest real window their globs cover. See
+[`scripts/README.md`](../scripts/README.md) § Preset fall-through audit.
+
 `qwen` additionally enables `dict_map_hints` (GPT-5-class presets currently
 opt-in to this via the legacy `capabilities: {dict_map_prompt_hints: true}`
 override on the model config — see the translation layer in
