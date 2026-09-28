@@ -819,6 +819,22 @@ The `AgentLoop` docstring carries the three obligations grading enforces and the
 
 tolokaforge ships `engine-loop` (the built-in `ToolCallingLoop`) as a built-in under this group; it resolves through the registry like any third-party loop.
 
+**Run the conformance suite against your factory.** Breaking one of those obligations does not raise — it produces a complete, plausible trajectory and a wrong grade. `tolokaforge.testing.agent_loops` ships the suite that catches it, plus `InMemoryAgentLoop`, the shortest loop that satisfies every obligation and the worked example to copy. Subclass and supply one fixture:
+
+```python
+import pytest
+from tolokaforge.testing.agent_loops import AgentLoopConformanceSuite
+
+class TestMyLoopConformance(AgentLoopConformanceSuite):
+    @pytest.fixture
+    def loop_factory(self):
+        return my_loop_factory
+```
+
+The suite drives scripted episodes through your factory and asserts on what grading reads: the id join holds and `build_trial_timeline` builds; two calls to the *same* tool with different arguments keep their own results; a failed call's `role: tool` message carries the error prefix and round-trips identically with and without a `tool_log.yaml` sidecar; every generation reaches `metrics`; `should_terminate` runs once per turn, after the assistant message is appended and before the tools execute; a supplied `user_turn` runs on a tool-call-free turn; and `config.max_turns` and `config.episode_timeout_s` both bound the episode — nothing outside the loop enforces either.
+
+**Termination honesty is a rule, not just an assertion.** The reasons in `tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` (`API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`, `RATE_LIMIT`) remove the trial from the measured denominator. A loop may emit one only on **typed** evidence — an exception type, an HTTP status, or a typed empty-completion observation (`GenerationResult` with empty `text` and no `tool_calls`). Never from matching prose against an exception message: a context-window overflow and a malformed tool schema both read as "an API error", and excluding a trial the agent actually failed inflates every benchmark number with nothing in the output to show it. Route raised exceptions through `context.classify_error` rather than naming a reason yourself. The suite pins the half it can see — a clean episode must not claim an excluded reason, and a raised exception must be classified by the context — but a loop that reaches its own provider and classifies by text is beyond what any in-process suite can check.
+
 **Composition-plan adapter seams** — `mypkg/k8s.py`. ADR-0044 splits the compose-mode runtime into three detachable adapter Protocols (see [Composition-plan seams](#composition-plan-seams) above for the shape). Each entry-point group targets an impl class directly; the caller instantiates with the class's own optional injection seams:
 
 ```python
