@@ -60,6 +60,17 @@ READ_TIMEOUT_S = 10.0
 _ITERATION = re.compile(r"^agent_iter_(\d+)$")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the key pair and the admission header to whatever host it names, and
+    its answer would pass for the receiver's: a 3xx is an answer the reads cannot use."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 class UploadError(RuntimeError):
     """The upload cannot start: no receiver, no credentials, keys that open another project, or
     a malformed input."""
@@ -102,7 +113,7 @@ class Receiver:
             return None
         request = urllib.request.Request(f"{self.base_url}{path}", headers=self.headers)
         try:
-            with urllib.request.urlopen(request, timeout=READ_TIMEOUT_S) as response:
+            with _OPENER.open(request, timeout=READ_TIMEOUT_S) as response:
                 return json.loads(response.read().decode("utf-8"))
         except (
             urllib.error.URLError,

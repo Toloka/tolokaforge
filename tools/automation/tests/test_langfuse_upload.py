@@ -581,6 +581,65 @@ class TestTheEnvironmentGuard:
         assert receiver.environments_of("trace") is None
         assert len(reads) == 2
 
+    def test_a_redirect_is_not_followed_and_carries_no_credential(self) -> None:
+        """urllib copies every header, Authorization included, to the host a redirect names, and
+        the answer from there would pass for the receiver's own."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        reached: list[dict[str, str]] = []
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                reached.append({k.lower(): v for k, v in self.headers.items()})
+                body = json.dumps({"data": [{"name": "acme", "environment": "x"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        elsewhere = HTTPServer(("127.0.0.1", 0), Elsewhere)
+        target = f"http://127.0.0.1:{elsewhere.server_address[1]}/login"
+
+        class Redirecting(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        receiver_side = HTTPServer(("127.0.0.1", 0), Redirecting)
+        threads = [
+            threading.Thread(target=server.serve_forever, daemon=True)
+            for server in (elsewhere, receiver_side)
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            base = f"http://127.0.0.1:{receiver_side.server_address[1]}"
+            receiver = receiver_from(
+                {
+                    "LANGFUSE_BASE_URL": base,
+                    "LANGFUSE_PUBLIC_KEY": "public-not-real",
+                    "LANGFUSE_SECRET_KEY": "secret-not-real",
+                    "LANGFUSE_EXTRA_HEADERS": "X-GitHub-Runner-Key=admission-not-real",
+                }
+            )
+            assert receiver.project_name() is None
+            assert receiver.environments_of("trace") is None
+        finally:
+            for server in (elsewhere, receiver_side):
+                server.shutdown()
+                server.server_close()
+            for thread in threads:
+                thread.join(timeout=5)
+        assert reached == []
+
     def test_a_malformed_http_answer_is_could_not_ask(self) -> None:
         """A proxy answering with a broken status line raises http.client's own error, which is
         not an OSError; it has to read as "could not ask" rather than end the upload."""
