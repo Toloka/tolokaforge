@@ -2785,4 +2785,3 @@ class TestTerminalBenchAgentToolSelection:
                 agent_harness="claude-code",
                 agent_model="m",
             )
-
