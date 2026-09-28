@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-@dataclass
+@dataclass(frozen=True)
 class InspectRunResult:
     """Outcome of one ``inspect eval`` subprocess."""
 

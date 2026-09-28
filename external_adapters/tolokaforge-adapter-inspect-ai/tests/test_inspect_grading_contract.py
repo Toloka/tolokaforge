@@ -17,9 +17,6 @@ _TASK_ID = "poc_smoke"
 
 
 class TestInspectAiAdapterGradingContract(AdapterGradingContractSuite):
-    expected_requires_docker_cli_in_runner = True
-    expected_preferred_grader_kind = "test_execution"
-
     @pytest.fixture
     def adapter(self) -> InspectAiAdapter:
         return InspectAiAdapter({"inspect_task_dir": str(_FIXTURES)})

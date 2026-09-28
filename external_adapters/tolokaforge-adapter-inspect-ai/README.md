@@ -9,12 +9,11 @@ on Inspect's own runtime (its solvers, scorers and sandbox). So this adapter doe
 **not** reimplement Inspect; it *delegates* to it:
 
 1. **Discover** — enumerate the `@task` functions in a task pack via Inspect's
-   `list_tasks`, and translate each into a tolokaforge `TaskConfig` / `TaskDescription`.
+   `list_tasks`, and translate each into a tolokaforge `TaskConfig`.
 2. **Execute** — hand the task to Inspect (`inspect eval`), which runs its own solver
    and scorer against the model under test.
 3. **Normalize** — read the resulting `.eval` log back into tolokaforge's `Grade` and
-   `Trajectory` (`normalize.py`), so reporting and analysis are unchanged. Inspect's
-   per-task score is the reward the runner's `test_execution` grader reads.
+   `Trajectory` (`normalize.py`), so reporting and analysis are unchanged.
 
 Model routing goes through an OpenAI-compatible / LiteLLM-proxy endpoint configured by
 the run. Secrets (keys, base URLs) are resolved via `tolokaforge.secrets` when wiring
@@ -22,30 +21,37 @@ the eval environment — never read from the process environment by this package
 
 ## Usage
 
-Install so the `tolokaforge.adapters` entry point is discoverable, then select the
-adapter in a run config:
+Discover and translate Inspect tasks through the adapter, then execute a task with the
+bridge and project the result:
 
-```yaml
-evaluation:
-  harness_adapter:
-    type: inspect_ai
-    params:
-      inspect_task_dir: path/to/inspect/tasks   # pack of *.py Inspect tasks
-      tasks_glob: "**/*.py"                       # optional; scans the pack by default
-      task_ids: ["poc_smoke"]                     # optional filter
+```python
+from tolokaforge_adapter_inspect_ai.adapter import InspectAiAdapter
+from tolokaforge_adapter_inspect_ai.bridge import run_inspect_eval
+from tolokaforge_adapter_inspect_ai import normalize
+from inspect_ai.log import read_eval_log
+
+adapter = InspectAiAdapter({"inspect_task_dir": "path/to/inspect/tasks"})
+info = adapter._tasks[adapter.get_task_ids()[0]]
+
+result = run_inspect_eval(
+    task_file=info.file,
+    task_name=info.name,
+    model="litellm-proxy/<model>",   # OpenAI-compatible / LiteLLM-proxy endpoint
+    log_dir="runs/inspect",
+    env={...},                       # base URL + key, resolved via tolokaforge.secrets
+)
+grade = normalize.run_grade(read_eval_log(str(result.log_path)))
 ```
-
-`agent_model` (the model under test) is supplied by the run's model config.
 
 ## Scope
 
-- **Now (local delegation):** discovery + translation, and a subprocess bridge
-  (`bridge.py`) that runs `inspect eval` and normalizes the log — exercised end-to-end
-  with the offline `mockllm` provider at $0.
-- **Next:** the containerized runner path (Inspect's docker sandbox coexisting with
-  tolokaforge's runtime) and driving the model under test through Inspect's own solver.
-- **Later:** injecting a tolokaforge agent/scaffold into Inspect tasks via Inspect's
-  agent bridge.
+The adapter discovers and translates Inspect tasks, and executes them through the
+local subprocess bridge (`bridge.py` → `inspect eval` → `normalize`), exercised
+end-to-end with the offline `mockllm` provider at $0.
+
+Execution through the tolokaforge runner is not wired: `to_task_description` and
+`grade` raise `NotImplementedError`. Running an Inspect task therefore goes through
+`bridge.run_inspect_eval` + `normalize`, not `tolokaforge run`.
 
 ## Development
 

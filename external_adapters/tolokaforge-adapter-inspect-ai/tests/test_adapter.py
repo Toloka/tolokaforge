@@ -7,8 +7,6 @@ from pathlib import Path
 import pytest
 from tolokaforge_adapter_inspect_ai.adapter import InspectAiAdapter
 
-from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
-
 pytestmark = pytest.mark.unit
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -39,24 +37,14 @@ def test_task_id_filter():
     assert adapter.get_task_ids() == []
 
 
-def test_to_task_description_is_valid_and_delegating(adapter: InspectAiAdapter):
-    desc = adapter.to_task_description("poc_smoke")
-    assert isinstance(desc, TaskDescription)
-    assert desc.adapter_type == "inspect_ai"
-    assert desc.metadata["delegation"] == "inspect_ai"
-    assert desc.metadata["inspect_model"] == "openai/gpt-4o-mini"
-    # the eval command Inspect will run is carried through for the runner
-    cmd = desc.metadata["eval_command"]
-    assert cmd[:2] == ["inspect", "eval"]
-    assert "poc_smoke" in cmd[2]
-    assert "openai/gpt-4o-mini" in cmd
+def test_to_task_description_not_wired(adapter: InspectAiAdapter):
+    with pytest.raises(NotImplementedError, match="run_inspect_eval"):
+        adapter.to_task_description("poc_smoke")
 
 
-def test_grading_is_test_execution(adapter: InspectAiAdapter):
-    assert adapter.preferred_grader_kind() == "test_execution"
-    desc = adapter.to_task_description("poc_smoke")
-    assert isinstance(desc.grading, RunnerGradingConfig)
-    assert desc.grading.grading_method == "test_execution"
+def test_grade_not_wired(adapter: InspectAiAdapter):
+    with pytest.raises(NotImplementedError, match="run_inspect_eval"):
+        adapter.grade("poc_smoke", None, {}, None)
 
 
 def test_registered_in_adapter_registry():

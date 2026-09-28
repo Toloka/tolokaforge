@@ -9,9 +9,7 @@ Inspect objects) so they can be unit-tested without constructing a real eval run
 
 from __future__ import annotations
 
-import argparse
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from tolokaforge.core.models import Grade, GradeComponents, Trajectory
@@ -125,32 +123,5 @@ def run_grade(log: Any, *, pass_threshold: float = 1.0) -> Grade:
 
 
 def reward_from_log(log: Any, *, pass_threshold: float = 1.0) -> float:
-    """The scalar reward for the runner's ``test_execution`` grader (mean score)."""
+    """The scalar reward for a run: the mean per-sample score in ``[0, 1]``."""
     return run_grade(log, pass_threshold=pass_threshold).score
-
-
-def write_reward(log_path: str | Path, reward_path: str | Path) -> float:
-    """Read an ``.eval`` log and write its scalar reward to ``reward_path``.
-
-    This is the in-container step the runner's ``test_execution`` grader reads: after
-    ``inspect eval`` produces the log, the reward file carries Inspect's own score.
-    """
-    from inspect_ai.log import read_eval_log
-
-    reward = reward_from_log(read_eval_log(str(log_path)))
-    Path(reward_path).write_text(f"{reward}\n")
-    return reward
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Write an Inspect .eval log's reward to a file.")
-    parser.add_argument("log_path", help="Path to the .eval log produced by `inspect eval`.")
-    parser.add_argument("reward_path", help="File to write the scalar reward to.")
-    args = parser.parse_args(argv)
-    reward = write_reward(args.log_path, args.reward_path)
-    print(reward)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

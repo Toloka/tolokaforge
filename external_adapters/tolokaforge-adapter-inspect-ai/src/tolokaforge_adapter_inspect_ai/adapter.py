@@ -1,26 +1,30 @@
 """Inspect AI adapter for tolokaforge.
 
 A *delegating* adapter: it does not reimplement Inspect. It discovers Inspect
-``@task`` functions in a task pack, translates each into a tolokaforge
-``TaskConfig`` / ``TaskDescription``, and hands execution to Inspect itself (which
-runs its own solvers, scorers and sandbox). Inspect's per-task score is the reward
-the runner's ``test_execution`` grader reads; :mod:`tolokaforge_adapter_inspect_ai.normalize`
-projects the result back onto tolokaforge's ``Grade`` / ``Trajectory``.
+``@task`` functions in a task pack and translates each into a tolokaforge
+``TaskConfig``. Execution is delegated to Inspect itself (which runs its own
+solvers, scorers and sandbox) via the local bridge
+(:mod:`tolokaforge_adapter_inspect_ai.bridge`), and its results are projected back
+onto tolokaforge's ``Grade`` / ``Trajectory`` by
+:mod:`tolokaforge_adapter_inspect_ai.normalize`.
 
-Model routing goes through an OpenAI-compatible / LiteLLM-proxy endpoint configured
-by the run; secrets (keys, base URLs) are resolved via :mod:`tolokaforge.secrets`
-by the caller wiring the eval environment, never read from ``os.environ`` here.
+Execution through the tolokaforge runner (materialising Inspect's sandbox inside a
+trial container and grading from the eval log) is not wired yet:
+:meth:`InspectAiAdapter.to_task_description` and :meth:`InspectAiAdapter.grade`
+raise ``NotImplementedError`` rather than present a runner path that would fail
+later. Model routing goes through an OpenAI-compatible / LiteLLM-proxy endpoint;
+secrets are resolved via :mod:`tolokaforge.secrets` by the caller wiring the eval
+environment, never read from ``os.environ`` here.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.models import (
     Grade,
-    GradeComponents,
     GradingCombineConfig,
     GradingConfig,
     InitialStateConfig,
@@ -28,8 +32,7 @@ from tolokaforge.core.models import (
     ToolsConfig,
     Trajectory,
 )
-from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
-from tolokaforge_adapter_inspect_ai.bridge import build_eval_command
+from tolokaforge.runner.models import TaskDescription
 from tolokaforge_adapter_inspect_ai.inspect_loader import (
     InspectTaskInfo,
     discover_inspect_tasks,
@@ -37,26 +40,20 @@ from tolokaforge_adapter_inspect_ai.inspect_loader import (
 
 _ADAPTER_TYPE = "inspect_ai"
 
-# Inspect returns a single scalar score per task, so grading maps onto the same
-# ``test_execution`` runner dispatch terminal-bench uses (one reward in [0, 1]).
-_TEST_EXECUTION_GRADING: dict[str, Any] = {
-    "combine_method": "weighted",
-    "weights": {"custom_checks": 1.0},
-    "pass_threshold": 0.5,
-    "grading_method": "test_execution",
-}
-
 _SYSTEM_PROMPT = (
     "This task is executed by the Inspect AI runtime. The task's own solver drives "
     "the interaction; this prompt is a fallback used only when none is supplied."
 )
 
+_NO_RUNNER_EXECUTION = (
+    "InspectAiAdapter does not execute through the tolokaforge runner. Run Inspect "
+    "tasks with tolokaforge_adapter_inspect_ai.bridge.run_inspect_eval and project the "
+    "result with tolokaforge_adapter_inspect_ai.normalize."
+)
+
 
 class InspectAiAdapter(BaseAdapter):
     """Runs Inspect AI tasks by delegating execution to ``inspect_ai``."""
-
-    requires_docker_cli_in_runner: ClassVar[bool] = True
-    """Inspect drives its own (docker) sandbox for sandboxed tasks."""
 
     def __init__(self, params: dict[str, Any]):
         super().__init__(params)
@@ -118,35 +115,8 @@ class InspectAiAdapter(BaseAdapter):
             ),
         )
 
-    def preferred_grader_kind(self) -> str:
-        return "test_execution"
-
     def to_task_description(self, task_id: str) -> TaskDescription:
-        self._ensure_discovered()
-        info = self._tasks[task_id]
-        eval_command = build_eval_command(
-            task_file=info.file,
-            task_name=info.name,
-            model=self.agent_model or "<model>",
-            log_dir="/logs/inspect",
-        )
-        return TaskDescription(
-            task_id=task_id,
-            name=info.name,
-            category="inspect",
-            description=f"Inspect AI task {info.name}",
-            adapter_type=_ADAPTER_TYPE,
-            system_prompt=self.get_system_prompt(task_id),
-            grading=RunnerGradingConfig(**_TEST_EXECUTION_GRADING),
-            metadata={
-                "delegation": _ADAPTER_TYPE,
-                "inspect_file": str(info.file),
-                "inspect_task": info.name,
-                "inspect_model": self.agent_model,
-                "eval_command": eval_command,
-                "attribs": info.attribs,
-            },
-        )
+        raise NotImplementedError(_NO_RUNNER_EXECUTION)
 
     # -- environment (Inspect owns the real environment) ---------------------
 
@@ -175,12 +145,7 @@ class InspectAiAdapter(BaseAdapter):
         final_state: dict[str, Any],
         env: AdapterEnvironment,
     ) -> Grade:
-        return Grade(
-            binary_pass=False,
-            score=0.0,
-            components=GradeComponents(),
-            reasons="inspect_ai grading runs from the eval log via the test_execution grader",
-        )
+        raise NotImplementedError(_NO_RUNNER_EXECUTION)
 
 
 def _as_list(value: Any) -> list[str] | None:

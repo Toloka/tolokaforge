@@ -8,6 +8,7 @@ with entry-point registration for `tolokaforge.adapters` discovery.
 | Package | Entry-Point Name | Adapter Class | Source |
 |---------|-----------------|---------------|--------|
 | `tolokaforge-adapter-terminal-bench` | `terminal_bench` | `TerminalBenchAdapter` | Terminal-bench Docker Compose tasks |
+| `tolokaforge-adapter-inspect-ai` | `inspect_ai` | `InspectAiAdapter` | Inspect AI tasks (execution delegated to `inspect_ai`) |
 
 ## How It Works
 

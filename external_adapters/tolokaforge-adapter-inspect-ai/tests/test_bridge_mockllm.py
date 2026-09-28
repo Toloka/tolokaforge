@@ -15,7 +15,7 @@ from tolokaforge_adapter_inspect_ai import normalize
 from tolokaforge_adapter_inspect_ai.adapter import InspectAiAdapter
 from tolokaforge_adapter_inspect_ai.bridge import run_inspect_eval
 
-pytestmark = pytest.mark.unit
+pytestmark = pytest.mark.integration
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
