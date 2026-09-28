@@ -2462,9 +2462,11 @@ class LLMClient:
 
 # The canned agent-side greeting: dispatched by the runner when the simulator
 # bootstraps turn 0, and re-used to lead the simulator's flipped context when
-# the opening was caller-seeded (see ``_llm_reply``). One constant so the two
-# sites cannot diverge — the mid-conversation reconstruction must show the
-# simulator the same agent opening it answers at bootstrap.
+# the opening was caller-seeded (see ``_simulator_context``). One constant so the
+# two sites cannot diverge — the mid-conversation reconstruction must show the
+# simulator the same agent opening it answers at bootstrap. A task that declares
+# ``actors.user.first_agent_message`` has its own line in the transcript instead,
+# and neither site uses this one.
 SIMULATOR_GREETING = "Hi! How can I help you today?"
 
 
@@ -2656,7 +2658,9 @@ Rules:
         # seeded opening flips to ``assistant`` at index 0. Prepend a synthetic
         # agent-side greeting rather than dropping the opening: without its own
         # opening in context the simulator believes it never asked and restarts
-        # the conversation verbatim after the agent has already answered.
+        # the conversation verbatim after the agent has already answered. A
+        # transcript that opens with the agent's own line (``first_agent_message``)
+        # already leads with a user-role turn here, and gets none.
         if sim_context and sim_context[0].role == MessageRole.ASSISTANT:
             sim_context.insert(
                 0,

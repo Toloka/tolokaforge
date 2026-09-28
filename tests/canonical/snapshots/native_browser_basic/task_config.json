@@ -2,6 +2,7 @@
   "actors": {
     "user": {
       "backstory": null,
+      "first_agent_message": null,
       "max_tool_steps": null,
       "mode": "scripted",
       "persona": null,

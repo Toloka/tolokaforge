@@ -102,6 +102,7 @@ actors:
     sampling: {temperature: 0.2}    # What the simulator samples at; null sends no temperature
     tool_turns: "isolated"          # Default "shared"; "isolated" keeps user tool steps from the agent
     max_tool_steps: 10              # Isolated only (refused under "shared"): steps one user turn may take
+    first_agent_message: "Hi! How can I help you today?"  # The agent's line the transcript opens with
 
 policies:
   disallowed_actions:

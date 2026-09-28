@@ -841,10 +841,12 @@ class InProcessConductor:
         user_simulator: UserSimulator | None
         user_stop = UserStopRule()
         user_tool_turns = UserToolTurnRule()
+        first_agent_message: str | None = None
         if task.interaction_mode == "conversational":
             sim = task.resolve_user_simulator()
             user_stop = UserStopRule.from_config(sim)
             user_tool_turns = UserToolTurnRule.from_config(sim)
+            first_agent_message = sim.first_agent_message
             user_llm_config = user_config if sim.mode == "llm" else None
             # The simulator hits the same provider quota as the agent, so a probe
             # run has to cover it too — otherwise a simulator 429 kills the trial
@@ -968,6 +970,7 @@ class InProcessConductor:
             ),
             user_stop=user_stop,
             user_tool_turns=user_tool_turns,
+            first_agent_message=first_agent_message,
         )
 
         # "" is the runner's "caller supplied nothing" seed: turn 0 is routed
