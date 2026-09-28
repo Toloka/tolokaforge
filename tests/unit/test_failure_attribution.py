@@ -52,6 +52,7 @@ _UNGRADEABLE = TrialOutcomeClass.UNGRADEABLE
 # prevent.
 _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool], ...] = (
     (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.AGENT_SUBMITTED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.USER_STOP, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.STUCK_DETECTED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.MAX_TURNS, _MEASURED, False),
@@ -66,6 +67,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.COMPLETED, None, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.AGENT_DONE, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.AGENT_SUBMITTED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.USER_STOP, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.STUCK_DETECTED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.MAX_TURNS, _MEASURED, False),
@@ -80,6 +82,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.FAILED, None, _HARNESS, False),
     (TrialStatus.TIMEOUT, TerminationReason.AGENT_DONE, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.AGENT_SUBMITTED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.USER_STOP, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.STUCK_DETECTED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.MAX_TURNS, _MEASURED, True),
@@ -94,6 +97,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.TIMEOUT, None, _HARNESS, True),
     (TrialStatus.ERROR, TerminationReason.AGENT_DONE, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.AGENT_SUBMITTED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.USER_STOP, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.STUCK_DETECTED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.MAX_TURNS, _MEASURED, True),
@@ -190,7 +194,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 112
+        assert len(_OUTCOME_CELLS) == len(expected) == 120
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,

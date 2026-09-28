@@ -304,10 +304,14 @@ asserts each group's rows target modules the subset ships, and
 `load_*` seam call reachable from the subset partition and asserts its
 group is in the allowlist. The other groups (`runtime_backends`,
 `trial_graders`, `conductors`, `service_readiness_probes`,
-`turn_policies`, `grading_substrates`) point at modules the subset does
-not ship — their loaders are called from `tolokaforge.core.runner` /
-`tolokaforge.grader.composite_dispatch`, which live outside the subset
-partition — and are deliberately excluded from the subset wheel.
+`turn_policies`, `agent_loops`, `grading_substrates`) are deliberately
+excluded from the subset wheel because their **loaders** are called only
+from modules outside the subset partition — `tolokaforge.core.runner` /
+`tolokaforge.grader.composite_dispatch` — so the runner container never
+resolves them. Whether the registered rows target modules the subset
+ships is not the criterion: `agent_loops`' only row points at
+`tolokaforge/core/loop.py`, which is in `RUNNER_SUBSET_LOOSE_FILES` and
+does ship.
 
 ```bash
 uv run hatch build --target custom

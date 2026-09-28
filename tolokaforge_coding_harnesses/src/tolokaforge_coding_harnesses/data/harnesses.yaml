@@ -685,6 +685,16 @@ harnesses:
     # both resolved at container-runtime from `container_env` — under the
     # shield, that dict carries the dummy value + gateway URL, so
     # config.toml on disk carries the dummy too. See ADR-0041.
+    # The CLI prints no usage: its stream is `text` events closing on an
+    # `end` event that carries only a stop reason, so there is nothing for a
+    # stdout dialect to read. Token counts come off the wire instead. The
+    # config file below asks for `{{ base_url }}`, which renders as this
+    # proxy's address because this field is set — the proxy holds the
+    # declared upstream, which it reads one preamble step earlier.
+    request_middleware:
+      upstream_env_key: "OPENROUTER_BASE_URL"
+      port: 8899
+      path_filter: "/chat/completions"
     credential_gateway:
       upstream_url: "https://openrouter.ai/api/v1"
       upstream_token_env_var: "OPENROUTER_API_KEY"

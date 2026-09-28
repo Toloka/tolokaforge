@@ -23,6 +23,7 @@ import pytest
 from tolokaforge_coding_harnesses.usage_log import (
     MIDDLEWARE_PROXY_USAGE_SOURCE,
     sum_harness_usage_records,
+    summarise_harness_requests,
 )
 
 pytestmark = pytest.mark.unit
@@ -202,3 +203,55 @@ class TestNothingMeasuredIsNotZeroMeasured:
 
 def test_the_tap_has_a_name_a_consumer_can_stamp() -> None:
     assert MIDDLEWARE_PROXY_USAGE_SOURCE == "middleware_proxy"
+
+
+class TestOnlyCompletionsDecideWhetherTheTrialWasServed:
+    """A trial is served when its *completions* are served.
+
+    The proxy taps every path, and several harnesses allowlist a model-list GET
+    on their credential gateway. Counting one of those as a served request
+    masks a trial whose every completion was refused — the case the summary
+    exists to catch.
+    """
+
+    @staticmethod
+    def _records(*pairs: tuple[str, int]) -> str:
+        return "".join(
+            json.dumps({"timestamp": "t", "path": path, "status": status, "model": "m"}) + "\n"
+            for path, status in pairs
+        )
+
+    def test_a_served_model_list_does_not_excuse_refused_completions(self) -> None:
+        outcomes = summarise_harness_requests(
+            self._records(("/models", 200), ("/chat/completions", 403), ("/chat/completions", 403))
+        )
+
+        assert outcomes is not None
+        assert outcomes.requests == 2
+        assert outcomes.none_succeeded is True
+
+    def test_google_rest_completions_are_recognised(self) -> None:
+        outcomes = summarise_harness_requests(
+            self._records(("/v1beta/models/gemini-3.6-flash:streamGenerateContent", 403))
+        )
+
+        assert outcomes is not None
+        assert outcomes.none_succeeded is True
+
+    def test_a_record_without_a_path_still_counts(self) -> None:
+        """Older records predate the field; shrinking the evidence on them
+        would be a silent behaviour change."""
+        outcomes = summarise_harness_requests(
+            json.dumps({"timestamp": "t", "status": 403, "model": "m"}) + "\n"
+        )
+
+        assert outcomes is not None
+        assert outcomes.requests == 1
+
+    def test_one_served_completion_is_enough(self) -> None:
+        outcomes = summarise_harness_requests(
+            self._records(("/chat/completions", 429), ("/chat/completions", 200))
+        )
+
+        assert outcomes is not None
+        assert outcomes.none_succeeded is False

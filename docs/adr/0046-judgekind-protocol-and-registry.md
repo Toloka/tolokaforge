@@ -1,6 +1,6 @@
 # 0046. The `JudgeKind` Protocol and Entry-Point Registry
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0049
 - **Date:** 2026-09-10
 - **Accepted-on:** 2026-09-10
 - **Deciders:** @CiroGamboa

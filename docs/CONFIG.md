@@ -88,6 +88,7 @@ Notes:
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated plan-shape coercion knob. Backend selection is composer-driven — the orchestrator always constructs `SharedStackRuntimeBackend` and the composer sequences the resolved plan's per-scope substrate. `shared` coerces every task's plan to run-scope, `per_trial` to trial-scope; multi-stack packs are refused under either coercion (declare stack-scope explicitly instead). Any other name registered in the `tolokaforge.runtime_backends` entry-point group (only `in_memory` in-tree today) is a legit backend swap, resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
+- `orchestrator.agent_loop` (default `engine-loop`) names the in-process loop that drives the agent's turns, resolved against the `tolokaforge.agent_loops` entry-point group. `engine-loop` is the built-in tool-calling loop; a downstream package registering a loop with a different prompt contract or action format selects it here without a framework PR. An unregistered name is refused at run start with the known names listed. See [ADR-0050](adr/0050-agent-loop-protocol-and-registry.md) and [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 - `orchestrator.strict_task_load` (default `false`) controls how the orchestrator handles an adapter exception raised from `get_task()` while `load_tasks` iterates the discovered task ids. Left `false`, the failure is logged at error level and that task is skipped — the run proceeds with the remaining tasks. Set to `true`, the exception propagates with the task id in the message so the run refuses to start rather than proceeding with a silently shorter task list; the bundled `examples/terminal_bench/*.yaml` opt in because a task-pack that fails to materialise is a config error the operator must see. **`--dry-run` is strict regardless of this flag** — it has its own loader (`load_tasks_for_dry_run`) with no exception handling, since surfacing config errors is the whole point of that entry point.
 - `orchestrator.runtime_connect.timeout_s` (default `30.0`) and `retry_interval_s` (default `1.0`) budget the runner's health-check retry loop during `runtime_backend.connect()`. Raise `timeout_s` when trials flake with `Runner service at localhost:<port> not healthy after 30.1s` on cold-boot. Env vars `TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S` and `TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S` override the block for operational tuning (env → YAML → default). See [RUNNER.md § Health-check timeout on connect](RUNNER.md#health-check-timeout-on-connect).
 - `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
@@ -774,3 +775,20 @@ output_dir/
 See `docs/OUTPUT_FORMAT.md` for details.
 For runner operations and queue workflows, see `docs/RUNNER.md`.
 For metrics and attribution interpretation, see `docs/ANALYTICS.md`.
+
+## Preflight opt-outs
+
+Two checks run before a coding-harness run spends anything, and each has an
+environment-variable escape hatch for the case it cannot judge.
+
+| Variable | Turns off | When you want it |
+|---|---|---|
+| `TOLOKAFORGE_SKIP_PROVIDER_PREFLIGHT` | Probing that the CLI's provider endpoint answers an authorised caller before the run starts. | An air-gapped or record-replay run, or a gateway reachable only from inside the trial container. |
+| `TOLOKAFORGE_SKIP_PRICING_FRESHNESS` | Comparing the bundled pricing table's rates against the source it names, when the table is older than its staleness window. | A run not being compared on spend, or one deliberately pinned to a historical table. |
+
+Both refuse the run when they find a problem rather than warning, because
+neither failure has a reading under which the run's numbers mean anything: a
+dead endpoint produces trials scored against untouched tasks, and a drifted
+rate produces a cost comparison computed from prices nobody charges. Neither
+refuses when it *cannot* form an opinion — an unreachable source, a scheme the
+probe does not speak, or a model neither side prices all leave the run alone.

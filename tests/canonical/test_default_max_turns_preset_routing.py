@@ -1,8 +1,15 @@
 """Canonical test — preset → ``default_max_turns`` routing.
 
-Pins the single model preset that opts into the per-model default for
-the per-trial turn budget:
+Pins the model presets that opt into the per-model default for the
+per-trial turn budget:
 
+* ``moonshot_kimi_k2`` — the K2 line emits the finest-grained turns in
+  the P0 set (median 260 completion tokens per turn, against 419 for
+  claude-sonnet-4.6 and 756 for gpt-5.6-sol on the same tasks), so it
+  converges in proportionally more steps. Live evidence: on the
+  2026-09-25 T-Bench 10-task sweep at 5 repeats, 37/50 trials ended
+  ``termination_reason: max_turns`` at exactly turn 50, and 27 of those
+  were still writing files in their final ten turns.
 * ``gemini_31_pro_preview`` — Gemini 3.1 Pro's per-turn edit style is
   more granular than the framework baseline (more per-turn tool calls,
   smaller diffs per call), so the same absolute budget exhausts earlier
@@ -40,6 +47,9 @@ pytestmark = pytest.mark.canonical
 _DEFAULT_MAX_TURNS_OPT_IN_MODELS = [
     ("google/gemini-3.1-pro-preview", "openrouter", 90),
     ("openrouter/google/gemini-3.1-pro-preview", "openrouter", 90),
+    ("moonshotai/kimi-k2.6", "openrouter", 90),
+    ("moonshotai/kimi-k2.7-code", "openrouter", 90),
+    ("openrouter/moonshotai/kimi-k2.7-code", "openrouter", 90),
 ]
 
 
@@ -52,7 +62,6 @@ _DEFAULT_MAX_TURNS_NONE_MODELS = [
     "x-ai/grok-4",
     "qwen/qwen3-coder",
     "moonshotai/kimi-k3",
-    "moonshotai/kimi-k2.6",
     "google/gemini-3.5-flash",
     "google/gemini-3.7-flash",
 ]

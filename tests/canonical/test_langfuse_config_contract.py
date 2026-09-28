@@ -23,6 +23,9 @@ def test_langfuse_settings_wire_shape(canon_snapshot):
     "field",
     [
         "expect_project",
+        "project",
+        "project_id",
+        "environments",
         "attach",
         "gradings",
         "projection",

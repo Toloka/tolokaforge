@@ -54,7 +54,7 @@ def _b64(data: bytes) -> str:
 
 
 class _ScriptedExec:
-    """Stub for ``DockerComposeExecToolWrapper._exec_sync``.
+    """Stub for ``DockerComposeExecToolWrapper.exec_in_env``.
 
     Sequenced return values, one per call, and records each command for later
     assertions. Extra calls raise so an over-eager helper trips a test.

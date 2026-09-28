@@ -254,8 +254,28 @@ def test_a_session_works_on_a_descriptor_past_select_s_ceiling(tmp_path):
     held: list[tuple[int, int]] = []
     session = LocalBashSession()
     try:
-        while len(os.listdir("/proc/self/fd")) < _FD_SETSIZE + 4:
-            held.append(os.pipe())
+        # Fill until an allocation actually comes back at or above the
+        # ceiling, rather than until some *count* of open descriptors is
+        # reached. The two are not the same: the kernel hands out the lowest
+        # free number, so a process carrying gaps below the ceiling — which a
+        # long test session routinely does — can hold well over
+        # ``_FD_SETSIZE`` descriptors while low numbers remain free. Counting
+        # them let the pty land at fd 474 on CI, and the test then reported
+        # that it had not exercised its own condition and failed for it.
+        # Allocating until a descriptor lands past the ceiling leaves every
+        # number below it occupied, so the session's pty cannot land low.
+        # It also drops the ``/proc`` dependency, which does not exist off
+        # Linux.
+        while True:
+            pipe = os.pipe()
+            held.append(pipe)
+            if max(pipe) >= _FD_SETSIZE:
+                break
+            if len(held) > needed:
+                pytest.skip(
+                    f"could not place a descriptor past {_FD_SETSIZE} after "
+                    f"{len(held)} pipes — this run cannot exercise the condition"
+                )
 
         session.open(str(tmp_path))
         assert session._master_fd >= _FD_SETSIZE, (

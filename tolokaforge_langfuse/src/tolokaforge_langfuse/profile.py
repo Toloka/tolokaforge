@@ -1,9 +1,10 @@
 """The deployment profile of the trace export (ADR-0047, parity and vocabulary amendments).
 
 Everything a deployment decides about its traces, and neither producer may know as a value,
-arrives at run time in one TOML file: the live observer reads it through
-``observability.tracing.options.langfuse.profile`` or ``TOLOKAFORGE_TRACING_PROFILE``, the offline bundle uploader
-through its ``--tag-profile`` flag. Over the default vocabulary of
+arrives at run time in one profile: inline under ``observability.tracing.options.langfuse.profile``
+(the run config's own layering, which the offline connector reads through
+:mod:`tolokaforge_langfuse.preflight`), or as a TOML or YAML file named there, by
+``TOLOKAFORGE_TRACING_PROFILE`` or by the connector's ``--tag-profile``. Over the default vocabulary of
 :mod:`tolokaforge_langfuse.vocabulary` (the prefixes, the producer's derived tags, the engine's
 closed lists, the default environment rule) a profile says:
 
@@ -20,7 +21,7 @@ closed lists, the default environment rule) a profile says:
   every trace carries;
 - the profile ``version`` that joins the native ``version`` field;
 - ``[models] rules``: the model-name rules file the ``toloka`` normalizer runs under (relative to
-  the profile file).
+  the profile file, or for an inline profile to the directory of the file that supplied it).
 
 A profile adds no prefix of its own. The producers validate the shape and apply the profile
 mechanically: a profile that does not load, an environment outside the receiver's alphabet, a
@@ -58,7 +59,7 @@ Example (neutral values; a deployment's file lives in its own repository)::
 
 ``python -m tolokaforge_langfuse.profile <file> [--tags a:b,c:d] [--metadata k=v,...]``
 validates a file, and optionally a launcher's tags and metadata against it (exit 2 on the first
-error).
+error); ``python -m tolokaforge_langfuse.preflight`` does the same for a run config's block.
 """
 
 from __future__ import annotations
@@ -145,11 +146,9 @@ class TracingProfile:
     fixed_metadata: Mapping[str, Any] = field(default_factory=dict)
     model_name_rules: str | None = None
     path: str | None = None
-
-    @property
-    def present(self) -> bool:
-        """Whether a deployment's file is in force (``NO_PROFILE`` is the vocabulary alone)."""
-        return self.path is not None
+    # whether a deployment's profile is in force, a file or inline (``NO_PROFILE``: the
+    # vocabulary alone); the required-tag check follows it
+    present: bool = True
 
     def allowed_values(self, prefix: str) -> tuple[str, ...] | None:
         """The closed list for ``prefix``: the profile's when it has one, else the core's."""
@@ -175,7 +174,7 @@ class TracingProfile:
         raise TracingProfileError(f"[derive.{prefix}]: no pattern matches {given!r}")
 
 
-NO_PROFILE = TracingProfile(version="none")
+NO_PROFILE = TracingProfile(version="none", present=False)
 
 
 def check_environment(value: object, *, where: str = "environment") -> str:
@@ -304,14 +303,28 @@ def _load_toml(text: str, *, where: str) -> Mapping[str, Any]:
         raise TracingProfileError(f"{where}: not valid TOML: {exc}") from exc
 
 
+def _load_yaml(text: str, *, where: str) -> Any:
+    import yaml
+
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise TracingProfileError(f"{where}: not valid YAML: {exc}") from exc
+
+
 def load_tracing_profile(path: str | Path) -> TracingProfile:
-    """Parse and validate the profile at ``path``; every error names the offending key."""
+    """Parse and validate the profile at ``path`` (``.yaml`` / ``.yml`` as YAML, anything else
+    as TOML); every error names the offending key."""
     where = f"tracing profile {path}"
     try:
         text = Path(path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise TracingProfileError(f"{where}: cannot be read: {exc}") from exc
-    return profile_from_mapping(_load_toml(text, where=where), path=str(path))
+    if Path(path).suffix.lower() in (".yaml", ".yml"):
+        data = _load_yaml(text, where=where)
+    else:
+        data = _load_toml(text, where=where)
+    return profile_from_mapping(data, path=str(path))
 
 
 def _environment_rule(data: Mapping[str, Any], *, where: str) -> EnvironmentRule:
@@ -430,7 +443,16 @@ def _derive(
     return derive
 
 
-def profile_from_mapping(data: Mapping[str, Any], *, path: str | None = None) -> TracingProfile:
+def profile_from_mapping(
+    data: Mapping[str, Any],
+    *,
+    path: str | None = None,
+    base_dir: str | Path | None = None,
+    check_files: bool = True,
+) -> TracingProfile:
+    """Validate a profile mapping. ``[models] rules`` resolves against ``base_dir``, else the
+    directory of ``path``, else the working directory; ``check_files=False`` checks the shape
+    only (a block validated before the file that supplied it is known)."""
     where = f"tracing profile {path}" if path else "tracing profile"
     if not isinstance(data, Mapping):
         raise TracingProfileError(f"{where}: the document must be a table")
@@ -511,9 +533,12 @@ def profile_from_mapping(data: Mapping[str, Any], *, path: str | None = None) ->
         if not isinstance(raw_rules, str) or not raw_rules.strip():
             raise TracingProfileError(f"{where}: [models] rules must be a non-empty path")
         rules_path = Path(raw_rules)
-        if not rules_path.is_absolute() and path is not None:
-            rules_path = Path(path).parent / rules_path
-        if not rules_path.is_file():
+        if not rules_path.is_absolute():
+            if base_dir is not None:
+                rules_path = Path(base_dir) / rules_path
+            elif path is not None:
+                rules_path = Path(path).parent / rules_path
+        if check_files and not rules_path.is_file():
             raise TracingProfileError(f"{where}: [models] rules: no such file {rules_path}")
         rules = str(rules_path)
     return TracingProfile(
@@ -588,7 +613,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         index += 1
     if len(positional) != 1:
         print(
-            "usage: python -m tolokaforge_langfuse.profile <profile.toml> [--tags a:b,c:d]"
+            "usage: python -m tolokaforge_langfuse.profile <profile.toml|.yaml> [--tags a:b,c:d]"
             " [--metadata k=v,k2=v2]",
             file=sys.stderr,
         )

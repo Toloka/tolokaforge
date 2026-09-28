@@ -206,7 +206,7 @@ jobs:
         for adapter_dir in external_adapters/*/; do
           if [ -d "${adapter_dir}tests" ]; then
             echo "=== Testing ${adapter_dir} ==="
-            (cd "${adapter_dir}" && uv run pytest tests/ -v --tb=short -p no:cacheprovider) || exit 1
+            (cd "${adapter_dir}" && uv run pytest tests/ -m "not requires_docker" -v --tb=short -p no:cacheprovider) || exit 1
           fi
         done
 
@@ -321,7 +321,7 @@ jobs:
         for adapter_dir in external_adapters/*/; do
           if [ -d "${adapter_dir}tests" ]; then
             echo "=== Testing ${adapter_dir} ==="
-            (cd "${adapter_dir}" && uv run pytest tests/ -v --tb=short -p no:cacheprovider) || exit 1
+            (cd "${adapter_dir}" && uv run pytest tests/ -m "not requires_docker" -v --tb=short -p no:cacheprovider) || exit 1
           fi
         done
 

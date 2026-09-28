@@ -114,10 +114,14 @@ class TestBuildSubmitReportTool:
         # Reason-then-answer: each criterion's justification field is emitted
         # before its verdict field so a schema-ordered generator writes the
         # reasoning before committing the verdict token. reasons stays last.
+        # Unanchored graded criteria additionally emit an optional
+        # `<id>_interpretation` slot BEFORE justification (M51 Layer 1) — kept
+        # optional so legacy cassettes and weaker models degrade cleanly.
         params = build_submit_report_tool(_mixed_rubric())["function"]["parameters"]
         assert list(params["properties"]) == [
             "refund_amount_justification",
             "refund_amount",
+            "tone_interpretation",
             "tone_justification",
             "tone",
             "reasons",

@@ -1,9 +1,17 @@
 """Integration tests for :class:`PerTrialRuntimeBackend`.
 
 Real docker-daemon coverage: spins up a two-service compose stack
-(``postgres:16`` + ``nginx:alpine`` — both public images), verifies
-provision → endpoints → teardown, and asserts per-trial isolation
-across concurrent instances.
+(``default`` + ``db-service``, both ``nginx:alpine`` public images),
+verifies provision → endpoints → teardown, and asserts per-trial
+isolation across concurrent instances.
+
+Under the default ``no_internet`` network policy only the runner service
+is bridged to the host-reachable edge network, so a non-runner service's
+published port is not host-resolvable and its endpoint stays ``None``. The
+fixture manifest therefore lists ``db-service`` in ``bridged_services`` so
+its ``db_url`` resolves — exercising the bridged-service host-reachability
+path and giving the per-trial isolation test two distinct endpoints to
+compare.
 
 The fixture stops short of the runner RPC surface: nginx does not
 speak gRPC, so ``register_trial`` / ``execute_tool`` / etc. are not
@@ -59,7 +67,13 @@ def _stack_handle(env_handle: Any) -> _DockerComposeStackHandle:
 
 
 def _make_trial_spec(trial_id: str) -> TrialSpec:
-    manifest = EnvironmentManifest(compose_file=_FIXTURE)
+    # ``db-service`` is bridged so it joins the host-reachable edge network:
+    # under the default ``no_internet`` policy only the runner is bridged, so an
+    # un-bridged db-service would have no host-published port and ``db_url`` would
+    # resolve to None (see ``test_missing_db_service_yields_db_url_none``).
+    manifest = EnvironmentManifest(
+        compose_file=_FIXTURE, bridged_services=frozenset({"db-service"})
+    )
     _synthesise_composition_plan(manifest, {})
     return TrialSpec(
         trial_id=trial_id,

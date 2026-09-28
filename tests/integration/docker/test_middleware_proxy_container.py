@@ -117,11 +117,32 @@ _WITHOUT_USAGE = {{
     key: value for key, value in _WITH_USAGE.items() if key != "usage"
 }}
 
+# The same spend, reported the way Google's ``generateContent`` reports it:
+# ``candidatesTokenCount`` EXCLUDES thinking tokens, so it is the completion
+# total minus the reasoning the OpenAI shape folds in.
+_WITH_GEMINI_USAGE = {{
+    "candidates": [{{"content": {{"parts": [{{"text": "done"}}], "role": "model"}}}}],
+    "usageMetadata": {{
+        "promptTokenCount": {EXPECTED_USAGE["prompt_tokens"]},
+        "candidatesTokenCount": {
+    EXPECTED_USAGE["completion_tokens"] - EXPECTED_USAGE["reasoning_tokens"]
+},
+        "thoughtsTokenCount": {EXPECTED_USAGE["reasoning_tokens"]},
+        "totalTokenCount": {EXPECTED_USAGE["total_tokens"]},
+        "cachedContentTokenCount": {EXPECTED_USAGE["cache_read_input_tokens"]},
+    }},
+}}
+
+_WITHOUT_GEMINI_USAGE = {{
+    key: value for key, value in _WITH_GEMINI_USAGE.items() if key != "usageMetadata"
+}}
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--record", required=True)
+    parser.add_argument("--shape", default="openai", choices=["openai", "gemini"])
     args = parser.parse_args()
 
     class Handler(BaseHTTPRequestHandler):
@@ -135,7 +156,11 @@ def main() -> None:
             with open(args.record, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps({{"path": self.path, "body": body}}) + "\\n")
             silent = body.get("model") == "{SILENT_MODEL}"
-            payload = json.dumps(_WITHOUT_USAGE if silent else _WITH_USAGE).encode()
+            if args.shape == "gemini":
+                chosen = _WITHOUT_GEMINI_USAGE if silent else _WITH_GEMINI_USAGE
+            else:
+                chosen = _WITHOUT_USAGE if silent else _WITH_USAGE
+            payload = json.dumps(chosen).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -242,7 +267,7 @@ def _middleware_steps() -> list[str]:
     return steps[: rewrite + 1]
 
 
-def _driver_script() -> str:
+def _driver_script(shape: str = "openai") -> str:
     """Boot the stub upstream and the real proxy, then hold the container open.
 
     Publishes the rewritten base URL to a file rather than leaving it in this
@@ -254,7 +279,7 @@ def _driver_script() -> str:
 set -eu
 export KIMI_MODEL_BASE_URL="http://127.0.0.1:{STUB_PORT}"
 python3 /work/stub_upstream.py --port {STUB_PORT} \
---record {UPSTREAM_RECORD_CONTAINER_PATH} &
+--record {UPSTREAM_RECORD_CONTAINER_PATH} --shape {shape} &
 python3 /work/wait_port.py {STUB_PORT}
 {steps}
 PROXY_PORT="${{KIMI_MODEL_BASE_URL##*:}}"
@@ -359,9 +384,20 @@ def _is_running(container: str) -> bool:
     not is_docker_daemon_available(),
     reason="Docker daemon not available (the proxy's usage tap needs a real container)",
 )
+@pytest.mark.parametrize(
+    "shape",
+    ["openai", "gemini"],
+    ids=["openai-chat-completions", "google-generate-content"],
+)
 def test_the_proxy_taps_usage_and_the_trial_reads_it_out_of_the_container(
-    tmp_path: Path,
+    tmp_path: Path, shape: str
 ) -> None:
+    """Both wire shapes the proxy meters, end to end in a real container.
+
+    The counts asserted below are identical for the two, which is the point:
+    a record's meaning must not depend on which CLI produced it. The Gemini
+    stub reports the same spend in Google's spelling, thinking tokens split
+    out of the completion total the way Google splits them."""
     work_dir = tmp_path / "work"
     logs_dir = tmp_path / "logs"
     work_dir.mkdir()
@@ -373,7 +409,7 @@ def test_the_proxy_taps_usage_and_the_trial_reads_it_out_of_the_container(
     (work_dir / "client.py").write_text(CLIENT)
     (work_dir / "wait_port.py").write_text(WAIT_PORT)
     (work_dir / "wait_records.py").write_text(WAIT_RECORDS)
-    (work_dir / "drive.sh").write_text(_driver_script())
+    (work_dir / "drive.sh").write_text(_driver_script(shape))
 
     container = f"tolokaforge-proxy-tap-{uuid.uuid4().hex[:10]}"
     started = subprocess.run(
@@ -441,10 +477,15 @@ def test_the_proxy_taps_usage_and_the_trial_reads_it_out_of_the_container(
 
     assert trajectory.status is TrialStatus.COMPLETED, trajectory.messages[-1].content
 
-    # The tap wrote one record — the usage-bearing response's. A record for the
-    # response without a usage block would report zero spend as if measured.
-    assert len(records) == 1, f"expected exactly one usage record. Got: {records}"
-    record = records[0]
+    # One record per provider response, so a trial whose every request was
+    # refused is legible as one rather than reading as a weak agent. Only the
+    # usage-bearing response carries counts: a zero-filled record for the
+    # silent one would report zero spend as if measured.
+    assert len(records) == 2, f"expected one record per response. Got: {records}"
+    counted = [r for r in records if "prompt_tokens" in r]
+    assert len(counted) == 1, f"expected one record to carry counts. Got: {records}"
+    assert all(r["status"] == 200 for r in records)
+    record = counted[0]
     assert record["model"] == REPORTING_MODEL
     assert record["path"] == "/chat/completions"
     assert record["status"] == 200

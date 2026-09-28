@@ -242,7 +242,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   means both substrates' transcript rules are reading a trial the two views no
   longer agree on. One lock reads the ids as recorded, before any timeline: its
   failure means the loop stopped assigning episode-unique ids at ingestion
-  (`ToolCallingLoop._assign_call_ids`), not that a substrate drifted — the
+  (`ToolCallFunnel.assign_ids`), not that a substrate drifted — the
   runner half executes the ids the loop produced, as production does.
   Build a coherent message-view/record pair for a grading fixture
   with `tests/utils/timelines.py`; a record naming a call no message asked for is a
@@ -447,8 +447,7 @@ runs entirely from committed cassettes under
 or `ANTHROPIC_API_KEY` present, live mode drives every corpus entry against a
 real `LiteLLMJudgeModelProvider`-backed `RecordingLLMClient` for every kind
 under test, then rewrites the recorded script back into the originating
-fixture's `judge_scripts.<kind_name>` block (or `judge_scripts_per_chunk.
-<kind_name>` block for a multi-client kind) in place — every other key in
+fixture's `judge_scripts.<kind_name>` block in place — every other key in
 the fixture file is preserved byte-identical. The keyless `unit`-tier
 `tests/utils/test_recording_llm_client.py` and the canonical
 `test_writeback_rewrites_cassette_preserving_other_keys` lock this recording

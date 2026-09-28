@@ -52,6 +52,7 @@ The groups:
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
+* ``tolokaforge.agent_loops`` → :data:`AgentLoopFactory`
 * ``tolokaforge.grading_methods`` → ``type[GradingMethod]``
 * ``tolokaforge.grader_kinds`` → ``type[GraderKind]``
 * ``tolokaforge.judge_kinds`` → ``type[JudgeKind]``
@@ -100,6 +101,13 @@ from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactor
 from tolokaforge.core.grading.substrate import GradingSubstrate
 from tolokaforge.core.grading.trace_check_operator import TraceCheckOperator
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
+from tolokaforge.core.loop import (
+    AgentLoop,
+    AgentLoopContext,
+    AgentLoopFactory,
+    ToolCallFunnel,
+    UnassignedToolCallError,
+)
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 
@@ -133,6 +141,9 @@ if TYPE_CHECKING:
 # the concrete class.
 
 __all__ = [
+    "AgentLoop",
+    "AgentLoopContext",
+    "AgentLoopFactory",
     "ConductorFactory",
     "CustomCheckExecutorFactory",
     "DuplicateRegistrationError",
@@ -143,13 +154,16 @@ __all__ = [
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
     "StateCheckBackendFactory",
+    "ToolCallFunnel",
     "TraceCheckOperator",
     "TranscriptRuleMatcherFactory",
     "TrialGraderContext",
     "TrialGraderFactory",
     "TurnPolicyContext",
     "TurnPolicyFactory",
+    "UnassignedToolCallError",
     "UnknownImplementationError",
+    "available_agent_loops",
     "available_bundle_stores",
     "available_compose_materialisers",
     "available_conductors",
@@ -170,6 +184,7 @@ __all__ = [
     "available_trial_graders",
     "available_turn_policies",
     "discover_entry_points",
+    "load_agent_loop",
     "load_bundle_store",
     "load_compose_materialiser",
     "load_conductor",
@@ -196,6 +211,7 @@ TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
+AGENT_LOOPS_GROUP = "tolokaforge.agent_loops"
 GRADING_METHODS_GROUP = "tolokaforge.grading_methods"
 GRADER_KINDS_GROUP = "tolokaforge.grader_kinds"
 JUDGE_KINDS_GROUP = "tolokaforge.judge_kinds"
@@ -484,6 +500,23 @@ def load_turn_policy(name: str) -> TurnPolicyFactory:
     return cast(TurnPolicyFactory, _load(TURN_POLICIES_GROUP, name))
 
 
+def load_agent_loop(name: str) -> AgentLoopFactory:
+    """Resolve a registered agent-loop name to its factory callable.
+
+    The factory adapts an :class:`~tolokaforge.core.loop.AgentLoopContext` to
+    an :class:`~tolokaforge.core.loop.AgentLoop`; the runner constructs the
+    context from the trial's own dependencies. ``engine-loop`` — the built-in
+    :class:`~tolokaforge.core.loop.ToolCallingLoop` — resolves through this
+    loader like any other registration.
+
+    A loop routes every tool call it makes through
+    :class:`~tolokaforge.core.loop.ToolCallFunnel`, re-exported here, which
+    discharges the call-id and failed-call-wording obligations the
+    :class:`~tolokaforge.core.loop.AgentLoop` contract names.
+    """
+    return cast(AgentLoopFactory, _load(AGENT_LOOPS_GROUP, name))
+
+
 def load_custom_check_executor(name: str) -> CustomCheckExecutorFactory:
     """Resolve a registered custom-check-executor name to its factory callable."""
     return cast(CustomCheckExecutorFactory, _load(CUSTOM_CHECK_EXECUTORS_GROUP, name))
@@ -570,11 +603,13 @@ def load_judge_kind(name: str) -> type[JudgeKind]:
     Returns the class object itself, matching :func:`load_grader_kind`.
     The runner-side composite dispatch resolves this loader to reach the
     LLM-judge implementation named by ``grading.llm_judge.judge_kind``.
-    Two built-ins ship under this group: ``single_shot_rubric`` (wraps
-    :class:`LLMJudge` byte-identically — the default) and ``chunked_rubric``
-    (one :class:`LLMJudge` invocation per fixed-K chunk of the rubric's
-    criteria). Downstream packages register alternative kinds (jury,
-    agentic, downstream-specific) under this group.
+    Five kinds ship under this group: three user-facing
+    (``single_shot_rubric``, ``multi_turn_rubric``, ``auto_rubric``) plus
+    two internal building blocks (``voted_rubric``, ``auto_anchored_rubric``)
+    that user code should not select via ``judge_kind:`` — the built-in
+    composite kinds compose them.
+    Downstream packages register alternative kinds (agentic,
+    downstream-specific) under this group.
 
     Fail-loud on unknown names via :class:`UnknownImplementationError`,
     matching every other loader in this module.
@@ -667,6 +702,11 @@ def available_readiness_probes() -> list[str]:
 def available_turn_policies() -> list[str]:
     """Sorted names registered in the ``tolokaforge.turn_policies`` group."""
     return sorted(discover_entry_points(TURN_POLICIES_GROUP))
+
+
+def available_agent_loops() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.agent_loops`` group."""
+    return sorted(discover_entry_points(AGENT_LOOPS_GROUP))
 
 
 def available_grading_methods() -> list[str]:

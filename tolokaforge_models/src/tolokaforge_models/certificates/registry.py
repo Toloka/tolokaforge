@@ -1599,7 +1599,7 @@ _ALL: list[MC] = [
         ),
     ),
     # Kimi-K2.7-Code (Moonshot AI via OpenRouter). Same moonshotai/kimi-k2
-    # family + shared ``openrouter_dict_stringify_recovery`` preset as kimi-k2.6,
+    # family + shared ``moonshot_kimi_k2`` preset as kimi-k2.6,
     # so this cert MIRRORS the kimi-k2.6 sibling (13 required / 7
     # known_unsupported) as the integration starting point. NOT yet
     # live-certified: the code-specialised variant may behave differently

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.27.0"
+version = "0.27.3"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -223,6 +223,15 @@ tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
 
+# In-process agent-loop seam (``tolokaforge/core/loop.py``). Every entry
+# resolves to a ``Callable[[AgentLoopContext], AgentLoop]``. ``engine-loop``
+# is the built-in ``ToolCallingLoop`` and goes through this registry like any
+# other registration; a downstream loop with a different prompt contract or
+# action format registers alongside it and is selected by
+# ``orchestrator.agent_loop`` without a framework PR.
+[project.entry-points."tolokaforge.agent_loops"]
+engine-loop = "tolokaforge.core.loop:_engine_loop_factory"
+
 # Runner-side dispatch selector on ``RunnerGradingConfig.grading_method``: the
 # registered names are the ones ``RegisterTrial`` accepts. Two markers ship
 # today — ``composite`` (default state-checks / transcript-rules / trace-checks /
@@ -250,11 +259,14 @@ test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGra
 # include_agent_system_prompt, kind_config, logger) -> JudgeResult``. The
 # runner-side composite dispatch resolves this loader to reach the LLM-judge
 # implementation registered as ``single_shot_rubric``; downstream packages
-# register alternative kinds (jury, downstream-specific) alongside without a
-# framework PR. See :mod:`tolokaforge.core.grading.judge_kinds`.
+# register alternative kinds (agentic, downstream-specific) alongside without
+# a framework PR. See :mod:`tolokaforge.core.grading.judge_kinds`.
 [project.entry-points."tolokaforge.judge_kinds"]
-chunked_rubric = "tolokaforge.core.grading.judge_kinds.chunked:ChunkedRubricJudgeKind"
+auto_anchored_rubric = "tolokaforge.core.grading.judge_kinds.auto_anchored:AutoAnchoredRubricJudgeKind"
+auto_rubric = "tolokaforge.core.grading.judge_kinds.auto:AutoRubricJudgeKind"
+multi_turn_rubric = "tolokaforge.core.grading.judge_kinds.multi_turn:MultiTurnRubricJudgeKind"
 single_shot_rubric = "tolokaforge.core.grading.judge_kinds.single_shot:SingleShotRubricJudgeKind"
+voted_rubric = "tolokaforge.core.grading.judge_kinds.voted:VotedRubricJudgeKind"
 
 # ADR-0044 composition-plan adapter Protocols
 # (``tolokaforge/core/composition_runtime.py``). Each entry point resolves
@@ -487,6 +499,7 @@ only-include = [
     "tolokaforge/core/run_display_events.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
+    "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     "tolokaforge/core/trial.py",
 ]

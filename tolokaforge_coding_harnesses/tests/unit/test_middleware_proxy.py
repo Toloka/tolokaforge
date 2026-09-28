@@ -22,6 +22,7 @@ from tolokaforge_coding_harnesses.middleware_proxy import (
     _extract_token_counts,
     _make_handler,
 )
+from tolokaforge_coding_harnesses.usage_log import sum_harness_usage_records
 
 pytestmark = pytest.mark.unit
 
@@ -424,10 +425,12 @@ class TestProxyUsageLog:
                 server.server_close()
         assert len(_records(usage_log)) == 1
 
-    def test_response_without_usage_records_nothing(self, tmp_path):
-        """Not even an empty file: a zero-filled record would read as a
-        request that spent nothing, which is a different claim from
-        "this request's usage was never reported"."""
+    def test_a_response_without_usage_is_recorded_but_counts_nothing(self, tmp_path):
+        """The request happened, so it is recorded — a trial whose every
+        request was refused has to be legible as one, or it reads as an agent
+        that worked and did badly. But the record carries no counts, because a
+        zero-filled one would claim the request spent nothing, which is a
+        different claim from "this request's usage was never reported"."""
         usage_log = tmp_path / "usage.ndjson"
         with _RecordingUpstream(response_body=b'{"choices":[{"message":{"content":"hi"}}]}') as up:
             server, port = _serve_proxy(up.base_url, usage_log=str(usage_log))
@@ -440,9 +443,12 @@ class TestProxyUsageLog:
                 server.server_close()
         assert status == 200
         assert body == b'{"choices":[{"message":{"content":"hi"}}]}'
-        assert not usage_log.exists()
+        record = json.loads(usage_log.read_text().strip())
+        assert record["status"] == 200
+        assert "prompt_tokens" not in record
+        assert sum_harness_usage_records(usage_log.read_text()) is None
 
-    def test_malformed_response_body_records_nothing_and_still_relays(self, tmp_path):
+    def test_a_malformed_response_body_counts_nothing_and_still_relays(self, tmp_path):
         usage_log = tmp_path / "usage.ndjson"
         malformed = b'{"choices":[{"message":'
         with _RecordingUpstream(response_body=malformed) as up:
@@ -455,7 +461,7 @@ class TestProxyUsageLog:
                 server.shutdown()
                 server.server_close()
         assert (status, body) == (200, malformed)
-        assert not usage_log.exists()
+        assert sum_harness_usage_records(usage_log.read_text()) is None
 
     def test_unwritable_usage_log_does_not_break_the_relay(self, tmp_path):
         """The tap is wrapped, the relay is not: a trial losing a usage
@@ -519,3 +525,135 @@ class TestProxyUsageLog:
                 server.server_close()
         assert status == 429
         assert _records(usage_log)[0]["status"] == 429
+
+
+class TestTheGeminiUsageShape:
+    """The proxy meters whatever the harness routes through it, and
+    ``gemini-cli`` speaks Google's ``generateContent``, not OpenAI's chat
+    completions. Its counts are normalised onto the same basis so a record's
+    meaning does not depend on which CLI produced it."""
+
+    @staticmethod
+    def _counts(body: str):
+        from tolokaforge_coding_harnesses.middleware_proxy import _extract_token_counts
+
+        return _extract_token_counts(body.encode())
+
+    def test_usage_metadata_is_read(self) -> None:
+        counts = self._counts(
+            json.dumps(
+                {
+                    "candidates": [{"content": {"parts": [{"text": "hi"}]}}],
+                    "usageMetadata": {
+                        "promptTokenCount": 1200,
+                        "candidatesTokenCount": 140,
+                        "totalTokenCount": 1340,
+                        "cachedContentTokenCount": 900,
+                    },
+                }
+            )
+        )
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 1200
+        assert counts["completion_tokens"] == 140
+        assert counts["cache_read_input_tokens"] == 900
+
+    def test_thinking_tokens_are_added_back_into_the_completion_total(self) -> None:
+        """Google reports ``candidatesTokenCount`` *excluding* thinking, where
+        OpenAI's ``completion_tokens`` includes it. Leaving them apart would
+        under-count the part of the answer the model charged for and did not
+        show."""
+        counts = self._counts(
+            json.dumps(
+                {
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 40,
+                        "thoughtsTokenCount": 25,
+                        "totalTokenCount": 75,
+                    }
+                }
+            )
+        )
+
+        assert counts is not None
+        assert counts["completion_tokens"] == 65
+        assert counts["reasoning_tokens"] == 25
+
+    def test_the_final_sse_chunk_wins(self) -> None:
+        """``streamGenerateContent`` repeats the block, and only the last
+        chunk carries the totals."""
+        body = (
+            'data: {"candidates":[{"content":{"parts":[{"text":"h"}]}}]}\n\n'
+            'data: {"candidates":[{"content":{"parts":[]}}],'
+            '"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,'
+            '"totalTokenCount":10}}\n\n'
+        )
+
+        counts = self._counts(body)
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 7
+        assert counts["completion_tokens"] == 3
+
+    def test_an_empty_usage_metadata_reports_nothing_rather_than_zero(self) -> None:
+        """A zero-filled record would claim the request spent nothing, which
+        is a different and false claim from "not reported"."""
+        assert self._counts(json.dumps({"usageMetadata": {}})) is None
+
+    def test_an_openai_shaped_body_still_wins_where_both_could_parse(self) -> None:
+        counts = self._counts(
+            json.dumps({"usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}})
+        )
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 5
+
+
+class TestGeminiPartialUsageShapes:
+    @staticmethod
+    def _counts(body: str):
+        from tolokaforge_coding_harnesses.middleware_proxy import _extract_token_counts
+
+        return _extract_token_counts(body.encode())
+
+    def test_thinking_tokens_survive_without_a_candidates_count(self) -> None:
+        """The caller prices completion and never reasoning, because every
+        dialect counts reasoning inside it. Leaving `completion_tokens` unset
+        here would bill the thinking tokens at nothing."""
+        counts = self._counts(
+            json.dumps({"usageMetadata": {"promptTokenCount": 10, "thoughtsTokenCount": 25}})
+        )
+
+        assert counts is not None
+        assert counts["completion_tokens"] == 25
+        assert counts["reasoning_tokens"] == 25
+
+    def test_a_block_carrying_only_cached_tokens_is_still_a_measurement(self) -> None:
+        counts = self._counts(json.dumps({"usageMetadata": {"cachedContentTokenCount": 900}}))
+
+        assert counts is not None
+        assert counts["cache_read_input_tokens"] == 900
+
+    def test_a_json_array_of_chunks_is_read(self) -> None:
+        """`streamGenerateContent` without `alt=sse` answers with an array —
+        neither a single object nor an SSE stream. Unhandled, the tap writes
+        nothing and the trial is silently unmetered."""
+        counts = self._counts(
+            json.dumps(
+                [
+                    {"candidates": [{"content": {"parts": [{"text": "h"}]}}]},
+                    {
+                        "usageMetadata": {
+                            "promptTokenCount": 7,
+                            "candidatesTokenCount": 3,
+                            "totalTokenCount": 10,
+                        }
+                    },
+                ]
+            )
+        )
+
+        assert counts is not None
+        assert counts["prompt_tokens"] == 7

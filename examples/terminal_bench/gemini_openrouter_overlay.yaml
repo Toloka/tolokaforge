@@ -1,0 +1,93 @@
+# harness_presets_file overlay — gemini-cli on OpenRouter, via a LiteLLM you run
+#
+# Sibling of ``gemini_litellm_overlay.yaml``. That one targets LiteLLM's
+# *passthrough* at ``{base}/gemini``, which forwards ``generateContent`` to
+# Google using the gateway's own Google credential. This one targets LiteLLM's
+# *translation* endpoint at the root, where the same ``generateContent``
+# request is answered by whatever backend the gateway's ``model_list`` maps
+# the model to — OpenRouter, in the setup this file exists for.
+#
+# Why it exists: gemini-cli speaks Google's native ``generateContent`` and has
+# no OpenAI-compatible auth mode (0.55.1 knows LOGIN_WITH_GOOGLE, USE_GEMINI,
+# USE_VERTEX_AI, COMPUTE_ADC, GATEWAY and LEGACY_CLOUD_SHELL — and nothing
+# else), so OpenRouter cannot serve it directly. A LiteLLM in front does the
+# protocol translation, which is what makes an OpenRouter-only host able to run
+# this harness at all.
+#
+# Running the gateway, minimally::
+#
+#     litellm --config litellm.yaml --port 4111
+#
+#     # litellm.yaml
+#     model_list:
+#       - model_name: gemini-3.6-flash
+#         litellm_params:
+#           model: openrouter/google/gemini-3.6-flash
+#           api_key: os.environ/OPENROUTER_API_KEY
+#
+# Then point ``LITELLM_BASE_URL`` at it. From inside a trial container that is
+# the host's address, not localhost — ``http://host.docker.internal:4111`` on
+# Docker Desktop. ``LITELLM_API_KEY`` is whatever virtual key the gateway
+# accepts; a gateway with no master key accepts any value.
+#
+# Apply it the same way as its sibling::
+#
+#   evaluation:
+#     harness_adapter:
+#       type: terminal_bench
+#       params:
+#         agent_harness: gemini-cli
+#         harness_presets_file: examples/terminal_bench/gemini_openrouter_overlay.yaml
+#
+# ADR-0033 does whole-entry replacement, so this file redeclares every
+# HarnessSpec field the shipped default carries — a partial overlay would drop
+# the fields it doesn't restate.
+
+harnesses:
+  gemini-cli:
+    install_method: "npm"
+    install_source: "@google/gemini-cli"
+    version: "0.55.1"
+    argv_prefix: ["gemini"]
+    argv_suffix: ["--yolo", "--prompt"]
+    strip_vendor_namespace: true
+    # ``GEMINI_CLI_TRUST_WORKSPACE=true`` prevents ``--yolo`` from silently
+    # falling back to "default" mode in a non-git workspace and blocking
+    # every tool call.
+    container_env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
+    # Headless ``--prompt`` mode 400s with "Invalid auth method selected"
+    # without a pre-pinned ``selectedType``. GATEWAY mode requires
+    # ``"gateway"`` here + ``useExternal: true`` — the CLI's
+    # ``validateAuthMethod()`` (through 0.55.1) hasn't been taught about
+    # GATEWAY yet, so pure env raises "Invalid auth method" without the
+    # settings-file override.
+    #
+    # ``tools.exclude`` names ``google_web_search`` and ``web_fetch``: a
+    # tbench container's ``no_internet`` policy blocks their egress, and
+    # gemini-cli retries on backoff before yielding a turn — up to 26
+    # retries observed, consuming the turn budget past useful work.
+    config_files:
+      "${HOME}/.gemini/settings.json": |-
+        {"security":{"auth":{"selectedType":"gateway","useExternal":true}},"tools":{"exclude":["google_web_search","web_fetch"]}}
+    # ``GEMINI_API_KEY`` is what gemini-cli reads for the ``x-goog-api-key``
+    # header it sends to the gateway. LITELLM_API_KEY is the credential
+    # the gateway expects — the header value is a virtual key, not a
+    # Google credential. ``GOOGLE_GEMINI_BASE_URL`` activates GATEWAY mode.
+    provider_env:
+      GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
+      GOOGLE_GEMINI_BASE_URL: "${secret:LITELLM_BASE_URL}"
+    # The CLI prints no usage this repo can read, so token counts come off the
+    # wire. It takes its endpoint from ``GOOGLE_GEMINI_BASE_URL``, so the
+    # proxy redirects it the same way it redirects an OpenAI-shaped CLI; the
+    # settings file above carries no endpoint of its own to bake in.
+    #
+    # ``path_filter`` gates *body injection* only, and this spec injects
+    # nothing — it is set to Google's REST prefix to say what the CLI posts to
+    # (``/v1beta/models/<model>:streamGenerateContent``) rather than to switch
+    # anything on. The usage tap runs on every path regardless, and reads the
+    # ``usageMetadata`` those responses carry.
+    request_middleware:
+      upstream_env_key: "GOOGLE_GEMINI_BASE_URL"
+      port: 8899
+      path_filter: "/v1beta/"

@@ -40,6 +40,8 @@ import json
 from dataclasses import dataclass
 
 __all__ = [
+    "HarnessRequestOutcomes",
+    "summarise_harness_requests",
     "MIDDLEWARE_PROXY_USAGE_SOURCE",
     "HarnessWireUsage",
     "sum_harness_usage_records",
@@ -97,6 +99,111 @@ class HarnessWireUsage:
     """
 
 
+@dataclass(frozen=True)
+class HarnessRequestOutcomes:
+    """How the provider answered a trial's requests, regardless of usage.
+
+    Separate from :class:`HarnessWireUsage` because the questions are
+    different: that one asks what the trial spent, this one asks whether the
+    trial was served at all. A CLI whose every request was refused still
+    writes a transcript, still exits, and still leaves a repository the
+    grader will happily score — so "nothing succeeded" has to be legible
+    before the score is.
+    """
+
+    requests: int
+    """Records carrying a status. At least ``1`` when this is not ``None``."""
+
+    failed: int
+    """Records whose status was outside the 2xx range."""
+
+    statuses: tuple[int, ...]
+    """The distinct non-2xx statuses seen, ascending — what to put in a message."""
+
+    @property
+    def none_succeeded(self) -> bool:
+        """Whether every request the proxy saw was refused."""
+        return self.requests > 0 and self.failed == self.requests
+
+
+def summarise_harness_requests(records: str) -> HarnessRequestOutcomes | None:
+    """Outcomes of the requests *records* describes, or ``None`` when none do.
+
+    ``None`` means the proxy recorded no request at all, which is the ordinary
+    absence — no middleware, or a CLI that never called a provider. It is not
+    evidence of failure, and a caller must not read it as one.
+    """
+    requests = 0
+    failed = 0
+    statuses: set[int] = set()
+    for line in records.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            record = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        status = record.get("status")
+        if not isinstance(status, int):
+            continue
+        if not _is_completion_path(record.get("path")):
+            # The proxy taps every path, and several harnesses allowlist a
+            # model-list GET on their credential gateway. Counting one of
+            # those as a served request would mask a trial whose every
+            # completion was refused — the case this exists to catch.
+            continue
+        requests += 1
+        if not 200 <= status < 300:
+            failed += 1
+            statuses.add(status)
+    if requests == 0:
+        return None
+    return HarnessRequestOutcomes(
+        requests=requests, failed=failed, statuses=tuple(sorted(statuses))
+    )
+
+
+_COMPLETION_PATH_MARKERS = (
+    "/chat/completions",
+    "/completions",
+    "/messages",
+    "/responses",
+    ":generatecontent",
+    ":streamgeneratecontent",
+)
+"""Path fragments identifying a request that asks a model to do work.
+
+A trial is served when its *completions* are served. Everything else a CLI
+sends through the proxy — a model list, a health probe, a token count — can
+succeed against a provider that refuses every actual request.
+"""
+
+
+def _is_completion_path(path: object) -> bool:
+    """Whether *path* is a request asking a model to do work."""
+    if not isinstance(path, str):
+        # A record without a path predates the field or came from a shape this
+        # does not recognise; counting it keeps the old behaviour rather than
+        # silently shrinking the evidence.
+        return True
+    lowered = path.lower()
+    return any(marker in lowered for marker in _COMPLETION_PATH_MARKERS)
+
+
+def _is_record(line: str) -> bool:
+    """Whether *line* is a JSON object the proxy could have written."""
+    stripped = line.strip()
+    if not stripped.startswith("{"):
+        return False
+    try:
+        return isinstance(json.loads(stripped), dict)
+    except json.JSONDecodeError:
+        return False
+
+
 def sum_harness_usage_records(records: str) -> HarnessWireUsage | None:
     """Sum the NDJSON usage *records*, or ``None`` when they carry none.
 
@@ -115,7 +222,11 @@ def sum_harness_usage_records(records: str) -> HarnessWireUsage | None:
     for line in records.splitlines():
         counts = _record_counts(line)
         if counts is None:
-            if line.strip():
+            # A record the proxy wrote for a response that reported no usage —
+            # a refusal, or a provider that simply omitted the block. It is not
+            # a damaged line, and counting it as one would raise a warning
+            # about corruption on every failed request.
+            if line.strip() and not _is_record(line):
                 skipped += 1
             continue
         requests += 1

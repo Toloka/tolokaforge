@@ -158,3 +158,20 @@ def get_provider_binding(provider: str) -> ProviderBinding:
     """
     key = (provider or "").split("/", 1)[0].lower()
     return _load_bundled_providers().get(key, ProviderBinding())
+
+
+#: Every credential env-var name the CLI + runner mirror into ``os.environ``
+#: at startup so litellm can authenticate. This tuple is the source of truth
+#: shared by both mirror sites, so a new provider added here reaches every
+#: startup export path in one edit. Consumed by
+#: ``tolokaforge/dx/cli/main.py`` and ``tolokaforge/runner/__main__.py``.
+CLI_EXPORTED_CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEYS",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "NOVA_API_KEY",
+    "TYPESENSE_API_KEY",
+)

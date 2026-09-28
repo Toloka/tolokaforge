@@ -213,7 +213,7 @@ class TestTrialCostAccumulation:
 class TestToolOutputTruncationAccounting:
     """``_AgentMetricsSink.record_tool_output_truncated`` accumulates the
     per-trial ``tool_output_chars_truncated`` counter that
-    ``ToolCallingLoop._cap_tool_message_content`` calls whenever it clips
+    ``ToolCallFunnel.cap_tool_message_content`` calls whenever it clips
     a ``role=tool`` message.
     """
 

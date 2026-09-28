@@ -41,7 +41,6 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
-from tolokaforge.core.grading.chunk_boundaries_wire import encode_chunk_boundaries
 from tolokaforge.core.grading.composite_fold import CompositeFold
 from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
@@ -106,6 +105,7 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
+from tolokaforge.runner.env_exec import first_env_exec_tool
 from tolokaforge.runner.grading import (
     compute_state_diff,
     grade_to_runner_wire,
@@ -163,7 +163,6 @@ from tolokaforge.runner.search_plane import (
     resolve_typesense_binding,
 )
 from tolokaforge.runner.tool_factory import (
-    DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
     RAGSearchToolWrapper,
     ToolCallOutcome,
@@ -175,24 +174,6 @@ from tolokaforge.runner.tool_factory import (
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
 logger = logging.getLogger(__name__)
-
-
-def _first_docker_compose_exec_tool(
-    tools: Collection[Callable],
-) -> DockerComposeExecToolWrapper | None:
-    """Return the first exec-capable wrapper among *tools*, or ``None``.
-
-    Three consumers reach the trial container through the same wrapper the
-    runner already registered for the tool: ``_run_test_suite_via_agent_tools``
-    (running the pack's verifier for a ``test_execution`` grader-kind trial),
-    ``_read_filesystem_for_state`` (snapshotting a harness trial's tree), and
-    :meth:`SubstrateServicer.RunTestSuite` (via its own lookup when an
-    independent grader dials the substrate).
-    """
-    for tool in tools:
-        if isinstance(tool, DockerComposeExecToolWrapper):
-            return tool
-    return None
 
 
 # Service version
@@ -1762,7 +1743,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 tool_absent_reason=f"Trial {trial_id!r} not registered",
                 script_exec_error="",
             )
-        bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
+        bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
         if bash_tool is None:
             return RunTestSuiteResult(
                 exit_code=0,
@@ -1772,16 +1753,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 tool_absent_reason=(
                     "test-execution grading was requested "
                     "(grading_method='test_execution') but no exec-capable env "
-                    "tool was found in this trial. Include an exec-capable "
-                    "lifecycle tool (e.g. DockerComposeExecToolWrapper) in "
-                    "TaskDescription.agent_tools so the runner can execute the "
-                    "test suite inside the trial environment."
+                    "tool was found in this trial. Include a tool satisfying "
+                    "SupportsEnvExec in TaskDescription.agent_tools so the "
+                    "runner can execute the test suite inside the trial "
+                    "environment."
                 ),
                 script_exec_error="",
             )
 
         try:
-            exit_code, stdout = bash_tool._exec_sync_with_rc(
+            exit_code, stdout = bash_tool.exec_in_env_with_exit_code(
                 f"cd $(dirname {script_path}) && bash {script_path} 2>&1",
                 timeout_s,
             )
@@ -1796,7 +1777,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
         try:
-            _rc, reward_str = bash_tool._exec_sync_with_rc(
+            _rc, reward_str = bash_tool.exec_in_env_with_exit_code(
                 f"cat {reward_path} 2>/dev/null || echo 0.0",
                 reward_read_timeout_s,
             )
@@ -1898,9 +1879,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             metadata = trial_context.task_description.metadata or {}
             agent_visible_dir = metadata.get("agent_visible_dir")
             if metadata.get("agent_harness_command") and isinstance(agent_visible_dir, str):
-                bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
+                bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
                 if bash_tool is not None:
-                    return snapshot_container_filesystem(bash_tool._exec_sync, agent_visible_dir)
+                    return snapshot_container_filesystem(bash_tool.exec_in_env, agent_visible_dir)
                 logger.warning(
                     f"GradeTrial: {trial_id} - harness trial has no exec-capable tool; "
                     "falling back to the runner's own /work/ walk"
@@ -2134,7 +2115,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     read_tools_offered=list(judge_result.read_tools_offered),
                     custom_system_prompt=judge_result.custom_system_prompt,
                     include_agent_system_prompt=judge_result.include_agent_system_prompt,
-                    chunk_boundaries_json=encode_chunk_boundaries(judge_result.chunk_boundaries),
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave

@@ -451,14 +451,14 @@ class Metrics(BaseModel):
     api_calls: int = 0
     usage: Usage = Field(default_factory=Usage)
     tool_output_chars_truncated: int = 0
-    """Cumulative characters clipped by ``ToolCallingLoop._cap_tool_message_content``
+    """Cumulative characters clipped by ``ToolCallFunnel.cap_tool_message_content``
     across every ``role=tool`` message on this trial.
 
     Non-zero means at least one tool result exceeded the effective cap
     (``min(ToolPolicy.output_max_chars, LoopConfig.tool_output_max_chars)``)
     and was middle-elided before append. Zero means either no cap fired or
     every raw output fit inside the cap. The recorder read at
-    :meth:`ToolCallingLoop._execute_tool_calls` runs earlier against the
+    :meth:`ToolCallFunnel.execute` runs earlier against the
     untruncated result, so grader inputs are unaffected."""
 
     parser_errors: list[ParserErrorRecord] = Field(default_factory=list)
@@ -545,6 +545,34 @@ class Metrics(BaseModel):
     ``None`` on every engine-loop trial and on a harness trial whose CLI
     reported no cost of its own — ``codex`` and ``kimi-code`` print none, so
     only their priced ``cost_usd`` exists to compare across arms."""
+
+    pricing_basis: dict[str, float] = Field(default_factory=dict)
+    """The rates ``cost_usd`` was computed from, per million tokens.
+
+    Populated on a **coding-harness** trial, which the engine prices itself
+    from the bundled table. Empty elsewhere: an engine-loop trial's cost is
+    assembled per call by the cost ladder and often comes from litellm rather
+    than a table row, so there is no single basis to name; an unpriced model
+    has no rates at all.
+
+    Stored because a cost without its rates cannot be corrected, only
+    re-earned. When the shipped table was found 16 days stale, re-pricing the
+    affected runs meant reconstructing the rates by hand from the table's
+    history; with this, a corrected table re-prices any recorded trial from
+    its own bundle. Keys are the table's own: ``input``, ``output``,
+    ``cache_read``, ``cache_write``.
+    """
+
+    pricing_key: str | None = None
+    """The pricing-table key that actually decided the lookup.
+
+    Not the model as configured: normalisation strips ``openrouter/`` and can
+    infer a vendor namespace, so the row billed is routinely not the one the
+    config appears to name — which is the whole of the duplicate-spelling
+    defect. Recording the resolved key is what lets a reader check the trial
+    was priced off the row they think it was.
+    """
+
     cost_cache_rate_fallback: bool = False
     """``cost_usd`` is an overestimate: at least one call was priced off the
     bundled table, reported cache tokens, and resolved to a row carrying no

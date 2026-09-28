@@ -2,7 +2,7 @@
 
 import shlex
 import time
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -12,12 +12,19 @@ from tolokaforge_coding_harnesses.stdout_telemetry import (
 )
 from tolokaforge_coding_harnesses.usage_log import (
     MIDDLEWARE_PROXY_USAGE_SOURCE,
+    HarnessRequestOutcomes,
     sum_harness_usage_records,
+    summarise_harness_requests,
 )
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
+from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
+from tolokaforge.core.grading.trace_timeline import (
+    TimelineInconsistencyError,
+    build_trial_timeline,
+)
 from tolokaforge.core.llm import (
     SIMULATOR_GREETING,
     GenerationResult,
@@ -29,10 +36,11 @@ from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
+    AgentLoopContext,
     LoopConfig,
+    LoopOutcome,
     MetricsSink,
     TerminationDecision,
-    ToolCallingLoop,
     UserTurnResult,
 )
 from tolokaforge.core.models import (
@@ -55,7 +63,7 @@ from tolokaforge.core.models import (
     UserReplyOutcome,
 )
 from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
-from tolokaforge.core.pricing import estimate_cost
+from tolokaforge.core.pricing import MODEL_PRICING, estimate_cost, resolve_pricing
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -84,6 +92,22 @@ _USAGE_READ_DETAIL_CHARS = 200
 
 Enough to name the cause (``cat``'s "No such file or directory" is the expected
 one) without spilling an unbounded container stream into the trial log."""
+
+BUILT_IN_AGENT_LOOP = "engine-loop"
+"""The ``tolokaforge.agent_loops`` registration of the loop this repo ships.
+
+:attr:`TrialRunner.agent_loop` defaults to it. The post-conditions read no
+loop name: the built-in loop earns its denominator-excluding reasons the way
+any other implementation does, by carrying the evidence
+:func:`~tolokaforge.core.loop.classify_loop_error` hands it.
+"""
+
+_RECONCILIATION_DETAIL_CHARS = 400
+"""How much of a timeline reconciliation failure the log carries.
+
+Enough for the first unlinkable call id and the counts around it, without
+copying an unbounded tool name or argument blob into the trial log.
+"""
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -143,6 +167,43 @@ class TrialToolCallRecorder:
         return tuple(call for call in self._recorded if call.executor is executor)
 
 
+_VENDOR_COST_TOLERANCE = 1.25
+"""How far our price may sit from a CLI's own before the trial says so.
+
+Wide on purpose. The two figures are allowed to differ — rounding, a retry the
+CLI folded away, a list rate against a negotiated one — and the failure worth
+catching is a *multiple*: the live drifts that motivated this were 1.4x, 2.5x
+and 4.6x.
+"""
+
+
+def _enabled_completion_tools(
+    tool_schemas: list[dict[str, Any]], sourced_tool_names: Collection[str] = ()
+) -> frozenset[str]:
+    """The completion-tool names among *tool_schemas*, per the builtin registry.
+
+    Read off the tool surface the model is actually offered rather than off the
+    run config, so the termination seam and the schema list can never disagree
+    about which tools can end an episode.
+
+    *sourced_tool_names* are the offered tools the trial reconstructed from a
+    :class:`~tolokaforge.runner.models.ToolSource` — a pack's or an adapter's
+    own implementation, which the builtin registry knows nothing about. The
+    name alone does not make a tool the end-of-episode signal: a pack shipping
+    its own ``submit`` would otherwise end the trial at the call site, before
+    the tool it actually named ever ran.
+    """
+    # Deferred: importing the builtin package pulls every tool driver, and this
+    # module is on the orchestrator's import path well before any tool is built.
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    sourced = set(sourced_tool_names)
+    names = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
+    return frozenset(
+        name for name in names if name not in sourced and builtin_registry.is_completion(name)
+    )
+
+
 class TrialRunner:
     """Runs a single trial of a task"""
 
@@ -165,8 +226,10 @@ class TrialRunner:
         events: RunDisplayEvents = _NULL_EVENTS,
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
+        agent_loop: str = BUILT_IN_AGENT_LOOP,
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
         loop_observer: "LoopObserver | None" = None,
+        sourced_tool_names: Collection[str] = (),
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -178,11 +241,22 @@ class TrialRunner:
         self.turn_timeout_s = turn_timeout_s
         self.episode_timeout_s = episode_timeout_s
         self.stuck_detector = stuck_detector
+        # The enabled agent tools whose call ends the episode. Empty unless an
+        # operator put a completion tool in ``tools.agent.enabled`` *and* the
+        # trial reconstructed it as the builtin, which is what keeps this seam
+        # inert for every pack that terminates through its user simulator and
+        # for one that ships a tool of the same name.
+        self._completion_tools = _enabled_completion_tools(tool_schemas, sourced_tool_names)
         self.user_tool_executor = user_tool_executor
         self.request_limiter = request_limiter
         self.verbose = verbose
         self.strict = strict
         self.interaction_mode = interaction_mode
+        # Name in the ``tolokaforge.agent_loops`` entry-point group. :meth:`run`
+        # resolves it to the loop that drives the agent's turns before the turn
+        # cycle starts; the orchestrator refuses an unregistered name at run
+        # start, ahead of any trial.
+        self.agent_loop = agent_loop
         self._events = events
         self.tool_output_max_chars_by_tool = tool_output_max_chars_by_tool
         # Non-``None`` only under rate-limit probe mode. Shared by the agent and
@@ -349,6 +423,11 @@ class TrialRunner:
             start_ts = datetime.now(tz=timezone.utc)
             status = TrialStatus.COMPLETED  # Optimistic default
             termination_reason: TerminationReason | None = None
+            # What the loop returned, or ``None`` where it never returned at
+            # all. The post-conditions below check what a loop produced, so a
+            # trial that died before or inside the loop has nothing for them to
+            # read and must not be reported as a loop that broke its contract.
+            outcome: LoopOutcome | None = None
 
             # Per-trial × role observations threaded into the agent's LLM client
             # (via the loop) and into the user-simulator's ``reply`` call sites so
@@ -363,15 +442,21 @@ class TrialRunner:
                 probe_stats=self._probe_stats,
             )
 
-            try:
-                # Deferred import: the plugin registry pulls the conductor
-                # protocol, which pulls this runner module — an eager top-level
-                # import would loop.
-                from tolokaforge.core.plugin_registry import (
-                    TurnPolicyContext,
-                    load_turn_policy,
-                )
+            # Deferred import: the plugin registry pulls the conductor
+            # protocol, which pulls this runner module — an eager top-level
+            # import would loop.
+            from tolokaforge.core.plugin_registry import (
+                TurnPolicyContext,
+                load_agent_loop,
+                load_turn_policy,
+            )
 
+            # Resolved outside the ``except Exception`` below: an unregistered
+            # name is a config fault, and reporting it as this trial's status
+            # would price it as a scored agent failure.
+            loop_factory = load_agent_loop(self.agent_loop)
+
+            try:
                 policy = load_turn_policy(self.interaction_mode)(
                     TurnPolicyContext(user_simulator=self.user_simulator)
                 )
@@ -394,42 +479,45 @@ class TrialRunner:
                     and capabilities.context_watermark is not None
                 ):
                     summarize_policy = LLMSummarizer(self.agent_client, agent_metrics_sink)
-                outcome = ToolCallingLoop(
-                    llm_client=self.agent_client,
-                    tool_executor=self.tool_executor,
-                    tool_schemas=self.tool_schemas,
-                    validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
-                        self.tool_schemas
-                    ),
-                    tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
-                    config=LoopConfig(
-                        max_turns=self.max_turns,
-                        episode_timeout_s=self.episode_timeout_s,
-                        empty_retry_count=capabilities.empty_retry_count,
-                        output_length_retry_count=capabilities.output_length_retry_count,
-                        parser_error_retry_count=capabilities.parser_error_retry_count,
-                        tool_output_max_chars=capabilities.tool_output_max_chars,
-                        max_context_tokens=capabilities.max_context_tokens,
-                        context_watermark=capabilities.context_watermark,
-                        summarize_policy=summarize_policy,
-                    ),
-                    metrics=agent_metrics_sink,
-                    should_terminate=self._agent_termination,
-                    user_turn=lambda messages: self._policy_user_turn(policy, messages),
-                    recorder=self.tool_call_recorder,
-                    call_ids=self._call_ids,
-                    request_limiter=self.request_limiter,
-                    normalize_tool_arguments=self._normalize_tool_arguments,
-                    classify_error=self.agent_client.classify_loop_error,
-                    logger=self.logger,
-                    call_observation=LLMCallObservation(
-                        events=self._events,
-                        trial_id=trial_id,
-                        role="agent",
-                        probe_stats=self._probe_stats,
-                    ),
-                    observer=self._loop_observer,
-                ).run(system_prompt, self.messages, self.start_time)
+                loop = loop_factory(
+                    AgentLoopContext(
+                        llm_client=self.agent_client,
+                        tool_executor=self.tool_executor,
+                        tool_schemas=self.tool_schemas,
+                        validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
+                            self.tool_schemas
+                        ),
+                        tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
+                        config=LoopConfig(
+                            max_turns=self.max_turns,
+                            episode_timeout_s=self.episode_timeout_s,
+                            empty_retry_count=capabilities.empty_retry_count,
+                            output_length_retry_count=capabilities.output_length_retry_count,
+                            parser_error_retry_count=capabilities.parser_error_retry_count,
+                            tool_output_max_chars=capabilities.tool_output_max_chars,
+                            max_context_tokens=capabilities.max_context_tokens,
+                            context_watermark=capabilities.context_watermark,
+                            summarize_policy=summarize_policy,
+                        ),
+                        metrics=agent_metrics_sink,
+                        should_terminate=self._agent_termination,
+                        user_turn=lambda messages: self._policy_user_turn(policy, messages),
+                        recorder=self.tool_call_recorder,
+                        call_ids=self._call_ids,
+                        request_limiter=self.request_limiter,
+                        normalize_tool_arguments=self._normalize_tool_arguments,
+                        classify_error=self.agent_client.classify_loop_error,
+                        logger=self.logger,
+                        call_observation=LLMCallObservation(
+                            events=self._events,
+                            trial_id=trial_id,
+                            role="agent",
+                            probe_stats=self._probe_stats,
+                        ),
+                        observer=self._loop_observer,
+                    )
+                )
+                outcome = loop.run(system_prompt, self.messages, self.start_time)
 
                 status = outcome.status
                 termination_reason = outcome.termination_reason
@@ -475,6 +563,9 @@ class TrialRunner:
                 if self.strict:
                     raise
 
+            if outcome is not None:
+                termination_reason = self._audit_loop_postconditions(outcome, termination_reason)
+
             return self._finalise(
                 status=status, termination_reason=termination_reason, start_ts=start_ts
             )
@@ -494,8 +585,9 @@ class TrialRunner:
         A harness CLI owns its own planning loop inside the container, so the
         engine's turn loop would be a second agent stacked on the first. The
         trial is one tool call instead: no LLM generation, no user turn, no
-        :class:`ToolCallingLoop`. The trajectory records *instruction* as the
-        user message and the CLI's output as the agent's single reply.
+        :class:`~tolokaforge.core.loop.AgentLoop`. The trajectory records
+        *instruction* as the user message and the CLI's output as the agent's
+        single reply.
 
         Args:
             tool_name: Tool the command runs through — the task's sole agent
@@ -580,7 +672,22 @@ class TrialRunner:
                 )
             )
 
-            if tool_status is ToolExecutionStatus.SUCCESS:
+            refused = self._harness_requests_all_refused()
+            if refused is not None:
+                # The CLI ran, wrote a transcript and exited — but the provider
+                # served none of its requests, so nothing it "did" was its own
+                # work. Left as a completed trial this scores against an
+                # untouched repository, and on these packs that is worth
+                # 0.42-0.58 of partial credit: a dead agent reported as a weak
+                # one. ERROR routes it to a synthesized grade instead.
+                status = TrialStatus.ERROR
+                termination_reason = TerminationReason.API_ERROR
+                self.logger.error(
+                    "Harness trial made no successful provider request; not scoring it",
+                    requests=refused.requests,
+                    statuses=list(refused.statuses),
+                )
+            elif tool_status is ToolExecutionStatus.SUCCESS:
                 status = TrialStatus.COMPLETED
                 termination_reason = TerminationReason.AGENT_DONE
             elif tool_status is ToolExecutionStatus.TIMEOUT:
@@ -595,6 +702,199 @@ class TrialRunner:
             return self._finalise(
                 status=status, termination_reason=termination_reason, start_ts=start_ts
             )
+
+    def _harness_requests_all_refused(self) -> HarnessRequestOutcomes | None:
+        """The trial's request outcomes when the provider served none of them.
+
+        ``None`` whenever the question cannot be answered or the answer is no:
+        the harness booted no proxy, the records were unreadable, the CLI
+        called no provider, or at least one request was served. Only a
+        positive count of requests, every one of them refused, is evidence —
+        an absent measurement must not condemn a trial any more than it may
+        excuse one.
+        """
+        records = self._harness_usage_records
+        if records is None:
+            return None
+        outcomes = summarise_harness_requests(records)
+        if outcomes is None or not outcomes.none_succeeded:
+            return None
+        return outcomes
+
+    def _audit_loop_postconditions(
+        self, outcome: LoopOutcome, termination_reason: TerminationReason | None
+    ) -> TerminationReason | None:
+        """Check what the loop returned against the obligations of its seam.
+
+        Runs on every trial a loop returned from, whichever loop drove it. The
+        obligations :class:`~tolokaforge.core.loop.AgentLoop` states are
+        enforced by nothing at write time, and each one broken produces a
+        plausible trajectory carrying a wrong number rather than an error —
+        so they are checked here, on every run, not only under test.
+
+        Returns the trial's termination reason, downgraded where a
+        denominator-excluding one arrived with no typed evidence behind it.
+        Nothing else changes the trial: the agent's work is finished by the
+        time this runs, and
+        :func:`~tolokaforge.core.failure_attribution.classify_trial_outcome`
+        already classifies a trial grading cannot answer rather than dropping
+        it, so discarding one here would destroy evidence the run keeps.
+
+        Every finding is reported through
+        :meth:`_report_postcondition_finding`, which logs at ERROR without
+        ending the trial.
+        """
+        downgraded = self._reason_downgraded_without_typed_evidence(outcome, termination_reason)
+        self._audit_call_id_reconciliation(downgraded)
+        self._audit_metrics_sink_liveness()
+        return downgraded
+
+    def _report_postcondition_finding(self, message: str, **context: Any) -> None:
+        """Log one post-condition finding at ERROR, and leave the trial standing.
+
+        ``StructuredLogger.error`` raises under ``strict``, and these checks run
+        after the agent's work is finished and before the trajectory is
+        assembled: a raise here would take the whole trial with it, including
+        the evidence the finding describes and the remaining checks. The record
+        reaches the trial's log either way, so the finding is reported and the
+        trial finalises — the "logged, not refused" every one of these checks
+        is written to.
+        """
+        try:
+            self.logger.error(message, **context)
+        except RuntimeError:
+            return
+
+    def _reason_downgraded_without_typed_evidence(
+        self, outcome: LoopOutcome, termination_reason: TerminationReason | None
+    ) -> TerminationReason | None:
+        """Keep a denominator-excluding reason only where typed evidence earned it.
+
+        Every reason in
+        :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS`
+        removes the trial from the measured denominator *and* produces no
+        grade, so a loop free to emit one from nothing can delete its own
+        failures from the run's results with nothing in the output to show it.
+        The evidence rides the outcome as
+        :attr:`~tolokaforge.core.loop.LoopOutcome.excluding_reason_evidence`; an
+        outcome leaving it ``None`` is an outcome that claims the exclusion
+        rather than earning it, and
+        :data:`~tolokaforge.core.models.TerminationReason.ERROR` is the counted
+        reason it becomes — ``HARNESS_ERROR`` rather than ``MEASURED``, because
+        a loop that ends a trial on an unevidenced provider fault is a defect
+        of ours and belongs in the denominator as one.
+
+        Every loop is held to it, the built-in one included. A loop that routes
+        its exceptions through ``context.classify_error`` is handed the evidence
+        on the :class:`~tolokaforge.core.loop.TerminationDecision` it already
+        copies the reason from, so the rule costs a conforming implementation
+        one field rather than a typing judgement of its own.
+        """
+        if termination_reason not in EXCLUDED_TYPED_REASONS:
+            return termination_reason
+        if outcome.excluding_reason_evidence is not None:
+            return termination_reason
+        self._report_postcondition_finding(
+            "The agent loop ended this trial on a reason that excludes it from the "
+            "measured denominator, but carried no typed evidence for it — counting "
+            "the trial instead",
+            agent_loop=self.agent_loop,
+            claimed_termination_reason=termination_reason.value,
+            counted_as=TerminationReason.ERROR.value,
+            remedy=(
+                "carry TerminationDecision.excluding_reason_evidence from "
+                "context.classify_error onto LoopOutcome.excluding_reason_evidence, "
+                "or name the empty-completion observation behind the reason"
+            ),
+        )
+        return TerminationReason.ERROR
+
+    def _audit_call_id_reconciliation(self, termination_reason: TerminationReason | None) -> None:
+        """The message view and the tool-call record must describe the same calls.
+
+        :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline`
+        is where the two views are joined, and the only place the rule for
+        joining them lives, so this runs that function rather than restating
+        it. What the check buys over waiting for grading is *when* it speaks:
+        here it names the loop that produced the disagreement, while the trial
+        is still the subject.
+
+        Logged, not refused. Grading raises on these same inputs and
+        :func:`~tolokaforge.core.failure_attribution.classify_trial_outcome`
+        reports the trial ``UNGRADEABLE`` — counted in ``measured_trials``,
+        never a pass, and visible in the output — so the trial is already
+        handled honestly. Refusing it here would instead discard a trial whose
+        state-based checks may well still grade it.
+        """
+        recorded = self.tool_call_recorder.recorded
+        declared = sum(len(message.tool_calls or []) for message in self.messages)
+        if recorded and not self._has_conversation_turns():
+            self._report_postcondition_finding(
+                "Tool-call id reconciliation could not run: the loop recorded tool "
+                "calls but appended no assistant or user turn to reconcile them "
+                "against, so nothing declares the calls the record describes",
+                agent_loop=self.agent_loop,
+                recorded_tool_calls=len(recorded),
+            )
+            return
+        try:
+            build_trial_timeline(self.messages, recorded, termination_reason)
+        except TimelineInconsistencyError as exc:
+            self._report_postcondition_finding(
+                "The loop's declared tool calls and its recorded ones do not "
+                "reconcile, so this trial cannot be graded from its trajectory",
+                agent_loop=self.agent_loop,
+                declared_tool_calls=declared,
+                recorded_tool_calls=len(recorded),
+                detail=str(exc)[:_RECONCILIATION_DETAIL_CHARS],
+                remedy=(
+                    "key every call by context.call_ids.assign(<provider id>) and use "
+                    "that one key on the assistant message, the recorder and the "
+                    "tool executor"
+                ),
+            )
+
+    def _has_conversation_turns(self) -> bool:
+        """Whether the trial carries any turn the timeline reads as a declaration.
+
+        ``role: system`` messages are harness annotations, so a trajectory of
+        nothing but those declares no tool call.
+        """
+        return any(
+            message.role in (MessageRole.ASSISTANT, MessageRole.USER) for message in self.messages
+        )
+
+    def _audit_metrics_sink_liveness(self) -> None:
+        """Assistant turns with no recorded model call means the sink never fired.
+
+        ``cost_usd`` accumulates in :meth:`_AgentMetricsSink.record_generation`
+        and nowhere else, so a loop that generates without feeding the sink it
+        was handed leaves this trial's cost at zero however much the generation
+        spent — and the run's budget cap, which sums those per-trial figures,
+        can never fire.
+        :meth:`Orchestrator._refuse_an_unenforceable_cost_limit` does not cover
+        it: that refusal asks whether the pricing table can price the run's
+        models, not whether anything is reporting usage to price.
+
+        Logged, not refused. The spend has already happened, so dropping the
+        trial recovers neither the money nor the cap, and a trial whose
+        conversation is intact still grades.
+        """
+        assistant_turns = sum(
+            1 for message in self.messages if message.role is MessageRole.ASSISTANT
+        )
+        if not assistant_turns or self.metrics.api_calls:
+            return
+        self._report_postcondition_finding(
+            "The agent loop produced assistant turns without recording a single model "
+            "call, so this trial reports no usage and no cost and cannot be held to a "
+            "budget cap",
+            agent_loop=self.agent_loop,
+            assistant_turns=assistant_turns,
+            api_calls=self.metrics.api_calls,
+            cost_usd=self.metrics.cost_usd,
+            remedy="call context.metrics.record_generation(result) for every generation",
+        )
 
     def _finalise(
         self,
@@ -735,8 +1035,39 @@ class TrialRunner:
             priced = self._price_harness_tokens(self.metrics.usage)
             if priced is not None:
                 cost_usd = priced
+                self._warn_on_vendor_cost_divergence(priced, telemetry.cost_usd)
         if cost_usd is not None:
             self.metrics.cost_usd = cost_usd
+
+    def _warn_on_vendor_cost_divergence(self, ours: float, theirs: float | None) -> None:
+        """Compare our price for this trial against the CLI's own figure.
+
+        ``harness_reported_cost_usd`` has been recorded as "the cross-check"
+        since the field was added, and nothing ever compared the two. Where a
+        CLI bills itself, that comparison is a free and continuous audit of the
+        whole pricing path — the table, the token basis and the arithmetic —
+        against a number the vendor computed independently. It has been exact
+        when both sides were right: a live ``claude-code`` trial agreed to
+        fifteen significant figures.
+
+        A warning rather than a refusal, because the two figures are allowed to
+        differ: a CLI may round, may price a retry we did not see, or may quote
+        a list rate against our negotiated one. What it must not do is differ
+        by a multiple, which is what a stale or wrong rate looks like.
+        """
+        if theirs is None or theirs <= 0:
+            return
+        ratio = ours / theirs
+        if 1 / _VENDOR_COST_TOLERANCE <= ratio <= _VENDOR_COST_TOLERANCE:
+            return
+        self.logger.warning(
+            "Our price for this trial disagrees with the CLI's own figure",
+            ours_usd=ours,
+            cli_reported_usd=theirs,
+            ratio=round(ratio, 3),
+            model=self.agent_client.model_name,
+            remedy="check the pricing table's rates for this model against the provider",
+        )
 
     def _read_container_usage_records(self, tool_name: str, container_path: str) -> str | None:
         """Read the wire-usage records out of the trial container via *tool_name*.
@@ -828,6 +1159,26 @@ class TrialRunner:
                 records=wire.requests,
             )
 
+        if not any(
+            (
+                wire.prompt_tokens,
+                wire.completion_tokens,
+                wire.cache_read_input_tokens,
+                wire.reasoning_tokens,
+            )
+        ):
+            # Records exist, so the CLI did reach a provider — but every count
+            # in them is zero, which no real exchange produces. An upstream
+            # that answers without populating usage (a gateway translating a
+            # streamed response, say) is reporting nothing, not reporting
+            # nothing spent, and recording it as the latter puts a $0.00 in a
+            # cost comparison for a trial that ran.
+            self.logger.warning(
+                "Harness wire usage is entirely zero; leaving the trial unmeasured",
+                records=wire.requests,
+            )
+            return
+
         self.metrics.harness_usage_source = MIDDLEWARE_PROXY_USAGE_SOURCE
         self.metrics.usage = Usage(
             prompt_tokens=wire.prompt_tokens,
@@ -863,14 +1214,43 @@ class TrialRunner:
         reason: every shipped dialect counts reasoning inside its output
         total, while :func:`estimate_cost` adds the argument to
         ``output_tokens``.
+
+        Flags the trial when the row priced observed cache tokens at its
+        input rate. The preflight check warns before the run that a model
+        resolves to a row without cache rates, but it cannot know whether the
+        trial will actually use the cache; this is the after-the-fact half of
+        the same signal, and on a cache-heavy harness trial the difference is
+        a multiple rather than a rounding.
         """
-        return estimate_cost(
-            model=self.agent_client.model_name,
+        model = self.agent_client.model_name
+        resolution = resolve_pricing(model)
+        self.metrics.pricing_key = resolution.resolved_key
+        if resolution.priced:
+            self.metrics.pricing_basis = {
+                rate: float(value)
+                for rate, value in (MODEL_PRICING.get(resolution.resolved_key) or {}).items()
+                if isinstance(value, (int, float))
+            }
+        cost = estimate_cost(
+            model=model,
             input_tokens=usage.prompt_tokens,
             output_tokens=usage.completion_tokens,
             cache_read_input_tokens=usage.cache_read_input_tokens,
             cache_creation_input_tokens=usage.cache_creation_input_tokens,
         )
+        if cost is not None:
+            # Each missing rate against its own counter, not both against
+            # either: a row lacking only `cache_write` misprices nothing on a
+            # trial that wrote no cache, and flagging it there would teach a
+            # reader to ignore the flag where it does mean something.
+            observed = {
+                "cache_read": usage.cache_read_input_tokens,
+                "cache_write": usage.cache_creation_input_tokens,
+            }
+            missing = resolve_pricing(model).missing_cache_rates
+            if any(observed.get(rate) for rate in missing):
+                self.metrics.cost_cache_rate_fallback = True
+        return cost
 
     def _apply_probe_stats(self) -> None:
         """Copy the trial's rate-limit probe accounting onto :class:`Metrics`.
@@ -1119,14 +1499,22 @@ class TrialRunner:
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
     ) -> TerminationDecision | None:
-        """Agent termination policy: stuck detection, and nothing else.
+        """Agent termination policy: stuck detection and the completion signal.
 
         The agent's prose is never read for a completion signal — who speaks
-        next, and whether anyone can, is the :class:`TurnPolicy`'s decision.
+        next, and whether anyone can, is the :class:`TurnPolicy`'s decision. A
+        *tool call* is read, and only a call to a tool the registry declares a
+        completion tool and the run actually enabled. That is the same shape the
+        rubric judge terminates on (``submit_report``), moved to the agent side:
+        the terminal act is an action the model takes, not a sentence it writes,
+        so a model that never narrates can still end its own episode.
+
         Stuck sets ``metrics.stuck_detected`` as a side effect, which is why it
-        lives here rather than in the policy.
+        lives here rather than in the policy. Stuck is checked first: an agent
+        that has been repeating itself has already failed, and letting a
+        ``submit`` on that turn overwrite the diagnosis would hide it.
         """
-        del result, turn, messages
+        del turn, messages
         if self.stuck_detector and self.stuck_detector.is_stuck(
             self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
         ):
@@ -1136,6 +1524,19 @@ class TrialRunner:
                 reason=TerminationReason.STUCK_DETECTED,
                 system_message="Stuck condition detected. Dialogue terminated.",
             )
+
+        if self._completion_tools:
+            for call in result.tool_calls:
+                if call.name in self._completion_tools:
+                    self.logger.info("Agent signalled completion", tool=call.name)
+                    return TerminationDecision(
+                        reason=TerminationReason.AGENT_SUBMITTED,
+                        system_message=(
+                            f"Agent called {call.name}. Episode terminated at the "
+                            "agent's own signal."
+                        ),
+                        status=TrialStatus.COMPLETED,
+                    )
 
         return None
 

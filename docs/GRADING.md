@@ -38,16 +38,24 @@ dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
 [GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
-Two built-ins ship: `single_shot_rubric` (the shipping reference impl
-wrapping today's `LLMJudge` in one shot) and `chunked_rubric` (one
-`LLMJudge` invocation per fixed-K chunk — the alternative kind for large
-rubrics where a single `submit_report` would truncate; see
-[JUDGE_KINDS.md](JUDGE_KINDS.md)). Per-kind options ride on
-`task.grading.llm_judge.kind_config` — an opaque `dict[str, Any]` the
-framework never inspects; each kind validates its own slice inside
-`evaluate`. Unknown `judge_kind` names are refused at parse time with a
-message naming the registered set — mirrors `grading_method`'s
-resolution shape.
+Three user-facing kinds ship: `single_shot_rubric` (the shipping
+reference impl wrapping today's `LLMJudge` in one shot),
+`multi_turn_rubric` (a baked-in `voted → auto_anchored → single_shot`
+composition — see
+[JUDGE_KINDS.md § Choosing a kind](JUDGE_KINDS.md#choosing-a-kind)),
+and `auto_rubric` (per-rubric deterministic router between the two
+above). Two additional kinds — `voted_rubric` and `auto_anchored_rubric`
+— ship as internal building blocks the composite user-facing kinds
+compose; user task configs should not select them via `judge_kind:`
+directly (see
+[JUDGE_KINDS.md § Internal building blocks](JUDGE_KINDS.md#internal-building-blocks)).
+Per-kind options ride on `task.grading.llm_judge.kind_config` — an
+opaque `dict[str, Any]` the framework never inspects; each kind
+validates its own slice inside `evaluate`. `multi_turn_rubric` and
+`auto_rubric` accept no `kind_config` — passing a non-empty mapping to
+either raises `ValueError`. Unknown `judge_kind` names are refused at
+parse time with a message naming the registered set — mirrors
+`grading_method`'s resolution shape.
 
 Cross-kind trust — whether a candidate kind's verdicts actually agree
 with the reference kind, on both the committed cassette corpus and real
@@ -232,10 +240,12 @@ ship:
   llm-judge / custom-checks fold. Omitting `grading_method` selects the same
   dispatch — `None` and `"composite"` are equivalent on the wire. The runner's
   inline composite fold owns this path.
-- `test_execution` — the reference-suite kind. Requires an exec-capable
-  lifecycle tool in `TaskDescription.agent_tools` (`DockerComposeExecToolWrapper`
-  today); the kind reads through `substrate.run_test_suite(...)` and parses the
-  reward off `/logs/verifier/reward.txt`.
+- `test_execution` — the reference-suite kind. Requires a tool in
+  `TaskDescription.agent_tools` satisfying `SupportsEnvExec`
+  ([`tolokaforge/runner/env_exec.py`](../tolokaforge/runner/env_exec.py));
+  `DockerComposeExecToolWrapper` is the in-tree one. The kind reads through
+  `substrate.run_test_suite(...)` and parses the reward off
+  `/logs/verifier/reward.txt`.
 
 Every non-composite name routes through the typed `GraderKind` seam at
 `RunnerServiceImpl._dispatch_via_grader_kind`. A downstream adapter registers a
@@ -3703,6 +3713,59 @@ grading:
           kind: graded
           weight: 0.5
 ```
+
+### Rubric authoring: anchor subjective criteria
+
+`kind: graded` asks the judge for a 0–1 gradient; `kind: binary` asks for
+met/not-met. Graded criteria without an author-written `expected:` are the
+highest-self-variance rubric cell tolokaforge ships — on rubrics whose
+subjective criteria carry only a `description:`, we observe κ near zero
+between judge runs on those criteria even when unrelated binary criteria
+on the same run score κ near one. AutoRubric (Rao & Callison-Burch,
+*Autorubric: A Unifying Framework for Rubric-Based LLM Evaluation on
+Non-Verifiable Tasks*, arXiv:2603.00077, §4.3) reports the same shape on
+the CHARM-100 benchmark: a binary criterion (factual accuracy) reached
+87.0% exact-agreement between judges, while four 5-level ordinal criteria
+reached only 38–58% exact-agreement (adjacent-agreement stayed 85–93%,
+i.e. the judge is usually within one step of ground truth but clusters
+toward scale extremes). The practical lesson is the same either way: a
+subjective criterion the author does not anchor leaves the judge to infer
+what "correct" looks like from `description:` alone, and that inference
+is where the flapping comes from.
+
+**Rule.** For every `kind: graded` criterion, write an `expected:` field
+naming what a correct answer looks like:
+
+```yaml
+# Before — the judge has to infer what "clear" means from `description` alone.
+- id: clarity
+  description: "the reply reads clearly"
+  kind: graded
+  weight: 0.5
+
+# After — the anchor pins the judge to the shape the author wants scored.
+- id: clarity
+  description: "the reply reads clearly"
+  expected: "A single paragraph, plain English, no jargon, ending with an actionable next step."
+  kind: graded
+  weight: 0.5
+```
+
+**Escape hatch.** If the criterion is truly self-anchored — met/not-met
+with no gradient, such as "the reply quotes the correct refund amount" —
+lower it to `kind: binary` and drop the anchor. Binary carries its
+anchor in the pass/fail semantics; a graded scale on the same criterion
+would ask the judge to invent gradations that were never part of the
+author's intent.
+
+**Parse-time nudge.** `tolokaforge validate` prints a yellow `⚠` line for
+every `kind: graded` criterion with no `expected:` field, and the run
+pre-flight logs the same nudge at WARNING level. The nudge never fails
+validation and never affects the run's exit code — it is a hint, not a
+gate. When anchoring alone is not enough to tame variance on a subjective
+criterion, the [JudgeKind guide](JUDGE_KINDS.md#choosing-a-kind) covers
+the cost picture for `multi_turn_rubric`, which stacks auto-anchor
+generation with K-sample geometric-median aggregation.
 
 ### How the judge works
 

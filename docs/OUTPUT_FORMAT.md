@@ -616,8 +616,8 @@ internal turn count, and its own token totals — which is why the dialect
 travels with them. `usage.prompt_tokens` is the prompt total with cache reads
 and writes included, on the same basis as an engine-loop trial's, because the
 parsers normalise the CLIs' differing conventions (`claude-code` prints the
-non-cached remainder beside its cache counters; `codex`'s `input_tokens`
-already includes them). `api_calls` stays `0` on that path, because the engine
+non-cached remainder beside its cache counters, as does `opencode`;
+`codex`'s `input_tokens` already includes them). `api_calls` stays `0` on that path, because the engine
 made none. A harness whose CLI prints no totals keeps the artefact shape and a
 `null` dialect, so "not measured" is never reported as a measured zero.
 
@@ -646,11 +646,25 @@ directory they are written into from a per-trial context copy it deletes at
 teardown; that read is engine instrumentation and is never part of `tool_calls`
 or [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
+`pricing_basis` and `pricing_key` record what that price was computed *from*:
+the four per-million rates the row carried, and the key that actually decided
+the lookup. They are populated on a coding-harness trial and empty elsewhere,
+because an engine-loop trial's cost is assembled per call by the cost ladder
+rather than from one row. They exist because a cost without its rates cannot be
+corrected, only re-earned — when the bundled table was found 16 days behind its
+source, re-pricing the affected runs meant reconstructing rates by hand. With
+the basis on the trial, a corrected table re-prices any recorded run from its
+own bundle. `pricing_key` is the *resolved* key rather than the configured
+model, since normalisation strips `openrouter/` and can infer a vendor
+namespace, so the row billed is routinely not the one the config appears to
+name.
+
 `cost_usd` on a harness trial is **the engine's price for those tokens**, from
 the same bundled pricing table the engine-loop cost ladder falls back to — not
 the figure the CLI printed. The CLIs report different subsets (`claude-code`
-reports a cost, `codex` reports tokens and no cost, `kimi-code` reports
-neither), so taking each vendor's own number would compare one vendor's
+reports a cost, `codex` reports tokens and no cost, `opencode` reports both
+per step, `kimi-code` reports neither), so taking each vendor's own number
+would compare one vendor's
 billing against another's inside a single cross-mode comparison. Pricing the
 tokens ourselves gives every arm one pricing authority.
 `harness_reported_cost_usd` carries what the CLI said it billed wherever it
@@ -1283,8 +1297,6 @@ judge_kb_gating:                # the judge's knowledge-search gating; null unle
   withheld: []                 # KB-tagged tools withheld by config (audit detail)
 judge_custom_prompt: false      # null (no judge) | false (default prompt) | true (custom prompt)
 judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated out) | true (included)
-judge_chunk_boundaries: null    # null (no judge, or a non-chunking kind) | [[criterion_id, ...], ...]
-                                # (one inner list per chunk in original rubric order, from a chunking kind)
 synthesized_by_termination_reason: null  # null on every grade produced by a real evaluator;
                                 # named ``TerminationReason`` (e.g. ``stuck_detected``,
                                 # ``context_window_exceeded``, ``error``) when a
@@ -1425,16 +1437,6 @@ layers.
   whether a block physically appeared — a trial with an empty agent prompt still
   reads `true` under the default. See
   [`docs/GRADING.md`](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence).
-* `judge_chunk_boundaries` — per-chunk criterion ids for the judge run that
-  produced this grade, in original rubric order, as a list-of-lists (one inner
-  list per chunk). `null` when no judge ran or when a non-chunking kind
-  (`single_shot_rubric`) produced the grade; populated by `chunked_rubric` and
-  any future chunking kind. Populated even on a whole-trial `errored` chunked
-  run — every boundary attempted is recorded so an offline replay can retry the
-  failing chunk without re-planning boundaries. Serialised inline in `grade.yaml`
-  (the payload is small: N * a few short strings). See
-  [`docs/JUDGE_KINDS.md`](JUDGE_KINDS.md).
-
 ### Custom-checks fields
 
 `components.custom_checks` and `custom_checks_details` are populated only when
