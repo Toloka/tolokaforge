@@ -37,6 +37,8 @@ def test_list_builtins_covers_every_consumer_today():
         "bash_session",
         # str-replace editor (#567)
         "str_replace_editor",
+        # agent completion signal
+        "submit",
     }
     assert expected == set(registry.list_builtins())
 
@@ -68,6 +70,31 @@ def test_str_replace_editor_routes_to_editor_dispatch():
 
     assert registry.get_dispatch("str_replace_editor") is registry.Dispatch.EDITOR
     assert registry.get_class("str_replace_editor") is StrReplaceEditorTool
+
+
+def test_submit_is_a_completion_tool_reconstructed_like_any_other_builtin():
+    """Completion is a property the registry declares, orthogonal to dispatch.
+
+    The runner needs no wrapper of its own for it: a completion call terminates
+    the loop before any tool executes, and if one ever were executed the generic
+    builtin wrapper answers it like every other stateless builtin."""
+    from tolokaforge.tools.builtin.submit import SubmitTool
+
+    assert registry.is_completion("submit")
+    assert registry.list_completion_tools() == frozenset({"submit"})
+    assert registry.get_dispatch("submit") is registry.Dispatch.GENERIC
+    assert registry.get_class("submit") is SubmitTool
+
+
+def test_no_other_builtin_ends_an_episode():
+    """Every other builtin is an action inside the episode, not the end of it.
+
+    A tool silently acquiring completion status would terminate trials that
+    enable it, so the set is asserted whole rather than per-member."""
+    assert registry.list_completion_tools() < registry.list_builtins()
+    assert registry.list_builtins() - registry.list_completion_tools() == {
+        name for name in registry.list_builtins() if not registry.is_completion(name)
+    }
 
 
 def test_bash_is_generic_not_files():

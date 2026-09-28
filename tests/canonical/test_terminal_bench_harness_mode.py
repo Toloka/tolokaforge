@@ -318,6 +318,21 @@ class TestHarnessModeSelection:
         with pytest.raises(RuntimeError, match="runs through exactly one"):
             harness_trial(tools=[_bash_tool(), _bash_tool(name="bash2")])
 
+    def test_the_one_tool_rule_is_the_harness_branch_alone(self, harness_trial):
+        """The turn loop drives whatever tool surface the task registered.
+
+        The ``exactly one`` rule above is a property of running a CLI inside a
+        single ``exec``, not of the adapter that emitted the task. Scoping it to
+        the harness branch is what lets an engine-loop run offer a second agent
+        tool — a completion signal beside the shell — and the sentinel raise is
+        the evidence the trial reached the loop rather than the refusal.
+        """
+        with pytest.raises(AssertionError, match="an agent loop was resolved"):
+            harness_trial(
+                metadata={"agent_harness": "engine-loop"},
+                tools=[_bash_tool(), _bash_tool(name="submit")],
+            )
+
 
 class TestTheMetadataTheConductorReadsIsAlwaysAMapping:
     """Why the branch may read ``spec.task.metadata`` without guarding its type.
