@@ -270,11 +270,24 @@ def id_contract(module: Any) -> IdContract:
         )
 
     return IdContract(
-        trace=trace,
-        observation=module.observation_id,
-        tool_key=module.tool_key,
+        trace=_refusing(trace, "trace id"),
+        observation=_refusing(module.observation_id, "observation id"),
+        tool_key=_refusing(module.tool_key, "tool key"),
         version=int(module.CONTRACT_VERSION),
     )
+
+
+def _refusing(function: Callable[..., str], what: str) -> Callable[..., str]:
+    """An id function whose refusal of a component (a ``|`` in the run id, a call id with
+    surrounding whitespace) refuses the transcript, like every other shape it cannot take."""
+
+    def call(*args: Any, **kwargs: Any) -> str:
+        try:
+            return function(*args, **kwargs)
+        except ValueError as exc:
+            raise TranscriptError(f"the id contract refuses this {what}: {exc}") from exc
+
+    return call
 
 
 def _module_name(module: Any) -> str:
@@ -309,7 +322,7 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
         if not isinstance(event, Mapping):
             raise TranscriptRefused(f"{origin}: event {position} is not a mapping")
         kind = event.get("type")
-        if kind not in EVENT_TYPES:
+        if not isinstance(kind, str) or kind not in EVENT_TYPES:
             raise TranscriptRefused(f"{origin}: event {position} has unknown type {kind!r}")
         session_id = session_id or _str(event.get("session_id"))
         stamp = _normalize_ts(event.get("timestamp"))
@@ -328,7 +341,7 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
             continue
         result = _result(event)
     started = stamps[0] if stamps else None
-    ended = _ended(stamps, result, started)
+    ended = _ended(stamps, result, started, origin)
     return Transcript(
         transcript_id=str(transcript_id),
         shape=shape,
@@ -385,7 +398,7 @@ def _assistant_turn(
     calls: list[ToolCall] = []
     for block in _blocks(message, origin, position):
         kind = block.get("type")
-        if kind not in ASSISTANT_BLOCKS:
+        if not isinstance(kind, str) or kind not in ASSISTANT_BLOCKS:
             raise TranscriptRefused(
                 f"{origin}: event {position} has unknown assistant content block {kind!r}"
             )
@@ -424,7 +437,7 @@ def _tool_outcomes(
     outcomes: list[ToolOutcome] = []
     for block in _blocks(message, origin, position):
         kind = block.get("type")
-        if kind not in USER_BLOCKS:
+        if not isinstance(kind, str) or kind not in USER_BLOCKS:
             raise TranscriptRefused(
                 f"{origin}: event {position} has unknown user content block {kind!r}"
             )
@@ -486,7 +499,9 @@ def _result(event: Mapping[str, Any]) -> RunResult:
     )
 
 
-def _ended(stamps: Sequence[str], result: RunResult | None, started: str | None) -> str | None:
+def _ended(
+    stamps: Sequence[str], result: RunResult | None, started: str | None, origin: str
+) -> str | None:
     if len(stamps) > 1:
         return stamps[-1]
     if started and result is not None and result.duration_ms:
@@ -495,7 +510,13 @@ def _ended(stamps: Sequence[str], result: RunResult | None, started: str | None)
         except ValueError:
             return stamps[-1] if stamps else None
         end = base.timestamp() + result.duration_ms / 1000.0
-        return datetime.fromtimestamp(end, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        try:
+            ended = datetime.fromtimestamp(end, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise TranscriptRefused(
+                f"{origin}: the result's duration_ms {result.duration_ms} is out of range"
+            ) from exc
+        return ended.isoformat().replace("+00:00", "Z")
     return stamps[-1] if stamps else None
 
 
@@ -884,7 +905,7 @@ def _str(value: Any) -> str | None:
 def _int(value: Any) -> int | None:
     try:
         return int(value) if value is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

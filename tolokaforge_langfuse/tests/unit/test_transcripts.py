@@ -206,6 +206,33 @@ class TestTheReader:
         # the source is named, so the operator knows which file to look at
         assert "probe.jsonl" in str(caught.value)
 
+    @pytest.mark.parametrize(
+        "event",
+        [
+            {"type": ["assistant"], "message": {}},
+            {"type": "assistant", "message": {"content": [{"type": {"text": "x"}}]}},
+            {"type": "user", "message": {"content": [{"type": ["tool_result"]}]}},
+        ],
+        ids=["event-type-list", "assistant-block-type-dict", "user-block-type-list"],
+    )
+    def test_a_type_that_is_not_a_string_refuses_rather_than_crashes(
+        self, event: dict[str, Any]
+    ) -> None:
+        with pytest.raises(tr.TranscriptRefused, match="unknown"):
+            tr.read_claude_text(stream([event]), transcript_id="t", origin="probe.jsonl")
+
+    def test_an_out_of_range_duration_refuses_rather_than_crashes(self) -> None:
+        events = [
+            {"type": "system", "subtype": "init", "timestamp": "2026-09-20T10:00:00Z"},
+            {"type": "result", "subtype": "success", "duration_ms": 1e300, "result": "ok"},
+        ]
+        with pytest.raises(tr.TranscriptRefused, match="duration_ms"):
+            tr.read_claude_text(stream(events), transcript_id="t")
+
+    def test_an_infinite_number_is_no_number(self) -> None:
+        text = '{"type": "result", "subtype": "success", "num_turns": Infinity, "result": "ok"}'
+        assert tr.read_claude_text(text, transcript_id="t").result.num_turns is None
+
     def test_a_refusal_is_a_transcript_error_so_one_except_clause_catches_both(self) -> None:
         assert issubclass(tr.TranscriptRefused, tr.TranscriptError)
 
@@ -455,6 +482,18 @@ class TestTheIdContract:
             trial_index=0,
             attempt="na",
         )
+
+    def test_a_run_id_the_contract_refuses_refuses_the_transcript(self) -> None:
+        with pytest.raises(tr.TranscriptError, match="refuses this trace id"):
+            built(tr.redact(read()), run_id="a|b")
+
+    def test_a_call_id_the_contract_refuses_refuses_the_transcript(self) -> None:
+        events = tool_event("ok")
+        events[0]["message"]["content"][1]["id"] = " toolu_1 "
+        events[1]["message"]["content"][0]["tool_use_id"] = " toolu_1 "
+        transcript = tr.redact(tr.read_claude_text(stream(events), transcript_id="t"))
+        with pytest.raises(tr.TranscriptError, match="refuses this observation id: .*tool key"):
+            built(transcript)
 
     def test_an_id_module_this_projection_cannot_read_is_an_error(self) -> None:
         class NoTraceId:

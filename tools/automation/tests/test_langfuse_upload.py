@@ -269,6 +269,16 @@ class TestTheUpload:
         assert "unknown type 'tool_progress'" in report.refused[0]["reason"]
         assert not report.ok
 
+    def test_a_run_id_the_id_contract_refuses_refuses_each_file_without_a_crash(
+        self, tmp_path: Path
+    ) -> None:
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        write(tmp_path, "agent_finalize.jsonl", CLEAN_EVENTS)
+        report = upload(tmp_path, run_id="a|b")
+        assert report.sent == []
+        assert [e["file"] for e in report.refused] == ["agent_finalize.jsonl", "agent_iter_1.jsonl"]
+        assert "refuses this trace id" in report.refused[0]["reason"]
+
     def test_a_missing_caller_tag_refuses_the_file_rather_than_sending_it_untagged(
         self, tmp_path: Path
     ) -> None:
