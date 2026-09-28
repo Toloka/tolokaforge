@@ -20,6 +20,11 @@ from tolokaforge_coding_harnesses.usage_log import (
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
+from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
+from tolokaforge.core.grading.trace_timeline import (
+    TimelineInconsistencyError,
+    build_trial_timeline,
+)
 from tolokaforge.core.llm import (
     SIMULATOR_GREETING,
     GenerationResult,
@@ -33,6 +38,7 @@ from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
     AgentLoopContext,
     LoopConfig,
+    LoopOutcome,
     MetricsSink,
     TerminationDecision,
     UserTurnResult,
@@ -86,6 +92,35 @@ _USAGE_READ_DETAIL_CHARS = 200
 
 Enough to name the cause (``cat``'s "No such file or directory" is the expected
 one) without spilling an unbounded container stream into the trial log."""
+
+BUILT_IN_AGENT_LOOP = "engine-loop"
+"""The ``tolokaforge.agent_loops`` registration of the loop this repo ships.
+
+Read by :meth:`TrialRunner._reason_downgraded_without_typed_evidence`, the one
+post-condition that treats the built-in loop differently: its
+denominator-excluding termination reasons are produced inside
+:func:`~tolokaforge.core.loop.classify_loop_error`, from an exception type, so
+the typed evidence behind them is the classifier's own input.
+"""
+
+EXCLUDING_REASON_EVIDENCE_ATTR = "excluding_reason_evidence"
+"""Attribute a :class:`~tolokaforge.core.loop.LoopOutcome` may carry.
+
+A loop ending a trial on a reason in
+:data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` sets it to
+the typed observation that earned the exclusion — the provider exception it
+caught, or the empty :class:`~tolokaforge.core.llm.GenerationResult` it saw
+after retries. Read through :func:`getattr`, so an outcome that does not carry
+it is an outcome with no evidence and its reason is downgraded to a counted
+one.
+"""
+
+_RECONCILIATION_DETAIL_CHARS = 400
+"""How much of a timeline reconciliation failure the log carries.
+
+Enough for the first unlinkable call id and the counts around it, without
+copying an unbounded tool name or argument blob into the trial log.
+"""
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -367,6 +402,11 @@ class TrialRunner:
             start_ts = datetime.now(tz=timezone.utc)
             status = TrialStatus.COMPLETED  # Optimistic default
             termination_reason: TerminationReason | None = None
+            # What the loop returned, or ``None`` where it never returned at
+            # all. The post-conditions below check what a loop produced, so a
+            # trial that died before or inside the loop has nothing for them to
+            # read and must not be reported as a loop that broke its contract.
+            outcome: LoopOutcome | None = None
 
             # Per-trial × role observations threaded into the agent's LLM client
             # (via the loop) and into the user-simulator's ``reply`` call sites so
@@ -501,6 +541,9 @@ class TrialRunner:
                 )
                 if self.strict:
                     raise
+
+            if outcome is not None:
+                termination_reason = self._audit_loop_postconditions(outcome, termination_reason)
 
             return self._finalise(
                 status=status, termination_reason=termination_reason, start_ts=start_ts
@@ -656,6 +699,162 @@ class TrialRunner:
         if outcomes is None or not outcomes.none_succeeded:
             return None
         return outcomes
+
+    def _audit_loop_postconditions(
+        self, outcome: LoopOutcome, termination_reason: TerminationReason | None
+    ) -> TerminationReason | None:
+        """Check what the loop returned against the obligations of its seam.
+
+        Runs on every trial a loop returned from, whichever loop drove it. The
+        obligations :class:`~tolokaforge.core.loop.AgentLoop` states are
+        enforced by nothing at write time, and each one broken produces a
+        plausible trajectory carrying a wrong number rather than an error —
+        so they are checked here, on every run, not only under test.
+
+        Returns the trial's termination reason, downgraded where a
+        denominator-excluding one arrived with no typed evidence behind it.
+        Nothing else changes the trial: the agent's work is finished by the
+        time this runs, and
+        :func:`~tolokaforge.core.failure_attribution.classify_trial_outcome`
+        already classifies a trial grading cannot answer rather than dropping
+        it, so discarding one here would destroy evidence the run keeps.
+
+        Every finding logs at ERROR, which under ``strict`` raises — a run that
+        asked to stop at the first defect stops at this one too.
+        """
+        downgraded = self._reason_downgraded_without_typed_evidence(outcome, termination_reason)
+        self._audit_call_id_reconciliation(downgraded)
+        self._audit_metrics_sink_liveness()
+        return downgraded
+
+    def _reason_downgraded_without_typed_evidence(
+        self, outcome: LoopOutcome, termination_reason: TerminationReason | None
+    ) -> TerminationReason | None:
+        """Keep a denominator-excluding reason only where typed evidence earned it.
+
+        Every reason in
+        :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS`
+        removes the trial from the measured denominator *and* produces no
+        grade, so a loop free to emit one from nothing can delete its own
+        failures from the run's results with nothing in the output to show it.
+        The evidence rides the outcome as
+        :data:`EXCLUDING_REASON_EVIDENCE_ATTR`; an outcome without it is an
+        outcome that claims the exclusion rather than earning it, and
+        :data:`~tolokaforge.core.models.TerminationReason.ERROR` is the counted
+        reason it becomes — ``HARNESS_ERROR`` rather than ``MEASURED``, because
+        a loop that ends a trial on an unevidenced provider fault is a defect
+        of ours and belongs in the denominator as one.
+
+        The built-in loop is exempt: it reaches these reasons only through
+        :func:`~tolokaforge.core.loop.classify_loop_error`, whose input is the
+        exception type itself.
+        """
+        if termination_reason not in EXCLUDED_TYPED_REASONS:
+            return termination_reason
+        if self.agent_loop == BUILT_IN_AGENT_LOOP:
+            return termination_reason
+        if getattr(outcome, EXCLUDING_REASON_EVIDENCE_ATTR, None) is not None:
+            return termination_reason
+        self.logger.error(
+            "The agent loop ended this trial on a reason that excludes it from the "
+            "measured denominator, but carried no typed evidence for it — counting "
+            "the trial instead",
+            agent_loop=self.agent_loop,
+            claimed_termination_reason=termination_reason.value,
+            counted_as=TerminationReason.ERROR.value,
+            remedy=(
+                f"set LoopOutcome.{EXCLUDING_REASON_EVIDENCE_ATTR} to the provider "
+                "exception or empty-completion observation behind the reason"
+            ),
+        )
+        return TerminationReason.ERROR
+
+    def _audit_call_id_reconciliation(self, termination_reason: TerminationReason | None) -> None:
+        """The message view and the tool-call record must describe the same calls.
+
+        :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline`
+        is where the two views are joined, and the only place the rule for
+        joining them lives, so this runs that function rather than restating
+        it. What the check buys over waiting for grading is *when* it speaks:
+        here it names the loop that produced the disagreement, while the trial
+        is still the subject.
+
+        Logged, not refused. Grading raises on these same inputs and
+        :func:`~tolokaforge.core.failure_attribution.classify_trial_outcome`
+        reports the trial ``UNGRADEABLE`` — counted in ``measured_trials``,
+        never a pass, and visible in the output — so the trial is already
+        handled honestly. Refusing it here would instead discard a trial whose
+        state-based checks may well still grade it.
+        """
+        recorded = self.tool_call_recorder.recorded
+        declared = sum(len(message.tool_calls or []) for message in self.messages)
+        if recorded and not self._has_conversation_turns():
+            self.logger.error(
+                "Tool-call id reconciliation could not run: the loop recorded tool "
+                "calls but appended no assistant or user turn to reconcile them "
+                "against, so nothing declares the calls the record describes",
+                agent_loop=self.agent_loop,
+                recorded_tool_calls=len(recorded),
+            )
+            return
+        try:
+            build_trial_timeline(self.messages, recorded, termination_reason)
+        except TimelineInconsistencyError as exc:
+            self.logger.error(
+                "The loop's declared tool calls and its recorded ones do not "
+                "reconcile, so this trial cannot be graded from its trajectory",
+                agent_loop=self.agent_loop,
+                declared_tool_calls=declared,
+                recorded_tool_calls=len(recorded),
+                detail=str(exc)[:_RECONCILIATION_DETAIL_CHARS],
+                remedy=(
+                    "key every call by context.call_ids.assign(<provider id>) and use "
+                    "that one key on the assistant message, the recorder and the "
+                    "tool executor"
+                ),
+            )
+
+    def _has_conversation_turns(self) -> bool:
+        """Whether the trial carries any turn the timeline reads as a declaration.
+
+        ``role: system`` messages are harness annotations, so a trajectory of
+        nothing but those declares no tool call.
+        """
+        return any(
+            message.role in (MessageRole.ASSISTANT, MessageRole.USER) for message in self.messages
+        )
+
+    def _audit_metrics_sink_liveness(self) -> None:
+        """Assistant turns with no recorded model call means the sink never fired.
+
+        ``cost_usd`` accumulates in :meth:`_AgentMetricsSink.record_generation`
+        and nowhere else, so a loop that generates without feeding the sink it
+        was handed leaves this trial's cost at zero however much the generation
+        spent — and the run's budget cap, which sums those per-trial figures,
+        can never fire.
+        :meth:`Orchestrator._refuse_an_unenforceable_cost_limit` does not cover
+        it: that refusal asks whether the pricing table can price the run's
+        models, not whether anything is reporting usage to price.
+
+        Logged, not refused. The spend has already happened, so dropping the
+        trial recovers neither the money nor the cap, and a trial whose
+        conversation is intact still grades.
+        """
+        assistant_turns = sum(
+            1 for message in self.messages if message.role is MessageRole.ASSISTANT
+        )
+        if not assistant_turns or self.metrics.api_calls:
+            return
+        self.logger.error(
+            "The agent loop produced assistant turns without recording a single model "
+            "call, so this trial reports no usage and no cost and cannot be held to a "
+            "budget cap",
+            agent_loop=self.agent_loop,
+            assistant_turns=assistant_turns,
+            api_calls=self.metrics.api_calls,
+            cost_usd=self.metrics.cost_usd,
+            remedy="call context.metrics.record_generation(result) for every generation",
+        )
 
     def _finalise(
         self,
