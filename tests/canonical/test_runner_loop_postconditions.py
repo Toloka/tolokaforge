@@ -51,11 +51,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.plugin_registry import AGENT_LOOPS_GROUP, _clear_discovery_cache
-from tolokaforge.core.runner import (
-    BUILT_IN_AGENT_LOOP,
-    EXCLUDING_REASON_EVIDENCE_ATTR,
-    TrialRunner,
-)
+from tolokaforge.core.runner import BUILT_IN_AGENT_LOOP, TrialRunner
 from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
 
 pytestmark = pytest.mark.canonical
@@ -130,13 +126,11 @@ class _ScriptedLoop:
                 output="ok",
                 latency_seconds=0.01,
             )
-        outcome = LoopOutcome(
+        return LoopOutcome(
             status=TrialStatus.COMPLETED,
             termination_reason=self.termination_reason,
+            excluding_reason_evidence=self.evidence,
         )
-        if self.evidence is not None:
-            setattr(outcome, EXCLUDING_REASON_EVIDENCE_ATTR, self.evidence)
-        return outcome
 
 
 class _EntryPointStub:

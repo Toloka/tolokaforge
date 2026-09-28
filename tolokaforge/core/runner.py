@@ -103,18 +103,6 @@ denominator-excluding termination reasons are produced inside
 the typed evidence behind them is the classifier's own input.
 """
 
-EXCLUDING_REASON_EVIDENCE_ATTR = "excluding_reason_evidence"
-"""Attribute a :class:`~tolokaforge.core.loop.LoopOutcome` may carry.
-
-A loop ending a trial on a reason in
-:data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` sets it to
-the typed observation that earned the exclusion — the provider exception it
-caught, or the empty :class:`~tolokaforge.core.llm.GenerationResult` it saw
-after retries. Read through :func:`getattr`, so an outcome that does not carry
-it is an outcome with no evidence and its reason is downgraded to a counted
-one.
-"""
-
 _RECONCILIATION_DETAIL_CHARS = 400
 """How much of a timeline reconciliation failure the log carries.
 
@@ -758,8 +746,9 @@ class TrialRunner:
         grade, so a loop free to emit one from nothing can delete its own
         failures from the run's results with nothing in the output to show it.
         The evidence rides the outcome as
-        :data:`EXCLUDING_REASON_EVIDENCE_ATTR`; an outcome without it is an
-        outcome that claims the exclusion rather than earning it, and
+        :attr:`~tolokaforge.core.loop.LoopOutcome.excluding_reason_evidence`; an
+        outcome leaving it ``None`` is an outcome that claims the exclusion
+        rather than earning it, and
         :data:`~tolokaforge.core.models.TerminationReason.ERROR` is the counted
         reason it becomes — ``HARNESS_ERROR`` rather than ``MEASURED``, because
         a loop that ends a trial on an unevidenced provider fault is a defect
@@ -773,7 +762,7 @@ class TrialRunner:
             return termination_reason
         if self.agent_loop == BUILT_IN_AGENT_LOOP:
             return termination_reason
-        if getattr(outcome, EXCLUDING_REASON_EVIDENCE_ATTR, None) is not None:
+        if outcome.excluding_reason_evidence is not None:
             return termination_reason
         self.logger.error(
             "The agent loop ended this trial on a reason that excludes it from the "
@@ -783,7 +772,7 @@ class TrialRunner:
             claimed_termination_reason=termination_reason.value,
             counted_as=TerminationReason.ERROR.value,
             remedy=(
-                f"set LoopOutcome.{EXCLUDING_REASON_EVIDENCE_ATTR} to the provider "
+                "set LoopOutcome.excluding_reason_evidence to the provider "
                 "exception or empty-completion observation behind the reason"
             ),
         )
