@@ -95,6 +95,9 @@ SYSTEM_INIT = "init"
 ASSISTANT_BLOCKS = frozenset({"text", "tool_use", "thinking", "redacted_thinking"})
 USER_BLOCKS = frozenset({"tool_result", "text"})
 
+# how much of an unknown type a refusal quotes
+SHOWN_CHARS = 40
+
 TOOL_IO_DROP = "drop"
 TOOL_IO_SCRUB = "scrub"
 TOOL_IO_POLICIES = (TOOL_IO_DROP, TOOL_IO_SCRUB)
@@ -323,7 +326,7 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
             raise TranscriptRefused(f"{origin}: event {position} is not a mapping")
         kind = event.get("type")
         if not isinstance(kind, str) or kind not in EVENT_TYPES:
-            raise TranscriptRefused(f"{origin}: event {position} has unknown type {kind!r}")
+            raise TranscriptRefused(f"{origin}: event {position} has unknown type {_shown(kind)}")
         session_id = session_id or _str(event.get("session_id"))
         stamp = _normalize_ts(event.get("timestamp"))
         if stamp:
@@ -405,7 +408,7 @@ def _assistant_turn(
         kind = block.get("type")
         if not isinstance(kind, str) or kind not in ASSISTANT_BLOCKS:
             raise TranscriptRefused(
-                f"{origin}: event {position} has unknown assistant content block {kind!r}"
+                f"{origin}: event {position} has unknown assistant content block {_shown(kind)}"
             )
         if kind == "text":
             texts.append(_str(block.get("text")) or "")
@@ -444,7 +447,7 @@ def _tool_outcomes(
         kind = block.get("type")
         if not isinstance(kind, str) or kind not in USER_BLOCKS:
             raise TranscriptRefused(
-                f"{origin}: event {position} has unknown user content block {kind!r}"
+                f"{origin}: event {position} has unknown user content block {_shown(kind)}"
             )
         if kind != "tool_result":
             continue
@@ -463,6 +466,14 @@ def _tool_outcomes(
             )
         )
     return outcomes
+
+
+def _shown(kind: object) -> str:
+    """An unknown type as a refusal names it. The refusal reaches a receipt and a job summary
+    unscanned, so a string is capped and anything else is named by its kind, never its content."""
+    if isinstance(kind, str):
+        return repr(kind if len(kind) <= SHOWN_CHARS else kind[:SHOWN_CHARS] + "...")
+    return f"<{type(kind).__name__}>"
 
 
 def _message(event: Mapping[str, Any], origin: str, position: int) -> Mapping[str, Any]:

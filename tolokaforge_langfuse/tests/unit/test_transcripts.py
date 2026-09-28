@@ -221,6 +221,19 @@ class TestTheReader:
         with pytest.raises(tr.TranscriptRefused, match="unknown"):
             tr.read_claude_text(stream([event]), transcript_id="t", origin="probe.jsonl")
 
+    @pytest.mark.parametrize(
+        "kind",
+        [{"text": "Q" * 500}, "Q" * 500],
+        ids=["mapping", "long-string"],
+    )
+    def test_a_refusal_quotes_no_content_of_the_file(self, kind: Any) -> None:
+        """A refusal lands in a receipt and a job summary that nothing scans."""
+        event = {"type": "assistant", "message": {"content": [{"type": kind}]}}
+        with pytest.raises(tr.TranscriptRefused) as caught:
+            tr.read_claude_text(stream([event]), transcript_id="t", origin="probe.jsonl")
+        assert "Q" * (tr.SHOWN_CHARS + 1) not in str(caught.value)
+        assert len(str(caught.value)) < 150
+
     def test_an_out_of_range_duration_refuses_rather_than_crashes(self) -> None:
         events = [
             {"type": "system", "subtype": "init", "timestamp": "2026-09-20T10:00:00Z"},
