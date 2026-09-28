@@ -163,9 +163,10 @@ def _extra_headers(raw: str | None) -> dict[str, str]:
         if separator and name.strip():
             headers[name.strip()] = value.strip()
     if not headers:
+        # the value carries the gateway's admission key: name its size, never its text
         raise UploadError(
-            f"LANGFUSE_EXTRA_HEADERS={raw!r} yields no header; it is a comma-separated list of "
-            "name=value pairs"
+            f"LANGFUSE_EXTRA_HEADERS ({len(raw)} characters) yields no header; it is a "
+            "comma-separated list of name=value pairs"
         )
     return headers
 

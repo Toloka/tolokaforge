@@ -233,6 +233,13 @@ class TestTheReceiver:
         with pytest.raises(lu.UploadError, match="yields no header"):
             lu._extra_headers(raw)
 
+    def test_the_error_never_echoes_the_value(self) -> None:
+        """The likeliest typo is the bare admission key without its name, and that is a
+        credential: the message gives its size only."""
+        with pytest.raises(lu.UploadError) as caught:
+            lu._extra_headers("admission-not-real-0123")
+        assert "admission-not-real-0123" not in str(caught.value)
+
     @staticmethod
     def _with_headers(raw: str) -> lu.Receiver:
         return receiver_from(
