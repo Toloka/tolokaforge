@@ -393,10 +393,15 @@ def _spend_metrics(trajectories: Sequence[Trajectory]) -> dict[str, Any]:
     # The per-role spend plane and its grand total. The plane sums the trials'
     # reconciled ``cost_by_role`` (agent + user) plus a synthesized judge row, so
     # its grand total equals ``total_cost_incl_judge_usd`` today — the only roles
-    # that spend are agent, user and judge.
+    # that spend are agent, user and judge. It inherits that field's None/partial
+    # semantics rather than reading the plane directly: an unpriced agent still
+    # emits a ``cost_usd=0.0`` row, which would coerce an unknown-cost run's grand
+    # total to a false ``0.0``.
     role_rows = _cost_by_role_rows(trajectories)
     spend["total_cost_by_role"] = role_rows
-    spend["total_cost_incl_all_usd"] = _role_plane_grand_total(role_rows)
+    spend["total_cost_incl_all_usd"] = (
+        None if spend["total_cost_incl_judge_usd"] is None else _role_plane_grand_total(role_rows)
+    )
     return spend
 
 
@@ -645,10 +650,14 @@ def calculate_aggregate_metrics(
     agg["total_cost_incl_judge_usd"] = sum(_known_total_incl) if _known_total_incl else None
     # Merge the per-task per-role planes into the run-level plane; its grand
     # total is the true cross-role total, equal to ``total_cost_incl_judge_usd``
-    # while agent, user and judge are the only roles that spend.
+    # while agent, user and judge are the only roles that spend, and unknown on
+    # the same terms — an unpriced agent's ``0.0`` row must not report a false
+    # ``0.0`` total for a run whose combined cost is ``None``.
     _role_rows = _merge_cost_by_role_rows(task_metrics)
     agg["total_cost_by_role"] = _role_rows
-    agg["total_cost_incl_all_usd"] = _role_plane_grand_total(_role_rows)
+    agg["total_cost_incl_all_usd"] = (
+        None if agg["total_cost_incl_judge_usd"] is None else _role_plane_grand_total(_role_rows)
+    )
 
     for percentile in ("latency_p50_s", "latency_p90_s", "latency_p99_s"):
         agg[f"{percentile}_macro"] = (

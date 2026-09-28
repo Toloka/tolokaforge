@@ -1030,9 +1030,12 @@ probe_buckets:
 The `(role, model)` breakdown exists because the roles are different models: in
 an arena config the agent is the model under test and the user simulator is a
 fixed, unrelated one, so a single flat counter blends a measured model's numbers
-with an unmeasured one's. `Metrics.usage` cannot substitute — `usage.calls` holds
-agent calls only and carries **no role field**, so per-model goodput and latency
-are not computable from it at all. Rows are sorted by `(role, model)`.
+with an unmeasured one's. `Metrics.usage` cannot substitute — `usage.calls`
+records only **served** responses, so the 429 / retry / wait census this
+breakdown carries is absent from it. Successful-call goodput per model is
+derivable from `usage.calls` (each record now carries its actor `role`), but the
+retries and wait time that mark a rate-limited run are not. Rows are sorted by
+`(role, model)`.
 
 `model` is the raw provider-qualified slug the client called. Grouping slugs into
 an upstream-provider taxonomy is the consumer's job. Attributing a 429 to the

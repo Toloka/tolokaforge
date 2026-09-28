@@ -1681,9 +1681,9 @@ class LLMClient:
 
         Keyed by this call's ``role`` and this client's model slug, both already
         in scope. That attribution is the gap this closes: ``Metrics.usage``
-        accumulates every role's calls into one object with no role field, so
-        counting log lines conflated the agent's model with the user
-        simulator's and inflated the number.
+        accumulates every role's calls into one object whose flat token scalars
+        are summed across roles, so counting from them conflated the agent's
+        model with the user simulator's and inflated the number.
 
         Recorded quantities and why:
 

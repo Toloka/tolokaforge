@@ -2679,9 +2679,9 @@ contribute to a measurement it is not part of.
 
 The agent and the user simulator are different models in an arena config, so
 their counters never merge; and `Metrics.usage` cannot answer the same questions —
-`usage.calls` records only served responses (no 429s, no retries) and at the
-trial level holds the agent's own calls only, though each record now carries its
-actor `role`. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
+`usage.calls` records only served responses (no 429s, no retries). At the trial
+level it holds the agent's and any in-trial user-simulator calls, each stamped
+with its actor `role`. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
 
 `duration_s` is the *outer* per-attempt wall time (`generate` brackets
 `_generate_once`), i.e. how long the client actually held the call in flight —

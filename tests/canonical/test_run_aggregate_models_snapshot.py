@@ -438,6 +438,56 @@ def test_aggregate_total_cost_by_role_sums_all_roles_with_harness_reconciliation
     _round_trip(AggregateMetrics, agg)
 
 
+def test_unpriced_agent_leaves_grand_total_none_not_coerced_zero() -> None:
+    """An unpriced run reports ``total_cost_incl_all_usd`` as ``None``, not ``0.0``.
+
+    When the agent model has no pricing row every call is costed ``None``, so
+    ``Metrics.cost_usd`` is ``None`` — yet the per-call reconciliation still emits
+    an ``agent`` row carrying ``cost_usd=0.0`` (calls present, none priced). Reading
+    the role plane's grand total directly would coerce that ``0.0`` into a definite
+    ``$0.00`` for a run whose cost is genuinely unknown, falsifying the invariant
+    ``total_cost_incl_all_usd == total_cost_incl_judge_usd`` (both ``None`` here).
+    The empty-``usage.calls`` fixture masks this — it produces no ``agent`` row at
+    all, so the grand total is ``None`` regardless of the coercion bug.
+    """
+    trajectories = [
+        _make_trajectory(
+            trial_index=0,
+            cost_usd=None,
+            cost_by_role=[
+                CostByRoleMetrics(
+                    role="agent", cost_usd=0.0, prompt_tokens=1200, completion_tokens=340
+                )
+            ],
+        ),
+        _make_trajectory(
+            trial_index=1,
+            cost_usd=None,
+            cost_by_role=[
+                CostByRoleMetrics(
+                    role="agent", cost_usd=0.0, prompt_tokens=800, completion_tokens=150
+                )
+            ],
+        ),
+    ]
+    task = calculate_task_metrics(trajectories)
+    _augment_task_metrics(task, task_id="task-unpriced")
+    agg = calculate_aggregate_metrics([task], weighted=True)
+
+    for payload in (task, agg):
+        assert payload["total_cost_usd"] is None
+        assert payload["total_cost_incl_judge_usd"] is None
+        assert payload["total_cost_incl_all_usd"] is None
+        assert payload["total_cost_incl_all_usd"] == payload["total_cost_incl_judge_usd"]
+        # The ``agent`` row itself is still present at ``$0.00`` — the bug was
+        # summing it into the grand total, not the row's own value.
+        by_role = {row["role"]: row for row in payload["total_cost_by_role"]}
+        assert by_role["agent"]["cost_usd"] == pytest.approx(0.0)
+
+    _round_trip(PerTaskMetrics, task)
+    _round_trip(AggregateMetrics, agg)
+
+
 # ---------------------------------------------------------------------------
 # captured_service_logs roll-up (#337)
 # ---------------------------------------------------------------------------

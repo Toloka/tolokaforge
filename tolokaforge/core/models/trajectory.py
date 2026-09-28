@@ -255,9 +255,9 @@ class RateLimitProbeRoleMetrics(BaseModel):
     down rather than rejecting them, which only goodput and latency catch. See
     ``docs/OUTPUT_FORMAT.md`` § Field observations for the measurements.
 
-    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` holds
-    agent calls only and carries no role field, so per-model goodput and latency
-    are not computable from it. These rows are the role-attributed record.
+    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` records
+    only served responses, so the 429 / retry / wait census is absent from it.
+    These rows are the rate-limit record.
 
     ``model`` is the raw provider-qualified slug the client called
     (``openrouter/anthropic/claude-sonnet-4.6``). The engine deliberately does
@@ -362,6 +362,8 @@ class CostByRoleModelMetrics(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    # Typed ``str`` (not the ``LLMCallRole`` Literal) so a bundle written by a
+    # future run with a new role member round-trips on read rather than raising.
     role: str
     model: str | None = None
     cost_usd: float = 0.0
@@ -384,6 +386,8 @@ class CostByRoleMetrics(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    # Typed ``str`` (not the ``LLMCallRole`` Literal) so a bundle written by a
+    # future run with a new role member round-trips on read rather than raising.
     role: str
     cost_usd: float = 0.0
     prompt_tokens: int = 0

@@ -743,9 +743,10 @@ class TestGoodputReachesMetrics:
     """The serialised surface a consumer computes goodput / tokens-per-second /
     Little's-law concurrency from, without parsing a single log line.
 
-    ``Metrics.usage`` cannot serve: ``usage.calls`` holds agent calls only and
-    carries no role, so a hand count conflated the agent model with the
-    user-simulator model and inflated the number.
+    ``Metrics.usage`` cannot serve: ``usage.calls`` records only served responses,
+    so the 429 / retry / wait census is absent from it, and a hand count of log
+    lines conflated the agent model with the user-simulator model and inflated the
+    number.
     """
 
     _AGENT = "openrouter/deepseek/deepseek-v3.2-exp"

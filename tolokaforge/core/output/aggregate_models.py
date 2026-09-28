@@ -214,7 +214,9 @@ class PerTaskMetrics(BaseModel):
     # Per-role spend plane. ``total_cost_by_role`` sums the trials'
     # ``cost_by_role`` (agent + user) and carries a synthesized ``judge`` row
     # from ``grade.judge_usage``; ``total_cost_incl_all_usd`` is the grand total
-    # across those rows (``None`` when no role spent anything).
+    # across those rows, inheriting ``total_cost_incl_judge_usd``'s None semantics
+    # so an unpriced run (agent row present at ``0.0``, cost unknown) reports
+    # ``None`` rather than a false ``0.0``.
     total_cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
     total_cost_incl_all_usd: int | float | None = None
 
@@ -324,7 +326,9 @@ class AggregateMetrics(BaseModel):
 
     # Run-level per-role spend plane, merged from the per-task
     # ``total_cost_by_role`` rows (one row per role, summed across tasks) with
-    # ``total_cost_incl_all_usd`` the grand total across every role.
+    # ``total_cost_incl_all_usd`` the grand total across every role, ``None`` on
+    # the same terms as ``total_cost_incl_judge_usd`` so an unpriced run is not
+    # reported as a definite ``0.0``.
     total_cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
     total_cost_incl_all_usd: int | float | None = None
 
