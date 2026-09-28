@@ -113,7 +113,8 @@ class Finding:
 class SafetyGate:
     """Scans serialised payloads; built once per process with the secrets it must never leak."""
 
-    known_values: tuple[bytes, ...] = ()
+    # never in a repr: a traceback or a debugger would print every value the gate protects
+    known_values: tuple[bytes, ...] = field(default=(), repr=False)
     # every rule -> how many hits it produced (for the receipt)
     hits: dict[str, int] = field(default_factory=dict)
 

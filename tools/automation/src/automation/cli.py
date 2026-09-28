@@ -34,6 +34,8 @@ app = typer.Typer(
     help="Arena model automation: observe quirks, resolve a policy + cert, finalize the PR.",
     no_args_is_help=True,
     add_completion=False,
+    # a traceback lands in a public job log; the locals of these commands hold keys and agent output
+    pretty_exceptions_show_locals=False,
 )
 
 # Slack thread notifications are their own sub-app (`automation slack ...`).

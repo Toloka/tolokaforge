@@ -490,6 +490,13 @@ class TestTheSentinel:
         with pytest.raises(safety.SafetyError, match="known-secret-value"):
             gate.check(payload, what="transcript t")
 
+    def test_the_gates_repr_carries_none_of_the_values_it_guards(self) -> None:
+        gate = safety.SafetyGate.from_environment(
+            {"ACME_UPLOAD_TOKEN": "not-a-shape-just-a-password"}
+        )
+        assert gate.known_values
+        assert "not-a-shape-just-a-password" not in repr(gate)
+
     def test_the_working_directory_is_not_a_known_secret(self) -> None:
         """``PWD`` matches the password pattern by name, but the shell sets it to the working
         directory: a transcript naming a file under it must not be blocked as a leak, while a

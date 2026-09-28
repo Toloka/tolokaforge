@@ -381,6 +381,39 @@ class TestTheReport:
         lu.write_summary(lu.UploadReport(), None)
 
 
+class TestACrash:
+    """A traceback of this command lands in a public job log, and its locals hold the sentinel's
+    known values and the agent's raw output. The command must crash without printing them."""
+
+    CRASH = (
+        "import automation.cli as cli\n"
+        "import automation.langfuse_upload as lu\n"
+        "def crash(*args, **kwargs):\n"
+        "    held = 'fake-credential-value-0123456789'\n"
+        "    raise RuntimeError('the upload crashed')\n"
+        "lu.upload = crash\n"
+        "cli.app(['langfuse-upload', 'unused', '--run-id', 'r', '--label', 'l'])\n"
+    )
+
+    def test_a_crash_prints_no_local_value(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k != "_TYPER_STANDARD_TRACEBACK"}
+        result = subprocess.run(
+            [sys.executable, "-c", self.CRASH],
+            capture_output=True,
+            text=True,
+            env={**env, "COLUMNS": "200"},
+            check=False,
+            timeout=60,
+        )
+        assert result.returncode != 0
+        assert "the upload crashed" in result.stderr
+        assert "fake-credential-value" not in result.stderr + result.stdout
+
+
 class TestThePairParsing:
     def test_it_reads_the_repeated_options(self) -> None:
         assert lu.parse_pairs(["team:acme", "run_kind:test"], ":", "--tag") == {
