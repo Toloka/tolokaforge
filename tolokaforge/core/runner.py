@@ -241,6 +241,7 @@ class TrialRunner:
         sourced_tool_names: Collection[str] = (),
         user_stop: UserStopRule = UserStopRule(),
         user_tool_turns: UserToolTurnRule = UserToolTurnRule(),
+        first_agent_message: str | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -278,6 +279,11 @@ class TrialRunner:
         self._loop_observer = loop_observer
         self._user_stop = user_stop
         self._user_tool_turns = user_tool_turns
+        # ``actors.user.first_agent_message``: written as the transcript's first
+        # message, ahead of turn 0, when set. The message written is kept, so the
+        # turn counts can leave out the one assistant message no model generated.
+        self._first_agent_message = first_agent_message
+        self._opening_line: Message | None = None
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
@@ -924,7 +930,7 @@ class TrialRunner:
         """
         end_ts = datetime.now(tz=timezone.utc)
         self.metrics.latency_total_s = time.time() - self.start_time
-        self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+        self.metrics.turns = self._agent_generations(self.messages)
         self._apply_probe_stats()
         self._apply_harness_telemetry()
 
@@ -1351,6 +1357,10 @@ class TrialRunner:
     ) -> None:
         """Determine and append the first user message before the loop runs.
 
+        A task's ``first_agent_message`` is appended ahead of it, as the agent's
+        first turn: the simulator then answers that line rather than the built-in
+        greeting, and the agent reads it back as its own.
+
         Delegates to ``policy.bootstrap(...)``: a policy may short-circuit to a
         caller-provided literal (tool-use / Tau style, agent-monologue seed),
         route to a user simulator to synthesise turn 0 (today's default
@@ -1366,6 +1376,15 @@ class TrialRunner:
         """
         seed = initial_user_message if initial_user_message.strip() else None
         decision = policy.bootstrap(task_config, seed)
+
+        if self._first_agent_message is not None:
+            self._opening_line = Message(
+                role=MessageRole.ASSISTANT,
+                content=self._first_agent_message,
+                ts=datetime.now(tz=timezone.utc),
+            )
+            self.messages.append(self._opening_line)
+            self.logger.info("Agent opening delivered", chars=len(self._first_agent_message))
 
         first_user_calls: list[ToolCall] = []
         if decision.first_user_message is not None:
@@ -1416,8 +1435,9 @@ class TrialRunner:
         )
 
     def _bootstrap_via_simulator(self) -> tuple[str, list[ToolCall]]:
-        """Synthesise turn 0 by dispatching the user simulator against a canned
-        agent greeting. Retries on rate limits only.
+        """Synthesise turn 0 by dispatching the user simulator against the agent's
+        opening line, or a canned agent greeting when the task declared none.
+        Retries on rate limits only.
 
         Returns the opening message text with any tool results inlined, and the
         calls that produced them. Only the tool-call half of a user turn is
@@ -1443,20 +1463,14 @@ class TrialRunner:
                 "bootstrap_via_simulator requires a user simulator; the conductor "
                 "must construct one for interaction_mode='conversational'."
             )
-        greeting_context = [
-            Message(
-                role=MessageRole.ASSISTANT,
-                content=SIMULATOR_GREETING,
-                ts=datetime.now(tz=timezone.utc),
-            )
-        ]
+        greeting_context = self._greeting_context()
         if self._user_tool_turns.isolated:
             return self._bootstrap_isolated(self.user_simulator, greeting_context)
         init_attempts = 1 if self._rate_limit_probe_active else 4
         for attempt in range(1, init_attempts + 1):
             try:
                 first_user_result = self.user_simulator.reply(
-                    greeting_context, observation=self._user_observation
+                    greeting_context + self.messages, observation=self._user_observation
                 )
                 self._record_user_reply_guard(
                     message_index=len(self.messages),
@@ -1512,6 +1526,31 @@ class TrialRunner:
 
         raise RuntimeError("Failed to generate initial user message")
 
+    def _agent_generations(self, messages: list[Message]) -> int:
+        """The assistant messages in *messages* the agent generated: all but the opening line."""
+        return sum(
+            1
+            for message in messages
+            if message.role == MessageRole.ASSISTANT and message is not self._opening_line
+        )
+
+    def _greeting_context(self) -> list[Message]:
+        """What leads the transcript in the simulator's turn-0 context.
+
+        Nothing, when the task declared a ``first_agent_message``: the transcript
+        already opens with it. Otherwise the canned :data:`SIMULATOR_GREETING`,
+        which the simulator's view prepends to every later context as well.
+        """
+        if self._first_agent_message is not None:
+            return []
+        return [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=SIMULATOR_GREETING,
+                ts=datetime.now(tz=timezone.utc),
+            )
+        ]
+
     def _bootstrap_isolated(
         self, simulator: UserSimulator, greeting_context: list[Message]
     ) -> tuple[str, list[ToolCall]]:
@@ -1532,7 +1571,7 @@ class TrialRunner:
         from the episode budget, and the loop's first turn ends a trial whose
         opening ran past that budget with ``TIMEOUT``.
         """
-        opening = self._bootstrap_reply(simulator, greeting_context)
+        opening = self._bootstrap_reply(simulator, greeting_context + self.messages)
         steps = 0
         while opening.tool_calls:
             steps += 1
@@ -1673,7 +1712,7 @@ class TrialRunner:
         state = TurnState(
             messages=messages,
             last_agent_had_tool_calls=False,
-            turn_index=sum(1 for m in messages if m.role == MessageRole.ASSISTANT),
+            turn_index=self._agent_generations(messages),
         )
         decision = policy.next_actor(state)
         if decision is None:

@@ -873,6 +873,18 @@ class ToolCallFunnel:
             call.arguments = normalized_args
 
 
+def _opening(wire: list[Message]) -> list[Message]:
+    """The head of *wire* a summarize keeps: everything through the first user turn.
+
+    That is the user's opening, and the agent's opening line ahead of it when the
+    task declared one (``actors.user.first_agent_message``).
+    """
+    for index, message in enumerate(wire):
+        if message.role is MessageRole.USER:
+            return wire[: index + 1]
+    return wire[:1]
+
+
 @dataclass
 class ToolCallingLoop:
     """Generic multi-turn tool-calling engine.
@@ -1333,9 +1345,8 @@ class ToolCallingLoop:
                 ),
                 status=TrialStatus.FAILED,
             )
-        first_user_message = self._wire_messages[0]
         self._wire_messages = [
-            first_user_message,
+            *_opening(self._wire_messages),
             Message(role=MessageRole.USER, content=recap, ts=_now()),
         ]
         marker = self._system_message(
