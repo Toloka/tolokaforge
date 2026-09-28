@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from tolokaforge.core.actors.tool_steps import TurnShape, user_tool_step_positions
 from tolokaforge.core.grading.judge_model_provider import JudgeModel
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.judge_tools import (
@@ -294,9 +295,15 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
     through :func:`_neutralise_judge_delimiters` before it lands in the prompt,
     so a payload that replays one of the judge prompt's own fence strings
     cannot escape the transcript block and inject fake instructions.
+
+    A user's tool step (``actors.user.tool_turns: isolated``) and its results are
+    labelled as such: nobody in the dialogue read them, and a step carries no
+    text, so without its own line its calls would read as the agent's. A
+    transcript without steps renders exactly as it always has.
     """
+    steps = user_tool_step_positions([_turn_shape(msg) for msg in transcript])
     lines: list[str] = []
-    for msg in transcript:
+    for index, msg in enumerate(transcript):
         role = str(msg.get("role", "?")).upper()
         content = msg.get("content")
         if isinstance(content, list):
@@ -304,7 +311,10 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
                 block.get("text", "") for block in content if isinstance(block, dict)
             )
         content = (content or "").strip()
-        if content:
+        if index in steps:
+            lines.append(_user_tool_step_line(role, _neutralise_judge_delimiters(content)))
+            content = content or "(tool result)"
+        elif content:
             lines.append(f"{role}: {_neutralise_judge_delimiters(content)}")
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", tc) if isinstance(tc, dict) else {}
@@ -317,6 +327,24 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
         if msg.get("tool_call_id") and not content:
             lines.append(f"{role}: (tool result)")
     return "\n".join(lines) if lines else "(empty transcript)"
+
+
+def _turn_shape(msg: dict[str, Any]) -> TurnShape:
+    return TurnShape(
+        role=str(msg.get("role", "")).lower(),
+        call_ids=tuple(
+            str(tc.get("id")) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict)
+        ),
+        answers=msg.get("tool_call_id"),
+    )
+
+
+def _user_tool_step_line(role: str, content: str) -> str:
+    """The line a message of a user tool step renders as: the step, or one of its results."""
+    if role == "USER":
+        label = "USER (tool step, not shown to the agent)"
+        return f"{label}: {content}" if content else label
+    return f"TOOL (result for the user): {content or '(tool result)'}"
 
 
 def _build_rubric_brief(rubric: Rubric) -> str:

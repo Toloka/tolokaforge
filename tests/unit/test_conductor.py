@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from tolokaforge.core.actors.tool_turns import UserToolTurnRule
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.conductor import (
     DEFAULT_MAX_TURNS,
@@ -719,10 +719,7 @@ class TestUserToolTurnsReachTheRunner:
             task_id="t1", description="d", actors={"user": ActorSpec(tool_turns="isolated")}
         )
 
-        with (
-            patch("tolokaforge.core.conductor.validate_rate_limit_probe_budget"),
-            pytest.raises(ValueError, match="rate_limit_probe is enabled"),
-        ):
+        with pytest.raises(ValueError, match="rate_limit_probe is enabled"):
             _trial_runner_kwargs(
                 tmp_path, task, rate_limit_probe=RateLimitProbeConfig(enabled=True)
             )

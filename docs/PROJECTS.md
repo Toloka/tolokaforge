@@ -1051,7 +1051,10 @@ An `ActorSpec` carries:
 - `mode` (`llm` or `scripted`), `persona`, `backstory` (inline text) and
   `scripted_flow`;
 - the stop rule, `stop_tokens` and `stop_with_text` (see
-  [Declaring the stop tokens](TASKS.md#declaring-the-stop-tokens)).
+  [Declaring the stop tokens](TASKS.md#declaring-the-stop-tokens));
+- `tool_turns` and `max_tool_steps`, how the simulator's own tool calls run (see
+  [User tool turns](TASKS.md#user-tool-turns)). A task drops a project-level value
+  with `null`.
 
 The project declares the shared defaults under
 `task_defaults.actors.user`; each task overrides field-by-field

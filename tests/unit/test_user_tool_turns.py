@@ -24,12 +24,16 @@ import pytest
 from litellm.litellm_core_utils.prompt_templates.factory import anthropic_messages_pt
 from litellm.llms.vertex_ai.gemini.transformation import _gemini_convert_messages_with_history
 
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.actors.tool_turns import (
-    UserToolTurnRule,
     agent_view,
+    shared_view,
     simulator_view,
     user_tool_step_call_ids,
 )
+from tolokaforge.core.grading.trace_event_kind import TraceEventKind
+from tolokaforge.core.grading.trace_timeline import build_trial_timeline
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import BuiltinUserSimulator
@@ -48,6 +52,7 @@ from tolokaforge.core.models import (
     UserSimulatorConfig,
 )
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.runner.models import RequiredAction, TranscriptRulesConfig
 from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
@@ -117,8 +122,61 @@ class TestProjections:
             (MessageRole.ASSISTANT, "Your card is blocked."),
         ]
 
-    def test_both_projections_leave_a_shared_transcript_alone(self) -> None:
+    def test_the_agent_view_leaves_a_shared_transcript_alone(self) -> None:
         assert agent_view(SHARED_TRANSCRIPT) == SHARED_TRANSCRIPT
+
+    def test_only_the_isolated_view_drops_agent_text_beside_its_calls(self) -> None:
+        """An agent message that calls tools is addressed to the environment, so the
+        isolated simulator never reads it; the shared view keeps its text, as the
+        shared simulator always has."""
+        transcript = [
+            _msg(MessageRole.USER, "My card was declined."),
+            _msg(MessageRole.ASSISTANT, "Let me look.", tool_calls=[_call("a1", "get_card")]),
+            _msg(MessageRole.TOOL, "card: blocked", tool_call_id="a1"),
+            _msg(MessageRole.ASSISTANT, "Your card is blocked."),
+        ]
+
+        assert [(m.role, m.content) for m in shared_view(transcript)] == [
+            (MessageRole.ASSISTANT, "My card was declined."),
+            (MessageRole.USER, "Let me look.\n\nYour card is blocked."),
+        ]
+        assert [(m.role, m.content) for m in simulator_view(transcript)] == [
+            (MessageRole.ASSISTANT, "My card was declined."),
+            (MessageRole.USER, "Your card is blocked."),
+        ]
+
+    def test_a_shared_turn_reusing_an_agent_call_id_is_not_a_step(self) -> None:
+        """A bundle recorded before call ids were unique across actors can give a
+        ``shared`` user call the raw id of an agent call. The step rule reads the
+        TOOL messages right after the user message, so the agent's own result
+        elsewhere does not turn the user's turn into a step."""
+        legacy = [
+            _msg(MessageRole.USER, "Hi."),
+            _msg(MessageRole.ASSISTANT, "", tool_calls=[_call("call_1", "get_card")]),
+            _msg(MessageRole.TOOL, "card: blocked", tool_call_id="call_1"),
+            _msg(MessageRole.ASSISTANT, "Can you check your balance?"),
+            _msg(
+                MessageRole.USER,
+                "Let me check that.\n\ncheck_balance() result: 12.50",
+                tool_calls=[_call("call_1")],
+            ),
+            _msg(MessageRole.ASSISTANT, "Your card is blocked."),
+        ]
+
+        assert user_tool_step_call_ids(legacy) == frozenset()
+        assert agent_view(legacy) == legacy
+        kinds = [event.kind for event in build_trial_timeline(legacy, [], None).events]
+        assert kinds.count(TraceEventKind.USER_MESSAGE) == 2
+
+    def test_a_step_needs_every_call_answered_right_after_it(self) -> None:
+        answered_later = [
+            _msg(MessageRole.USER, "", tool_calls=[_call("u1"), _call("u2", "list_cards")]),
+            _msg(MessageRole.TOOL, "balance: 12.50", tool_call_id="u1"),
+            _msg(MessageRole.ASSISTANT, "Hm."),
+            _msg(MessageRole.TOOL, "cards: [visa]", tool_call_id="u2"),
+        ]
+
+        assert user_tool_step_call_ids(answered_later) == frozenset()
 
     def test_the_simulator_sees_its_own_steps_and_none_of_the_agents(self) -> None:
         view = simulator_view(ISOLATED_TRANSCRIPT)
@@ -186,18 +244,25 @@ class TestUserToolTurnRule:
 
 
 class _RecordingAgent:
-    """The agent's generate seam: queued texts, and a copy of every request's messages."""
+    """The agent's generate seam: queued replies, and a copy of every request's messages.
 
-    def __init__(self, *texts: str) -> None:
-        self._texts = list(texts)
+    A reply is a text, or a :class:`GenerationResult` for a turn that calls tools.
+    """
+
+    def __init__(self, *replies: str | GenerationResult) -> None:
+        self._replies = list(replies)
         self.requests: list[list[Message]] = []
         self.capabilities = ModelCapabilities()
 
     def generate(self, *, messages: list[Message], **_: Any) -> GenerationResult:
         self.requests.append(list(messages))
-        text = self._texts.pop(0) if len(self._texts) > 1 else self._texts[0]
+        reply = self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+        if isinstance(reply, str):
+            reply = _say(reply)
         return GenerationResult(
-            text=text, tool_calls=[], usage=Usage(prompt_tokens=10, completion_tokens=5)
+            text=reply.text,
+            tool_calls=list(reply.tool_calls),
+            usage=Usage(prompt_tokens=10, completion_tokens=5),
         )
 
     def classify_loop_error(self, exc: Exception):
@@ -250,6 +315,7 @@ def _isolated_trial(
     user: _QueuedUser,
     *,
     tools: _UserTools | None = None,
+    agent_tools: _UserTools | None = None,
     max_steps: int = 10,
     episode_timeout_s: int = 600,
 ) -> TrialRunner:
@@ -258,7 +324,7 @@ def _isolated_trial(
         trial_index=0,
         agent_client=agent,  # type: ignore[arg-type]
         user_simulator=user,  # type: ignore[arg-type]
-        tool_executor=MagicMock(),
+        tool_executor=agent_tools or MagicMock(),
         tool_schemas=[],
         user_tool_executor=tools or _UserTools(),
         episode_timeout_s=episode_timeout_s,
@@ -369,8 +435,8 @@ class TestIsolatedTurns:
             "tool",
         ]
         assert trajectory.messages[-1].content == (
-            "User took 2 tool step(s) without replying; the 1 call(s) of the next step were "
-            "not run. Dialogue terminated."
+            "User took 2 tool step(s) without replying; the next step's 1 call(s), "
+            "check_balance, were not run. Dialogue terminated."
         )
 
     def test_the_episode_timeout_is_checked_between_steps(self) -> None:
@@ -469,6 +535,114 @@ def _simulator(
     wire = _FakeWire(*results)
     simulator.llm_client = wire  # type: ignore[assignment]
     return simulator, wire
+
+
+class TestIsolatedTurnsDownstream:
+    """What an isolated trial hands its readers: the agent's context, the grading
+    timeline, a required user action, and the simulator's next request."""
+
+    def test_the_agent_keeps_its_own_tool_traffic_and_the_timeline_agrees(self) -> None:
+        agent = _RecordingAgent(
+            _tool_step(_call("a1", "get_card")),
+            "Can you check your balance?",
+            "Your card is blocked.",
+        )
+        # The user's raw id collides with the agent's; the trial's assigner keys it apart.
+        user = _QueuedUser(_tool_step(_call("a1")), _say("It says 12.50."), _say("###STOP###"))
+        runner = _isolated_trial(agent, user, agent_tools=_UserTools())
+
+        trajectory = runner.run("System", "My card was declined.")
+
+        assert trajectory.termination_reason == TerminationReason.USER_STOP
+        last_request = agent.requests[-1]
+        assert [m.tool_call_id for m in last_request if m.role is MessageRole.TOOL] == ["a1"]
+        assert not any(m.role is MessageRole.USER and m.tool_calls for m in last_request)
+        step = next(m for m in trajectory.messages if m.role is MessageRole.USER and m.tool_calls)
+        assert step.tool_calls[0].id == "a1#2"
+        timeline = build_trial_timeline(
+            trajectory.messages, runner.tool_call_recorder.recorded, trajectory.termination_reason
+        )
+        assert [event.kind for event in timeline.events] == [
+            TraceEventKind.USER_MESSAGE,
+            TraceEventKind.ASSISTANT_MESSAGE,
+            TraceEventKind.TOOL_CALL,
+            TraceEventKind.TOOL_RESULT,
+            TraceEventKind.ASSISTANT_MESSAGE,
+            TraceEventKind.TOOL_CALL,
+            TraceEventKind.TOOL_RESULT,
+            TraceEventKind.USER_MESSAGE,
+            TraceEventKind.ASSISTANT_MESSAGE,
+        ]
+        assert [m.role for m in simulator_view(user.contexts[1])] == [
+            MessageRole.ASSISTANT,
+            MessageRole.USER,
+            MessageRole.ASSISTANT,
+            MessageRole.TOOL,
+        ]
+
+    @pytest.mark.parametrize(("requestor", "passed"), [("user", True), ("assistant", False)])
+    def test_a_required_user_action_is_met_by_a_step(self, requestor: str, passed: bool) -> None:
+        agent = _RecordingAgent("Can you check your balance?", "Thanks.")
+        user = _QueuedUser(
+            _tool_step(_call("u1", account="main")), _say("It says 12.50."), _say("###STOP###")
+        )
+        runner = _isolated_trial(agent, user)
+
+        trajectory = runner.run("System", "My card was declined.")
+        timeline = build_trial_timeline(
+            trajectory.messages, runner.tool_call_recorder.recorded, trajectory.termination_reason
+        )
+        rules = TranscriptRulesConfig(
+            required_actions=[
+                RequiredAction(
+                    action_id="check",
+                    requestor=requestor,
+                    name="check_balance",
+                    arguments={"account": "main"},
+                )
+            ]
+        )
+
+        assert evaluate_transcript_rules(timeline, rules).passed is passed
+
+    def test_a_step_carries_the_simulators_reasoning_into_its_next_ask(self) -> None:
+        """The runner records a step's reasoning, so a thinking model's signed blocks
+        reach the simulator's next request (see the provider test below)."""
+        thinking = StructuredReasoning(
+            blocks=(ReasoningBlock(type="thinking", text="Check first.", signature="sig-1"),),
+            transport="anthropic_native",
+        )
+        step = GenerationResult(text="", tool_calls=[_call("u1")], reasoning=thinking)
+        user = _QueuedUser(step, _say("It says 12.50."), _say("###STOP###"))
+        runner = _isolated_trial(_RecordingAgent("Can you check your balance?", "Thanks."), user)
+
+        trajectory = runner.run("System", "My card was declined.")
+
+        recorded = next(
+            m for m in trajectory.messages if m.role is MessageRole.USER and m.tool_calls
+        )
+        assert recorded.reasoning == thinking
+        replayed = next(m for m in simulator_view(user.contexts[1]) if m.tool_calls)
+        assert replayed.reasoning == thinking
+
+    def test_an_opening_that_overruns_the_budget_ends_on_the_first_turn(self) -> None:
+        """Turn 0 runs before the loop, so no timeout check interrupts its steps; the
+        loop's first turn ends the trial with ``timeout`` before the agent speaks."""
+        agent = _RecordingAgent("never generated")
+        user = _QueuedUser(_tool_step(_call("u1")), _tool_step(_call("u2")), _say("I need help."))
+        runner: TrialRunner
+
+        def spend_the_budget() -> None:
+            runner.episode_timeout_s = 0
+
+        runner = _isolated_trial(agent, user, tools=_UserTools(on_execute=spend_the_budget))
+
+        trajectory = runner.run("System")
+
+        assert len(user.contexts) == 3
+        assert agent.requests == []
+        assert trajectory.termination_reason == TerminationReason.TIMEOUT
+        assert _roles(trajectory.messages) == ["user+calls", "tool", "user+calls", "tool", "user"]
 
 
 class TestIsolatedSimulator:
@@ -617,3 +791,61 @@ class TestProviderShapes:
         response_parts = [p for p in contents[4]["parts"] if "function_response" in p]
         assert [p["function_call"]["name"] for p in call_parts] == ["check_balance"]
         assert [p["function_response"]["name"] for p in response_parts] == ["check_balance"]
+
+
+def test_a_thinking_step_with_two_calls_pairs_both_results_for_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step with parallel calls, built for an Anthropic model and converted by
+    litellm's own Anthropic transformation: the signed thinking leads the step's
+    turn, and one user turn answers both calls, in order."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-sk-tool-turns")
+    thinking = StructuredReasoning(
+        blocks=(ReasoningBlock(type="thinking", text="Check both.", signature="sig-1"),),
+        transport="anthropic_native",
+    )
+    transcript = [
+        _msg(MessageRole.USER, "My card was declined."),
+        _msg(MessageRole.ASSISTANT, "Can you check your balance and cards?"),
+        _msg(
+            MessageRole.USER,
+            "",
+            tool_calls=[_call("u1"), _call("u2", "list_cards")],
+            reasoning=thinking,
+        ),
+        _msg(MessageRole.TOOL, "balance: 12.50", tool_call_id="u1"),
+        _msg(MessageRole.TOOL, "cards: [visa]", tool_call_id="u2"),
+    ]
+    simulator = BuiltinUserSimulator(
+        mode="llm",
+        llm_config=ModelConfig(provider="anthropic", name="claude-opus-4-7"),
+        tool_schemas=[
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": "d",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for name in ("check_balance", "list_cards")
+        ],
+        tool_turns="isolated",
+    )
+    with (
+        patch(
+            "tolokaforge.core.llm.client.completion", return_value=_completion_response()
+        ) as completion,
+        patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+    ):
+        simulator.reply(transcript)
+
+    converted = anthropic_messages_pt(
+        [m for m in completion.call_args.kwargs["messages"] if m["role"] != "system"],
+        model="claude-opus-4-7",
+        llm_provider="anthropic",
+    )
+    assert [m["role"] for m in converted] == ["user", "assistant", "user", "assistant", "user"]
+    step_blocks = [block["type"] for block in converted[3]["content"]]
+    assert step_blocks[0] == "thinking" and step_blocks.count("tool_use") == 2
+    assert [block["tool_use_id"] for block in converted[4]["content"]] == ["u1", "u2"]
