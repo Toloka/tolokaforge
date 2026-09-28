@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import yaml
+from rich.console import Console
 
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.dry_run import (
@@ -24,6 +25,7 @@ from tolokaforge.core.dry_run import (
 )
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.models import (
+    ActorSpec,
     EvaluationConfig,
     ModelConfig,
     OrchestratorConfig,
@@ -31,6 +33,7 @@ from tolokaforge.core.models import (
     TypeSenseConfig,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.dx.dry_run_render import render_dry_run_sample
 
 pytestmark = pytest.mark.unit
 
@@ -117,6 +120,49 @@ class TestMaterializeDryRunSample:
         assert "generated at runtime by user simulator" in sample.user_prompt_text
         assert f"mode={sim.mode}" in sample.user_prompt_text
         assert f"persona={sim.persona}" in sample.user_prompt_text
+
+    def test_materialize_shows_the_agent_opening_line(self) -> None:
+        adapter = _tool_use_adapter()
+        task = adapter.get_task("tool_use_public_example_01")
+        opened = task.model_copy(
+            update={
+                "actors": {
+                    **(task.actors or {}),
+                    "user": ActorSpec(first_agent_message="Hi! How can I help you today?"),
+                }
+            }
+        )
+        agent = ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4-6")
+
+        sample = materialize_dry_run_sample(
+            task=opened,
+            adapter=adapter,
+            agent_config=agent,
+            judge_config=None,
+            runtime_choice="shared",
+        )
+        console = Console(record=True, width=120)
+        render_dry_run_sample(sample=sample, console=console)
+
+        assert sample.agent_opening_line == "Hi! How can I help you today?"
+        rendered = console.export_text()
+        assert rendered.index("Agent opening line:") < rendered.index("User prompt:")
+        assert "Hi! How can I help you today?" in rendered
+
+    def test_materialize_has_no_opening_line_by_default(self) -> None:
+        adapter = _tool_use_adapter()
+        task = adapter.get_task("tool_use_public_example_01")
+        agent = ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4-6")
+
+        sample = materialize_dry_run_sample(
+            task=task,
+            adapter=adapter,
+            agent_config=agent,
+            judge_config=None,
+            runtime_choice="shared",
+        )
+
+        assert sample.agent_opening_line is None
 
     def test_materialize_no_http_via_respx(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No socket opens. Belt-and-braces: patch httpx.Client.send AND
