@@ -607,8 +607,8 @@ class TestTheEnvironmentGuard:
 
     @pytest.mark.parametrize(
         "answer",
-        [{"message": "not the API"}, {"data": None}, ["a", "list"]],
-        ids=["no-data", "null-data", "not-a-mapping"],
+        [{"message": "not the API"}, {"data": None}, ["a", "list"], {"data": ["<html>", "page"]}],
+        ids=["no-data", "null-data", "not-a-mapping", "rows-that-are-not-rows"],
     )
     def test_an_answer_that_is_not_the_api_is_could_not_ask(self, answer: Any) -> None:
         assert self.receiver_answering([answer]).environments_of("trace") is None
@@ -689,6 +689,24 @@ class TestTheEnvironmentGuard:
             for thread in threads:
                 thread.join(timeout=5)
         assert reached == []
+
+    def test_a_walk_without_end_stops(self) -> None:
+        """Fresh cursors forever are no more paging than the same one twice."""
+        reads: list[int] = []
+
+        def endless(path: str) -> Any:
+            reads.append(1)
+            if len(reads) > 10 * lu.MAX_PAGES:
+                raise AssertionError("the walk did not stop")
+            return {
+                "data": [{"id": str(i), "environment": "test"} for i in range(lu.READ_PAGE)],
+                "meta": {"cursor": f"cursor-{len(reads)}"},
+            }
+
+        receiver = lu.Receiver(endpoint="https://h/v1/traces", base_url="https://h")
+        object.__setattr__(receiver, "_get", endless)
+        assert receiver.environments_of("trace") is None
+        assert len(reads) == lu.MAX_PAGES + 1
 
     def test_a_malformed_http_answer_is_could_not_ask(self) -> None:
         """A proxy answering with a broken status line raises http.client's own error, which is

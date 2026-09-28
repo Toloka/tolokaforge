@@ -50,6 +50,8 @@ OBSERVATIONS_PATH = "/api/public/v2/observations"
 # ``core`` alone has no environment and ``basic`` brings it in the same request, no second round trip
 OBSERVATION_FIELDS = "core,basic"
 READ_PAGE = 100
+# a transcript's trace is a few hundred observations; a walk past this many pages is not paging
+MAX_PAGES = 50
 # a row the receiver filed under no environment of its own sits in its default
 DEFAULT_ENVIRONMENT = "default"
 DEFAULT_RUN_TAG = "v1"
@@ -154,18 +156,18 @@ class Receiver:
                 query += f"&cursor={quote(cursor, safe='')}"
             payload = self._get(f"{OBSERVATIONS_PATH}?{query}")
             rows = payload.get("data") if isinstance(payload, Mapping) else None
-            if not isinstance(rows, list):
+            if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
                 # no answer, or one that is not the observations API (a proxy's own page)
                 return None
-            page = [row for row in rows if isinstance(row, Mapping)]
+            page = list(rows)
             found.update(str(row.get("environment") or DEFAULT_ENVIRONMENT) for row in page)
             meta = payload.get("meta")
             cursor = str(meta.get("cursor") or "") if isinstance(meta, Mapping) else ""
             # a short page ends the walk whatever the cursor says: this read must never spin
             if not cursor or len(page) < READ_PAGE:
                 return found
-            if cursor in cursors:
-                # a receiver handing back a cursor it already gave is not paging
+            if cursor in cursors or len(cursors) >= MAX_PAGES:
+                # a cursor handed back twice, or a walk without end, is not paging
                 return None
             cursors.add(cursor)
 
