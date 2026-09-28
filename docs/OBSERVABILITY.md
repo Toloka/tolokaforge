@@ -459,8 +459,8 @@ Langfuse-shaped is the `tolokaforge-langfuse` distribution (`tolokaforge_langfus
 repository, a workspace member released on its own `langfuse-vX.Y.Z` cadence, `docs/RELEASING.md`):
 the OTLP observer, the trial-end projection, the gradings pass, the media and ingestion calls, the
 attachment manifest, the deployment profile, the model-name resolution, and the coding-agent
-transcript path (`transcripts.py`) with the outbound sentinel (`safety.py`) both producers scan
-with.
+transcript path (`transcripts.py`) with the outbound sentinel its uploaders scan with
+(`safety.py`).
 
 A plugin is a callable registered under the `tolokaforge.trial_observers` entry-point group with the
 signature `build(tracing, identity, *, engine_run_id, output_dir) -> TrialObserver | None`. At run

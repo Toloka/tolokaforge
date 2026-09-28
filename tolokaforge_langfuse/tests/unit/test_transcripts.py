@@ -3,8 +3,8 @@
 The adversarial payloads are **assembled at run time** rather than committed as fixture files:
 every one of them is a credential *shape*, and a file full of key-shaped literals in a public
 repository is a permanent finding for every secret scanner that ever reads it. Assembling them
-here gives the same coverage (the table below states the outcome of each case, as the test plan
-asks) and leaves nothing key-shaped on disk.
+here gives the same coverage (the table below states the outcome of each case) and leaves nothing
+key-shaped on disk.
 """
 
 from __future__ import annotations

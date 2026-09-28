@@ -7,7 +7,8 @@ keys. So every payload a producer sends, ingestion events and media alike, is sc
 **serialised bytes** before the send, fail-closed:
 
 - **known secret values**: every credential the process itself holds (environment variables whose
-  name looks like a secret) and the values of the repo-root ``.env`` under secret-like keys;
+  name looks like a secret) and, when the caller names one, the values of a ``.env`` file under
+  secret-like keys;
 - **shape patterns**: dotenv lines with secret-like keys, ``Authorization`` headers, PEM blocks,
   URL credentials (a redacted ``***`` password is not a hit), well-known key prefixes
   (``pk-lf-``, ``sk-lf-``, ``sk-or-``, ``sk-ant-``, ``ghp_``, ``github_pat_``, ``xox?-``,
@@ -23,8 +24,10 @@ What an ATTACHMENT may be is a different question and lives with the attachments
 :func:`tolokaforge_langfuse.attachments.allowed_attachment`. Two allowlists under one name in
 one package is how they drift apart.
 
-Engine-free by construction, so both producers ship the same gate: the live path's automation
-uploader and the offline uploader scan with one implementation and one set of fixtures.
+Engine-free by construction, so the two transcript uploaders (``automation langfuse-upload`` in the
+engine repository and the offline connector) scan with one implementation and one set of fixtures.
+The live observer's attachment step still scans with its own copy of the shapes
+(:class:`tolokaforge_langfuse.attachments.SecretScan`).
 """
 
 from __future__ import annotations
@@ -122,7 +125,7 @@ class SafetyGate:
     def from_environment(
         cls, env: Mapping[str, str] | None = None, dotenv: Path | None = None
     ) -> SafetyGate:
-        """Known secret values from the process environment and the repo-root ``.env``."""
+        """Known secret values from the process environment and, when given, a ``.env`` file."""
         values: set[bytes] = set()
         for name, value in (env if env is not None else os.environ).items():
             if _looks_secret(name) and len(value) >= MIN_SECRET_VALUE:

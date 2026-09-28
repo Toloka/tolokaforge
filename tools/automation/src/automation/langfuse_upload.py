@@ -18,7 +18,8 @@ What it does, in order, per file:
 5. **export** one batch per transcript.
 
 Nothing here fails the pipeline on its own: the command reports what it refused, what it blocked
-and what it could not send, and the workflow step carries ``continue-on-error``. Credentials are
+and what it could not send and exits 1 for any of them, for a step that carries
+``continue-on-error`` to show without failing the job. Credentials are
 read from the step's own environment through the ``SecretManager``, never logged, and never
 written to the receipt.
 
