@@ -242,7 +242,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   means both substrates' transcript rules are reading a trial the two views no
   longer agree on. One lock reads the ids as recorded, before any timeline: its
   failure means the loop stopped assigning episode-unique ids at ingestion
-  (`ToolCallingLoop._assign_call_ids`), not that a substrate drifted — the
+  (`ToolCallFunnel.assign_ids`), not that a substrate drifted — the
   runner half executes the ids the loop produced, as production does.
   Build a coherent message-view/record pair for a grading fixture
   with `tests/utils/timelines.py`; a record naming a call no message asked for is a

@@ -815,7 +815,31 @@ def my_loop_factory(ctx: AgentLoopContext) -> MyAgentLoop:
 my_loop = "mypkg.loop:my_loop_factory"
 ```
 
-The `AgentLoop` docstring carries the three obligations grading enforces and the type checker does not: every call id comes from `context.call_ids.assign(...)` and is used identically on the assistant `Message`, in `recorder.record(...)` and in `tool_executor.execute(...)`; a failed tool call's message content carries `tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`; and `metrics`, `should_terminate` and a supplied `user_turn` are fed, not optional. A loop with a text action format normalises each parsed action into a `ToolCall` before appending. See [ADR-0049](adr/0049-agent-loop-protocol-and-registry.md).
+The `AgentLoop` docstring carries the four obligations the type checker does not: every call id comes from `context.call_ids.assign(...)` and is used identically on the assistant `Message`, in `recorder.record(...)` and in `tool_executor.execute(...)`; a failed tool call's message content carries `tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`; `metrics`, `should_terminate` and a supplied `user_turn` are fed, not optional; and a termination reason that excludes the trial from the measured denominator (`RATE_LIMIT`, `API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`) is emitted only with typed evidence named in `LoopOutcome.excluding_reason_evidence` — otherwise the loop emits `ERROR`, which is counted, and an unevidenced claim is downgraded to `ERROR` by the caller. A loop with a text action format normalises each parsed action into a `ToolCall` before appending. See [ADR-0049](adr/0049-agent-loop-protocol-and-registry.md).
+
+Route every tool call through `ToolCallFunnel` and the first two are discharged for you — it is the same implementation the built-in loop runs on:
+
+```python
+from tolokaforge.core.plugin_registry import AgentLoopContext, ToolCallFunnel
+
+class MyAgentLoop:
+    def __init__(self, context: AgentLoopContext) -> None:
+        self.context = context
+        self.funnel = ToolCallFunnel.from_context(context)
+
+    def _turn(self, result, messages: list[Message]) -> None:
+        # Key the turn's calls, then append the assistant message carrying them.
+        calls = self.funnel.assign_ids(result.tool_calls)
+        messages.append(assistant_message_with(calls))
+
+        def append_tool_message(message: Message) -> int:
+            messages.append(message)
+            return len(messages) - 1
+
+        self.funnel.execute_all(calls, append_tool_message, result.text)
+```
+
+`assign_ids` returns the calls the assistant message must carry; `execute` / `execute_all` run each one, record it, word a failure with the error prefix, cap the output, tick metrics and notify the observer. `execute` raises `UnassignedToolCallError` on a call whose id did not come from `assign_ids`, so the two steps cannot be inverted and the id cannot be minted elsewhere.
 
 tolokaforge ships `engine-loop` (the built-in `ToolCallingLoop`) as a built-in under this group; it resolves through the registry like any third-party loop.
 
