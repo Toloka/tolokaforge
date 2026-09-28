@@ -389,6 +389,30 @@ class TestTheUpload:
         report = upload(tmp_path)
         assert report.ok and len(report.sent) == 1
 
+    def test_the_admission_key_is_a_value_the_sentinel_knows(self, tmp_path: Path) -> None:
+        """It reaches the process as LANGFUSE_EXTRA_HEADERS, which the gate does not read as a
+        secret's name, and the agent's own words are never redacted."""
+        admission = "admission-not-real-0123456789"
+        events = json.loads(json.dumps(CLEAN_EVENTS))
+        events[1]["message"]["content"][0]["text"] = f"the runner key is {admission}"
+        write(tmp_path, "agent_iter_1.jsonl", events)
+        receiver = lu.Receiver(
+            endpoint="https://h/v1/traces",
+            headers={"Authorization": "Basic x", "X-GitHub-Runner-Key": admission},
+        )
+        exporter = FakeExporter()
+        import tolokaforge_langfuse.otlp_transport as transport
+
+        original = transport.make_otlp_exporter
+        transport.make_otlp_exporter = lambda *a, **k: exporter  # type: ignore[assignment]
+        try:
+            report = upload(tmp_path, dry_run=False, receiver=receiver)
+        finally:
+            transport.make_otlp_exporter = original  # type: ignore[assignment]
+        assert report.sent == [] and exporter.batches == []
+        assert "known-secret-value" in report.blocked[0]["reason"]
+        assert admission not in json.dumps(report.as_dict())
+
     def test_it_exports_one_batch_per_transcript(self, tmp_path: Path) -> None:
         write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
         write(tmp_path, "agent_finalize.jsonl", CLEAN_EVENTS)

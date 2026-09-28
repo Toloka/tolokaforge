@@ -280,7 +280,7 @@ def upload(
 ) -> UploadReport:
     """Read, gate, project and send every agent transcript under ``directory``."""
     from tolokaforge.observability import ids as engine_ids
-    from tolokaforge_langfuse import otlp_spans, otlp_transport, safety
+    from tolokaforge_langfuse import otlp_spans, otlp_transport
     from tolokaforge_langfuse import transcripts as tr
 
     files = tr.transcript_files(Path(directory))
@@ -291,7 +291,7 @@ def upload(
     if receiver is None and not dry_run:
         receiver = Receiver.from_environment()
     verified = _project_verified(receiver, project)
-    gate = safety.SafetyGate.from_environment()
+    gate = _sentinel(receiver)
     contract = tr.id_contract(engine_ids)
     exporter = (
         otlp_transport.make_otlp_exporter(receiver.endpoint, receiver.headers, retry=False)
@@ -366,6 +366,24 @@ def upload(
                 }
             )
     return report
+
+
+def _sentinel(receiver: Receiver | None) -> Any:
+    """The outbound sentinel: the secrets of the process, and the receiver's own header values,
+    because the admission key arrives as LANGFUSE_EXTRA_HEADERS, a name the gate does not read as
+    a secret's."""
+    from tolokaforge_langfuse import safety
+
+    gate = safety.SafetyGate.from_environment()
+    if receiver is None:
+        return gate
+    held = {
+        value.encode("utf-8")
+        for value in receiver.headers.values()
+        if len(value) >= safety.MIN_SECRET_VALUE
+    }
+    known = sorted(set(gate.known_values) | held, key=len, reverse=True)
+    return safety.SafetyGate(known_values=tuple(known))
 
 
 def _scan(gate: Any, events: Sequence[Mapping[str, Any]], *, what: str) -> list[Any]:
