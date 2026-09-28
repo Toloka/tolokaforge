@@ -44,7 +44,6 @@ from tenacity import (
 from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
-from tolokaforge.core.actors.prompt_template import render_prompt_template
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
 from tolokaforge.core.env_var import parse_env_non_negative_int, parse_env_positive_float
 from tolokaforge.core.llm.capabilities import ModelCapabilities
@@ -2486,24 +2485,22 @@ class UserSimulator(Actor):
         tool_schemas: list[dict[str, Any]] | None = None,
         *,
         rate_limit_probe: RateLimitProbeConfig | None = None,
-        prompt_template: str | None = None,
+        system_prompt: str | None = None,
     ):
+        # A task-authored system prompt — ``actors.user.prompt_template`` as the
+        # conductor renders it — replaces the built-in one whole; ``None`` keeps
+        # the built-in prompt. Only an llm simulator sends a prompt.
+        if system_prompt is not None and mode != "llm":
+            raise ValueError(
+                f"A task-authored system prompt applies to an llm user simulator; this one "
+                f"is {mode!r} and sends no prompt."
+            )
         self.mode = mode
         self.persona = persona
         self.backstory = backstory
         self.scripted_flow = scripted_flow or []
         self.tool_schemas = tool_schemas or []
-        # The prompt a task-authored template renders to, or ``None`` for the
-        # built-in prompt. Both inputs are fixed for the simulator's life, so it is
-        # rendered — and its placeholder checked — once, at construction.
-        self._templated_prompt: str | None = None
-        if prompt_template is not None:
-            if backstory is None:
-                raise ValueError(
-                    "A user-simulator prompt template places the task's backstory; this "
-                    "simulator has none to place."
-                )
-            self._templated_prompt = render_prompt_template(prompt_template, backstory)
+        self._task_system_prompt = system_prompt
         self.llm_client = (
             LLMClient(llm_config, rate_limit_probe=rate_limit_probe)
             if llm_config and mode == "llm"
@@ -2593,12 +2590,13 @@ class UserSimulator(Actor):
         ``tests/canonical/test_simulator_prompt_generation.py`` holds what this
         renders to ``Trajectory.simulator_schema_version``.
 
-        A task-authored ``prompt_template`` replaces all of it: the result is the
-        template with the backstory at its placeholder, and not one character of
-        the built-in body — tool guidance included — is added.
+        A task-authored prompt (``actors.user.prompt_template``, rendered by the
+        conductor) replaces all of it: the result is the template with the
+        backstory at its placeholder, and not one character of the built-in body —
+        tool guidance included — is added.
         """
-        if self._templated_prompt is not None:
-            return self._templated_prompt
+        if self._task_system_prompt is not None:
+            return self._task_system_prompt
 
         instruction_display = (
             ("\n\nInstruction: " + self.backstory + "\n") if self.backstory else ""

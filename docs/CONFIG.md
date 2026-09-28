@@ -537,7 +537,7 @@ actors:
       - default: "Please continue."
     stop_tokens: ["###STOP###"]  # tokens that end the dialogue (see docs/TASKS.md)
     stop_with_text: "deliver"    # "deliver" or "end"
-    prompt_template: null        # task-root path of an authored simulator prompt with {backstory}
+    prompt_template: null        # authored simulator prompt with {backstory}; relative to the task root
 
 policies:
   guidance:

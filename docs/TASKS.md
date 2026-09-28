@@ -265,22 +265,25 @@ Scripted mode (`mode: "scripted"`) is available for simple deterministic flows b
 
 To author the simulator's whole system prompt instead of the built-in one, point
 `prompt_template` at a file (relative to the task root, like `system_prompt`) that
-carries `{backstory}` exactly once:
+carries `{backstory}` exactly once. A project's `task_defaults` may set it too:
+the project loader anchors that path to the project directory, and a task writes
+`prompt_template: null` to go back to the built-in prompt.
 
 ```yaml
 actors:
   user:
     backstory: |
       Instructions:
-      	You want to move your booking to Friday.
+          You want to move your booking to Friday.
     prompt_template: sim/user_prompt.md   # "<guidelines>\n\n<scenario>\n{backstory}\n</scenario>"
 ```
 
-The engine substitutes the backstory and adds nothing else — the built-in rules
-and tool guidance are not appended — so the template must carry every instruction
-the simulator needs, its stop tokens included: the load refuses a `stop_tokens`
-entry that neither the template nor the backstory names. See
-[LLM_LAYER.md § The prompt body](LLM_LAYER.md#the-prompt-body).
+The engine substitutes the backstory and adds nothing else — the built-in rules,
+tool guidance and `persona` are not appended — so the template must carry every
+instruction the simulator needs, its stop tokens included: the load refuses a
+`stop_tokens` entry that neither the template nor the backstory names. `stop_tokens`
+still defaults to `["###STOP###"]`, so a template that teaches other tokens
+declares the list. See [LLM_LAYER.md § The prompt body](LLM_LAYER.md#the-prompt-body).
 
 ### Authoring the opening turn
 
