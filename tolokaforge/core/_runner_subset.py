@@ -94,6 +94,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/run_display_events.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
+    "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     "tolokaforge/core/trial.py",
 )

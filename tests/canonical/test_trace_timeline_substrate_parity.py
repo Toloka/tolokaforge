@@ -492,6 +492,32 @@ def test_the_compared_timeline_is_the_scripted_trial(substrate_timelines) -> Non
         assert all(event.executor is ToolExecutorIdentity.AGENT for event in _results(timeline))
 
 
+def test_the_message_only_timeline_recovers_the_same_result_texts(
+    substrate_recordings: _Recordings, substrate_timelines
+) -> None:
+    """The failure prefix the loop writes is the one the timeline strips.
+
+    A bundle re-graded without ``tool_log.yaml`` has no record view, so a
+    ``result:`` matcher reads the ``role: tool`` message instead — where a
+    failure is marked only by
+    :data:`~tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`.
+    Producer and
+    consumer import one constant, and this is what fails if the two ever spell
+    it differently: no literal appears here, only the round trip. Without it a
+    loop that worded a failure its own way would make every failed call read as
+    a successful one — a wrong grade rather than an error.
+    """
+    core, _ = substrate_timelines
+    message_only = build_trial_timeline(
+        substrate_recordings.core_messages, (), TerminationReason.MAX_TURNS
+    )
+
+    assert message_only.records_present is False
+    assert {event.call_id: event.result for event in _results(message_only)} == {
+        event.call_id: event.result for event in _results(core)
+    }
+
+
 def test_both_substrates_record_the_token_argument_raw(substrate_timelines) -> None:
     """A matcher on a ``token``-named argument must mean the same thing on both
     substrates, which holds only because neither redacts at record time."""

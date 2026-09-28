@@ -25,7 +25,7 @@ from tolokaforge.core.models import (
     LEGACY_DOCKER_RUNTIME_ALIAS,
     RunConfig,
 )
-from tolokaforge.core.plugin_registry import available_runtime_backends
+from tolokaforge.core.plugin_registry import available_agent_loops, available_runtime_backends
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +400,26 @@ def _validate_orchestrator(raw: dict[str, Any]) -> list[ValidationIssue]:
                     message=(
                         f"Unknown runtime backend {orch['runtime']!r}. "
                         f"Registered backends: {', '.join(known)}."
+                    ),
+                )
+            )
+
+    agent_loop = orch.get("agent_loop")
+    if agent_loop is not None:
+        registered = available_agent_loops()
+        if agent_loop not in registered:
+            issues.append(
+                ValidationIssue(
+                    severity=Severity.ERROR,
+                    path="orchestrator.agent_loop",
+                    message=(
+                        f"Unknown agent loop {agent_loop!r}. "
+                        f"Registered loops: {', '.join(registered)}."
+                    ),
+                    hint=(
+                        "Install the package that registers the loop under the "
+                        "tolokaforge.agent_loops entry-point group, or use the "
+                        "built-in 'engine-loop'"
                     ),
                 )
             )

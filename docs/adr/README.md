@@ -81,3 +81,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0046](0046-judgekind-protocol-and-registry.md) | The `JudgeKind` Protocol and entry-point registry | Accepted |
 | [0047](0047-live-tracing-trial-observer-otel.md) | Live tracing: a TrialObserver seam and an OTLP exporter behind the `otel` extra (amended: the Langfuse observer is the `tolokaforge-langfuse` plugin wheel) | Proposed, amended 2026-09-17 |
 | [0048](0048-write-once-observations-append-only-receiver.md) | Write-once producer layout for Langfuse v4 (preview rows while a trial runs, the record written once from the bundle) | Proposed |
+| [0049](0049-agent-loop-protocol-and-registry.md) | The `AgentLoop` Protocol and entry-point registry — the in-process agent loop as an adapter-selectable plugin | Accepted |

@@ -932,6 +932,7 @@ class InProcessConductor:
             events=self.events,
             probe_stats=_build_probe_stats(rate_limit_probe),
             interaction_mode=task.interaction_mode,
+            agent_loop=self.config.orchestrator.agent_loop,
             tool_output_max_chars_by_tool=setup.tool_output_max_chars_by_tool or None,
             loop_observer=(
                 LoopObserverBinding(self.trial_observer, identity, role="agent")
