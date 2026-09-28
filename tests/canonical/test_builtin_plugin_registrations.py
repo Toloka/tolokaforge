@@ -35,8 +35,11 @@ from tolokaforge.core.grading.grading_method import (
     TestExecutionGradingMethod,
 )
 from tolokaforge.core.grading.judge_kinds import (
-    ChunkedRubricJudgeKind,
+    AutoAnchoredRubricJudgeKind,
+    AutoRubricJudgeKind,
+    MultiTurnRubricJudgeKind,
     SingleShotRubricJudgeKind,
+    VotedRubricJudgeKind,
 )
 from tolokaforge.core.grading.kinds import CompositeGraderKind, TestExecutionGraderKind
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
@@ -218,8 +221,11 @@ def test_grader_kind_names_resolve_to_their_class(name: str, expected_cls: type)
 @pytest.mark.parametrize(
     ("name", "expected_cls"),
     [
-        ("chunked_rubric", ChunkedRubricJudgeKind),
+        ("auto_anchored_rubric", AutoAnchoredRubricJudgeKind),
+        ("auto_rubric", AutoRubricJudgeKind),
+        ("multi_turn_rubric", MultiTurnRubricJudgeKind),
         ("single_shot_rubric", SingleShotRubricJudgeKind),
+        ("voted_rubric", VotedRubricJudgeKind),
     ],
 )
 def test_judge_kind_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
@@ -247,7 +253,13 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_turn_policies() == ["agent_only", "conversational"]
     assert available_grading_methods() == ["composite", "test_execution"]
     assert available_grader_kinds() == ["composite", "test_execution"]
-    assert available_judge_kinds() == ["chunked_rubric", "single_shot_rubric"]
+    assert available_judge_kinds() == [
+        "auto_anchored_rubric",
+        "auto_rubric",
+        "multi_turn_rubric",
+        "single_shot_rubric",
+        "voted_rubric",
+    ]
     assert available_bundle_stores() == ["local_disk", "s3"]
     assert available_compose_materialisers() == ["docker_compose"]
     assert available_service_lifecycle_dispatchers() == ["ephemeral", "reset", "shared"]
@@ -283,7 +295,13 @@ def test_raw_entry_point_probe_lists_grader_kinds() -> None:
 
 def test_raw_entry_point_probe_lists_judge_kinds() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=JUDGE_KINDS_GROUP))
-    assert names == ["chunked_rubric", "single_shot_rubric"]
+    assert names == [
+        "auto_anchored_rubric",
+        "auto_rubric",
+        "multi_turn_rubric",
+        "single_shot_rubric",
+        "voted_rubric",
+    ]
 
 
 def test_raw_entry_point_probe_lists_bundle_stores() -> None:
