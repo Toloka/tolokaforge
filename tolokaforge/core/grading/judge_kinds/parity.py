@@ -27,18 +27,18 @@ aggregate ``decide_gate`` for its other callers.
 **Partial-verdict handling is loud.** An entry whose reference or
 candidate leg returns a :class:`JudgeResult` with fewer
 ``criterion_results`` than the rubric has criteria (partial completion,
-``status == ERRORED``, a chunked kind failing on one chunk) lands in the
-report's ``errored_fixture_ids`` with a reason that names the entry_id,
-the leg that fell short, and the missing criterion ids. Silent partial
-pairs are the failure mode this contract refuses — a candidate that
-grades 4 of 5 criteria is not "80 % agreeing", it is failing to grade
-one criterion, which the gate reports as such.
+``status == ERRORED``) lands in the report's ``errored_fixture_ids``
+with a reason that names the entry_id, the leg that fell short, and
+the missing criterion ids. Silent partial pairs are the failure mode
+this contract refuses — a candidate that grades 4 of 5 criteria is not
+"80 % agreeing", it is failing to grade one criterion, which the gate
+reports as such.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -137,17 +137,10 @@ class ParityCorpusEntry:
 
     ``entry_id`` is the slug the parity lane parametrises on and the
     identifier the report uses when it surfaces a failing entry.
-    ``judge_scripts`` is keyed on ``JudgeKind.NAME`` — the cassette a
-    single-client kind draws its LLM turns from when the harness runs
-    cassette-mode. ``judge_scripts_per_chunk`` is the parallel entry
-    for kinds that dispatch one client per chunk (``chunked_rubric``):
-    the value is a list of scripts, one per chunk, and the parity-lane
-    pool provider pops one :class:`ScriptedLLMClient` per chunk per
-    entry when a kind's name appears in this map. Both maps can carry
-    the same kind's name — providers dispatch on which map holds the
-    key. A missing key for a kind under test is the loader's
-    responsibility to raise on (loud, not silent skip); this dataclass
-    carries only the shape.
+    ``judge_scripts`` is keyed on ``JudgeKind.NAME`` — the cassette the
+    kind draws its LLM turns from in cassette mode. A missing key for
+    a kind under test is the loader's responsibility to raise on (loud,
+    not silent skip); this dataclass carries only the shape.
     """
 
     entry_id: str
@@ -159,7 +152,6 @@ class ParityCorpusEntry:
     custom_system_prompt: str | None
     include_agent_system_prompt: bool
     judge_scripts: Mapping[str, list[Any]]
-    judge_scripts_per_chunk: Mapping[str, list[list[Any]]] = field(default_factory=dict)
 
 
 def measure_cross_kind_agreement(
@@ -185,11 +177,10 @@ def measure_cross_kind_agreement(
     ``candidate_provider``. An entry where either leg returns a
     :class:`JudgeResult` whose ``criterion_results`` is shorter than
     ``entry.rubric.criteria`` (partial completion, ``status ==
-    ERRORED``, chunked kind failing on one chunk) contributes NO paired
-    observation and is added to the returned report's
-    ``errored_fixture_ids`` — with a reason naming the entry_id, the
-    leg that fell short, and the missing criterion ids. Reference-short
-    and candidate-short are treated symmetrically.
+    ERRORED``) contributes NO paired observation and is added to the
+    returned report's ``errored_fixture_ids`` — with a reason naming
+    the entry_id, the leg that fell short, and the missing criterion
+    ids. Reference-short and candidate-short are treated symmetrically.
     """
     logger = _resolve_logger(logger)
     observations: list[CriterionObservation] = []
