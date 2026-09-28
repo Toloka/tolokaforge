@@ -536,6 +536,11 @@ class TestTheProjectCheck:
         assert lu._project_verified(self.receiver_opening("other"), None) is False
         assert lu._project_verified(None, "acme") is False
 
+    def test_an_empty_project_is_no_expectation_rather_than_a_mismatch(self) -> None:
+        """A workflow maps LANGFUSE_PROJECT from a variable that may be undefined, and an empty
+        string then reaches the command; the traces say project:none, as without the variable."""
+        assert lu._project_verified(self.receiver_opening("arena"), "") is False
+
 
 class TestTheEnvironmentGuard:
     """A v4 receiver merges observations by id alone, so the same trace re-sent under a second

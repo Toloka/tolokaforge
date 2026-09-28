@@ -403,7 +403,8 @@ def _project_verified(receiver: Receiver | None, project: str | None) -> bool:
     """Whether the keys are known to open ``project``; ``False`` when there is nothing to check or
     the receiver cannot be asked. Keys that open another project refuse the upload (the live
     observer's rule): every trace would carry a ``project:`` tag its own receiver contradicts."""
-    if project is None or receiver is None:
+    if not project or receiver is None:
+        # an empty --project or LANGFUSE_PROJECT names nothing: the trace says project:none
         return False
     opened = receiver.project_name()
     if opened is not None and opened != project:
