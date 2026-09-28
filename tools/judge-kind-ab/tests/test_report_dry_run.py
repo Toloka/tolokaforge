@@ -124,7 +124,7 @@ def test_run_live_ab_dry_run_renders_well_formed_report(tmp_path: Path) -> None:
         provider_factory_for=_provider_factory_for,
     )
 
-    assert result.cross_kind == []
+    assert result.cross_kind == ()
 
     assert {s.kind for s in result.self_consistency} == set(_KIND_NAMES)
     for self_result in result.self_consistency:
