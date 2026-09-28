@@ -22,8 +22,10 @@ contracts rather than findings:
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -55,6 +57,45 @@ from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.presets import resolve_effective_preset
 
 pytestmark = pytest.mark.unit
+
+
+@contextmanager
+def _synthetic_fallthrough():
+    """Drive the CLI over a preset table that exhibits one SUSPECT.
+
+    ``acme/thing-1`` lands on a preset whose globs span two vendors and that
+    declares no budget knobs; its same-family sibling ``acme/thing-2`` lands
+    on a preset that declares two. That pair is the shape the SUSPECT rule
+    names, built here rather than borrowed from the shipped table so that
+    fixing a real fall-through does not fail this test.
+    """
+    presets = {
+        "presets": {
+            "acme_pro": {
+                "match": ["acme/thing-2"],
+                "default_max_turns": 90,
+                "empty_retry_count": 3,
+            },
+            "shared_wire": {"match": ["acme/*", "othercorp/*"]},
+        }
+    }
+    resolved = {"acme/thing-2": "acme_pro", "acme/thing-1": "shared_wire"}
+    caps = SimpleNamespace(**dict.fromkeys(KNOBS))
+    with (
+        patch(
+            "scripts.analysis.audit_preset_fallthrough.get_resolved_presets",
+            return_value=presets,
+        ),
+        patch(
+            "scripts.analysis.audit_preset_fallthrough.resolve_effective_preset",
+            side_effect=lambda slug, _provider="": resolved[slug],
+        ),
+        patch(
+            "scripts.analysis.audit_preset_fallthrough.build_capabilities",
+            return_value=caps,
+        ),
+    ):
+        yield
 
 
 def _row(slug: str, preset: str, declared: dict[str, object]) -> ModelRow:
@@ -565,6 +606,7 @@ class TestCli:
         assert payload["models"][0]["openrouter_context_window"] is None
 
     def test_explicit_slugs_render_a_table(self, tmp_path: Path, capsys):
+        """Every named slug gets a row carrying the preset it resolved to."""
         code = main(
             [
                 "moonshotai/kimi-k2.7-code",
@@ -576,26 +618,24 @@ class TestCli:
         )
         out = capsys.readouterr().out
         assert code == 0
-        assert "moonshotai/kimi-k2.7-code" in out
-        assert "openrouter_dict_stringify_recovery" in out
-        assert "moonshot_kimi_k3" in out
-        # The two globs are disjoint, so the pair must land on two presets —
-        # which is the whole premise of the SUSPECT finding below it.
-        assert "SUSPECT — shared multi-vendor preset, sibling carries more (1)" in out
+        for slug in ("moonshotai/kimi-k2.7-code", "moonshotai/kimi-k3"):
+            assert slug in out
+            assert resolve_effective_preset(slug, "openrouter") in out
 
     def test_fail_on_suspect_exits_nonzero(self, tmp_path: Path, capsys):
-        code = main(
-            [
-                "moonshotai/kimi-k2.7-code",
-                "moonshotai/kimi-k3",
-                "deepseek/deepseek-v4",
-                "--offline",
-                "--fail-on-suspect",
-                "--cache",
-                str(tmp_path / "absent.json"),
-            ]
-        )
-        capsys.readouterr()
+        with _synthetic_fallthrough():
+            code = main(
+                [
+                    "acme/thing-1",
+                    "acme/thing-2",
+                    "--offline",
+                    "--fail-on-suspect",
+                    "--cache",
+                    str(tmp_path / "absent.json"),
+                ]
+            )
+        out = capsys.readouterr().out
+        assert "SUSPECT — shared multi-vendor preset, sibling carries more (1)" in out
         assert code == 1
 
     def test_clean_slug_set_exits_zero_under_fail_on_suspect(self, tmp_path: Path, capsys):
