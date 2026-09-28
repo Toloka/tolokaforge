@@ -190,6 +190,8 @@ class UploadReport:
     blocked: list[dict[str, str]] = field(default_factory=list)
     mismatched: list[dict[str, str]] = field(default_factory=list)
     failed: list[dict[str, str]] = field(default_factory=list)
+    # sent, but the environment guard could not ask the receiver first (not a failure)
+    unchecked: list[dict[str, str]] = field(default_factory=list)
     dry_run: bool = False
 
     @property
@@ -210,6 +212,7 @@ class UploadReport:
             "blocked": self.blocked,
             "mismatched": self.mismatched,
             "failed": self.failed,
+            "unchecked": self.unchecked,
             "ok": self.ok,
         }
 
@@ -225,6 +228,7 @@ class UploadReport:
             ("blocked by the safety gate", self.blocked),
             ("already in another environment", self.mismatched),
             ("not sent", self.failed),
+            ("sent without the environment check", self.unchecked),
         ):
             if entries:
                 lines.append(f"- {label}: **{len(entries)}**")
@@ -311,24 +315,15 @@ def upload(
             continue
 
         spans = otlp_spans.spans_from_events(built.events, environment=environment)
-        if exporter is None:
-            report.sent.append(
-                {
-                    "file": name,
-                    "transcript_id": gated.transcript_id,
-                    "trace_id": built.trace_id,
-                    "spans": len(spans),
-                }
-            )
-            continue
-        try:
-            outcome = exporter.export(spans)
-        except Exception as exc:  # the receiver is not this pipeline's business to fail on
-            report.failed.append({"file": name, "reason": f"export raised: {exc}"})
-            continue
-        if getattr(outcome, "name", str(outcome)) != "SUCCESS":
-            report.failed.append({"file": name, "reason": f"export returned {outcome}"})
-            continue
+        if exporter is not None:
+            try:
+                outcome = exporter.export(spans)
+            except Exception as exc:  # the receiver is not this pipeline's business to fail on
+                report.failed.append({"file": name, "reason": f"export raised: {exc}"})
+                continue
+            if getattr(outcome, "name", str(outcome)) != "SUCCESS":
+                report.failed.append({"file": name, "reason": f"export returned {outcome}"})
+                continue
         report.sent.append(
             {
                 "file": name,
@@ -337,6 +332,14 @@ def upload(
                 "spans": len(spans),
             }
         )
+        if elsewhere is None:
+            report.unchecked.append(
+                {
+                    "file": name,
+                    "reason": "the receiver's REST API could not be asked which environment "
+                    "already holds this trace",
+                }
+            )
     return report
 
 
@@ -355,18 +358,21 @@ def _project_verified(receiver: Receiver | None, project: str | None) -> bool:
     return opened == project
 
 
-def _held_elsewhere(receiver: Receiver | None, trace_id: str, environment: str | None) -> set[str]:
+def _held_elsewhere(
+    receiver: Receiver | None, trace_id: str, environment: str | None
+) -> set[str] | None:
     """The environments this trace already lives in, other than the one we are about to write.
 
-    Empty when there is nothing there, when the question cannot be asked, or when there is no
-    receiver at all (a dry run). Not a substitute for the deployment pinning one environment per
-    set of keys: a guard against the one failure mode a v4 receiver makes invisible.
+    Empty when there is nothing there, or when there is no receiver at all (a dry run); ``None``
+    when the question cannot be asked, which the report records rather than hides. Not a
+    substitute for the deployment pinning one environment per set of keys: a guard against the
+    one failure mode a v4 receiver makes invisible.
     """
     if receiver is None:
         return set()
     found = receiver.environments_of(trace_id)
     if found is None:
-        return set()
+        return None
     return found - {environment or DEFAULT_ENVIRONMENT}
 
 

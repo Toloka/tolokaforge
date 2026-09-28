@@ -484,11 +484,12 @@ class TestTheEnvironmentGuard:
             ({"production-automation"}, "production-automation", set()),
             ({"default"}, None, set()),
             (set(), "production-automation", set()),
-            (None, "production-automation", set()),
+            # could not ask: not "nowhere", and the upload reports it
+            (None, "production-automation", None),
         ],
     )
     def test_only_a_real_difference_counts(
-        self, found: set[str] | None, environment: str | None, expected: set[str]
+        self, found: set[str] | None, environment: str | None, expected: set[str] | None
     ) -> None:
         receiver = lu.Receiver(endpoint="https://h/v1/traces", base_url="https://h")
         object.__setattr__(receiver, "environments_of", lambda trace_id: found)
@@ -496,6 +497,41 @@ class TestTheEnvironmentGuard:
 
     def test_no_receiver_means_no_question_to_ask(self) -> None:
         assert lu._held_elsewhere(None, "trace", "production-automation") == set()
+
+    def test_a_send_the_guard_checked_is_not_listed_as_unchecked(self, tmp_path: Path) -> None:
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        receiver = self.receiver_answering([{"data": []}])
+        exporter = FakeExporter()
+        import tolokaforge_langfuse.otlp_transport as transport
+
+        original = transport.make_otlp_exporter
+        transport.make_otlp_exporter = lambda *a, **k: exporter  # type: ignore[assignment]
+        try:
+            report = upload(tmp_path, dry_run=False, receiver=receiver)
+        finally:
+            transport.make_otlp_exporter = original  # type: ignore[assignment]
+        assert report.ok and len(exporter.batches) == 1
+        assert report.unchecked == []
+        assert "without the environment check" not in report.as_markdown()
+
+    def test_a_send_the_guard_could_not_check_says_so(self, tmp_path: Path) -> None:
+        """An alias that routes OTLP and nothing else leaves the guard blind: the upload goes on,
+        and the report says so instead of reading like a checked send."""
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        receiver = self.receiver_answering([None])
+        exporter = FakeExporter()
+        import tolokaforge_langfuse.otlp_transport as transport
+
+        original = transport.make_otlp_exporter
+        transport.make_otlp_exporter = lambda *a, **k: exporter  # type: ignore[assignment]
+        try:
+            report = upload(tmp_path, dry_run=False, receiver=receiver)
+        finally:
+            transport.make_otlp_exporter = original  # type: ignore[assignment]
+        assert report.ok and len(exporter.batches) == 1
+        assert [e["file"] for e in report.unchecked] == ["agent_iter_1.jsonl"]
+        assert report.as_dict()["unchecked"] == report.unchecked
+        assert "sent without the environment check: **1**" in report.as_markdown()
 
     def test_a_trace_already_elsewhere_is_not_sent(self, tmp_path: Path) -> None:
         write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
