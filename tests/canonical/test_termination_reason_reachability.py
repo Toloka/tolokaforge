@@ -51,9 +51,9 @@ from tolokaforge.core.failure_attribution import (
 )
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import (
+    BuiltinUserSimulator,
     GenerationResult,
     LLMApiTimeoutError,
-    UserSimulator,
 )
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
@@ -219,7 +219,9 @@ def _run_trial(
         task_id="reachability",
         trial_index=0,
         agent_client=_ScriptedAgent(*agent_items),
-        user_simulator=UserSimulator(mode="scripted", scripted_flow=[{"default": user_reply}]),
+        user_simulator=BuiltinUserSimulator(
+            mode="scripted", scripted_flow=[{"default": user_reply}]
+        ),
         tool_executor=ToolExecutor(ToolRegistry()),
         tool_schemas=tool_schemas or [],
         max_turns=max_turns,

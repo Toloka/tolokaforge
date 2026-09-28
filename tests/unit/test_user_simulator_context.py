@@ -1,4 +1,4 @@
-"""UserSimulator._llm_reply context construction — the simulator's view of
+"""BuiltinUserSimulator._llm_reply context construction — the simulator's view of
 the shared transcript.
 
 The simulator converses from the customer's seat: its own past USER messages
@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from tolokaforge.core.llm.client import SIMULATOR_GREETING, GenerationResult, UserSimulator
+from tolokaforge.core.llm.client import SIMULATOR_GREETING, BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
 
 pytestmark = pytest.mark.unit
@@ -53,14 +53,14 @@ class _CapturingClient:
         return GenerationResult(text="Understood, thanks.", tool_calls=[])
 
 
-def _sim_with_capture() -> tuple[UserSimulator, _CapturingClient]:
-    sim = UserSimulator(
+def _sim_with_capture() -> tuple[BuiltinUserSimulator, _CapturingClient]:
+    sim = BuiltinUserSimulator(
         mode="llm",
         llm_config=ModelConfig(provider="mock", name="user-sim-mock"),
         backstory="Ask whether a replacement warranty certificate was issued.",
     )
     client = _CapturingClient()
-    # UserSimulator has no client-injection seam; the stub matches generate() only.
+    # BuiltinUserSimulator has no client-injection seam; the stub matches generate() only.
     sim.llm_client = client  # type: ignore[assignment]
     return sim, client
 

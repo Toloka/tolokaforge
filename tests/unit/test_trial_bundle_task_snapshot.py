@@ -93,6 +93,8 @@ def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
         "persona": "frustrated commuter",
         "backstory": "I lost my season pass last week.",
         "scripted_flow": flow,
+        "simulator": "builtin",
+        "simulator_config": {},
     }
     assert list(snapshot) == [
         "task_id",
@@ -121,6 +123,8 @@ def test_a_task_declaring_no_user_actor_records_the_resolution_the_run_used(
         "persona": "cooperative",
         "backstory": None,
         "scripted_flow": None,
+        "simulator": "builtin",
+        "simulator_config": {},
     }
 
 

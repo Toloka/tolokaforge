@@ -232,6 +232,15 @@ conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_fac
 [project.entry-points."tolokaforge.agent_loops"]
 engine-loop = "tolokaforge.core.loop:_engine_loop_factory"
 
+# In-process user-simulator seam (``tolokaforge/core/actors/user_simulator.py``).
+# Every entry resolves to a ``Callable[[UserSimulatorContext], UserSimulator]``.
+# ``builtin`` is the engine's ``BuiltinUserSimulator`` and goes through this
+# registry like any other registration; a downstream simulator that reproduces
+# another harness's dialogue registers alongside it and is selected per task by
+# ``actors.user.simulator`` without a framework PR.
+[project.entry-points."tolokaforge.user_simulators"]
+builtin = "tolokaforge.core.llm.client:_builtin_user_simulator_factory"
+
 # Runner-side dispatch selector on ``RunnerGradingConfig.grading_method``: the
 # registered names are the ones ``RegisterTrial`` accepts. Two markers ship
 # today — ``composite`` (default state-checks / transcript-rules / trace-checks /

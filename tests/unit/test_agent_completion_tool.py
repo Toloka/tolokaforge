@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from tolokaforge.core.llm.capabilities import ModelCapabilities
-from tolokaforge.core.llm.client import GenerationResult, UserSimulator
+from tolokaforge.core.llm.client import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import (
@@ -102,7 +102,9 @@ def _run(
         task_id="completion",
         trial_index=0,
         agent_client=_ScriptedAgent(*agent_items),
-        user_simulator=UserSimulator(mode="scripted", scripted_flow=[{"default": user_reply}]),
+        user_simulator=BuiltinUserSimulator(
+            mode="scripted", scripted_flow=[{"default": user_reply}]
+        ),
         tool_executor=ToolExecutor(registry or ToolRegistry()),
         tool_schemas=tool_schemas or [],
         max_turns=max_turns,

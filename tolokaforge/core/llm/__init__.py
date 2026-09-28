@@ -69,21 +69,21 @@ if TYPE_CHECKING:  # pragma: no cover - type-only re-exports
     from tolokaforge.core.llm.capabilities import ModelCapabilities
     from tolokaforge.core.llm.client import (
         SIMULATOR_GREETING,
+        BuiltinUserSimulator,
         GenerationResult,
         LLMClient,
-        UserSimulator,
     )
     from tolokaforge.core.llm.presets import build_capabilities
 
 
-# ``ModelCapabilities``, ``LLMClient``, ``UserSimulator``, ``GenerationResult``
+# ``ModelCapabilities``, ``LLMClient``, ``BuiltinUserSimulator``, ``GenerationResult``
 # and ``build_capabilities`` all import :mod:`tolokaforge.core.models`, which
 # itself imports :mod:`tolokaforge.core.llm.reasoning`. To break the import
 # cycle we expose them via module-level ``__getattr__`` (PEP 562).
 _LAZY: Final[dict[str, tuple[str, str]]] = {
     "ModelCapabilities": ("tolokaforge.core.llm.capabilities", "ModelCapabilities"),
     "LLMClient": ("tolokaforge.core.llm.client", "LLMClient"),
-    "UserSimulator": ("tolokaforge.core.llm.client", "UserSimulator"),
+    "BuiltinUserSimulator": ("tolokaforge.core.llm.client", "BuiltinUserSimulator"),
     "GenerationResult": ("tolokaforge.core.llm.client", "GenerationResult"),
     "SIMULATOR_GREETING": ("tolokaforge.core.llm.client", "SIMULATOR_GREETING"),
     "build_capabilities": ("tolokaforge.core.llm.presets", "build_capabilities"),
@@ -207,6 +207,6 @@ __all__ = [
     # Client (lazy)
     "LLMClient",
     "GenerationResult",
-    "UserSimulator",
+    "BuiltinUserSimulator",
     "SIMULATOR_GREETING",
 ]

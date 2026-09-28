@@ -4,7 +4,7 @@ Home of two sibling seams:
 
 * :class:`~tolokaforge.core.actors.actor.Actor` — the per-turn
   message-producing contract that
-  :class:`~tolokaforge.core.llm.client.UserSimulator` satisfies and that
+  :class:`~tolokaforge.core.llm.client.BuiltinUserSimulator` satisfies and that
   future actor kinds (adversary, oracle, evaluator) plug into without
   re-introducing a two-party assumption in the loop body.
 * :class:`~tolokaforge.core.actors.turn_policy.TurnPolicy` — the

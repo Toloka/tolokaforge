@@ -535,6 +535,8 @@ actors:
       - if_assistant_contains: "done"
         user: "Thanks!"
       - default: "Please continue."
+    # simulator: "builtin"      # which registered simulator produces the dialogue
+    # simulator_config: {}      # opaque config for a non-builtin simulator
 
 policies:
   guidance:
@@ -584,6 +586,25 @@ is refused at load naming which one it is and the fix: `interaction_mode:
 agent_only`, which dispatches no user turn at all, and a user simulator resolving
 to `mode: scripted`, whose reply is text and never a tool call. `tools.user.enabled: []`
 loads under both — the declaration is what is refused, not the key.
+
+### `actors.user.simulator:` / `actors.user.simulator_config:` — which simulator produces the dialogue
+
+`actors.user.simulator` (default `builtin`) names the implementation that
+produces the user's turns, resolved against the `tolokaforge.user_simulators`
+entry-point group. `builtin` is the engine's own simulator (`mode`, `persona`,
+`backstory`, `scripted_flow` above configure it); a downstream package registers
+an alternative — one with its own system prompt, sampling or turn structure — and
+selects it here without a framework PR. Because the simulator is actor-scoped,
+different tasks in a run may name different simulators; a project sets it once in
+`task_defaults.actors.user.simulator` so a whole pack inherits one. An
+unregistered name is refused at run start, naming the registered simulators and
+the task that asked for it.
+
+`actors.user.simulator_config` is an opaque mapping the engine passes to the
+selected simulator untouched — a non-built-in simulator declares its own fields
+there and validates them itself; the built-in ignores it. See
+[ADR-0051](adr/0051-user-simulator-protocol-and-registry.md) and
+[RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 
 ## Grading Specification (`grading.yaml`)
 

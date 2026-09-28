@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.llm import UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +60,9 @@ _DROPPED_RULE_PHRASES = [
 
 
 def _prompt(*, backstory: str | None = None, tool_schemas: list[dict] | None = None) -> str:
-    return UserSimulator(backstory=backstory, tool_schemas=tool_schemas)._build_system_prompt()
+    return BuiltinUserSimulator(
+        backstory=backstory, tool_schemas=tool_schemas
+    )._build_system_prompt()
 
 
 def _rules(prompt: str) -> list[str]:

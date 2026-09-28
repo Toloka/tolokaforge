@@ -1040,14 +1040,14 @@ def test_tool_calling_loop_forwards_none_observation_when_unset() -> None:
 
 
 def test_user_simulator_llm_reply_forwards_observation_to_generate() -> None:
-    """User path: :meth:`UserSimulator.reply` in llm mode forwards
+    """User path: :meth:`BuiltinUserSimulator.reply` in llm mode forwards
     ``observation`` verbatim to the inner ``LLMClient.generate`` — so the
     user simulator surfaces as ``role="user"`` LLM-call events."""
-    from tolokaforge.core.llm import UserSimulator
+    from tolokaforge.core.llm import BuiltinUserSimulator
     from tolokaforge.core.models import Message, MessageRole, ModelConfig
     from tolokaforge.core.run_display_events import LLMCallObservation
 
-    simulator = UserSimulator(
+    simulator = BuiltinUserSimulator(
         mode="llm",
         llm_config=ModelConfig(provider="openai", name="gpt-4"),
         backstory="do a thing",
@@ -1071,11 +1071,11 @@ def test_user_simulator_llm_reply_forwards_observation_to_generate() -> None:
 def test_user_simulator_scripted_reply_ignores_observation() -> None:
     """Scripted mode never touches the wire — passing an observation is a
     no-op, not a raise. Keeps the reply signature uniform between modes."""
-    from tolokaforge.core.llm import UserSimulator
+    from tolokaforge.core.llm import BuiltinUserSimulator
     from tolokaforge.core.models import Message, MessageRole
     from tolokaforge.core.run_display_events import LLMCallObservation
 
-    simulator = UserSimulator(mode="scripted")
+    simulator = BuiltinUserSimulator(mode="scripted")
     events = _RecordingEvents()
     observation = LLMCallObservation(events=events, trial_id="taskA:0", role="user")
 

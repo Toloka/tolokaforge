@@ -91,6 +91,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from tolokaforge.core.actors.user_simulator import (
+    UserSimulator,
+    UserSimulatorContext,
+    UserSimulatorFactory,
+)
 from tolokaforge.core.grading.check_runner import CheckExecutor
 from tolokaforge.core.grading.grading_method import GradingMethod
 from tolokaforge.core.grading.judge_kinds import JudgeKind
@@ -163,6 +168,9 @@ __all__ = [
     "TurnPolicyFactory",
     "UnassignedToolCallError",
     "UnknownImplementationError",
+    "UserSimulator",
+    "UserSimulatorContext",
+    "UserSimulatorFactory",
     "available_agent_loops",
     "available_bundle_stores",
     "available_compose_materialisers",
@@ -183,6 +191,7 @@ __all__ = [
     "available_transcript_rule_matchers",
     "available_trial_graders",
     "available_turn_policies",
+    "available_user_simulators",
     "discover_entry_points",
     "load_agent_loop",
     "load_bundle_store",
@@ -204,6 +213,7 @@ __all__ = [
     "load_transcript_rule_matcher",
     "load_trial_grader",
     "load_turn_policy",
+    "load_user_simulator",
 ]
 
 RUNTIME_BACKENDS_GROUP = "tolokaforge.runtime_backends"
@@ -212,6 +222,7 @@ CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
 AGENT_LOOPS_GROUP = "tolokaforge.agent_loops"
+USER_SIMULATORS_GROUP = "tolokaforge.user_simulators"
 GRADING_METHODS_GROUP = "tolokaforge.grading_methods"
 GRADER_KINDS_GROUP = "tolokaforge.grader_kinds"
 JUDGE_KINDS_GROUP = "tolokaforge.judge_kinds"
@@ -517,6 +528,22 @@ def load_agent_loop(name: str) -> AgentLoopFactory:
     return cast(AgentLoopFactory, _load(AGENT_LOOPS_GROUP, name))
 
 
+def load_user_simulator(name: str) -> UserSimulatorFactory:
+    """Resolve a registered user-simulator name to its factory callable.
+
+    The factory adapts a
+    :class:`~tolokaforge.core.actors.user_simulator.UserSimulatorContext` to a
+    :class:`~tolokaforge.core.actors.user_simulator.UserSimulator`; the conductor
+    builds the context from the trial's resolved ``actors.user`` config.
+    ``builtin`` — the engine's
+    :class:`~tolokaforge.core.llm.client.BuiltinUserSimulator` — resolves through
+    this loader like any other registration. Selected per task via
+    ``actors.user.simulator``; a non-built-in simulator reads its own
+    configuration from ``actors.user.simulator_config`` on the context.
+    """
+    return cast(UserSimulatorFactory, _load(USER_SIMULATORS_GROUP, name))
+
+
 def load_custom_check_executor(name: str) -> CustomCheckExecutorFactory:
     """Resolve a registered custom-check-executor name to its factory callable."""
     return cast(CustomCheckExecutorFactory, _load(CUSTOM_CHECK_EXECUTORS_GROUP, name))
@@ -707,6 +734,11 @@ def available_turn_policies() -> list[str]:
 def available_agent_loops() -> list[str]:
     """Sorted names registered in the ``tolokaforge.agent_loops`` group."""
     return sorted(discover_entry_points(AGENT_LOOPS_GROUP))
+
+
+def available_user_simulators() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.user_simulators`` group."""
+    return sorted(discover_entry_points(USER_SIMULATORS_GROUP))
 
 
 def available_grading_methods() -> list[str]:
