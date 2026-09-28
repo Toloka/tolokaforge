@@ -409,3 +409,146 @@ def test_natural_completion_records_run_completed(tmp_path: Path) -> None:
     state = RunStateManager(output_dir).load_state()
     assert state is not None
     assert state.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# grading_completeness is published on every path that returns from run()
+# ---------------------------------------------------------------------------
+
+
+def test_grading_completeness_published_on_budget_pause(tmp_path: Path) -> None:
+    """A budget-paused ``run()`` still binds ``grading_completeness``.
+
+    Every caller of :meth:`Orchestrator.run` reads the attribute
+    unconditionally — ``dx.cli.main`` feeds it to the completeness gates
+    straight after ``run()`` returns — so leaving it unbound turns a clean
+    budget stop into an ``AttributeError`` and a failed run.
+
+    The counts must describe the attempts that actually ran, not the trial
+    set that was planned: a paused run is truncated by construction.
+    """
+    budget = CompositeBudget([SampleBudget(limit=1)])
+    orch, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB", "taskC"],
+        budget=budget,
+        cost_per_trial=0.01,
+    )
+
+    output_dir = orch.run()
+
+    completeness = orch.grading_completeness
+    assert completeness.total_attempts == len(orch.results)
+    assert completeness.total_attempts < 3, "the budget did not truncate the run"
+
+    from tolokaforge.core.resume import RunStateManager
+
+    state = RunStateManager(output_dir).load_state()
+    assert state is not None
+    assert state.status == "paused", "publishing must not stamp a paused run completed"
+
+
+def test_budget_pause_writes_the_reports_its_gates_point_at(tmp_path: Path) -> None:
+    """A paused run writes ``aggregate.json``, because its gates cite it.
+
+    ``_fail_on_completeness_gates`` runs on this path and, when it fires,
+    tells the operator to read ``ungradeable`` / ``infrastructure_aborts``
+    in ``aggregate.json``. Skipping report generation would leave that
+    message pointing at a file that was never written — or, on a run
+    directory an earlier pass already wrote, at a stale one that disagrees
+    with the counts just printed.
+    """
+    budget = CompositeBudget([SampleBudget(limit=1)])
+    orch, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB", "taskC"],
+        budget=budget,
+        cost_per_trial=0.01,
+    )
+
+    output_dir = orch.run()
+
+    aggregate = output_dir / "aggregate.json"
+    assert aggregate.exists(), "a paused run must write the report its gates name"
+    payload = json.loads(aggregate.read_text())
+    assert payload, "aggregate.json is empty"
+
+    from tolokaforge.core.resume import RunStateManager
+
+    state = RunStateManager(output_dir).load_state()
+    assert state is not None
+    assert state.status == "paused", "writing reports must not stamp the run completed"
+
+
+def test_budget_pause_refreshes_a_stale_report_from_an_earlier_pass(
+    tmp_path: Path,
+) -> None:
+    """The resumed-directory case: a pre-existing report must not survive.
+
+    A run directory that already holds an ``aggregate.json`` from an
+    earlier pass is the situation where a missing refresh does real
+    damage — the operator reads numbers that describe a different run.
+    """
+    budget = CompositeBudget([SampleBudget(limit=1)])
+    orch, run_dir = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB", "taskC"],
+        budget=budget,
+        cost_per_trial=0.01,
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    stale = run_dir / "aggregate.json"
+    stale.write_text(json.dumps({"sentinel": "from-an-earlier-pass"}))
+
+    output_dir = orch.run()
+
+    payload = json.loads((output_dir / "aggregate.json").read_text())
+    assert "sentinel" not in payload, "the stale report from the earlier pass survived"
+
+
+def test_grading_completeness_published_when_budget_exhausted_at_start(
+    tmp_path: Path,
+) -> None:
+    """The degenerate pause — the cap is already spent, so nothing is scheduled.
+
+    ``run()`` returns through the same paused branch with zero results, which
+    is the one case where publishing could plausibly be skipped as pointless.
+    It cannot be: the caller reads the attribute either way.
+
+    The published value is deliberately the empty one, and it is worth being
+    explicit about what that buys and costs. ``zero_coverage`` is guarded on
+    ``total_attempts > 0`` (ADR-0041), so a run that scheduled nothing does not
+    trip it and the CLI exits ``0`` even under ``--fail-on-zero-coverage``.
+    That is correct on the ADR's terms — there were no trials to measure — but
+    it means an automated caller resuming an already-spent run sees success
+    without any work having happened, and must read ``run_state.json``'s
+    ``paused`` status or the stopped banner to tell the two apart. Documented
+    in ``docs/CLI.md`` under the run exit codes.
+    """
+    budget = CompositeBudget([SampleBudget(limit=0)])
+    orch, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=budget,
+        cost_per_trial=0.01,
+    )
+
+    orch.run()
+
+    completeness = orch.grading_completeness
+    assert completeness.total_attempts == 0
+    assert completeness.zero_coverage is False
+
+
+def test_natural_completion_still_publishes_grading_completeness(tmp_path: Path) -> None:
+    """The unpaused path keeps publishing — the pause branch is additive."""
+    orch, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=None,
+        cost_per_trial=0.0,
+    )
+
+    orch.run()
+
+    assert orch.grading_completeness.total_attempts == 2

@@ -3403,7 +3403,22 @@ class Orchestrator:
             # Publish completeness and generate reports before stamping the
             # run as completed, so ``run_state.json``'s completion gates are
             # derived from the published counts.
-            if not (budget_exhausted and remaining > 0):
+            if budget_exhausted and remaining > 0:
+                # A paused run publishes completeness and writes its reports
+                # over the attempts it ran; only the completed stamp is
+                # withheld, because resume detection reads ``status`` alone.
+                #
+                # Both halves are load-bearing. Completeness is read
+                # unconditionally by every caller of :meth:`run`, and the
+                # reports are what the completeness gates tell the operator to
+                # go and read — a gate firing against a missing
+                # ``aggregate.json``, or against a stale one left by an earlier
+                # pass over this run directory, is worse than no gate at all.
+                # Publishing first keeps the attribute bound even if report
+                # generation raises.
+                self._publish_grading_completeness()
+                self._generate_reports(output_dir)
+            else:
                 self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()
