@@ -6,7 +6,7 @@ This guide explains Tolokaforge metrics outputs, failure attribution, and progra
 
 After a run, Tolokaforge writes analytics artifacts in `evaluation.output_dir`:
 
-- `aggregate.json`: run-level aggregate metrics (`schema_version: 3`)
+- `aggregate.json`: run-level aggregate metrics (`schema_version: 4`)
 - `per_task_metrics.json`: per-task metrics across trials
 - `metadata_slices.json`: aggregates sliced by benchmark type, complexity, tags, expected failure modes
 - `failure_attribution.json`: failed-attempt attribution summary + per-attempt evidence
@@ -185,7 +185,9 @@ executed, not how the agent performed. `avg_latency_s` is the exception: it is a
 performance average, so it follows the measured denominator.
 
 - `avg_latency_s` (measured attempts), `latency_p50_s`, `latency_p90_s`, `latency_p99_s`
-- `total_cost_usd`, `avg_cost_usd`
+- `total_cost_usd`, `avg_cost_usd` — the agent + user spend (`avg_cost_usd` over `costed_trials`)
+- `judge_cost_usd`, `total_cost_incl_judge_usd` — the rubric judge's spend and the agent + user + judge combined total
+- `total_cost_by_role`, `total_cost_incl_all_usd` — the per-role spend plane and its grand total
 - Full [`Usage`](../tolokaforge/core/llm/usage.py:1) aggregates — one
   `total_<field>` + `avg_<field>` pair per `Usage` field:
   - `total_prompt_tokens` / `avg_prompt_tokens`
@@ -204,6 +206,15 @@ The rows are derived from `usage.calls` and reconciled against the trial's
 including a coding-harness trial, whose whole cost lands on the `agent` row. These
 cover the in-trial roles (agent + user); the judge's cost is a run-level synthesis
 (see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `metrics.yaml`).
+
+`per_task_metrics.json` and `aggregate.json` roll that plane up run-wide in
+`total_cost_by_role` — one row per role, each summing `cost_usd` and the six
+`Usage` token counters. The `agent` and `user` rows sum the trials' `cost_by_role`
+(so a coding-harness trial's cost is carried on the `agent` row); the `judge` row
+is synthesized from each trial's `grade.judge_usage`. `total_cost_incl_all_usd` is
+the grand total across every role — the run's true spend across all actors. Only
+agent, user and judge spend today, so it equals the legacy
+`total_cost_incl_judge_usd` and never falls below `total_cost_usd`.
 
 ### Reliability
 

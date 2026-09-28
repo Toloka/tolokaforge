@@ -280,6 +280,64 @@ _USAGE_FIELDS = (
 )
 
 
+def _role_spend_bucket() -> dict[str, float | int]:
+    """A zeroed per-role cost / token accumulator, one slot per wire field."""
+    bucket: dict[str, float | int] = {"cost_usd": 0.0}
+    for field in _USAGE_FIELDS:
+        bucket[field] = 0
+    return bucket
+
+
+def _cost_by_role_rows(trajectories: Sequence[Trajectory]) -> list[dict[str, Any]]:
+    """The task's per-role spend — one row per role, summed across trials.
+
+    Sums each trial's reconciled ``cost_by_role`` (agent + user), then appends a
+    synthesized ``judge`` row from ``grade.judge_usage``: the judge runs its own
+    LLM, so its spend never enters ``usage.calls`` and reaches the per-role plane
+    only here. Rows are sorted by role for a stable wire order.
+    """
+    buckets: dict[str, dict[str, float | int]] = {}
+    for trajectory in trajectories:
+        for row in trajectory.metrics.cost_by_role:
+            bucket = buckets.setdefault(row.role, _role_spend_bucket())
+            bucket["cost_usd"] += row.cost_usd
+            for field in _USAGE_FIELDS:
+                bucket[field] += getattr(row, field)
+
+    judge = _role_spend_bucket()
+    judge_seen = False
+    for trajectory in trajectories:
+        if trajectory.grade is None or trajectory.grade.judge_usage is None:
+            continue
+        judge_seen = True
+        usage = trajectory.grade.judge_usage
+        judge["cost_usd"] += usage.cost_usd
+        judge["prompt_tokens"] += usage.prompt_tokens
+        judge["completion_tokens"] += usage.completion_tokens
+        judge["reasoning_tokens"] += usage.reasoning_tokens
+    if judge_seen:
+        buckets["judge"] = judge
+
+    return [{"role": role, **buckets[role]} for role in sorted(buckets)]
+
+
+def _merge_cost_by_role_rows(task_metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sum the per-task ``total_cost_by_role`` rows into one run-level row per role."""
+    buckets: dict[str, dict[str, float | int]] = {}
+    for metrics in task_metrics:
+        for row in metrics.get("total_cost_by_role", []):
+            bucket = buckets.setdefault(row["role"], _role_spend_bucket())
+            bucket["cost_usd"] += row["cost_usd"]
+            for field in _USAGE_FIELDS:
+                bucket[field] += row[field]
+    return [{"role": role, **buckets[role]} for role in sorted(buckets)]
+
+
+def _role_plane_grand_total(role_rows: list[dict[str, Any]]) -> float | None:
+    """The cost summed across every role row, ``None`` when nothing was spent."""
+    return sum(row["cost_usd"] for row in role_rows) if role_rows else None
+
+
 def _spend_metrics(trajectories: Sequence[Trajectory]) -> dict[str, Any]:
     """Token and cost accounting over **every** attempted trial.
 
@@ -331,6 +389,14 @@ def _spend_metrics(trajectories: Sequence[Trajectory]) -> dict[str, Any]:
     else:
         spend["total_cost_incl_judge_usd"] = spend["total_cost_usd"] + spend["judge_cost_usd"]
         spend["total_cost_incl_judge_is_partial"] = False
+
+    # The per-role spend plane and its grand total. The plane sums the trials'
+    # reconciled ``cost_by_role`` (agent + user) plus a synthesized judge row, so
+    # its grand total equals ``total_cost_incl_judge_usd`` today — the only roles
+    # that spend are agent, user and judge.
+    role_rows = _cost_by_role_rows(trajectories)
+    spend["total_cost_by_role"] = role_rows
+    spend["total_cost_incl_all_usd"] = _role_plane_grand_total(role_rows)
     return spend
 
 
@@ -577,6 +643,12 @@ def calculate_aggregate_metrics(
         if m.get("total_cost_incl_judge_usd") is not None
     ]
     agg["total_cost_incl_judge_usd"] = sum(_known_total_incl) if _known_total_incl else None
+    # Merge the per-task per-role planes into the run-level plane; its grand
+    # total is the true cross-role total, equal to ``total_cost_incl_judge_usd``
+    # while agent, user and judge are the only roles that spend.
+    _role_rows = _merge_cost_by_role_rows(task_metrics)
+    agg["total_cost_by_role"] = _role_rows
+    agg["total_cost_incl_all_usd"] = _role_plane_grand_total(_role_rows)
 
     for percentile in ("latency_p50_s", "latency_p90_s", "latency_p99_s"):
         agg[f"{percentile}_macro"] = (

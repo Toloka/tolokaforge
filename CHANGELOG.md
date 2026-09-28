@@ -9,6 +9,7 @@ All notable changes to this project are documented in this file.
 - **llm**: stamp per-call actor `role` + `model` on every `ProviderRawCall`, so per-role cost/token attribution reads off the per-call record; bump the trial-bundle schema to 6 (#1647)
 - **runner**: fold the LLM-mode user simulator's spend into the trial `Metrics`, so `metrics.yaml` `cost_usd` / `usage` / `openrouter_generation_ids` / `api_calls` include the user actor and the simulator's generation id is recoverable; scripted / `agent_only` trials record zero user spend (#1647)
 - **runner**: derive per-role `cost_by_role` / `cost_by_role_model` breakdowns on each trial's `metrics.yaml`, reconciled against `cost_usd` so the per-role totals sum to the trial cost on every trial — a coding-harness trial's whole cost lands on the `agent` row (#1647)
+- **metrics**: roll the per-role spend plane up run-wide in `aggregate.json` / `per_task_metrics.json` — `total_cost_by_role` (agent + user summed from the trials, plus a synthesized `judge` row) and the grand total `total_cost_incl_all_usd`; bump the aggregate schema to 4. Legacy `total_cost_usd` / `judge_cost_usd` / `total_cost_incl_judge_usd` are retained, and `total_cost_incl_all_usd` equals `total_cost_incl_judge_usd` while agent, user and judge are the only roles that spend (#1647)
 
 ## v0.27.3 (2026-09-25)
 
