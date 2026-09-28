@@ -2222,10 +2222,12 @@ Implementations:
 * `StandardResponse` — no-op (default for OpenAI / Anthropic).
 * `UnwrapInputResponse` — strips Nova/Bedrock's `{input: {...}}` wrapper.
 * `JsonCoerceResponse` — defence against open-weights stringification:
-  decodes JSON-encoded array / object arguments back to native shape.
-  When `param_types` is supplied, also coerces `''` → `[]` / `''` → `{}`
-  for declared `array` / `object` parameters (the qwen `equipment: ''`
-  bug class).
+  decodes JSON-encoded array / object arguments back to native shape,
+  except for a parameter the schema declares `string`, whose JSON text the
+  tool asked for itself (τ³-bench's `call_discoverable_agent_tool(arguments:
+  str)` parses it). When `param_types` is supplied, also coerces `''` → `[]` /
+  `''` → `{}` for declared `array` / `object` parameters (the qwen
+  `equipment: ''` bug class).
 * `ArrayDictMapResponse` — composes `JsonCoerceResponse` plus the reverse
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
   `openai_gpt5` and `xai_grok` presets.
@@ -2458,7 +2460,7 @@ Free functions, re-exported from `tolokaforge.core.llm`:
 
 | Helper | Module | What it does |
 |---|---|---|
-| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. |
+| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. With `param_types`, a parameter declared `string` is never decoded. |
 | [`coerce_empty_containers`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Schema-aware recovery: coerces `""` → `[]` / `""` → `{}` for declared `array` / `object` / `dict_map` parameters. No-op without `param_types`; `""` on a `string` parameter passes through. |
 | [`find_additional_properties`](../tolokaforge/core/llm/dict_maps.py) | `dict_maps` | Locate an `additionalProperties` declaration on a property schema or any of its `anyOf` / `oneOf` branches. Handles the Pydantic `Optional[Dict[str, T]]` shape (`anyOf=[{additionalProperties:T}, {null}]`). |
 
