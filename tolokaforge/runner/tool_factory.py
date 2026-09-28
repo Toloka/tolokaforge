@@ -1123,6 +1123,88 @@ def _decode_partial_output(buf: bytes | str | None) -> str:
     return buf
 
 
+def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> str:
+    """Run *argv* and return its output, never raising on a deadline overrun.
+
+    Body of :meth:`~tolokaforge.runner.env_exec.SupportsEnvExec.exec_in_env`,
+    shared by every wrapper that offers the capability.
+
+    Popen + ``communicate(timeout=…)`` so a timeout kills the process AND
+    surfaces whatever the child had already written. ``subprocess.run``'s
+    capture_output path discards buffered stdout on ``TimeoutExpired``, which
+    turns a slow-agent run into an opaque "nothing happened".
+    """
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes the
+        # child had buffered when the deadline hit, even under text=True —
+        # Popen only decodes at the point of a clean communicate() return.
+        # _decode_partial_output normalises to str so the footer
+        # concatenation below is str+str, not str+bytes (a TypeError there
+        # would hide the output this path exists to preserve).
+        stdout = _decode_partial_output(exc.stdout)
+        stderr = _decode_partial_output(exc.stderr)
+        # communicate() after kill drains whatever else the child buffered.
+        try:
+            more_out, more_err = proc.communicate(timeout=5)
+            stdout += _decode_partial_output(more_out)
+            stderr += _decode_partial_output(more_err)
+        except subprocess.TimeoutExpired:
+            # Best-effort drain; the primary timeout is already surfaced in
+            # the timed-out footer below.
+            pass
+        timed_out = True
+    output = stdout
+    if timed_out:
+        output += f"\n[timed out after {timeout_s}s; partial output preserved]\n{stderr}"
+    elif proc.returncode != 0:
+        output += f"\n[exit code: {proc.returncode}]\n{stderr}"
+    return output
+
+
+def _run_argv_with_exit_code(argv: list[str], timeout_s: float) -> tuple[int, str]:
+    """Run *argv* and return ``(returncode, stdout+stderr_merged)``.
+
+    Body of
+    :meth:`~tolokaforge.runner.env_exec.SupportsEnvExec.exec_in_env_with_exit_code`,
+    shared by every wrapper that offers the capability. rc=0 → the merged
+    output is just stdout; rc≠0 → the same ``\\n[exit code: N]\\n{stderr}``
+    suffix :func:`_run_argv_preserving_partial_output` uses is appended, so
+    callers that render the merged string in a grade's reasons block see the
+    exit-code marker in the same place. A deadline overrun raises
+    :class:`subprocess.TimeoutExpired` rather than returning partial output —
+    the callers render that as its own grade outcome.
+    """
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s)
+    merged = proc.stdout
+    if proc.returncode != 0:
+        merged += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
+    return proc.returncode, merged
+
+
+def _docker_exec_argv(container: str, command: str, user: str | None = None) -> list[str]:
+    """``docker exec`` argv running *command* under bash inside *container*.
+
+    ``--user`` before ``-i``: matches ``docker exec --help`` order and the argv
+    :class:`~tolokaforge.tools.persistent_shell.DockerComposeBashSession` builds
+    for the same container.
+    """
+    argv = ["docker", "exec"]
+    if user is not None:
+        argv.extend(["--user", user])
+    argv.extend(["-i", container, "bash", "-c", command])
+    return argv
+
+
 class DockerComposeExecToolWrapper(ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
@@ -1176,79 +1258,26 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
         Satisfies :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
         """
-        if self._container is None:
-            raise ToolExecutionError(
-                self.name,
-                "docker_compose_exec tool executed before start() — container name unresolved",
-            )
-        # Popen + communicate(timeout=…) so a timeout kills the process AND
-        # surfaces whatever the CLI had already written. subprocess.run's
-        # capture_output path discards buffered stdout on TimeoutExpired,
-        # which turns a slow-agent run into an opaque "nothing happened".
-        proc = subprocess.Popen(
-            ["docker", "exec", "-i", self._container, "bash", "-c", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout_s)
-            timed_out = False
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes
-            # the child had buffered when the deadline hit, even under
-            # text=True — Popen only decodes at the point of a clean
-            # communicate() return. _decode_partial_output normalises to
-            # str so the footer concatenation below is str+str, not
-            # str+bytes (a TypeError there would hide the CLI output the
-            # whole rewrite exists to preserve).
-            stdout = _decode_partial_output(exc.stdout)
-            stderr = _decode_partial_output(exc.stderr)
-            # communicate() after kill drains whatever else the child buffered.
-            try:
-                more_out, more_err = proc.communicate(timeout=5)
-                stdout += _decode_partial_output(more_out)
-                stderr += _decode_partial_output(more_err)
-            except subprocess.TimeoutExpired:
-                # Best-effort drain; the primary timeout is already surfaced
-                # in the wrapper's timed-out footer below.
-                pass
-            timed_out = True
-        output = stdout
-        if timed_out:
-            output += f"\n[timed out after {timeout_s}s; partial output preserved]\n{stderr}"
-        elif proc.returncode != 0:
-            output += f"\n[exit code: {proc.returncode}]\n{stderr}"
-        return output
+        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
 
     def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
         """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
 
         Sibling of :meth:`exec_in_env`, and the second half of
-        :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`. The two-arg-tuple return exposes the
-        returncode to callers that need to render it (e.g. the substrate's
-        test-suite RPC that ships the exit code on the wire) without gating on
-        it. rc=0 → merged output is just stdout; rc≠0 → the same
-        ``\\n[exit code: N]\\n{stderr}`` suffix :meth:`exec_in_env` uses is
-        appended so callers that render the merged string in a grade's reasons
-        block see the exit-code marker in the same place.
+        :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`. The two-arg-tuple
+        return exposes the returncode to callers that need to render it (e.g.
+        the substrate's test-suite RPC that ships the exit code on the wire)
+        without gating on it.
         """
+        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+
+    def _exec_argv(self, command: str) -> list[str]:
         if self._container is None:
             raise ToolExecutionError(
                 self.name,
                 "docker_compose_exec tool executed before start() — container name unresolved",
             )
-        proc = subprocess.run(
-            ["docker", "exec", "-i", self._container, "bash", "-c", command],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        merged = proc.stdout
-        if proc.returncode != 0:
-            merged += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
-        return proc.returncode, merged
+        return _docker_exec_argv(self._container, command)
 
 
 # =============================================================================
@@ -1329,6 +1358,50 @@ class PersistentShellToolWrapper(ToolWrapper):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
         return self._format_result(result)
+
+    def exec_in_env(self, command: str, timeout_s: float) -> str:
+        """Run ``command`` in the trial's environment and return its output.
+
+        First half of :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`, so
+        a trial whose only agent tool is this one is still gradeable: the three
+        grading consumers pick their executor out of ``agent_tools`` by that
+        capability, and a trial that ran on the session-lifetime shell would
+        otherwise present no executor at all.
+        """
+        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+
+    def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
+        """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
+
+        Second half of :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
+        """
+        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+
+    def _exec_argv(self, command: str) -> list[str]:
+        """Argv for a fresh one-shot exec into the environment the session targets.
+
+        Deliberately not routed through :attr:`_session`. Grading runs after an
+        agent has had the shell for a whole trial, and that shell carries the
+        agent's cwd, exported environment and any traps or shell functions it
+        defined; a verifier run inside it would be graded against a mutated
+        shell rather than against the environment. A timed-out command also
+        leaves the session needing a restart, which would make grading's
+        success depend on the agent's last command. Both hazards go away by
+        exec'ing into the same container (or the same host, for the local
+        backend) afresh — which is exactly what the compose-exec wrapper this
+        tool replaces did.
+        """
+        if self._service is None:
+            return ["bash", "-c", command]
+        if self._trial_id is None or self._project_prefix is None:
+            raise ToolExecutionError(
+                self.name,
+                "bash_session executed before start() — container name unresolved",
+            )
+        container = self._resolve_container_name(
+            self._trial_id, self._service, self._project_prefix
+        )
+        return _docker_exec_argv(container, command, user=self._user)
 
     def _new_session(self) -> BashSession:
         """Construct (but do not open) the backend session from config."""
