@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fix
+
+- **llm**: stamp per-call actor `role` + `model` on every `ProviderRawCall`, so per-role cost/token attribution reads off the per-call record; bump the trial-bundle schema to 6 (#1647)
+
 ## v0.27.3 (2026-09-25)
 
 ### Feat

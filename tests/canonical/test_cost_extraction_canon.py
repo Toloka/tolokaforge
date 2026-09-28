@@ -38,6 +38,7 @@ import pytest
 from tolokaforge.core.llm import LLMClient, ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
 from tolokaforge.core.pricing import reload_pricing
+from tolokaforge.core.run_display_events import _NULL_EVENTS, LLMCallObservation
 
 pytestmark = pytest.mark.canonical
 
@@ -312,3 +313,53 @@ class TestCostExtractionPriorityLadder:
             result = _generate(client, response)
 
         assert result.cost_usd is None
+
+
+class TestPerCallRoleAndModelAttribution:
+    """Pin that a call routed through ``_assemble_result`` stamps its
+    ``ProviderRawCall`` with the actor ``role`` and the serving ``model``.
+
+    Attribution rides the per-call record, so per-role cost rollups need no
+    bespoke per-actor channel. The role threads from ``generate``'s
+    ``observation.role`` (fallback ``"agent"``) and the model is the client's
+    own slug — both must land on ``usage.calls[0]``.
+    """
+
+    def test_default_call_is_attributed_to_agent_at_client_model(
+        self,
+        hermetic_pricing: Path,
+    ) -> None:
+        client = _make_client("openai/gpt-canon")
+        response = _make_response(
+            prompt_tokens=100,
+            completion_tokens=50,
+            hidden_params={"response_cost": 0.001},
+        )
+
+        result = _generate(client, response)
+
+        assert len(result.usage.calls) == 1
+        assert result.usage.calls[0].role == "agent"
+        assert result.usage.calls[0].model == "openai/gpt-canon"
+
+    def test_observation_role_threads_onto_the_call_record(
+        self,
+        hermetic_pricing: Path,
+    ) -> None:
+        client = _make_client("openai/gpt-canon")
+        response = _make_response(
+            prompt_tokens=100,
+            completion_tokens=50,
+            hidden_params={"response_cost": 0.001},
+        )
+        observation = LLMCallObservation(events=_NULL_EVENTS, trial_id="taskA:0", role="user")
+
+        with patch("tolokaforge.core.llm.client.completion", return_value=response):
+            result = client.generate(
+                system="You are helpful.",
+                messages=[Message(role=MessageRole.USER, content="Hi")],
+                observation=observation,
+            )
+
+        assert result.usage.calls[0].role == "user"
+        assert result.usage.calls[0].model == "openai/gpt-canon"

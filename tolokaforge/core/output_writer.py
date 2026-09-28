@@ -18,8 +18,13 @@ from tolokaforge.core.redaction import (
     RedactionStamp,
 )
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 5
+TRIAL_BUNDLE_SCHEMA_VERSION = 6
 """The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 6 bundles stamp each ``usage.calls[*]`` record with the ``role`` of the
+actor whose loop issued the call and the ``model`` slug it was served by, so
+per-role cost/token attribution reads off the per-call record rather than a
+bespoke per-actor channel.
 
 Version 5 bundles report a coding-harness trial's ``turns`` and ``usage`` from
 the CLI's own totals where the CLI prints them, rather than leaving the

@@ -76,7 +76,7 @@ from tolokaforge.core.models import (
     ToolCall,
 )
 from tolokaforge.core.pricing import estimate_cost, resolve_pricing
-from tolokaforge.core.run_display_events import LLMCallObservation
+from tolokaforge.core.run_display_events import LLMCallObservation, LLMCallRole
 
 # Silence litellm's stdout banners ("Provider List: https://docs.litellm.ai/docs/providers",
 # "LiteLLM completion() model= ...") - pure noise in probe/eval logs; no effect on behavior/results.
@@ -1469,6 +1469,7 @@ class LLMClient:
         if self.provider == "mock":
             return self._mock_generate(messages, tools)
 
+        role: LLMCallRole = observation.role if observation is not None else "agent"
         retrying = self._build_retrying(observation)
         for attempt in retrying:
             with attempt:
@@ -1486,6 +1487,7 @@ class LLMClient:
                         reasoning=reasoning,
                         top_p=top_p,
                         max_tokens=max_tokens,
+                        role=role,
                     )
                 except BaseException as exc:
                     self._fire_call_finished(
@@ -1727,6 +1729,7 @@ class LLMClient:
         reasoning: ReasoningConfig | None,
         top_p: float | None,
         max_tokens: int | None,
+        role: LLMCallRole = "agent",
     ) -> GenerationResult:
         """One outer-retry attempt: prepare → build → call → detect → assemble.
 
@@ -1768,6 +1771,7 @@ class LLMClient:
             effective_system_prompt=effective_system_prompt,
             latency_s=latency,
             sanitized_tools=sanitized_tools,
+            role=role,
         )
 
     # ------------------------------------------------------------------
@@ -2272,6 +2276,7 @@ class LLMClient:
         effective_system_prompt: str | None,
         latency_s: float,
         sanitized_tools: list[dict[str, Any]] | None = None,
+        role: LLMCallRole = "agent",
     ) -> GenerationResult:
         """Convert a raw litellm response into a :class:`GenerationResult`.
 
@@ -2383,6 +2388,8 @@ class LLMClient:
             # str subclass (asdict deepcopies every call record).
             gateway_route=str(self._gateway_route) if self._gateway_route is not None else None,
             gateway_route_kind=self._gateway_route_kind,
+            role=role,
+            model=self.model_name,
         )
 
         result = GenerationResult(

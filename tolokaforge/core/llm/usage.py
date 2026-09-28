@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from tolokaforge.core.llm.gateway_route import RouteKind
+from tolokaforge.core.run_display_events import LLMCallRole
 
 __all__ = [
     "OPENROUTER_GENERATION_ID_HEADER",
@@ -79,6 +80,19 @@ class ProviderRawCall:
     ``provider_raw``). Downstream analytics walk this list to answer
     "which call stalled?" and "which calls were cache-hits?".
     """
+
+    role: LLMCallRole = "agent"
+    """The actor whose loop issued this call, per :data:`LLMCallRole`.
+
+    Attribution rides the per-call record so per-role cost/token rollups need
+    no bespoke per-actor channel. ``"agent"`` when the caller supplies no
+    observation (the agent loop and summarizer)."""
+
+    model: str | None = None
+    """The client model slug this call was served by, else ``None``.
+
+    ``None`` only on records built without a serving client (mock path,
+    hand-built test records); a live call always stamps ``self.model_name``."""
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -313,6 +327,8 @@ class UsageExtractor:
         cost_source: CostSource = "unknown",
         gateway_route: str | None = None,
         gateway_route_kind: RouteKind | None = None,
+        role: LLMCallRole = "agent",
+        model: str | None = None,
     ) -> Usage:
         usage = getattr(response, "usage", None)
         if usage is None and isinstance(response, dict):
@@ -348,6 +364,8 @@ class UsageExtractor:
             cache_read = cached
 
         call = ProviderRawCall(
+            role=role,
+            model=model,
             prompt_tokens=prompt,
             completion_tokens=completion,
             cached_tokens=cached,

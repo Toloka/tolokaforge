@@ -150,6 +150,16 @@ class TestUsageExtractorCarriesTheId:
         usage = UsageExtractor().extract(_response(headers={}))
         assert usage.calls[0].openrouter_generation_id is None
 
+    def test_call_record_stamps_role_and_model(self) -> None:
+        usage = UsageExtractor().extract(_response(headers={}), role="user", model="m")
+        assert usage.calls[0].role == "user"
+        assert usage.calls[0].model == "m"
+
+    def test_call_record_role_defaults_to_agent(self) -> None:
+        usage = UsageExtractor().extract(_response(headers={}))
+        assert usage.calls[0].role == "agent"
+        assert usage.calls[0].model is None
+
 
 class TestGenerationResultCarriesTheId:
     """``LLMClient.generate`` surfaces the id on the result it returns."""
