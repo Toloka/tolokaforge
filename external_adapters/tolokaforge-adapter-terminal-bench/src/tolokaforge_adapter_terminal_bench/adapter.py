@@ -47,6 +47,7 @@ from tolokaforge.runner.models import (
     ToolSchema,
 )
 from tolokaforge.secrets import expand_secret_refs, get_default
+from tolokaforge.tools.builtin import registry as builtin_registry
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     DEFAULT_SKILL_DELIVERY,
     PROJECT_PREFIX,
@@ -76,6 +77,15 @@ from tolokaforge_coding_harnesses import (
 )
 
 _AGENT_TOOL_TIMEOUT_S = 120.0
+
+AGENT_TOOL_BASH = "bash"
+"""One ``docker exec`` per call: no cwd, environment or shell state survives it."""
+
+AGENT_TOOL_BASH_SESSION = "bash_session"
+"""One held ``docker exec`` bash session for the trial: state survives every call."""
+
+AGENT_TOOLS: tuple[str, ...] = (AGENT_TOOL_BASH, AGENT_TOOL_BASH_SESSION)
+"""Values ``adapter_params.agent_tool`` accepts, default first."""
 
 _REMOVED_PARAMS: dict[str, str] = {
     "runner_task_dir": (
@@ -240,6 +250,19 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "`agent_model` — the CLI selects its own default otherwise, so the run "
                 "config's model would not be the one measured."
             )
+        self.agent_tool: str = params.get("agent_tool", AGENT_TOOL_BASH)
+        if self.agent_tool not in AGENT_TOOLS:
+            raise ValueError(
+                f"terminal-bench adapter: agent_tool {self.agent_tool!r} is not one of "
+                f"{list(AGENT_TOOLS)!r}."
+            )
+        if self.agent_tool != AGENT_TOOL_BASH and self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench adapter: agent_tool {self.agent_tool!r} requires "
+                f"agent_harness {ENGINE_LOOP!r} — under a coding-harness CLI the engine "
+                "runs no turn loop and the whole trial is one tool call, so a "
+                "session-lifetime shell has nothing to carry state across."
+            )
         self.agent_provider_env: dict[str, str] = _resolve_provider_env(
             self.harness_spec.provider_env if self.harness_spec else {},
             params.get("agent_provider_env") or {},
@@ -358,7 +381,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initial_user_message=meta.instruction if meta.instruction.strip() else None,
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(
-                agent={"enabled": ["bash"]},
+                agent=self.agent_tool_block(task_id),
                 user={"enabled": []},
             ),
             grading="__adapter__",
@@ -418,6 +441,84 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     def get_registry_tools(self, task_id: str, env: AdapterEnvironment) -> list[Any]:
         return []
 
+    def _agent_tool_timeout_s(self, task_id: str) -> float:
+        """Subprocess budget the runner-side wrapper enforces per call.
+
+        Under the engine loop a call is one agent command, so the budget is the
+        fixed per-command ceiling. Under a coding-harness CLI the whole trial
+        runs inside a single ``exec``, so the budget is the trial's agent
+        timeout.
+        """
+        if self.agent_harness == ENGINE_LOOP:
+            return _AGENT_TOOL_TIMEOUT_S
+        self._ensure_discovered()
+        return self._tasks[task_id].agent_timeout_sec
+
+    def _persistent_shell_tool_config(self, task_id: str) -> dict[str, Any]:
+        """``tool_config`` the persistent shell's compose backend reads.
+
+        ``service`` selects that backend over the local subprocess one, and
+        ``compose_project_prefix`` is what resolves the per-trial container
+        name — the same two values the one-shot tool carries on
+        ``ToolSource.extra``, so both tools exec into the same container.
+        """
+        return {
+            "service": self._environment(task_id).agent_service,
+            "compose_project_prefix": PROJECT_PREFIX,
+            "timeout_s": self._agent_tool_timeout_s(task_id),
+        }
+
+    def agent_tool_block(self, task_id: str) -> dict[str, Any]:
+        """The ``tools.agent`` block naming this run's single agent tool.
+
+        Paired with :meth:`agent_tool_schema` — the name enabled here is the
+        name of the schema emitted there, and the persistent shell's per-tool
+        kwargs are the same dict the schema carries as ``tool_config``.
+        """
+        if self.agent_tool == AGENT_TOOL_BASH:
+            return {"enabled": [AGENT_TOOL_BASH]}
+        return {
+            "enabled": [AGENT_TOOL_BASH_SESSION],
+            AGENT_TOOL_BASH_SESSION: self._persistent_shell_tool_config(task_id),
+        }
+
+    def agent_tool_schema(self, task_id: str) -> ToolSchema:
+        """This run's single agent tool, as the runner reconstructs it.
+
+        ``bash`` carries a ``docker_compose_exec`` :class:`ToolSource`, which
+        the runner's factory routes to its compose-exec wrapper. ``bash_session``
+        carries no source at all: the factory dispatches a sourceless tool by
+        name through the builtin registry, where the name resolves to the
+        persistent shell. Its advertised parameters come from the registered
+        tool class rather than a copy, so the schema the model sees cannot
+        drift from the one the wrapper implements.
+        """
+        if self.agent_tool == AGENT_TOOL_BASH:
+            return ToolSchema(
+                **self.emit_harness_tool_schema(
+                    service=self._environment(task_id).agent_service,
+                    compose_project_prefix=PROJECT_PREFIX,
+                    # The runner-side compose-exec wrapper reads its subprocess
+                    # timeout off this field, so under harness mode it has to
+                    # carry the whole trial's agent budget: the CLI runs to
+                    # completion inside a single exec.
+                    timeout_s=self._agent_tool_timeout_s(task_id),
+                    toolset="terminal_bench",
+                )
+            )
+        tool_config = self._persistent_shell_tool_config(task_id)
+        function = builtin_registry.get_class(AGENT_TOOL_BASH_SESSION)(**tool_config).get_schema()[
+            "function"
+        ]
+        return ToolSchema(
+            name=AGENT_TOOL_BASH_SESSION,
+            description=function["description"],
+            parameters=function["parameters"],
+            category="compute",
+            timeout_s=tool_config["timeout_s"],
+            tool_config=tool_config,
+        )
+
     # -- prompts --------------------------------------------------------------
 
     def get_system_prompt(self, task_id: str) -> str:
@@ -437,7 +538,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             return self._agent_system_prompt
         return (
             "You are an expert developer working inside a Linux container. "
-            "Use the bash tool to execute commands. "
+            f"Use the {self.agent_tool} tool to execute commands. "
             "Fix the issues described in the user message."
         )
 
@@ -457,7 +558,6 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     def to_task_description(self, task_id: str) -> TaskDescription:
         self._ensure_discovered()
         meta = self._tasks[task_id]
-        env = self._environment(task_id)
         manifest = resolve_environment_patch(None, self._environment_patch(task_id))
 
         return TaskDescription(
@@ -468,24 +568,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             adapter_type=AdapterType.TERMINAL_BENCH,
             system_prompt=self.get_system_prompt(task_id),
             environment_manifest=manifest,
-            agent_tools=[
-                ToolSchema(
-                    **self.emit_harness_tool_schema(
-                        service=env.agent_service,
-                        compose_project_prefix=PROJECT_PREFIX,
-                        # The runner-side compose-exec wrapper reads its subprocess
-                        # timeout off this field, so under harness mode it has to
-                        # carry the whole trial's agent budget: the CLI runs to
-                        # completion inside a single exec.
-                        timeout_s=(
-                            _AGENT_TOOL_TIMEOUT_S
-                            if self.agent_harness == ENGINE_LOOP
-                            else meta.agent_timeout_sec
-                        ),
-                        toolset="terminal_bench",
-                    )
-                )
-            ],
+            agent_tools=[self.agent_tool_schema(task_id)],
             user_tools=[],
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),

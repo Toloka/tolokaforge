@@ -2620,3 +2620,169 @@ class TestAgentSystemPromptOverride:
                     "agent_system_prompt_file": str(blank),
                 }
             )
+
+
+class TestTerminalBenchAgentToolSelection:
+    """``adapter_params.agent_tool`` picks the one tool the agent is given.
+
+    The tool surface is declared twice — ``TaskConfig.tools.agent`` and
+    ``TaskDescription.agent_tools`` — and the two must name the same tool with
+    the same configuration, or the model is told about one tool while the
+    runner builds another.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    # -- default: byte-identical to the pre-param emission -------------------
+
+    def test_default_enables_one_shot_bash(self, fixture_dir, tmp_path):
+        """Safety lock: no ``agent_tool`` means exactly what shipped before."""
+        adapter = self._adapter(fixture_dir, tmp_path)
+
+        assert adapter.agent_tool == "bash"
+        assert adapter.get_task("echo-hello").tools.agent == {"enabled": ["bash"]}
+
+    def test_default_tool_schema_is_the_compose_exec_shape(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+
+        schema = adapter.to_task_description("echo-hello").agent_tools[0]
+
+        assert schema.name == "bash"
+        assert schema.tool_config == {}
+        assert schema.source is not None
+        assert schema.source.invocation_style is InvocationStyle.DOCKER_COMPOSE_EXEC
+        assert schema.source.extra == {
+            "service": adapter._environment("echo-hello").agent_service,
+            "compose_project_prefix": "tbench_",
+        }
+        assert schema.timeout_s == 120.0
+
+    def test_explicit_bash_matches_the_default(self, fixture_dir, tmp_path):
+        default = self._adapter(fixture_dir, tmp_path)
+        explicit = self._adapter(fixture_dir, tmp_path, agent_tool="bash")
+
+        assert (
+            explicit.get_task("echo-hello").tools.agent
+            == default.get_task("echo-hello").tools.agent
+        )
+        assert (
+            explicit.to_task_description("echo-hello").agent_tools
+            == default.to_task_description("echo-hello").agent_tools
+        )
+        assert explicit.get_system_prompt("echo-hello") == default.get_system_prompt("echo-hello")
+
+    # -- bash_session --------------------------------------------------------
+
+    def test_bash_session_enables_the_persistent_shell(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session")
+
+        block = adapter.get_task("echo-hello").tools.agent
+
+        assert block["enabled"] == ["bash_session"]
+        assert block["bash_session"] == {
+            "service": adapter._environment("echo-hello").agent_service,
+            "compose_project_prefix": "tbench_",
+            "timeout_s": 120.0,
+        }
+
+    def test_bash_session_schema_is_sourceless_with_compose_tool_config(
+        self, fixture_dir, tmp_path
+    ):
+        """No ``source`` is what routes the runner's factory through the builtin
+        registry to the persistent shell; the compose backend is selected by the
+        ``service`` key in ``tool_config``."""
+        adapter = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session")
+
+        schema = adapter.to_task_description("echo-hello").agent_tools[0]
+
+        assert schema.name == "bash_session"
+        assert schema.source is None
+        assert schema.tool_config == {
+            "service": adapter._environment("echo-hello").agent_service,
+            "compose_project_prefix": "tbench_",
+            "timeout_s": 120.0,
+        }
+        assert schema.category == "compute"
+        assert schema.timeout_s == 120.0
+        assert set(schema.parameters["properties"]) == {"command", "restart"}
+
+    def test_both_declaration_sites_agree(self, fixture_dir, tmp_path):
+        """The enabled name and the emitted schema name are one decision, and
+        the per-tool kwargs are the same dict on both surfaces."""
+        for agent_tool in ("bash", "bash_session"):
+            adapter = self._adapter(fixture_dir, tmp_path, agent_tool=agent_tool)
+            block = adapter.get_task("echo-hello").tools.agent
+            schema = adapter.to_task_description("echo-hello").agent_tools[0]
+
+            assert block["enabled"] == [schema.name] == [agent_tool]
+            assert block.get(schema.name, {}) == schema.tool_config
+
+    def test_system_prompt_names_the_enabled_tool(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session")
+
+        assert "Use the bash_session tool" in adapter.get_system_prompt("echo-hello")
+
+    def test_bash_session_schema_builds_the_persistent_shell_wrapper(self, fixture_dir, tmp_path):
+        """Wiring lock: the emitted schema is one the runner's factory accepts,
+        and it resolves to the persistent-shell wrapper against the same
+        container the one-shot tool would have exec'd into."""
+        from tolokaforge.runner.tool_factory import PersistentShellToolWrapper
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session")
+        schema = adapter.to_task_description("echo-hello").agent_tools[0]
+
+        factory = ToolFactory(db_client=MagicMock(), trial_id="echo-hello:0")
+        wrapper = factory._create_wrapper(schema)
+
+        assert isinstance(wrapper, PersistentShellToolWrapper)
+        assert wrapper.own_budget_s == 120.0
+        assert (
+            wrapper._resolve_container_name(
+                "echo-hello:0", schema.tool_config["service"], "tbench_"
+            )
+            == f"tbench_echo-hello_0_{schema.tool_config['service']}"
+        )
+
+    def test_grading_is_unchanged_by_the_tool_selection(self, fixture_dir, tmp_path):
+        """``test_execution`` reads the verifier's reward out of the container;
+        it never looks at which tool the agent was given."""
+        bash = self._adapter(fixture_dir, tmp_path)
+        session = self._adapter(fixture_dir, tmp_path, agent_tool="bash_session")
+
+        assert session.preferred_grader_kind() == bash.preferred_grader_kind() == "test_execution"
+        assert (
+            session.to_task_description("echo-hello").grading
+            == bash.to_task_description("echo-hello").grading
+        )
+
+    # -- refusals ------------------------------------------------------------
+
+    def test_unknown_agent_tool_rejected_at_construction(self, fixture_dir, tmp_path):
+        with pytest.raises(ValueError, match=r"agent_tool 'tmux'.*\['bash', 'bash_session'\]"):
+            self._adapter(fixture_dir, tmp_path, agent_tool="tmux")
+
+    def test_bash_session_rejected_under_a_coding_harness(self, fixture_dir, tmp_path):
+        """A harness CLI runs the whole trial inside one tool call, so there is
+        no sequence of calls for a session to persist across."""
+        with pytest.raises(ValueError, match=r"agent_tool 'bash_session' requires agent_harness"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                agent_tool="bash_session",
+                agent_harness="claude-code",
+                agent_model="m",
+            )
+

@@ -111,6 +111,29 @@ per-task means. Per-trial artifacts live under
   (Gemini schema sanitizers, Claude system prompt shape, etc.).
 - You want honest token / cost accounting through `litellm`.
 
+### Choosing the agent's shell — `agent_tool`
+
+Engine-loop mode gives the agent exactly one tool, and `agent_tool` picks which:
+
+| Value | Tool the agent sees | Behaviour |
+|---|---|---|
+| `bash` (default) | `bash` | One `docker exec` per call. Working directory, exported variables and shell state are discarded after every command. |
+| `bash_session` | `bash_session` | One `docker exec` bash session held for the trial. Working directory, environment and shell functions persist across calls; `restart: true` resets them. |
+
+```yaml
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      agent_tool: "bash_session"
+```
+
+Both tools exec into the same per-trial agent container and grade identically
+— the task's verifier reads container state, not the transcript.
+`bash_session` requires engine-loop mode: a coding-harness CLI runs the whole
+trial inside a single tool call, so there is no sequence of calls for a session
+to persist across, and the adapter refuses the combination at construction.
+
 ## Harness mode — a vendor CLI drives the trial
 
 Use when you want to measure a **coding-harness CLI** (Claude Code, Codex,
