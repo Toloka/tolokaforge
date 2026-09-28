@@ -37,6 +37,7 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.actors.tool_steps import TurnShape, user_tool_step_positions
 from tolokaforge.observability import ids
 from tolokaforge.observability.observer import TrialIdentity
 from tolokaforge_langfuse.attachments import ATTACHMENTS_SCHEMA
@@ -520,7 +521,13 @@ def _user_generation(
     started: str | None,
     ended: str | None,
     user_model_name: str | None,
+    tool_step: bool = False,
 ) -> dict[str, Any]:
+    # A user tool step (``tool_turns: isolated``) carries calls and usually no text,
+    # so its output shows the calls; a dialogue turn's output stays its text.
+    output: dict[str, Any] = {"content": message.get("content")}
+    if tool_step:
+        output["tool_calls"] = message.get("tool_calls")
     body: dict[str, Any] = {
         "id": ids.observation_id(trace_id, "ugen", index),
         "traceId": trace_id,
@@ -529,7 +536,7 @@ def _user_generation(
         "startTime": started,
         "endTime": ended or started,
         "input": context[-CONTEXT_MESSAGES:],
-        "output": {"content": message.get("content")},
+        "output": output,
         "metadata": {
             "role": "user",
             "actor": "user_simulator",
@@ -606,6 +613,7 @@ def _tool_observation(
     ended: str | None,
     media: MediaHandler | None,
     stats: ProjectionStats,
+    user_step_result: bool = False,
 ) -> dict[str, Any]:
     call_id = message.get("tool_call_id")
     blocks = message.get("content_blocks")
@@ -639,7 +647,9 @@ def _tool_observation(
         "input": arguments,
         "output": tool_output,
         "metadata": {
-            "role": "agent_tool",
+            # Without a tool log the transcript's shape still tells a user tool
+            # step's result from the agent's.
+            "role": "user_tool" if user_step_result else "agent_tool",
             "kind": "tool",
             "source": "transcript",
             "message_index": index,
@@ -708,6 +718,7 @@ def _agent_observations(
     emitted_calls: set[str] = set()
     out: list[tuple[str, dict[str, Any]]] = []
     context: list[dict[str, Any]] = []
+    steps = _user_tool_step_positions(messages)
     for index, message in enumerate(messages):
         role = message.get("role")
         started = _normalize_ts(message.get("ts")) or start
@@ -722,6 +733,7 @@ def _agent_observations(
                 started=started,
                 ended=ended,
                 user_model_name=user_model_name,
+                tool_step=index in steps,
             )
             out.append(("generation-create", body))
             stats.user_generations += 1
@@ -757,6 +769,7 @@ def _agent_observations(
                 ended=ended,
                 media=media,
                 stats=stats,
+                user_step_result=index in steps,
             )
             out.append(("span-create", body))
         context.append({"role": role, "content": str(message.get("content") or "")[:CONTEXT_CHARS]})
@@ -1144,12 +1157,23 @@ def _trace_body(
     agent: ModelIdentity | None,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
+    # The trace's input is the dialogue's first user turn: a tool step the
+    # simulator took before its opening (``tool_turns: isolated``) is not one.
+    steps = _user_tool_step_positions(messages)
+    opening = next(
+        (
+            m.get("content")
+            for position, m in enumerate(messages)
+            if m.get("role") == "user" and position not in steps
+        ),
+        None,
+    )
     return {
         "id": trace_id,
         "name": f"{ctx.label}/{task_id}",
         "timestamp": start,
         "sessionId": ctx.session_id,
-        "input": next((m.get("content") for m in messages if m.get("role") == "user"), None),
+        "input": opening,
         "output": next(
             (
                 m.get("content")
@@ -1297,3 +1321,21 @@ def build_projection(
     )
     events = _projection_events(trace_body, typed, environment=ctx.environment, stats=stats)
     return Projection(trace_id=trace_id, events=events, trace_body=trace_body, stats=stats)
+
+
+def _user_tool_step_positions(messages: Sequence[Mapping[str, Any]]) -> frozenset[int]:
+    """Positions of the user's tool steps and their results (``tool_turns: isolated``)."""
+    return user_tool_step_positions(
+        [
+            TurnShape(
+                role=str(message.get("role") or ""),
+                call_ids=tuple(
+                    str(call.get("id"))
+                    for call in message.get("tool_calls") or []
+                    if isinstance(call, Mapping)
+                ),
+                answers=message.get("tool_call_id"),
+            )
+            for message in messages
+        ]
+    )

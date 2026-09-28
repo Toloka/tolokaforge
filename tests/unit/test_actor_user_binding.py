@@ -18,7 +18,7 @@ import yaml
 from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import load_task_yaml
-from tolokaforge.core.models import TaskDefaults
+from tolokaforge.core.models import TaskDefaults, UserSimulatorConfig
 
 pytestmark = pytest.mark.unit
 
@@ -332,6 +332,41 @@ class TestToolTurnsDeclaration:
         _write_yaml(task_path, _task_body(actors={"user": {"max_tool_steps": 3}}))
         with pytest.raises(ValueError, match="never loops"):
             load_task_yaml(task_path)
+
+    def test_a_task_opts_out_of_a_project_step_limit_with_null(self, tmp_path: Path) -> None:
+        """A project that runs isolated turns with a limit sets both for every task; a
+        task that goes back to ``shared`` drops the project's limit with ``null``."""
+        project = {"actors": {"user": {"tool_turns": "isolated", "max_tool_steps": 5}}}
+        refused = tmp_path / "refused" / "task.yaml"
+        _write_yaml(refused, _task_body(actors={"user": {"tool_turns": "shared"}}))
+        with pytest.raises(ValueError, match="write max_tool_steps: null in the task"):
+            _load(refused, project_task_defaults=project)
+
+        opted_out = tmp_path / "opted_out" / "task.yaml"
+        _write_yaml(
+            opted_out,
+            _task_body(actors={"user": {"tool_turns": "shared", "max_tool_steps": None}}),
+        )
+        task, _ = _load(opted_out, project_task_defaults=project)
+        assert task.resolve_user_simulator().tool_turns == "shared"
+
+    def test_isolated_turns_on_a_scripted_simulator_are_refused(self, tmp_path: Path) -> None:
+        """Scripted replies are authored text and never call tools, so a step mode
+        for calls it never makes describes nothing."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"mode": "scripted", "tool_turns": "isolated"}}),
+        )
+        with pytest.raises(ValueError, match="never call tools"):
+            load_task_yaml(task_path)
+
+    def test_the_resolved_step_limit_revalidates_from_its_own_dump(self) -> None:
+        """The bundle records the resolved simulator, default limit included, as
+        ``user_actor``; that record is a config its own model accepts."""
+        resolved = UserSimulatorConfig(mode="llm")
+
+        assert UserSimulatorConfig(**resolved.model_dump()) == resolved
 
     @pytest.mark.parametrize(
         ("user", "match"),

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import parity_bundle as pb
 import pytest
+import yaml
 from tolokaforge_langfuse.media import LangfuseApiError, iter_batches
 from tolokaforge_langfuse.model_names import RawModelNameResolver, build_model_name_resolver
 from tolokaforge_langfuse.projection import (
@@ -445,3 +446,57 @@ class TestObserverProjection:
 
 def test_the_png_of_the_bundle_is_a_real_image() -> None:
     assert base64.b64encode(pb.PNG).decode().startswith("iVBORw0KGgo")
+
+
+class TestUserToolSteps:
+    """A trial run with ``actors.user.tool_turns: isolated`` records the simulator's
+    tool steps as a user message carrying calls, then a tool message per result."""
+
+    @staticmethod
+    def _isolated_bundle(tmp_path: Path, *, with_tool_log: bool) -> Path:
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        step_call = {"id": "u1", "name": "check_booking_app", "arguments": {"pnr": "PLT001"}}
+        step = {**trajectory["messages"][0], "content": "", "tool_calls": [step_call]}
+        result = {
+            **trajectory["messages"][2],
+            "content": '{"pnr": "PLT001"}',
+            "tool_call_id": "u1",
+            "ts": "2026-09-17T09:00:00.500000Z",
+        }
+        step["ts"] = "2026-09-17T09:00:00.200000Z"
+        trajectory["messages"] = [step, result, *trajectory["messages"]]
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        if not with_tool_log:
+            (trial_dir / "tool_log.yaml").unlink()
+        return trial_dir
+
+    def _projection(self, tmp_path: Path, *, with_tool_log: bool):
+        trial_dir = self._isolated_bundle(tmp_path, with_tool_log=with_tool_log)
+        resolver = RawModelNameResolver()
+        return build_projection(
+            IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
+        )
+
+    def test_the_trace_input_is_the_opening_not_the_step_before_it(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path, with_tool_log=True)
+        assert projection.trace_body["input"] == pb.trajectory()["messages"][0]["content"]
+
+    def test_the_step_generation_shows_its_calls(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path, with_tool_log=True)
+        step = next(
+            e["body"]
+            for e in projection.events
+            if e["type"] == "generation-create" and e["body"]["name"] == "user turn 0"
+        )
+        assert step["output"]["tool_calls"][0]["name"] == "check_booking_app"
+
+    def test_without_a_tool_log_the_step_result_is_the_users(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path, with_tool_log=False)
+        roles = {
+            e["body"]["metadata"]["call_id"]: e["body"]["metadata"]["role"]
+            for e in projection.events
+            if (e["body"].get("metadata") or {}).get("kind") == "tool"
+        }
+        assert roles["u1"] == "user_tool"
+        assert roles["call_1"] == "agent_tool"

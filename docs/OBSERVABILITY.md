@@ -167,7 +167,7 @@ of the fixed schema explicit (the receiver merges metadata and an omitted key wo
 
 | From the bundle | Records |
 |---|---|
-| `trajectory.yaml`, `metrics.yaml` | the root observation, one generation per agent turn with its paired usage and cost (by generation id, else positionally), one generation per simulated user turn (the user model, no usage), the trace's input, output, timestamp, status and totals |
+| `trajectory.yaml`, `metrics.yaml` | the root observation, one generation per agent turn with its paired usage and cost (by generation id, else positionally), one generation per simulated user turn (the user model, no usage), the trace's input, output, timestamp, status and totals. Under `actors.user.tool_turns: isolated` each user tool step is a user generation whose output carries its calls, its results are `user_tool` spans even without a `tool_log.yaml`, and the trace's input is the first user turn of the dialogue, not a step taken before it |
 | `tool_log.yaml` | one tool span per recorded call, the grader's view (status, executor, latency, sequence, untruncated output) with the transcript's agent-facing text beside it when it differs; the user simulator's own tool calls too |
 | `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` | the `grading:live:<run_id>` observation with the judge turns beneath, its scores and the trace-level mirror (`gradings: false` leaves the grading out, like the offline `--grades none`) |
 | `logs.yaml`, `trajectory.user_reply_guard_events`, `provision_stage`, the run's `LIMIT_HIT.json`, `services/_capture.yaml` | events (WARNING and ERROR always, INFO under `attach: all`) |

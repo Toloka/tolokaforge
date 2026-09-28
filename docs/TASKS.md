@@ -285,21 +285,35 @@ actors:
   steps and none of the agent's tool traffic: an agent message that calls tools is
   left out of the simulator's view whole, text included. This is how the τ³-bench
   harness runs its users.
-  - A stop token inside a tool step is not a stop.
+  - A stop token inside a tool step is not a stop, as in τ³-bench: a step is addressed
+    to the environment.
   - A step beyond `max_tool_steps` ends the dialogue with `user_tool_loop_limit`, and
-    none of that step's calls run. The reason is graded, like `max_turns`.
-  - The episode timeout is checked between steps.
-  - The opening turn follows the same rule: steps taken before the first message are
-    recorded ahead of it, and more than `max_tool_steps` of them refuse the trial.
+    none of that step's calls run; the system message and the trial log name them. The
+    reason is graded, like `max_turns`.
+  - Between steps of a dialogue turn the episode timeout is checked.
+  - The opening turn records its steps ahead of the first message. Like the rest of
+    turn 0 it runs before the loop, so no timeout check interrupts it: `max_tool_steps`
+    bounds it, and a trial whose opening ran past the episode budget ends with
+    `timeout` on the loop's first turn. More than `max_tool_steps` steps before the
+    opening refuse the trial as an error rather than end it with
+    `user_tool_loop_limit`: the agent has not spoken yet, so there is nothing of its
+    to grade.
+  - A user tool that raises ends the trial as an error, after every call of the step
+    is answered with an `Error: …` result. τ³-bench turns an exception into an error
+    result and goes on, so a user-side environment that wants that returns the error
+    as the tool's result instead of raising.
   - A run with `orchestrator.rate_limit_probe` enabled refuses `isolated` tasks: the
     probe budgets one simulator reply per turn.
 
-`max_tool_steps` under `shared` is refused, since a shared turn never loops. `isolated`
-without user tools loads, so an adapter can declare it on every task. In grading, a
-tool step's calls and results are timeline events and the step itself is not a
-`user_message` (see [GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline));
-a custom check's `transcript.user_messages` still lists it, as a user message
-carrying `tool_calls`.
+`max_tool_steps` under `shared` is refused, since a shared turn never loops, and so is
+`isolated` on a `scripted` simulator, whose authored replies never call tools. Both are
+decided on what the task and its project declared: a task under a project that sets
+either key writes it as `null` to drop it. `isolated` without user tools loads, so an
+adapter can declare it on every task. In grading, a tool step's calls and results are
+timeline events and the step itself is not a `user_message` (see
+[GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)); the rubric
+judge's transcript labels the step and its results as the user's; a custom check's
+`transcript.user_messages` still lists it, as a user message carrying `tool_calls`.
 
 ### Authoring the opening turn
 

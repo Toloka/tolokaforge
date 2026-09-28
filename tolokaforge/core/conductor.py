@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from tolokaforge_coding_harnesses.adapter_support import HARNESS_USAGE_LOG_METADATA_KEY
 
 from tolokaforge.adapters import BaseAdapter
-from tolokaforge.core.actors.tool_turns import UserToolTurnRule
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.actors.user_simulator import UserSimulator, UserSimulatorContext
 from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
@@ -923,15 +923,9 @@ class InProcessConductor:
             turn_timeout_s = run_turn_s
             episode_timeout_s = run_episode_s
 
-        # Checked against the post-clamp value: a pack declaring trial_seconds
-        # shrinks the ceiling the probe's per-call budget has to fit inside.
-        validate_rate_limit_probe_budget(
-            rate_limit_probe,
-            episode_timeout_s,
-            source=f"task {task.task_id}",
-        )
-        # The budget above allows one user reply per turn, and an isolated user
-        # turn asks its simulator once per tool step and again for the reply.
+        # The probe's budget, checked next, allows one user reply per turn, and an
+        # isolated user turn asks its simulator once per tool step and again for the
+        # reply — so no budget fits it, and the combination is refused first.
         if rate_limit_probe.enabled and user_tool_turns.isolated:
             raise ValueError(
                 f"task {task.task_id}: actors.user.tool_turns is isolated, and "
@@ -939,6 +933,13 @@ class InProcessConductor:
                 "one user reply, while an isolated user turn asks its simulator up to "
                 f"{user_tool_turns.max_steps + 1} times. Disable the probe for this run."
             )
+        # Checked against the post-clamp value: a pack declaring trial_seconds
+        # shrinks the ceiling the probe's per-call budget has to fit inside.
+        validate_rate_limit_probe_budget(
+            rate_limit_probe,
+            episode_timeout_s,
+            source=f"task {task.task_id}",
+        )
 
         runner = TrialRunner(
             task_id=task.task_id,

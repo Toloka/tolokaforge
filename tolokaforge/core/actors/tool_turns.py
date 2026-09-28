@@ -1,4 +1,4 @@
-"""The user simulator's own tool steps, and who gets to see them.
+"""What each side of a dialogue reads of a transcript that holds user tool steps.
 
 Under ``actors.user.tool_turns: isolated`` a user reply that calls tools is not a
 dialogue turn: it is recorded as a *tool step* — a USER message carrying the
@@ -7,69 +7,39 @@ with the results in view, until it replies with text alone. The agent reads only
 that text. A call is addressed to the environment, so neither side of the
 dialogue sees the other's tool traffic.
 
-Nothing on :class:`~tolokaforge.core.models.Message` says which kind a message
-is; the transcript's shape does. A step's calls are answered by TOOL messages
-carrying their ids, while a ``shared`` user turn keeps its results inside its own
-text and has no TOOL messages at all, and call ids are unique across both actors
-for the whole episode. So the functions here read any transcript — a live one,
-one decoded from the grading wire, a recorded bundle — without being told the
-mode, and on a ``shared`` transcript each is the identity.
+Which messages are steps is read from the transcript's shape
+(:mod:`tolokaforge.core.actors.tool_steps`), so these functions work on any
+transcript — a live one, one decoded from the grading wire, a recorded bundle —
+without being told the mode. A ``shared`` transcript has no steps, so
+:func:`agent_view` returns it unchanged; :func:`simulator_view` is the isolated
+simulator's view and :func:`shared_view` the shared one's.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
+from tolokaforge.core.actors.tool_steps import TurnShape, user_tool_step_positions
 from tolokaforge.core.models import Message, MessageRole
-from tolokaforge.core.models.task_config import (
-    DEFAULT_MAX_USER_TOOL_STEPS,
-    UserSimulatorConfig,
-    UserToolTurns,
-)
 
 __all__ = [
-    "UserToolTurnRule",
     "agent_view",
     "is_user_tool_step",
+    "shared_view",
     "simulator_view",
     "user_tool_step_call_ids",
 ]
 
-
-@dataclass(frozen=True)
-class UserToolTurnRule:
-    """How a trial runs its user simulator's tool calls: the resolved actor's
-    ``tool_turns`` and ``max_tool_steps``."""
-
-    mode: UserToolTurns = "shared"
-    max_steps: int = DEFAULT_MAX_USER_TOOL_STEPS
-
-    def __post_init__(self) -> None:
-        if self.max_steps < 1:
-            raise ValueError(f"max_steps is {self.max_steps}; a user turn needs at least one.")
-
-    @property
-    def isolated(self) -> bool:
-        return self.mode == "isolated"
-
-    @classmethod
-    def from_config(cls, config: UserSimulatorConfig) -> UserToolTurnRule:
-        return cls(mode=config.tool_turns, max_steps=config.max_tool_steps)
+_FLIPPED = {MessageRole.USER: MessageRole.ASSISTANT, MessageRole.ASSISTANT: MessageRole.USER}
 
 
 def user_tool_step_call_ids(messages: Sequence[Message]) -> frozenset[str]:
-    """Ids of the user's calls that a TOOL message answers — the calls of its tool steps."""
-    user_call_ids = {
-        call.id
-        for message in messages
-        if message.role is MessageRole.USER
-        for call in message.tool_calls or ()
-    }
+    """Ids of the calls the user's tool steps carry."""
     return frozenset(
-        message.tool_call_id
-        for message in messages
-        if message.role is MessageRole.TOOL and message.tool_call_id in user_call_ids
+        call.id
+        for index in _step_positions(messages)
+        if messages[index].role is MessageRole.USER
+        for call in messages[index].tool_calls or ()
     )
 
 
@@ -82,13 +52,8 @@ def is_user_tool_step(message: Message, step_call_ids: frozenset[str]) -> bool:
 
 def agent_view(messages: Sequence[Message]) -> list[Message]:
     """The transcript as the agent reads it: without the user's tool steps or their results."""
-    step_call_ids = user_tool_step_call_ids(messages)
-    return [
-        message
-        for message in messages
-        if not is_user_tool_step(message, step_call_ids)
-        and not (message.role is MessageRole.TOOL and message.tool_call_id in step_call_ids)
-    ]
+    positions = _step_positions(messages)
+    return [message for index, message in enumerate(messages) if index not in positions]
 
 
 def simulator_view(messages: Sequence[Message]) -> list[Message]:
@@ -103,44 +68,97 @@ def simulator_view(messages: Sequence[Message]) -> list[Message]:
     turns of one party are joined so the request alternates; a tool step is
     never joined to anything.
     """
-    step_call_ids = user_tool_step_call_ids(messages)
+    positions = _step_positions(messages)
+    view: list[Message] = []
+    for index, message in enumerate(messages):
+        replayed = _as_the_simulator_reads_it(message, in_step=index in positions)
+        if replayed is not None:
+            _append_joining_text(view, replayed)
+    return view
+
+
+def shared_view(messages: Sequence[Message]) -> list[Message]:
+    """The transcript from the customer's seat under ``shared`` tool turns.
+
+    The simulator's past messages replay as ``assistant`` turns and the agent's as
+    ``user`` turns. Turns with no dialogue text (agent tool-call turns,
+    whitespace-only replies) are skipped — replaying them as empty turns adds
+    noise the simulator's provider may reject. The skip is text-only: a turn
+    carrying ``content_blocks`` with no text would be dropped too, a latent gap
+    no USER/ASSISTANT call site produces today. Adjacent same-role turns are
+    coalesced so the request alternates strictly — a skipped turn can leave two
+    dialogue turns of the same party back to back, which strict-alternation
+    providers reject. An agent turn that carries text beside its calls keeps its
+    text here, unlike :func:`simulator_view`.
+    """
     view: list[Message] = []
     for message in messages:
-        if is_user_tool_step(message, step_call_ids):
-            view.append(
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content=message.content,
-                    tool_calls=message.tool_calls,
-                    reasoning=message.reasoning,
-                    ts=message.ts,
-                )
-            )
+        if not message.content.strip():
             continue
-        if message.role is MessageRole.TOOL:
-            if message.tool_call_id in step_call_ids:
-                view.append(
-                    Message(
-                        role=MessageRole.TOOL,
-                        content=message.content,
-                        tool_call_id=message.tool_call_id,
-                        ts=message.ts,
-                    )
-                )
+        role = _FLIPPED.get(message.role)
+        if role is None:
             continue
-        if message.role is MessageRole.ASSISTANT and message.tool_calls:
-            continue
-        role = {
-            MessageRole.USER: MessageRole.ASSISTANT,
-            MessageRole.ASSISTANT: MessageRole.USER,
-        }.get(message.role)
-        if role is None or not message.content.strip():
-            continue
-        previous = view[-1] if view else None
-        if previous is not None and previous.role is role and not previous.tool_calls:
+        if view and view[-1].role == role:
+            previous = view[-1]
             view[-1] = Message(
                 role=role, content=f"{previous.content}\n\n{message.content}", ts=message.ts
             )
         else:
             view.append(Message(role=role, content=message.content, ts=message.ts))
     return view
+
+
+def _step_positions(messages: Sequence[Message]) -> frozenset[int]:
+    return user_tool_step_positions(
+        [
+            TurnShape(
+                role=message.role.value,
+                call_ids=tuple(call.id for call in message.tool_calls or ()),
+                answers=message.tool_call_id,
+            )
+            for message in messages
+        ]
+    )
+
+
+def _as_the_simulator_reads_it(message: Message, *, in_step: bool) -> Message | None:
+    """*message* as the isolated simulator reads it, or ``None`` when it does not."""
+    if in_step and message.role is MessageRole.USER:
+        return Message(
+            role=MessageRole.ASSISTANT,
+            content=message.content,
+            tool_calls=message.tool_calls,
+            reasoning=message.reasoning,
+            ts=message.ts,
+        )
+    if in_step:
+        return Message(
+            role=MessageRole.TOOL,
+            content=message.content,
+            tool_call_id=message.tool_call_id,
+            ts=message.ts,
+        )
+    if message.role is MessageRole.ASSISTANT and message.tool_calls:
+        return None
+    role = _FLIPPED.get(message.role)
+    if role is None or not message.content.strip():
+        return None
+    return Message(role=role, content=message.content, ts=message.ts)
+
+
+def _append_joining_text(view: list[Message], message: Message) -> None:
+    """Append *message*, joined onto the previous turn when both are one party's text."""
+    previous = view[-1] if view else None
+    joins = (
+        previous is not None
+        and message.role is not MessageRole.TOOL
+        and not message.tool_calls
+        and previous.role is message.role
+        and not previous.tool_calls
+    )
+    if not joins:
+        view.append(message)
+        return
+    view[-1] = Message(
+        role=message.role, content=f"{previous.content}\n\n{message.content}", ts=message.ts
+    )
