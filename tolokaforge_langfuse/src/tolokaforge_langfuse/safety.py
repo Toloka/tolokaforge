@@ -38,8 +38,11 @@ from pathlib import Path
 SECRET_NAME = re.compile(
     r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
 )
-# names that look secret-like but never hold a secret value
-_NOT_SECRET_NAMES = re.compile(r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_NAME$|_HEADER$)", re.I)
+# names that look secret-like but never hold a secret value; PWD and OLDPWD are the shell's
+# working directories, which an agent's own text names all the time
+_NOT_SECRET_NAMES = re.compile(
+    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_NAME$|_HEADER$|^(?:OLD)?PWD$)", re.I
+)
 MIN_SECRET_VALUE = 8
 
 SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (

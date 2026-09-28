@@ -490,6 +490,21 @@ class TestTheSentinel:
         with pytest.raises(safety.SafetyError, match="known-secret-value"):
             gate.check(payload, what="transcript t")
 
+    def test_the_working_directory_is_not_a_known_secret(self) -> None:
+        """``PWD`` matches the password pattern by name, but the shell sets it to the working
+        directory: a transcript naming a file under it must not be blocked as a leak, while a
+        real ``*_PWD`` value still is."""
+        gate = safety.SafetyGate.from_environment(
+            {
+                "PWD": "/home/runner/work/acme/acme",
+                "OLDPWD": "/home/runner/work/acme",
+                "DB_PWD": "not-a-shape-just-a-password",
+            }
+        )
+        assert gate.scan(b"edited /home/runner/work/acme/acme/src/app.py") == []
+        rules = [f.rule for f in gate.scan(b"the db said not-a-shape-just-a-password")]
+        assert rules == ["known-secret-value"]
+
     def test_the_clean_transcript_passes_the_sentinel(self) -> None:
         payload = json.dumps(bodies(built(tr.redact(read())))).encode()
         assert safety.SafetyGate().scan(payload) == []
