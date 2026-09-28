@@ -307,10 +307,10 @@ consistent mix of author and judge-authored `expected:` fields.
 
 Audit trail: every auto-anchor lands in `JudgeResult.reasons` prefixed
 with `auto_anchored_rubric warm-up anchors:` so a reader can see what
-the harness told the judge "met" looks like. The auto-anchor text also
-lands in each criterion's `expected:` inside the wrapped-kind's dispatch,
-prefixed with `auto-anchor: `, so downstream schema dumps show the anchor
-came from the harness rather than the author.
+the harness told the judge "met" looks like. The auto-anchor is written
+verbatim into each criterion's `expected:` in the wrapped-kind's dispatch
+with no synthetic tag — the wrapped judge sees an anchor indistinguishable
+from an author-written one, so it cannot bias on provenance.
 
 Cost: **+1 judge call per unique (rubric, judge_model)** — amortised
 across every trial in the process that uses the same rubric + judge.

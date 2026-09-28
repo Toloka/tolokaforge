@@ -88,7 +88,7 @@ class AutoRubricJudgeKind:
         else:
             selected = SingleShotRubricJudgeKind()
             audit_line = (
-                "auto_rubric selected single_shot_rubric " "(all graded criteria are anchored)\n\n"
+                "auto_rubric selected single_shot_rubric (all graded criteria are anchored)\n\n"
             )
 
         inner = selected.evaluate(
