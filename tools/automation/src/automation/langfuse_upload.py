@@ -28,6 +28,7 @@ OpenTelemetry exporter.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -102,7 +103,13 @@ class Receiver:
         try:
             with urllib.request.urlopen(request, timeout=READ_TIMEOUT_S) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            TimeoutError,
+            ValueError,
+            OSError,
+        ):
             return None
 
     def project_name(self) -> str | None:
@@ -126,6 +133,7 @@ class Receiver:
         """
         found: set[str] = set()
         cursor = ""
+        cursors: set[str] = set()
         while True:
             query = (
                 f"traceId={quote(trace_id, safe='')}&fields={OBSERVATION_FIELDS}&limit={READ_PAGE}"
@@ -133,16 +141,21 @@ class Receiver:
             if cursor:
                 query += f"&cursor={quote(cursor, safe='')}"
             payload = self._get(f"{OBSERVATIONS_PATH}?{query}")
-            if payload is None:
+            rows = payload.get("data") if isinstance(payload, Mapping) else None
+            if not isinstance(rows, list):
+                # no answer, or one that is not the observations API (a proxy's own page)
                 return None
-            rows = (payload.get("data") if isinstance(payload, Mapping) else None) or []
             page = [row for row in rows if isinstance(row, Mapping)]
             found.update(str(row.get("environment") or DEFAULT_ENVIRONMENT) for row in page)
-            meta = (payload.get("meta") or {}) if isinstance(payload, Mapping) else {}
-            cursor = str(meta.get("cursor") or "")
+            meta = payload.get("meta")
+            cursor = str(meta.get("cursor") or "") if isinstance(meta, Mapping) else ""
             # a short page ends the walk whatever the cursor says: this read must never spin
             if not cursor or len(page) < READ_PAGE:
                 return found
+            if cursor in cursors:
+                # a receiver handing back a cursor it already gave is not paging
+                return None
+            cursors.add(cursor)
 
 
 def _extra_headers(raw: str | None) -> dict[str, str]:

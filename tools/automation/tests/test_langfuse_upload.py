@@ -556,6 +556,56 @@ class TestTheEnvironmentGuard:
         assert self.receiver_answering([None]).environments_of("trace") is None
 
     @pytest.mark.parametrize(
+        "answer",
+        [{"message": "not the API"}, {"data": None}, ["a", "list"]],
+        ids=["no-data", "null-data", "not-a-mapping"],
+    )
+    def test_an_answer_that_is_not_the_api_is_could_not_ask(self, answer: Any) -> None:
+        assert self.receiver_answering([answer]).environments_of("trace") is None
+
+    def test_a_receiver_that_repeats_its_cursor_does_not_spin(self) -> None:
+        full = {
+            "data": [{"id": str(i), "environment": "test"} for i in range(lu.READ_PAGE)],
+            "meta": {"cursor": "same"},
+        }
+        reads: list[str] = []
+
+        def forever(path: str) -> Any:
+            reads.append(path)
+            if len(reads) > 10:
+                raise AssertionError("still paging after 10 reads of the same cursor")
+            return full
+
+        receiver = lu.Receiver(endpoint="https://h/v1/traces", base_url="https://h")
+        object.__setattr__(receiver, "_get", forever)
+        assert receiver.environments_of("trace") is None
+        assert len(reads) == 2
+
+    def test_a_malformed_http_answer_is_could_not_ask(self) -> None:
+        """A proxy answering with a broken status line raises http.client's own error, which is
+        not an OSError; it has to read as "could not ask" rather than end the upload."""
+        import socketserver
+        import threading
+
+        class Garbage(socketserver.StreamRequestHandler):
+            def handle(self) -> None:
+                self.rfile.readline()
+                self.wfile.write(b"not-http\r\n\r\n")
+
+        server = socketserver.TCPServer(("127.0.0.1", 0), Garbage)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            receiver = lu.Receiver(endpoint=f"{base}/v1/traces", base_url=base)
+            assert receiver.environments_of("trace") is None
+            assert receiver.project_name() is None
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    @pytest.mark.parametrize(
         ("found", "environment", "expected"),
         [
             ({"test"}, "production-automation", {"test"}),
