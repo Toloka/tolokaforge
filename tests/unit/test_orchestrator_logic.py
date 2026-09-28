@@ -17,6 +17,7 @@ from tolokaforge.core.models import (
     EvaluationConfig,
     Grade,
     GradeComponents,
+    JudgeUsage,
     Metrics,
     ModelConfig,
     OrchestratorConfig,
@@ -69,8 +70,13 @@ def _make_trajectory(
     latency: float = 5.0,
     turns: int = 10,
     tool_calls: int = 5,
+    judge_cost: float | None = None,
 ) -> Trajectory:
-    """Build a Trajectory with realistic defaults."""
+    """Build a Trajectory with realistic defaults.
+
+    ``judge_cost`` attaches a :class:`JudgeUsage` carrying that rubric-judge
+    spend to the grade, so a caller can exercise cross-role accounting.
+    """
     now = datetime.now(tz=timezone.utc)
     return Trajectory(
         task_id=task_id,
@@ -90,6 +96,7 @@ def _make_trajectory(
             binary_pass=binary_pass,
             score=score,
             components=GradeComponents(state_checks=score),
+            judge_usage=JudgeUsage(cost_usd=judge_cost) if judge_cost is not None else None,
         ),
     )
 
@@ -449,6 +456,105 @@ class TestCollectExistingCost:
         (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": None}))
 
         assert Orchestrator._collect_existing_cost(tmp_path) == 0.0
+
+    def test_sums_judge_cost_from_grade_bundle(self, tmp_path: Path) -> None:
+        """Resume seed adds each trial's ``grade.yaml`` judge cost to ``metrics.yaml`` cost."""
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trial_dir = tmp_path / "trials" / "T1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.05}))
+        (trial_dir / "grade.yaml").write_text(yaml.dump({"judge_usage": {"cost_usd": 0.02}}))
+
+        total = Orchestrator._collect_existing_cost(tmp_path)
+        assert abs(total - 0.07) < 1e-9
+
+    def test_grade_bundle_without_judge_usage(self, tmp_path: Path) -> None:
+        """A grade bundle with no ``judge_usage`` adds nothing beyond the metrics cost."""
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trial_dir = tmp_path / "trials" / "T1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.05}))
+        (trial_dir / "grade.yaml").write_text(yaml.dump({"binary_pass": True}))
+
+        assert abs(Orchestrator._collect_existing_cost(tmp_path) - 0.05) < 1e-9
+
+    def test_corrupt_grade_yaml_is_logged_and_skipped(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A mid-write grade bundle is warned-then-skipped, not fatal — resume survives it.
+
+        The valid ``metrics.yaml`` cost is still counted; only the unreadable
+        judge cost is dropped, and the skip is surfaced at warning.
+        """
+        import logging
+
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trial_dir = tmp_path / "trials" / "T1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.05}))
+        (trial_dir / "grade.yaml").write_text("{{{{invalid yaml")
+
+        with caplog.at_level(logging.WARNING):
+            total = Orchestrator._collect_existing_cost(tmp_path)
+        assert abs(total - 0.05) < 1e-9
+        assert any("resume cost seed" in record.message for record in caplog.records)
+
+
+# ===================================================================
+# _trial_total_spend_usd (static method)
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestTrialTotalSpendUsd:
+    """The shared per-trial spend helper both budget paths route through."""
+
+    def test_sums_metrics_and_judge_cost(self) -> None:
+        """Cross-role total = ``metrics.cost_usd`` (agent + user) + judge cost."""
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        traj = _make_trajectory(cost=0.05, judge_cost=0.02)
+        assert abs(Orchestrator._trial_total_spend_usd(traj) - 0.07) < 1e-9
+
+    def test_no_judge_usage_returns_metrics_cost(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        traj = _make_trajectory(cost=0.05, judge_cost=None)
+        assert abs(Orchestrator._trial_total_spend_usd(traj) - 0.05) < 1e-9
+
+    def test_none_metrics_cost_counts_only_judge(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        traj = _make_trajectory(cost=0.05, judge_cost=0.02)
+        traj.metrics.cost_usd = None
+        assert abs(Orchestrator._trial_total_spend_usd(traj) - 0.02) < 1e-9
+
+    def test_judge_cost_pushes_budget_over_cap(self) -> None:
+        """A trajectory whose judge cost tips the running total fires the cost cap."""
+        from tolokaforge.core.budgets import CostBudget
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        budget = CostBudget(limit_usd=0.10)
+        # Agent+user spend alone stays under the cap.
+        under_cap = _make_trajectory(cost=0.05, judge_cost=None)
+        budget.record_generation_cost(Orchestrator._trial_total_spend_usd(under_cap))
+        assert budget.poll() is None
+
+        # A second trial's judge cost tips the cross-role total past the cap.
+        with_judge = _make_trajectory(cost=0.04, judge_cost=0.03)
+        budget.record_generation_cost(Orchestrator._trial_total_spend_usd(with_judge))
+        hit = budget.poll()
+        assert hit is not None
+        assert hit.which == "cost"
 
 
 # ===================================================================
