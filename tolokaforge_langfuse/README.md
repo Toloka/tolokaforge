@@ -120,6 +120,8 @@ profile".
 | `vocabulary.py` | the default trace vocabulary: prefixes, derived tags, the environment rule (shared with the offline uploader) |
 | `profile.py` | the deployment profile (schema 2; schema 1 still loads) and the launcher-input check |
 | `model_names.py` | model identity as configuration (raw, or `toloka-model-name-normalizer`) |
+| `transcripts.py` | coding-agent transcripts: `claude -p` output read through an allowlist (an unknown event or content block refuses the file), the tool input/output policy (`drop` by default, `scrub` behind a flag) and the projection to the trial projection's ingestion bodies, the id contract injected by the caller; engine-free |
+| `safety.py` | the outbound sentinel a producer scans every payload with before a send: credential shapes and the values the process holds; engine-free |
 
 ## Tests
 

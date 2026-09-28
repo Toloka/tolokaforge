@@ -507,6 +507,16 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 - `automation cost-summary` / `key-snapshot` / `agent-digest` - the accounting tail (see "Cost
   summary" above): key-usage snapshots, the per-run cost summary (JSON + markdown + one-liner) and
   the one-line job-log digest of an agent run's result event.
+- `automation langfuse-upload <dir>` - sends the agents' own `claude -p` output to a Langfuse
+  receiver, one trace per file (`agent_iter_<i>.jsonl` -> `resolve/<i>`, `agent_finalize.jsonl`
+  -> `finalize`), through `tolokaforge_langfuse.transcripts`: a file with a shape the reader does
+  not know is refused, tool inputs and outputs are dropped unless `--tool-io scrub`, the serialised
+  payload is scanned by the outbound sentinel, keys that open another project than `--project`
+  refuse the upload, and a trace the receiver already holds in another environment is not
+  re-sent. The receiver is `LANGFUSE_BASE_URL` (or `LANGFUSE_OTLP_ENDPOINT`); the key pair and
+  `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A
+  file it did not send is a line in the report (`--receipt`, the job summary) and exit 1;
+  `--dry-run` needs no key. No workflow step calls it.
 - `tests/unit/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
 - `tests/unit/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
