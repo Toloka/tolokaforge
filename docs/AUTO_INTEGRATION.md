@@ -515,8 +515,9 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   refuse the upload, and a trace the receiver already holds in another environment is not
   re-sent. The receiver is `LANGFUSE_BASE_URL` (or `LANGFUSE_OTLP_ENDPOINT`); the key pair and
   `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A
-  file it did not send is a line in the report (`--receipt`, the job summary) and exit 1;
-  `--dry-run` needs no key. No workflow step calls it.
+  file it did not send is a line in the report (`--receipt`, the job summary) and exit 1; a setup
+  error (no receiver, no key pair, keys that open another project) is one line on stderr and exit
+  1, with no receipt. `--dry-run` needs no key. No workflow step calls it.
 - `tests/unit/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
 - `tests/unit/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
