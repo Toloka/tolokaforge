@@ -19,7 +19,8 @@ What it does, in order, per file:
 
 Nothing here fails the pipeline on its own: the command reports what it refused, what it blocked
 and what it could not send, and the workflow step carries ``continue-on-error``. Credentials are
-read from the step's own environment, never logged, and never written to the receipt.
+read from the step's own environment through the ``SecretManager``, never logged, and never
+written to the receipt.
 
 The wheel is imported inside :func:`upload`, so the tool's other commands never load the
 OpenTelemetry exporter.
@@ -38,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+from tolokaforge.secrets import EnvProvider, SecretManager
 
 OTLP_PATH = "/api/public/otel/v1/traces"
 PROJECTS_PATH = "/api/public/projects"
@@ -68,18 +71,25 @@ class Receiver:
     base_url: str | None = None
 
     @classmethod
-    def from_environment(cls, env: Mapping[str, str] | None = None) -> Receiver:
+    def from_environment(
+        cls, env: Mapping[str, str] | None = None, *, secrets: SecretManager | None = None
+    ) -> Receiver:
+        """The address from ``env``; the key pair and the admission headers through ``secrets``,
+        env-only by default: the workflow maps the secrets in per step, and dotenv precedence
+        would let a developer's local ``.env`` answer a CI run."""
         env = env if env is not None else os.environ
+        secrets = secrets if secrets is not None else SecretManager([EnvProvider()])
         base = (env.get("LANGFUSE_BASE_URL") or "").rstrip("/")
         endpoint = env.get("LANGFUSE_OTLP_ENDPOINT") or (f"{base}{OTLP_PATH}" if base else "")
         if not endpoint:
             raise UploadError("no receiver: set LANGFUSE_BASE_URL or LANGFUSE_OTLP_ENDPOINT")
-        public, secret = env.get("LANGFUSE_PUBLIC_KEY"), env.get("LANGFUSE_SECRET_KEY")
+        public = secrets.get_secret("LANGFUSE_PUBLIC_KEY")
+        secret = secrets.get_secret("LANGFUSE_SECRET_KEY")
         if not public or not secret:
             raise UploadError("no credentials: set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY")
         token = b64encode(f"{public}:{secret}".encode()).decode()
         headers = {"Authorization": f"Basic {token}"}
-        headers.update(_extra_headers(env.get("LANGFUSE_EXTRA_HEADERS")))
+        headers.update(_extra_headers(secrets.get_secret("LANGFUSE_EXTRA_HEADERS")))
         return cls(endpoint=endpoint, headers=headers, base_url=base or None)
 
     def _get(self, path: str) -> Any:

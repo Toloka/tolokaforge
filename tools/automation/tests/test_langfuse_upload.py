@@ -8,11 +8,14 @@ No network: the export is a fake exporter, and the dry run proves the whole path
 from __future__ import annotations
 
 import json
+from base64 import b64encode
 from pathlib import Path
 from typing import Any
 
 import automation.langfuse_upload as lu
 import pytest
+
+from tolokaforge.secrets import DictProvider, SecretManager
 
 pytestmark = pytest.mark.unit
 
@@ -68,6 +71,11 @@ def write(directory: Path, name: str, events: list[dict[str, Any]]) -> Path:
     return path
 
 
+def receiver_from(env: dict[str, str]) -> lu.Receiver:
+    """The receiver the command builds, its secrets from a fixed manager instead of the process."""
+    return lu.Receiver.from_environment(env, secrets=SecretManager([DictProvider(env)]))
+
+
 def upload(directory: Path, **overrides: Any) -> lu.UploadReport:
     kwargs: dict[str, Any] = {
         "run_id": "automation/integrate-model/1/1",
@@ -111,7 +119,7 @@ class TestTheTranscriptId:
 
 class TestTheReceiver:
     def test_it_builds_the_endpoint_and_the_basic_header(self) -> None:
-        receiver = lu.Receiver.from_environment(
+        receiver = receiver_from(
             {
                 "LANGFUSE_BASE_URL": "https://receiver.example.com/",
                 "LANGFUSE_PUBLIC_KEY": "public-value",
@@ -124,7 +132,7 @@ class TestTheReceiver:
 
     def test_the_credentials_are_not_in_the_repr(self) -> None:
         """A dataclass repr lands in a rich traceback, which lands in a public job log."""
-        receiver = lu.Receiver.from_environment(
+        receiver = receiver_from(
             {
                 "LANGFUSE_BASE_URL": "https://receiver.example.com",
                 "LANGFUSE_PUBLIC_KEY": "public-value",
@@ -135,7 +143,7 @@ class TestTheReceiver:
         assert "Basic" not in repr(receiver)
 
     def test_an_explicit_endpoint_wins_over_the_base_url(self) -> None:
-        receiver = lu.Receiver.from_environment(
+        receiver = receiver_from(
             {
                 "LANGFUSE_BASE_URL": "https://receiver.example.com",
                 "LANGFUSE_OTLP_ENDPOINT": "https://alias.example.com/v1/traces",
@@ -157,7 +165,42 @@ class TestTheReceiver:
         self, env: dict[str, str], expected: str
     ) -> None:
         with pytest.raises(lu.UploadError, match=expected):
-            lu.Receiver.from_environment(env)
+            receiver_from(env)
+
+    def test_the_key_pair_comes_through_the_secret_manager_not_the_mapping(self) -> None:
+        """The mapping carries the address only; a credential in it is not read."""
+        env = {
+            "LANGFUSE_BASE_URL": "https://h",
+            "LANGFUSE_PUBLIC_KEY": "p",
+            "LANGFUSE_SECRET_KEY": "s",
+        }
+        with pytest.raises(lu.UploadError, match="no credentials"):
+            lu.Receiver.from_environment(env, secrets=SecretManager([DictProvider({})]))
+
+    def test_by_default_the_secrets_are_the_steps_own_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "public-value")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "secret-value")
+        monkeypatch.setenv("LANGFUSE_EXTRA_HEADERS", "X-GitHub-Runner-Key=admission-value")
+        receiver = lu.Receiver.from_environment({"LANGFUSE_BASE_URL": "https://h"})
+        assert receiver.headers["Authorization"] == "Basic " + b64encode(
+            b"public-value:secret-value"
+        ).decode("ascii")
+        assert receiver.headers["X-GitHub-Runner-Key"] == "admission-value"
+
+    def test_a_dotenv_in_the_working_directory_does_not_answer_for_the_step(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A developer's .env must not stand in for the secrets the workflow maps in."""
+        (tmp_path / ".env").write_text(
+            "LANGFUSE_PUBLIC_KEY=from-dotenv\nLANGFUSE_SECRET_KEY=from-dotenv\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+        monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+        with pytest.raises(lu.UploadError, match="no credentials"):
+            lu.Receiver.from_environment({"LANGFUSE_BASE_URL": "https://h"})
 
     def test_the_admission_header_rides_along(self) -> None:
         """The gateway in front of the receiver refuses a request without it, so it has to
@@ -192,7 +235,7 @@ class TestTheReceiver:
 
     @staticmethod
     def _with_headers(raw: str) -> lu.Receiver:
-        return lu.Receiver.from_environment(
+        return receiver_from(
             {
                 "LANGFUSE_BASE_URL": "https://h",
                 "LANGFUSE_PUBLIC_KEY": "p",
@@ -471,9 +514,7 @@ class TestWhatReachesTheWire:
             if extra:
                 environment["LANGFUSE_EXTRA_HEADERS"] = extra
             write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
-            report = upload(
-                tmp_path, dry_run=False, receiver=lu.Receiver.from_environment(environment)
-            )
+            report = upload(tmp_path, dry_run=False, receiver=receiver_from(environment))
         finally:
             server.shutdown()
             thread.join(timeout=5)
