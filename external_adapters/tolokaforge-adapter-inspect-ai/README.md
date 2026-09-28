@@ -21,37 +21,37 @@ the eval environment — never read from the process environment by this package
 
 ## Usage
 
-Discover and translate Inspect tasks through the adapter, then execute a task with the
-bridge and project the result:
+Install the package (so the `tolokaforge-inspect` command and the `tolokaforge.adapters`
+entry point are available), then run a pack of Inspect tasks:
 
-```python
-from tolokaforge_adapter_inspect_ai.adapter import InspectAiAdapter
-from tolokaforge_adapter_inspect_ai.bridge import run_inspect_eval
-from tolokaforge_adapter_inspect_ai import normalize
-from inspect_ai.log import read_eval_log
+```bash
+# discover tasks
+tolokaforge-inspect list path/to/inspect/tasks
 
-adapter = InspectAiAdapter({"inspect_task_dir": "path/to/inspect/tasks"})
-info = adapter._tasks[adapter.get_task_ids()[0]]
+# run them (offline, $0)
+tolokaforge-inspect run path/to/inspect/tasks --model mockllm/model --output-dir runs/inspect
 
-result = run_inspect_eval(
-    task_file=info.file,
-    task_name=info.name,
-    model="litellm-proxy/<model>",   # OpenAI-compatible / LiteLLM-proxy endpoint
-    log_dir="runs/inspect",
-    env={...},                       # base URL + key, resolved via tolokaforge.secrets
-)
-grade = normalize.run_grade(read_eval_log(str(result.log_path)))
+# run against a real model through a gateway; the key is resolved via tolokaforge.secrets
+tolokaforge-inspect run path/to/inspect/tasks \
+  --model litellm-proxy/<model> \
+  --set-env LITELLM_PROXY_BASE_URL=http://localhost:4000 \
+  --set-secret LITELLM_PROXY_API_KEY=LITELLM_API_KEY \
+  --output-dir runs/inspect
 ```
+
+`run` writes one `<task_id>.json` (grade + trajectories) per task plus a `summary.json`.
+The same flow is available in Python via `tolokaforge_adapter_inspect_ai.runner.run_pack`.
 
 ## Scope
 
-The adapter discovers and translates Inspect tasks, and executes them through the
-local subprocess bridge (`bridge.py` → `inspect eval` → `normalize`), exercised
-end-to-end with the offline `mockllm` provider at $0.
+Tasks run through the `tolokaforge-inspect` CLI / `runner.run_pack`, which drives the
+local subprocess bridge (`bridge.py` → `inspect eval` → `normalize`) and writes
+tolokaforge `Grade` + `Trajectory` results — exercised end-to-end with the offline
+`mockllm` provider at $0.
 
-Execution through the tolokaforge runner is not wired: `to_task_description` and
-`grade` raise `NotImplementedError`. Running an Inspect task therefore goes through
-`bridge.run_inspect_eval` + `normalize`, not `tolokaforge run`.
+Execution through the tolokaforge engine runner (`tolokaforge run`) is a separate
+backend and is not wired here: the adapter's `to_task_description` and `grade` raise
+`NotImplementedError`. Run Inspect tasks with `tolokaforge-inspect` instead.
 
 ## Development
 

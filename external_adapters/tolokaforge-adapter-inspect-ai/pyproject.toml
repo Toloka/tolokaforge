@@ -12,10 +12,14 @@ dependencies = [
     "tolokaforge",
     "inspect-ai>=0.3.263,<0.4",
     "pyyaml>=6.0.1",
+    "typer>=0.12.0",
 ]
 
 [project.entry-points."tolokaforge.adapters"]
 inspect_ai = "tolokaforge_adapter_inspect_ai.adapter:InspectAiAdapter"
+
+[project.scripts]
+tolokaforge-inspect = "tolokaforge_adapter_inspect_ai.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tolokaforge_adapter_inspect_ai"]

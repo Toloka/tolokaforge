@@ -81,6 +81,11 @@ class InspectAiAdapter(BaseAdapter):
         self._ensure_discovered()
         return self._tasks[task_id].task_dir
 
+    def inspect_task(self, task_id: str) -> InspectTaskInfo:
+        """The discovered Inspect task (file + name) for ``task_id``."""
+        self._ensure_discovered()
+        return self._tasks[task_id]
+
     # -- translation ---------------------------------------------------------
 
     def get_task(self, task_id: str) -> TaskConfig:
