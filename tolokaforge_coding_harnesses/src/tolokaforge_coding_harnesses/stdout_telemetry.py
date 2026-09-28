@@ -20,10 +20,9 @@ So what a CLI reports is a *subset*, and the record below distinguishes "not
 reported" (``None``) from "reported as zero". A caller that needs the tokens
 ``kimi-code`` withholds has to measure them at the wire instead.
 
-``grok-build`` declares no dialect: its terminal ``end`` event carries only a
-stop reason. ``opencode`` is not wired up here yet, though it does report
-per-step ``tokens`` and ``cost`` that this module's shape could carry.
-:func:`parse_harness_stdout` returns ``None`` for both, and the caller keeps
+``grok-build`` declares no dialect: its stream is ``text`` events closing on
+an ``end`` event that carries only a stop reason, so there is nothing to read.
+:func:`parse_harness_stdout` returns ``None`` for it and the caller keeps
 whatever accounting it already had.
 
 Lives beside the registry because a stdout dialect is a property of the CLI,
@@ -38,6 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "OPENCODE_JSON",
     "STDOUT_TELEMETRY_DIALECTS",
     "HarnessStdoutTelemetry",
     "parse_harness_stdout",
@@ -53,6 +53,11 @@ CODEX_JSON = "codex/json"
 ``{"type": "turn.completed", "usage": {…}}`` per turn. Usage is per-turn, so a
 reader sums across them. Reports tokens but no cost."""
 
+OPENCODE_JSON = "opencode/json"
+"""Dialect of ``opencode run --format=json``: one JSON object per line, with a
+``step_finish`` per step carrying that step's ``tokens`` and ``cost``. Usage is
+per-step, so a reader sums across them. Reports both tokens and cost."""
+
 KIMI_CODE_STREAM_JSON = "kimi-code/stream-json"
 """Dialect of ``kimi-code --output-format stream-json``: an OpenAI-shaped
 message transcript (``{"role": "assistant", …}`` / ``{"role": "tool", …}``)
@@ -63,6 +68,7 @@ STDOUT_TELEMETRY_DIALECTS: dict[str, str] = {
     "claude-code": CLAUDE_CODE_STREAM_JSON,
     "codex": CODEX_JSON,
     "kimi-code": KIMI_CODE_STREAM_JSON,
+    "opencode": OPENCODE_JSON,
 }
 """Harness name → the stdout dialect it prints. A harness absent from this
 mapping prints nothing a parser can read; see the module docstring."""
@@ -133,6 +139,8 @@ def parse_harness_stdout(harness: str, stdout: str) -> HarnessStdoutTelemetry | 
         return _parse_codex_json(stdout)
     if dialect == KIMI_CODE_STREAM_JSON:
         return _parse_kimi_code_stream_json(stdout)
+    if dialect == OPENCODE_JSON:
+        return _parse_opencode_json(stdout)
     # The mapping and the branches above are edited together; a dialect with
     # no branch is a programming error, not a runtime condition.
     raise AssertionError(f"no parser for stdout dialect {dialect!r}")
@@ -202,6 +210,97 @@ def _parse_codex_json(stdout: str) -> HarnessStdoutTelemetry | None:
         dialect=CODEX_JSON,
         turns=turns,
         cost_usd=None,
+        duration_s=None,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_write,
+        reasoning_tokens=reasoning,
+    )
+
+
+def _parse_opencode_json(stdout: str) -> HarnessStdoutTelemetry | None:
+    """Sum the per-step usage ``opencode run --format=json`` reports.
+
+    The stream runs ``step_start`` → ``tool_use`` → ``step_finish`` per step,
+    and each ``step_finish`` carries **that step's** tokens and cost under
+    ``part`` — so totals are a sum across them, not the last one.
+
+    Whether ``tokens.input`` already includes the cached prompt depends on the
+    **provider** opencode routed to, not on opencode: the shipped Anthropic
+    block reports the non-cached remainder (a recorded step: ``input=1``,
+    ``cache.write=387``, ``cache.read=15623``, ``output=304``, ``total=16315``
+    — their sum), while an OpenAI-shaped provider reports an inclusive
+    ``input`` with the cached part as a subset of it. Reading either as the
+    other doubles or halves a cache-heavy trial's prompt.
+
+    So the basis is not assumed, it is read off the step: ``total`` says which
+    arithmetic the provider used, and the cache counters are folded in only
+    when the exclusive reading is the one that reconciles. A step whose
+    ``total`` reconciles with neither, or reports none, is folded, because the
+    shipped provider block is Anthropic-shaped. That is a choice about which
+    error to prefer, not a safe default: folding an already-inclusive ``input``
+    counts the cached prompt twice and overstates.
+
+    ``reasoning`` is already inside ``output``, matching what the record
+    declares and what the caller's pricing expects.
+
+    Cost is summed only across the steps that reported one, and stays ``None``
+    when no step did — a ``0.0`` here would claim a trial that ran spent
+    nothing, which is the reading this dialect exists to remove.
+    """
+    turns = 0
+    prompt = completion = cache_read = cache_write = reasoning = 0
+    cost: float | None = None
+    counted_steps = 0
+    for event in _json_lines(stdout):
+        if event.get("type") != "step_finish":
+            continue
+        part = event.get("part")
+        if not isinstance(part, Mapping):
+            continue
+        turns += 1
+        step_cost = _as_float(part.get("cost"))
+        if step_cost is not None:
+            cost = step_cost if cost is None else cost + step_cost
+        tokens = part.get("tokens")
+        if not isinstance(tokens, Mapping):
+            continue
+        counted_steps += 1
+        cache = tokens.get("cache")
+        read = _as_int(cache.get("read")) if isinstance(cache, Mapping) else 0
+        write = _as_int(cache.get("write")) if isinstance(cache, Mapping) else 0
+        step_input = _as_int(tokens.get("input"))
+        step_output = _as_int(tokens.get("output"))
+        total = _as_int(tokens.get("total"))
+        inclusive = total > 0 and step_input + step_output == total and (read or write)
+        prompt += step_input if inclusive else step_input + read + write
+        completion += step_output
+        reasoning += _as_int(tokens.get("reasoning"))
+        cache_read += read
+        cache_write += write
+    if turns == 0:
+        return None
+    if counted_steps == 0:
+        # Steps ran but none carried a tokens block. Reporting zeros here would
+        # make `has_token_counts` true, price the trial at $0.00 and suppress
+        # the wire fallback that could still measure it — "not measured"
+        # rendered as "measured as zero", on the one path that had no guard.
+        return HarnessStdoutTelemetry(
+            dialect=OPENCODE_JSON,
+            turns=turns,
+            cost_usd=cost,
+            duration_s=None,
+            prompt_tokens=None,
+            completion_tokens=None,
+            cache_read_input_tokens=None,
+            cache_creation_input_tokens=None,
+            reasoning_tokens=None,
+        )
+    return HarnessStdoutTelemetry(
+        dialect=OPENCODE_JSON,
+        turns=turns,
+        cost_usd=cost,
         duration_s=None,
         prompt_tokens=prompt,
         completion_tokens=completion,

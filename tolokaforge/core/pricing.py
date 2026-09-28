@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -87,6 +88,60 @@ def _load_pricing(path: Path | None = None) -> dict[str, dict[str, float]]:
             f"pricing table {target} 'models' entry must be a mapping, got {type(models).__name__}"
         )
     return models
+
+
+@dataclass(frozen=True)
+class PricingTableMetadata:
+    """What the shipped pricing table says about itself.
+
+    The table has always carried its own provenance — the URL it was fetched
+    from and the moment it was fetched — and nothing read either, so a copy
+    16 days behind its source priced two models at rates the provider had
+    stopped charging. Reading it is what lets a run say how old its prices are
+    instead of assuming they are current.
+    """
+
+    source_url: str | None
+    updated_at: datetime | None
+
+    @property
+    def age(self) -> timedelta | None:
+        """How long ago the table was fetched, or ``None`` when it does not say."""
+        if self.updated_at is None:
+            return None
+        return datetime.now(timezone.utc) - self.updated_at
+
+
+def pricing_table_metadata(path: Path | None = None) -> PricingTableMetadata:
+    """The ``_meta`` block of the pricing table, with nothing inferred.
+
+    Every field is ``None`` when the table omits it or spells it in a way this
+    cannot read. A table that does not say when it was fetched is not a table
+    that was fetched recently, and the caller must not treat the two alike.
+    """
+    target = Path(path) if path is not None else bundled_pricing_path()
+    try:
+        with open(target) as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return PricingTableMetadata(source_url=None, updated_at=None)
+    meta = data.get("_meta") if isinstance(data, dict) else None
+    if not isinstance(meta, dict):
+        return PricingTableMetadata(source_url=None, updated_at=None)
+    source = meta.get("source_url")
+    stamp = meta.get("updated_at")
+    parsed: datetime | None = None
+    if isinstance(stamp, str):
+        try:
+            parsed = datetime.fromisoformat(stamp)
+        except ValueError:
+            parsed = None
+        else:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+    return PricingTableMetadata(
+        source_url=source if isinstance(source, str) else None, updated_at=parsed
+    )
 
 
 def reload_pricing(

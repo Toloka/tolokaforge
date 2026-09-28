@@ -296,9 +296,17 @@ def _spend_metrics(trajectories: Sequence[Trajectory]) -> dict[str, Any]:
 
     known_costs = [t.metrics.cost_usd for t in trajectories if t.metrics.cost_usd is not None]
     spend["total_cost_usd"] = sum(known_costs) if known_costs else None
-    spend["avg_cost_usd"] = (
-        spend["total_cost_usd"] / n_total if spend["total_cost_usd"] is not None else None
-    )
+    # Averaged over the trials that *have* a cost, the way ``avg_score`` is
+    # averaged over the trials that have a score. Dividing a filtered numerator
+    # by ``n_total`` reported an average diluted by exactly the proportion of
+    # unpriced trials — the arithmetic ``_measured_averages`` was written to
+    # fix for scores, still live here.
+    spend["avg_cost_usd"] = _mean_or_none(known_costs)
+    # The average's own denominator, so a reader can tell a cheap run from a
+    # barely-measured one. A total over 3 of 50 trials and a total over 50 of
+    # 50 are indistinguishable without it.
+    spend["costed_trials"] = len(known_costs)
+    spend["unpriced_trials"] = n_total - len(known_costs)
 
     judge_costs = [
         t.grade.judge_usage.cost_usd
@@ -306,12 +314,23 @@ def _spend_metrics(trajectories: Sequence[Trajectory]) -> dict[str, Any]:
         if t.grade is not None and t.grade.judge_usage is not None
     ]
     spend["judge_cost_usd"] = sum(judge_costs) if judge_costs else None
-    if spend["total_cost_usd"] is None and spend["judge_cost_usd"] is None:
-        spend["total_cost_incl_judge_usd"] = None
-    else:
-        spend["total_cost_incl_judge_usd"] = (spend["total_cost_usd"] or 0.0) + (
-            spend["judge_cost_usd"] or 0.0
+    # ``None`` unless *both* halves are known. Coercing one to ``0.0`` reported
+    # the other alone as if it were the run's total — a known judge cost beside
+    # an unknown agent cost read as a run that spent only what the judge did.
+    if spend["total_cost_usd"] is None or spend["judge_cost_usd"] is None:
+        spend["total_cost_incl_judge_usd"] = (
+            None
+            if spend["total_cost_usd"] is None and spend["judge_cost_usd"] is None
+            else (
+                spend["total_cost_usd"]
+                if spend["judge_cost_usd"] is None
+                else spend["judge_cost_usd"]
+            )
         )
+        spend["total_cost_incl_judge_is_partial"] = spend["total_cost_incl_judge_usd"] is not None
+    else:
+        spend["total_cost_incl_judge_usd"] = spend["total_cost_usd"] + spend["judge_cost_usd"]
+        spend["total_cost_incl_judge_is_partial"] = False
     return spend
 
 
@@ -333,7 +352,16 @@ def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
         "avg_latency_s": _mean_or_none(t.metrics.latency_total_s for t in measured),
         "avg_turns": _mean_or_none(t.metrics.turns for t in measured),
         "avg_tool_calls": _mean_or_none(t.metrics.tool_calls for t in measured),
-        "stuck_rate": _mean_or_none(1.0 if t.metrics.stuck_detected else 0.0 for t in measured),
+        # Over the trials the detector could actually run on. It needs a run of
+        # repeated tool calls to fire, and a coding-harness trial makes exactly
+        # one — so every harness trial reported a hard `0.0` and a run of them
+        # reported `stuck_rate: 0.0`, which reads as "measured, none stuck"
+        # when nothing was measured at all.
+        "stuck_rate": _mean_or_none(
+            1.0 if t.metrics.stuck_detected else 0.0
+            for t in measured
+            if t.metrics.harness_stdout_dialect is None and t.metrics.harness_usage_source is None
+        ),
     }
 
 
@@ -529,9 +557,14 @@ def calculate_aggregate_metrics(
     _known_avg_costs = [
         m.get("avg_cost_usd") for m in task_metrics if m.get("avg_cost_usd") is not None
     ]
-    agg["avg_cost_usd"] = (
-        sum(_known_avg_costs) / n_tasks if _known_avg_costs and n_tasks > 0 else None
-    )
+    # Over the tasks that have an average, not over every task — the same
+    # dilution the per-task figure carried, compounding one level up.
+    agg["avg_cost_usd"] = _mean_or_none(_known_avg_costs)
+    # Coverage, summed from the tasks rather than recomputed, so the two
+    # cannot disagree. A run-level total says nothing about how much of the
+    # run it covers without them.
+    agg["costed_trials"] = sum(m.get("costed_trials", 0) for m in task_metrics)
+    agg["unpriced_trials"] = sum(m.get("unpriced_trials", 0) for m in task_metrics)
     # Roll up judge spend and the combined total across tasks (agent-only
     # ``total_cost_usd`` above; judge runs its own LLM in the Runner).
     _known_judge_costs = [

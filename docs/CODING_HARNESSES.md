@@ -174,7 +174,7 @@ live next to each entry in the shipped
 | `gemini-cli` | `openrouter/google/gemini-3.6-flash` | Shipped default routes at Google directly. LiteLLM gateway path via `harness_presets_file` — see [RUNNING_TERMINAL_BENCH.md § Gemini CLI](RUNNING_TERMINAL_BENCH.md#recipe--gemini-cli-litellm-gateway). |
 | `kimi-code` | `openrouter/moonshotai/kimi-k3` | Also `kimi-k2.7-code` — the shipped `request_middleware` pins Moonshot AI first-party routing on OpenRouter automatically. |
 | `opencode` | `anthropic/claude-sonnet-4-6` | Routes through opencode's shipped `anthropic` provider block (`baseURL` points at OpenRouter's Anthropic-compat surface). Non-Anthropic vendors need an operator overlay populating the `openrouter` block's `models` dict — see the caveat below. |
-| `grok-build` | `openrouter/x-ai/grok-4.5` | Auto-configures `~/.grok/config.toml` for OpenRouter. |
+| `grok-build` | `openrouter/x-ai/grok-4.5` | Auto-configures `~/.grok/config.toml` for OpenRouter. Prints no usage, so token counts come off the wire; its config template asks for `{{ base_url }}`, which renders as the proxy's address. |
 | `qwen-code` | `openrouter/qwen/qwen3-coder-plus` | OpenAI-compat via OpenRouter; model arrives in `OPENAI_MODEL`, so no `--model` flag. Prints no usage of its own — token counts are metered off the wire by the shipped `request_middleware`. |
 
 Two things about the `opencode` row are load-bearing on 1.18.x:
