@@ -59,7 +59,8 @@ _ITERATION = re.compile(r"^agent_iter_(\d+)$")
 
 
 class UploadError(RuntimeError):
-    """The upload cannot start: no receiver, no credentials, or a malformed input."""
+    """The upload cannot start: no receiver, no credentials, keys that open another project, or
+    a malformed input."""
 
 
 @dataclass(frozen=True)
@@ -259,7 +260,7 @@ def upload(
 
     if receiver is None and not dry_run:
         receiver = Receiver.from_environment()
-    verified = project is not None and receiver is not None and receiver.project_name() == project
+    verified = _project_verified(receiver, project)
     gate = safety.SafetyGate.from_environment()
     contract = tr.id_contract(engine_ids)
     exporter = (
@@ -337,6 +338,21 @@ def upload(
             }
         )
     return report
+
+
+def _project_verified(receiver: Receiver | None, project: str | None) -> bool:
+    """Whether the keys are known to open ``project``; ``False`` when there is nothing to check or
+    the receiver cannot be asked. Keys that open another project refuse the upload (the live
+    observer's rule): every trace would carry a ``project:`` tag its own receiver contradicts."""
+    if project is None or receiver is None:
+        return False
+    opened = receiver.project_name()
+    if opened is not None and opened != project:
+        raise UploadError(
+            f"the keys open project {opened!r}, not {project!r}: fix the keys, never the "
+            "expectation"
+        )
+    return opened == project
 
 
 def _held_elsewhere(receiver: Receiver | None, trace_id: str, environment: str | None) -> set[str]:

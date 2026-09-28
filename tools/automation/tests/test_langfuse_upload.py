@@ -398,6 +398,46 @@ class TestThePairParsing:
             lu.parse_pairs([value], ":", "--tag")
 
 
+class TestTheProjectCheck:
+    """The keys must open the project the traces are tagged with, as on the live path."""
+
+    @staticmethod
+    def receiver_opening(name: str | None) -> lu.Receiver:
+        receiver = lu.Receiver(endpoint="https://h/v1/traces", base_url="https://h")
+        object.__setattr__(receiver, "project_name", lambda: name)
+        return receiver
+
+    def test_keys_that_open_another_project_refuse_before_any_send(self, tmp_path: Path) -> None:
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        exporter = FakeExporter()
+        import tolokaforge_langfuse.otlp_transport as transport
+
+        original = transport.make_otlp_exporter
+        transport.make_otlp_exporter = lambda *a, **k: exporter  # type: ignore[assignment]
+        try:
+            with pytest.raises(lu.UploadError, match="open project 'other', not 'acme'"):
+                upload(
+                    tmp_path,
+                    dry_run=False,
+                    project="acme",
+                    receiver=self.receiver_opening("other"),
+                )
+        finally:
+            transport.make_otlp_exporter = original  # type: ignore[assignment]
+        assert exporter.batches == []
+
+    @pytest.mark.parametrize(("opened", "verified"), [("acme", True), (None, False)])
+    def test_a_match_verifies_and_a_receiver_that_cannot_be_asked_does_not(
+        self, opened: str | None, verified: bool
+    ) -> None:
+        """``None`` is "could not ask": the upload goes on, unverified, as on the live path."""
+        assert lu._project_verified(self.receiver_opening(opened), "acme") is verified
+
+    def test_no_expected_project_means_nothing_to_check(self) -> None:
+        assert lu._project_verified(self.receiver_opening("other"), None) is False
+        assert lu._project_verified(None, "acme") is False
+
+
 class TestTheEnvironmentGuard:
     """A v4 receiver merges observations by id alone, so the same trace re-sent under a second
     environment is a silent no-op reported as success. One read before the write catches it."""
