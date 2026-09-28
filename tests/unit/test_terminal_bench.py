@@ -2540,3 +2540,83 @@ class TestTheWireUsageLogPathOnTaskMetadata:
         metadata = self._metadata(fixture_dir, tmp_path, ENGINE_LOOP)
 
         assert HARNESS_USAGE_LOG_METADATA_KEY not in metadata
+
+
+class TestAgentSystemPromptOverride:
+    """``agent_system_prompt_file`` replaces the built-in agent prompt.
+
+    The default prompt suits a model that narrates its own reasoning and stops
+    when it is done. A model that emits a bare tool call every turn needs to be
+    told to do both, and that difference belongs to the run rather than to the
+    pack — hence a param rather than a second hard-coded string.
+    """
+
+    def test_default_prompt_when_the_key_is_absent(self, tmp_path: Path) -> None:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter({"terminal_bench_dir": str(tmp_path)})
+        assert "expert developer" in adapter.get_system_prompt("any-task")
+
+    def test_the_file_contents_replace_the_default(self, tmp_path: Path) -> None:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("State your analysis and plan before each batch.\n")
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tmp_path), "agent_system_prompt_file": str(prompt)}
+        )
+
+        assert adapter.get_system_prompt("any-task") == prompt.read_text()
+        assert "expert developer" not in adapter.get_system_prompt("any-task")
+
+    def test_the_override_reaches_the_task_policies(self, tmp_path: Path) -> None:
+        """What the engine actually reads.
+
+        ``build_system_prompt`` resolves ``policies["agent_system_prompt"]``
+        first, so an override that never lands there changes nothing about the
+        run while still looking configured.
+        """
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Analysis first.\n")
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path / "stage"),
+                "agent_system_prompt_file": str(prompt),
+            }
+        )
+        task = adapter.get_task(adapter.get_task_ids()[0])
+
+        assert task.policies["agent_system_prompt"] == "Analysis first.\n"
+
+    def test_a_missing_file_fails_at_construction(self, tmp_path: Path) -> None:
+        """Loudly, and before any image is built — not per task lookup."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        with pytest.raises(ValueError, match="does not exist"):
+            TerminalBenchAdapter(
+                {
+                    "terminal_bench_dir": str(tmp_path),
+                    "agent_system_prompt_file": str(tmp_path / "nope.md"),
+                }
+            )
+
+    def test_an_empty_file_fails_rather_than_silently_blanking_the_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        blank = tmp_path / "blank.md"
+        blank.write_text("   \n")
+        with pytest.raises(ValueError, match="is empty"):
+            TerminalBenchAdapter(
+                {
+                    "terminal_bench_dir": str(tmp_path),
+                    "agent_system_prompt_file": str(blank),
+                }
+            )
