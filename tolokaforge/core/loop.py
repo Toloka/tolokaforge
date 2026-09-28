@@ -204,6 +204,18 @@ class TerminationDecision:
     reason: TerminationReason
     system_message: str
     status: TrialStatus | None = None
+    excluding_reason_evidence: str | None = None
+    """The typed observation behind a denominator-excluding ``reason``.
+
+    Non-``None`` only where ``reason`` is in
+    :data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` and the
+    decision was reached from an exception type or an HTTP status rather than
+    from matching prose. :func:`classify_loop_error` fills it on exactly those
+    branches, which is what makes a classified exception self-evidencing: a
+    loop that routes its exception through ``context.classify_error`` copies
+    this onto :attr:`LoopOutcome.excluding_reason_evidence` and has earned the
+    exclusion without inspecting the exception itself.
+    """
 
 
 class TerminationPolicy(Protocol):
@@ -298,6 +310,24 @@ bound method delegates to.
 """
 
 
+def _exception_type_evidence(exc: BaseException) -> str:
+    """The exception chain's type names, outermost first.
+
+    Names what the typed branches of :func:`classify_loop_error` matched on.
+    Types rather than message text, and the whole ``__cause__`` chain because
+    the client re-raises every provider error wrapped — the 429 the rate-limit
+    predicate found is a cause, not the outermost type.
+    """
+    names: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        names.append(type(current).__qualname__)
+        current = current.__cause__
+    return " <- ".join(names)
+
+
 def classify_loop_error(
     exc: Exception, patterns: tuple[re.Pattern[str], ...]
 ) -> TerminationDecision:
@@ -339,12 +369,14 @@ def classify_loop_error(
             reason=TerminationReason.API_TIMEOUT,
             system_message=f"API timeout: {error_str}. Dialogue terminated.",
             status=TrialStatus.ERROR,
+            excluding_reason_evidence=_exception_type_evidence(exc),
         )
     if is_typed_rate_limit_exception(exc):
         return TerminationDecision(
             reason=TerminationReason.RATE_LIMIT,
             system_message=f"Rate limit error: {error_str}. Dialogue terminated.",
             status=TrialStatus.ERROR,
+            excluding_reason_evidence=_exception_type_evidence(exc),
         )
     if matches_rate_limit_text(error_str, patterns):
         return TerminationDecision(
@@ -385,6 +417,10 @@ class LoopOutcome:
     loop reached it from an exception type, an HTTP status or a typed
     empty-completion observation — never from matching prose against an
     exception message. The value names that observation.
+
+    A loop that routes its exceptions through ``context.classify_error`` copies
+    :attr:`TerminationDecision.excluding_reason_evidence` here and needs no
+    typing knowledge of its own.
 
     ``None`` on every other reason, and ``None`` on an excluding reason the loop
     cannot evidence: the caller then counts the trial as
@@ -467,6 +503,14 @@ class AgentLoop(Protocol):
     counted. An outcome that claims an excluding reason and carries no evidence
     is downgraded to ``ERROR`` by the caller.
 
+    Routing the exception through ``context.classify_error`` discharges this:
+    the returned :class:`TerminationDecision` carries
+    :attr:`~TerminationDecision.excluding_reason_evidence` on exactly the typed
+    branches, and an implementation copies it onto the outcome beside the
+    reason it copies from the same decision. Only a loop that reaches an
+    excluding reason on its own — an empty-completion observation of its own
+    making, say — words the evidence itself.
+
     :class:`ToolCallingLoop` satisfies this contract; implementations resolve
     through the ``tolokaforge.agent_loops`` entry-point group.
     """
@@ -541,6 +585,16 @@ class AgentLoopContext:
 
 
 AgentLoopFactory = Callable[[AgentLoopContext], AgentLoop]
+
+_EMPTY_COMPLETION_EVIDENCE = (
+    "GenerationResult with empty text and no tool calls, after the empty-completion retry budget"
+)
+"""Evidence wording for the one excluding reason the loop observes itself.
+
+``EMPTY_COMPLETION`` is reached from the shape of a returned
+:class:`~tolokaforge.core.llm.client.GenerationResult`, not from an exception,
+so no classifier decision carries its evidence.
+"""
 
 
 def _now() -> datetime:
@@ -854,6 +908,11 @@ class ToolCallingLoop:
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
+    # The typed observation behind this episode's termination reason, where that
+    # reason excludes the trial from the measured denominator. Written by the
+    # two paths that can reach such a reason — the classifier's decision and the
+    # empty-completion observation — and read once, into ``LoopOutcome``.
+    _excluding_reason_evidence: str | None = field(default=None, init=False)
     # Wire message list sent to the provider. Distinct from the caller-owned
     # ``messages`` (which becomes ``Trajectory.messages``) so a summarize event
     # can rewrite the wire view while the recorded history keeps the full
@@ -884,6 +943,7 @@ class ToolCallingLoop:
         status = TrialStatus.COMPLETED
         termination_reason: TerminationReason | None = None
         self._wire_messages = list(messages)
+        self._excluding_reason_evidence = None
 
         for turn in range(self.config.max_turns):
             outcome = self._attempt_turn(turn, system_prompt, messages, start_time)
@@ -891,6 +951,7 @@ class ToolCallingLoop:
                 self._append_both(messages, self._system_message(outcome.system_message))
                 status = outcome.status or status
                 termination_reason = outcome.reason
+                self._excluding_reason_evidence = outcome.excluding_reason_evidence
                 break
             turn_status, turn_reason, stop = outcome
             if turn_status is not None:
@@ -911,7 +972,19 @@ class ToolCallingLoop:
             status=status,
             termination_reason=termination_reason,
             captured_effective_system_prompt=self._captured_effective_prompt,
+            excluding_reason_evidence=self._excluding_reason_evidence,
         )
+
+    def _stop_on(
+        self, decision: TerminationDecision
+    ) -> tuple[TrialStatus | None, TerminationReason | None, bool]:
+        """The turn's stop triple for *decision*, with its evidence kept beside it.
+
+        The triple carries no room for the evidence, so it lands on the loop
+        and :meth:`run` reads it into the outcome alongside the reason.
+        """
+        self._excluding_reason_evidence = decision.excluding_reason_evidence
+        return decision.status, decision.reason, True
 
     def _append_both(self, messages: list[Message], message: Message) -> None:
         """Append to the caller-owned recorded list and the wire list.
@@ -1001,7 +1074,7 @@ class ToolCallingLoop:
         summarize_decision = self._maybe_summarize(turn, system_prompt, messages)
         if summarize_decision is not None:
             self._append_both(messages, self._system_message(summarize_decision.system_message))
-            return summarize_decision.status, summarize_decision.reason, True
+            return self._stop_on(summarize_decision)
 
         empty_attempts = 0
         output_length_attempts = 0
@@ -1015,7 +1088,7 @@ class ToolCallingLoop:
                     self._append_both(
                         messages, self._system_message(reactive_decision.system_message)
                     )
-                    return reactive_decision.status, reactive_decision.reason, True
+                    return self._stop_on(reactive_decision)
                 if not self._summarize_armed():
                     raise
                 try:
@@ -1097,6 +1170,7 @@ class ToolCallingLoop:
                         "trial terminated to keep the next request provider-legal."
                     ),
                 )
+                self._excluding_reason_evidence = _EMPTY_COMPLETION_EVIDENCE
                 return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
 
             empty_attempts += 1
@@ -1122,7 +1196,7 @@ class ToolCallingLoop:
         decision = self.should_terminate(result, turn, messages)
         if decision is not None:
             self._append_both(messages, self._system_message(decision.system_message))
-            return decision.status, decision.reason, True
+            return self._stop_on(decision)
 
         if result.tool_calls:
             self._execute_tool_calls(result, messages)
@@ -1255,7 +1329,7 @@ class ToolCallingLoop:
         outcome = self.user_turn(messages)
         if outcome.termination is not None:
             self._append_both(messages, self._system_message(outcome.termination.system_message))
-            return outcome.termination.status, outcome.termination.reason, True
+            return self._stop_on(outcome.termination)
 
         if outcome.message is not None:
             self._append_both(messages, outcome.message)

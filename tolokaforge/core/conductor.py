@@ -934,6 +934,13 @@ class InProcessConductor:
             interaction_mode=task.interaction_mode,
             agent_loop=self.config.orchestrator.agent_loop,
             tool_output_max_chars_by_tool=setup.tool_output_max_chars_by_tool or None,
+            # The offered tools the runner reconstructs from the pack's own
+            # ``ToolSource`` rather than from the builtin registry. The runner
+            # reads it to tell a builtin completion tool from a pack tool that
+            # merely shares its name.
+            sourced_tool_names=frozenset(
+                tool.name for tool in spec.task.agent_tools if tool.source is not None
+            ),
             loop_observer=(
                 LoopObserverBinding(self.trial_observer, identity, role="agent")
                 if identity is not None and not isinstance(self.trial_observer, NullTrialObserver)

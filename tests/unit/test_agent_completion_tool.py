@@ -95,6 +95,7 @@ def _run(
     max_turns: int = 6,
     user_reply: str = "Please carry on.",
     interaction_mode: InteractionMode = "conversational",
+    sourced_tool_names: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[Trajectory, TrialRunner]:
     """Drive one whole trial and return its trajectory beside its runner."""
     runner = TrialRunner(
@@ -106,6 +107,7 @@ def _run(
         tool_schemas=tool_schemas or [],
         max_turns=max_turns,
         interaction_mode=interaction_mode,
+        sourced_tool_names=sourced_tool_names,
     )
     return runner.run("You are an agent.", "Do the task."), runner
 
@@ -232,6 +234,33 @@ def test_the_enabled_set_is_read_off_the_offered_tool_surface():
     assert _enabled_completion_tools([]) == frozenset()
     assert _enabled_completion_tools([CalculatorTool().get_schema()]) == frozenset()
     assert _enabled_completion_tools([completion_schema()]) == frozenset({SUBMIT_TOOL_NAME})
+
+
+def test_a_pack_tool_of_the_same_name_is_not_the_completion_signal():
+    """The name is not the signal; being the builtin is.
+
+    A pack that ships its own ``submit`` — an MCP-served tool, or any tool the
+    adapter emitted with a ``ToolSource`` — is offered under a name the builtin
+    registry also knows. Reading the name alone ends the episode at the call
+    site, before the pack's tool runs at all: the trial is scored on work the
+    agent asked for and never got.
+    """
+    assert (
+        _enabled_completion_tools([completion_schema()], sourced_tool_names={SUBMIT_TOOL_NAME})
+        == frozenset()
+    )
+
+
+def test_a_run_whose_completion_call_belongs_to_the_pack_runs_on():
+    """The same lock at the trial level: the call executes and the episode continues."""
+    sourced, _ = _run(
+        _calls(_submit()),
+        tool_schemas=[completion_schema()],
+        max_turns=4,
+        sourced_tool_names={SUBMIT_TOOL_NAME},
+    )
+
+    assert sourced.termination_reason is TerminationReason.MAX_TURNS
 
 
 # ---------------------------------------------------------------------------

@@ -3,9 +3,10 @@
 :class:`InMemoryAgentLoop` is the shortest loop that satisfies every obligation
 :class:`~tolokaforge.core.loop.AgentLoop` declares. It runs no provider, reaches
 no substrate and holds no trial state beyond one episode, so an implementer can
-read the whole turn cycle in one screen and copy the four things that are not
-optional: the id assignment, the error prefix, the sink feed, and the two
-budgets.
+read the whole turn cycle in one screen and copy what is not optional: the
+:class:`~tolokaforge.core.loop.ToolCallFunnel` every tool call travels through,
+the sink feed, the two budgets, and the classifier's evidence carried onto the
+outcome beside its reason.
 
 It is also the suite's own control. Every defect in :class:`LoopDefects`
 switches off exactly one obligation, which is what lets
@@ -26,6 +27,7 @@ from tolokaforge.core.loop import (
     AgentLoopContext,
     LoopOutcome,
     TerminationDecision,
+    ToolCallFunnel,
 )
 from tolokaforge.core.models import (
     Message,
@@ -57,7 +59,12 @@ class LoopDefects:
     """
 
     raw_provider_call_ids: bool = False
-    """Key calls by the provider's raw id instead of ``context.call_ids``."""
+    """Key calls by the provider's raw id instead of ``context.call_ids``.
+
+    Also takes the turn off the funnel: the funnel refuses to execute a call it
+    did not key, so a loop that mints its own ids is a loop that hand-rolls the
+    whole tool-call path.
+    """
 
     execute_in_reverse: bool = False
     """Execute a turn's calls in reverse declaration order.
@@ -68,7 +75,11 @@ class LoopDefects:
     """
 
     plain_tool_error_text: bool = False
-    """Word a failed call's ``role: tool`` message without the error prefix."""
+    """Word a failed call's ``role: tool`` message without the error prefix.
+
+    The funnel always writes the prefix, so this too hand-rolls the tool-call
+    path rather than routing through it.
+    """
 
     skip_metrics: bool = False
     """Never feed the metrics sink, so the trial's cost reads as zero."""
@@ -87,6 +98,14 @@ class LoopDefects:
 
     unearned_excluded_reason: TerminationReason | None = None
     """Report this reason on a clean finish, with no typed evidence behind it."""
+
+    drop_excluding_reason_evidence: bool = False
+    """Report the classifier's reason while discarding the evidence it came with.
+
+    The reason is earned and the outcome still cannot show it, so the caller
+    counts the trial rather than excluding it — the shape a loop that copies
+    ``decision.reason`` alone produces.
+    """
 
 
 @dataclass
@@ -119,6 +138,24 @@ class InMemoryAgentLoop:
     defects: LoopDefects = field(default_factory=LoopDefects)
     call_log: InMemoryAgentLoopCallLog = field(default_factory=InMemoryAgentLoopCallLog)
 
+    # The one path an honoured tool call takes: id assignment, execution,
+    # recording, error wording, output cap, metrics, observer. One per episode,
+    # because the assigner it draws from is the episode's.
+    funnel: ToolCallFunnel = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.funnel = ToolCallFunnel.from_context(self.context)
+
+    @property
+    def _hand_rolls_tool_calls(self) -> bool:
+        """Whether a defect puts this episode's calls outside the funnel.
+
+        The funnel discharges the id and error-prefix obligations by
+        construction, so a defect that switches either one off cannot be
+        expressed through it.
+        """
+        return self.defects.raw_provider_call_ids or self.defects.plain_tool_error_text
+
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         max_turns = self.context.config.max_turns
         if self.defects.ignore_max_turns:
@@ -146,10 +183,7 @@ class InMemoryAgentLoop:
             except Exception as exc:  # noqa: BLE001 — classified into a terminal verdict
                 decision = self.context.classify_error(exc)
                 messages.append(self._system_message(decision.system_message))
-                return LoopOutcome(
-                    status=decision.status or TrialStatus.ERROR,
-                    termination_reason=decision.reason,
-                )
+                return self._outcome(decision, TrialStatus.ERROR)
 
             self.call_log.turns += 1
             self.call_log.generations.append(result)
@@ -163,22 +197,16 @@ class InMemoryAgentLoop:
             decision = self._consult_termination(result, turn, messages)
             if decision is not None:
                 messages.append(self._system_message(decision.system_message))
-                return LoopOutcome(
-                    status=decision.status or TrialStatus.COMPLETED,
-                    termination_reason=decision.reason,
-                )
+                return self._outcome(decision, TrialStatus.COMPLETED)
 
             if result.tool_calls:
-                self._execute(result.tool_calls, messages)
+                self._execute(result.tool_calls, messages, result.text)
                 continue
 
             user_decision = self._advance_user_turn(messages)
             if user_decision is not None:
                 messages.append(self._system_message(user_decision.system_message))
-                return LoopOutcome(
-                    status=user_decision.status or TrialStatus.COMPLETED,
-                    termination_reason=user_decision.reason,
-                )
+                return self._outcome(user_decision, TrialStatus.COMPLETED)
 
         messages.append(
             self._system_message(f"Maximum turns ({self.context.config.max_turns}) reached.")
@@ -187,6 +215,23 @@ class InMemoryAgentLoop:
             status=TrialStatus.COMPLETED,
             termination_reason=(
                 self.defects.unearned_excluded_reason or TerminationReason.MAX_TURNS
+            ),
+        )
+
+    def _outcome(self, decision: TerminationDecision, default: TrialStatus) -> LoopOutcome:
+        """The loop's verdict for a termination *decision*, evidence included.
+
+        A decision that named a denominator-excluding reason carries the typed
+        observation behind it, and the outcome carries both or neither: a
+        reason copied without its evidence is downgraded by the caller.
+        """
+        return LoopOutcome(
+            status=decision.status or default,
+            termination_reason=decision.reason,
+            excluding_reason_evidence=(
+                None
+                if self.defects.drop_excluding_reason_evidence
+                else decision.excluding_reason_evidence
             ),
         )
 
@@ -204,10 +249,7 @@ class InMemoryAgentLoop:
         """
         if self.defects.raw_provider_call_ids:
             return
-        result.tool_calls = [
-            call.model_copy(update={"id": self.context.call_ids.assign(call.id)})
-            for call in result.tool_calls
-        ]
+        result.tool_calls = self.funnel.assign_ids(result.tool_calls)
 
     def _consult_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
@@ -217,36 +259,52 @@ class InMemoryAgentLoop:
         self.call_log.termination_checks += 1
         return self.context.should_terminate(result, turn, messages)
 
-    def _execute(self, calls: list[ToolCall], messages: list[Message]) -> None:
+    def _execute(self, calls: list[ToolCall], messages: list[Message], assistant_text: str) -> None:
         ordered = list(reversed(calls)) if self.defects.execute_in_reverse else list(calls)
+
+        def append_tool_message(message: Message) -> int:
+            messages.append(message)
+            return len(messages) - 1
+
         for call in ordered:
-            started = time.time()
-            tool_result = self.context.tool_executor.execute(
-                call.name, call.arguments, call_id=call.id
-            )
-            latency = time.time() - started
             self.call_log.executed_call_ids.append(call.id)
-            self.context.metrics.record_tool_call()
+            if self._hand_rolls_tool_calls:
+                self._execute_by_hand(call, messages)
+            else:
+                self.funnel.execute(call, append_tool_message, assistant_text)
 
-            if self.context.recorder is not None:
-                self.context.recorder.record(
-                    call_id=call.id,
-                    tool_name=call.name,
-                    arguments=call.arguments or {},
-                    executor=ToolExecutorIdentity.AGENT,
-                    status=resolve_tool_status(tool_result),
-                    output=resolve_tool_output(tool_result),
-                    latency_seconds=latency,
-                )
+    def _execute_by_hand(self, call: ToolCall, messages: list[Message]) -> None:
+        """The funnel's work, written out, for the defects that bypass it.
 
-            messages.append(
-                Message(
-                    role=MessageRole.TOOL,
-                    content=self._tool_message_content(tool_result),
-                    tool_call_id=call.id,
-                    ts=_now(),
-                )
+        Everything :meth:`~tolokaforge.core.loop.ToolCallFunnel.execute` also
+        does, minus the output cap, the observer notification, the argument
+        recovery and the per-tool validation schema — which is the cost of
+        leaving the funnel, and the reason only a defect does.
+        """
+        started = time.time()
+        tool_result = self.context.tool_executor.execute(call.name, call.arguments, call_id=call.id)
+        latency = time.time() - started
+        self.context.metrics.record_tool_call()
+
+        if self.context.recorder is not None:
+            self.context.recorder.record(
+                call_id=call.id,
+                tool_name=call.name,
+                arguments=call.arguments or {},
+                executor=ToolExecutorIdentity.AGENT,
+                status=resolve_tool_status(tool_result),
+                output=resolve_tool_output(tool_result),
+                latency_seconds=latency,
             )
+
+        messages.append(
+            Message(
+                role=MessageRole.TOOL,
+                content=self._tool_message_content(tool_result),
+                tool_call_id=call.id,
+                ts=_now(),
+            )
+        )
 
     def _tool_message_content(self, tool_result: Any) -> str:
         text = resolve_tool_output(tool_result)

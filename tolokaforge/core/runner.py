@@ -2,7 +2,7 @@
 
 import shlex
 import time
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -96,11 +96,10 @@ one) without spilling an unbounded container stream into the trial log."""
 BUILT_IN_AGENT_LOOP = "engine-loop"
 """The ``tolokaforge.agent_loops`` registration of the loop this repo ships.
 
-Read by :meth:`TrialRunner._reason_downgraded_without_typed_evidence`, the one
-post-condition that treats the built-in loop differently: its
-denominator-excluding termination reasons are produced inside
-:func:`~tolokaforge.core.loop.classify_loop_error`, from an exception type, so
-the typed evidence behind them is the classifier's own input.
+:attr:`TrialRunner.agent_loop` defaults to it. The post-conditions read no
+loop name: the built-in loop earns its denominator-excluding reasons the way
+any other implementation does, by carrying the evidence
+:func:`~tolokaforge.core.loop.classify_loop_error` hands it.
 """
 
 _RECONCILIATION_DETAIL_CHARS = 400
@@ -178,19 +177,31 @@ and 4.6x.
 """
 
 
-def _enabled_completion_tools(tool_schemas: list[dict[str, Any]]) -> frozenset[str]:
+def _enabled_completion_tools(
+    tool_schemas: list[dict[str, Any]], sourced_tool_names: Collection[str] = ()
+) -> frozenset[str]:
     """The completion-tool names among *tool_schemas*, per the builtin registry.
 
     Read off the tool surface the model is actually offered rather than off the
     run config, so the termination seam and the schema list can never disagree
     about which tools can end an episode.
+
+    *sourced_tool_names* are the offered tools the trial reconstructed from a
+    :class:`~tolokaforge.runner.models.ToolSource` — a pack's or an adapter's
+    own implementation, which the builtin registry knows nothing about. The
+    name alone does not make a tool the end-of-episode signal: a pack shipping
+    its own ``submit`` would otherwise end the trial at the call site, before
+    the tool it actually named ever ran.
     """
     # Deferred: importing the builtin package pulls every tool driver, and this
     # module is on the orchestrator's import path well before any tool is built.
     from tolokaforge.tools.builtin import registry as builtin_registry
 
+    sourced = set(sourced_tool_names)
     names = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
-    return frozenset(name for name in names if builtin_registry.is_completion(name))
+    return frozenset(
+        name for name in names if name not in sourced and builtin_registry.is_completion(name)
+    )
 
 
 class TrialRunner:
@@ -215,9 +226,10 @@ class TrialRunner:
         events: RunDisplayEvents = _NULL_EVENTS,
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
-        agent_loop: str = "engine-loop",
+        agent_loop: str = BUILT_IN_AGENT_LOOP,
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
         loop_observer: "LoopObserver | None" = None,
+        sourced_tool_names: Collection[str] = (),
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -230,10 +242,11 @@ class TrialRunner:
         self.episode_timeout_s = episode_timeout_s
         self.stuck_detector = stuck_detector
         # The enabled agent tools whose call ends the episode. Empty unless an
-        # operator put a completion tool in ``tools.agent.enabled``, which is
-        # what keeps this seam inert for every pack that terminates through its
-        # user simulator.
-        self._completion_tools = _enabled_completion_tools(tool_schemas)
+        # operator put a completion tool in ``tools.agent.enabled`` *and* the
+        # trial reconstructed it as the builtin, which is what keeps this seam
+        # inert for every pack that terminates through its user simulator and
+        # for one that ships a tool of the same name.
+        self._completion_tools = _enabled_completion_tools(tool_schemas, sourced_tool_names)
         self.user_tool_executor = user_tool_executor
         self.request_limiter = request_limiter
         self.verbose = verbose
@@ -727,13 +740,30 @@ class TrialRunner:
         already classifies a trial grading cannot answer rather than dropping
         it, so discarding one here would destroy evidence the run keeps.
 
-        Every finding logs at ERROR, which under ``strict`` raises — a run that
-        asked to stop at the first defect stops at this one too.
+        Every finding is reported through
+        :meth:`_report_postcondition_finding`, which logs at ERROR without
+        ending the trial.
         """
         downgraded = self._reason_downgraded_without_typed_evidence(outcome, termination_reason)
         self._audit_call_id_reconciliation(downgraded)
         self._audit_metrics_sink_liveness()
         return downgraded
+
+    def _report_postcondition_finding(self, message: str, **context: Any) -> None:
+        """Log one post-condition finding at ERROR, and leave the trial standing.
+
+        ``StructuredLogger.error`` raises under ``strict``, and these checks run
+        after the agent's work is finished and before the trajectory is
+        assembled: a raise here would take the whole trial with it, including
+        the evidence the finding describes and the remaining checks. The record
+        reaches the trial's log either way, so the finding is reported and the
+        trial finalises — the "logged, not refused" every one of these checks
+        is written to.
+        """
+        try:
+            self.logger.error(message, **context)
+        except RuntimeError:
+            return
 
     def _reason_downgraded_without_typed_evidence(
         self, outcome: LoopOutcome, termination_reason: TerminationReason | None
@@ -754,17 +784,17 @@ class TrialRunner:
         a loop that ends a trial on an unevidenced provider fault is a defect
         of ours and belongs in the denominator as one.
 
-        The built-in loop is exempt: it reaches these reasons only through
-        :func:`~tolokaforge.core.loop.classify_loop_error`, whose input is the
-        exception type itself.
+        Every loop is held to it, the built-in one included. A loop that routes
+        its exceptions through ``context.classify_error`` is handed the evidence
+        on the :class:`~tolokaforge.core.loop.TerminationDecision` it already
+        copies the reason from, so the rule costs a conforming implementation
+        one field rather than a typing judgement of its own.
         """
         if termination_reason not in EXCLUDED_TYPED_REASONS:
             return termination_reason
-        if self.agent_loop == BUILT_IN_AGENT_LOOP:
-            return termination_reason
         if outcome.excluding_reason_evidence is not None:
             return termination_reason
-        self.logger.error(
+        self._report_postcondition_finding(
             "The agent loop ended this trial on a reason that excludes it from the "
             "measured denominator, but carried no typed evidence for it — counting "
             "the trial instead",
@@ -772,8 +802,9 @@ class TrialRunner:
             claimed_termination_reason=termination_reason.value,
             counted_as=TerminationReason.ERROR.value,
             remedy=(
-                "set LoopOutcome.excluding_reason_evidence to the provider "
-                "exception or empty-completion observation behind the reason"
+                "carry TerminationDecision.excluding_reason_evidence from "
+                "context.classify_error onto LoopOutcome.excluding_reason_evidence, "
+                "or name the empty-completion observation behind the reason"
             ),
         )
         return TerminationReason.ERROR
@@ -798,7 +829,7 @@ class TrialRunner:
         recorded = self.tool_call_recorder.recorded
         declared = sum(len(message.tool_calls or []) for message in self.messages)
         if recorded and not self._has_conversation_turns():
-            self.logger.error(
+            self._report_postcondition_finding(
                 "Tool-call id reconciliation could not run: the loop recorded tool "
                 "calls but appended no assistant or user turn to reconcile them "
                 "against, so nothing declares the calls the record describes",
@@ -809,7 +840,7 @@ class TrialRunner:
         try:
             build_trial_timeline(self.messages, recorded, termination_reason)
         except TimelineInconsistencyError as exc:
-            self.logger.error(
+            self._report_postcondition_finding(
                 "The loop's declared tool calls and its recorded ones do not "
                 "reconcile, so this trial cannot be graded from its trajectory",
                 agent_loop=self.agent_loop,
@@ -854,7 +885,7 @@ class TrialRunner:
         )
         if not assistant_turns or self.metrics.api_calls:
             return
-        self.logger.error(
+        self._report_postcondition_finding(
             "The agent loop produced assistant turns without recording a single model "
             "call, so this trial reports no usage and no cost and cannot be held to a "
             "budget cap",

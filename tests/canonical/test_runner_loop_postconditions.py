@@ -30,8 +30,9 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
 from tolokaforge.core.llm.capabilities import ModelCapabilities
-from tolokaforge.core.llm.client import GenerationResult
+from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import (
     AgentLoopContext,
@@ -92,6 +93,12 @@ class _ScriptedLoop:
     evidence: object | None = None
     append_assistant_turn: bool = True
     clear_messages: bool = False
+    classify: Exception | None = None
+    """Route this exception through ``context.classify_error`` and report what it says.
+
+    The shape ``docs/RUNTIME_BACKENDS.md`` instructs a third-party loop to
+    write: the reason and its evidence both come off the one decision.
+    """
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         if self.clear_messages:
@@ -126,6 +133,13 @@ class _ScriptedLoop:
                 output="ok",
                 latency_seconds=0.01,
             )
+        if self.classify is not None:
+            decision = self.context.classify_error(self.classify)
+            return LoopOutcome(
+                status=decision.status or TrialStatus.ERROR,
+                termination_reason=decision.reason,
+                excluding_reason_evidence=decision.excluding_reason_evidence,
+            )
         return LoopOutcome(
             status=TrialStatus.COMPLETED,
             termination_reason=self.termination_reason,
@@ -156,10 +170,9 @@ _LOOP_NAME = "postcondition_stub_loop"
 def register_loop(monkeypatch: pytest.MonkeyPatch):
     """Register a scripted loop, optionally *as* the built-in registration.
 
-    Registering under :data:`BUILT_IN_AGENT_LOOP` is how the built-in
-    exemption is driven: the exemption is keyed on the name the runner
-    resolved, so a stub answering to that name reaches exactly the branch a
-    real ``engine-loop`` trial does.
+    Registering under :data:`BUILT_IN_AGENT_LOOP` is how "no name is exempt" is
+    driven: the stub answers to the name a real ``engine-loop`` trial resolves,
+    so any branch keyed on that name would fire for it.
     """
 
     def register(*, name: str = _LOOP_NAME, **script: Any) -> None:
@@ -186,7 +199,9 @@ def register_loop(monkeypatch: pytest.MonkeyPatch):
 _TRIAL_COUNTER = iter(range(10_000))
 
 
-def _drive(agent_loop: str = _LOOP_NAME) -> tuple[Trajectory, list[dict[str, Any]]]:
+def _drive(
+    agent_loop: str = _LOOP_NAME, *, strict: bool = False
+) -> tuple[Trajectory, list[dict[str, Any]]]:
     """Run one trial and return its trajectory plus the ERROR records it logged.
 
     Each call takes a fresh ``task_id`` because :func:`get_logger` caches by
@@ -203,6 +218,7 @@ def _drive(agent_loop: str = _LOOP_NAME) -> tuple[Trajectory, list[dict[str, Any
         episode_timeout_s=1200,
         interaction_mode="agent_only",
         agent_loop=agent_loop,
+        strict=strict,
     )
     trajectory = runner.run("You are an agent.", "Do the task.")
     errors = [entry for entry in runner.logger.logs if entry["level"] == "ERROR"]
@@ -308,13 +324,35 @@ class TestExclusionIsEarnedByTypedEvidence:
         assert trajectory.termination_reason is TerminationReason.MAX_TURNS
         assert errors == [], _messages(errors)
 
-    def test_the_built_in_loop_is_exempt(self, register_loop) -> None:
-        """The built-in loop reaches these reasons only through its classifier.
+    def test_a_loop_that_carries_the_classifiers_evidence_keeps_its_exclusion(
+        self, register_loop
+    ) -> None:
+        """The compliant third-party shape, end to end through the real runner.
 
-        Its excluding reasons are produced from an exception type inside
-        ``classify_loop_error``, so the evidence is the classifier's own input
-        and the outcome carries none. Downgrading them would change the
-        behaviour of every real run.
+        ``docs/RUNTIME_BACKENDS.md`` tells an implementer to route the exception
+        through ``context.classify_error`` and report the decision. A genuine
+        provider timeout reported that way is typed evidence, so the trial
+        leaves the denominator as it should — the rule cannot be one a
+        conforming loop fails.
+        """
+        register_loop(
+            classify=LLMApiTimeoutError("the provider did not answer in time"),
+            record_generation=True,
+        )
+
+        trajectory, errors = _drive()
+
+        assert trajectory.termination_reason is TerminationReason.API_TIMEOUT
+        assert errors == [], _messages(errors)
+
+    def test_the_built_in_loop_is_held_to_the_same_rule(self, register_loop) -> None:
+        """No loop name is exempt: the evidence is the whole test.
+
+        An exemption keyed on ``engine-loop`` says nothing about what the
+        outcome carries, so it certifies the shipped loop while punishing every
+        compliant third-party one. The shipped loop earns its exclusions the
+        same way anyone else does, and a loop answering to its name that cannot
+        show evidence is downgraded like any other.
         """
         register_loop(
             name=BUILT_IN_AGENT_LOOP,
@@ -324,8 +362,31 @@ class TestExclusionIsEarnedByTypedEvidence:
 
         trajectory, errors = _drive(agent_loop=BUILT_IN_AGENT_LOOP)
 
-        assert trajectory.termination_reason is TerminationReason.RATE_LIMIT
-        assert errors == [], _messages(errors)
+        assert trajectory.termination_reason is TerminationReason.ERROR
+        assert len(errors) == 1, _messages(errors)
+        assert errors[0]["context"]["claimed_termination_reason"] == (
+            TerminationReason.RATE_LIMIT.value
+        )
+
+    def test_the_shipped_classifier_evidences_every_exclusion_it_spends(self) -> None:
+        """The other half: the rule costs the real ``engine-loop`` nothing.
+
+        Its excluding reasons come from the shipped classifier, and every
+        decision that spends an exclusion names the exception chain behind it —
+        so the built-in loop has something to carry and the removed name-keyed
+        exemption changes no real run.
+
+        ``tests/canonical/test_agent_loop_contract.py`` runs the whole
+        conformance suite against ``engine-loop`` itself, which is where the
+        end-to-end form of this is pinned.
+        """
+        decision = classify_loop_error(LLMApiTimeoutError("no answer in time"), ())
+
+        assert decision.reason in EXCLUDED_TYPED_REASONS
+        assert decision.excluding_reason_evidence == "LLMApiTimeoutError", (
+            "a decision that removes a trial from the denominator must name the "
+            f"type it matched on; it named {decision.excluding_reason_evidence!r}"
+        )
 
 
 class TestMetricsSinkLiveness:
@@ -360,3 +421,49 @@ class TestMetricsSinkLiveness:
         _, errors = _drive()
 
         assert errors == [], _messages(errors)
+
+
+class TestAFindingNeverCostsTheTrial:
+    """``strict`` stops a run at the first defect; it cannot stop this one.
+
+    These checks run after the agent's work is finished and before the
+    trajectory is assembled. ``StructuredLogger.error`` raises under ``strict``,
+    so a finding raised from here would leave ``TrialRunner.run`` with no
+    trajectory at all — deleting the very trial the finding describes, and with
+    it the messages, the tool record and the spend the run already paid for.
+    Every one of these checks is written "logged, not refused"; under ``strict``
+    the finding is logged and the trial still finalises.
+    """
+
+    def test_a_strict_run_with_a_finding_still_produces_a_trajectory(self, register_loop) -> None:
+        register_loop(declare="call-1", record="call-2", record_generation=True)
+
+        trajectory, errors = _drive(strict=True)
+
+        assert isinstance(trajectory, Trajectory)
+        assert len(errors) == 1, _messages(errors)
+        assert trajectory.messages, "the trial's conversation survives its own audit"
+        assert trajectory.metrics.api_calls == 1
+
+    def test_a_strict_run_still_downgrades_an_unevidenced_exclusion(self, register_loop) -> None:
+        """The downgrade is the finding's whole point, so it cannot be the
+        casualty of reporting it."""
+        register_loop(termination_reason=TerminationReason.RATE_LIMIT, record_generation=True)
+
+        trajectory, errors = _drive(strict=True)
+
+        assert trajectory.termination_reason is TerminationReason.ERROR
+        assert len(errors) == 1, _messages(errors)
+
+    def test_a_strict_run_reports_every_finding_not_only_the_first(self, register_loop) -> None:
+        """One finding must not abort the checks behind it."""
+        register_loop(
+            termination_reason=TerminationReason.RATE_LIMIT,
+            declare="call-1",
+            record="call-2",
+            record_generation=False,
+        )
+
+        _, errors = _drive(strict=True)
+
+        assert len(errors) == 3, _messages(errors)

@@ -30,11 +30,14 @@ A reason in
 trial from the measured denominator, so it may be emitted only on *typed*
 evidence — an exception type, an HTTP status, or a typed empty-completion
 observation. The suite pins the reachable half of that rule: a loop must not
-report an excluded reason on an episode where nothing typed went wrong, and it
-must route a raised exception through ``context.classify_error`` rather than
-naming a reason itself. What it cannot check is a loop that reaches its *own*
-provider, matches prose against an exception message, and calls the result a
-rate limit. That one is on the implementer.
+report an excluded reason on an episode where nothing typed went wrong, it must
+route a raised exception through ``context.classify_error`` rather than naming a
+reason itself, and where the classifier does spend an exclusion the loop must
+carry the evidence it was handed onto the outcome — the same pairing the caller
+reads before it decides whether the trial leaves the denominator. What it cannot
+check is a loop that reaches its *own* provider, matches prose against an
+exception message, and calls the result a rate limit. That one is on the
+implementer.
 """
 
 from __future__ import annotations
@@ -601,7 +604,15 @@ class AgentLoopConformanceSuite:
     def test_a_typed_provider_timeout_earns_its_excluded_reason(
         self, loop_factory: AgentLoopFactory
     ) -> None:
-        """The positive half of the same rule: typed evidence does earn exclusion."""
+        """The positive half of the same rule: typed evidence does earn exclusion.
+
+        Both halves of the outcome are checked, because the caller reads both.
+        ``TrialRunner`` keeps an excluding reason only where
+        :attr:`~tolokaforge.core.loop.LoopOutcome.excluding_reason_evidence`
+        shows what earned it, so a loop that reports the classifier's reason and
+        drops the evidence it came with is downgraded in production while
+        passing an assertion written over the reason alone.
+        """
         timeout = LLMApiTimeoutError("the provider did not answer in time")
         harness = EpisodeHarness.build([], raise_at_call={0: timeout})
         episode = run_episode(loop_factory, harness)
@@ -611,4 +622,14 @@ class AgentLoopConformanceSuite:
             f"{TerminationReason.API_TIMEOUT!r}; the loop reported "
             f"{episode.outcome.termination_reason!r}. Counting a trial the "
             "provider killed deflates the run's numbers"
+        )
+        expected = harness.context().classify_error(timeout)
+        assert episode.outcome.excluding_reason_evidence == expected.excluding_reason_evidence, (
+            "the loop reported "
+            f"{TerminationReason.API_TIMEOUT!r} with "
+            f"excluding_reason_evidence={episode.outcome.excluding_reason_evidence!r}; "
+            "`context.classify_error` handed it "
+            f"{expected.excluding_reason_evidence!r}. Carry the decision's evidence "
+            "onto the outcome beside the reason taken from the same decision — "
+            "without it the caller counts the trial as a harness defect"
         )

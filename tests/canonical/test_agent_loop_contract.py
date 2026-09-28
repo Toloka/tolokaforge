@@ -152,6 +152,11 @@ _VECTORS = [
         "test_a_clean_episode_does_not_claim_an_excluded_reason",
         id="trial-excluded-from-the-denominator-unearned",
     ),
+    pytest.param(
+        {"drop_excluding_reason_evidence": True},
+        "test_a_typed_provider_timeout_earns_its_excluded_reason",
+        id="exclusion-claimed-without-the-evidence-that-earned-it",
+    ),
 ]
 
 
