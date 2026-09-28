@@ -215,6 +215,43 @@ class TestLLMClientThreadsParamTypesIntoResponsePolicy:
         assert recovered["status"] == "pending"
         assert recovered["lines"] == {"SKU-A": {"qty": 1}}
 
+    def test_a_json_string_for_a_string_param_reaches_the_tool_as_text(self) -> None:
+        """GPT-5.5 through OpenRouter (``ArrayDictMapResponse``) calling a τ³-bench
+        discoverable tool: ``arguments`` is declared ``string`` and carries JSON text,
+        which the tool parses itself."""
+        client = LLMClient(ModelConfig(provider="openrouter", name="openai/gpt-5.5"))
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "call_discoverable_agent_tool",
+                "parameters": {
+                    "type": "object",
+                    "required": ["agent_tool_name"],
+                    "properties": {
+                        "agent_tool_name": {"type": "string"},
+                        "arguments": {"type": "string", "default": "{}"},
+                    },
+                },
+            },
+        }
+        emitted_args = {
+            "agent_tool_name": "get_margin_status_9861",
+            "arguments": '{"account_id": "34567812"}',
+        }
+
+        response = _completion_response_with_tool_call(emitted_args)
+        response.choices[0].message.tool_calls[0].function.name = "call_discoverable_agent_tool"
+
+        with patch("tolokaforge.core.llm.client.completion") as mock_completion:
+            mock_completion.return_value = response
+            result = client.generate(
+                system=None,
+                messages=[Message(role=MessageRole.USER, content="check my margin")],
+                tools=[tool],
+            )
+
+        assert result.tool_calls[0].arguments == emitted_args
+
     def test_default_preset_without_array_param_passes_string_through(self) -> None:
         """Sanity: the wiring doesn't over-coerce when there's no schema info
         suggesting the value should be a container."""
