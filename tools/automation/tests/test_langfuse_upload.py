@@ -605,6 +605,24 @@ class TestWhatReachesTheWire:
         assert headers.get("x-langfuse-ingestion-version") == "4"
         assert headers.get("content-type") == "application/x-protobuf"
 
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            None,
+            "X-GitHub-Runner-Key=admission-not-real",
+            "X-A=1,X-GitHub-Runner-Key=admission-not-real",
+        ],
+        ids=["no-extra-headers", "one-extra-header", "two-extra-headers"],
+    )
+    def test_the_ingestion_version_header_is_on_every_request(
+        self, tmp_path: Path, extra: str | None
+    ) -> None:
+        """A v4 receiver takes its direct ingestion path only with this header, so the extra
+        headers must join it, never replace it, and it must not depend on them either."""
+        report, headers = self._capture(tmp_path, extra)
+        assert report.ok, report.as_dict()
+        assert headers.get("x-langfuse-ingestion-version") == "4"
+
     def test_without_the_variable_the_request_carries_no_admission_header(
         self, tmp_path: Path
     ) -> None:
