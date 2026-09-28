@@ -330,6 +330,27 @@ class TestTheUpload:
         assert report.sent == []
         assert "dotenv-secret" in report.blocked[0]["reason"]
 
+    def test_a_run_of_blank_lines_does_not_stall_the_scan(self) -> None:
+        """An agent turn that degenerates into newlines is a known failure mode; a line-anchored
+        shape made the raw scan quadratic in them (50k lines took tens of seconds)."""
+        import time
+
+        from tolokaforge_langfuse import safety
+
+        events = [{"type": "trace-create", "body": {"output": "a" + "\n" * 50_000 + "b"}}]
+        started = time.monotonic()
+        assert lu._scan(safety.SafetyGate(), events, what="t") == []
+        assert time.monotonic() - started < 5.0
+
+    def test_a_dotenv_line_after_blank_lines_is_still_found(self) -> None:
+        from tolokaforge_langfuse import safety
+
+        line = "NPM_" + "TOKEN=" + "q" * 16
+        events = [{"type": "trace-create", "body": {"output": "see:\n\n\n" + line}}]
+        assert [f.rule for f in lu._scan(safety.SafetyGate(), events, what="t")] == [
+            "dotenv-secret"
+        ]
+
     @pytest.mark.parametrize(
         "value",
         ['Zq"8!mK-p2wX-9', "p\u00e4ssw\u00f6rd-12345", "back\\slash-12345"],

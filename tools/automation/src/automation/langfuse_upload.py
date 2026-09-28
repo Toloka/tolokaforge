@@ -373,7 +373,11 @@ def _scan(gate: Any, events: Sequence[Mapping[str, Any]], *, what: str) -> list[
     JSON escaping hides a value with a quote, a backslash or a non-ASCII character, and turns a
     line break into two characters no line-anchored shape matches."""
     serialised = json.dumps(events, default=str).encode("utf-8")
-    raw = "\n".join(_strings(events)).encode("utf-8", "replace")
+    # blank lines go: no shape spans one, and a line-anchored shape's leading \s* would otherwise
+    # cross a whole run of them from every line start (quadratic in a run of newlines)
+    raw = "\n".join(
+        line for text in _strings(events) for line in text.splitlines() if line.strip()
+    ).encode("utf-8", "replace")
     found, seen = [], set()
     for finding in gate.scan(serialised, what=what) + gate.scan(raw, what=what):
         if (finding.rule, finding.excerpt) not in seen:
