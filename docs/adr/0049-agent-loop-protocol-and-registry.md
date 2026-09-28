@@ -100,7 +100,7 @@ checker does not**, because they are otherwise invisible. Three of them:
    mis-paired calls name different tools, and the join is silently wrong when
    they name the same one. Pre-assigned ids are already episode-unique, so both
    derivations are the identity and ordering cannot matter.
-   `ToolCallingLoop._assign_call_ids` is where the built-in satisfies this.
+   `ToolCallFunnel.assign_ids` is where every loop satisfies this.
 2. **A failed tool call's `role: tool` message content carries
    `TOOL_ERROR_MESSAGE_PREFIX`.** The message view records no status, so a
    trial re-graded from messages alone recovers the result text by stripping
@@ -111,6 +111,7 @@ checker does not**, because they are otherwise invisible. Three of them:
    `core/loop.py` and `core/grading/trace_timeline.py`, so producer and
    consumer cannot drift — and the grading path keeps the import footprint
    that makes `tolokaforge retrace` incapable of reaching an LLM client.
+   `ToolCallFunnel.execute` is where every loop satisfies this.
 3. **`metrics`, `should_terminate` and a supplied `user_turn` are
    obligations.** See `AgentLoopContext` below.
 
@@ -118,6 +119,16 @@ A loop whose action format is text rather than provider `tool_calls` therefore
 normalises each parsed action into a `ToolCall` carrying the assigned id
 *before* appending the assistant message. Emitting prose and recording
 separately produces an ungradeable trial, not a degraded one.
+
+Obligations 1 and 2 are prose only for a loop that writes the tool-call
+sequence itself. `ToolCallFunnel` — re-exported from
+`tolokaforge.core.plugin_registry` beside `AgentLoop` — performs that sequence
+once for every loop: `assign_ids` keys the turn's calls, and `execute` runs,
+records, words, caps and observes each one. `execute` refuses a call whose id
+did not come from `assign_ids`, so an implementation cannot invert the order or
+mint an id elsewhere and still reach the executor. The built-in
+`ToolCallingLoop` owns one funnel and makes every call through it, so the
+shared path is the one production exercises.
 
 ### `AgentLoopContext` + registry
 

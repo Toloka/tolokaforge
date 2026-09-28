@@ -2041,7 +2041,7 @@ The composition runs at two sites, each using the same shape (`min` of the
 set candidates, `None` when none is set). The adapter site
 (`native._actor_tool_schemas`) folds the task-yaml override and the
 tool-declared bound into the emitted `ToolSchema.output_max_chars`. The
-loop site (`ToolCallingLoop._cap_tool_message_content`) folds that emitted
+loop site (`ToolCallFunnel.cap_tool_message_content`) folds that emitted
 value with the per-model backstop into the per-call effective cap.
 
 Middle-elision uses `keep_head_and_tail` from
@@ -2056,7 +2056,7 @@ the baseline for presets that do not name the key on tools that do not
 declare a cap in a pack that does not override it.
 
 The cap sits **below** the trial's recorder and the grader. The recorder
-call inside `_execute_tool_calls` reads the full text through
+call inside `ToolCallFunnel.execute` reads the full text through
 `resolve_tool_output(tool_result)` before the truncation runs, so the
 trial's ordered tool-call record and the grader inputs carry the
 untruncated tool output regardless of the cap. Only the string the model

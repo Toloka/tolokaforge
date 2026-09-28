@@ -101,7 +101,13 @@ from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactor
 from tolokaforge.core.grading.substrate import GradingSubstrate
 from tolokaforge.core.grading.trace_check_operator import TraceCheckOperator
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
-from tolokaforge.core.loop import AgentLoop, AgentLoopContext, AgentLoopFactory
+from tolokaforge.core.loop import (
+    AgentLoop,
+    AgentLoopContext,
+    AgentLoopFactory,
+    ToolCallFunnel,
+    UnassignedToolCallError,
+)
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 
@@ -148,12 +154,14 @@ __all__ = [
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
     "StateCheckBackendFactory",
+    "ToolCallFunnel",
     "TraceCheckOperator",
     "TranscriptRuleMatcherFactory",
     "TrialGraderContext",
     "TrialGraderFactory",
     "TurnPolicyContext",
     "TurnPolicyFactory",
+    "UnassignedToolCallError",
     "UnknownImplementationError",
     "available_agent_loops",
     "available_bundle_stores",
@@ -500,6 +508,11 @@ def load_agent_loop(name: str) -> AgentLoopFactory:
     context from the trial's own dependencies. ``engine-loop`` — the built-in
     :class:`~tolokaforge.core.loop.ToolCallingLoop` — resolves through this
     loader like any other registration.
+
+    A loop routes every tool call it makes through
+    :class:`~tolokaforge.core.loop.ToolCallFunnel`, re-exported here, which
+    discharges the call-id and failed-call-wording obligations the
+    :class:`~tolokaforge.core.loop.AgentLoop` contract names.
     """
     return cast(AgentLoopFactory, _load(AGENT_LOOPS_GROUP, name))
 
