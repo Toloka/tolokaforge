@@ -29,7 +29,7 @@ from tolokaforge.runner.models import Rubric
 pytestmark = pytest.mark.canonical
 
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
-_KIND_NAMES = ("single_shot_rubric", "chunked_rubric")
+_KIND_NAMES = ("single_shot_rubric",)
 _RUBRIC = Rubric.model_validate(
     {
         "criteria": [
@@ -83,7 +83,6 @@ def _entry(entry_id: str, *, met_a: bool, met_b: bool) -> ParityCorpusEntry:
         custom_system_prompt=None,
         include_agent_system_prompt=True,
         judge_scripts={"single_shot_rubric": script},
-        judge_scripts_per_chunk={"chunked_rubric": [script]},
     )
 
 
@@ -95,24 +94,11 @@ def _corpus() -> list[tuple[str, ParityCorpusEntry]]:
     ]
 
 
-def _entry_client_scripts(entry: ParityCorpusEntry, kind_name: str) -> list[list[Any]]:
-    """One client-script per :meth:`JudgeModelProvider.build` call the kind
-    makes on this entry — dispatches on cassette shape, mirroring
-    ``tests/canonical/test_judge_kind_parity.py``'s ``_entry_client_scripts``."""
-    if kind_name in entry.judge_scripts_per_chunk:
-        return list(entry.judge_scripts_per_chunk[kind_name])
-    return [list(entry.judge_scripts[kind_name])]
-
-
 def _scripted_provider_factory_for(entries: list[ParityCorpusEntry], kind_name: str):
     """Local reimplementation of the parity lane's per-replay cassette pool."""
 
     def _factory(_replay_index: int) -> JudgeModelProvider:
-        remaining = [
-            ScriptedLLMClient(script)
-            for entry in entries
-            for script in _entry_client_scripts(entry, kind_name)
-        ]
+        remaining = [ScriptedLLMClient(list(entry.judge_scripts[kind_name])) for entry in entries]
 
         class _PoolProvider:
             def build(self, model_config: ModelConfig) -> JudgeModel:  # noqa: ARG002
@@ -138,13 +124,7 @@ def test_run_live_ab_dry_run_renders_well_formed_report(tmp_path: Path) -> None:
         provider_factory_for=_provider_factory_for,
     )
 
-    assert len(result.cross_kind) == 1
-    pair = result.cross_kind[0]
-    assert {pair.reference, pair.candidate} == set(_KIND_NAMES)
-    pair_criteria = {v.criterion_id for v in pair.decision.per_criterion}
-    assert pair_criteria == {"criterion_a", "criterion_b"}
-    for verdict in pair.decision.per_criterion:
-        assert verdict.kappa == pytest.approx(1.0), "identical cassettes must agree perfectly"
+    assert result.cross_kind == []
 
     assert {s.kind for s in result.self_consistency} == set(_KIND_NAMES)
     for self_result in result.self_consistency:
@@ -161,16 +141,13 @@ def test_run_live_ab_dry_run_renders_well_formed_report(tmp_path: Path) -> None:
     report_md = (tmp_path / "report.md").read_text()
     report_json = json.loads((tmp_path / "report.json").read_text())
 
-    assert "## Per-criterion kappa" in report_md
     assert "## Cost by kind" in report_md
     assert "## Cost by kind and task family" in report_md
     for name in _KIND_NAMES:
         assert name in report_md
-    assert "criterion_a" in report_md
-    assert "criterion_b" in report_md
 
-    assert len(report_json["cross_kind"]) == 1
-    assert len(report_json["self_consistency"]) == 2
+    assert report_json["cross_kind"] == []
+    assert len(report_json["self_consistency"]) == 1
     for name in _KIND_NAMES:
         assert report_json["usage_by_kind"][name]["total"]["calls"] > 0
         assert set(report_json["usage_by_kind"][name]["by_family"]) == {"family_a", "family_b"}

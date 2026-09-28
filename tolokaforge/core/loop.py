@@ -553,7 +553,7 @@ class AgentLoopContext:
         ``None`` only when the trial's turn policy dispatches no user — the
         caller decides that, not the loop. When it is supplied, a loop that
         never calls it runs a ``conversational`` trial agent-only, and per
-        ADR-0049 the interaction-mode axis and the loop axis are orthogonal.
+        ADR-0050 the interaction-mode axis and the loop axis are orthogonal.
     ``recorder`` and ``call_ids``
         The two halves of the join key the :class:`AgentLoop` contract pins:
         the recorder is the trial's ordered tool-call record, and the assigner

@@ -832,8 +832,8 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
 
     Dispatches through the :class:`JudgeKind` seam
     (``load_judge_kind(inputs.judge_kind)()``) so a recorded trial with
-    ``judge_kind: chunked_rubric`` replays through
-    :class:`ChunkedRubricJudgeKind` and one graded originally with
+    ``judge_kind: voted_rubric`` replays through
+    :class:`VotedRubricJudgeKind` and one graded originally with
     ``single_shot_rubric`` (or a legacy artifact predating the field) replays
     through :class:`SingleShotRubricJudgeKind`. ``judge_client`` injects a
     scripted client for tests (no network) via
@@ -969,9 +969,6 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         ),
         judge_custom_prompt=result.custom_system_prompt,
         judge_agent_prompt_included=result.include_agent_system_prompt,
-        judge_chunk_boundaries=(
-            [list(chunk) for chunk in result.chunk_boundaries] if result.chunk_boundaries else None
-        ),
     )
 
 

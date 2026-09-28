@@ -517,6 +517,16 @@ class AuthoringReport:
     :attr:`Skip.kind` (``ADAPTER_DECLARED`` promotes under
     ``--strict-authoring``; ``STRUCTURAL`` stays never-fatal). See ADR-0042."""
 
+    hints: tuple[Finding, ...] = ()
+    """Author-facing nudges the gate never makes fatal, at any ``fail_on`` value.
+
+    A hint reports an authoring shape the gate cannot condemn — the pack still
+    grades correctly — but that the rule wants the author to reconsider. Kept in
+    its own channel because :attr:`advisories` is fatal under the default
+    ``fail_on=ADVISORY`` and reusing it would fail packs the rule cannot prove
+    wrong. :meth:`fatal` never returns hints on any :class:`GradingFindingSeverity`.
+    """
+
     def fatal(self, fail_on: GradingFindingSeverity) -> tuple[Finding, ...]:
         """The findings a caller enforcing down to *fail_on* must refuse."""
         if fail_on is GradingFindingSeverity.ERROR:
@@ -531,7 +541,10 @@ class AuthoringReport:
         channel — otherwise a caller that gated nothing reads as a clean bill of health.
         """
         return AuthoringReport(
-            errors=self.errors, advisories=self.advisories, unchecked=self.unchecked + skips
+            errors=self.errors,
+            advisories=self.advisories,
+            unchecked=self.unchecked + skips,
+            hints=self.hints,
         )
 
 
@@ -999,6 +1012,7 @@ def inspect_grading_authoring(
         _check_jsonpaths_address_a_reachable_state(grading),
         _check_path_glob_is_compared_the_way_the_runner_reads_it(grading),
         _check_severity_gate_default_on_missing_is_risky(constraints),
+        _check_graded_criteria_have_expected_anchor(grading),
     ]
     if inventory.known:
         reports += [
@@ -2522,6 +2536,60 @@ def _check_severity_gate_default_on_missing_is_risky(
     return AuthoringReport(advisories=advisories)
 
 
+_GRADED_CRITERION_WITHOUT_EXPECTED_ANCHOR = (
+    "{where}: kind: graded with no 'expected:' anchor. Subjective criteria "
+    "without an author-written reference show the highest judge self-variance "
+    "at grade time. Add 'expected: <what a correct answer looks like>', or "
+    "lower to 'kind: binary' if the criterion is self-anchored. See the "
+    "docs/GRADING.md § LLM Judge rubric-authoring guideline."
+)
+
+
+def _check_graded_criteria_have_expected_anchor(grading: Mapping[str, Any]) -> AuthoringReport:
+    """Hint: a ``kind: graded`` criterion under ``llm_judge.rubric`` with no
+    ``expected:`` field is the highest-self-variance rubric cell the pack ships.
+
+    A subjective criterion asks the judge for a 0-1 gradient; without an
+    author-written reference of what a correct answer looks like, the judge
+    anchors on whatever it infers from ``description`` alone, which is the
+    single largest driver of inter-run disagreement on the shipped kinds.
+    The hint names the criterion, points at the fix (write an anchor, or lower
+    to ``kind: binary`` if the criterion is truly self-anchored), and cites the
+    in-tree authoring guideline.
+
+    Hint only — never an error, never an advisory. A missing anchor is a
+    judgement call the engine cannot decide for the author (the pack still
+    grades correctly), so it goes in the :attr:`AuthoringReport.hints` channel
+    that :meth:`AuthoringReport.fatal` never returns. Reads the raw dict so a
+    malformed ``llm_judge`` block (its own load error) does not raise here;
+    non-string ``kind`` values are silently skipped so the schema validator owns
+    the type error.
+    """
+    llm_judge = grading.get("llm_judge")
+    if not isinstance(llm_judge, Mapping):
+        return AuthoringReport()
+    rubric = llm_judge.get("rubric")
+    if not isinstance(rubric, Mapping):
+        return AuthoringReport()
+    criteria = rubric.get("criteria")
+    if not isinstance(criteria, Sequence) or isinstance(criteria, (str, bytes)):
+        return AuthoringReport()
+    hints = tuple(
+        Finding(
+            f"llm_judge.rubric.criteria.{criterion['id']}",
+            _GRADED_CRITERION_WITHOUT_EXPECTED_ANCHOR.format(
+                where=f"llm_judge.rubric.criteria.{criterion['id']}"
+            ),
+        )
+        for criterion in criteria
+        if isinstance(criterion, Mapping)
+        and isinstance(criterion.get("id"), str)
+        and criterion.get("kind") == "graded"
+        and not criterion.get("expected")
+    )
+    return AuthoringReport(hints=hints)
+
+
 def _trace_constraints(grading: Mapping[str, Any]) -> Iterator[tuple[str, TraceConstraint]]:
     """Every constraint the block declares, shared and per-route, with its address.
 
@@ -2620,4 +2688,5 @@ def _merged(reports: Iterable[AuthoringReport]) -> AuthoringReport:
         errors=tuple(finding for report in collected for finding in report.errors),
         advisories=tuple(finding for report in collected for finding in report.advisories),
         unchecked=tuple(skip for report in collected for skip in report.unchecked),
+        hints=tuple(finding for report in collected for finding in report.hints),
     )

@@ -147,15 +147,11 @@ state so the offline judge can inspect it is tracked separately (issue #525).
 `replay_trial` dispatches through the same
 [`JudgeKind`](JUDGE_KINDS.md) seam every other Grade-writing path uses:
 `load_judge_kind(inputs.judge_kind)()` resolves the recorded kind by
-name and drives its `evaluate` with `inputs.kind_config`. A recorded
-trial with `grading_config.llm_judge.judge_kind: chunked_rubric` +
-`kind_config: {chunk_size: N}` replays through
-`ChunkedRubricJudgeKind` and its `JudgeResult.chunk_boundaries` lands
-on `Grade.judge_chunk_boundaries` in the replay's `grade.yaml` via
-`build_replay_grade`. A legacy trial artifact whose
-`grading_config.llm_judge` predates the `judge_kind` field defaults to
-`("single_shot_rubric", None)` and replays through the reference kind
-— byte-identical to prior behaviour, and the anchor
+name and drives its `evaluate` with `inputs.kind_config`. A legacy
+trial artifact whose `grading_config.llm_judge` predates the
+`judge_kind` field defaults to `("single_shot_rubric", None)` and
+replays through the reference kind — byte-identical to prior
+behaviour, and the anchor
 `tests/canonical/test_judge_kind_single_shot_byte_parity.py` guards
 that identity.
 

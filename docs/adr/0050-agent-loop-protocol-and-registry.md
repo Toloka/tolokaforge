@@ -1,4 +1,4 @@
-# 0049. The `AgentLoop` Protocol and entry-point registry
+# 0050. The `AgentLoop` Protocol and entry-point registry
 
 - **Status:** Accepted
 - **Date:** 2026-09-27

@@ -7,9 +7,10 @@ from the caller-supplied :class:`JudgeModelProvider`, constructs an
 runs it once over the trial's rubric evidence.
 
 Byte-identity anchor: the ``LLMJudge`` construction below matches the
-pre-seam :class:`LLMJudgeRubricEvaluator.evaluate` call one-for-one, so
+:class:`LLMJudgeRubricEvaluator.evaluate` call one-for-one, so
 :meth:`SingleShotRubricJudgeKind.evaluate` produces the same
-:class:`JudgeResult` the pre-seam path produced from the same inputs.
+:class:`JudgeResult` the direct :class:`LLMJudgeRubricEvaluator` path
+produces from the same inputs.
 """
 
 from __future__ import annotations

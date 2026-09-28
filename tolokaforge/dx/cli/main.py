@@ -115,18 +115,9 @@ install_global_redactor()
 # os.environ directly. Mirror the resolved secrets into os.environ once at
 # CLI startup so those SDKs find them. Use setdefault so explicit shell
 # exports always win.
-_secrets.export_to_environ(
-    [
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_API_KEYS",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "NOVA_API_KEY",
-        "TYPESENSE_API_KEY",
-    ]
-)
+from tolokaforge.core.llm.providers import CLI_EXPORTED_CREDENTIAL_ENV_NAMES as _CLI_CRED_NAMES
+
+_secrets.export_to_environ(list(_CLI_CRED_NAMES))
 
 
 def _print_runtime_banner(*, console: Console, runtime_choice: str | None, source: str) -> None:
@@ -1962,6 +1953,8 @@ def validate(tasks: str, strict_authoring: bool):
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")
+            for hint in report.hints:
+                console.print(f"[yellow]  ⚠ {hint.where}: {hint.message}[/yellow]")
             valid += 1
         except Exception as e:
             console.print(f"[red]✗ {task_file}: {str(e)}[/red]")
