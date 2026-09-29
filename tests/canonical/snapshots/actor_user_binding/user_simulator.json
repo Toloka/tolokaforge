@@ -2,5 +2,9 @@
   "backstory": "I just joined the ops team and need help.",
   "mode": "llm",
   "persona": "curious engineer",
-  "scripted_flow": null
+  "scripted_flow": null,
+  "stop_tokens": [
+    "###STOP###"
+  ],
+  "stop_with_text": "deliver"
 }
