@@ -651,6 +651,57 @@ _ALL: list[MC] = [
         ),
         known_unsupported=frozenset(),
     ),
+    # Claude Sonnet 5.5 — Anthropic adaptive thinker, landed via auto-resolve
+    # (PR #1661). Routes through the model-specific
+    # ``anthropic_claude_sonnet_5_5`` preset (see model_presets.yaml): the
+    # generic ``anthropic`` axes (content/reasoning/cache = anthropic,
+    # supports_seed false) PLUS
+    # ``param_value_rules.reasoning_effort.medium -> override with high`` —
+    # the same fix as the fable-5.1 sibling.
+    #
+    # The observe (default) baseline surfaced ONE preset-fixable failure —
+    # ``thinking_emits_blocks`` 0/15 ("StructuredReasoning should be
+    # surfaced"). That probe is the only one sending effort_hint="medium"; the
+    # siblings on the SAME anthropic reasoning codec and OpenRouter transport
+    # passed 15/15 — unsigned replay at effort="high" and signed replay at
+    # budget_tokens=4000 — so "medium" merely under-allocates the adaptive
+    # budget. Overriding medium -> high took the reprobe to 5/5 on the
+    # fix-target, so THINKING_EMITS_BLOCKS is ``required`` here. Every other
+    # capability passed 15/15 and decision.json ceilings were empty.
+    MC(
+        model_id="openrouter__anthropic_claude-sonnet-5.5",
+        provider="openrouter",
+        name="anthropic/claude-sonnet-5.5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.BASIC_COMPLETION,
+                C.COST_USD_POPULATED,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.LEXICAL_TOOL_INVENTION,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.MULTI_TURN_TOOL_USE,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.PROMPT_CACHING,
+                C.RE2_PATTERN_TOLERANCE,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.SIMPLE_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.TOOL_NAME_DISCIPLINE,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.USAGE_METRICS_POPULATED,
+            }
+        ),
+        known_unsupported=frozenset(),
+    ),
     # Claude Opus 5 — Anthropic adaptive thinker, landed via auto-resolve
     # (Slack-requested integration, PR #614). Routes through the model-specific
     # ``anthropic_claude_opus_5`` preset (see model_presets.yaml): the generic
