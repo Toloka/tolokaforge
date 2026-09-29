@@ -5698,7 +5698,6 @@ dependencies = [
     { name = "inspect-ai" },
     { name = "pyyaml" },
     { name = "tolokaforge" },
-    { name = "typer" },
 ]
 
 [package.metadata]
@@ -5706,7 +5705,6 @@ requires-dist = [
     { name = "inspect-ai", specifier = ">=0.3.263,<0.4" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "tolokaforge", editable = "." },
-    { name = "typer", specifier = ">=0.12.0" },
 ]
 
 [[package]]
