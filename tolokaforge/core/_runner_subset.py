@@ -160,9 +160,8 @@ orchestrator does that before handing a :class:`TrialRunner` to the
 conductor, and the runner-side wire protocol carries only the resolved
 per-turn artefacts. ``core.actors.user_stop`` is the stop rule the same
 ``TrialRunner`` applies to a user reply, and ``core.actors.tool_turn_rule`` the
-rule it runs the simulator's tool calls by; the runner container never reads a
-task-authored simulator prompt for the loader and the conductor; the runner
-container never builds a simulator.
+rule it runs the simulator's tool calls by; the runner container needs neither,
+since it never builds a simulator.
 
 Seven grading-side files (``core.grading.combine``,
 ``core.grading.corpus_curation``, ``core.grading.migration_declaration``,
