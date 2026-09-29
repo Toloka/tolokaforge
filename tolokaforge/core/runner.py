@@ -1586,16 +1586,17 @@ class TrialRunner:
         The trial's :class:`UserStopRule` names the tokens; the earliest one in the
         reply decides. Stop-token handling has three shapes:
 
-        * A bare token (or the token with only whitespace before it) — terminate
-          immediately with ``USER_STOP``.
-        * Substantive text before the token, under ``stop_with_text: deliver`` —
+        * Under ``stop_with_text: end``, any reply carrying a token — record the
+          reply as the simulator wrote it, token included, as the dialogue's last
+          USER message and terminate in the same turn, so the agent never answers
+          it (:meth:`_end_on_user_stop`).
+        * Under ``stop_with_text: deliver``, a bare token (or the token with only
+          whitespace before it) — terminate immediately with ``USER_STOP``.
+        * Under ``stop_with_text: deliver``, substantive text before the token —
           deliver the pre-token text as a normal USER message, hold the stop
           pending, and terminate on the following user turn. Guarantees the agent
           sees the final reply (e.g. a backstory-mandated verbal decline) before
           the dialogue ends.
-        * Substantive text before the token, under ``stop_with_text: end`` —
-          record the pre-token text as the dialogue's last USER message and
-          terminate in the same turn, so the agent never answers it.
         """
         if self._pending_user_stop is not None:
             stop = self._pending_user_stop
@@ -1606,8 +1607,8 @@ class TrialRunner:
             )
 
         # Read before the dispatch: this is the position the turn's USER message
-        # will occupy, and on a bare stop token or a refusal the loop puts its
-        # own SYSTEM message there instead.
+        # will occupy, and on a bare stop token under ``deliver`` or a refusal the
+        # loop puts its own SYSTEM message there instead.
         message_index = len(messages)
         try:
             user_result = actor.reply(messages, observation=self._user_observation)
@@ -1625,6 +1626,8 @@ class TrialRunner:
         )
 
         stop = self._user_stop.find(user_result.text)
+        if stop is not None and self._user_stop.with_text == "end":
+            return self._end_on_user_stop(stop, user_result)
         if stop is not None and stop.dropped:
             self.logger.info(
                 f"Dropped the text after {stop.token} in the user reply",
@@ -1651,16 +1654,39 @@ class TrialRunner:
 
         if stop is None:
             return UserTurnResult(message=message)
-        if self._user_stop.with_text == "end":
-            self.logger.info(
-                f"User sent final reply with {stop.token} — recording reply, dialogue ends"
-            )
-            return UserTurnResult(message=message, termination=self._user_stop_decision(stop))
         self.logger.info(
             f"User sent final reply with {stop.token} — delivering reply, stop pending"
         )
         self._pending_user_stop = stop
         return UserTurnResult(message=message)
+
+    def _end_on_user_stop(self, stop: UserStop, user_result: GenerationResult) -> UserTurnResult:
+        """``stop_with_text: end``: record the stop reply as written and end the dialogue.
+
+        The reply becomes the dialogue's last USER message exactly as the simulator
+        wrote it — what precedes the token, the token and whatever follows it — the
+        way the reference τ³-bench harness records a stop, and the dialogue ends in
+        the same turn, so the agent never answers it. A bare token is recorded the
+        same way. The calls on a reply with text run and are recorded on the
+        message first; a bare token's calls are not run.
+        """
+        calls = user_result.tool_calls if stop.text else []
+        if not stop.text:
+            self.logger.info(
+                f"User signaled completion ({stop.token})",
+                dropped_tool_calls=len(user_result.tool_calls or []),
+            )
+        user_message_text, executed_calls = self._run_user_tool_calls(user_result.text, calls)
+        message = Message(
+            role=MessageRole.USER,
+            content=user_message_text,
+            tool_calls=executed_calls if executed_calls else None,
+            ts=datetime.now(tz=timezone.utc),
+        )
+        self.logger.info(
+            f"User sent final reply with {stop.token} — recording reply, dialogue ends"
+        )
+        return UserTurnResult(message=message, termination=self._user_stop_decision(stop))
 
     @staticmethod
     def _user_stop_decision(

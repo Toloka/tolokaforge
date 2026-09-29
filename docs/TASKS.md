@@ -344,8 +344,9 @@ actors:
 
 - **`stop_tokens`** — the earliest listed token in a reply fires, and the
   termination message names it (`User signaled stop (###TRANSFER###). Dialogue
-  ended.`). Whatever the reply says after that token is discarded; the trial
-  log records how much. The reason is `USER_STOP` for every token. The list must be
+  ended.`). Under `stop_with_text: deliver` whatever the reply says after that
+  token is discarded; the trial log records how much. The reason is `USER_STOP`
+  for every token. The list must be
   non-empty, without blank or repeated tokens, and no token may contain another.
   The engine listens for the list and the model sends what its prompt tells it
   to, so for an `llm` simulator the two must agree: the list must contain
@@ -353,10 +354,11 @@ actors:
   must be named in the backstory, which is where the model learns when to send
   it. A `scripted` simulator may list any tokens.
 - **`stop_with_text`** — `deliver` hands the text before the token to the agent,
-  lets it answer, and ends the trial on the next user turn. `end` records that
-  text as the last user message and ends the trial at once, so the agent never
-  answers it — the reference τ³-bench harness (`sierra-research/tau2-bench`)
-  behaves this way. A bare token ends the trial at once under either value.
+  lets it answer, and ends the trial on the next user turn; a bare token ends the
+  trial at once. `end` records the reply as the simulator wrote it — the token,
+  the text around it, and a bare token alike — as the last user message and ends
+  the trial at once, so the agent never answers it; the reference τ³-bench
+  harness (`sierra-research/tau2-bench`) records a stop this way.
 - **A reply that also calls tools** still stops. The calls on a reply with text
   run and are recorded on that message before the stop applies; a bare token
   ends the trial without running them. The τ³-bench harness differs here: it

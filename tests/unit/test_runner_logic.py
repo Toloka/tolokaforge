@@ -1053,10 +1053,25 @@ class TestConfiguredStopRule:
         assert traj.termination_reason == TerminationReason.USER_STOP
         assert agent.generate.call_count == 1
         assert [m.role for m in traj.messages[-2:]] == [MessageRole.USER, MessageRole.SYSTEM]
-        assert traj.messages[-2].content == "That covers it."
+        assert traj.messages[-2].content == "That covers it. ###STOP###"
         assert traj.messages[-1].content == "User signaled stop (###STOP###). Dialogue ended."
         assert runner._pending_user_stop is None
         assert user_sim.reply.call_count == 1
+
+    def test_end_records_the_reply_as_written_around_the_token(self) -> None:
+        """τ³-bench records a stop reply verbatim: the whitespace before the token and
+        what follows it stay, since the reply is never delivered to the agent."""
+        reply = "Done, thanks.  \n\n###TRANSFER###\nP.S. one more thing"
+        runner = _make_runner(
+            agent_client=_agent_turns("Anything else?"),
+            user_simulator=_user_replies(GenerationResult(text=reply, tool_calls=[])),
+            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS, with_text="end"),
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert _texts(traj, MessageRole.USER)[-1] == reply
+        assert traj.messages[-1].content == "User signaled stop (###TRANSFER###). Dialogue ended."
 
     def test_end_still_runs_and_records_the_final_replys_tool_calls(self) -> None:
         call = ToolCall(id="uc1", name="user_lookup", arguments={"id": "42"})
@@ -1078,13 +1093,12 @@ class TestConfiguredStopRule:
         assert [r.call_id for r in traj.tool_log] == ["uc1"]
         assert traj.termination_reason == TerminationReason.USER_STOP
 
-    @pytest.mark.parametrize("with_text", ["deliver", "end"])
-    def test_a_bare_token_ends_at_once_under_either_rule(self, with_text: str) -> None:
+    def test_a_bare_token_ends_at_once_under_deliver(self) -> None:
         agent = _agent_turns("Anything else?")
         runner = _make_runner(
             agent_client=agent,
             user_simulator=_user_replies(GenerationResult(text="  ###STOP###", tool_calls=[])),
-            user_stop=UserStopRule(with_text=with_text),
+            user_stop=UserStopRule(with_text="deliver"),
         )
 
         traj = runner.run("System", "Hi")
@@ -1093,6 +1107,26 @@ class TestConfiguredStopRule:
         assert traj.messages[-1].role == MessageRole.SYSTEM
         assert traj.messages[-1].content == "User signaled stop (###STOP###). Dialogue ended."
         assert _texts(traj, MessageRole.USER) == ["Hi"]
+
+    def test_a_bare_token_under_end_is_recorded_and_its_calls_are_not_run(self) -> None:
+        call = ToolCall(id="uc1", name="user_lookup", arguments={"id": "42"})
+        agent = _agent_turns("Anything else?")
+        runner = _make_runner(
+            agent_client=agent,
+            user_simulator=_user_replies(GenerationResult(text="  ###STOP###", tool_calls=[call])),
+            user_tool_executor=_EchoingUserToolExecutor(),
+            user_stop=UserStopRule(with_text="end"),
+        )
+
+        traj = runner.run("System", "Hi")
+
+        assert agent.generate.call_count == 1
+        assert [m.role for m in traj.messages[-2:]] == [MessageRole.USER, MessageRole.SYSTEM]
+        assert traj.messages[-2].content == "  ###STOP###"
+        assert traj.messages[-2].tool_calls is None
+        assert traj.tool_log == []
+        assert traj.messages[-1].content == "User signaled stop (###STOP###). Dialogue ended."
+        assert traj.termination_reason == TerminationReason.USER_STOP
 
 
 @pytest.mark.unit
