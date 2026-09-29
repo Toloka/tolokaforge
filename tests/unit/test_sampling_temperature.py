@@ -8,16 +8,26 @@ null`` sends no temperature; the built-in simulator sends 0.2 whatever
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.unit.test_orchestrator_strict_task_load import _make_task, _RaisingStubAdapter
 from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.client import BuiltinUserSimulator, LLMClient
-from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.core.models import (
+    EvaluationConfig,
+    Message,
+    MessageRole,
+    ModelConfig,
+    OrchestratorConfig,
+    RunConfig,
+)
 from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
+from tolokaforge.core.orchestrator import Orchestrator
 
 pytestmark = pytest.mark.unit
 
@@ -141,3 +151,36 @@ class TestTheIgnoredUserKeyIsReported:
     def test_config_validate_is_quiet_without_the_key(self) -> None:
         issues = validate_run_config(self._RUN).issues
         assert not [i for i in issues if i.path == "models.user.temperature"]
+
+    @pytest.mark.parametrize("value", [0.0, None])
+    def test_a_run_logs_the_warning_once_its_tasks_load(
+        self, value: float | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        records = self._load_tasks({"temperature": value}, caplog)
+        warned = [r for r in records if r.getMessage() == USER_TEMPERATURE_IGNORED]
+        assert len(warned) == 1
+        assert warned[0].levelno == logging.WARNING
+
+    def test_a_run_without_the_key_logs_nothing_about_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        records = self._load_tasks({}, caplog)
+        assert not [r for r in records if r.getMessage() == USER_TEMPERATURE_IGNORED]
+
+    @staticmethod
+    def _load_tasks(user: dict[str, Any], caplog: pytest.LogCaptureFixture) -> list:
+        config = RunConfig(
+            models={
+                "agent": ModelConfig(provider="openai", name="gpt-4"),
+                "user": ModelConfig(provider="openai", name="gpt-4o-mini", **user),
+            },
+            orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+            evaluation=EvaluationConfig(output_dir="/tmp/user_temperature_warning"),
+        )
+        orchestrator = Orchestrator(config)
+        orchestrator.adapter = _RaisingStubAdapter(
+            {}, tasks={"TASK-A": _make_task("TASK-A")}, raises=set()
+        )
+        with caplog.at_level(logging.WARNING):
+            orchestrator.load_tasks()
+        return list(caplog.records)

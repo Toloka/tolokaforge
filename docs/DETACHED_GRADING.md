@@ -197,7 +197,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
 
 orchestrator:
   workers: 1

@@ -336,7 +336,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
@@ -1413,7 +1412,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
@@ -1461,7 +1459,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-haiku-4-5"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
@@ -1484,7 +1481,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"       # stronger judge for reliability
@@ -1559,7 +1555,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"
