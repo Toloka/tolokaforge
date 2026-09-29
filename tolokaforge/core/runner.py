@@ -1756,6 +1756,13 @@ class _AgentMetricsSink(MetricsSink):
         # calls did.
         if result.cost_cache_rate_fallback:
             self._metrics.cost_cache_rate_fallback = True
+        if result.reasoning_billed_not_captured:
+            self._metrics.reasoning_billed_not_captured += 1
+        # Sticky for the same reason the cache-rate flag is: once a codec
+        # declines to replay, it declines on every turn, so a count would only
+        # restate the turn count.
+        if result.reasoning_replay_dropped:
+            self._metrics.reasoning_replay_dropped = True
         self._last_prompt_tokens = result.usage.prompt_tokens
         self._events.trial_progress(
             trial_id=self._trial_id,

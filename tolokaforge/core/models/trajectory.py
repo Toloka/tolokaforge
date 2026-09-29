@@ -589,6 +589,30 @@ class Metrics(BaseModel):
     ``False`` on every litellm-priced call (provider-authoritative, already
     cache-aware) and on every model whose row carries its cache rates."""
 
+    reasoning_billed_not_captured: int = 0
+    """Calls the provider charged reasoning tokens for while the codec
+    surfaced no reasoning at all.
+
+    The model deliberated somewhere this preset's ``reasoning_codec`` does not
+    read. Often benign — OpenAI and Grok bill for an opaque
+    ``reasoning.encrypted`` blob there is no way to surface — and the shape of
+    a real defect when the payload was readable text. Which one it is takes a
+    live call to answer: ``scripts/analysis/probe_reasoning_transport.py``.
+
+    Independent of ``reasoning.mode``: the engine asks for reasoning only when
+    the mode says so, but a model may reason unasked, and one measured here
+    did so on every turn."""
+
+    reasoning_replay_dropped: bool = False
+    """At least one request in this trial carried an earlier turn's reasoning
+    that the codec would not replay, so the model could not see it.
+
+    Correct for a route that refuses echoed reasoning, which is why this marks
+    the trial rather than failing it. It is also exactly what
+    ``moonshotai/kimi-k2.7-code`` looked like while it was scoring 0.38 instead
+    of 0.69: reasoning on turn 1 and none afterwards, because the model read a
+    history in which it had never reasoned."""
+
     tool_calls: int = 0
     tool_success_rate: float = 0.0
     stuck_detected: bool = False

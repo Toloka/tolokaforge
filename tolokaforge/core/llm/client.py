@@ -541,6 +541,11 @@ def _litellm_response_cost(response: Any) -> float | None:
     return value if value > 0 else None
 
 
+#: ``provider/model`` pairs whose dropped-reasoning-replay warning has been
+#: emitted. Nothing reads it but the logger.
+_REPLAY_DROP_WARNED: set[str] = set()
+
+
 class GenerationResult:
     """Result from LLM generation.
 
@@ -563,8 +568,16 @@ class GenerationResult:
         effective_system_prompt: str | None = None,
         openrouter_generation_id: str | None = None,
         finish_reason: str | None = None,
+        reasoning_billed_not_captured: bool = False,
+        reasoning_replay_dropped: bool = False,
     ):
         self.text = text
+        # The provider charged for reasoning this turn and the codec surfaced
+        # none of it: the deliberation happened somewhere we do not read.
+        self.reasoning_billed_not_captured = reasoning_billed_not_captured
+        # The reasoning on an earlier turn of this request's history was
+        # extracted and then not replayed, so the model cannot see it.
+        self.reasoning_replay_dropped = reasoning_replay_dropped
         self.tool_calls = tool_calls or []
         # Full, normalised usage — default to the empty Usage() so callers
         # never have to None-check before reading prompt/completion counters.
@@ -679,6 +692,9 @@ class LLMClient:
         # Declared here rather than created on the first pin drop, so the flag stays
         # inside the client's attribute set. See the drop site in _call_with_retry.
         self._pin_drop_warned: bool = False
+        # Set by :meth:`_convert_messages` for the request it just built:
+        # this history carried reasoning the codec would not replay.
+        self._reasoning_replay_dropped: bool = False
         if self._proxy is not None:
             catalog = fetch_gateway_catalog(self._proxy)
             if catalog is None:
@@ -1316,6 +1332,31 @@ class LLMClient:
     # Message conversion
     # ------------------------------------------------------------------
 
+    def _warn_reasoning_replay_dropped(self) -> None:
+        """Say once per run that this model's reasoning is not reaching it back.
+
+        Keyed on the model rather than held on the client: a client is built
+        per trial per role, so an instance flag still repeats the sentence once
+        per trial across a whole eval. Same idiom as
+        :data:`~tolokaforge.core.llm.litellm_params._LOGGED`.
+
+        Not an error. A route that refuses echoed reasoning makes this the
+        correct behaviour, and only a live probe can tell the two apart —
+        ``scripts/analysis/probe_reasoning_transport.py``. The line exists so
+        the question gets asked at all.
+        """
+        key = f"{self.provider}/{self.model_name}"
+        if key in _REPLAY_DROP_WARNED:
+            return
+        _REPLAY_DROP_WARNED.add(key)
+        self.logger.warning(
+            "Reasoning extracted from this model is not being replayed to it: "
+            "its codec returns no replay payload, so each turn reads a history "
+            "in which it never reasoned",
+            model=self.model_name,
+            codec=type(self.capabilities.reasoning_codec).__name__,
+        )
+
     def _convert_messages(
         self,
         system: str | list[dict[str, Any]] | None,
@@ -1341,6 +1382,7 @@ class LLMClient:
         from USER role.
         """
         litellm_messages: list[dict[str, Any]] = []
+        dropped_replay = False
 
         if system:
             litellm_messages.append({"role": "system", "content": system})
@@ -1408,9 +1450,21 @@ class LLMClient:
                 replay_payload = self.capabilities.reasoning_codec.encode_for_replay(msg.reasoning)
                 if replay_payload:
                     litellm_msg.update(replay_payload)
+                else:
+                    # The codec read this turn's reasoning and hands back
+                    # nothing to send, so the model will read a history in
+                    # which it never reasoned. Correct for a route that
+                    # refuses echoed reasoning, and the shape of a silent
+                    # defect for one that would have accepted it — which the
+                    # caller cannot tell apart, so it is recorded rather than
+                    # judged here.
+                    dropped_replay = True
 
             litellm_messages.append(litellm_msg)
 
+        if dropped_replay:
+            self._warn_reasoning_replay_dropped()
+        self._reasoning_replay_dropped = dropped_replay
         return litellm_messages
 
     # ------------------------------------------------------------------
@@ -2398,6 +2452,8 @@ class LLMClient:
             # that returned no usage block contributes no call record, and the
             # routing decision is still worth recording for that turn.
             openrouter_generation_id=extract_openrouter_generation_id(response),
+            reasoning_billed_not_captured=(usage.reasoning_tokens > 0 and reasoning_result is None),
+            reasoning_replay_dropped=self._reasoning_replay_dropped,
             # litellm post-maps every current provider's max-tokens truncation
             # to the OpenAI-compatible ``"length"`` on this field; a response
             # that carries no finish_reason at all lands as ``None``.

@@ -185,3 +185,99 @@ class TestUpstreamProviderIsRecorded:
         from tolokaforge.core.llm.usage import extract_upstream_provider
 
         assert extract_upstream_provider(object()) is None
+
+
+class TestReasoningLossIsObservable:
+    """Reasoning that never reaches the model back leaves a mark on the trial.
+
+    ``moonshotai/kimi-k2.7-code`` reasoned on turn 1 and never again, because
+    its codec replayed nothing and the model copied the reasoning-free history
+    it was shown. Every artifact of those runs looked healthy. These two
+    observations are what makes that visible without a live probe.
+    """
+
+    def _client(self, codec):
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.llm.client import LLMClient
+        from tolokaforge.core.models import ModelConfig
+
+        client = LLMClient.__new__(LLMClient)
+        client.config = ModelConfig(provider="openrouter", name="openrouter/acme/widget")
+        client.provider = "openrouter"
+        client.model_name = "openrouter/acme/widget"
+        client.capabilities = MagicMock()
+        client.capabilities.reasoning_codec = codec
+        client.capabilities.cache_policy.apply_messages.side_effect = lambda m: m
+        client.logger = MagicMock()
+        client._reasoning_replay_dropped = False
+        return client
+
+    def test_a_codec_that_replays_nothing_marks_the_request(self) -> None:
+        from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
+        from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
+        from tolokaforge.core.models import Message, MessageRole
+
+        client = self._client(OpenAIReasoningCodec())
+        history = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                reasoning=StructuredReasoning(
+                    blocks=(ReasoningBlock(type="summary_text", text="I checked the logs."),)
+                ),
+            )
+        ]
+
+        client._convert_messages(None, history)
+
+        assert client._reasoning_replay_dropped is True
+
+    def test_a_codec_that_replays_leaves_no_mark(self) -> None:
+        from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCodec
+
+        from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
+        from tolokaforge.core.models import Message, MessageRole
+
+        client = self._client(OpenAISummaryReplayReasoningCodec())
+        history = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                reasoning=StructuredReasoning(
+                    blocks=(ReasoningBlock(type="summary_text", text="I checked the logs."),)
+                ),
+            )
+        ]
+
+        converted = client._convert_messages(None, history)
+
+        assert client._reasoning_replay_dropped is False
+        assert converted[0]["reasoning_details"][0]["text"] == "I checked the logs."
+
+    def test_a_turn_with_no_reasoning_at_all_is_not_a_drop(self) -> None:
+        """Most turns of most models; the flag must not fire on them."""
+        from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
+        from tolokaforge.core.models import Message, MessageRole
+
+        client = self._client(OpenAIReasoningCodec())
+
+        client._convert_messages(None, [Message(role=MessageRole.ASSISTANT, content="done")])
+
+        assert client._reasoning_replay_dropped is False
+
+    def test_billed_reasoning_the_codec_did_not_surface_is_recorded(self) -> None:
+        """The predicate, stated directly: charged for thinking, captured none."""
+        from tolokaforge.core.llm.client import GenerationResult
+        from tolokaforge.core.llm.usage import Usage
+
+        billed = GenerationResult(
+            text=" ",
+            usage=Usage(reasoning_tokens=42),
+            reasoning=None,
+            reasoning_billed_not_captured=True,
+        )
+        clean = GenerationResult(text="ok", usage=Usage(reasoning_tokens=0))
+
+        assert billed.reasoning_billed_not_captured is True
+        assert clean.reasoning_billed_not_captured is False

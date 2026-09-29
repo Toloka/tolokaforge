@@ -429,13 +429,23 @@ presets:
     reasoning_codec: openai_summary_replay
 
   xai_grok:
+    # The ``*/`` variants carry the ``openrouter/x-ai/…`` spelling a run config
+    # writes. Without them the vendor-anchored globs match only the bare name
+    # and the prefixed one falls through to ``default`` — passthrough schema,
+    # no response policy, no reasoning codec — with nothing raised.
     match:
       - "x-ai/*"
       - "xai/*"
+      - "*/x-ai/*"
+      - "*/xai/*"
       - "grok*"
     schema_sanitizer: strict
     response_policy: array_dict_map
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30,
+    # grok-4.3 returns readable reasoning that was extracted and never
+    # replayed. Siblings that emit only a ``reasoning.encrypted`` blob
+    # (grok-4.5) are unaffected — there is nothing readable to carry.
+    reasoning_codec: openai_summary_replay
 
   # qwen/qwen3.8-max — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #845). Declared BEFORE the generic
@@ -477,11 +487,15 @@ presets:
     # ``json_coerce`` recovers the stringified-JSON failure mode.
     match:
       - "qwen/*"
+      - "*/qwen/*"
       - "qwen3*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30,
+    # qwen3.6-plus on Alibaba returns readable reasoning the parent codec
+    # extracts and then declines to replay.
+    reasoning_codec: openai_summary_replay
 
   # deepseek/deepseek-v4-flash-0731 — model-specific overlay landed via
   # auto-resolve (Slack-requested integration, PR #846). Declared BEFORE the
@@ -634,7 +648,15 @@ presets:
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: these routes answer in
+    # the reasoning channel and the parent codec's ``encode_for_replay``
+    # returns ``{}``, so the note never rides the next request and the model
+    # reads a history in which it never reasoned. Probed 2026-09-30
+    # (``scripts/analysis/probe_reasoning_transport.py``): deepseek-v4-pro,
+    # mimo-v2.5-pro, nemotron-3-super and nemotron-3-ultra each returned
+    # readable reasoning in ``reasoning_content`` / ``reasoning_details``,
+    # extracted fine, replayed nothing.
+    reasoning_codec: openai_summary_replay
 
   # moonshotai/kimi-k2 (K2.6, K2.7-code, …) — the wire-shape recovery the
   # ``openrouter_dict_stringify_recovery`` preset gives the rest of its
@@ -799,6 +821,12 @@ presets:
   # ~6 % headroom — enough for a normal-sized reasoning turn plus its
   # tool-call reply. See ``docs/LLM_LAYER.md § Context-window handoff``.
   moonshot_kimi_k3:
+    # ``reasoning_codec`` was unset (→ ``NoReasoningCodec``) while the route
+    # returns readable reasoning on every turn: probed 2026-09-30 on
+    # InferenceNet, ``reasoning_content`` / ``reasoning_details`` populated and
+    # nothing extracted. Same loss its K2 sibling was measured losing half a
+    # Terminal-Bench score to, one step earlier in the path.
+    reasoning_codec: openai_summary_replay
     match:
       - "moonshotai/kimi-k3*"
       - "*kimi-k3*"
@@ -845,9 +873,12 @@ presets:
     match:
       - "thinkingmachines/inkling"
       - "thinkingmachines/inkling*"
+      - "*thinkingmachines/inkling*"
     schema_sanitizer: passthrough
     prompt_policy: dict_map_hints_ref
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30 on
+    # Together, readable reasoning extracted and never replayed.
+    reasoning_codec: openai_summary_replay
 
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
@@ -1040,7 +1071,11 @@ presets:
     match:
       - "openai/gpt-oss*"
       - "*gpt-oss*"
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: the name is OpenAI's
+    # but the route is not — probed 2026-09-30 on AkashML, readable reasoning
+    # extracted and never replayed. The parent codec's empty replay is a
+    # statement about OpenAI's own endpoints, not about this lineage.
+    reasoning_codec: openai_summary_replay
 
   # Gemma 4 (Google open-weights via OpenRouter) — NOT the Gemini API line
   # (no reasoning_details envelope), so it borrows the Gemini *schema*

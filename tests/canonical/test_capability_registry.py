@@ -193,3 +193,63 @@ class TestCapabilityCoverage:
                 "neither required nor known_unsupported. Every certificate "
                 "must take a position on every core capability."
             )
+
+
+#: The three contracts that together say "this model's reasoning survives a
+#: turn". A certificate declaring all three unsupported is claiming the model
+#: either does not reason or reasons in a way we cannot keep.
+_REASONING_CAPABILITIES = frozenset(
+    {
+        Capability.THINKING_EMITS_BLOCKS,
+        Capability.THINKING_REPLAY_ROUNDTRIP,
+        Capability.UNSIGNED_THINKING_REPLAY,
+    }
+)
+
+
+class TestReasoningClaimsAreJustified:
+    """A ``known_unsupported`` reasoning claim is a hypothesis, not a fact.
+
+    ``moonshotai/kimi-k2.7-code`` carried all three of these as
+    ``known_unsupported``, copied from a sibling certificate with the comment
+    "NOT yet live-certified". The model was in fact reasoning on every turn and
+    the engine was discarding it, which cost roughly half its score on
+    Terminal-Bench and went unnoticed for weeks. Nothing in the canon objected,
+    because all three capabilities are non-core and other certificates supplied
+    the required side.
+
+    This is the cheap half of the guard — it runs on every pull request, where
+    the live capability suite does not. It cannot tell whether a claim is
+    *true*; it only refuses one made in silence. ``scripts/analysis/
+    probe_reasoning_transport.py`` answers the truth question for about a cent.
+    """
+
+    def _resolved_codec_name(self, cert) -> str:
+        from tolokaforge.core.llm import build_capabilities
+
+        return type(build_capabilities(cert.name, cert.provider).reasoning_codec).__name__
+
+    def test_a_silent_no_reasoning_claim_is_refused_when_the_preset_disagrees(self) -> None:
+        unjustified: list[str] = []
+        for cert in ALL_MODELS:
+            if not set(cert.known_unsupported) >= _REASONING_CAPABILITIES:
+                continue
+            if self._resolved_codec_name(cert) == "NoReasoningCodec":
+                # Preset and certificate agree the model does not reason.
+                continue
+            reasons = cert.known_unsupported_reasons or {}
+            if any(capability in reasons for capability in _REASONING_CAPABILITIES):
+                continue
+            unjustified.append(cert.model_id)
+
+        assert not unjustified, (
+            "These certificates claim the model has no usable reasoning while their "
+            "resolved preset installs a reasoning codec to extract it, and give no "
+            f"reason: {sorted(unjustified)}.\n\n"
+            "That contradiction is how kimi-k2.7-code lost half its score. Resolve it "
+            "one of three ways: run scripts/analysis/probe_reasoning_transport.py and "
+            "move the capability to `required` if it holds; add a "
+            "`known_unsupported_reasons` entry saying what was measured and when; or "
+            "route the preset to `reasoning_codec: none` if the model really does not "
+            "reason. Do not add an exemption here."
+        )

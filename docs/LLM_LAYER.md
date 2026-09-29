@@ -1206,6 +1206,46 @@ shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 
+### Reasoning that never reaches the model back
+
+A `ReasoningCodec` has two halves and they fail differently. `extract` reads the
+provider's reasoning off the response; `encode_for_replay` says what to send back
+on the next request. A codec that extracts and replays nothing leaves the model
+reading a history in which it never reasoned — and models copy that. Measured on
+`moonshotai/kimi-k2.7-code`: 39–57 reasoning tokens on turn 1 and **0 on turns 2
+through 20**, across 11 trials on two upstreams, with score 0.380 against 0.688
+once the reasoning was replayed.
+
+An empty replay is *correct* for OpenAI, which does not accept echoed reasoning.
+It is a silent defect for a route that would have honoured it, and from inside
+the engine the two are indistinguishable. Three things make the difference
+visible:
+
+* **Runtime.** `Metrics.reasoning_billed_not_captured` counts calls the provider
+  charged reasoning tokens for while the codec surfaced none;
+  `Metrics.reasoning_replay_dropped` marks a trial in which reasoning was
+  extracted and then not sent back. Both land in `metrics.yaml`. The second also
+  warns once per run per model — a client is built per trial per role, so the
+  guard is keyed module-side rather than held on the client.
+* **Pull-request time.**
+  [`tests/canonical/test_reasoning_codec_preset_routing.py`](../tests/canonical/test_reasoning_codec_preset_routing.py)
+  holds the allow-list of presets permitted to replay nothing, each with its
+  reason;
+  [`tests/canonical/test_capability_registry.py`](../tests/canonical/test_capability_registry.py)
+  refuses a certificate that declares all three reasoning capabilities
+  `known_unsupported` while its preset installs a codec to extract them, unless
+  it says why.
+* **On demand.**
+  [`scripts/analysis/probe_reasoning_transport.py`](../scripts/analysis/probe_reasoning_transport.py)
+  answers, for about a cent per model, where the reasoning arrives, whether the
+  codec keeps it, and whether the upstream answers differently when it is echoed
+  back. That last question matters: one route accepts the field and ignores it.
+
+`OpenAISummaryReplayReasoningCodec` (`reasoning_codec: openai_summary_replay`) is
+the OpenAI extract plus a replay that rebuilds the `reasoning.text` envelope —
+the shape OpenRouter routes emit, and what a non-OpenAI route carrying readable
+reasoning should use.
+
 ### Preset-level `openrouter_defaults`
 
 `ModelCapabilities.openrouter_defaults: OpenRouterConfig | None` is the
