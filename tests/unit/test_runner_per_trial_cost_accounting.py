@@ -478,6 +478,27 @@ class TestCostByRoleRollup:
         assert len(runner.metrics.cost_by_role_model) == 1
         assert runner.metrics.cost_by_role_model[0].model == "harness-model"
 
+    def test_residual_survives_agent_client_without_model_name(self) -> None:
+        """An agent client whose contract omits ``model_name`` (post ADR-0051 the
+        agent is a Protocol; some test doubles never expose one) still reconciles
+        — the residual lands on the ``agent`` role with model ``None`` rather than
+        raising ``AttributeError``.
+        """
+        runner = _make_runner(_make_user_simulator_keep_going())
+        del runner.agent_client.model_name  # an Actor with no model_name attribute
+        runner.metrics.usage = Usage(prompt_tokens=500, completion_tokens=100, calls=())
+        runner.metrics.cost_usd = 0.30
+
+        runner._apply_cost_rollup()
+
+        assert len(runner.metrics.cost_by_role) == 1
+        agent_row = runner.metrics.cost_by_role[0]
+        assert agent_row.role == "agent"
+        assert agent_row.cost_usd == pytest.approx(0.30)
+        assert sum(row.cost_usd for row in runner.metrics.cost_by_role) == pytest.approx(0.30)
+        assert len(runner.metrics.cost_by_role_model) == 1
+        assert runner.metrics.cost_by_role_model[0].model is None
+
     def test_none_cost_leaves_rollup_call_derived(self) -> None:
         """A ``None`` ``cost_usd`` emits no reconciled residual row."""
         runner = _make_runner(_make_user_simulator_keep_going())

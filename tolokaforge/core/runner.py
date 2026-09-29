@@ -1387,7 +1387,16 @@ class TrialRunner:
         cost_usd = self.metrics.cost_usd
         residual = None if cost_usd is None else cost_usd - calls_cost
         if residual is not None and abs(residual) > _COST_ROLLUP_RESIDUAL_TOLERANCE_USD:
-            key = ("agent", self.agent_client.model_name)
+            # The residual is agent spend the per-call records did not carry (a
+            # coding-harness trial prices CLI-reported tokens with no per-call
+            # records). Name it at the agent model where the client exposes one;
+            # an Actor whose contract omits ``model_name`` (post ADR-0051 the
+            # agent is a Protocol) attributes the residual to the agent role with
+            # an unknown model rather than raising.
+            agent_model = getattr(self.agent_client, "model_name", None)
+            if not isinstance(agent_model, str):
+                agent_model = None
+            key = ("agent", agent_model)
             _ensure(key)
             cost_by_pair[key] += residual
             for field in token_fields:
