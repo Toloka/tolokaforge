@@ -2117,6 +2117,36 @@ the loop-layer behaviour and the helper contract are pinned by
 and
 [`tests/unit/test_tool_output_truncation.py`](../tests/unit/test_tool_output_truncation.py).
 
+### Preset-level reply contract
+
+`ModelCapabilities.default_agent_prompt_contract: str | None` names the reply
+contract a model gets when it works a task on its own. It is preset data of the
+same shape as `default_max_turns`: a value the run can still override, resolved
+to text by
+[`resolve_agent_prompt_contract`](../tolokaforge/core/agent_prompt_contract.py)
+and composed ahead of the task's own document by `build_system_prompt`.
+
+Not every model needs one. Some narrate their reasoning unprompted and some stop
+when nothing rewards it, and on a benchmark whose grader reads the container
+rather than the transcript, nothing does. The measured spread is wide — one
+model wrote text on 5 of 2,239 assistant turns here against 100% under a harness
+whose prompt asks for it, scoring 0.321 against 0.826 on the same tasks. The knob
+is per-preset because the behaviour is per-model. See
+[ADR-0052](adr/0052-agent-reply-contract.md).
+
+Precedence, lowest to highest:
+
+1. `ModelCapabilities.default_agent_prompt_contract` — this model's preset.
+   Applies **only** when `TaskConfig.interaction_mode` is `agent_only`: the
+   shipped text tells an agent that a message carrying no tool call ends the
+   task, which is what `AgentOnlyTurnPolicy` does and what a conversational turn
+   policy does not.
+2. `TaskConfig.agent_prompt_contract` — this task names one, in either mode.
+3. `task.policies["agent_system_prompt"]` — an inline prompt, reproduced byte
+   for byte; no contract is composed onto it.
+
+`None` (the default) leaves a solo task on the prompt-authoring chain alone.
+
 ### Per-model turn-budget default
 
 `ModelCapabilities.default_max_turns: int | None` is the preset-level value

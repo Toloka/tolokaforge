@@ -203,6 +203,20 @@ class ModelCapabilities:
     preset that does not name the key inherits it.
     """
 
+    default_agent_prompt_contract: str | None = None
+    """Preset-level reply contract for a task the agent works on its own.
+
+    Names a shipped contract in
+    :data:`~tolokaforge.core.agent_prompt_contract.CONTRACTS`, or a path
+    resolved against the task directory. It reaches the prompt only when
+    ``TaskConfig.interaction_mode`` is ``agent_only``: the contract says a
+    message carrying no tool call ends the task, which holds under that mode
+    and nowhere else. It is the lowest-priority source —
+    ``TaskConfig.agent_prompt_contract`` names a contract over it, and an
+    inline ``policies["agent_system_prompt"]`` replaces the prompt entirely.
+    ``None`` (the default) leaves a solo task on the authoring chain alone.
+    """
+
     max_context_tokens: int | None = None
     """Preset-declared provider max input tokens.
 

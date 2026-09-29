@@ -2991,3 +2991,61 @@ class TestTerminalBenchAgentPromptContract:
 
         with pytest.raises(UnknownAgentPromptContractError):
             build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)
+
+
+class TestTerminalBenchInteractionMode:
+    """``adapter_params.interaction_mode`` picks the turn-loop shape.
+
+    Default ``conversational``: a Terminal-Bench trial has always built a user
+    simulator, and the mode a run grades under must move because a config says
+    so, not because an adapter changed underneath it.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    TASK_ID = "echo-hello"
+
+    def test_the_default_is_conversational(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+
+        assert adapter.get_task(self.TASK_ID).interaction_mode == "conversational"
+
+    def test_a_run_may_ask_for_the_solo_shape(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path, interaction_mode="agent_only")
+
+        assert adapter.get_task(self.TASK_ID).interaction_mode == "agent_only"
+
+    def test_the_solo_shape_carries_the_opener_it_requires(self, fixture_dir, tmp_path):
+        """``AgentOnlyTurnPolicy`` has no simulator to synthesise turn 0 from."""
+        adapter = self._adapter(fixture_dir, tmp_path, interaction_mode="agent_only")
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.initial_user_message, "a solo task without an opener fails at run start"
+
+    def test_an_unknown_mode_is_refused(self, fixture_dir, tmp_path):
+        with pytest.raises(ValueError, match=r"interaction_mode"):
+            self._adapter(fixture_dir, tmp_path, interaction_mode="monologue")
+
+    def test_the_solo_shape_is_refused_under_a_cli_harness(self, fixture_dir, tmp_path):
+        """A CLI drives its own trial; there is no engine turn loop to reshape."""
+        with pytest.raises(ValueError, match=r"interaction_mode 'agent_only' requires"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                interaction_mode="agent_only",
+                agent_harness="claude-code",
+                agent_model="m",
+            )

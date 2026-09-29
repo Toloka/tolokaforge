@@ -6,11 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.adapters._task_loader import load_task
 from tolokaforge.core.agent_prompt_contract import (
     CONTRACTS,
     UnknownAgentPromptContractError,
     resolve_agent_prompt_contract,
 )
+from tolokaforge.core.llm import build_capabilities, presets
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.core.system_prompt import build_system_prompt
 
@@ -65,7 +67,9 @@ class TestWhereAContractSitsInThePriorityChain:
 
     def test_a_preset_default_supplies_one_the_task_did_not(self, tmp_path: Path) -> None:
         from_default = build_system_prompt(
-            task=_task(), task_dir=tmp_path, default_prompt_contract="reasoning_agent"
+            task=_task(interaction_mode="agent_only"),
+            task_dir=tmp_path,
+            default_prompt_contract="reasoning_agent",
         )
         from_task = build_system_prompt(
             task=_task(agent_prompt_contract="reasoning_agent"), task_dir=tmp_path
@@ -73,11 +77,34 @@ class TestWhereAContractSitsInThePriorityChain:
 
         assert from_default == from_task
 
+    def test_the_preset_default_stays_out_of_a_conversation(self, tmp_path: Path) -> None:
+        """The contract says a tool-call-free message ends the task.
+
+        That is the solo turn policy's rule. In a conversation the same message
+        hands the floor to the user, so a blanket default must not reach one.
+        """
+        built = build_system_prompt(
+            task=_task(interaction_mode="conversational"),
+            task_dir=tmp_path,
+            default_prompt_contract="reasoning_agent",
+        )
+
+        assert built == "You are a helpful assistant."
+
+    def test_a_task_may_still_name_one_in_a_conversation(self, tmp_path: Path) -> None:
+        """Naming it is an author's decision about one task; the default is a blanket."""
+        built = build_system_prompt(
+            task=_task(interaction_mode="conversational", agent_prompt_contract="reasoning_agent"),
+            task_dir=tmp_path,
+        )
+
+        assert built.startswith(CONTRACTS["reasoning_agent"])
+
     def test_the_task_wins_over_the_preset_default(self, tmp_path: Path) -> None:
         (tmp_path / "mine.md").write_text("MINE")
 
         built = build_system_prompt(
-            task=_task(agent_prompt_contract="mine.md"),
+            task=_task(agent_prompt_contract="mine.md", interaction_mode="agent_only"),
             task_dir=tmp_path,
             default_prompt_contract="reasoning_agent",
         )
@@ -89,6 +116,7 @@ class TestWhereAContractSitsInThePriorityChain:
         built = build_system_prompt(
             task=_task(
                 agent_prompt_contract="reasoning_agent",
+                interaction_mode="agent_only",
                 policies={"agent_system_prompt": "VERBATIM"},
             ),
             task_dir=tmp_path,
@@ -154,3 +182,52 @@ class TestWhatTheShippedContractMustSay:
     def test_it_stays_short_enough_not_to_spend_the_cost_advantage(self) -> None:
         """Re-sent every turn, so length is a per-turn tax on every trial."""
         assert len(CONTRACTS["reasoning_agent"]) < 2_000
+
+
+class TestThePresetKnob:
+    """``default_agent_prompt_contract`` is preset data, read like any other knob."""
+
+    def test_a_preset_block_declaring_one_reaches_capabilities(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            presets,
+            "_match_preset",
+            lambda *_args, **_kwargs: {"default_agent_prompt_contract": "reasoning_agent"},
+        )
+
+        caps = build_capabilities("acme/widget-1", "openrouter")
+
+        assert caps.default_agent_prompt_contract == "reasoning_agent"
+
+    def test_a_preset_that_names_none_leaves_the_slot_empty(self) -> None:
+        caps = build_capabilities("openai/gpt-5.6-sol", "openrouter")
+
+        assert caps.default_agent_prompt_contract is None
+
+
+class TestLoadingAPack:
+    """A typo is refused at load, not at the first trial's prompt build."""
+
+    def _write(self, tmp_path: Path, selector: str) -> Path:
+        path = tmp_path / "task.yaml"
+        path.write_text("task_id: t\ndescription: d\nagent_prompt_contract: " + selector + "\n")
+        return path
+
+    def test_an_unknown_name_is_refused_before_anything_is_provisioned(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(UnknownAgentPromptContractError):
+            load_task(self._write(tmp_path, "no_such_contract"))
+
+    def test_a_shipped_name_loads(self, tmp_path: Path) -> None:
+        task = load_task(self._write(tmp_path, "reasoning_agent"))
+
+        assert task.agent_prompt_contract == "reasoning_agent"
+
+    def test_a_file_beside_the_task_loads(self, tmp_path: Path) -> None:
+        (tmp_path / "house_style.md").write_text("Answer in limericks.")
+
+        task = load_task(self._write(tmp_path, "house_style.md"))
+
+        assert task.agent_prompt_contract == "house_style.md"
