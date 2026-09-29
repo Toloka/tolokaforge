@@ -3,6 +3,9 @@
   "mode": "llm",
   "persona": "curious engineer",
   "prompt_template": null,
+  "sampling": {
+    "temperature": 0.2
+  },
   "scripted_flow": null,
   "stop_tokens": [
     "###STOP###"

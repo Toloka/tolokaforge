@@ -107,6 +107,7 @@ from tolokaforge.core.models.task_config import (
     TaskMetadata,
     TimeoutDefaults,
     ToolsConfig,
+    UserSamplingConfig,
     UserSimulatorConfig,
 )
 from tolokaforge.core.models.trajectory import (
@@ -286,6 +287,7 @@ __all__ = [
     "TaskMetadata",
     "TimeoutDefaults",
     "ToolsConfig",
+    "UserSamplingConfig",
     "UserSimulatorConfig",
     # Cross-package re-exports (runner.models canonical wire types)
     "REQUESTOR_TO_EXECUTOR",

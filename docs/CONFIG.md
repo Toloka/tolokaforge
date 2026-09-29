@@ -31,7 +31,8 @@ models:
   user:
     provider: "openai"
     name: "gpt-4o-mini"
-    temperature: 0.3
+    # The simulator samples at the task's actors.user.sampling (default
+    # temperature 0.2); it does not read models.user.temperature.
   # Optional: read-only rubric judge model. Required only when a selected task
   # grades with `llm_judge` — the run aborts up front if a rubric task is
   # selected but `judge` is absent (no default, no fallback to the agent model).
@@ -85,6 +86,7 @@ Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `evaluation.grading_validation.fail_on` (default `advisory`) names the least severe finding class the pre-run gate refuses the run over. `advisory` fails on both classes; `error` fails on errors alone. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). `unchecked` is not a value here: it is a channel rather than a severity, and is logged rather than enforced so a gate that could check nothing does not read as a clean bill of health.
 - **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
+- `models.<role>.temperature` (default `0.0`) is sent as the request's `temperature`; `null` sends none, so the provider's default applies. A preset's `fixed_temperature` overrides either. `ModelConfig` also crosses the grader RPC and the distributed-worker queue, so a run that writes `null` needs workers and a grader image of this engine version or newer; an older one refuses the payload. The user simulator does not read `models.user.temperature`: it samples at its actor's `sampling.temperature`, `0.2` unless the task sets it (see [TASKS.md § Simulator sampling](TASKS.md#simulator-sampling)).
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated plan-shape coercion knob. Backend selection is composer-driven — the orchestrator always constructs `SharedStackRuntimeBackend` and the composer sequences the resolved plan's per-scope substrate. `shared` coerces every task's plan to run-scope, `per_trial` to trial-scope; multi-stack packs are refused under either coercion (declare stack-scope explicitly instead). Any other name registered in the `tolokaforge.runtime_backends` entry-point group (only `in_memory` in-tree today) is a legit backend swap, resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
@@ -538,6 +540,7 @@ actors:
     stop_tokens: ["###STOP###"]  # tokens that end the dialogue (see docs/TASKS.md)
     stop_with_text: "deliver"    # "deliver" or "end"
     prompt_template: null        # authored simulator prompt with {backstory}; relative to the task root
+    # sampling: {temperature: 0.2}  # llm mode only; null sends no temperature
 
 policies:
   guidance:

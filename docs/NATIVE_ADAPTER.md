@@ -365,7 +365,6 @@ models:
   user:
     provider: openrouter
     name: anthropic/claude-3.5-sonnet
-    temperature: 0.7
 
 evaluation:
   tasks_glob: "tasks/tool_use/shop_orders_02/task.yaml"
