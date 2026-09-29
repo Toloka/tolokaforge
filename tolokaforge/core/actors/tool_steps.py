@@ -16,10 +16,11 @@ the engine, so any of them can load it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
-__all__ = ["TurnShape", "user_tool_step_positions"]
+__all__ = ["TurnShape", "turn_shape_of", "user_tool_step_positions", "user_tool_step_positions_of"]
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,27 @@ def user_tool_step_positions(shapes: Sequence[TurnShape]) -> frozenset[int]:
             positions.add(index)
             positions.update(answering)
     return frozenset(positions)
+
+
+def turn_shape_of(message: Mapping[str, Any]) -> TurnShape:
+    """The :class:`TurnShape` of one message as a bundle stores it.
+
+    Reads ``role`` (any case), the ``id`` of each mapping in ``tool_calls`` and
+    ``tool_call_id``; every reader of a stored transcript — the judge, the trace
+    projection — extracts the shape through this one function, so none of them
+    can drift from the rule the engine applies to live messages.
+    """
+    calls = message.get("tool_calls") or []
+    return TurnShape(
+        role=str(message.get("role") or "").lower(),
+        call_ids=tuple(str(call.get("id")) for call in calls if isinstance(call, Mapping)),
+        answers=message.get("tool_call_id"),
+    )
+
+
+def user_tool_step_positions_of(messages: Sequence[Mapping[str, Any]]) -> frozenset[int]:
+    """:func:`user_tool_step_positions` over messages as a bundle stores them."""
+    return user_tool_step_positions([turn_shape_of(message) for message in messages])
 
 
 def _tool_run_after(shapes: Sequence[TurnShape], index: int) -> range:

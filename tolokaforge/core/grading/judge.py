@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from tolokaforge.core.actors.tool_steps import TurnShape, user_tool_step_positions
+from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.core.grading.judge_model_provider import JudgeModel
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.judge_tools import (
@@ -301,7 +301,7 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
     text, so without its own line its calls would read as the agent's. A
     transcript without steps renders exactly as it always has.
     """
-    steps = user_tool_step_positions([_turn_shape(msg) for msg in transcript])
+    steps = user_tool_step_positions_of(transcript)
     lines: list[str] = []
     for index, msg in enumerate(transcript):
         role = str(msg.get("role", "?")).upper()
@@ -327,16 +327,6 @@ def format_transcript(transcript: list[dict[str, Any]]) -> str:
         if msg.get("tool_call_id") and not content:
             lines.append(f"{role}: (tool result)")
     return "\n".join(lines) if lines else "(empty transcript)"
-
-
-def _turn_shape(msg: dict[str, Any]) -> TurnShape:
-    return TurnShape(
-        role=str(msg.get("role", "")).lower(),
-        call_ids=tuple(
-            str(tc.get("id")) for tc in msg.get("tool_calls") or [] if isinstance(tc, dict)
-        ),
-        answers=msg.get("tool_call_id"),
-    )
 
 
 def _user_tool_step_line(role: str, content: str) -> str:

@@ -283,10 +283,10 @@ actors:
   agent, and the simulator is asked again with the results in view, until it replies
   with text alone. That text is the turn the agent reads. The simulator sees its own
   steps and none of the agent's tool traffic: an agent message that calls tools is
-  left out of the simulator's view whole, text included. This is how the τ³-bench
-  harness runs its users.
-  - A stop token inside a tool step is not a stop, as in τ³-bench: a step is addressed
-    to the environment.
+  left out of the simulator's view whole, text included: a message that calls tools
+  is addressed to the environment, not to the other party.
+  - A stop token inside a tool step is not a stop: a step is addressed to the
+    environment, and only a reply the agent would read can end the dialogue.
   - A step beyond `max_tool_steps` ends the dialogue with `user_tool_loop_limit`, and
     none of that step's calls run; the system message and the trial log name them. The
     reason is graded, like `max_turns`.
@@ -299,9 +299,9 @@ actors:
     `user_tool_loop_limit`: the agent has not spoken yet, so there is nothing of its
     to grade.
   - A user tool that raises ends the trial as an error, after every call of the step
-    is answered with an `Error: …` result. τ³-bench turns an exception into an error
-    result and goes on, so a user-side environment that wants that returns the error
-    as the tool's result instead of raising.
+    is answered with an `Error: …` result. A user-side environment that wants the
+    dialogue to go on after a failure returns the error as the tool's result instead
+    of raising.
   - A run with `orchestrator.rate_limit_probe` enabled refuses `isolated` tasks: the
     probe budgets one simulator reply per turn.
 

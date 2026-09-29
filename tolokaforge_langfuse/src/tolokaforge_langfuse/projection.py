@@ -37,7 +37,7 @@ from typing import Any
 
 import yaml
 
-from tolokaforge.core.actors.tool_steps import TurnShape, user_tool_step_positions
+from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.observability import ids
 from tolokaforge.observability.observer import TrialIdentity
 from tolokaforge_langfuse.attachments import ATTACHMENTS_SCHEMA
@@ -718,7 +718,7 @@ def _agent_observations(
     emitted_calls: set[str] = set()
     out: list[tuple[str, dict[str, Any]]] = []
     context: list[dict[str, Any]] = []
-    steps = _user_tool_step_positions(messages)
+    steps = user_tool_step_positions_of(messages)
     for index, message in enumerate(messages):
         role = message.get("role")
         started = _normalize_ts(message.get("ts")) or start
@@ -1159,7 +1159,7 @@ def _trace_body(
 ) -> dict[str, Any]:
     # The trace's input is the dialogue's first user turn: a tool step the
     # simulator took before its opening (``tool_turns: isolated``) is not one.
-    steps = _user_tool_step_positions(messages)
+    steps = user_tool_step_positions_of(messages)
     opening = next(
         (
             m.get("content")
@@ -1321,21 +1321,3 @@ def build_projection(
     )
     events = _projection_events(trace_body, typed, environment=ctx.environment, stats=stats)
     return Projection(trace_id=trace_id, events=events, trace_body=trace_body, stats=stats)
-
-
-def _user_tool_step_positions(messages: Sequence[Mapping[str, Any]]) -> frozenset[int]:
-    """Positions of the user's tool steps and their results (``tool_turns: isolated``)."""
-    return user_tool_step_positions(
-        [
-            TurnShape(
-                role=str(message.get("role") or ""),
-                call_ids=tuple(
-                    str(call.get("id"))
-                    for call in message.get("tool_calls") or []
-                    if isinstance(call, Mapping)
-                ),
-                answers=message.get("tool_call_id"),
-            )
-            for message in messages
-        ]
-    )
