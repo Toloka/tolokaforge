@@ -92,7 +92,10 @@ def coerce_empty_containers(
     return out
 
 
-def coerce_json_strings(arguments: dict[str, Any]) -> dict[str, Any]:
+def coerce_json_strings(
+    arguments: dict[str, Any],
+    param_types: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Decode stringified JSON arrays / objects back to native values.
 
     Public API. Stable within the v0.17.x minor series; removal or signature
@@ -104,12 +107,20 @@ def coerce_json_strings(arguments: dict[str, Any]) -> dict[str, Any]:
     invalid JSON, and non-string values are passed through unchanged. We
     deliberately do *not* promote scalar JSON literals (``"42"`` → 42)
     because string IDs are common and would silently corrupt.
+
+    A parameter *param_types* declares as ``string`` is never decoded: the
+    tool asked for the JSON text itself (τ³-bench's
+    ``call_discoverable_agent_tool(arguments: str)`` parses it on its own), so
+    handing it the decoded object breaks every such call. Without
+    *param_types*, or for a parameter it does not name, the heuristic applies.
     """
     if not isinstance(arguments, dict):
         return arguments
     out = dict(arguments)
     for key, value in arguments.items():
         if not isinstance(value, str):
+            continue
+        if param_types is not None and param_types.get(key) == "string":
             continue
         stripped = value.lstrip()
         if not stripped or stripped[0] not in "[{":
@@ -235,7 +246,7 @@ class JsonCoerceResponse:
         # Schema-aware empty-container coercion runs BEFORE JSON-string
         # decoding so empty strings never reach ``json.loads``.
         coerced = coerce_empty_containers(arguments, param_types)
-        return coerce_json_strings(coerced)
+        return coerce_json_strings(coerced, param_types)
 
 
 class ArrayDictMapResponse:
@@ -270,7 +281,7 @@ class ArrayDictMapResponse:
         # Same recovery order as JsonCoerceResponse: empty-container coercion
         # → JSON-string decode → array → dict pivot.
         coerced = coerce_empty_containers(arguments, param_types)
-        result = dict(coerce_json_strings(coerced))
+        result = dict(coerce_json_strings(coerced, param_types))
         for param_name, value in list(result.items()):
             if isinstance(value, list):
                 if not value:
