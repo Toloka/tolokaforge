@@ -27,6 +27,10 @@ behaviour was first observed in:
   call tools natively, so the envelope buys nothing and costs a failure mode.
   The contract asks for reasoning in the message body *beside* a real tool
   call.
+* **It says what the note is not.** A task may forbid a separate planning
+  step, and the sentence that does so does not obviously exempt a one-line
+  note riding the message that carries the next command. The distinction is
+  drawn here rather than left to the reader.
 * **It asks three questions, not for "reasoning".** Reconciling the last output
   against expectation, stating what remains, and predicting what the next
   command will produce keep the note from decaying into a restatement of
@@ -78,7 +82,7 @@ __all__ = [
 #: Bumped when the text of any shipped contract changes. A canonical test pins
 #: the rendered bytes against this counter so an edit is deliberate and shows
 #: up in review as a number, not only as prose.
-GENERATION = 1
+GENERATION = 2
 
 
 _REASONING_AGENT = """You are an expert software engineer working on your own inside a Linux container.
@@ -90,6 +94,10 @@ Every turn, before you act, write a short note in your message covering:
 
 Then make the tool call in the same turn. The note and the tool call belong together; you \
 are not choosing between them.
+
+The note is not a plan and not a document — it is a sentence or two in the message that \
+carries your next command. A task that tells you not to write a plan is telling you not to \
+spend a turn on one; it is not telling you to stop writing these.
 
 Never send a message on its own while you are still working — a message with no tool call \
 is how you end the task, so a turn spent only thinking will stop you before you have \

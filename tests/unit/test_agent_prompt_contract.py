@@ -25,9 +25,9 @@ def _task(**kwargs: object) -> TaskConfig:
 
 class TestResolvingAContract:
     def test_a_shipped_name_returns_its_text(self, tmp_path: Path) -> None:
-        assert resolve_agent_prompt_contract("reasoning_agent", task_dir=tmp_path) == (
-            CONTRACTS["reasoning_agent"]
-        )
+        resolved = resolve_agent_prompt_contract("reasoning_agent", task_dir=tmp_path)
+
+        assert resolved == CONTRACTS["reasoning_agent"]
 
     def test_a_pack_may_ship_its_own_beside_the_task(self, tmp_path: Path) -> None:
         (tmp_path / "house_style.md").write_text("Answer in limericks.")
@@ -178,6 +178,10 @@ class TestWhatTheShippedContractMustSay:
 
     def test_it_asks_the_model_to_reconcile_against_what_it_expected(self) -> None:
         assert "what you expect it to produce" in CONTRACTS["reasoning_agent"]
+
+    def test_it_separates_the_note_from_a_planning_step(self) -> None:
+        """A task may forbid a plan; a model reads that as covering the note too."""
+        assert "not a plan" in CONTRACTS["reasoning_agent"]
 
     def test_it_stays_short_enough_not_to_spend_the_cost_advantage(self) -> None:
         """Re-sent every turn, so length is a per-turn tax on every trial."""

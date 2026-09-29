@@ -25,6 +25,9 @@ _DIGESTS: dict[int, dict[str, str]] = {
     1: {
         "reasoning_agent": "bbb3866142459b82ed4679d347ad29995955bb976323cc17a71b88e171fd8b22",
     },
+    2: {
+        "reasoning_agent": "3ace74270f351201175b69a37c88ff0e1bd955794e4e6714184d0247ff19df55",
+    },
 }
 
 
