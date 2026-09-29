@@ -2485,12 +2485,22 @@ class UserSimulator(Actor):
         tool_schemas: list[dict[str, Any]] | None = None,
         *,
         rate_limit_probe: RateLimitProbeConfig | None = None,
+        system_prompt: str | None = None,
     ):
+        # A task-authored system prompt — ``actors.user.prompt_template`` as the
+        # conductor renders it — replaces the built-in one whole; ``None`` keeps
+        # the built-in prompt. Only an llm simulator sends a prompt.
+        if system_prompt is not None and mode != "llm":
+            raise ValueError(
+                f"A task-authored system prompt applies to an llm user simulator; this one "
+                f"is {mode!r} and sends no prompt."
+            )
         self.mode = mode
         self.persona = persona
         self.backstory = backstory
         self.scripted_flow = scripted_flow or []
         self.tool_schemas = tool_schemas or []
+        self._task_system_prompt = system_prompt
         self.llm_client = (
             LLMClient(llm_config, rate_limit_probe=rate_limit_probe)
             if llm_config and mode == "llm"
@@ -2579,7 +2589,15 @@ class UserSimulator(Actor):
         simulator holds tool schemas.
         ``tests/canonical/test_simulator_prompt_generation.py`` holds what this
         renders to ``Trajectory.simulator_schema_version``.
+
+        A task-authored prompt (``actors.user.prompt_template``, rendered by the
+        conductor) replaces all of it: the result is the template with the
+        backstory at its placeholder, and not one character of the built-in body —
+        tool guidance included — is added.
         """
+        if self._task_system_prompt is not None:
+            return self._task_system_prompt
+
         instruction_display = (
             ("\n\nInstruction: " + self.backstory + "\n") if self.backstory else ""
         )

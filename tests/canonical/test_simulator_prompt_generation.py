@@ -15,6 +15,11 @@ The three renderings are the coverage boundary: between them they exercise the
 opening line, the ``Instruction:`` framing, the ``Rules:`` block and the
 tool-guidance block — every conditional segment ``_build_system_prompt`` has. A
 fourth conditional segment needs a fourth rendering here, or it moves unguarded.
+
+A task's ``actors.user.prompt_template`` is not a segment of this body: it
+replaces the body with task-authored text and the engine adds none of its own,
+so there is no engine prompt for a generation to date.
+``tests/unit/test_user_prompt_template.py`` pins that rendering byte for byte.
 """
 
 from __future__ import annotations

@@ -4,6 +4,7 @@
       "backstory": null,
       "mode": "scripted",
       "persona": null,
+      "prompt_template": null,
       "scripted_flow": [
         {
           "content": "Please open the test.html file in the browser and find the secret code displayed on the page. Save the secret code to a file called secret.txt.",

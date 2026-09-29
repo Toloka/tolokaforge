@@ -263,6 +263,28 @@ actors:
 
 Scripted mode (`mode: "scripted"`) is available for simple deterministic flows but produces less realistic conversations.
 
+To author the simulator's whole system prompt instead of the built-in one, point
+`prompt_template` at a file (relative to the task root, like `system_prompt`) that
+carries `{backstory}` exactly once. A project's `task_defaults` may set it too:
+the project loader anchors that path to the project directory, and a task writes
+`prompt_template: null` to go back to the built-in prompt.
+
+```yaml
+actors:
+  user:
+    backstory: |
+      Instructions:
+          You want to move your booking to Friday.
+    prompt_template: sim/user_prompt.md   # "<guidelines>\n\n<scenario>\n{backstory}\n</scenario>"
+```
+
+The engine substitutes the backstory and adds nothing else — the built-in rules,
+tool guidance and `persona` are not appended — so the template must carry every
+instruction the simulator needs, its stop tokens included: the load refuses a
+`stop_tokens` entry that neither the template nor the backstory names. `stop_tokens`
+still defaults to `["###STOP###"]`, so a template that teaches other tokens
+declares the list. See [LLM_LAYER.md § The prompt body](LLM_LAYER.md#the-prompt-body).
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in
@@ -348,10 +370,12 @@ actors:
   log records how much. The reason is `USER_STOP` for every token. The list must be
   non-empty, without blank or repeated tokens, and no token may contain another.
   The engine listens for the list and the model sends what its prompt tells it
-  to, so for an `llm` simulator the two must agree: the list must contain
-  `###STOP###`, which the built-in prompt instructs, and every other listed token
-  must be named in the backstory, which is where the model learns when to send
-  it. A `scripted` simulator may list any tokens.
+  to, so for an `llm` simulator on the built-in prompt the two must agree: the
+  list must contain `###STOP###`, which that prompt instructs, and every other
+  listed token must be named in the backstory, which is where the model learns
+  when to send it. A `scripted` simulator may list any tokens. A simulator whose
+  prompt comes from `prompt_template` is held to one rule instead: every listed
+  token must appear in the prompt the template renders to.
 - **`stop_with_text`** — `deliver` hands the text before the token to the agent,
   lets it answer, and ends the trial on the next user turn. `end` records that
   text as the last user message and ends the trial at once, so the agent never

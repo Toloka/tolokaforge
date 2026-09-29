@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from tolokaforge_coding_harnesses.adapter_support import HARNESS_USAGE_LOG_METADATA_KEY
 
 from tolokaforge.adapters import BaseAdapter
+from tolokaforge.core.actors.prompt_template import render_user_prompt_template
 from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
@@ -856,6 +857,7 @@ class InProcessConductor:
                 scripted_flow=sim.scripted_flow,
                 tool_schemas=setup.user_tool_schemas or None,
                 rate_limit_probe=rate_limit_probe.for_simulator(),
+                system_prompt=render_user_prompt_template(setup.task_dir, sim),
             )
         else:
             user_simulator = None
