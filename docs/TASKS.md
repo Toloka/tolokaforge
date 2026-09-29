@@ -349,21 +349,21 @@ actors:
   for every token. The list must be
   non-empty, without blank or repeated tokens, and no token may contain another.
   The engine listens for the list and the model sends what its prompt tells it
-  to, so for an `llm` simulator the two must agree: the list must contain
-  `###STOP###`, which the built-in prompt instructs, and every other listed token
-  must be named in the backstory, which is where the model learns when to send
-  it. A `scripted` simulator may list any tokens.
+  to, so for an `llm` simulator the two must agree: on the built-in simulator
+  the list must contain `###STOP###`, which the built-in prompt instructs, and
+  every other listed token must be named in the backstory, which is where the
+  model learns when to send it. A `scripted` simulator may list any tokens, and
+  so may a non-`builtin` simulator (`actors.user.simulator`): it owns its prompt,
+  so checking that the prompt teaches the listed tokens is its own job.
 - **`stop_with_text`** — `deliver` hands the text before the token to the agent,
   lets it answer, and ends the trial on the next user turn; a bare token ends the
   trial at once. `end` records the reply as the simulator wrote it — the token,
   the text around it, and a bare token alike — as the last user message and ends
-  the trial at once, so the agent never answers it; the reference τ³-bench
-  harness (`sierra-research/tau2-bench`) records a stop this way.
+  the trial at once, so the agent never answers it. `end` is the shape for a
+  transcript that must keep the stop reply verbatim as its last user turn.
 - **A reply that also calls tools** still stops. The calls on a reply with text
   run and are recorded on that message before the stop applies; a bare token
-  ends the trial without running them. The τ³-bench harness differs here: it
-  never treats a reply that calls tools as a stop, it runs the calls and asks
-  the user again.
+  ends the trial without running them.
 
 The agent's own completion is **structural**, not a phrase it emits: a trial ends
 with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls

@@ -259,6 +259,25 @@ class TestStopRuleDeclaration:
         with pytest.raises(ValueError, match=r"\['###TRANSFER###'\].*never told"):
             load_task_yaml(task_path)
 
+    def test_a_non_builtin_simulator_may_use_any_token(self, tmp_path: Path) -> None:
+        """A registered simulator owns its prompt, so the built-in prompt's rules do
+        not describe it; whether its tokens are taught is its own check."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={
+                    "user": {
+                        "mode": "llm",
+                        "simulator": "custom",
+                        "stop_tokens": ["###DONE###", "###TRANSFER###"],
+                    }
+                }
+            ),
+        )
+        sim = load_task_yaml(task_path)[0].resolve_user_simulator()
+        assert sim.stop_tokens == ["###DONE###", "###TRANSFER###"]
+
     def test_a_scripted_simulator_may_use_any_token(self, tmp_path: Path) -> None:
         task_path = tmp_path / "task.yaml"
         _write_yaml(

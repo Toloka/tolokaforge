@@ -1059,8 +1059,8 @@ class TestConfiguredStopRule:
         assert user_sim.reply.call_count == 1
 
     def test_end_records_the_reply_as_written_around_the_token(self) -> None:
-        """τ³-bench records a stop reply verbatim: the whitespace before the token and
-        what follows it stay, since the reply is never delivered to the agent."""
+        """Under ``end`` the stop reply is recorded verbatim: the whitespace before the
+        token and what follows it stay, since the reply is never delivered to the agent."""
         reply = "Done, thanks.  \n\n###TRANSFER###\nP.S. one more thing"
         runner = _make_runner(
             agent_client=_agent_turns("Anything else?"),

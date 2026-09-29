@@ -219,9 +219,12 @@ class UserSimulatorConfig(BaseModel):
         that token lets the model's stop pass as ordinary text to the agent and the
         dialogue go on. Any other listed token can only be taught by the backstory,
         and one the backstory never names can never fire. Scripted replies are
-        authored text, so a scripted simulator may use any token.
+        authored text, so a scripted simulator may use any token. A non-built-in
+        simulator (``actors.user.simulator``) owns its prompt, so it is the one
+        that knows which tokens the prompt teaches; these two rules describe the
+        built-in prompt only.
         """
-        if self.mode != "llm":
+        if self.mode != "llm" or self.simulator != "builtin":
             return self
         if SIMULATOR_STOP_TOKEN not in self.stop_tokens:
             raise ValueError(

@@ -1664,9 +1664,9 @@ class TrialRunner:
         """``stop_with_text: end``: record the stop reply as written and end the dialogue.
 
         The reply becomes the dialogue's last USER message exactly as the simulator
-        wrote it — what precedes the token, the token and whatever follows it — the
-        way the reference τ³-bench harness records a stop, and the dialogue ends in
-        the same turn, so the agent never answers it. A bare token is recorded the
+        wrote it — what precedes the token, the token and whatever follows it — so
+        a transcript keeps the stop reply verbatim, and the dialogue ends in the
+        same turn, so the agent never answers it. A bare token is recorded the
         same way. The calls on a reply with text run and are recorded on the
         message first; a bare token's calls are not run.
         """
