@@ -372,6 +372,38 @@ writes itself, and only `initial_user_message` is the guarantee. Leave the field
 unset when the opening turn should be improvised from the backstory; a blank
 value is refused at load.
 
+### The agent's opening line
+
+A transcript opens with the user's turn. `first_agent_message` puts a line of the
+agent's ahead of it, the way the τ³-bench harness opens every dialogue with its
+agent greeting:
+
+```yaml
+actors:
+  user:
+    first_agent_message: "Hi! How can I help you today?"   # default: none
+```
+
+- The line is written into the transcript as its first message, an assistant turn.
+  The agent reads it back as its own on every request, and the simulator answers it
+  in place of the built-in greeting it is otherwise shown. A pinned
+  `initial_user_message` follows the line; a user's `isolated` tool steps before its
+  opening follow it too.
+- The line is not a generation: it counts as no turn in `metrics.turns` and has no
+  usage. Grading reads the transcript as recorded, as τ³-bench's evaluation reads its
+  trajectory, so the line is the agent's first message there: the timeline's turn 0,
+  a text transcript rules read, and the first of a custom check's
+  `transcript.agent_messages` (see
+  [GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)). A rule that
+  should not credit the agent with it can say so, since the task wrote it.
+- A summarize keeps the line and the user's opening on the wire.
+- The agent's first request opens with an assistant message. The engine adds
+  nothing ahead of it, as τ³-bench does not, so a provider or chat template that
+  requires a user turn first refuses that request with its own error and the trial
+  ends as an error.
+- A blank line is refused, and so is the key under `interaction_mode: agent_only`,
+  where no user answers it. A task drops a project-level value with `null`.
+
 ### Specialised personas
 
 For adversarial, multi-step tasks where the agent must *extract* the deciding

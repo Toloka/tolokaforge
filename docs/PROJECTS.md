@@ -1055,7 +1055,9 @@ An `ActorSpec` carries:
   applies to every task, so a scripted task writes `sampling: null` to drop it;
 - `tool_turns` and `max_tool_steps`, how the simulator's own tool calls run (see
   [User tool turns](TASKS.md#user-tool-turns)). A task drops a project-level value
-  the same way, with `null`.
+  the same way, with `null`;
+- `first_agent_message`, a line of the agent's the transcript opens with (see
+  [The agent's opening line](TASKS.md#the-agents-opening-line)), dropped the same way.
 
 The project declares the shared defaults under
 `task_defaults.actors.user`; each task overrides field-by-field

@@ -485,7 +485,16 @@ invariants hold on the request it sends:
    improvising.
 
 The greeting exists only in the simulator's private request; it never
-enters the shared transcript or `trajectory.yaml`. A revision to the prompt
+enters the shared transcript or `trajectory.yaml`. A task that declares
+`actors.user.first_agent_message` has that line in the transcript instead, as its
+first message: it flips to the request's leading user-role turn, so no greeting is
+prepended, and the simulator answers the task's line at turn 0 and reads it on
+every later turn. The line is part of the agent's request as well, as its first
+message after the system prompt; the engine puts no user turn ahead of it, as
+τ³-bench does not, so a provider that requires one refuses the request with its own
+error. The line is opt-in and authored, so it is outside
+`simulator_schema_version`; a trial that ran it is identified by
+`user_actor.first_agent_message`. A revision to the prompt
 body or to this context shape bumps `Trajectory.simulator_schema_version`
 (see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps);
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)

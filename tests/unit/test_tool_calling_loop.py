@@ -1595,6 +1595,44 @@ def test_summarize_fires_at_watermark_before_generate():
     assert any(m.role is MessageRole.SYSTEM and "Context summarized" in m.content for m in messages)
 
 
+def test_summarize_keeps_the_agent_opening_line_with_the_first_user_turn():
+    """A transcript that opens with the agent's own line (``first_agent_message``)
+    keeps that line and the user's opening on the wire across a summarize: the
+    recap replaces what came after them, not the user's first message."""
+    summarizer = _ScriptedSummarizer(["compact-recap"])
+    client = _RecordingClient(
+        [
+            GenerationResult(
+                text="reach for a tool",
+                tool_calls=[ToolCall(id="t1", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=950),
+            ),
+            GenerationResult(text="all done", usage=Usage(prompt_tokens=100)),
+        ]
+    )
+    opening_line = Message(role=MessageRole.ASSISTANT, content="Hi! How can I help you today?")
+    messages: list[Message] = [opening_line, _first_user()]
+    _summarize_loop(
+        client,
+        sink=_WatermarkSink([950, 100]),
+        summarizer=summarizer,
+        config=_summarize_config(
+            max_context_tokens=1000,
+            context_watermark=100,
+            summarize_policy=summarizer,
+            max_turns=2,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.wire_snapshots[0] == messages[:2]
+    assert [(m.role, m.content) for m in client.wire_snapshots[1][:3]] == [
+        (MessageRole.ASSISTANT, "Hi! How can I help you today?"),
+        (MessageRole.USER, "the original task"),
+        (MessageRole.USER, "compact-recap"),
+    ]
+    assert client.wire_snapshots[1][3].role is MessageRole.SYSTEM
+
+
 class _RequestRecordingObserver:
     """Loop observer keeping what each generation was reported to have been sent."""
 

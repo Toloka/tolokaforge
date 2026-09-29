@@ -1,5 +1,6 @@
 {
   "backstory": "I just joined the ops team and need help.",
+  "first_agent_message": null,
   "max_tool_steps": 10,
   "mode": "llm",
   "persona": "curious engineer",
