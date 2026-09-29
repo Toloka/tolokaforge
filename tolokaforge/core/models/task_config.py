@@ -138,10 +138,11 @@ SIMULATOR_STOP_TOKEN = "###STOP###"
 """The exit token the built-in simulator prompt instructs the model to send."""
 
 UserStopWithText = Literal["deliver", "end"]
-"""What a user reply carrying text before its stop token does.
+"""What a user reply carrying a stop token does.
 
-``deliver`` hands the text to the agent, lets the agent answer it, and ends the
-dialogue on the next user turn. ``end`` records the text as the dialogue's last
+``deliver`` hands the text before the token to the agent, lets the agent answer
+it, and ends the dialogue on the next user turn; a bare token ends it at once.
+``end`` records the reply as written, token included, as the dialogue's last
 user turn and ends the dialogue at once, so the agent never answers it."""
 
 
