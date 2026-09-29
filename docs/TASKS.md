@@ -351,6 +351,10 @@ actors:
   `transcript.agent_messages` (see
   [GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)). A rule that
   should not credit the agent with it can say so, since the task wrote it.
+  Turning the line on for tasks written without it (through a project's
+  `task_defaults`, say) moves every generation one turn later on the timeline, so
+  a trace check's `first_turn` / `last_turn` window written for those tasks moves
+  by one too.
 - A summarize keeps the line and the user's opening on the wire.
 - The agent's first request opens with an assistant message. The engine adds
   nothing ahead of it, so a provider or chat template that requires a user turn

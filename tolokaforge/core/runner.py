@@ -900,9 +900,9 @@ class TrialRunner:
         trial recovers neither the money nor the cap, and a trial whose
         conversation is intact still grades.
         """
-        assistant_turns = sum(
-            1 for message in self.messages if message.role is MessageRole.ASSISTANT
-        )
+        # The agent's opening line (``first_agent_message``) is recorded, not
+        # generated, so it is no turn a model call should have paid for.
+        assistant_turns = self._agent_generations(self.messages)
         if not assistant_turns or self.metrics.api_calls:
             return
         self._report_postcondition_finding(

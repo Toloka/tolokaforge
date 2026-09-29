@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import litellm
 import pytest
 from litellm.litellm_core_utils.prompt_templates.factory import anthropic_messages_pt
 from litellm.llms.vertex_ai.gemini.transformation import _gemini_convert_messages_with_history
@@ -44,6 +45,7 @@ from tolokaforge.core.models import (
     TaskConfig,
     TerminationReason,
     ToolCall,
+    TrialStatus,
     UserSimulatorConfig,
 )
 from tolokaforge.core.runner import TrialRunner
@@ -117,7 +119,7 @@ class TestDeclaration:
 class _RecordingAgent:
     """The agent's generate seam: queued replies, and a copy of every request's messages."""
 
-    def __init__(self, *replies: str | GenerationResult) -> None:
+    def __init__(self, *replies: str | GenerationResult | Exception) -> None:
         self._replies = list(replies)
         self.requests: list[list[Message]] = []
         self.capabilities = ModelCapabilities()
@@ -125,6 +127,8 @@ class _RecordingAgent:
     def generate(self, *, messages: list[Message], **_: Any) -> GenerationResult:
         self.requests.append(list(messages))
         reply = self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+        if isinstance(reply, Exception):
+            raise reply
         if isinstance(reply, str):
             reply = _say(reply)
         return GenerationResult(
@@ -223,6 +227,31 @@ class TestTrial:
         trajectory = _trial(agent, user).run("System")
 
         assert trajectory.metrics.turns == 2
+
+    def test_an_agent_that_never_generated_is_not_reported_as_an_unrecorded_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The line is recorded, not generated: when the agent's first generation fails,
+        no model call was made, and the metrics-sink audit must not read the line as an
+        assistant turn nobody recorded."""
+        findings: list[str] = []
+        monkeypatch.setattr(
+            TrialRunner,
+            "_report_postcondition_finding",
+            lambda self, message, **_: findings.append(message),
+        )
+        error = litellm.exceptions.APIError(
+            status_code=500, message="boom", llm_provider="openrouter", model="m"
+        )
+
+        trajectory = _trial(_RecordingAgent(error), _QueuedUser(_say("Change my trip."))).run(
+            "System"
+        )
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.metrics.api_calls == 0
+        assert _said(trajectory.messages)[:2] == [("assistant", LINE), ("user", "Change my trip.")]
+        assert not [f for f in findings if "without recording a single model call" in f]
 
     def test_a_pinned_opening_follows_the_line(self) -> None:
         agent = _RecordingAgent("Sure, which one?")
