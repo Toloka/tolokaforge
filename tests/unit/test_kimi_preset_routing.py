@@ -4,8 +4,11 @@ The two Kimi lines carry different accommodations and must not be
 confused for one another:
 
 * ``moonshot_kimi_k2`` — the K2 line (K2.6, K2.7-code, …). Carries the
-  ``openrouter_dict_stringify_recovery`` policy quartet verbatim plus
-  ``default_max_turns: 90`` and ``empty_retry_count: 1``.
+  ``openrouter_dict_stringify_recovery`` policy quartet with one
+  substitution — ``reasoning_codec: openai_summary_replay`` in place of
+  ``openai``, because this line answers in the reasoning channel and the
+  parent codec replays none of it — plus ``default_max_turns: 90`` and
+  ``empty_retry_count: 1``.
 * ``moonshot_kimi_k3`` — the K3 line. Carries the empty-assistant filler
   and the Moonshot routing pin, which K2 deliberately does not.
 
@@ -40,10 +43,20 @@ _K3_MODELS = (
     "openrouter/moonshotai/kimi-k3",
 )
 
-#: What ``moonshot_kimi_k2`` adds on top of the shared recipe. Everything
-#: else it declares must still match the generic preset key for key.
+#: What ``moonshot_kimi_k2`` adds to, or substitutes in, the shared recipe.
+#: Everything else it declares must still match the generic preset key for key.
+#: ``reasoning_codec`` is a substitution rather than an addition: the K2 line
+#: returns its note in ``reasoning_details`` and an empty ``content``, so the
+#: generic ``openai`` codec — whose ``encode_for_replay`` emits nothing — drops
+#: the note from every following request.
 _K2_ADDITIONS = frozenset(
-    {"default_max_turns", "empty_retry_count", "max_context_tokens", "context_watermark"}
+    {
+        "default_max_turns",
+        "empty_retry_count",
+        "max_context_tokens",
+        "context_watermark",
+        "reasoning_codec",
+    }
 )
 
 
@@ -92,3 +105,27 @@ def test_k3_is_unaffected(model: str) -> None:
     assert resolve_effective_preset(model, "openrouter") == "moonshot_kimi_k3"
     cfg = _match_preset(model, "openrouter")
     assert cfg.get("openrouter_defaults") is not None, "K3 kept its routing pin"
+
+
+@pytest.mark.parametrize("model", _K2_MODELS)
+def test_k2_replays_the_reasoning_it_is_given(model: str) -> None:
+    """The note lives in the reasoning channel, so it has to ride the next request.
+
+    The parent ``openai`` codec extracts this line's reasoning correctly and
+    then replays none of it, leaving the model a history in which it has never
+    reasoned — measured across 11 trials on two upstreams, reasoning tokens ran
+    39-57 on turn 1 and 0 on every turn after.
+    """
+    from tolokaforge.core.llm import build_capabilities
+    from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
+
+    codec = build_capabilities(model, "openrouter").reasoning_codec
+    replay = codec.encode_for_replay(
+        StructuredReasoning(blocks=(ReasoningBlock(type="summary_text", text="NOTE"),))
+    )
+
+    assert replay.get("reasoning_details"), (
+        f"{model!r} resolves to a codec that replays no reasoning "
+        f"({type(codec).__name__}); this line answers only in that channel."
+    )
+    assert replay["reasoning_details"][0]["text"] == "NOTE"

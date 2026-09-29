@@ -827,6 +827,22 @@ it. Persisting the id is therefore what makes that question answerable after the
 fact — without it, a suspect result can only be re-run, never checked, and a
 re-run samples routing afresh.
 
+The same body also names the upstream directly: OpenRouter returns a top-level
+`provider` field, which litellm keeps on `response.model_extra`.
+`extract_upstream_provider` ([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py))
+reads it onto `ProviderRawCall.upstream_provider`, so a finished run's
+`metrics.yaml` names the machine per call without an API round-trip. The
+generation id remains the richer handle — it also reports native token counts
+and finish reason — but the name is the one an audit reads first. Observed
+values are vendor display names: `"Moonshot AI"`, `"CoreWeave"`, `"Novita"`,
+`"Amazon Bedrock"`, `"Google"`.
+
+How much this matters is measurable: `moonshotai/kimi-k2.7-code` resolved to
+three different upstreams across four runs on one day, and the runs split into
+behavioural profiles that tracked the upstream rather than the task — one
+returning `content: ""` and repeating an identical shell command on 30% of
+calls, another returning `content: " "` and repeating on 4%.
+
 **The header is `x-generation-id`, not `x-openrouter-generation-id`** — the
 plausible-looking longer name is not the one OpenRouter actually returns.
 litellm re-keys raw upstream headers as `llm_provider-<name>` into

@@ -677,6 +677,22 @@ presets:
   # trajectories only, since a median trial never approaches it. Same
   # posture as the K3 sibling, which caps at 128 K on a 1 M-window model.
   #
+  # ``reasoning_codec: openai_summary_replay`` because this line puts its
+  # whole deliberation in the reasoning channel and none of it in
+  # ``content``. Live capture 2026-09-29, one bash tool, both on Moonshot
+  # direct and on a fan-out mirror: ``content`` comes back ``null`` (litellm
+  # normalises it to ``" "``) while ``reasoning`` / ``reasoning_details``
+  # carry the note. The parent ``openai`` codec extracts that correctly but
+  # its ``encode_for_replay`` returns ``{}``, so the note is never echoed on
+  # the next request and the model reads a history in which it has never
+  # reasoned. It then stops: measured across 11 trials on two upstreams,
+  # mean reasoning tokens were 39-57 on turn 1 and exactly 0 on turns 2
+  # through 20. A controlled A/B on a two-turn exchange, 3 samples per cell,
+  # moves turn-2 reasoning from 1.0 tokens without the echo to 12-19 with
+  # it. ``openai_summary_replay`` is the parent plus an ``encode_for_replay``
+  # that rebuilds the ``reasoning.text`` envelope, which is the shape this
+  # route emits.
+  #
   # NOT opted in here, deliberately: the ``openrouter_defaults`` Moonshot
   # pin. K3 pairs that pin with an empty-assistant filler because Moonshot
   # direct rejects empty-content assistant turns; pinning K2.x without a
@@ -690,7 +706,7 @@ presets:
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    reasoning_codec: openai_summary_replay
     default_max_turns: 90
     empty_retry_count: 1
     max_context_tokens: 120000

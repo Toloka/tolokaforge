@@ -154,3 +154,34 @@ class TestUsagePipelineEndToEnd:
         assert restored.usage.reasoning_tokens == 250
         assert restored.usage.cache_read_input_tokens == 800
         assert restored.usage.cache_creation_input_tokens == 1500
+
+
+class TestUpstreamProviderIsRecorded:
+    """Which machine served a call is part of the call record, not a re-run away.
+
+    A model slug on OpenRouter resolves to one of many upstreams of differing
+    quantisation, chosen per request. Without the name on the record, a
+    suspect result can only be re-sampled — and re-sampling draws afresh.
+    """
+
+    def test_the_serving_upstream_lands_on_the_call(self) -> None:
+        from tolokaforge.core.llm.usage import extract_upstream_provider
+
+        class _Response:
+            model_extra = {"provider": "CoreWeave"}
+
+        assert extract_upstream_provider(_Response()) == "CoreWeave"
+
+    def test_a_direct_route_names_no_upstream(self) -> None:
+        from tolokaforge.core.llm.usage import extract_upstream_provider
+
+        class _Response:
+            model_extra: dict[str, object] = {}
+
+        assert extract_upstream_provider(_Response()) is None
+
+    def test_a_response_without_the_attribute_is_not_an_error(self) -> None:
+        """Telemetry, not control flow — an unreadable shape reads as absent."""
+        from tolokaforge.core.llm.usage import extract_upstream_provider
+
+        assert extract_upstream_provider(object()) is None
