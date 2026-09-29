@@ -696,7 +696,7 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-Nine swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (five seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
+Ten swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (six seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
@@ -706,6 +706,7 @@ Nine swappable seams are each exposed as an `importlib.metadata` entry-point gro
 | `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
 | `tolokaforge.turn_policies` | `Callable[[TurnPolicyContext], TurnPolicy]` | `user_simulator` (the resolved user :class:`Actor`; ``None`` for policies that dispatch no user) |
 | `tolokaforge.agent_loops` | `Callable[[AgentLoopContext], AgentLoop]` | the trial's loop dependencies (LLM client, tool executor + schemas, loop budget, metrics sink, termination + user-turn seams, tool-call recorder, call-id assigner, logger, observation sinks) |
+| `tolokaforge.user_simulators` | `Callable[[UserSimulatorContext], UserSimulator]` | the resolved `actors.user` fields (`mode`, `persona`, `backstory`, `scripted_flow`), the trial deps the built-in needs (`tool_schemas`, `llm_config`, `rate_limit_probe`), and the opaque `simulator_config` mapping the engine passes through untouched for a non-built-in simulator to read |
 | `tolokaforge.compose_materialisers` | `type[ComposeMaterialiser]` | *no context* — class is instantiated by the composer |
 | `tolokaforge.service_lifecycle_dispatchers` | `type[ServiceLifecycleDispatcher]` | *no context* — one class per `ServiceIsolation` label; the class's `isolation` ClassVar names the label the composer looks it up by |
 | `tolokaforge.substrate_composers` | `type[SubstrateComposer]` | *no context* — the backend instantiates the composer and injects its own materialiser + dispatcher registry |
@@ -858,6 +859,22 @@ class TestMyLoopConformance(AgentLoopConformanceSuite):
 The suite drives scripted episodes through your factory and asserts on what grading reads: the id join holds and `build_trial_timeline` builds; two calls to the *same* tool with different arguments keep their own results; a failed call's `role: tool` message carries the error prefix and round-trips identically with and without a `tool_log.yaml` sidecar; every generation reaches `metrics`; `should_terminate` runs once per turn, after the assistant message is appended and before the tools execute; a supplied `user_turn` runs on a tool-call-free turn; and `config.max_turns` and `config.episode_timeout_s` both bound the episode — nothing outside the loop enforces either.
 
 **Termination honesty is a rule, not just an assertion.** The reasons in `tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` (`API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`, `RATE_LIMIT`) remove the trial from the measured denominator. A loop may emit one only on **typed** evidence — an exception type, an HTTP status, or a typed empty-completion observation (`GenerationResult` with empty `text` and no `tool_calls`). Never from matching prose against an exception message: a context-window overflow and a malformed tool schema both read as "an API error", and excluding a trial the agent actually failed inflates every benchmark number with nothing in the output to show it. Route raised exceptions through `context.classify_error` rather than naming a reason yourself. The suite pins the half it can see — a clean episode must not claim an excluded reason, and a raised exception must be classified by the context — but a loop that reaches its own provider and classifies by text is beyond what any in-process suite can check.
+
+**User simulator** — `mypkg/simulator.py`. A user simulator produces the user's turns in a `conversational` trial: it satisfies the `Actor` reply contract and adds `last_system_prompt`. It is looked up per task by `actors.user.simulator`, and reads any configuration of its own from the opaque `actors.user.simulator_config` mapping the engine passes through untouched:
+
+```python
+from tolokaforge.core.plugin_registry import UserSimulatorContext, UserSimulator
+
+def my_simulator_factory(ctx: UserSimulatorContext) -> UserSimulator:
+    return MySimulator(ctx.simulator_config)  # validate the mapping into your own model
+```
+
+```toml
+[project.entry-points."tolokaforge.user_simulators"]
+my_sim = "mypkg.simulator:my_simulator_factory"
+```
+
+tolokaforge ships `builtin` (the `BuiltinUserSimulator`) under this group; it resolves through the registry like any third-party simulator, and ignores `simulator_config`. An unregistered name is refused at run start, naming the registered simulators and the task that asked for it. See [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md).
 
 **Composition-plan adapter seams** — `mypkg/k8s.py`. ADR-0044 splits the compose-mode runtime into three detachable adapter Protocols (see [Composition-plan seams](#composition-plan-seams) above for the shape). Each entry-point group targets an impl class directly; the caller instantiates with the class's own optional injection seams:
 

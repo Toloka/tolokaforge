@@ -85,7 +85,7 @@ upgrading past v0.17.x.
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
-| [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
+| [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `BuiltinUserSimulator` |
 
 ## `reasoning`
 
@@ -457,7 +457,14 @@ corruption observed in the post-PR-#88 production run:
 See [`plans/eval_post_pr88_schema_sanitizer_diagnosis.md`](../plans/eval_post_pr88_schema_sanitizer_diagnosis.md)
 for the full evidence trail.
 
-## `UserSimulator` request and reply contract
+## `BuiltinUserSimulator` request and reply contract
+
+`UserSimulator` is the `@runtime_checkable` Protocol in
+[`core/actors/user_simulator.py`](../tolokaforge/core/actors/user_simulator.py)
+that the conductor resolves through the `tolokaforge.user_simulators` registry
+(see [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md));
+`BuiltinUserSimulator` is the engine's built-in implementation, registered as
+`builtin`. The contract below is the built-in's.
 
 The LLM user simulator converses from the customer's seat: before each
 generation it role-flips the shared transcript (its own past USER turns
@@ -2506,9 +2513,9 @@ composes a `ModelCapabilities` and wraps litellm's `completion()`.
 `reasoning: StructuredReasoning | None`, and `effective_system_prompt`.
 See § `usage` above for the full Usage schema and accumulation contract.
 
-`UserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
+`BuiltinUserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
 `scripted` or `llm` modes. An `llm`-mode reply is delivered only if it survives
-the guard described in § `UserSimulator` request and reply contract;
+the guard described in § `BuiltinUserSimulator` request and reply contract;
 `GenerationResult.guard_rejections` carries the defects of the attempts
 discarded before it, and is empty everywhere else.
 

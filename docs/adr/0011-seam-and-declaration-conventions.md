@@ -148,7 +148,8 @@ Some components in the codebase pre-date this ADR and did not follow Pattern A. 
 ### Follow-ups
 
 - **Judge Protocol lift** — the first real test of Pattern A generalisability, realized in [ADR-0020](0020-judge-protocol.md) ([GH #131](https://github.com/Toloka/tolokaforge/issues/131)).
-- **`TrialRunner` / `UserSimulator` lifts** — file when a second variant becomes realistic.
+- **`UserSimulator` lift** — realized in [ADR-0051](0051-user-simulator-protocol-and-registry.md).
+- **`TrialRunner` lift** — realized in [ADR-0050](0050-agent-loop-protocol-and-registry.md) (the `AgentLoop` Protocol + registry).
 - **CI / lint enforcement** — deferred. Introduce only if drift returns after this ADR lands and future components still ignore the patterns.
 
 ## Rejected alternatives

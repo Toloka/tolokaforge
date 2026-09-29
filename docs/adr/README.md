@@ -83,3 +83,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0048](0048-write-once-observations-append-only-receiver.md) | Write-once producer layout for Langfuse v4 (preview rows while a trial runs, the record written once from the bundle) | Proposed |
 | [0049](0049-judgekind-registry-consolidation.md) | JudgeKind registry consolidation — three user-facing kinds (`single_shot_rubric`, `multi_turn_rubric`, `auto_rubric`) plus two internal building blocks (`voted_rubric`, `auto_anchored_rubric`) | Accepted |
 | [0050](0050-agent-loop-protocol-and-registry.md) | The `AgentLoop` Protocol and entry-point registry — the in-process agent loop as an adapter-selectable plugin | Accepted |
+| [0051](0051-user-simulator-protocol-and-registry.md) | The `UserSimulator` Protocol and entry-point registry — the user simulator as a per-task-selectable plugin with an opaque config passthrough | Accepted |

@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tolokaforge.core.llm.client import UserSimulator
+from tolokaforge.core.llm.client import BuiltinUserSimulator
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
 
 pytestmark = [
@@ -67,12 +67,12 @@ _AGENT_ANSWER = (
 
 
 @pytest.fixture()
-def simulator() -> UserSimulator:
+def simulator() -> BuiltinUserSimulator:
     if not os.getenv("OPENROUTER_API_KEY"):
         pytest.skip("OPENROUTER_API_KEY not set — skipping live simulator test")
     # ``_llm_reply`` pins its own generation temperature; the config value is
     # not the control here, so none is claimed.
-    return UserSimulator(
+    return BuiltinUserSimulator(
         mode="llm",
         llm_config=ModelConfig(
             provider="openrouter",
@@ -83,7 +83,7 @@ def simulator() -> UserSimulator:
     )
 
 
-def test_simulator_does_not_restart_after_agent_answers(simulator: UserSimulator) -> None:
+def test_simulator_does_not_restart_after_agent_answers(simulator: BuiltinUserSimulator) -> None:
     """First live simulator turn after a full answer must continue, not reopen.
 
     The shared transcript is exactly the failure shape: seeded opening, an

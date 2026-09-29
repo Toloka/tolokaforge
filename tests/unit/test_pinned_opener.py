@@ -4,7 +4,7 @@ The conductor threads the field into the turn loop as the runner's seed
 argument (``conductor.py`` → :meth:`TrialRunner.run`), so these tests build a
 :class:`TaskConfig`, hand its opener to the runner the same way, and read the
 trajectory the loop produced. The user simulator is a real scripted
-:class:`UserSimulator` that counts its own dispatches — a mock would assert
+:class:`BuiltinUserSimulator` that counts its own dispatches — a mock would assert
 that a call happened, not that the opening LLM turn was skipped.
 """
 
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.llm import GenerationResult, UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
@@ -33,7 +33,7 @@ PINNED_OPENER = "  Hi, I want to return my DSLR camera.  "
 GENERATED_OPENER = "I need help with my order"
 
 
-class _CountingSimulator(UserSimulator):
+class _CountingSimulator(BuiltinUserSimulator):
     """Scripted simulator that records how often the loop dispatched it."""
 
     def __init__(self, reply_text: str) -> None:

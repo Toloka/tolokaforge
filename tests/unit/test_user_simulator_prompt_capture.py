@@ -1,10 +1,10 @@
-"""``UserSimulator``'s system prompt: its capture, and its two shapes.
+"""``BuiltinUserSimulator``'s system prompt: its capture, and its two shapes.
 
 ``TrialRunner`` reads ``last_system_prompt`` after the first user turn and writes it to
 the trial bundle's ``prompts.yaml``, so a capture that drifted from the builder
 would publish a prompt no generation ever used. Assertions:
 
-1. After ``UserSimulator._llm_reply`` fires once, ``last_system_prompt`` is a
+1. After ``BuiltinUserSimulator._llm_reply`` fires once, ``last_system_prompt`` is a
    non-empty string and exactly equals the output of ``_build_system_prompt``.
 2. Scripted simulators leave ``last_system_prompt`` ``None`` — scripted mode
    never talks to an LLM, so no prompt is ever emitted.
@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tolokaforge.core.llm import UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, Trajectory
 
 pytestmark = pytest.mark.unit
@@ -36,7 +36,7 @@ def _mock_user_config() -> ModelConfig:
 
 def test_llm_simulator_captures_system_prompt() -> None:
     backstory = "Order a cappuccino at the Blue Bottle on Market St."
-    sim = UserSimulator(
+    sim = BuiltinUserSimulator(
         mode="llm",
         llm_config=_mock_user_config(),
         backstory=backstory,
@@ -57,7 +57,7 @@ def test_llm_simulator_captures_system_prompt() -> None:
 
 
 def test_scripted_simulator_never_sets_last_system_prompt() -> None:
-    sim = UserSimulator(mode="scripted", scripted_flow=[{"user": "hello"}])
+    sim = BuiltinUserSimulator(mode="scripted", scripted_flow=[{"user": "hello"}])
     assert sim.last_system_prompt is None
 
     ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -73,7 +73,7 @@ def test_scripted_simulator_never_sets_last_system_prompt() -> None:
 def test_build_system_prompt_pure_and_stable() -> None:
     """``_build_system_prompt`` is pure — calling it twice returns the same
     string. No mutation of ``last_system_prompt``."""
-    sim = UserSimulator(mode="llm", llm_config=_mock_user_config(), backstory="Buy milk.")
+    sim = BuiltinUserSimulator(mode="llm", llm_config=_mock_user_config(), backstory="Buy milk.")
     a = sim._build_system_prompt()
     b = sim._build_system_prompt()
     assert a == b
@@ -82,7 +82,7 @@ def test_build_system_prompt_pure_and_stable() -> None:
     assert sim.last_system_prompt is None
 
 
-# ``UserSimulator()`` with no tool schemas, sha256 of the UTF-8 bytes. Captured
+# ``BuiltinUserSimulator()`` with no tool schemas, sha256 of the UTF-8 bytes. Captured
 # from the released prompt; ``Trajectory.simulator_schema_version`` (currently 4)
 # stamps this shape, so a change here without a version bump would leave one
 # version naming two different prompts.
@@ -93,7 +93,7 @@ def test_the_no_tools_prompt_is_unchanged_byte_for_byte() -> None:
     """Offering the simulator tools appends a guidance block; it must not
     perturb the prompt every shipped pack already gets, none of which declares
     a user tool."""
-    prompt = UserSimulator(mode="scripted")._build_system_prompt()
+    prompt = BuiltinUserSimulator(mode="scripted")._build_system_prompt()
 
     assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == _NO_TOOLS_PROMPT_SHA256
     assert Trajectory.model_fields["simulator_schema_version"].default == 4
@@ -102,8 +102,8 @@ def test_the_no_tools_prompt_is_unchanged_byte_for_byte() -> None:
 def test_tool_schemas_append_guidance_to_that_exact_prompt() -> None:
     """The tool-carrying prompt is the no-tools prompt plus a suffix — the
     guidance is appended, not woven in, so the two shapes cannot drift apart."""
-    without = UserSimulator(mode="scripted")._build_system_prompt()
-    with_tools = UserSimulator(
+    without = BuiltinUserSimulator(mode="scripted")._build_system_prompt()
+    with_tools = BuiltinUserSimulator(
         mode="scripted",
         tool_schemas=[{"type": "function", "function": {"name": "calculator"}}],
     )._build_system_prompt()
@@ -115,10 +115,10 @@ def test_tool_schemas_append_guidance_to_that_exact_prompt() -> None:
 def test_the_tool_guidance_names_no_tool_the_task_did_not_declare() -> None:
     """The block is generic: a simulator offered ``calculator`` must not be told
     to call some other tool the task never declared."""
-    guidance = UserSimulator(
+    guidance = BuiltinUserSimulator(
         mode="scripted",
         tool_schemas=[{"type": "function", "function": {"name": "calculator"}}],
-    )._build_system_prompt()[len(UserSimulator(mode="scripted")._build_system_prompt()) :]
+    )._build_system_prompt()[len(BuiltinUserSimulator(mode="scripted")._build_system_prompt()) :]
 
     assert "check_status_bar" not in guidance
     assert "status bar" not in guidance

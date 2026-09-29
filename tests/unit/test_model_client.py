@@ -885,50 +885,50 @@ class TestRotateKey:
 
 
 # ===================================================================
-# UserSimulator construction and scripted replies
+# BuiltinUserSimulator construction and scripted replies
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestUserSimulator:
-    """UserSimulator construction and scripted_reply logic."""
+    """BuiltinUserSimulator construction and scripted_reply logic."""
 
     def test_scripted_mode_construction(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         assert sim.mode == "scripted"
         assert sim.llm_client is None
         assert sim.scripted_flow == []
 
     def test_llm_mode_without_config(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="llm", llm_config=None)
+        sim = BuiltinUserSimulator(mode="llm", llm_config=None)
         assert sim.llm_client is None
 
     def test_scripted_reply_empty_context(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         result = sim.reply([])
         assert "help" in result.text.lower() or "task" in result.text.lower()
 
     def test_scripted_reply_unconditional_flow(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"user": "I need to book a flight."}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         # Context with no matching prior user message
         ctx = [Message(role=MessageRole.ASSISTANT, content="How can I help?")]
         result = sim.reply(ctx)
         assert result.text == "I need to book a flight."
 
     def test_scripted_reply_conditional_match(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"if_assistant_contains": "booking confirmed", "user": "Thank you!"}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         ctx = [Message(role=MessageRole.ASSISTANT, content="Your booking confirmed for tomorrow.")]
         result = sim.reply(ctx)
         assert result.text == "Thank you!"
@@ -940,43 +940,43 @@ class TestUserSimulator:
         comparison so e.g. "BOOKING CONFIRMED" matches a "booking confirmed"
         rule.
         """
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"if_assistant_contains": "booking confirmed", "user": "Thank you!"}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         ctx = [Message(role=MessageRole.ASSISTANT, content="Your BOOKING CONFIRMED for tomorrow.")]
         result = sim.reply(ctx)
         assert result.text == "Thank you!"
 
     def test_scripted_reply_default_fallback(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
         flow = [{"default": "I'm not sure."}]
-        sim = UserSimulator(mode="scripted", scripted_flow=flow)
+        sim = BuiltinUserSimulator(mode="scripted", scripted_flow=flow)
         ctx = [Message(role=MessageRole.ASSISTANT, content="Something unexpected.")]
         result = sim.reply(ctx)
         assert result.text == "I'm not sure."
 
     def test_scripted_reply_question_fallback(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         ctx = [Message(role=MessageRole.ASSISTANT, content="Would you like to proceed?")]
         result = sim.reply(ctx)
         assert result.text == "Yes, please proceed."
 
     def test_scripted_reply_statement_fallback(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="scripted")
+        sim = BuiltinUserSimulator(mode="scripted")
         ctx = [Message(role=MessageRole.ASSISTANT, content="Done.")]
         result = sim.reply(ctx)
         assert result.text == "Okay."
 
     def test_reply_unknown_mode_raises(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
+        from tolokaforge.core.llm import BuiltinUserSimulator
 
-        sim = UserSimulator(mode="unknown")
+        sim = BuiltinUserSimulator(mode="unknown")
         with pytest.raises(ValueError, match="Unknown user simulator mode"):
             sim.reply([Message(role=MessageRole.ASSISTANT, content="Hi")])
 

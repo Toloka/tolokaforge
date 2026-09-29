@@ -16,6 +16,8 @@ The engine exposes two disjoint families of adapters. Each family is a Protocol 
 
   See [`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md#composition-plan-seams) for the seam catalogue in runtime context. Composition-plan adapters do not overlap with harness adapters — a harness adapter emits an `EnvironmentManifest`; the composer consumes the manifest's composition plan at run time.
 
+Beyond these two adapter families, the engine exposes per-role plug-in seams a downstream package registers the same way — the agent loop ([ADR-0050](adr/0050-agent-loop-protocol-and-registry.md)), the user simulator ([ADR-0051](adr/0051-user-simulator-protocol-and-registry.md)), the turn policy ([ADR-0028](adr/0028-multi-actor-turn-policy.md)), and more — all catalogued under [`docs/RUNTIME_BACKENDS.md § Plug-in extension points`](RUNTIME_BACKENDS.md#plug-in-extension-points). A harness adapter that must also drive its own dialogue registers a user simulator under `tolokaforge.user_simulators` and selects it per task via `actors.user.simulator`, rather than adding fields to the engine's built-in simulator.
+
 ## Design Principles
 
 1. **Unified Interface**: All task/environment loading goes through adapters

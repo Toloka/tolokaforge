@@ -140,6 +140,8 @@ class UserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str | None = None  # User instruction for tau-bench parity
     scripted_flow: list[dict[str, str]] | None = None
+    simulator: str = "builtin"
+    simulator_config: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -171,6 +173,8 @@ class ActorSpec(BaseModel):
     persona: str | None = None
     backstory: str | None = None
     scripted_flow: list[dict[str, str]] | None = None
+    simulator: str | None = None
+    simulator_config: dict[str, Any] | None = None
 
     model_config = {"extra": "ignore"}
 
@@ -471,6 +475,8 @@ class TaskConfig(BaseModel):
             persona=spec.persona or "cooperative",
             backstory=spec.backstory,
             scripted_flow=spec.scripted_flow,
+            simulator=spec.simulator or "builtin",
+            simulator_config=spec.simulator_config or {},
         )
 
 

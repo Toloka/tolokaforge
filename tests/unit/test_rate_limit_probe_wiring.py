@@ -43,7 +43,7 @@ from tolokaforge.core.conductor import (
 )
 from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_result import JudgeStatus
-from tolokaforge.core.llm import LLMClient, UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator, LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -416,7 +416,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
     def test_the_simulator_the_conductor_builds_carries_the_shorter_budget(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """End of the wiring: the ``UserSimulator`` the conductor actually
+        """End of the wiring: the ``BuiltinUserSimulator`` the conductor actually
         constructs probes at ``simulator_per_call_budget_s``, not the agent's."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-conductor")
         conductor = self._conductor(_run_config(probe=_PROBE), tmp_path)
@@ -461,7 +461,7 @@ class TestUserSimulatorCarriesTheMode:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-sim")
-        sim = UserSimulator(mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE)
+        sim = BuiltinUserSimulator(mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE)
 
         assert sim.llm_client is not None
         assert sim.llm_client._rate_limit_probe == _PROBE
@@ -470,7 +470,9 @@ class TestUserSimulatorCarriesTheMode:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-sim")
-        sim = UserSimulator(mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE.for_simulator())
+        sim = BuiltinUserSimulator(
+            mode="llm", llm_config=_AGENT, rate_limit_probe=_PROBE.for_simulator()
+        )
 
         assert sim.llm_client is not None
         probe = sim.llm_client._rate_limit_probe
@@ -491,13 +493,13 @@ class TestUserSimulatorCarriesTheMode:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-sim")
-        sim = UserSimulator(mode="llm", llm_config=_AGENT)
+        sim = BuiltinUserSimulator(mode="llm", llm_config=_AGENT)
 
         assert sim.llm_client is not None
         assert sim.llm_client._rate_limit_probe is None
 
     def test_scripted_simulator_builds_no_client_at_all(self) -> None:
-        sim = UserSimulator(mode="scripted", rate_limit_probe=_PROBE)
+        sim = BuiltinUserSimulator(mode="scripted", rate_limit_probe=_PROBE)
         assert sim.llm_client is None
 
 

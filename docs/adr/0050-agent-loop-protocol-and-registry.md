@@ -254,8 +254,8 @@ orchestrator-only loop implementation stays out of the partition entirely;
 
 - **The terminal-oriented loop itself** — this ADR ships the seam and the
   built-in only.
-- **User-simulator Protocol lift** — the remaining ADR-0011 follow-up, still
-  unfiled.
+- **User-simulator Protocol lift** — the remaining ADR-0011 follow-up, filed as
+  [ADR-0051](0051-user-simulator-protocol-and-registry.md).
 
 ## Links
 

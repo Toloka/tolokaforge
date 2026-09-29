@@ -29,7 +29,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.llm.capabilities import ModelCapabilities
-from tolokaforge.core.llm.client import GenerationResult, UserSimulator
+from tolokaforge.core.llm.client import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import Message, TerminationReason
@@ -78,7 +78,7 @@ def _spy_simulator() -> MagicMock:
     ``AGENT_DONE`` — so the ``call_count == 0`` invariant is checked
     against a reply the runner *cannot silently discard*.
     """
-    sim = MagicMock(spec=UserSimulator)
+    sim = MagicMock(spec=BuiltinUserSimulator)
     sim.reply.return_value = GenerationResult(text="###STOP###", tool_calls=[], usage=Usage())
     sim.last_system_prompt = None
     return sim

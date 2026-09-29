@@ -20,6 +20,7 @@ from tolokaforge_coding_harnesses.usage_log import (
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
+from tolokaforge.core.actors.user_simulator import UserSimulator
 from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
@@ -30,7 +31,6 @@ from tolokaforge.core.llm import (
     GenerationResult,
     LLMClient,
     Usage,
-    UserSimulator,
 )
 from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger

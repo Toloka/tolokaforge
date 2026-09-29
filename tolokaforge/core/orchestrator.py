@@ -90,6 +90,7 @@ from tolokaforge.core.plugin_registry import (
     load_conductor,
     load_runtime_backend,
     load_trial_grader,
+    load_user_simulator,
 )
 from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
 from tolokaforge.core.pricing_freshness import compare_against_source, live_prices
@@ -2324,6 +2325,32 @@ class Orchestrator:
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
+
+        self._refuse_an_unregistered_user_simulator()
+
+    def _refuse_an_unregistered_user_simulator(self) -> None:
+        """Resolve every task's ``actors.user.simulator`` once, before any trial.
+
+        The simulator is actor-scoped config, so a run may mix names across its
+        tasks; each distinct name is resolved here — after tasks load, before any
+        trial — so an unregistered name (a typo, or an editable install whose
+        ``.dist-info`` predates the ``tolokaforge.user_simulators`` group) is one
+        refusal naming the known registrations and the task that asked for it,
+        not one scored failure per trial after the trial's container is already
+        up. ``agent_only`` tasks resolve no user actor, so they are skipped.
+        """
+        checked: set[str] = set()
+        for task in self.tasks:
+            if task.interaction_mode != "conversational":
+                continue
+            name = task.resolve_user_simulator().simulator
+            if name in checked:
+                continue
+            checked.add(name)
+            try:
+                load_user_simulator(name)
+            except UnknownImplementationError as exc:
+                raise RuntimeError(f"task {task.task_id!r}: actors.user.simulator: {exc}") from exc
 
     def _refuse_an_unregistered_agent_loop(self) -> None:
         """Resolve ``orchestrator.agent_loop`` once, before any trial work.
