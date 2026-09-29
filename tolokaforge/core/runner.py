@@ -1668,7 +1668,8 @@ class TrialRunner:
         a transcript keeps the stop reply verbatim, and the dialogue ends in the
         same turn, so the agent never answers it. A bare token is recorded the
         same way. The calls on a reply with text run and are recorded on the
-        message first; a bare token's calls are not run.
+        message first, their results appended after the text as on any user
+        turn that calls tools; a bare token's calls are not run.
         """
         calls = user_result.tool_calls if stop.text else []
         if not stop.text:

@@ -362,8 +362,10 @@ actors:
   the trial at once, so the agent never answers it. `end` is the shape for a
   transcript that must keep the stop reply verbatim as its last user turn.
 - **A reply that also calls tools** still stops. The calls on a reply with text
-  run and are recorded on that message before the stop applies; a bare token
-  ends the trial without running them.
+  run and are recorded on that message before the stop applies, and their
+  results are appended to its text, as on any user turn that calls tools, so
+  under `end` such a reply is recorded as written followed by those results; a
+  bare token ends the trial without running them.
 
 The agent's own completion is **structural**, not a phrase it emits: a trial ends
 with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls

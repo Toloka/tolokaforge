@@ -931,7 +931,7 @@ class TestUserSimulatorIntegration:
 # Configured stop rule
 # ===================================================================
 
-_TAU_STOP_TOKENS = ("###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###")
+_MULTI_STOP_TOKENS = ("###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###")
 
 
 def _agent_turns(*texts: str) -> MagicMock:
@@ -962,13 +962,13 @@ class TestConfiguredStopRule:
     """The runner stops on the tokens the trial's ``UserStopRule`` names, and the
     rule's ``with_text`` decides whether the agent answers a final reply."""
 
-    @pytest.mark.parametrize("token", _TAU_STOP_TOKENS)
+    @pytest.mark.parametrize("token", _MULTI_STOP_TOKENS)
     def test_every_listed_token_ends_the_dialogue(self, token: str) -> None:
         user_sim = _user_replies(GenerationResult(text=token, tool_calls=[]))
         runner = _make_runner(
             agent_client=_agent_turns("How can I help?"),
             user_simulator=user_sim,
-            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS),
+            user_stop=UserStopRule(tokens=_MULTI_STOP_TOKENS),
         )
 
         traj = runner.run("System", "Hi")
@@ -1013,7 +1013,7 @@ class TestConfiguredStopRule:
         runner = _make_runner(
             agent_client=_agent_turns("Anything else?", "Goodbye."),
             user_simulator=user_sim,
-            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS),
+            user_stop=UserStopRule(tokens=_MULTI_STOP_TOKENS),
         )
 
         traj = runner.run("System", "Hi")
@@ -1030,7 +1030,7 @@ class TestConfiguredStopRule:
         runner = _make_runner(
             agent_client=_agent_turns("Here is your answer.", "You're welcome."),
             user_simulator=user_sim,
-            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS, with_text="deliver"),
+            user_stop=UserStopRule(tokens=_MULTI_STOP_TOKENS, with_text="deliver"),
         )
 
         traj = runner.run("System", "Hi")
@@ -1045,7 +1045,7 @@ class TestConfiguredStopRule:
         runner = _make_runner(
             agent_client=agent,
             user_simulator=user_sim,
-            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS, with_text="end"),
+            user_stop=UserStopRule(tokens=_MULTI_STOP_TOKENS, with_text="end"),
         )
 
         traj = runner.run("System", "Hi")
@@ -1065,7 +1065,7 @@ class TestConfiguredStopRule:
         runner = _make_runner(
             agent_client=_agent_turns("Anything else?"),
             user_simulator=_user_replies(GenerationResult(text=reply, tool_calls=[])),
-            user_stop=UserStopRule(tokens=_TAU_STOP_TOKENS, with_text="end"),
+            user_stop=UserStopRule(tokens=_MULTI_STOP_TOKENS, with_text="end"),
         )
 
         traj = runner.run("System", "Hi")
@@ -1089,6 +1089,12 @@ class TestConfiguredStopRule:
 
         final_reply = traj.messages[-2]
         assert final_reply.role == MessageRole.USER
+        # The reply as written, then the calls' results, as on any user turn
+        # that calls tools.
+        assert (
+            final_reply.content
+            == "Checked, thanks. ###STOP###\n\nuser_lookup() result: user_lookup ran"
+        )
         assert [c.id for c in final_reply.tool_calls or []] == ["uc1"]
         assert [r.call_id for r in traj.tool_log] == ["uc1"]
         assert traj.termination_reason == TerminationReason.USER_STOP
@@ -1132,15 +1138,17 @@ class TestConfiguredStopRule:
 @pytest.mark.unit
 class TestUserStopRuleFind:
     def test_no_token_is_no_stop(self) -> None:
-        assert UserStopRule(tokens=_TAU_STOP_TOKENS).find("Thanks, bye.") is None
+        assert UserStopRule(tokens=_MULTI_STOP_TOKENS).find("Thanks, bye.") is None
 
     def test_the_text_before_the_earliest_token_is_right_stripped(self) -> None:
-        stop = UserStopRule(tokens=_TAU_STOP_TOKENS).find("Bye now. \n###OUT-OF-SCOPE### x")
+        stop = UserStopRule(tokens=_MULTI_STOP_TOKENS).find("Bye now. \n###OUT-OF-SCOPE### x")
 
         assert stop == UserStop(token="###OUT-OF-SCOPE###", text="Bye now.", dropped="x")
 
     def test_what_follows_the_token_is_reported_as_dropped(self) -> None:
-        stop = UserStopRule(tokens=_TAU_STOP_TOKENS).find("Done. ###STOP###\n  P.S. one more thing")
+        stop = UserStopRule(tokens=_MULTI_STOP_TOKENS).find(
+            "Done. ###STOP###\n  P.S. one more thing"
+        )
 
         assert stop is not None
         assert stop.text == "Done."

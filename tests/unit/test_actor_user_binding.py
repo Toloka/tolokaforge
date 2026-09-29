@@ -158,9 +158,9 @@ class TestStopRuleDeclaration:
     simulator through every layer, and a list that cannot end a dialogue is
     refused at load rather than on the first trial."""
 
-    _TAU_TOKENS = ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]
+    _MULTI_STOP_TOKENS = ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]
     # The built-in prompt teaches ###STOP### only; the backstory teaches the rest.
-    _TAU_BACKSTORY = (
+    _MULTI_TOKEN_BACKSTORY = (
         "Send ###TRANSFER### once the agent transfers you, and ###OUT-OF-SCOPE### when "
         "the scenario does not say how to answer."
     )
@@ -172,15 +172,15 @@ class TestStopRuleDeclaration:
             _task_body(
                 actors={
                     "user": {
-                        "backstory": self._TAU_BACKSTORY,
-                        "stop_tokens": self._TAU_TOKENS,
+                        "backstory": self._MULTI_TOKEN_BACKSTORY,
+                        "stop_tokens": self._MULTI_STOP_TOKENS,
                         "stop_with_text": "end",
                     }
                 }
             ),
         )
         sim = load_task_yaml(task_path)[0].resolve_user_simulator()
-        assert sim.stop_tokens == self._TAU_TOKENS
+        assert sim.stop_tokens == self._MULTI_STOP_TOKENS
         assert sim.stop_with_text == "end"
 
     def test_undeclared_fields_resolve_to_the_legacy_rule(self, tmp_path: Path) -> None:
@@ -195,15 +195,15 @@ class TestStopRuleDeclaration:
         _write_yaml(
             task_path,
             _task_body(
-                actors={"user": {"backstory": self._TAU_BACKSTORY, "stop_with_text": "end"}}
+                actors={"user": {"backstory": self._MULTI_TOKEN_BACKSTORY, "stop_with_text": "end"}}
             ),
         )
         task, _ = _load(
             task_path,
-            project_task_defaults={"actors": {"user": {"stop_tokens": self._TAU_TOKENS}}},
+            project_task_defaults={"actors": {"user": {"stop_tokens": self._MULTI_STOP_TOKENS}}},
         )
         sim = task.resolve_user_simulator()
-        assert sim.stop_tokens == self._TAU_TOKENS
+        assert sim.stop_tokens == self._MULTI_STOP_TOKENS
         assert sim.stop_with_text == "end"
 
     @pytest.mark.parametrize(

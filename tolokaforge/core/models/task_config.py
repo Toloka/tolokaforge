@@ -143,7 +143,9 @@ UserStopWithText = Literal["deliver", "end"]
 ``deliver`` hands the text before the token to the agent, lets the agent answer
 it, and ends the dialogue on the next user turn; a bare token ends it at once.
 ``end`` records the reply as written, token included, as the dialogue's last
-user turn and ends the dialogue at once, so the agent never answers it."""
+user turn and ends the dialogue at once, so the agent never answers it. A reply
+that also calls tools gets its calls' results appended after the text, as any
+user turn that calls tools does."""
 
 
 def validate_stop_tokens(tokens: list[str]) -> list[str]:
