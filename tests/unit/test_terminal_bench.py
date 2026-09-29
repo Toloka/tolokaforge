@@ -2905,3 +2905,89 @@ class TestTerminalBenchAgentCompletionTool:
                 agent_harness="claude-code",
                 agent_model="m",
             )
+
+
+class TestTerminalBenchAgentPromptContract:
+    """``adapter_params.agent_prompt_contract`` names a contract the engine composes.
+
+    The adapter's own prompt is written into ``policies["agent_system_prompt"]``,
+    which ``build_system_prompt`` returns before it considers anything else. So
+    the adapter has to stand aside for any engine-side default to be reachable
+    at all — that, rather than the new param, is the behavioural change here.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    TASK_ID = "echo-hello"
+
+    def test_default_emission_is_unchanged(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.agent_prompt_contract is None
+        assert "agent_system_prompt" in task.policies
+
+    def test_selecting_a_contract_stops_the_adapter_writing_a_prompt(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="reasoning_agent")
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.agent_prompt_contract == "reasoning_agent"
+        assert (
+            "agent_system_prompt" not in task.policies
+        ), "the highest-priority key must be absent, or no contract can be reached"
+
+    def test_the_contract_reaches_the_built_prompt(self, fixture_dir, tmp_path):
+        from tolokaforge.core.agent_prompt_contract import CONTRACTS
+        from tolokaforge.core.system_prompt import build_system_prompt
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="reasoning_agent")
+        task_id = self.TASK_ID
+        task = adapter.get_task(task_id)
+
+        built = build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)
+
+        assert built.startswith(CONTRACTS["reasoning_agent"])
+
+    def test_a_verbatim_prompt_file_still_wins(self, fixture_dir, tmp_path):
+        prompt = tmp_path / "verbatim.md"
+        prompt.write_text("EXACTLY THIS")
+        adapter = self._adapter(fixture_dir, tmp_path, agent_system_prompt_file=str(prompt))
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.policies["agent_system_prompt"] == "EXACTLY THIS"
+
+    def test_asking_for_both_is_refused_at_construction(self, fixture_dir, tmp_path):
+        prompt = tmp_path / "verbatim.md"
+        prompt.write_text("EXACTLY THIS")
+
+        with pytest.raises(ValueError, match="not both"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                agent_system_prompt_file=str(prompt),
+                agent_prompt_contract="reasoning_agent",
+            )
+
+    def test_an_unknown_contract_name_fails_when_the_prompt_is_built(self, fixture_dir, tmp_path):
+        from tolokaforge.core.agent_prompt_contract import UnknownAgentPromptContractError
+        from tolokaforge.core.system_prompt import build_system_prompt
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="no_such_thing")
+        task_id = self.TASK_ID
+        task = adapter.get_task(task_id)
+
+        with pytest.raises(UnknownAgentPromptContractError):
+            build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)

@@ -23,6 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tolokaforge.core.agent_prompt_contract import resolve_agent_prompt_contract
+
 if TYPE_CHECKING:
     from tolokaforge.core.models import TaskConfig
 
@@ -68,8 +70,17 @@ def _build_single_file(domain_policy: str) -> str:
     return _wrap_policy_document(_AGENT_INSTRUCTION_NO_TRAILING_NEWLINE, domain_policy)
 
 
-def _build_minimal_default(task: TaskConfig) -> str:
-    parts = ["You are a helpful assistant."]
+_BARE_PERSONA = "You are a helpful assistant."
+
+
+def _build_minimal_default(task: TaskConfig, *, persona: bool = True) -> str:
+    """Guidance bullets and browser hint, under a generic persona.
+
+    *persona* is dropped when a reply contract already opened the prompt with
+    one of its own: two personas in one prompt contradict each other, and the
+    contract's is the specific one.
+    """
+    parts = [_BARE_PERSONA] if persona else []
 
     guidance = task.policies.get("guidance", []) if task.policies else []
     if guidance:
@@ -90,7 +101,21 @@ def _build_minimal_default(task: TaskConfig) -> str:
     return "\n".join(parts)
 
 
-def build_system_prompt(*, task: TaskConfig, task_dir: Path) -> str:
+def _compose_with_contract(contract: str, body: str | None) -> str:
+    """Put the reply contract first, the task's own prompt after it.
+
+    Order is deliberate: the contract describes how to answer every turn and
+    stays true for the whole episode, while the body describes this particular
+    job. A model reading top-down meets the standing rule before the specifics.
+    """
+    if body is None or not body.strip():
+        return contract
+    return f"{contract}\n\n{body}"
+
+
+def build_system_prompt(
+    *, task: TaskConfig, task_dir: Path, default_prompt_contract: str | None = None
+) -> str:
     """Assemble the pre-policy agent system prompt for *task*.
 
     Priority (first-match-wins):
@@ -111,6 +136,22 @@ def build_system_prompt(*, task: TaskConfig, task_dir: Path) -> str:
     if "agent_system_prompt" in task.policies:
         return task.policies["agent_system_prompt"]
 
+    contract_selector = task.agent_prompt_contract or default_prompt_contract
+    contract = (
+        resolve_agent_prompt_contract(contract_selector, task_dir=task_dir)
+        if contract_selector
+        else None
+    )
+
+    if contract is not None:
+        body = _build_task_body(task=task, task_dir=task_dir, persona=False)
+        return _compose_with_contract(contract, body)
+
+    return _build_task_body(task=task, task_dir=task_dir)
+
+
+def _build_task_body(*, task: TaskConfig, task_dir: Path, persona: bool = True) -> str:
+    """The task's own prompt, by the authoring chain that predates contracts."""
     if task.system_prompt:
         system_prompt_path = task_dir / task.system_prompt
         if system_prompt_path.exists():
@@ -138,4 +179,4 @@ def build_system_prompt(*, task: TaskConfig, task_dir: Path) -> str:
         if system_prompt_path.exists():
             return _build_single_file(system_prompt_path.read_text())
 
-    return _build_minimal_default(task)
+    return _build_minimal_default(task, persona=persona)

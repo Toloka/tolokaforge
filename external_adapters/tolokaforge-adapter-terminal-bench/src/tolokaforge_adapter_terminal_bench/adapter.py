@@ -229,6 +229,17 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     f"terminal-bench adapter: agent_system_prompt_file "
                     f"{prompt_file!r} is empty — omit the key to use the default"
                 )
+        # Names a reply contract the engine resolves, rather than a prompt this
+        # adapter writes. Left unset the adapter supplies no prompt at all, so a
+        # model preset's default can reach the task; an explicit
+        # ``agent_system_prompt_file`` still wins, for byte-exact replay.
+        self._agent_prompt_contract: str | None = params.get("agent_prompt_contract")
+        if self._agent_prompt_contract and self._agent_system_prompt is not None:
+            raise ValueError(
+                "terminal-bench adapter: set agent_system_prompt_file or "
+                "agent_prompt_contract, not both — the first supplies the whole "
+                "prompt verbatim and the second asks the engine to compose one"
+            )
         self.task_id_filter: list[str] | None = params.get("task_ids")
         self.network_policy = NetworkPolicy(
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
@@ -393,7 +404,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 user={"enabled": []},
             ),
             grading="__adapter__",
-            policies={"agent_system_prompt": self.get_system_prompt(task_id)},
+            policies=self._agent_policies(task_id),
+            agent_prompt_contract=self._agent_prompt_contract,
             environment_manifest=self._environment_patch(task_id),
             adapter_settings={
                 "difficulty": meta.difficulty,
@@ -588,6 +600,22 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             f"Use the {self.agent_tool} tool to execute commands. "
             "Fix the issues described in the user message."
         )
+
+    def _agent_policies(self, task_id: str) -> dict[str, Any]:
+        """The task's ``policies`` block, carrying a prompt only when one was asked for.
+
+        ``build_system_prompt`` returns ``policies["agent_system_prompt"]``
+        before it considers anything else, so writing this key unconditionally —
+        as this adapter used to — makes every lower-priority source
+        unreachable, including a model preset's default contract. The key is
+        now present only when the run supplied a prompt file, which is the one
+        case where a verbatim prompt is the point.
+        """
+        if self._agent_system_prompt is not None:
+            return {"agent_system_prompt": self._agent_system_prompt}
+        if self._agent_prompt_contract is not None:
+            return {}
+        return {"agent_system_prompt": self.get_system_prompt(task_id)}
 
     # -- grading config -------------------------------------------------------
 
