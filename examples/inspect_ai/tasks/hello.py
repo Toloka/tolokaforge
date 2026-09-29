@@ -1,8 +1,9 @@
-"""Example Inspect AI task, runnable under `tolokaforge run` (offline with mockllm).
+"""Example Inspect AI task, runnable under `tolokaforge run`.
 
-The mockllm provider's default completion contains the word "output", so the
-`includes()` scorer marks the sample correct — this task passes at $0 with
-`--model mockllm/model` and needs no API key.
+Deterministic across models: the prompt asks for the exact word "output", which a
+real model returns and which the mockllm provider's default completion also
+contains — so the `includes()` scorer passes both with a real cheap model and
+offline at $0 with `mockllm/model`.
 """
 
 from inspect_ai import Task, task
@@ -14,7 +15,12 @@ from inspect_ai.solver import generate, system_message
 @task
 def hello():
     return Task(
-        dataset=MemoryDataset([Sample(input="Say hello.", target="output", id="s1")]),
-        solver=[system_message("Be brief."), generate()],
+        dataset=MemoryDataset(
+            [Sample(input="Reply with exactly one word: output", target="output", id="s1")]
+        ),
+        solver=[
+            system_message("Reply with exactly the requested word and nothing else."),
+            generate(),
+        ],
         scorer=includes(),
     )

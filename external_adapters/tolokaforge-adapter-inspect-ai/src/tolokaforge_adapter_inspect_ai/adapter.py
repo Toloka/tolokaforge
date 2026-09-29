@@ -86,6 +86,11 @@ class InspectAiAdapter(BaseAdapter):
         self.agent_model: str = params.get("agent_model") or ""
         self.inspect_version: str = params.get("inspect_version") or _DEFAULT_INSPECT_VERSION
         self.base_image: str = params.get("base_image") or _DEFAULT_BASE_IMAGE
+        # inspect_ai ships no provider client; `openai` covers the openai /
+        # openrouter / openai-api / litellm-proxy providers. Override for others.
+        self.extra_pip_packages: list[str] = _as_list(params.get("extra_pip_packages")) or [
+            "openai"
+        ]
         self.agent_timeout_s: float = float(
             params.get("agent_timeout_s") or _DEFAULT_AGENT_TIMEOUT_S
         )
@@ -135,6 +140,7 @@ class InspectAiAdapter(BaseAdapter):
             inspect_version=self.inspect_version,
             base_image=self.base_image,
             provider_env_keys=sorted(self.agent_provider_env),
+            extra_pip_packages=self.extra_pip_packages,
         )
         self._environments[task_id] = env
         return env

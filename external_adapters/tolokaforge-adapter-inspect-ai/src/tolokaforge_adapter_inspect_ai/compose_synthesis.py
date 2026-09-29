@@ -40,7 +40,7 @@ _DB_SERVICE = "db-service"
 
 _DOCKERFILE_TEMPLATE = """\
 FROM {base_image}
-RUN pip install --no-cache-dir "inspect-ai=={inspect_version}"
+RUN pip install --no-cache-dir "inspect-ai=={inspect_version}"{extra_pip}
 COPY {task_pack} /app/{task_pack}
 COPY tests /tests
 WORKDIR /app
@@ -103,6 +103,7 @@ def materialise_task_environment(
     inspect_version: str,
     base_image: str,
     provider_env_keys: Sequence[str] = (),
+    extra_pip_packages: Sequence[str] = (),
     runner_image: str = "tolokaforge-runner:local",
     db_service_image: str = "tolokaforge-db-service:local",
     agent_service: str = "main",
@@ -115,6 +116,7 @@ def materialise_task_environment(
             "inspect_version": inspect_version,
             "base_image": base_image,
             "provider_env_keys": ",".join(sorted(provider_env_keys)),
+            "extra_pip_packages": ",".join(extra_pip_packages),
             "runner_image": runner_image,
             "db_service_image": db_service_image,
             "agent_service": agent_service,
@@ -124,7 +126,13 @@ def materialise_task_environment(
         digest = f"h{digest}"
 
     staging_dir = (staging_root / f"inspect-{_safe(task_name)}-{digest}").resolve()
-    _write_staging(pack_dir, staging_dir, inspect_version=inspect_version, base_image=base_image)
+    _write_staging(
+        pack_dir,
+        staging_dir,
+        inspect_version=inspect_version,
+        base_image=base_image,
+        extra_pip_packages=extra_pip_packages,
+    )
 
     agent_image = f"tolokaforge-inspect-{_safe(task_name)}:{digest}"
     task_doc = _task_compose_doc(agent_service, agent_image, provider_env_keys)
@@ -145,7 +153,12 @@ def materialise_task_environment(
 
 
 def _write_staging(
-    pack_dir: Path, staging_dir: Path, *, inspect_version: str, base_image: str
+    pack_dir: Path,
+    staging_dir: Path,
+    *,
+    inspect_version: str,
+    base_image: str,
+    extra_pip_packages: Sequence[str] = (),
 ) -> None:
     def _ignore(_dir: str, names: list[str]) -> list[str]:
         return [n for n in names if n == "__pycache__"]
@@ -155,9 +168,13 @@ def _write_staging(
         shutil.rmtree(task_pack_dir)
     shutil.copytree(pack_dir, task_pack_dir, ignore=_ignore)
 
+    extra_pip = "".join(f' "{pkg}"' for pkg in extra_pip_packages)
     (staging_dir / "Dockerfile").write_text(
         _DOCKERFILE_TEMPLATE.format(
-            base_image=base_image, inspect_version=inspect_version, task_pack=TASK_PACK_DIRNAME
+            base_image=base_image,
+            inspect_version=inspect_version,
+            extra_pip=extra_pip,
+            task_pack=TASK_PACK_DIRNAME,
         )
     )
     tests_dir = staging_dir / "tests"

@@ -45,8 +45,14 @@ evaluation:
       #   OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
 ```
 
-Requires a running Docker daemon. `params` also accepts `base_image`, `inspect_version`,
-`agent_timeout_s`, `network_policy`, `tasks_glob`, and `task_ids`.
+A real (cheap) model run is in `examples/inspect_ai/run_config_openrouter.yaml`
+(`openrouter/openai/gpt-4o-mini`, key via `agent_provider_env`).
+
+Requires a running Docker daemon. The task image installs `inspect_ai` plus the provider
+client (`openai` by default, which covers the openai / openrouter / openai-api /
+litellm-proxy providers); set `extra_pip_packages` for others (e.g. `anthropic`).
+`params` also accepts `base_image`, `inspect_version`, `agent_timeout_s`,
+`network_policy`, `tasks_glob`, and `task_ids`.
 
 ## Development
 

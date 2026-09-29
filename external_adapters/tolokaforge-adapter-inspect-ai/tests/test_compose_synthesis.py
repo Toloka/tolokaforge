@@ -56,6 +56,13 @@ def test_test_sh_reads_reward_from_eval_log(tmp_path):
     assert "/logs/inspect/*.eval" in test_sh
 
 
+def test_extra_pip_packages_land_in_dockerfile(tmp_path):
+    env = _materialise(tmp_path, extra_pip_packages=["openai", "anthropic"])
+    dockerfile = (env.staging_dir / "Dockerfile").read_text()
+    assert '"openai"' in dockerfile
+    assert '"anthropic"' in dockerfile
+
+
 def test_provider_env_keys_become_compose_env(tmp_path):
     env = _materialise(tmp_path, provider_env_keys=["OPENAI_API_KEY"])
     doc = yaml.safe_load(env.compose_file.read_text())
