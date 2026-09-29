@@ -33,6 +33,7 @@ from tolokaforge.runner.models import (
 __all__ = [
     "ActorSpec",
     "AssetsConfig",
+    "DEFAULT_MAX_USER_TOOL_STEPS",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -59,6 +60,7 @@ __all__ = [
     "UserSamplingConfig",
     "UserSimulatorConfig",
     "UserStopWithText",
+    "UserToolTurns",
     "validate_stop_tokens",
 ]
 
@@ -188,6 +190,19 @@ class UserSamplingConfig(BaseModel):
     default applies. A preset's ``fixed_temperature`` still overrides it."""
 
 
+UserToolTurns = Literal["shared", "isolated"]
+"""How a user simulator's own tool calls take part in the dialogue.
+
+``shared`` runs a reply's calls and appends their results to the reply's text,
+which the agent reads; the simulator gets one generation per turn. ``isolated``
+records each call and its results as a step only the simulator sees, then asks
+it again, until it replies with text alone; that reply is all the agent reads.
+"""
+
+DEFAULT_MAX_USER_TOOL_STEPS = 10
+"""Tool steps one ``isolated`` user turn may take before the dialogue ends."""
+
+
 def validate_stop_tokens(tokens: list[str]) -> list[str]:
     """Reject a stop-token list that cannot end a dialogue the way it reads.
 
@@ -253,6 +268,14 @@ class UserSimulatorConfig(BaseModel):
     task *declared* ``sampling`` on a scripted actor is decided where the
     declaration is visible, in :meth:`TaskConfig.resolve_user_simulator`, so this
     resolved config re-validates from its own dump."""
+    tool_turns: UserToolTurns = "shared"
+    """See :data:`UserToolTurns`."""
+    max_tool_steps: int = Field(default=DEFAULT_MAX_USER_TOOL_STEPS, ge=1)
+    """Tool steps an ``isolated`` user turn may take; one more ends the dialogue
+    with ``USER_TOOL_LOOP_LIMIT`` and runs none of that step's calls. A ``shared``
+    config carries the default and ignores it; whether a task *declared* a limit
+    nothing loops under is decided in :meth:`TaskConfig.resolve_user_simulator`, so
+    this resolved config re-validates from its own dump."""
 
     @model_validator(mode="before")
     @classmethod
@@ -358,6 +381,8 @@ class ActorSpec(BaseModel):
     stop_with_text: UserStopWithText | None = None
     prompt_template: str | None = None
     sampling: UserSamplingConfig | None = None
+    tool_turns: UserToolTurns | None = None
+    max_tool_steps: int | None = Field(default=None, ge=1)
 
     model_config = {"extra": "ignore"}
 
@@ -686,6 +711,8 @@ class TaskConfig(BaseModel):
                 ("stop_tokens", spec.stop_tokens),
                 ("stop_with_text", spec.stop_with_text),
                 ("sampling", spec.sampling),
+                ("tool_turns", spec.tool_turns),
+                ("max_tool_steps", spec.max_tool_steps),
             )
             if value is not None
         }
@@ -700,7 +727,7 @@ class TaskConfig(BaseModel):
 
 
 def _refuse_a_declaration_the_mode_ignores(spec: ActorSpec, mode: str) -> None:
-    """Refuse an ``actors.user`` key the resolved simulator mode would never read.
+    """Refuse an ``actors.user`` key the resolved simulator would never read.
 
     Decided on the merged actor spec, where a declared key is still told apart
     from a default, rather than on the resolved :class:`UserSimulatorConfig`,
@@ -713,6 +740,21 @@ def _refuse_a_declaration_the_mode_ignores(spec: ActorSpec, mode: str) -> None:
             f"sampling is {spec.sampling.model_dump()!r}, but the user simulator resolves to "
             "mode scripted, which samples nothing. Write mode: llm, or drop sampling "
             "(declared in a project's task_defaults, write sampling: null in the task)."
+        )
+    tool_turns = spec.tool_turns or "shared"
+    if mode == "scripted" and tool_turns == "isolated":
+        raise ValueError(
+            "tool_turns is isolated, but the user simulator resolves to mode scripted, whose "
+            "replies are authored text and never call tools. Write mode: llm, or drop "
+            "tool_turns (declared in a project's task_defaults, write tool_turns: null in "
+            "the task)."
+        )
+    if tool_turns == "shared" and spec.max_tool_steps is not None:
+        raise ValueError(
+            f"max_tool_steps is {spec.max_tool_steps}, but tool_turns resolves to shared, "
+            "where a user turn is one generation and never loops. Write tool_turns: "
+            "isolated, or drop max_tool_steps (declared in a project's task_defaults, write "
+            "max_tool_steps: null in the task)."
         )
 
 

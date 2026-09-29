@@ -100,6 +100,8 @@ actors:
     stop_with_text: "deliver"       # "deliver" (agent answers the final reply) or "end"
     prompt_template: "sim/user.md"  # Replaces the built-in simulator prompt; carries {backstory} once
     sampling: {temperature: 0.2}    # What the simulator samples at; null sends no temperature
+    tool_turns: "isolated"          # Default "shared"; "isolated" keeps user tool steps from the agent
+    max_tool_steps: 10              # Isolated only (refused under "shared"): steps one user turn may take
 
 policies:
   disallowed_actions:

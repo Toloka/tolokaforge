@@ -2,13 +2,15 @@
   "actors": {
     "user": {
       "backstory": "You are customer Alex Torres (C-101) checking that the assistant can correctly use the shop tools to place your order and process payment. Confirm when the assistant tells you the order is placed and paid, then end the conversation with ###STOP###.\n",
+      "max_tool_steps": null,
       "mode": "llm",
       "persona": "cooperative",
       "prompt_template": null,
       "sampling": null,
       "scripted_flow": null,
       "stop_tokens": null,
-      "stop_with_text": null
+      "stop_with_text": null,
+      "tool_turns": null
     }
   },
   "adapter_settings": null,

@@ -307,6 +307,58 @@ rather than read as either value. `temperature` written directly on the actor
 that sets `sampling` in its `task_defaults` sets it for every task, so a scripted
 task in that project writes `sampling: null` to drop it.
 
+### User tool turns
+
+A user with tools of its own (`tools.user.enabled`) runs them one of two ways, set by
+`tool_turns`:
+
+```yaml
+actors:
+  user:
+    tool_turns: isolated   # default: shared
+    max_tool_steps: 10     # isolated only; this is the default
+```
+
+- **`shared`** (default) — the simulator gets one generation per turn. Its calls run,
+  and their results are appended to the text of its reply, which the agent reads. A
+  reply that is only calls is given the text "Let me check that." (#1089).
+- **`isolated`** — a reply that calls tools is a *tool step*. The calls, and a TOOL
+  message with each result, are recorded in the transcript but never sent to the
+  agent, and the simulator is asked again with the results in view, until it replies
+  with text alone. That text is the turn the agent reads. The simulator sees its own
+  steps and none of the agent's tool traffic: an agent message that calls tools is
+  left out of the simulator's view whole, text included. This is how the τ³-bench
+  harness runs its users.
+  - A stop token inside a tool step is not a stop, as in τ³-bench: a step is addressed
+    to the environment.
+  - A step beyond `max_tool_steps` ends the dialogue with `user_tool_loop_limit`, and
+    none of that step's calls run; the system message and the trial log name them. The
+    reason is graded, like `max_turns`.
+  - Between steps of a dialogue turn the episode timeout is checked.
+  - The opening turn records its steps ahead of the first message. Like the rest of
+    turn 0 it runs before the loop, so no timeout check interrupts it: `max_tool_steps`
+    bounds it, and a trial whose opening ran past the episode budget ends with
+    `timeout` on the loop's first turn. More than `max_tool_steps` steps before the
+    opening refuse the trial as an error rather than end it with
+    `user_tool_loop_limit`: the agent has not spoken yet, so there is nothing of its
+    to grade.
+  - A user tool that raises ends the trial as an error, after every call of the step
+    is answered with an `Error: …` result. τ³-bench turns an exception into an error
+    result and goes on, so a user-side environment that wants that returns the error
+    as the tool's result instead of raising.
+  - A run with `orchestrator.rate_limit_probe` enabled refuses `isolated` tasks: the
+    probe budgets one simulator reply per turn.
+
+`max_tool_steps` under `shared` is refused, since a shared turn never loops, and so is
+`isolated` on a `scripted` simulator, whose authored replies never call tools. Both are
+decided on what the task and its project declared: a task under a project that sets
+either key writes it as `null` to drop it. `isolated` without user tools loads, so an
+adapter can declare it on every task. In grading, a tool step's calls and results are
+timeline events and the step itself is not a `user_message` (see
+[GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)); the rubric
+judge's transcript labels the step and its results as the user's; a custom check's
+`transcript.user_messages` still lists it, as a user message carrying `tool_calls`.
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in

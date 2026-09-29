@@ -464,7 +464,9 @@ generation it role-flips the shared transcript (its own past USER turns
 replay as `assistant`, the agent's ASSISTANT turns as `user`), skips
 turns carrying no dialogue text (agent tool-call turns, whitespace-only
 replies), and coalesces adjacent same-role turns so the request
-alternates strictly. Two invariants hold on the request it sends:
+alternates strictly
+([`shared_view`](../tolokaforge/core/actors/tool_turns.py)). Two
+invariants hold on the request it sends:
 
 1. **It leads with a user-role turn.** Whenever the flipped context starts
    assistant-side (the simulator's own opening comes first — caller-seeded
@@ -496,6 +498,25 @@ copy of `models.user` with that value in place — it never reads
 per-call override means "use the config". A preset's `fixed_temperature` still
 wins. Sampling is outside `simulator_schema_version`; a trial's value is recorded
 in the bundle's `user_actor.sampling`.
+
+Under `actors.user.tool_turns: isolated` the context is built by
+[`simulator_view`](../tolokaforge/core/actors/tool_turns.py) instead. The
+simulator's own tool steps replay as `assistant` messages carrying their
+`tool_calls` — and the step's reasoning, so a thinking model gets its signed blocks
+back with the tool use they preceded — and their results as `tool` messages. An
+agent message that calls tools is dropped whole, text included, and only adjacent
+text turns are joined. Invariant 2 then admits a trailing `tool` message: the
+simulator reads a step's results and goes on. A tool-call reply is never given the
+filler text, since it is a step rather than a dialogue turn. The shape of this
+context is new only under `isolated`, so `simulator_schema_version` stays; a trial
+that ran it is identified by `user_actor.tool_turns`.
+
+A step whose user tool raises still gets a `tool` message for every call before
+the exception propagates, because the simulator can be asked again on the same
+transcript: when a user turn fails with an error the loop classifies as a
+provider error, the loop retries the whole turn, and the agent generates again
+before the simulator is asked. That retry predates tool turns; it leaves two
+assistant turns in a row in the agent's context.
 
 ### The prompt body
 

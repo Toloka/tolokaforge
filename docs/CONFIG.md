@@ -541,6 +541,8 @@ actors:
     stop_with_text: "deliver"    # "deliver" or "end"
     prompt_template: null        # authored simulator prompt with {backstory}; relative to the task root
     # sampling: {temperature: 0.2}  # llm mode only; null sends no temperature
+    tool_turns: "shared"         # "shared" or "isolated" (see docs/TASKS.md)
+    # max_tool_steps: 10         # isolated only
 
 policies:
   guidance:
