@@ -24,6 +24,11 @@ import pytest
 from litellm.litellm_core_utils.prompt_templates.factory import anthropic_messages_pt
 from litellm.llms.vertex_ai.gemini.transformation import _gemini_convert_messages_with_history
 
+from tolokaforge.core.actors.tool_steps import (
+    TurnShape,
+    turn_shape_of,
+    user_tool_step_positions_of,
+)
 from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.actors.tool_turns import (
     agent_view,
@@ -121,6 +126,21 @@ class TestProjections:
             (MessageRole.TOOL, "card: blocked"),
             (MessageRole.ASSISTANT, "Your card is blocked."),
         ]
+
+    def test_a_stored_transcript_reads_by_the_same_rule(self) -> None:
+        """The judge and the trace projection read bundle dicts through one
+        extractor; role case and a malformed call entry do not change the shape."""
+        stored = [
+            {"role": "USER", "content": "", "tool_calls": [{"id": "u1"}, "not-a-call"]},
+            {"role": "tool", "content": "12.50", "tool_call_id": "u1"},
+            {"role": "user", "content": "It says 12.50."},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "a1"}]},
+            {"role": "tool", "content": "card: blocked", "tool_call_id": "a1"},
+        ]
+
+        assert turn_shape_of(stored[0]) == TurnShape(role="user", call_ids=("u1",))
+        assert turn_shape_of(stored[1]) == TurnShape(role="tool", answers="u1")
+        assert user_tool_step_positions_of(stored) == frozenset({0, 1})
 
     def test_the_agent_view_leaves_a_shared_transcript_alone(self) -> None:
         assert agent_view(SHARED_TRANSCRIPT) == SHARED_TRANSCRIPT
