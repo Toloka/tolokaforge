@@ -27,9 +27,9 @@ the ``tolokaforge.policies`` entry-point group.
 All policies accept an optional ``param_types`` keyword argument: a
 ``Mapping[str, str]`` from root-level parameter name to its JSON-Schema
 ``type`` (after sanitisation). When supplied, schema-aware recovery
-(empty-container coercion) fires; when omitted, only schema-agnostic
-recovery runs (JSON-string decode), and other arguments pass through
-unchanged.
+(empty-container coercion) fires, and a parameter it declares ``string`` is
+never JSON-decoded; when omitted, only schema-agnostic recovery runs
+(JSON-string decode), and other arguments pass through unchanged.
 """
 
 from __future__ import annotations
@@ -108,11 +108,10 @@ def coerce_json_strings(
     deliberately do *not* promote scalar JSON literals (``"42"`` → 42)
     because string IDs are common and would silently corrupt.
 
-    A parameter *param_types* declares as ``string`` is never decoded: the
-    tool asked for the JSON text itself (τ³-bench's
-    ``call_discoverable_agent_tool(arguments: str)`` parses it on its own), so
-    handing it the decoded object breaks every such call. Without
-    *param_types*, or for a parameter it does not name, the heuristic applies.
+    A parameter *param_types* declares as ``string`` is never decoded: it
+    carries text the tool parses itself, so handing the tool the decoded object
+    breaks every such call. Without *param_types*, or for a parameter it does not
+    name, the heuristic applies.
     """
     if not isinstance(arguments, dict):
         return arguments

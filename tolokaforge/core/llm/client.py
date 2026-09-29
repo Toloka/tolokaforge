@@ -198,6 +198,12 @@ def _root_param_types_by_tool(
     For ``Optional[array | object]`` shapes (Pydantic ``anyOf``), pick the
     first non-null branch's ``type`` so empty-string coercion still fires
     for ``equipment: Optional[list[str]]``.
+
+    A union of ``string`` with a container (``str | list[str]``, whichever
+    branch comes first) is left unnamed when its first branch is the string:
+    naming it ``string`` would stop the JSON-string recovery for a parameter
+    that also takes the decoded container, and would make the result depend on
+    the order the branches were written in.
     """
     out: dict[str, dict[str, str]] = {}
     for tool in sanitized_tools or []:
@@ -216,6 +222,8 @@ def _root_param_types_by_tool(
             if not isinstance(prop_schema, dict):
                 continue
             declared = _resolve_declared_type(prop_schema)
+            if declared == "string" and _admits_a_container(prop_schema):
+                continue
             if declared is not None:
                 type_map[prop_name] = declared
         if type_map:
@@ -252,6 +260,17 @@ def _resolve_declared_type(schema: dict[str, Any]) -> str | None:
                     return "dict_map"
                 return inner
     return None
+
+
+_CONTAINER_TYPES = frozenset({"array", "object"})
+
+
+def _admits_a_container(schema: dict[str, Any]) -> bool:
+    """Whether one of *schema*'s ``anyOf`` branches is an array or an object."""
+    branches = schema.get("anyOf")
+    return isinstance(branches, list) and any(
+        isinstance(branch, dict) and branch.get("type") in _CONTAINER_TYPES for branch in branches
+    )
 
 
 # Synthetic key field that ``StrictSchema`` adds to items when converting
