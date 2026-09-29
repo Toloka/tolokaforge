@@ -44,7 +44,7 @@ import pytest
 import yaml
 
 from tolokaforge.core.llm.capabilities import ModelCapabilities
-from tolokaforge.core.llm.client import GenerationResult, UserSimulator
+from tolokaforge.core.llm.client import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import Message, TerminationReason, ToolCall, Trajectory
@@ -235,7 +235,7 @@ def _drive(script: Callable[[int], GenerationResult], thresholds: Mapping[str, i
         task_id="stuck-heuristics",
         trial_index=0,
         agent_client=_ScriptedTurns(script),
-        user_simulator=UserSimulator(
+        user_simulator=BuiltinUserSimulator(
             mode="scripted", scripted_flow=[{"default": "Please carry on."}]
         ),
         tool_executor=ToolExecutor(ToolRegistry()),

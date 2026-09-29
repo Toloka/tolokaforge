@@ -1,6 +1,6 @@
 """A generated user turn reaches the agent as written, or not at all.
 
-The guard is exercised through a real :class:`UserSimulator` in ``llm`` mode
+The guard is exercised through a real :class:`BuiltinUserSimulator` in ``llm`` mode
 with a fake wire client standing in for :class:`LLMClient`: the simulator, its
 ``_llm_reply`` and the guard are all real, only the network is not. A mocked
 simulator would assert that the harness called something, not that the words
@@ -37,7 +37,7 @@ from tolokaforge.core.actors.reply_guard import (
 )
 from tolokaforge.core.actors.scratchpad import ScratchpadDetector
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
-from tolokaforge.core.llm import GenerationResult, UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
@@ -122,13 +122,13 @@ class _FakeWireClient:
         )
 
 
-def _llm_simulator(replies: list[str]) -> tuple[UserSimulator, _FakeWireClient]:
+def _llm_simulator(replies: list[str]) -> tuple[BuiltinUserSimulator, _FakeWireClient]:
     """A real LLM-mode simulator whose wire client returns *replies* in order.
 
     ``llm_config=None`` leaves ``llm_client`` unset, so the fake is assigned
     rather than replacing a constructed client.
     """
-    simulator = UserSimulator(mode="llm", llm_config=None)
+    simulator = BuiltinUserSimulator(mode="llm", llm_config=None)
     client = _FakeWireClient(replies)
     simulator.llm_client = client  # type: ignore[assignment]
     return simulator, client
@@ -433,7 +433,7 @@ class TestScriptedRepliesAreAuthoredContent:
         scripted_text = "This is a simulation of the task."
         assert FourthWallDetector().inspect(scripted_text) is not None
 
-        simulator = UserSimulator(mode="scripted", scripted_flow=[{"user": scripted_text}])
+        simulator = BuiltinUserSimulator(mode="scripted", scripted_flow=[{"user": scripted_text}])
 
         result = simulator.reply(_agent_turn())
 
@@ -443,7 +443,7 @@ class TestScriptedRepliesAreAuthoredContent:
 
 # ===================================================================
 # What the bundle records — a real TrialRunner driving a real
-# UserSimulator whose only stand-in is the wire client.
+# BuiltinUserSimulator whose only stand-in is the wire client.
 # ===================================================================
 
 PINNED_OPENER = "My router keeps dropping the 5GHz band."

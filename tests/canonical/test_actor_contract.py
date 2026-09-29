@@ -1,6 +1,6 @@
 """Pin the :class:`Actor` Protocol contract — runtime check + round-trip.
 
-Two implementations are checked: :class:`UserSimulator` (the historical
+Two implementations are checked: :class:`BuiltinUserSimulator` (the historical
 concrete actor, constructed in scripted mode with a minimal flow) and a
 purpose-built ``_InMemoryActor`` fixture in this file that locks the
 contract's expected value-object shape for future actor kinds (adversary,
@@ -21,7 +21,7 @@ from tolokaforge.core.actors.actor import (
     LLMCallObservation,
     Message,
 )
-from tolokaforge.core.llm.client import UserSimulator
+from tolokaforge.core.llm.client import BuiltinUserSimulator
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import MessageRole
 
@@ -54,9 +54,9 @@ class _InMemoryActor:
         )
 
 
-def _scripted_user_simulator() -> UserSimulator:
-    """Build a scripted :class:`UserSimulator` — no LLM client wired."""
-    return UserSimulator(
+def _scripted_user_simulator() -> BuiltinUserSimulator:
+    """Build a scripted :class:`BuiltinUserSimulator` — no LLM client wired."""
+    return BuiltinUserSimulator(
         mode="scripted",
         scripted_flow=[{"user": "Please complete step one."}],
     )

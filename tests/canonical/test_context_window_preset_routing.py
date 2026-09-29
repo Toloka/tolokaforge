@@ -3,6 +3,12 @@
 Pins the two model presets that opt into the loop's context-window
 summarize seam:
 
+* ``moonshot_kimi_k2`` — 120 K ceiling with an 8 K free-token watermark.
+  Chosen against the SMALLEST window the K2 globs match
+  (``moonshotai/kimi-k2`` is 128 K; the k2.5/2.6/2.7 siblings are 256 K),
+  because the seam has to hold for every route the preset owns. Armed
+  alongside ``default_max_turns: 90`` — a longer turn budget is a bigger
+  context, and an unarmed overflow is terminal.
 * ``moonshot_kimi_k3`` — 128 K documented context, 8 K free-token
   watermark (~6 % headroom sized for one reasoning turn + reply).
   Reasoning-heavy multi-turn trajectories on tool-rich packs exhaust
@@ -39,6 +45,8 @@ pytestmark = pytest.mark.canonical
 
 _CONTEXT_WINDOW_OPT_IN_MODELS = [
     ("moonshotai/kimi-k3", "openrouter", 128000, 8000),
+    ("moonshotai/kimi-k2.6", "openrouter", 120000, 8000),
+    ("moonshotai/kimi-k2.7-code", "openrouter", 120000, 8000),
     ("openrouter/moonshotai/kimi-k3", "openrouter", 128000, 8000),
     ("anthropic/claude-opus-4.7", "openrouter", 200000, 12000),
     ("anthropic/claude-sonnet-4.7", "openrouter", 200000, 12000),
@@ -55,7 +63,6 @@ _CONTEXT_WINDOW_NONE_MODELS = [
     "anthropic/claude-fable-5.1",
     "x-ai/grok-4",
     "qwen/qwen3-coder",
-    "moonshotai/kimi-k2.6",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.5-flash",
 ]

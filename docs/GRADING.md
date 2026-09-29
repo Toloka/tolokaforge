@@ -240,10 +240,12 @@ ship:
   llm-judge / custom-checks fold. Omitting `grading_method` selects the same
   dispatch — `None` and `"composite"` are equivalent on the wire. The runner's
   inline composite fold owns this path.
-- `test_execution` — the reference-suite kind. Requires an exec-capable
-  lifecycle tool in `TaskDescription.agent_tools` (`DockerComposeExecToolWrapper`
-  today); the kind reads through `substrate.run_test_suite(...)` and parses the
-  reward off `/logs/verifier/reward.txt`.
+- `test_execution` — the reference-suite kind. Requires a tool in
+  `TaskDescription.agent_tools` satisfying `SupportsEnvExec`
+  ([`tolokaforge/runner/env_exec.py`](../tolokaforge/runner/env_exec.py));
+  `DockerComposeExecToolWrapper` is the in-tree one. The kind reads through
+  `substrate.run_test_suite(...)` and parses the reward off
+  `/logs/verifier/reward.txt`.
 
 Every non-composite name routes through the typed `GraderKind` seam at
 `RunnerServiceImpl._dispatch_via_grader_kind`. A downstream adapter registers a

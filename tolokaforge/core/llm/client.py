@@ -5,7 +5,7 @@ It composes a :class:`~tolokaforge.core.llm.capabilities.ModelCapabilities`
 set (schema sanitizer, prompt enrichment, params, response, content,
 reasoning codec, cache) and delegates per-request adaptation to each policy.
 
-``UserSimulator`` wraps the same client for tau-bench-style user simulation.
+``BuiltinUserSimulator`` wraps the same client for tau-bench-style user simulation.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
+from tolokaforge.core.actors.user_simulator import UserSimulatorContext
 from tolokaforge.core.env_var import parse_env_non_negative_int, parse_env_positive_float
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import (
@@ -88,7 +89,7 @@ __all__ = [
     "LLMApiTimeoutError",
     "LLMClient",
     "ParserError",
-    "UserSimulator",
+    "BuiltinUserSimulator",
 ]
 
 # Bound on the raw-arguments excerpt carried by ``ParserError.raw_arguments``.
@@ -589,7 +590,7 @@ class GenerationResult:
         # the response carries no finish_reason at all.
         self.finish_reason = finish_reason
         # Defects of the attempts discarded before this reply was accepted.
-        # Stamped only by ``UserSimulator._llm_reply``; every other producer
+        # Stamped only by ``BuiltinUserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
         self.guard_rejections: tuple[ReplyDefect, ...] = ()
         # One ``ParserError`` per ``tool_call.function.arguments`` string that
@@ -600,7 +601,7 @@ class GenerationResult:
         # append ``role=user`` parse-error feedback naming the failing tools,
         # and resample under ``LoopConfig.parser_error_retry_count``.
         self.parser_errors: tuple[ParserError, ...] = ()
-        # True iff ``UserSimulator._llm_reply`` substituted the fixed filler
+        # True iff ``BuiltinUserSimulator._llm_reply`` substituted the fixed filler
         # for a tool-call-only reply with no text. Callers whose downstream
         # semantics depend on the model having written the text (the
         # bootstrap seed the agent is graded against) refuse on this flag
@@ -2473,13 +2474,16 @@ class LLMClient:
 SIMULATOR_GREETING = "Hi! How can I help you today?"
 
 
-class UserSimulator(Actor):
-    """User simulator for benchmarking.
+class BuiltinUserSimulator(Actor):
+    """The engine's built-in user simulator for benchmarking.
 
-    Declares :class:`~tolokaforge.core.actors.actor.Actor` conformance so
-    the turn-loop seam can accept any Protocol-satisfying actor kind, not
-    just this concrete simulator. Behaviour is unchanged — the existing
-    :meth:`reply` already matches the Protocol signature.
+    Declares :class:`~tolokaforge.core.actors.actor.Actor` conformance and
+    satisfies the :class:`~tolokaforge.core.actors.user_simulator.UserSimulator`
+    Protocol (``reply`` + ``last_system_prompt``). Registered as ``builtin`` in
+    the ``tolokaforge.user_simulators`` entry-point group via
+    :func:`_builtin_user_simulator_factory`; the conductor resolves it through
+    :func:`~tolokaforge.core.plugin_registry.load_user_simulator` like any
+    third-party simulator.
     """
 
     def __init__(
@@ -2725,3 +2729,22 @@ Rules:
         )
         result.guard_rejections = rejected
         return result
+
+
+def _builtin_user_simulator_factory(context: UserSimulatorContext) -> BuiltinUserSimulator:
+    """Build the engine's built-in user simulator from the seam context.
+
+    Registered as ``builtin`` in the ``tolokaforge.user_simulators`` entry-point
+    group. Reads only the engine's own fields; a simulator that needs
+    task-declared configuration reads ``context.simulator_config``, which the
+    built-in ignores.
+    """
+    return BuiltinUserSimulator(
+        mode=context.mode,
+        llm_config=context.llm_config,
+        persona=context.persona,
+        backstory=context.backstory,
+        scripted_flow=context.scripted_flow,
+        tool_schemas=context.tool_schemas,
+        rate_limit_probe=context.rate_limit_probe,
+    )

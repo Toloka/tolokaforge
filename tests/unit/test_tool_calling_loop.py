@@ -1395,7 +1395,7 @@ def test_tool_output_cap_takes_tighter_of_tool_and_capability(
 
     Pairs with the ``capability_set`` and ``capability_none`` cases upstream:
     together they exercise every ``(tool_cap, cap_cap)`` combination
-    :meth:`ToolCallingLoop._cap_tool_message_content` distinguishes.
+    :meth:`ToolCallFunnel.cap_tool_message_content` distinguishes.
     """
     recorder = _RecordingRecorder()
     huge = "X" * 4_000

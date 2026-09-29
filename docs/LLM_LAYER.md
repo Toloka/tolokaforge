@@ -85,7 +85,7 @@ upgrading past v0.17.x.
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
-| [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
+| [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `BuiltinUserSimulator` |
 
 ## `reasoning`
 
@@ -460,7 +460,14 @@ corruption observed in the post-PR-#88 production run:
 See [`plans/eval_post_pr88_schema_sanitizer_diagnosis.md`](../plans/eval_post_pr88_schema_sanitizer_diagnosis.md)
 for the full evidence trail.
 
-## `UserSimulator` request and reply contract
+## `BuiltinUserSimulator` request and reply contract
+
+`UserSimulator` is the `@runtime_checkable` Protocol in
+[`core/actors/user_simulator.py`](../tolokaforge/core/actors/user_simulator.py)
+that the conductor resolves through the `tolokaforge.user_simulators` registry
+(see [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md));
+`BuiltinUserSimulator` is the engine's built-in implementation, registered as
+`builtin`. The contract below is the built-in's.
 
 The LLM user simulator converses from the customer's seat: before each
 generation it role-flips the shared transcript (its own past USER turns
@@ -2044,7 +2051,7 @@ The composition runs at two sites, each using the same shape (`min` of the
 set candidates, `None` when none is set). The adapter site
 (`native._actor_tool_schemas`) folds the task-yaml override and the
 tool-declared bound into the emitted `ToolSchema.output_max_chars`. The
-loop site (`ToolCallingLoop._cap_tool_message_content`) folds that emitted
+loop site (`ToolCallFunnel.cap_tool_message_content`) folds that emitted
 value with the per-model backstop into the per-call effective cap.
 
 Middle-elision uses `keep_head_and_tail` from
@@ -2059,7 +2066,7 @@ the baseline for presets that do not name the key on tools that do not
 declare a cap in a pack that does not override it.
 
 The cap sits **below** the trial's recorder and the grader. The recorder
-call inside `_execute_tool_calls` reads the full text through
+call inside `ToolCallFunnel.execute` reads the full text through
 `resolve_tool_output(tool_result)` before the truncation runs, so the
 trial's ordered tool-call record and the grader inputs carry the
 untruncated tool output regardless of the cap. Only the string the model
@@ -2152,11 +2159,14 @@ the precedence body is pinned by
 [`tests/unit/test_conductor.py`](../tests/unit/test_conductor.py)
 (`TestResolveMaxTurns`).
 
-The `gemini_31_pro_preview` preset opts in at
-`default_max_turns: 90`. Gemini 3.1 Pro's per-turn edit style is more
-granular than the framework baseline, so the same absolute budget
-exhausts earlier on tasks a coarser-grained model completes in fewer
-turns; 90 is the conservative lift over the 50-turn framework default.
+Two presets opt in at `default_max_turns: 90`, for the same reason:
+`gemini_31_pro_preview` and `moonshot_kimi_k2`. Both lines have a
+per-turn edit style more granular than the framework baseline, so the
+same absolute budget exhausts earlier on tasks a coarser-grained model
+completes in fewer turns; 90 is the conservative lift over the 50-turn
+framework default. Kimi K2 is the finer-grained of the two — median 260
+completion tokens per turn against 419 for `claude-sonnet-4.6` and 756
+for `gpt-5.6-sol` on one ten-task sample.
 The overlay carries the generic `gemini` policy trio (`reasoning_codec`,
 `schema_sanitizer`, `response_policy`) verbatim, so the preset's only
 functional divergence from the shared `gemini` route is the turn-budget
@@ -2312,6 +2322,15 @@ thinking-kwarg routing instead of falling through to the adaptive-effort
 path that 4.7 ignores (see
 [plans/eval_output_new_diagnosis.md](../plans/eval_output_new_diagnosis.md)
 Part 4).
+
+Because the match is whole-entry and first-match-wins, a slug that lands on a
+broad multi-vendor preset inherits that preset's silence on every budget knob
+even when a near-identical sibling slug routes to a narrower preset that
+declares several. `scripts/analysis/audit_preset_fallthrough.py` reports that
+asymmetry — resolved preset, declared knobs and OpenRouter context window per
+slug, plus the presets whose `max_context_tokens + context_watermark`
+disagrees with the smallest real window their globs cover. See
+[`scripts/README.md`](../scripts/README.md) § Preset fall-through audit.
 
 `qwen` additionally enables `dict_map_hints` (GPT-5-class presets currently
 opt-in to this via the legacy `capabilities: {dict_map_prompt_hints: true}`
@@ -2497,9 +2516,9 @@ composes a `ModelCapabilities` and wraps litellm's `completion()`.
 `reasoning: StructuredReasoning | None`, and `effective_system_prompt`.
 See § `usage` above for the full Usage schema and accumulation contract.
 
-`UserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
+`BuiltinUserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
 `scripted` or `llm` modes. An `llm`-mode reply is delivered only if it survives
-the guard described in § `UserSimulator` request and reply contract;
+the guard described in § `BuiltinUserSimulator` request and reply contract;
 `GenerationResult.guard_rejections` carries the defects of the attempts
 discarded before it, and is empty everywhere else.
 

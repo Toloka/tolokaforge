@@ -194,7 +194,7 @@ class _SubmitReportTermination:
 
 
 #: Termination fires the instant the terminating tool appears, before any tool
-#: runs (``loop.py``: ``should_terminate`` precedes ``_execute_tool_calls``), so
+#: runs (``loop.py``: ``should_terminate`` precedes the tool-call funnel), so
 #: a sibling call on that same turn genuinely never executed — this returns an
 #: honest "not run" note, not a fabricated tool output, naming whichever tool
 #: actually ended the turn so the judge isn't told a falsehood about which call

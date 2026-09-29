@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test that UserSimulator can accept tool schemas (pure in-memory)."""
+"""Test that BuiltinUserSimulator can accept tool schemas (pure in-memory)."""
 
 import pytest
 
@@ -7,12 +7,12 @@ pytestmark = pytest.mark.unit
 
 from datetime import datetime, timezone
 
-from tolokaforge.core.llm import GenerationResult, UserSimulator
+from tolokaforge.core.llm import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.models import Message, MessageRole
 
 
 def test_user_simulator_tools():
-    """Test that UserSimulator can accept tool schemas"""
+    """Test that BuiltinUserSimulator can accept tool schemas"""
     # Create mock tool schemas
     tool_schemas = [
         {
@@ -29,7 +29,7 @@ def test_user_simulator_tools():
     ]
 
     # Create user simulator with tools (scripted mode for simple test)
-    user_sim = UserSimulator(mode="scripted", tool_schemas=tool_schemas)
+    user_sim = BuiltinUserSimulator(mode="scripted", tool_schemas=tool_schemas)
 
     # Test reply returns GenerationResult
     context = [

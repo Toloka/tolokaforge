@@ -88,6 +88,7 @@ Notes:
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated plan-shape coercion knob. Backend selection is composer-driven — the orchestrator always constructs `SharedStackRuntimeBackend` and the composer sequences the resolved plan's per-scope substrate. `shared` coerces every task's plan to run-scope, `per_trial` to trial-scope; multi-stack packs are refused under either coercion (declare stack-scope explicitly instead). Any other name registered in the `tolokaforge.runtime_backends` entry-point group (only `in_memory` in-tree today) is a legit backend swap, resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
+- `orchestrator.agent_loop` (default `engine-loop`) names the in-process loop that drives the agent's turns, resolved against the `tolokaforge.agent_loops` entry-point group. `engine-loop` is the built-in tool-calling loop; a downstream package registering a loop with a different prompt contract or action format selects it here without a framework PR. An unregistered name is refused at run start with the known names listed. See [ADR-0050](adr/0050-agent-loop-protocol-and-registry.md) and [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 - `orchestrator.strict_task_load` (default `false`) controls how the orchestrator handles an adapter exception raised from `get_task()` while `load_tasks` iterates the discovered task ids. Left `false`, the failure is logged at error level and that task is skipped — the run proceeds with the remaining tasks. Set to `true`, the exception propagates with the task id in the message so the run refuses to start rather than proceeding with a silently shorter task list; the bundled `examples/terminal_bench/*.yaml` opt in because a task-pack that fails to materialise is a config error the operator must see. **`--dry-run` is strict regardless of this flag** — it has its own loader (`load_tasks_for_dry_run`) with no exception handling, since surfacing config errors is the whole point of that entry point.
 - `orchestrator.runtime_connect.timeout_s` (default `30.0`) and `retry_interval_s` (default `1.0`) budget the runner's health-check retry loop during `runtime_backend.connect()`. Raise `timeout_s` when trials flake with `Runner service at localhost:<port> not healthy after 30.1s` on cold-boot. Env vars `TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S` and `TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S` override the block for operational tuning (env → YAML → default). See [RUNNER.md § Health-check timeout on connect](RUNNER.md#health-check-timeout-on-connect).
 - `max_budget_usd` pauses scheduling new trials when cumulative spend across all actor roles (agent + user simulator + rubric judge) reaches the budget.
@@ -534,6 +535,8 @@ actors:
       - if_assistant_contains: "done"
         user: "Thanks!"
       - default: "Please continue."
+    # simulator: "builtin"      # which registered simulator produces the dialogue
+    # simulator_config: {}      # opaque config for a non-builtin simulator
 
 policies:
   guidance:
@@ -583,6 +586,25 @@ is refused at load naming which one it is and the fix: `interaction_mode:
 agent_only`, which dispatches no user turn at all, and a user simulator resolving
 to `mode: scripted`, whose reply is text and never a tool call. `tools.user.enabled: []`
 loads under both — the declaration is what is refused, not the key.
+
+### `actors.user.simulator:` / `actors.user.simulator_config:` — which simulator produces the dialogue
+
+`actors.user.simulator` (default `builtin`) names the implementation that
+produces the user's turns, resolved against the `tolokaforge.user_simulators`
+entry-point group. `builtin` is the engine's own simulator (`mode`, `persona`,
+`backstory`, `scripted_flow` above configure it); a downstream package registers
+an alternative — one with its own system prompt, sampling or turn structure — and
+selects it here without a framework PR. Because the simulator is actor-scoped,
+different tasks in a run may name different simulators; a project sets it once in
+`task_defaults.actors.user.simulator` so a whole pack inherits one. An
+unregistered name is refused at run start, naming the registered simulators and
+the task that asked for it.
+
+`actors.user.simulator_config` is an opaque mapping the engine passes to the
+selected simulator untouched — a non-built-in simulator declares its own fields
+there and validates them itself; the built-in ignores it. See
+[ADR-0051](adr/0051-user-simulator-protocol-and-registry.md) and
+[RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 
 ## Grading Specification (`grading.yaml`)
 

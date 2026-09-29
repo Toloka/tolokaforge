@@ -562,6 +562,18 @@ class OrchestratorConfig(BaseModel):
     home is ``task_defaults``; a ``DeprecationWarning`` fires when this
     field is explicitly set."""
 
+    agent_loop: str = "engine-loop"
+    """Name of the in-process loop that drives the agent's turns.
+
+    Resolved against the ``tolokaforge.agent_loops`` entry-point group and
+    threaded into the trial runner, which builds the loop from the trial's own
+    dependencies. ``engine-loop`` is the built-in tool-calling loop; a
+    downstream package registers an alternative shape (a terminal-oriented
+    loop, a deep-research loop) under the same group and selects it here
+    without a framework PR. A name with no registration is refused at
+    run-start with the known names listed.
+    """
+
     runtime: str | None = None
     """Deprecated plan-shape coercion knob.
 

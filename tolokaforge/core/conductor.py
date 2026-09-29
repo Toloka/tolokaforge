@@ -32,11 +32,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from tolokaforge_coding_harnesses.adapter_support import HARNESS_USAGE_LOG_METADATA_KEY
 
 from tolokaforge.adapters import BaseAdapter
+from tolokaforge.core.actors.user_simulator import UserSimulator, UserSimulatorContext
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.judge_prompt import effective_judge_system_prompt
-from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
+from tolokaforge.core.llm import LLMClient, build_capabilities
 from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
     resolve_policy_names,
@@ -55,6 +56,7 @@ from tolokaforge.core.models import (
     validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.output.artifacts import TrialArtifactWriter
+from tolokaforge.core.plugin_registry import load_user_simulator
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -845,14 +847,22 @@ class InProcessConductor:
             # simulator-scoped per-call budget: its throughput is not what the probe
             # measures, and one turn can spend the simulator's budget once per
             # reply-guard attempt, all inside one uninterruptible turn.
-            user_simulator = UserSimulator(
-                mode=sim.mode,
-                llm_config=user_llm_config,
-                persona=sim.persona,
-                backstory=sim.backstory,
-                scripted_flow=sim.scripted_flow,
-                tool_schemas=setup.user_tool_schemas or None,
-                rate_limit_probe=rate_limit_probe.for_simulator(),
+            # The concrete simulator is chosen per task by ``actors.user.simulator``
+            # (``builtin`` by default) and resolved through the
+            # ``tolokaforge.user_simulators`` registry; a non-built-in simulator
+            # reads its own fields from ``sim.simulator_config``, which the engine
+            # passes through untouched.
+            user_simulator = load_user_simulator(sim.simulator)(
+                UserSimulatorContext(
+                    mode=sim.mode,
+                    llm_config=user_llm_config,
+                    persona=sim.persona,
+                    backstory=sim.backstory,
+                    scripted_flow=sim.scripted_flow,
+                    tool_schemas=setup.user_tool_schemas or None,
+                    rate_limit_probe=rate_limit_probe.for_simulator(),
+                    simulator_config=sim.simulator_config,
+                )
             )
         else:
             user_simulator = None
@@ -932,7 +942,15 @@ class InProcessConductor:
             events=self.events,
             probe_stats=_build_probe_stats(rate_limit_probe),
             interaction_mode=task.interaction_mode,
+            agent_loop=self.config.orchestrator.agent_loop,
             tool_output_max_chars_by_tool=setup.tool_output_max_chars_by_tool or None,
+            # The offered tools the runner reconstructs from the pack's own
+            # ``ToolSource`` rather than from the builtin registry. The runner
+            # reads it to tell a builtin completion tool from a pack tool that
+            # merely shares its name.
+            sourced_tool_names=frozenset(
+                tool.name for tool in spec.task.agent_tools if tool.source is not None
+            ),
             loop_observer=(
                 LoopObserverBinding(self.trial_observer, identity, role="agent")
                 if identity is not None and not isinstance(self.trial_observer, NullTrialObserver)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.27.3"
+version = "0.27.4"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -222,6 +222,24 @@ tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 [project.entry-points."tolokaforge.turn_policies"]
 agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
+
+# In-process agent-loop seam (``tolokaforge/core/loop.py``). Every entry
+# resolves to a ``Callable[[AgentLoopContext], AgentLoop]``. ``engine-loop``
+# is the built-in ``ToolCallingLoop`` and goes through this registry like any
+# other registration; a downstream loop with a different prompt contract or
+# action format registers alongside it and is selected by
+# ``orchestrator.agent_loop`` without a framework PR.
+[project.entry-points."tolokaforge.agent_loops"]
+engine-loop = "tolokaforge.core.loop:_engine_loop_factory"
+
+# In-process user-simulator seam (``tolokaforge/core/actors/user_simulator.py``).
+# Every entry resolves to a ``Callable[[UserSimulatorContext], UserSimulator]``.
+# ``builtin`` is the engine's ``BuiltinUserSimulator`` and goes through this
+# registry like any other registration; a downstream simulator that reproduces
+# another harness's dialogue registers alongside it and is selected per task by
+# ``actors.user.simulator`` without a framework PR.
+[project.entry-points."tolokaforge.user_simulators"]
+builtin = "tolokaforge.core.llm.client:_builtin_user_simulator_factory"
 
 # Runner-side dispatch selector on ``RunnerGradingConfig.grading_method``: the
 # registered names are the ones ``RegisterTrial`` accepts. Two markers ship
@@ -490,6 +508,7 @@ only-include = [
     "tolokaforge/core/run_display_events.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
+    "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     "tolokaforge/core/trial.py",
 ]

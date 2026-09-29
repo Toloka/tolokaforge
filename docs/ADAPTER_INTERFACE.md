@@ -274,10 +274,10 @@ A declarative selector on the grading config that tells the runner *how* to grad
   rules / LLM judge per `weights` + `pass_threshold`. Most adapters want this and
   need do nothing.
 - **`"test_execution"`** — the runner runs a reference test suite inside the
-  trial's env container via an exec-capable lifecycle tool (today:
-  `DockerComposeExecToolWrapper`) and scores by reading a reward float written
-  by the suite. Requires such a tool in `TaskDescription.agent_tools`; otherwise
-  the runner returns a clear error at `GradeTrial` time. Used by the
+  trial's env container via a tool satisfying `SupportsEnvExec`
+  (`DockerComposeExecToolWrapper` in-tree) and scores by reading a reward float
+  written by the suite. Requires such a tool in `TaskDescription.agent_tools`;
+  otherwise the runner returns a clear error at `GradeTrial` time. Used by the
   `terminal_bench` adapter as a worked example.
 - `"hash"` / `"transcript"` / `"llm"` are reserved names for future
   single-method dispatch and currently behave as part of the default path.

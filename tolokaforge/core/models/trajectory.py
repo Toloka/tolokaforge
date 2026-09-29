@@ -505,14 +505,14 @@ class Metrics(BaseModel):
     api_calls: int = 0
     usage: Usage = Field(default_factory=Usage)
     tool_output_chars_truncated: int = 0
-    """Cumulative characters clipped by ``ToolCallingLoop._cap_tool_message_content``
+    """Cumulative characters clipped by ``ToolCallFunnel.cap_tool_message_content``
     across every ``role=tool`` message on this trial.
 
     Non-zero means at least one tool result exceeded the effective cap
     (``min(ToolPolicy.output_max_chars, LoopConfig.tool_output_max_chars)``)
     and was middle-elided before append. Zero means either no cap fired or
     every raw output fit inside the cap. The recorder read at
-    :meth:`ToolCallingLoop._execute_tool_calls` runs earlier against the
+    :meth:`ToolCallFunnel.execute` runs earlier against the
     untruncated result, so grader inputs are unaffected."""
 
     parser_errors: list[ParserErrorRecord] = Field(default_factory=list)

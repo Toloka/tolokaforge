@@ -111,6 +111,57 @@ per-task means. Per-trial artifacts live under
   (Gemini schema sanitizers, Claude system prompt shape, etc.).
 - You want honest token / cost accounting through `litellm`.
 
+### Choosing the agent's shell — `agent_tool`
+
+Engine-loop mode gives the agent one shell, and `agent_tool` picks which:
+
+| Value | Tool the agent sees | Behaviour |
+|---|---|---|
+| `bash` (default) | `bash` | One `docker exec` per call. Working directory, exported variables and shell state are discarded after every command. |
+| `bash_session` | `bash_session` | One `docker exec` bash session held for the trial. Working directory, environment and shell functions persist across calls; `restart: true` resets them. |
+
+```yaml
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      agent_tool: "bash_session"
+```
+
+Both tools exec into the same per-trial agent container and grade identically
+— the task's verifier reads container state, not the transcript.
+`bash_session` requires engine-loop mode: a coding-harness CLI runs the whole
+trial inside a single tool call, so there is no sequence of calls for a session
+to persist across, and the adapter refuses the combination at construction.
+
+### Letting the agent stop — `agent_completion_tool`
+
+Terminal-bench tasks carry no conversation: the instruction arrives once and
+the agent works until it stops or the turn budget ends the trial. Whether it
+stops is a property of the model — the loop reads a turn with no tool call as
+"nothing further to do", so a model that answers every turn with a bare command
+never produces one.
+
+Set `agent_completion_tool: true` to offer the [`submit`](TOOLS.md#ending-an-episode)
+tool beside the shell. Calling it ends the trial with termination reason
+`agent_submitted`.
+
+```yaml
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      agent_tool: "bash_session"
+      agent_completion_tool: true
+```
+
+Default off, and off emits exactly the single-tool surface it emitted before
+the param existed. It requires engine-loop mode for the same reason
+`bash_session` does: a harness CLI runs no turn loop, so nothing would read the
+signal. Grading is untouched either way — the task's verifier reads container
+state, so a trial that submits is scored on the work it left behind, not on
+having said it was finished.
+
 ## Harness mode — a vendor CLI drives the trial
 
 Use when you want to measure a **coding-harness CLI** (Claude Code, Codex,

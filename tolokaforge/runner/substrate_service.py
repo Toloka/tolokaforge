@@ -38,6 +38,7 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
+from tolokaforge.runner.env_exec import first_env_exec_tool
 
 if TYPE_CHECKING:
     from tolokaforge.runner.service import RunnerServiceImpl
@@ -276,16 +277,13 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             context.set_details(f"Trial '{request.trial_id}' not registered")
             return pb2.RunTestSuiteResponse()
 
-        from tolokaforge.runner.service import _first_docker_compose_exec_tool
-
-        bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
+        bash_tool = first_env_exec_tool(trial_context.agent_tools.values())
         if bash_tool is None:
             error_msg = (
                 "test-execution grading was requested (grading_method='test_execution') "
-                "but no exec-capable env tool was found in this trial. Include an "
-                "exec-capable lifecycle tool (e.g. DockerComposeExecToolWrapper) in "
-                "TaskDescription.agent_tools so the runner can execute the test suite "
-                "inside the trial environment."
+                "but no exec-capable env tool was found in this trial. Include a "
+                "tool satisfying SupportsEnvExec in TaskDescription.agent_tools so "
+                "the runner can execute the test suite inside the trial environment."
             )
             return pb2.RunTestSuiteResponse(
                 tool_absent=True,
@@ -300,7 +298,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         )
 
         try:
-            exit_code, stdout = bash_tool._exec_sync_with_rc(
+            exit_code, stdout = bash_tool.exec_in_env_with_exit_code(
                 f"cd $(dirname {request.script_path}) && bash {request.script_path} 2>&1",
                 script_timeout,
             )
@@ -313,7 +311,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
             )
 
         try:
-            _rc, reward_str = bash_tool._exec_sync_with_rc(
+            _rc, reward_str = bash_tool.exec_in_env_with_exit_code(
                 f"cat {request.reward_path} 2>/dev/null || echo 0.0",
                 reward_read_timeout,
             )

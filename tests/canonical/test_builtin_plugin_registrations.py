@@ -44,6 +44,7 @@ from tolokaforge.core.grading.judge_kinds import (
 from tolokaforge.core.grading.kinds import CompositeGraderKind, TestExecutionGraderKind
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
+    AGENT_LOOPS_GROUP,
     BUNDLE_STORES_GROUP,
     COMPOSE_MATERIALISERS_GROUP,
     GRADER_KINDS_GROUP,
@@ -58,6 +59,7 @@ from tolokaforge.core.plugin_registry import (
     TrialGraderContext,
     TurnPolicyContext,
     UnknownImplementationError,
+    available_agent_loops,
     available_bundle_stores,
     available_compose_materialisers,
     available_conductors,
@@ -251,6 +253,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_conductors() == ["in_memory", "in_process"]
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
     assert available_turn_policies() == ["agent_only", "conversational"]
+    assert available_agent_loops() == ["engine-loop"]
     assert available_grading_methods() == ["composite", "test_execution"]
     assert available_grader_kinds() == ["composite", "test_execution"]
     assert available_judge_kinds() == [
@@ -281,6 +284,11 @@ def test_raw_entry_point_probe_lists_readiness_probes() -> None:
 def test_raw_entry_point_probe_lists_turn_policies() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=TURN_POLICIES_GROUP))
     assert names == ["agent_only", "conversational"]
+
+
+def test_raw_entry_point_probe_lists_agent_loops() -> None:
+    names = sorted(ep.name for ep in importlib.metadata.entry_points(group=AGENT_LOOPS_GROUP))
+    assert names == ["engine-loop"]
 
 
 def test_raw_entry_point_probe_lists_grading_methods() -> None:

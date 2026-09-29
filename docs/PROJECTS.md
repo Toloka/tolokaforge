@@ -711,6 +711,10 @@ task_defaults:
       mode: "llm"
       persona: "curious engineer"
       backstory: "./shared/user_backstory.md"  # shared user backstory; each task may override
+      # simulator: "builtin"       # which registered simulator produces the dialogue
+      #                            # (tolokaforge.user_simulators group; default "builtin")
+      # simulator_config: {}       # opaque config the engine passes to a non-builtin
+      #                            # simulator untouched; the builtin ignores it
   policies:
     max_tool_calls_per_turn: 10
   metadata: {}
