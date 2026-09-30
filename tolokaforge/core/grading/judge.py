@@ -546,7 +546,7 @@ def model_config_from_ref(model_ref: str) -> ModelConfig:
     ``--model-ref`` option. The judge's own runtime path takes a full
     ``ModelConfig`` (run-level), never a string.
 
-    Matches ``BaseAdapter.grade`` and ``LLMClient._format_model_name``: e.g.
+    Matches ``BaseAdapter.grade`` and ``providers.litellm_model_id``: e.g.
     ``openrouter/anthropic/claude-sonnet-4.5`` → provider ``openrouter``, name
     ``anthropic/claude-sonnet-4.5``. ``temperature=0.0`` for grading stability.
     """

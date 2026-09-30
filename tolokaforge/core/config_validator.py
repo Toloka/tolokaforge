@@ -20,6 +20,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from tolokaforge.core.llm.litellm_params import (
+    OverlayKeyMismatchError,
+    lookup_overlay,
+    overlay_key_mismatches,
+    overlay_stray_entries,
+)
+from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.models import (
     DOCKER_RUNTIME_ALIAS_TARGET,
     LEGACY_DOCKER_RUNTIME_ALIAS,
@@ -124,23 +131,6 @@ def _model_supports_reasoning(model_name: str) -> bool | None:
     return None  # unknown – let the caller decide
 
 
-def _declared_function_calling(name: str, provider: str) -> bool:
-    """Whether an operator overlay admits tool calls for this model.
-
-    Asked through the same function the RUN asks, so the preflight cannot
-    disagree with it about which entry applies - a second lookup here would
-    have its own idea of how to build the key.
-    """
-    from tolokaforge.core.llm.litellm_params import allowed_openai_params
-
-    try:
-        return "tools" in allowed_openai_params(name, provider)
-    except (OSError, ValueError):
-        # A broken overlay has its own, louder error path at load; this check
-        # must not turn it into a confusing function-calling verdict.
-        return False
-
-
 def _model_supports_function_calling(model_name: str) -> bool | None:
     """Answer function-calling support for *model_name* from litellm's map.
 
@@ -167,21 +157,90 @@ def _model_supports_function_calling(model_name: str) -> bool | None:
 # ---------------------------------------------------------------------------
 
 
-def _validate_schema(raw: dict[str, Any]) -> list[ValidationIssue]:
-    """Validate that *raw* parses into a valid ``RunConfig``."""
-    issues: list[ValidationIssue] = []
+def _function_calling_issues(base: str, provider: str, name: str) -> list[ValidationIssue]:
+    """The agent's function-calling verdict, from litellm's map and the overlay."""
     try:
-        RunConfig(**raw)
-    except Exception as exc:
-        issues.append(
+        overlay = lookup_overlay(provider, name)
+    except OverlayKeyMismatchError:
+        # Reported as an ERROR by the walk over every model config; a second
+        # issue for the same entry would only restate it.
+        return []
+    fc_support = _model_supports_function_calling(litellm_model_id(provider, name))
+    if fc_support is not True and "tools" in overlay.params:
+        # An overlay entry answers the same question litellm's map cannot,
+        # and this command already loads and schema-validates that block.
+        # Reporting the model unable to call functions while the run works
+        # is a preflight that contradicts the thing it is checking.
+        #
+        # `is not True` rather than `is False`: today an unmapped model
+        # reads False, but the premise of this whole feature is that
+        # litellm's answers move between patch releases, and a future
+        # `None` would quietly stop consulting the declaration.
+        fc_support = True
+    if fc_support is False:
+        severity = Severity.WARNING if provider.lower().startswith("openrouter") else Severity.ERROR
+        return [
             ValidationIssue(
-                severity=Severity.ERROR,
-                path="(root)",
-                message=f"Schema validation failed: {exc}",
-                hint="Check YAML structure against docs/CONFIG.md",
+                severity=severity,
+                path=f"{base}.name",
+                message=f"Model {name!r} does not appear to support function calling (required for agent)",
+                hint="Verify with your provider that the model supports tool use / function calling",
             )
+        ]
+    if fc_support is None:
+        # Unmapped in litellm and undeclared in the overlay: the check
+        # cannot answer either way. Surface an INFO with the exact overlay
+        # entry to declare — silence would look like approval.
+        return [
+            ValidationIssue(
+                severity=Severity.INFO,
+                path=f"{base}.name",
+                message=(
+                    f"Model {name!r} is not in litellm's model map; "
+                    "cannot confirm function-calling support"
+                ),
+                hint=(
+                    "If the run needs tools, declare it in the presets overlay: "
+                    f"litellm_models.{overlay.key} with supports_function_calling: true"
+                ),
+            )
+        ]
+    return []
+
+
+def _overlay_key_issues(run_config: RunConfig) -> list[ValidationIssue]:
+    """An ERROR per model config whose overlay entry sits under its raw name, and
+    an INFO per model config whose raw name keys another config's entry."""
+    refused = [
+        ValidationIssue(severity=Severity.ERROR, path=f"{path}.name", message=str(err))
+        for path, err in overlay_key_mismatches(run_config.models)
+    ]
+    stray = [
+        ValidationIssue(
+            severity=Severity.INFO,
+            path=f"{path}.name",
+            message=(
+                f"litellm_models entry `{lookup.stray_key}` applies to provider "
+                f"`{lookup.stray_provider}`, not to this config, which resolves `{lookup.key}`"
+            ),
+            hint=f"To admit parameters for this config, declare litellm_models.{lookup.key}",
         )
-    return issues
+        for path, lookup in overlay_stray_entries(run_config.models)
+    ]
+    return refused + stray
+
+
+def _validate_schema(raw: dict[str, Any]) -> RunConfig | ValidationIssue:
+    """Parse *raw* into a ``RunConfig``, or the ERROR saying why it does not parse."""
+    try:
+        return RunConfig(**raw)
+    except Exception as exc:
+        return ValidationIssue(
+            severity=Severity.ERROR,
+            path="(root)",
+            message=f"Schema validation failed: {exc}",
+            hint="Check YAML structure against docs/CONFIG.md",
+        )
 
 
 def _validate_model(
@@ -296,51 +355,8 @@ def _validate_model(
             )
         )
 
-    # --- function calling (agent only) ---
     if role == "agent" and provider:
-        litellm_name = f"{provider}/{name}" if not name.startswith(f"{provider}/") else name
-        fc_support = _model_supports_function_calling(litellm_name)
-        if fc_support is not True and _declared_function_calling(name, provider):
-            # An overlay entry answers the same question litellm's map cannot,
-            # and this command already loads and schema-validates that block.
-            # Reporting the model unable to call functions while the run works
-            # is a preflight that contradicts the thing it is checking.
-            #
-            # `is not True` rather than `is False`: today an unmapped model
-            # reads False, but the premise of this whole feature is that
-            # litellm's answers move between patch releases, and a future
-            # `None` would quietly stop consulting the declaration.
-            fc_support = True
-        if fc_support is False:
-            severity = (
-                Severity.WARNING if provider.lower().startswith("openrouter") else Severity.ERROR
-            )
-            issues.append(
-                ValidationIssue(
-                    severity=severity,
-                    path=f"{base}.name",
-                    message=f"Model {name!r} does not appear to support function calling (required for agent)",
-                    hint="Verify with your provider that the model supports tool use / function calling",
-                )
-            )
-        elif fc_support is None:
-            # Unmapped in litellm and undeclared in the overlay: the check
-            # cannot answer either way. Surface an INFO with the exact overlay
-            # entry to declare — silence would look like approval.
-            issues.append(
-                ValidationIssue(
-                    severity=Severity.INFO,
-                    path=f"{base}.name",
-                    message=(
-                        f"Model {name!r} is not in litellm's model map; "
-                        "cannot confirm function-calling support"
-                    ),
-                    hint=(
-                        "If the run needs tools, declare it in the presets overlay: "
-                        f"litellm_models.{provider}/{name} with supports_function_calling: true"
-                    ),
-                )
-            )
+        issues.extend(_function_calling_issues(base, provider, name))
 
     return issues
 
@@ -453,21 +469,24 @@ def validate_run_config(raw: dict[str, Any]) -> ValidationResult:
     result = ValidationResult()
 
     # 1. Schema validation (must pass for further checks)
-    schema_issues = _validate_schema(raw)
-    result.issues.extend(schema_issues)
-    if any(i.severity == Severity.ERROR for i in schema_issues):
+    run_config = _validate_schema(raw)
+    if isinstance(run_config, ValidationIssue):
+        result.issues.append(run_config)
         return result
 
-    # 2. Per-model checks
+    # 2. Overlay entries stored under a raw name, for every model and fallback
+    result.issues.extend(_overlay_key_issues(run_config))
+
+    # 3. Per-model checks
     models = raw.get("models", {})
     for role, model_cfg in models.items():
         if isinstance(model_cfg, dict):
             result.issues.extend(_validate_model(role, model_cfg))
 
-    # 3. API key presence
+    # 4. API key presence
     result.issues.extend(_validate_api_keys(raw))
 
-    # 4. Orchestrator checks
+    # 5. Orchestrator checks
     result.issues.extend(_validate_orchestrator(raw))
 
     return result
