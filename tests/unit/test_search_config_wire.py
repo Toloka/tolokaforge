@@ -135,6 +135,28 @@ def test_the_built_in_constants_serialise_as_their_names() -> None:
     assert config.model_dump()["plane"] == "typesense"
 
 
+def test_a_mapping_stored_without_validation_dumps_as_the_mapping(
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    """``model_copy(update=…)`` stores the value unvalidated; the dump must not raise."""
+    description = TaskDescription(
+        task_id="t",
+        name="t",
+        category="c",
+        description="d",
+        adapter_type="native",
+        system_prompt="s",
+    ).model_copy(update={"search": {"enabled": True, "plane": "rag_service"}})
+    assert description.model_dump(mode="json")["search"] == {
+        "enabled": True,
+        "plane": "rag_service",
+    }
+    assert json.loads(description.model_dump_json())["search"] == {
+        "enabled": True,
+        "plane": "rag_service",
+    }
+
+
 def test_the_task_description_carries_the_search_block_unchanged() -> None:
     description = TaskDescription(
         task_id="t",

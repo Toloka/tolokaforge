@@ -123,7 +123,13 @@ def _dump_declared_fields_only(
     written them — a task declaring ``corpus_dir`` alone would grow a backend, a
     config and a tool block. A default an author writes out is kept. Plain
     pydantic 2.x (``Field(exclude_if=...)`` needs 2.11; the engine allows 2.0).
+
+    A plain mapping stored in the field without validation — ``model_copy(update=…)``
+    or assignment — has no fields set to read, so it dumps as the mapping it is, as
+    the untyped block did.
     """
+    if not isinstance(model, BaseModel):
+        return handler(model)
     data = handler(model)
     for name in type(model).model_fields.keys() - model.model_fields_set:
         data.pop(name, None)
