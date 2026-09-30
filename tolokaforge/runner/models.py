@@ -424,6 +424,10 @@ class SearchConfig(BaseModel):
     def _omit_fields_at_their_default(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, Any]:
+        if not isinstance(self, SearchConfig):
+            # A plain mapping stored without validation (``model_copy(update=…)``)
+            # dumps as the mapping it is, as it did before this serializer existed.
+            return handler(self)
         data = handler(self)
         for name in self.OMITTED_AT_DEFAULT:
             if getattr(self, name) == type(self).model_fields[name].get_default(

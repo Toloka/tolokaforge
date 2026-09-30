@@ -115,6 +115,15 @@ def test_a_misspelt_or_malformed_key_is_refused_not_defaulted(
     assert [tuple(detail["loc"]) for detail in excinfo.value.errors()] == [loc]
 
 
+def test_a_mapping_stored_without_validation_dumps_as_the_mapping(
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    """``model_copy(update=…)`` stores the value unvalidated; the dump must not raise."""
+    state = InitialStateConfig().model_copy(update={"rag": {"corpus_dir": "kb", "extra": 1}})
+    assert state.model_dump(mode="json")["rag"] == {"corpus_dir": "kb", "extra": 1}
+    assert state.model_dump()["rag"] == {"corpus_dir": "kb", "extra": 1}
+
+
 def test_there_is_no_tool_actors_field() -> None:
     """The actor that gets the tool is ``tools.<actor>.enabled``, declared once."""
     assert set(RagToolConfig.model_fields) == {"name", "description"}
