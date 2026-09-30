@@ -1,63 +1,31 @@
 """Search-backend Protocols and the context a backend factory receives (ADR-0052).
 
-A task selects its retrieval the way it selects every other swappable part of a
-trial: by name, through an entry-point group. The name is
-``initial_state.rag.backend``; the native adapter carries it on the wire as
-``TaskDescription.search.plane``, and the runner resolves it through the
-``tolokaforge.search_backends`` group with
-:func:`~tolokaforge.core.plugin_registry.load_search_backend`. The engine's own
-rag-service backend registers there as ``rag_service`` and resolves like any
-third-party one.
+A task names its retrieval in ``initial_state.rag.backend``; the wire carries the
+name as ``search.plane`` and the runner resolves it through the
+``tolokaforge.search_backends`` group
+(:func:`~tolokaforge.core.plugin_registry.load_search_backend`). The engine's
+rag-service registers there as ``rag_service``, like any third-party backend.
 
-Two Protocols, one context, one factory alias:
+* :class:`SearchBackend` — what a task selects: its ``name``, the
+  ``stack_service`` it needs, the agent tool's ``parameters``, and
+  ``build_index``.
+* :class:`SearchIndex` — one trial's index: ``search`` answers the agent's call
+  with a :class:`SearchOutcome` the backend renders itself; ``knowledge_search``
+  gives the judge a read over the same index, or ``None``.
+* :class:`SearchBackendContext` and :data:`SearchBackendFactory` — what an entry
+  point is built from, and its shape.
 
-* :class:`SearchBackend` — what a task selects. It declares its ``name``, the
-  stack service it needs (``stack_service``; the orchestrator's stack rule reads
-  it), the JSON-schema ``parameters`` object of the agent's tool
-  (:meth:`~SearchBackend.tool_parameters`), and builds one trial's
-  :class:`SearchIndex` from the corpus.
-* :class:`SearchIndex` — one trial's index. :meth:`~SearchIndex.search` answers
-  the agent's tool call with a :class:`SearchOutcome`: the hits, and the text the
-  agent reads. The backend owns that rendering, because the agent-visible text is
-  part of what a backend reproduces. :meth:`~SearchIndex.knowledge_search` hands
-  the judge a :class:`~tolokaforge.core.grading.kb_search.KnowledgeSearch` over
-  the same index, or ``None`` when the backend gives the judge nothing.
-* :class:`SearchBackendContext` — what a factory is built from.
-* :data:`SearchBackendFactory` — ``Callable[[SearchBackendContext], SearchBackend]``,
-  the shape every ``tolokaforge.search_backends`` entry point resolves to.
+``build_index`` and ``search`` are coroutines the runner awaits on its own event
+loop. A factory is also built orchestrator-side from a *trial-less* context
+(``trial_id`` ``None``, no clients) to read ``tool_parameters()`` and
+``stack_service``, which may depend on ``backend_config``; so a factory does no
+trial work, and ``build_index`` refuses that context.
 
-Both calls that do trial work are coroutines. The runner awaits
-:meth:`~SearchBackend.build_index` on its own event loop at ``RegisterTrial`` and
-the agent's tool call awaits :meth:`~SearchIndex.search` on the same loop, so a
-backend over a network service (rag-service's HTTP API) needs no bridge of its
-own, and an in-process backend simply never awaits.
-
-**One context, two callers.** The runner builds a context per trial, at
-``RegisterTrial``. The orchestrator side — the native adapter building the
-agent's schema, the stack rule choosing the stack — builds a *trial-less* one:
-``trial_id`` is ``None`` and ``stack_service_clients`` is empty. It needs only
-what a backend declares (``tool_parameters()``, ``stack_service``), and those may
-depend on ``backend_config`` — which is why they are read off a constructed
-backend rather than declared on a class. A factory must therefore be cheap and
-free of side effects; every piece of trial work belongs in ``build_index``, which
-a backend refuses on a trial-less context.
-
-**How a backend reaches its stack service.** A backend that declares a
-``stack_service`` needs the runner's handle on that service — rag-service's
-indexing and search go through the runner's one long-lived client, bound to the
-runner's event loop and shared with the judge's search, so a backend building a
-client of its own would change connection handling and could let the judge and
-the agent reach different endpoints. The context carries the runner's handles in
-``stack_service_clients``, keyed by the ``stack_service`` name a backend
-declares; the backend reads the entry its own ``stack_service`` names. The
-values are typed ``object`` because a handle's type belongs to its service, not
-to this seam: this module names no service, and a backend narrows the value it
-reads to the client type it was written against. A mapping rather than a single
-slot, because the runner builds the context before the factory has said which
-service it declares.
-
-This module imports the standard library and the judge's search contract only,
-so the runner subset ships it without dragging any backend's dependencies in.
+A backend that declares a ``stack_service`` reads the runner's handle on it from
+``stack_service_clients`` under that name — the runner's one client, shared with
+the judge's search — typed ``object`` so this module names no service. It
+imports only the standard library and the judge's search contract, so the runner
+subset ships it light.
 """
 
 from __future__ import annotations
@@ -97,10 +65,13 @@ not a backend name: the ``rag_service`` backend happens to share the spelling.
 class SearchOutcome:
     """What one search answered: the hits, and the text the agent receives.
 
-    ``hits`` is what a reader of the retrieval itself consumes — the judge's
-    search, the remote grader's ``KBSearch`` and offline replay all read
-    :class:`~tolokaforge.core.grading.kb_search.SearchHit`. ``rendered`` is the
-    tool result the agent reads, exactly as the backend formats it.
+    ``rendered`` is the tool result the agent reads, exactly as the backend
+    formats it. ``hits`` are the same answer in the backend-neutral
+    :class:`~tolokaforge.core.grading.kb_search.SearchHit` shape the judge's
+    search, the remote grader's ``KBSearch`` and offline replay read. No engine
+    code reads an outcome's ``hits`` yet: they are there for the readers that
+    will record the agent's retrievals (replay of the agent's own searches is the
+    first), so a backend fills them honestly now.
     """
 
     hits: tuple[SearchHit, ...]
@@ -165,10 +136,12 @@ class SearchBackend(Protocol):
 
         ``corpus_dir`` is the task's ``search.documents_path``, resolved by the
         runner against the trial's extracted artifacts; ``None`` when the task
-        declares none. Raises :class:`SearchIndexBuildError` with the refusal
-        ``RegisterTrial`` returns when the index cannot be built — a corpus that
-        indexes empty included, since that is a bundling bug and not an agent
-        failure.
+        declares none. The native adapter declares a search block only for a task
+        that declares a corpus, so today it is ``None`` only for an external
+        adapter's task; a backend that needs no corpus is a follow-up. Raises
+        :class:`SearchIndexBuildError` with the refusal ``RegisterTrial`` returns
+        when the index cannot be built — a corpus that indexes empty included,
+        since that is a bundling bug and not an agent failure.
         """
         ...
 
