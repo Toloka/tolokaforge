@@ -141,20 +141,32 @@ holds the TypeSense client):
 ```python
 @runtime_checkable
 class SearchIndex(Protocol):
-    def search(self, query: str, arguments: Mapping[str, Any]) -> SearchOutcome: ...
+    async def search(
+        self, query: str, arguments: Mapping[str, Any], *, budget_s: float
+    ) -> SearchOutcome: ...
     def knowledge_search(self) -> KnowledgeSearch | None: ...   # None: this backend gives the judge nothing
 
 @runtime_checkable
 class SearchBackend(Protocol):
     name: str
-    stack_service: str | None                                    # "rag_service" | "typesense" | None
-    def tool_parameters(self) -> Mapping[str, Any] | None: ...   # JSON-schema properties the agent sees; None: no agent tool
-    def build_index(self, corpus_dir: Path | None) -> SearchIndex: ...
+    stack_service: str | None                                    # "rag_service" | None
+    def tool_parameters(self) -> Mapping[str, Any] | None: ...   # the agent tool's JSON-schema `parameters`; None: no agent tool
+    async def build_index(self, corpus_dir: Path | None) -> SearchIndex: ...
 ```
 
+- **Both trial calls are coroutines.** The runner awaits `build_index` on its
+  event loop at `RegisterTrial`, and the agent's tool call awaits `search` on the
+  same loop, so a backend over a network service needs no bridge of its own.
+  `budget_s` is the tool's declared per-call budget: rag-service bounds its HTTP
+  request by it, so the runner's backstop never fires first.
+- **`tool_parameters()`** is the whole JSON-schema `parameters` object (type,
+  properties, required) and must declare `query`: the runner hands that argument
+  to `search` by name.
+
 - **`SearchOutcome`** is a frozen dataclass with two fields:
-  - `hits: tuple[SearchHit, ...]`: the existing backend-neutral `SearchHit`, plus
-    an optional `title`;
+  - `hits: tuple[SearchHit, ...]`: the existing backend-neutral `SearchHit`
+    (an optional `title` comes with `bm25`, change 2, together with its field in
+    the remote grader's proto);
   - `rendered: str`: the text the agent receives.
 
   The backend owns the rendering, because the agent-visible text is part of what
@@ -166,9 +178,19 @@ class SearchBackend(Protocol):
 
 ### `SearchBackendContext` + registry
 
-- **The context** is a frozen dataclass of what the runner knows at
-  `RegisterTrial`: the resolved `backend_config` mapping, the trial id, the
-  tool's declared name and description, and a logger.
+- **The context** is a frozen dataclass: the `backend_config` mapping, the
+  tool's declared name and description, a logger, and what the runner knows at
+  `RegisterTrial` — the trial id, the knowledge base's `domain_name`, and
+  `stack_service_clients`, the runner's handle on each stack service keyed by the
+  `stack_service` name a backend declares (rag-service's is the runner's one
+  long-lived client, shared with the judge's search). The values are typed
+  `object`, so the Protocol module names no service; a backend narrows the value
+  it reads.
+- **A trial-less context.** The orchestrator side (the native adapter building
+  the agent's schema, the stack rule) builds a context with no trial id and no
+  clients, and reads `tool_parameters()` and `stack_service` off the constructed
+  backend: both may depend on `backend_config`. A factory is therefore cheap and
+  free of side effects, and `build_index` refuses a trial-less context.
 - **Registration.** Backends register under **`tolokaforge.search_backends`** as
   `Callable[[SearchBackendContext], SearchBackend]`.
 - **Loading.** `load_search_backend(name)` and `available_search_backends()` use
@@ -177,15 +199,18 @@ class SearchBackend(Protocol):
 - **Ownership.** `plugin_registry` owns the group constant, the loader and the
   listing, and re-exports the Protocols, as for `AgentLoop` and `UserSimulator`.
 - **The runner subset.** The group joins `RUNNER_REACHABLE_ENTRY_POINT_GROUPS`,
-  so `test_runner_subset_partition` locks it into the subset wheel.
+  so `test_runner_subset_partition` locks it into the subset wheel, and
+  `core/search` joins the subset partition (`typesense_server.py`, which only the
+  orchestrator uses, stays out).
 
 ### `search.plane` is the backend's name
 
-- **The field.** `SearchConfig.plane` becomes `str | None`, validated against
-  the registry.
-- **The constants.** `SearchPlane` becomes the constants of the built-in names
-  (`RAG_SERVICE = "rag_service"`, `TYPESENSE = "typesense"`, `BM25 = "bm25"`), as
-  `AdapterType` is: canonical constants, not a closed set.
+- **The field.** `SearchConfig.plane` becomes `str | None`. It is checked
+  against the registry at `load_tasks` and at `RegisterTrial`, not in the wire
+  model, which the grader and bundle readers parse too.
+- **The constants.** `SearchPlane` holds the constants of the built-in names
+  (`RAG_SERVICE = "rag_service"`, `TYPESENSE = "typesense"`; `BM25` comes with
+  change 2), as `AdapterType` does: canonical constants, not a closed set.
 - **Existing tasks** serialize `"rag_service"`, `"typesense"` or `null`, exactly
   as today.
 - **Old runner images** reject a task with `"bm25"`. That is honest: the feature
@@ -224,13 +249,15 @@ initial_state:
   per unregistered backend name, as `_refuse_an_unregistered_user_simulator`
   does.
 - **The corpus.** `_bundle_corpus_artifacts` accepts `.json` documents next to
-  `.md` and `.txt`.
+  `.md` and `.txt` — in change 2, since it changes the `tool_artifacts` of any
+  existing pack with JSON files in its corpus directory.
 
 ### Re-homing the agent-side binding (`Dispatch.RAG`)
 
 - **One construction site.** `RegisterTrial` resolves the backend from
-  `task_description.search.plane` and builds the trial's `SearchIndex` (cached by
-  a hash of the corpus and `backend_config`). It hands `ToolFactory` the pair
+  `task_description.search.plane` and builds the trial's `SearchIndex`; a backend
+  may cache what it derives from the corpus (the runner does not: rag-service's
+  indexes are per trial). It hands `ToolFactory` the pair
   `(index, tool_name)` in place of the rag-service client.
 - **The wrapper.** `ToolFactory._create_wrapper` checks the declared search tool
   name before the builtin-registry branch, and returns a generic
@@ -239,8 +266,9 @@ initial_state:
   registry and `_create_rag_search_wrapper`.
 - **rag-service's behaviour moves into its backend, byte for byte.**
   `RAGSearchToolWrapper` becomes the `rag_service` backend's
-  `SearchIndex.search()`: its JSON rendering, `{"error": "Query is required"}`
-  for an empty query, and the defaults `top_k=5`, `alpha=0.5`.
+  `SearchIndex.search()`: its JSON rendering,
+  `{"error": "Query is required", "results": []}` for an empty query, and the
+  defaults `top_k=5`, `alpha=0.5`.
 - **No new `InvocationStyle`.** The agent schema stays source-less, so
   `agent_tools[*].source` on the wire does not change for any task.
 - **The schema.** `native.py` builds it from `tool.name`, `tool.description` and
@@ -250,9 +278,11 @@ initial_state:
   "corpus ⇒ tool enabled" check read the declared name.
 - **The stack rule.** `search_kb` leaves `_FULL_STACK_TOOL_NAMES`, and
   `full_stack` is chosen by the backend's `stack_service`. Otherwise a `bm25`
-  task with a tool named `search_kb` would still stand up rag-service. This also
-  fixes a regression the typed model would cause: `rag: {}` is truthy as a model,
-  so the rule tests `rag is not None and rag.corpus_dir`.
+  task with a tool named `search_kb` would still stand up rag-service. The rule
+  is: a task that searches — declares a corpus or enables its search tool — and
+  whose backend's `stack_service` is `rag_service` gets `full_stack`. A typed
+  `rag: {}` is truthy as a model, and so does not count on its own, as the empty
+  dict it replaces never did.
 
 ### Re-homing the judge-side binding (`isinstance(RAGSearchToolWrapper)`)
 
