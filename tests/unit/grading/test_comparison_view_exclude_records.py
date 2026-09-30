@@ -436,6 +436,65 @@ def test_references_are_read_before_the_rule_removes_anything() -> None:
     assert [row["id"] for row in result.state["proposals"]] == ["P1", "P3"]
 
 
+def test_a_rows_reference_to_itself_does_not_keep_it() -> None:
+    holds = [
+        {"id": "H1", "status": "released", "follows": "H1"},
+        {"id": "H2", "status": "released", "follows": "H3"},
+        {"id": "H3", "status": "released", "follows": None},
+    ]
+    result = _apply({"holds": holds}, _released_unless({"table": "holds", "field": "follows"}))
+    assert _kept_holds(result) == ["H3"]
+
+
+def test_a_row_referenced_by_itself_and_by_another_row_is_kept() -> None:
+    holds = [
+        {"id": "H1", "status": "released", "follows": ["H1"]},
+        {"id": "H2", "status": "confirmed", "follows": ["H1"]},
+    ]
+    result = _apply({"holds": holds}, _released_unless({"table": "holds", "field": "follows"}))
+    assert _kept_holds(result) == ["H1", "H2"]
+
+
+@pytest.mark.parametrize(
+    ("field", "id_fields"),
+    [("id", {}), ("hold_ref", {"holds": "hold_ref"}), ("hold_ref", {"holds": ["hold_ref"]})],
+)
+def test_naming_the_rules_own_id_field_is_refused(
+    field: str, id_fields: dict[str, str | list[str]]
+) -> None:
+    rule = _released_unless({"table": "holds", "field": field})
+    with pytest.raises(ComparisonViewError, match=f"names holds.{field}, the id field of the rule"):
+        _apply({"holds": _HOLDS}, rule, id_fields=id_fields)
+
+
+def test_a_field_named_id_is_an_ordinary_reference_when_the_key_is_another_field() -> None:
+    holds = [
+        {"hold_ref": "R1", "id": "R2", "status": "released"},
+        {"hold_ref": "R2", "id": None, "status": "released"},
+    ]
+    result = _apply(
+        {"holds": holds},
+        _released_unless({"table": "holds", "field": "id"}),
+        id_fields={"holds": "hold_ref"},
+    )
+    assert [row["hold_ref"] for row in result.state["holds"]] == ["R2"]
+
+
+@pytest.mark.parametrize(
+    ("hold_id", "reference", "kept"),
+    [(1, 1.0, True), (1, "1", False), ("1", 1, False), (1, True, False), (True, 1, False)],
+    ids=["int-float", "int-str", "str-int", "int-bool", "bool-int"],
+)
+def test_an_id_and_a_reference_match_as_json_values(
+    hold_id: Any, reference: Any, kept: bool
+) -> None:
+    result = _apply(
+        {"holds": [{"id": hold_id, "status": "released"}], "equipment": [{"hold_id": reference}]},
+        _released_unless({"table": "equipment", "field": "hold_id"}),
+    )
+    assert (result.state["holds"] != []) is kept
+
+
 def test_a_bool_reference_does_not_hold_a_numeric_id() -> None:
     holds = [{"id": 1, "status": "released"}]
     result = _apply(
@@ -457,12 +516,12 @@ def test_only_matching_rows_need_an_id() -> None:
         (
             {"holds": [{"hold_ref": "H1", "status": "released"}]},
             {},
-            "matches exclude_records but has no id field 'id'",
+            "its id field 'id' is missing or null",
         ),
         (
             {"holds": [{"id": ["H", 1], "status": "released"}]},
             {},
-            "holds a list in its id field 'id'; an id is a scalar",
+            "holds a list in its id field 'id'; an id is a string, a number or a bool",
         ),
         (
             {"holds": _HOLDS},
@@ -472,7 +531,27 @@ def test_only_matching_rows_need_an_id() -> None:
         (
             {"holds": _HOLDS, "equipment": [{"id": "E1", "hold_id": {"id": "H1"}}]},
             {},
-            "unless_referenced_by: 'equipment.hold_id' holds a mapping, not an id",
+            "unless_referenced_by: 'equipment.hold_id' holds a dict, not an id",
+        ),
+        (
+            {"holds": [{"id": None, "status": "released"}]},
+            {},
+            "its id field 'id' is missing or null",
+        ),
+        (
+            {"holds": [{"id": date(2026, 1, 1), "status": "released"}]},
+            {},
+            "holds a date in its id field 'id'; an id is a string, a number or a bool",
+        ),
+        (
+            {"holds": _HOLDS, "equipment": [{"id": "E1", "hold_id": {"H1", "H2"}}]},
+            {},
+            "unless_referenced_by: 'equipment.hold_id' holds a set, not an id",
+        ),
+        (
+            {"holds": _HOLDS, "equipment": [{"id": "E1", "hold_id": [date(2026, 1, 1)]}]},
+            {},
+            "unless_referenced_by: 'equipment.hold_id' holds a date, not an id",
         ),
         (
             {"holds": _HOLDS, "equipment": {"E1": {"hold_id": "H1"}}},
@@ -480,7 +559,17 @@ def test_only_matching_rows_need_an_id() -> None:
             "unless_referenced_by: table 'equipment' holds a dict, not a list of records",
         ),
     ],
-    ids=["no-id", "list-id", "composite-key", "mapping-reference", "table-not-a-list"],
+    ids=[
+        "no-id",
+        "list-id",
+        "composite-key",
+        "mapping-reference",
+        "null-id",
+        "date-id",
+        "set-reference",
+        "date-reference",
+        "table-not-a-list",
+    ],
 )
 def test_a_reference_that_cannot_be_resolved_is_refused(
     state: dict[str, Any], id_fields: dict[str, Any], fragment: str

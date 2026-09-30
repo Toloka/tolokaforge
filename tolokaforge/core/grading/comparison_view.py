@@ -30,11 +30,14 @@ Each rule is a mapping whose ``kind`` selects an entry of the rule table
       Null, a missing field and a non-numeric value are not zero.
 
     With ``unless_referenced_by: [{table, field}]`` a matching row is kept when
-    any listed field of any row of the listed table holds its id. The id field is
-    the table's ``state_checks.id_fields`` entry, ``"id"`` when absent; a
-    composite key is refused. References are read from the state the rule
-    receives, before it removes anything. ``path`` and ``unless_referenced_by``
-    do not combine: nested items have no declared id.
+    any listed field of another row of the listed table holds its id; a row's
+    reference to itself does not count, and naming the table's own id field is
+    refused. The id field is the table's ``state_checks.id_fields`` entry,
+    ``"id"`` when absent; a composite key, a null id and an id or reference that
+    is not a JSON scalar are refused. Ids match as JSON values: ``1`` matches
+    ``1.0`` but not ``"1"`` or ``true``. References are read from the state the
+    rule receives, before it removes anything. ``path`` and
+    ``unless_referenced_by`` do not combine: nested items have no declared id.
 ``exclude_tables``
     Drops the named tables whole. ``reason`` is required, and a table another
     rule of the same view names is refused, because the order of the two would
@@ -76,6 +79,7 @@ import hashlib
 import json
 import re
 from abc import abstractmethod
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -138,6 +142,7 @@ ALL_ZERO: Final[str] = "all_zero"
 It is reserved, so a field named ``all_zero`` cannot take a condition."""
 
 _DEFAULT_ID_FIELD: Final[str] = "id"
+_ID_TYPES: Final[tuple[type, ...]] = (str, int, float, bool)
 _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", re.ASCII)
 
 
@@ -641,12 +646,37 @@ def _rows_to_keep(
     if not config.unless_referenced_by:
         return [row for row in rows if not matches(row)]
     id_field = _record_id_field(config.table, id_fields)
-    referenced = _referenced_ids(state, config.unless_referenced_by)
+    _refuse_own_id_references(config, id_field)
+    counts = _reference_counts(state, config.unless_referenced_by)
     return [
         row
         for row in rows
-        if not matches(row) or _reference_key(_record_id(row, config.table, id_field)) in referenced
+        if not matches(row) or _referenced_by_another_row(row, config, id_field, counts)
     ]
+
+
+def _refuse_own_id_references(config: ExcludeRecordsConfig, id_field: str) -> None:
+    for reference in config.unless_referenced_by:
+        if reference.table == config.table and reference.field == id_field:
+            raise ComparisonViewError(
+                f"unless_referenced_by names {config.table}.{id_field}, the id field of the "
+                f"rule's own table: every row would reference only itself"
+            )
+
+
+def _referenced_by_another_row(
+    row: Record, config: ExcludeRecordsConfig, id_field: str, counts: Counter[tuple[bool, Any]]
+) -> bool:
+    """Whether a reference other than the row's own references to itself holds its id."""
+    key = _reference_key(_record_id(row, config.table, id_field))
+    own = sum(
+        1
+        for reference in config.unless_referenced_by
+        if reference.table == config.table
+        for value in _ids_at(row, _segments(reference.field), _reference_label(reference))
+        if _reference_key(value) == key
+    )
+    return counts[key] > own
 
 
 def _record_id_field(table: str, id_fields: Mapping[str, str | list[str]]) -> str:
@@ -671,37 +701,46 @@ def _record_id_field(table: str, id_fields: Mapping[str, str | list[str]]) -> st
 
 
 def _record_id(row: Record, table: str, id_field: str) -> Any:
-    if id_field not in row:
+    value = row.get(id_field)
+    if value is None:
         raise ComparisonViewError(
-            f"a record of table {table!r} matches exclude_records but has no id field "
-            f"{id_field!r}, so unless_referenced_by cannot tell whether it is referenced; "
-            f"declare state_checks.id_fields[{table!r}]"
+            f"a record of table {table!r} matches exclude_records but its id field "
+            f"{id_field!r} is missing or null, so unless_referenced_by cannot tell whether "
+            f"it is referenced; declare state_checks.id_fields[{table!r}]"
         )
-    value = row[id_field]
-    if isinstance(value, Mapping | list):
+    if not isinstance(value, _ID_TYPES):
         raise ComparisonViewError(
             f"a record of table {table!r} holds a {type(value).__name__} in its id field "
-            f"{id_field!r}; an id is a scalar"
+            f"{id_field!r}; an id is a string, a number or a bool"
         )
     return value
 
 
 def _reference_key(value: Any) -> tuple[bool, Any]:
-    """A set key under which a bool id never meets a numeric one."""
+    """The key an id and a reference to it share, compared as JSON values.
+
+    A bool never matches a number, ``1`` matches ``1.0``, and ``1`` does not match
+    ``"1"``: the JSON types differ.
+    """
     return isinstance(value, bool), value
 
 
-def _referenced_ids(
+def _reference_counts(
     state: Mapping[str, Any], references: Sequence[RecordReference]
-) -> frozenset[tuple[bool, Any]]:
-    keys: set[tuple[bool, Any]] = set()
+) -> Counter[tuple[bool, Any]]:
+    """How many times each id is referenced by the listed fields, over every row."""
+    counts: Counter[tuple[bool, Any]] = Counter()
     for reference in references:
         if reference.table not in state:
             continue
         rows = _records(state[reference.table], f"unless_referenced_by: table {reference.table!r}")
-        where = f"unless_referenced_by: '{reference.table}.{reference.field}'"
-        keys.update(map(_reference_key, _ids_at(rows, _segments(reference.field), where)))
-    return frozenset(keys)
+        found = _ids_at(rows, _segments(reference.field), _reference_label(reference))
+        counts.update(map(_reference_key, found))
+    return counts
+
+
+def _reference_label(reference: RecordReference) -> str:
+    return f"unless_referenced_by: '{reference.table}.{reference.field}'"
 
 
 def _ids_at(value: Any, segments: Sequence[str], where: str) -> list[Any]:
@@ -724,8 +763,8 @@ def _ids_in(value: Any, where: str) -> Iterator[Any]:
         for item in value:
             yield from _ids_in(item, where)
         return
-    if isinstance(value, Mapping):
-        raise ComparisonViewError(f"{where} holds a mapping, not an id")
+    if not isinstance(value, _ID_TYPES):
+        raise ComparisonViewError(f"{where} holds a {type(value).__name__}, not an id")
     yield value
 
 
