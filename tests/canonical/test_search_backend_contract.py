@@ -20,21 +20,27 @@ written for it must fail on that backend.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.utils.fake_rag_service import FakeRagService
+from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.plugin_registry import load_search_backend
 from tolokaforge.core.search.backend import (
     SearchBackend,
     SearchBackendContext,
     SearchIndex,
+    SearchOutcome,
 )
 from tolokaforge.runner.rag_service_backend import RagServiceBackend
 from tolokaforge.testing.search_backends import (
     InMemorySearchBackend,
+    InMemorySearchIndex,
+    RunnerLoop,
     SearchBackendConformanceSuite,
     SearchBackendDefects,
     in_memory_search_backend_factory,
@@ -85,10 +91,22 @@ class TestRagServiceConformance(SearchBackendConformanceSuite):
     def trial_context_fixture(self, rag_service: FakeRagService) -> SearchBackendContext:
         return trial_context(stack_service_clients={"rag_service": rag_service.client()})
 
+    @pytest.fixture
+    def make_searches_fail(self, rag_service: FakeRagService) -> Any:
+        def fail(index: SearchIndex) -> None:
+            rag_service.searches_fail = True
+
+        return fail
+
     def test_the_suite_ran_the_registered_built_in(
         self, backend_factory: Any, trial_context: SearchBackendContext
     ) -> None:
         assert isinstance(backend_factory(trial_context), RagServiceBackend)
+
+
+def _fail_in_memory_searches(index: SearchIndex) -> None:
+    assert isinstance(index, InMemorySearchIndex)
+    index.fail_searches_with(ConnectionError("the index went away"))
 
 
 class TestInMemoryConformance(SearchBackendConformanceSuite):
@@ -97,6 +115,78 @@ class TestInMemoryConformance(SearchBackendConformanceSuite):
     @pytest.fixture
     def backend_factory(self) -> Any:
         return in_memory_search_backend_factory
+
+    @pytest.fixture
+    def make_searches_fail(self) -> Any:
+        return _fail_in_memory_searches
+
+
+class _BridgingIndex:
+    """An index whose own search is a coroutine, and whose judge search bridges to it.
+
+    The judge's ``KnowledgeSearch.search`` is synchronous and the runner calls it off
+    the event loop the index was built on; a backend over an async client reaches its
+    coroutine from there either with a fresh ``asyncio.run`` or with
+    ``run_coroutine_threadsafe`` onto the loop it captured at build time.
+    """
+
+    def __init__(self, inner: InMemorySearchIndex, loop: asyncio.AbstractEventLoop, bridge: str):
+        self.inner = inner
+        self.loop = loop
+        self.bridge = bridge
+
+    async def ranked(self, query: str, top_k: int) -> list[SearchHit]:
+        await asyncio.sleep(0)
+        return list(self.inner.rank(query, top_k))
+
+    async def search(
+        self, query: str, arguments: Mapping[str, Any], *, budget_s: float
+    ) -> SearchOutcome:
+        return await self.inner.search(query, arguments, budget_s=budget_s)
+
+    def knowledge_search(self) -> _BridgingKnowledgeSearch:
+        return _BridgingKnowledgeSearch(self)
+
+
+class _BridgingKnowledgeSearch:
+    def __init__(self, index: _BridgingIndex) -> None:
+        self.index = index
+
+    def search(self, query: str, top_k: int = 5, alpha: float = 0.5) -> list[SearchHit]:
+        coroutine = self.index.ranked(query, top_k)
+        if self.index.bridge == "asyncio_run":
+            return asyncio.run(coroutine)
+        return asyncio.run_coroutine_threadsafe(coroutine, self.index.loop).result(timeout=10)
+
+
+def _bridging_factory(bridge: str) -> Any:
+    class _BridgingBackend(InMemorySearchBackend):
+        async def build_index(self, corpus_dir: Path | None) -> Any:
+            inner = await super().build_index(corpus_dir)
+            return _BridgingIndex(inner, asyncio.get_running_loop(), bridge)
+
+    return _BridgingBackend
+
+
+@pytest.mark.parametrize("bridge", ["asyncio_run", "run_coroutine_threadsafe"])
+class TestABackendBridgingItsJudgeSearchToACoroutineConforms(SearchBackendConformanceSuite):
+    """The suite calls the judge's search where the runner does: off the running loop.
+
+    Called from inside the loop, the ``asyncio_run`` bridge would raise and the
+    ``run_coroutine_threadsafe`` bridge would deadlock — both correct backends.
+    """
+
+    @pytest.fixture
+    def backend_factory(self, bridge: str) -> Any:
+        return _bridging_factory(bridge)
+
+    @pytest.fixture
+    def make_searches_fail(self) -> Any:
+        def fail(index: SearchIndex) -> None:
+            assert isinstance(index, _BridgingIndex)
+            _fail_in_memory_searches(index.inner)
+
+        return fail
 
 
 def _defective(**defects: Any) -> Any:
@@ -137,6 +227,16 @@ _VECTORS = [
         "test_a_corpus_with_no_documents_is_refused",
         id="empty-corpus-accepted",
     ),
+    pytest.param(
+        {"builds_without_a_trial": True},
+        "test_build_index_refuses_a_trial_less_context",
+        id="index-built-for-no-trial",
+    ),
+    pytest.param(
+        {"renders_failed_searches_as_empty": True},
+        "test_a_failed_search_raises_rather_than_rendering_results",
+        id="failed-search-rendered-as-empty",
+    ),
 ]
 
 
@@ -144,14 +244,20 @@ def _call(suite: SearchBackendConformanceSuite, test_name: str, factory: Any, tm
     """Drive one suite test directly with the inputs its fixtures would supply."""
     test = getattr(suite, test_name)
     wanted = test.__code__.co_varnames[1 : test.__code__.co_argcount]
+    loop = RunnerLoop()
     supplied = {
         "backend_factory": factory,
+        "make_searches_fail": _fail_in_memory_searches,
         "trial_context": trial_context(),
         "corpus_dir": write_corpus(tmp / "corpus"),
         "query": "refund window",
         "tmp_path": tmp,
+        "runner_loop": loop,
     }
-    test(**{name: supplied[name] for name in wanted})
+    try:
+        test(**{name: supplied[name] for name in wanted})
+    finally:
+        loop.close()
 
 
 class TestTheSuiteDetectsEachVector:

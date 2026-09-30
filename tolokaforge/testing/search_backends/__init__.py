@@ -10,14 +10,16 @@ exception.
 Three things ship here:
 
 - :class:`SearchBackendConformanceSuite` — the pytest suite an implementer points at
-  their own factory. One fixture to override; the assertions are behavioural.
+  their own factory. Two fixtures to override — the factory, and how its search
+  fails; the assertions are behavioural. :class:`RunnerLoop` is the threading shape
+  it runs a backend in, the runner's.
 - :class:`InMemorySearchBackend` — the reference implementation and the worked
   example to copy, with a call log the engine's own end-to-end tests read. Its
   :class:`SearchBackendDefects` knobs switch obligations off one at a time, which is
   how the suite's own teeth are proven.
 - :func:`in_memory_search_backend_factory` — the reference factory.
 
-Adoption is five lines::
+Adoption::
 
     import pytest
     from tolokaforge.testing.search_backends import SearchBackendConformanceSuite
@@ -26,10 +28,15 @@ Adoption is five lines::
         @pytest.fixture
         def backend_factory(self):
             return my_search_backend_factory
+
+        @pytest.fixture
+        def make_searches_fail(self):
+            return lambda index: my_service.go_down()
 """
 
 from .conformance import (
     CONFORMANCE_QUERY,
+    RunnerLoop,
     SearchBackendConformanceSuite,
     declaration_context,
     trial_context,
@@ -52,6 +59,7 @@ __all__ = [
     "InMemorySearchBackend",
     "InMemorySearchCallLog",
     "InMemorySearchIndex",
+    "RunnerLoop",
     "SearchBackendConformanceSuite",
     "SearchBackendDefects",
     "declaration_context",
