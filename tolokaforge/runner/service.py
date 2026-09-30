@@ -1817,6 +1817,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         (kinds registry ships; composite runtime dispatch through it does
         not).
 
+        ``kind_config`` is the task's own ``grading.grading_method_config``,
+        so a pack that declares a longer verifier timeout grades on the clock
+        it asked for; ``None`` leaves the kind on its defaults.
+
         ``functools.partial`` binds ``evaluate``'s kwargs so ``run_in_executor``
         — which takes positional args only — invokes the kind synchronously
         off-loop. A raised :class:`GraderKindRefusedError` maps to
@@ -1830,7 +1834,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 kind_cls().evaluate,
                 substrate=substrate,
                 task_config=trial_context.grading_config,
-                kind_config=None,
+                kind_config=trial_context.grading_config.grading_method_config,
                 trial_id=trial_id,
                 agent_tools=trial_context.agent_tools,
                 logger=logger,

@@ -88,9 +88,22 @@ class TestTerminalBenchAdapterCanon:
     """Canonical tests for TerminalBenchAdapter task loading and serialisation."""
 
     def test_task_discovery(self, tbench_adapter):
-        """Adapter discovers both fixture tasks — plain, and skills-carrying."""
+        """Adapter discovers every fixture task, compose file or not.
+
+        The fixtures carry one of each corpus layout. ``echo-hello-single`` is
+        the majority shape — ``task.toml`` plus ``environment/Dockerfile``, no
+        ``task.yaml`` and no compose file at all. ``echo-hello-multi`` is the
+        canonical one, whose compose lives under ``environment/`` and declares
+        a service the agent's container talks to. Discovery keyed on a root
+        compose file would return neither, and report no error for either.
+        """
         task_ids = tbench_adapter.get_task_ids()
-        assert task_ids == ["echo-hello", "echo-hello-skills"]
+        assert task_ids == [
+            "echo-hello",
+            "echo-hello-multi",
+            "echo-hello-single",
+            "echo-hello-skills",
+        ]
 
     def test_task_config(self, tbench_adapter, canon_snapshot):
         """TaskConfig has correct adapter_type, category, and instruction."""

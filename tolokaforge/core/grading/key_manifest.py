@@ -713,6 +713,22 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
             "the runtime accounted-keys ledger does not apply to those dispatch modes"
         ),
     ),
+    GradingKey(
+        author_key="grading_method_config",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.RUNNER_ONLY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field=None,
+        runner_field="RunnerGradingConfig.grading_method_config",
+        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._dispatch_via_grader_kind",
+        reason=(
+            "per-kind configuration for whichever kind grading_method selects, and so "
+            "reachable only on the same runner-side dispatch that key is; it carries no "
+            "score of its own and the core GradingEngine has no counterpart to read it. "
+            "Each kind owns the model that validates the contents — the terminal-bench "
+            "adapter emits the verifier timeout its task.toml declares"
+        ),
+    ),
 )
 
 _BY_AUTHOR_KEY: dict[str, GradingKey] = {}

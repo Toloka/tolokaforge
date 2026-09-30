@@ -619,7 +619,9 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             user_tools=[],
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
-            grading=RunnerGradingConfig(**self.emit_test_execution_grading()),
+            grading=RunnerGradingConfig(
+                **self.emit_test_execution_grading(meta.verifier_timeout_sec)
+            ),
             metadata=self._metadata(meta),
         )
 
@@ -649,9 +651,10 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         metadata: dict[str, Any] = {
             "difficulty": meta.difficulty,
             "tags": meta.tags,
-            "verifier_timeout_sec": meta.verifier_timeout_sec,
             "agent_harness": self.agent_harness,
         }
+        if meta.verifier_timeout_sec is not None:
+            metadata["verifier_timeout_sec"] = meta.verifier_timeout_sec
         if self.harness_spec is not None:
             command = self.build_harness_command(
                 self.agent_harness,

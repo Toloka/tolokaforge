@@ -4,13 +4,19 @@ Runs terminal-bench task packs on the tolokaforge engine.
 
 ## Environment contract
 
-Terminal-bench tasks author a `docker-compose.yaml` that references
-`T_BENCH_*` variables (plus `CPUS` / `MEMORY`) which terminal-bench's own
-provisioner injects at up-time. The tolokaforge engine never sets those, so
-the compose file is **synthesised** before provisioning — the adapter emits
-a self-contained compose file the engine can bring up unchanged, alongside
-a staging directory that carries the task's build context, tests, and log
-mountpoints.
+A terminal-bench task declares itself with `task.toml` (or the legacy
+`task.yaml`) and an `environment/Dockerfile`. A compose file is optional and
+names the multi-container shape; it is read from `environment/docker-compose.yaml`
+first — the only location upstream reads — and from the task root second, which
+is where the pre-harbor format kept it. Most tasks ship neither, and their
+compose doc is synthesised from the Dockerfile alone.
+
+A task that does ship one authors it against `T_BENCH_*` variables (plus
+`CPUS` / `MEMORY`) which terminal-bench's own provisioner injects at up-time.
+The tolokaforge engine never sets those, so the compose file is **synthesised**
+either way — the adapter emits a self-contained compose file the engine can
+bring up unchanged, alongside a staging directory that carries the task's
+build context, tests, and log mountpoints.
 
 ### Staging directory
 
@@ -49,6 +55,19 @@ Contents of a staging directory:
   | `CPUS`                                      | `str(meta.cpus)`                                                                                          |
   | `MEMORY`                                    | `{meta.memory_mb}M`                                                                                       |
 
+  A task whose compose lives under `environment/` authors against the
+  upstream harness's own variable set instead, which is resolved the same way:
+
+  | Variable                    | Resolved value                         |
+  | --------------------------- | -------------------------------------- |
+  | `CONTEXT_DIR`               | `./environment`                        |
+  | `MAIN_IMAGE_NAME`           | same as the agent service's `image:`    |
+  | `TEST_DIR`                  | `/tests`                               |
+  | `ENV_AGENT_LOGS_PATH`       | `/logs/agent`                          |
+  | `ENV_VERIFIER_LOGS_PATH`    | `/logs/verifier`                       |
+  | `HOST_AGENT_LOGS_PATH`      | `./_logs/agent`                        |
+  | `HOST_VERIFIER_LOGS_PATH`   | `./_logs/verifier`                     |
+
   `${TOLOKAFORGE_TRIAL_SLUG}` is the one variable that survives into the
   emitted file — the engine writes it to the per-trial `.env` at provision
   time so each trial's containers get a unique name.
@@ -60,9 +79,20 @@ Contents of a staging directory:
     or `{image_registry}/{task_id}:{image_tag}` when `image_registry` is
     set (with `build:` dropped so the image is pulled);
   - `container_name: tbench_${TOLOKAFORGE_TRIAL_SLUG}_{agent_service}`;
-  - `volumes: ["./tests:/tests", "./_logs:/logs"]` — the relative bind
-    mounts against the staging dir replace the `T_BENCH_*` log mounts;
-  - `TEST_DIR=/tests` in its `environment:`.
+  - `./tests:/tests` and `./_logs:/logs` appended to whatever volumes the
+    task declared — relative binds against the staging dir. A task mount
+    targeting `/tests` or `/logs` gives way to these; anything else it
+    declares (a named volume shared with a sibling service, say) is kept;
+  - `TEST_DIR=/tests` in its `environment:`;
+  - `build.context: ./environment` when the task's compose declares no
+    build of its own. The upstream harness supplies this from a base compose
+    layer it merges underneath the task's, so most canonical compose files
+    name no build at all.
+
+- A compose file under `environment/` is read **in place** upstream, so
+  relative `build.context` values in it mean paths under `environment/`.
+  The emitted file sits one level up at the staging root, so those contexts
+  are re-rooted onto `environment/` as it is written.
 
 - Two engine services are **injected** alongside the task's own:
   - `runner` (default image `tolokaforge-runner:local`) — exposes gRPC on

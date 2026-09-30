@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import os.path
+import posixpath
 import re
 import shlex
 import shutil
@@ -49,7 +50,7 @@ import warnings
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 import yaml
@@ -236,13 +237,17 @@ def materialise_task_environment(
     validate_harness(agent_harness, harness_registry)
     harness_spec = harness_registry.get(agent_harness)
 
-    original = _load_compose(meta.compose_file)
-    task_services = original.get("services")
-    if not isinstance(task_services, dict) or not task_services:
-        raise ValueError(
-            f"terminal-bench task {meta.task_id!r} compose file "
-            f"{meta.compose_file} must declare a non-empty `services:` mapping."
-        )
+    if meta.compose_file is not None:
+        original = _load_compose(meta.compose_file)
+        task_services = original.get("services")
+        if not isinstance(task_services, dict) or not task_services:
+            raise ValueError(
+                f"terminal-bench task {meta.task_id!r} compose file "
+                f"{meta.compose_file} must declare a non-empty `services:` mapping."
+            )
+    else:
+        original = _single_container_compose(meta)
+        task_services = original["services"]
     agent_service = _resolve_agent_service(meta.task_id, task_services)
     base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
     # The base service exists only under harness mode, so only harness mode can
@@ -373,6 +378,140 @@ def _write_engine_stack(staging_root: Path, engine_doc: dict[str, Any]) -> Path:
     return engine_compose_file
 
 
+#: The service name a synthesised single-container task gets. Matches the
+#: name 82 of the 86 compose-bearing corpus tasks already use, so a reader
+#: comparing the two shapes sees one convention rather than two.
+SINGLE_CONTAINER_SERVICE = "main"
+
+#: Where a task's image is built from. Every task in the corpus ships
+#: ``environment/Dockerfile`` and Dockerfiles inside it copy relative to that
+#: directory, so the context is the directory, not the task root.
+_ENVIRONMENT_BUILD_CONTEXT = "./environment"
+
+#: Container paths the upstream harness binds the two log directories to, and
+#: the staging-relative host paths ours mount them from. A task authored
+#: against the harbor format reads these four as ``${ENV_*}`` / ``${HOST_*}``.
+_HARBOR_LOG_PATHS = {
+    "ENV_AGENT_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/agent",
+    "ENV_VERIFIER_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/verifier",
+    "HOST_AGENT_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/agent",
+    "HOST_VERIFIER_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/verifier",
+}
+
+
+def _reroot_build_contexts(doc: dict[str, Any]) -> None:
+    """Re-root each service's relative build context onto ``environment/``.
+
+    A compose file under ``environment/`` is read *in place* by the upstream
+    harness, so a context of ``.`` in it means that directory. We emit one
+    merged compose file at the staging root instead, one level up, where the
+    same ``.`` would mean the task root — a different directory, usually
+    without a Dockerfile in it.
+
+    Only literal paths move. A value still carrying ``${...}`` is left for
+    substitution, which resolves ``CONTEXT_DIR`` to the staging-relative
+    environment directory directly.
+    """
+    for body in (doc.get("services") or {}).values():
+        if not isinstance(body, dict):
+            continue
+        build = body.get("build")
+        if isinstance(build, str):
+            moved = _reroot_context(build)
+            if moved is not None:
+                body["build"] = moved
+        elif isinstance(build, dict):
+            context = build.get("context")
+            if isinstance(context, str):
+                moved = _reroot_context(context)
+                if moved is not None:
+                    build["context"] = moved
+
+
+def _agent_volumes(declared: Any) -> list[Any]:
+    """The agent service's mounts: the task's own, plus ours for tests and logs.
+
+    84 of the canonical compose files mount a named volume on the agent service
+    — ``app_src:/app`` and the like — shared with the sibling services that run
+    the code the agent is there to repair. Replacing the list outright left
+    those tasks with an empty ``/app`` and siblings that never saw an edit, so
+    what is declared is kept and ours is appended.
+
+    A task mount targeting ``/tests`` or ``/logs`` is dropped in favour of ours.
+    Both are the harness's directories rather than the task's — the verifier
+    reads its reward from under ``/logs`` and the suite it runs from ``/tests``
+    — and two mounts on one target leave which of them wins up to compose.
+    """
+    ours = ["./tests:/tests", f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}"]
+    reserved = {"/tests", CONTAINER_LOGS_DIR}
+    kept = [
+        mount
+        for mount in (declared or [])
+        if not _mount_target_is_under(_mount_target(mount), reserved)
+    ]
+    return kept + ours
+
+
+def _mount_target(mount: Any) -> str | None:
+    """The container path *mount* binds to, in either compose spelling."""
+    if isinstance(mount, Mapping):
+        target = mount.get("target")
+        return target if isinstance(target, str) else None
+    if isinstance(mount, str):
+        # "source:target" / "source:target:ro"; a bare "/data" is anonymous and
+        # targets itself. Windows drive letters do not occur in this corpus.
+        parts = mount.split(":")
+        return parts[1] if len(parts) >= 2 else parts[0]
+    return None
+
+
+def _mount_target_is_under(target: str | None, reserved: set[str]) -> bool:
+    """Whether *target* is one of *reserved* or sits inside one."""
+    if target is None:
+        return False
+    path = PurePosixPath(posixpath.normpath(target))
+    return any(path == PurePosixPath(r) or path.is_relative_to(r) for r in reserved)
+
+
+def _reroot_context(context: str) -> str | None:
+    """*context* relative to the staging root, or ``None`` to leave it alone."""
+    if "${" in context or PurePosixPath(context).is_absolute():
+        return None
+    return posixpath.normpath(posixpath.join(_ENVIRONMENT_BUILD_CONTEXT, context))
+
+
+def _single_container_compose(meta: TerminalBenchTask) -> dict[str, Any]:
+    """The compose doc for a task that ships a Dockerfile and no compose file.
+
+    This is the majority shape — 691 of 974 delivered tasks ship neither a
+    root compose file nor one under ``environment/``. Only the two
+    fields the synthesiser does not go on to overwrite are set here: where to
+    build from, and a command that keeps the container alive for the agent to
+    exec into. ``image``, ``container_name``, ``volumes`` and ``TEST_DIR`` are
+    all written unconditionally downstream, so setting them here would be
+    writing something twice and inviting the two to drift.
+
+    Raises when the Dockerfile is missing rather than emitting a compose doc
+    that would fail at ``docker compose build`` with a message about a path
+    nobody wrote.
+    """
+    dockerfile = meta.task_dir / "environment" / "Dockerfile"
+    if not dockerfile.is_file():
+        raise ValueError(
+            f"terminal-bench task {meta.task_id!r} has neither a "
+            f"docker-compose.yaml nor {dockerfile.relative_to(meta.task_dir)}; "
+            "one of the two has to say how to build the task's container."
+        )
+    return {
+        "services": {
+            SINGLE_CONTAINER_SERVICE: {
+                "build": {"context": _ENVIRONMENT_BUILD_CONTEXT},
+                "command": ["sh", "-c", "sleep infinity"],
+            }
+        }
+    }
+
+
 def _load_compose(path: Path) -> dict[str, Any]:
     with path.open() as f:
         content = yaml.safe_load(f)
@@ -385,15 +524,30 @@ def _load_compose(path: Path) -> dict[str, Any]:
 
 
 def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
+    """Which service the agent works inside.
+
+    ``main`` by name first — the convention 186 of the corpus's 197 canonical
+    compose files follow. Then the sole service, if there is only one.
+
+    Then the sole service that declares ``build``: a task's supporting
+    containers are stock images (``postgres:16-alpine``, ``redis``), and the
+    one built from the task's own source is the one holding the code under
+    repair. That rule is what lets a task keep its own service names — the
+    alternative is telling the benchmark to rename things to suit us, and a
+    task edited to fit the harness is no longer the task the score refers to.
+    """
     if AGENT_SERVICE_DEFAULT in services:
         return AGENT_SERVICE_DEFAULT
     if len(services) == 1:
         return next(iter(services))
+    built = [name for name, body in services.items() if isinstance(body, dict) and "build" in body]
+    if len(built) == 1:
+        return built[0]
     raise ValueError(
         f"terminal-bench task {task_id!r}: cannot resolve the agent service — "
-        f"the compose file declares {sorted(services)!r} but no service is named "
-        f"{AGENT_SERVICE_DEFAULT!r}. Rename one of the services to "
-        f"{AGENT_SERVICE_DEFAULT!r} or leave a single service in the compose file."
+        f"the compose file declares {sorted(services)!r}, none is named "
+        f"{AGENT_SERVICE_DEFAULT!r}, and {len(built)} of them declare a build "
+        f"context, so which one holds the task's own code is ambiguous."
     )
 
 
@@ -660,6 +814,7 @@ def _build_synthesised_compose(
     agent_container_name = _trial_scoped_container_name(agent_service)
 
     resolved_vars = {
+        # The pre-harbor dialect, which the 86 root-compose tasks author against.
         "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": agent_image,
         "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": agent_container_name,
         "T_BENCH_CONTAINER_LOGS_PATH": CONTAINER_LOGS_DIR,
@@ -667,22 +822,38 @@ def _build_synthesised_compose(
         "T_BENCH_CONTAINER_AGENT_LOGS_PATH": f"{CONTAINER_LOGS_DIR}/agent",
         "T_BENCH_TASK_AGENT_LOGS_PATH": f"./{STAGING_LOGS_DIRNAME}/agent",
         "T_BENCH_TEST_DIR": "/tests",
+        # The harbor dialect, which the canonical ``environment/`` compose files
+        # author against. ``CONTEXT_DIR`` is the environment directory — upstream
+        # resolves it absolute, ours is relative to the staging root the merged
+        # compose file sits in, and both name the directory holding the Dockerfile.
+        "CONTEXT_DIR": _ENVIRONMENT_BUILD_CONTEXT,
+        "MAIN_IMAGE_NAME": agent_image,
+        "TEST_DIR": "/tests",
+        **_HARBOR_LOG_PATHS,
+        # Shared by both dialects.
         "CPUS": str(meta.cpus),
         "MEMORY": f"{meta.memory_mb}M",
     }
-    task_doc = _substitute_tree(deepcopy(original), resolved_vars)
+    staged = deepcopy(original)
+    if meta.compose_file is not None and meta.compose_file.parent.name == "environment":
+        _reroot_build_contexts(staged)
+    task_doc = _substitute_tree(staged, resolved_vars)
 
     services: dict[str, Any] = task_doc["services"]
     agent_body: dict[str, Any] = services[agent_service]
+    if "build" not in agent_body:
+        # Upstream's base compose layer gives the agent service
+        # ``build.context: ${CONTEXT_DIR}`` unconditionally, and a task's own
+        # compose overrides it only by declaring its own build. 158 of the 197
+        # canonical compose files rely on that and name no build at all; without
+        # it they inherit an image tag that nothing in the stack ever builds.
+        agent_body["build"] = {"context": _ENVIRONMENT_BUILD_CONTEXT}
     task_build = agent_body.get("build")
     agent_body["image"] = agent_image
     if image_registry:
         agent_body.pop("build", None)
     agent_body["container_name"] = agent_container_name
-    agent_body["volumes"] = [
-        "./tests:/tests",
-        f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}",
-    ]
+    agent_body["volumes"] = _agent_volumes(agent_body.get("volumes"))
     agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
     for key in sorted(provider_env_keys):
         agent_body["environment"] = _set_env_key(
