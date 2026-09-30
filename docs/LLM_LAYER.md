@@ -127,7 +127,8 @@ the client never branches on provider. See
 |---|---|---|---|
 | `NoReasoningCodec` | default | — (always `None`) | `{}` |
 | `AnthropicReasoningCodec` | `anthropic` preset | `message.thinking_blocks` + `message.reasoning_content` | `{"thinking_blocks": [...]}` |
-| `OpenAIReasoningCodec` | `openai_gpt5` / `xai_grok` / `qwen` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAIReasoningCodec` | `openai_gpt5` / `openai_gpt6` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAISummaryReplayReasoningCodec` | every other route carrying readable reasoning — `moonshot_kimi_k2` / `k3`, `qwen`, `xai_grok`, `openrouter_dict_stringify_recovery`, `thinkingmachines_inkling`, `gpt_oss`, `z_ai_glm_5_3`, `cohere_command_a_plus_05_2026`, `deepseek_v4_flash_0731_resolve` | inherited from `OpenAIReasoningCodec` | `{"reasoning_details": [{"type": "reasoning.text", ...}]}` |
 
 ### `AnthropicReasoningCodec` contract (Stage 3, fixes P4a + P4c)
 
@@ -1247,9 +1248,13 @@ A `ReasoningCodec` has two halves and they fail differently. `extract` reads the
 provider's reasoning off the response; `encode_for_replay` says what to send back
 on the next request. A codec that extracts and replays nothing leaves the model
 reading a history in which it never reasoned — and models copy that. Measured on
-`moonshotai/kimi-k2.7-code`: 39–57 reasoning tokens on turn 1 and **0 on turns 2
-through 20**, across 11 trials on two upstreams, with score 0.380 against 0.688
-once the reasoning was replayed.
+`moonshotai/kimi-k2.7-code` in two datasets that disagree on magnitude and agree on
+direction: the ten-task sweep behind the published report (50 trials) carried
+reasoning on **every turn-1 call and 15–34% of later ones** — 28.5% of 2,241 calls
+overall — while a three-task run served by two fan-out mirrors fell to **2.7%** of
+411 calls, against **98.2%** of 277 once the note was replayed. Score on those three
+tasks moved 0.380 → 0.688. How far the collapse goes evidently depends on the
+upstream; that it happens does not.
 
 An empty replay is *correct* for OpenAI, which does not accept echoed reasoning.
 It is a silent defect for a route that would have honoured it, and from inside
@@ -2432,10 +2437,10 @@ the same three policies. Keep this table in sync with
 | `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `xai_grok`              | `x-ai/*`, `xai/*`, `*/x-ai/*`, `*/xai/*`, `grok*`                | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
+| `qwen`                  | `qwen/*`, `*/qwen/*`, `qwen3*`                                   | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
 | `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
-| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
+| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `openai_summary_replay` | `nova` (filler `" "`) | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its

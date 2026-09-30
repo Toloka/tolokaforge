@@ -28,7 +28,11 @@ pytestmark = pytest.mark.canonical
 
 
 #: Live OpenRouter slugs, one per preset family the engine ships an opinion
-#: about. Bare form, exactly as a certificate or the pricing table spells it.
+#: about, plus one point-release suffix. Bare form, exactly as a certificate
+#: or the pricing table spells it. The suffixed entry is deliberate: a glob
+#: written for an exact slug fixes that slug and leaves its point releases
+#: resolving differently under the two spellings — which is this bug wearing
+#: a hat.
 _SLUGS: tuple[str, ...] = (
     "openai/gpt-5.6-sol",
     "anthropic/claude-sonnet-4.6",
@@ -43,6 +47,7 @@ _SLUGS: tuple[str, ...] = (
     "z-ai/glm-5.3",
     "deepseek/deepseek-v4-pro-0813",
     "deepseek/deepseek-v4-flash-0731",
+    "deepseek/deepseek-v4-flash-0731-turbo",
     "xiaomi/mimo-v2.6-pro",
     "nvidia/nemotron-3-ultra-550b-a55b",
     "minimax/minimax-m3",

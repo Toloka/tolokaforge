@@ -210,7 +210,6 @@ class TestReasoningLossIsObservable:
         client.capabilities.reasoning_codec = codec
         client.capabilities.cache_policy.apply_messages.side_effect = lambda m: m
         client.logger = MagicMock()
-        client._reasoning_replay_dropped = False
         return client
 
     def test_a_codec_that_replays_nothing_marks_the_request(self) -> None:
@@ -229,9 +228,7 @@ class TestReasoningLossIsObservable:
             )
         ]
 
-        client._convert_messages(None, history)
-
-        assert client._reasoning_replay_dropped is True
+        assert client._reasoning_replay_dropped_for(history) is True
 
     def test_a_codec_that_replays_leaves_no_mark(self) -> None:
         from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCodec
@@ -252,7 +249,7 @@ class TestReasoningLossIsObservable:
 
         converted = client._convert_messages(None, history)
 
-        assert client._reasoning_replay_dropped is False
+        assert client._reasoning_replay_dropped_for(history) is False
         assert converted[0]["reasoning_details"][0]["text"] == "I checked the logs."
 
     def test_a_turn_with_no_reasoning_at_all_is_not_a_drop(self) -> None:
@@ -262,9 +259,9 @@ class TestReasoningLossIsObservable:
 
         client = self._client(OpenAIReasoningCodec())
 
-        client._convert_messages(None, [Message(role=MessageRole.ASSISTANT, content="done")])
+        turn = [Message(role=MessageRole.ASSISTANT, content="done")]
 
-        assert client._reasoning_replay_dropped is False
+        assert client._reasoning_replay_dropped_for(turn) is False
 
     def test_billed_reasoning_the_codec_did_not_surface_is_recorded(self) -> None:
         """The predicate, stated directly: charged for thinking, captured none."""
@@ -281,3 +278,59 @@ class TestReasoningLossIsObservable:
 
         assert billed.reasoning_billed_not_captured is True
         assert clean.reasoning_billed_not_captured is False
+
+
+class TestTheReplayObservationRidesTheCallNotTheClient:
+    """One ``LLMClient`` serves every concurrent trial in a run.
+
+    ``orchestrator.py`` builds the agent client once and hands the same object
+    to every worker in the trial pool, which ``runner.py`` states outright:
+    "The ``LLMClient`` is shared across concurrent trials — the identity must
+    ride the call, not the client." Per-request state kept on ``self`` is read
+    by whichever trial reaches ``_assemble_result`` next, so a trial that
+    dropped reasoning can have the fact recorded against a different trial —
+    and ``Metrics.reasoning_replay_dropped`` is sticky, so a false positive
+    never clears.
+    """
+
+    def test_the_client_holds_no_per_request_replay_state(self) -> None:
+        from tolokaforge.core.llm.client import LLMClient
+
+        leaked = [n for n in vars(LLMClient).get("__annotations__", {}) if "replay_dropped" in n]
+
+        assert not leaked, f"{leaked} is per-request state on a shared client"
+
+    def test_two_interleaved_histories_each_get_their_own_answer(self) -> None:
+        """The interleaving that the old instance flag got wrong."""
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.llm.client import LLMClient
+        from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
+        from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
+        from tolokaforge.core.models import Message, MessageRole, ModelConfig
+
+        client = LLMClient.__new__(LLMClient)
+        client.config = ModelConfig(provider="openrouter", name="openrouter/acme/widget")
+        client.provider = "openrouter"
+        client.model_name = "openrouter/acme/widget"
+        client.capabilities = MagicMock()
+        client.capabilities.reasoning_codec = OpenAIReasoningCodec()
+        client.logger = MagicMock()
+
+        with_reasoning = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                reasoning=StructuredReasoning(
+                    blocks=(ReasoningBlock(type="summary_text", text="I read the log."),)
+                ),
+            )
+        ]
+        without = [Message(role=MessageRole.ASSISTANT, content="done")]
+
+        # trial A asks, trial B asks before A reads its answer
+        a = client._reasoning_replay_dropped_for(with_reasoning)
+        b = client._reasoning_replay_dropped_for(without)
+
+        assert a is True, "the history that dropped reasoning must say so"
+        assert b is False, "the history that dropped none must not inherit A's answer"

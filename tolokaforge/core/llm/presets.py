@@ -1146,7 +1146,8 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
             "prompt_policy":           "dict_map_hints" | "none",
             "content_policy":          "anthropic" | "openai" | "nova",
             "response_policy":         "standard" | "array_dict_map" | "unwrap_input",
-            "reasoning_codec":         "anthropic" | "openai" | "none",
+            "reasoning_codec":         "anthropic" | "openai"
+                                       | "openai_summary_replay" | "gemini" | "none",
             "cache_policy":            "anthropic_ephemeral" | "none",
             "message_assembly_policy": "null" | "nova",
             "assistant_text_policy":   "passthrough",

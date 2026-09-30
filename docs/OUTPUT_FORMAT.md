@@ -337,7 +337,7 @@ Computed by the orchestrator at trial-start via
 | `prompt_policy` | `none` \| `dict_map_hints` | policy registry |
 | `content_policy` | `openai` \| `anthropic` | policy registry |
 | `response_policy` | `standard` \| `unwrap_input` \| `array_dict_map` | policy registry |
-| `reasoning_codec` | `none` \| `anthropic` \| `openai` | policy registry |
+| `reasoning_codec` | `none` \| `anthropic` \| `openai` \| `openai_summary_replay` \| `gemini` | policy registry |
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |
 | `message_assembly_policy` | `null` \| `nova` (only `aws_nova` / `aws_nova_openrouter` carry `nova`; every other preset resolves to `null`) | policy registry |
 | `assistant_text_policy` | `passthrough` (every shipped preset today; out-of-tree subclasses land via the `--presets-file` overlay) | policy registry |

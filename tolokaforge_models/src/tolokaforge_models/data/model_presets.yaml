@@ -539,7 +539,7 @@ presets:
   deepseek_v4_flash_0731_resolve:
     match:
       - "deepseek/deepseek-v4-flash-0731"
-      - "*deepseek/deepseek-v4-flash-0731"
+      - "*deepseek/deepseek-v4-flash-0731*"
       - "deepseek/deepseek-v4-flash-0731*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
@@ -708,9 +708,12 @@ presets:
   # carry the note. The parent ``openai`` codec extracts that correctly but
   # its ``encode_for_replay`` returns ``{}``, so the note is never echoed on
   # the next request and the model reads a history in which it has never
-  # reasoned. It then stops: measured across 11 trials on two upstreams,
-  # mean reasoning tokens were 39-57 on turn 1 and exactly 0 on turns 2
-  # through 20. A controlled A/B on a two-turn exchange, 3 samples per cell,
+  # reasoned. It then reasons far less: on the 2026-09-25 ten-task sweep
+  # (50 trials) every turn-1 call carried reasoning and only 15-34% of later
+  # turns did, 28.5% of 2,241 calls overall; on a three-task run over two
+  # fan-out mirrors it fell to 2.7% of 411 calls, against 98.2% of 277 once
+  # the note was replayed. A controlled A/B on a two-turn exchange, 3 samples
+  # per cell,
   # moves turn-2 reasoning from 1.0 tokens without the echo to 12-19 with
   # it. ``openai_summary_replay`` is the parent plus an ``encode_for_replay``
   # that rebuilds the ``reasoning.text`` envelope, which is the shape this

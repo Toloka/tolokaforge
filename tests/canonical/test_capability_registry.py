@@ -212,9 +212,10 @@ class TestReasoningClaimsAreJustified:
 
     ``moonshotai/kimi-k2.7-code`` carried all three of these as
     ``known_unsupported``, copied from a sibling certificate with the comment
-    "NOT yet live-certified". The model was in fact reasoning on every turn and
-    the engine was discarding it, which cost roughly half its score on
-    Terminal-Bench and went unnoticed for weeks. Nothing in the canon objected,
+    "NOT yet live-certified". The model was in fact reasoning — on every turn-1
+    call of the fifty-trial sweep, and on a fifth of later turns once the engine
+    had discarded the rest — and that cost roughly half its score on
+    Terminal-Bench, unnoticed for weeks. Nothing in the canon objected,
     because all three capabilities are non-core and other certificates supplied
     the required side.
 
