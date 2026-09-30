@@ -807,13 +807,22 @@ def search_tool_schema(declaration: SearchDeclaration, backend: SearchBackend) -
     wire.
 
     Raises:
-        ValueError: the backend gives the agent no tool of its own.
+        ValueError: the backend gives the agent no tool of its own, or declares
+            parameters without the ``query`` the runner hands its index by name.
     """
     parameters = backend.tool_parameters()
     if parameters is None:
         raise ValueError(
             f"search backend {declaration.backend!r} gives the agent no search tool, but "
             f"{declaration.tool_name!r} is enabled; drop it from tools.<actor>.enabled"
+        )
+    properties = parameters.get("properties")
+    if not isinstance(properties, Mapping) or "query" not in properties:
+        raise ValueError(
+            f"search backend {declaration.backend!r} declares tool parameters with no "
+            f"'query' property for {declaration.tool_name!r}; the runner hands the agent's "
+            "query argument to the trial's index by that name, so every call would search "
+            "for nothing"
         )
     return ToolSchema(
         name=declaration.tool_name,
