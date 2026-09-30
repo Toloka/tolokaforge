@@ -7,10 +7,14 @@ implementer can read the whole contract in one screen and copy it:
 * a factory that builds from a trial-less context, because the adapter and the
   stack rule build one orchestrator-side to read ``tool_parameters()`` and
   ``stack_service``;
-* ``build_index`` doing the trial's work, and refusing a corpus with no documents;
+* ``build_index`` doing the trial's work, refusing a trial-less context and a
+  corpus with no documents;
 * ``search`` returning a :class:`~tolokaforge.core.search.backend.SearchOutcome`
-  whose ``rendered`` text the backend formats itself;
+  whose ``rendered`` text the backend formats itself, and raising when it fails;
 * ``knowledge_search`` over the same documents the agent searched.
+
+:meth:`InMemorySearchIndex.fail_searches_with` stands in for the service an index
+reaches going away, so the suite can check a failure is raised, not rendered.
 
 It records what it was asked in :class:`InMemorySearchCallLog`, which is what lets
 an end-to-end test show the agent's call and the judge's search reaching one index.
@@ -73,6 +77,12 @@ class SearchBackendDefects:
     indexes_an_empty_corpus: bool = False
     """Build an index over a corpus with no documents instead of refusing the trial."""
 
+    builds_without_a_trial: bool = False
+    """Build an index from a trial-less context: trial work done for no trial."""
+
+    renders_failed_searches_as_empty: bool = False
+    """Answer a failed search with "no document matched": the agent is graded for an outage."""
+
 
 @dataclass
 class InMemorySearchCallLog:
@@ -99,9 +109,16 @@ class InMemorySearchIndex:
         self.documents = documents
         self._call_log = call_log
         self._defects = defects
+        self._failure: Exception | None = None
+
+    def fail_searches_with(self, error: Exception) -> None:
+        """Make every later search — the agent's and the judge's — raise ``error``."""
+        self._failure = error
 
     def rank(self, query: str, top_k: int) -> tuple[SearchHit, ...]:
         """Documents sharing a word with ``query``, most shared first, ties by id."""
+        if self._failure is not None:
+            raise self._failure
         wanted = _tokens(query)
         scored = [
             (len(wanted & _tokens(text)), doc_id, source, text)
@@ -117,7 +134,12 @@ class InMemorySearchIndex:
         self, query: str, arguments: Mapping[str, Any], *, budget_s: float
     ) -> SearchOutcome:
         self._call_log.searches.append((query, dict(arguments)))
-        hits = self.rank(query, _AGENT_TOP_K)
+        try:
+            hits = self.rank(query, _AGENT_TOP_K)
+        except Exception:
+            if not self._defects.renders_failed_searches_as_empty:
+                raise
+            hits = ()
         rendered = "\n".join(f"[{hit.doc_id}] {hit.text}" for hit in hits) or _NO_MATCH
         if self._defects.rendered_as_a_mapping:
             return SearchOutcome(hits=hits, rendered={"text": rendered})  # type: ignore[arg-type]
@@ -172,7 +194,7 @@ class InMemorySearchBackend:
         }
 
     async def build_index(self, corpus_dir: Path | None) -> InMemorySearchIndex:
-        if self.context.trial_id is None:
+        if self.context.trial_id is None and not self._defects.builds_without_a_trial:
             raise RuntimeError("InMemorySearchBackend builds an index only for a trial")
         self.call_log.builds.append(corpus_dir)
         if corpus_dir is None:
