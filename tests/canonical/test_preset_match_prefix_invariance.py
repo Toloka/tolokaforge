@@ -42,6 +42,7 @@ _SLUGS: tuple[str, ...] = (
     "qwen/qwen3.8-flash",
     "z-ai/glm-5.3",
     "deepseek/deepseek-v4-pro-0813",
+    "deepseek/deepseek-v4-flash-0731",
     "xiaomi/mimo-v2.6-pro",
     "nvidia/nemotron-3-ultra-550b-a55b",
     "minimax/minimax-m3",

@@ -3024,13 +3024,33 @@ class TestTerminalBenchInteractionMode:
         assert adapter.get_task(self.TASK_ID).interaction_mode == "conversational"
 
     def test_a_run_may_ask_for_the_solo_shape(self, fixture_dir, tmp_path):
-        adapter = self._adapter(fixture_dir, tmp_path, interaction_mode="agent_only")
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            interaction_mode="agent_only",
+            agent_prompt_contract="reasoning_agent",
+        )
 
         assert adapter.get_task(self.TASK_ID).interaction_mode == "agent_only"
 
+    def test_the_solo_shape_needs_a_prompt_that_names_the_exit(self, fixture_dir, tmp_path):
+        """Under this mode a tool-call-free turn ends the trial at any index.
+
+        The adapter's default prompt never says so, so a model that opens with
+        a plan ends at turn 1 against an untouched container and the bundle
+        reads as a completed trial.
+        """
+        with pytest.raises(ValueError, match=r"needs a prompt that tells the agent"):
+            self._adapter(fixture_dir, tmp_path, interaction_mode="agent_only")
+
     def test_the_solo_shape_carries_the_opener_it_requires(self, fixture_dir, tmp_path):
         """``AgentOnlyTurnPolicy`` has no simulator to synthesise turn 0 from."""
-        adapter = self._adapter(fixture_dir, tmp_path, interaction_mode="agent_only")
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            interaction_mode="agent_only",
+            agent_prompt_contract="reasoning_agent",
+        )
         task = adapter.get_task(self.TASK_ID)
 
         assert task.initial_user_message, "a solo task without an opener fails at run start"
@@ -3046,6 +3066,7 @@ class TestTerminalBenchInteractionMode:
                 fixture_dir,
                 tmp_path,
                 interaction_mode="agent_only",
+                agent_prompt_contract="reasoning_agent",
                 agent_harness="claude-code",
                 agent_model="m",
             )

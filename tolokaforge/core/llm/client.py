@@ -1471,14 +1471,22 @@ class LLMClient:
                 replay_payload = self.capabilities.reasoning_codec.encode_for_replay(msg.reasoning)
                 if replay_payload:
                     litellm_msg.update(replay_payload)
-                else:
-                    # The codec read this turn's reasoning and hands back
-                    # nothing to send, so the model will read a history in
-                    # which it never reasoned. Correct for a route that
+                elif not msg.reasoning.is_empty():
+                    # The codec read reasoning that carried text and hands
+                    # back nothing to send, so the model will read a history
+                    # in which it never reasoned. Correct for a route that
                     # refuses echoed reasoning, and the shape of a silent
                     # defect for one that would have accepted it — which the
                     # caller cannot tell apart, so it is recorded rather than
                     # judged here.
+                    #
+                    # The ``is_empty`` guard matters: a codec may extract a
+                    # structure carrying no text at all — Gemini builds one
+                    # from a summary-only response, and again from
+                    # OpenRouter's no-real-thinking placeholder — and return
+                    # ``{}`` for it. Nothing was lost there, and flagging it
+                    # would put a warning on the routes this engine
+                    # classifies as having nothing to keep.
                     dropped_replay = True
 
             litellm_messages.append(litellm_msg)

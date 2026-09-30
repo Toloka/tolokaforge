@@ -296,6 +296,18 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 f"{self.interaction_mode!r} is not one of "
                 f"{', '.join(sorted(_INTERACTION_MODES))}."
             )
+        if self.interaction_mode == "agent_only" and not (
+            self._agent_prompt_contract or self._agent_system_prompt
+        ):
+            raise ValueError(
+                "terminal-bench adapter: interaction_mode 'agent_only' needs a prompt "
+                "that tells the agent how the episode ends — set agent_prompt_contract "
+                "(or agent_system_prompt_file). Under this mode a turn carrying no tool "
+                "call ends the trial at whatever index it happens on, turn 1 included, "
+                "graded against an untouched container; the adapter's own default prompt "
+                "says nothing about that, so a model that opens with a plan scores zero "
+                "and the bundle looks like a completed trial."
+            )
         if self.interaction_mode == "agent_only" and self.agent_harness != ENGINE_LOOP:
             raise ValueError(
                 f"terminal-bench adapter: interaction_mode 'agent_only' requires "

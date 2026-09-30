@@ -56,6 +56,15 @@ behaviour was first observed in:
   agents assert completion 84 times across 50 trials and 45 of those are not
   final, so the contract asks for a verification pass before the claim.
 
+One thing it does not solve. The contract opens with a persona, and so does
+any pack document that assigns one. ``build_system_prompt`` drops only the
+engine's own generic persona; a task that ships its own ``system_prompt`` file
+keeps it verbatim, because rewriting an author's document is not this layer's
+business. Selecting a contract for such a task therefore yields two personas,
+and the contract's is the wrong one for it. The combination is legitimate but
+the caller owns the collision — a contract is for a task the agent works alone
+on, which is not the shape a persona-bearing pack usually describes.
+
 Two things it deliberately omits. There is no instruction to batch commands:
 that harness averages 2.35 shell commands a turn against our 1.24, which is
 most of why it needs 46.7 turns where we need 79.7, but its prompt never asks

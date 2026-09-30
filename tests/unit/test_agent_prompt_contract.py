@@ -235,3 +235,23 @@ class TestLoadingAPack:
         task = load_task(self._write(tmp_path, "house_style.md"))
 
         assert task.agent_prompt_contract == "house_style.md"
+
+
+class TestWhatCompositionDoesNotSolve:
+    def test_a_pack_that_brings_its_own_persona_ends_up_with_two(self, tmp_path: Path) -> None:
+        """Pinned as a known limit, not as a desired property.
+
+        The engine's own generic persona is dropped when a contract supplies
+        one. A pack's authored ``system_prompt`` is not: rewriting an author's
+        document is not this layer's business, so the collision is the
+        caller's to avoid by not selecting a contract for such a task.
+        """
+        (tmp_path / "wiki.md").write_text("You are a customer support agent for Acme.")
+
+        built = build_system_prompt(
+            task=_task(system_prompt="wiki.md", agent_prompt_contract="reasoning_agent"),
+            task_dir=tmp_path,
+        )
+
+        assert built.startswith("You are an expert software engineer")
+        assert "You are a customer support agent for Acme." in built

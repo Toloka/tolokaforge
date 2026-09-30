@@ -36,6 +36,8 @@ import sys
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCodec
+
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.llm.presets import resolve_effective_preset
 from tolokaforge.core.llm.reasoning_codec import NoReasoningCodec
@@ -155,6 +157,10 @@ def _reasoning_tokens(response: Any) -> int:
 #: ``reasoning.encrypted`` is deliberately absent: an opaque blob is not
 #: deliberation we can keep, and a probe that counted it would report a loss
 #: where none is possible.
+#: Used only to build a replay payload for question 3, so the upstream is
+#: asked the same question whatever codec the preset happens to install.
+_ALWAYS_REPLAYS = OpenAISummaryReplayReasoningCodec()
+
 _READABLE_DETAIL_TYPES: frozenset[str] = frozenset({"reasoning.text", "reasoning.summary"})
 
 
@@ -204,6 +210,15 @@ def probe(slug: str, key: str) -> ProbeResult:
         replay = codec.encode_for_replay(reasoning) if reasoning is not None else {}
         out.replay_emits = bool(replay)
 
+        # Question 3 is asked with a codec that always emits, never with the
+        # preset's own. Asking with the installed codec means the one case
+        # worth disambiguating — it extracts and replays nothing — is the one
+        # case that sends no payload, so the route is never actually asked
+        # whether it would have honoured one.
+        probe_replay = replay or (
+            _ALWAYS_REPLAYS.encode_for_replay(reasoning) if reasoning is not None else {}
+        )
+
         if isinstance(codec, NoReasoningCodec) or not out.arrives_in:
             return out
 
@@ -231,9 +246,9 @@ def probe(slug: str, key: str) -> ProbeResult:
             {"role": "tool", "tool_call_id": call_id, "content": _TOOL_RESULT},
         ]
         out.turn2_reasoning_without_replay = _reasoning_tokens(_completion(slug, second, key))
-        if replay:
+        if probe_replay:
             out.turn2_reasoning_with_replay = _reasoning_tokens(
-                _completion(slug, second, key, replay=replay)
+                _completion(slug, second, key, replay=probe_replay)
             )
     except Exception as exc:  # noqa: BLE001 — a probe reports failures, it does not raise them
         out.error = f"{type(exc).__name__}: {exc}"[:160]

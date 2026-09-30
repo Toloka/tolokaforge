@@ -539,6 +539,7 @@ presets:
   deepseek_v4_flash_0731_resolve:
     match:
       - "deepseek/deepseek-v4-flash-0731"
+      - "*deepseek/deepseek-v4-flash-0731"
       - "deepseek/deepseek-v4-flash-0731*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
