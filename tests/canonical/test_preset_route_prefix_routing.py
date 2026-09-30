@@ -162,3 +162,26 @@ def test_gateway_route_gets_the_policy_axes_of_the_same_weights() -> None:
     gateway = resolve_policy_names(build_capabilities("self-hosted/qwen3.6-35b-a3b", "openai"))
     vendor = resolve_policy_names(build_capabilities("qwen/qwen3.6-35b-a3b", "openai"))
     assert gateway == vendor
+
+
+class TestNemotronLine:
+    """The shared preset claims NVIDIA's Nemotron line, not Llama-based fine-tunes."""
+
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [
+            ("openrouter", "nvidia/nemotron-3-super-120b-a12b"),
+            ("openrouter", "openrouter/nvidia/nemotron-3-super-120b-a12b"),
+            ("openai", "nemotron-3-super-120b-a12b"),
+            ("openai", "self-hosted/nemotron-3.5-lightning"),
+        ],
+    )
+    def test_nemotron_model_routes_to_the_shared_preset(self, provider: str, model: str) -> None:
+        assert resolve_effective_preset(model, provider) == "openrouter_dict_stringify_recovery"
+
+    @pytest.mark.parametrize(
+        "model",
+        ["nvidia/llama-3.1-nemotron-70b-instruct", "nvidia/llama-3.3-nemotron-super-49b-v1.5"],
+    )
+    def test_llama_nemotron_fine_tune_falls_through_to_default(self, model: str) -> None:
+        assert resolve_effective_preset(model, "openrouter") == "default"

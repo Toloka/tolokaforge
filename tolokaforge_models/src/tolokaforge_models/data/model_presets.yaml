@@ -629,6 +629,10 @@ presets:
   # preset to make the capability reliable). All three also surface a
   # reasoning_content summary the ``openai`` codec lands in the logs.
   # Live 2026-06-05.
+  # The nemotron globs claim NVIDIA's Nemotron line (``nemotron-*`` models,
+  # under any vendor or route prefix). Llama-based fine-tunes such as
+  # ``nvidia/llama-3.1-nemotron-70b-instruct`` only CONTAIN ``-nemotron-``;
+  # nothing was measured on them, so they stay on ``default``.
   # The Kimi K2 line carries the same wire-shape recovery from its own
   # ``moonshot_kimi_k2`` preset below, which restates these four policies
   # alongside the turn budget that line needs. Matching is first-match-wins
@@ -644,10 +648,11 @@ presets:
       - "tencent/hy3*"
       - "*hy3-preview*"
       - "nvidia/nemotron*"
-      - "*nemotron-*"
+      - "nemotron-*"
       - "*/xiaomi/mimo*"
       - "*/tencent/hy3*"
       - "*/nvidia/nemotron*"
+      - "*/nemotron-*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
