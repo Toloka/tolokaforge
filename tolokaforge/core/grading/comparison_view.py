@@ -640,13 +640,18 @@ def _record_id_field(table: str, id_fields: Mapping[str, str | list[str]]) -> st
     if not declared:
         return _DEFAULT_ID_FIELD
     fields = [declared] if isinstance(declared, str) else declared
-    if isinstance(fields, list) and len(fields) == 1 and isinstance(fields[0], str) and fields[0]:
-        return fields[0]
-    raise ComparisonViewError(
-        f"state_checks.id_fields[{table!r}] is {declared!r}; unless_referenced_by needs one "
-        f"id field for table {table!r}, and a composite key has no single field a "
-        f"reference could hold"
-    )
+    if not isinstance(fields, list) or not all(isinstance(f, str) and f for f in fields):
+        raise ComparisonViewError(
+            f"state_checks.id_fields[{table!r}] is {declared!r}, which names no key field; "
+            f"a key is a field name or a list of field names"
+        )
+    if len(fields) > 1:
+        raise ComparisonViewError(
+            f"state_checks.id_fields[{table!r}] is the composite key {declared!r}; "
+            f"unless_referenced_by needs one id field for table {table!r}, and a composite "
+            f"key has no single field a reference could hold"
+        )
+    return fields[0]
 
 
 def _record_id(row: Record, table: str, id_field: str) -> Any:
