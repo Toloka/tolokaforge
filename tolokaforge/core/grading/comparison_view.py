@@ -76,7 +76,7 @@ import hashlib
 import json
 import re
 from abc import abstractmethod
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from types import MappingProxyType
@@ -121,6 +121,7 @@ __all__ = [
     "RuleOutcome",
     "StartsWithCondition",
     "apply_comparison_view",
+    "comparison_view_findings",
     "comparison_view_rules",
     "resolve_comparison_view_rule",
 ]
@@ -924,3 +925,94 @@ def apply_comparison_view(
         applied=tuple(applied),
     )
     return ComparisonViewResult(state=working, applied=record.applied, record=record)
+
+
+# ---------------------------------------------------------------------------
+# Load-time check against the task's declared initial state
+# ---------------------------------------------------------------------------
+
+
+def comparison_view_findings(
+    view: ComparisonViewConfig,
+    *,
+    tables: Mapping[str, Sequence[Mapping[str, Any]]],
+    schema_fields: Mapping[str, Collection[str]],
+    id_fields: Mapping[str, str | list[str]],
+) -> list[str]:
+    """One sentence per table or field a rule names that the task does not declare.
+
+    ``tables`` is ``initial_state.tables``; ``schema_fields`` maps each table of
+    ``initial_state.schemas`` to its declared field names. A table must be in one
+    of the two. A field must be a key of a seeded record at its path or, for a
+    field of the row itself, a declared schema field; a field whose path reaches
+    no seeded record and no schema is not checked, since its rows may arrive
+    later. A table whose id ``unless_referenced_by`` reads must have one id field
+    (``id_fields``, ``"id"`` when absent). Empty when the view fits the task.
+    """
+    known_tables = set(tables) | set(schema_fields)
+    findings: list[str] = []
+    for index, rule in enumerate(view.rules):
+        label = f"state_checks.comparison_view.rules[{index}] ({rule.kind})"
+        findings += _rule_findings(
+            label, rule.names(), known_tables, tables, schema_fields, id_fields
+        )
+    return findings
+
+
+def _rule_findings(
+    label: str,
+    names: RuleNames,
+    known_tables: set[str],
+    tables: Mapping[str, Sequence[Mapping[str, Any]]],
+    schema_fields: Mapping[str, Collection[str]],
+    id_fields: Mapping[str, str | list[str]],
+) -> list[str]:
+    findings: list[str] = []
+    missing = [table for table in names.tables if table not in known_tables]
+    if missing:
+        findings.append(
+            f"{label} names table(s) {missing} absent from initial_state "
+            f"(known: {sorted(known_tables)}). Fix a typo, declare the table in "
+            f"initial_state, or set state_checks.relaxed_validation: true."
+        )
+    fields = list(names.fields)
+    for table in names.keyed_tables:
+        try:
+            fields.append(NamedField(table, (), _record_id_field(table, id_fields)))
+        except ComparisonViewError as exc:
+            findings.append(f"{label}: {exc}.")
+    for named in dict.fromkeys(fields):
+        if named.table in known_tables:
+            findings += _field_findings(label, named, tables.get(named.table, ()), schema_fields)
+    return findings
+
+
+def _field_findings(
+    label: str,
+    named: NamedField,
+    rows: Sequence[Mapping[str, Any]],
+    schema_fields: Mapping[str, Collection[str]],
+) -> list[str]:
+    known: set[str] = set() if named.path else set(schema_fields.get(named.table, ()))
+    for mapping in _mappings_at(list(rows), named.path):
+        known.update(mapping)
+    if not known or named.field in known:
+        return []
+    return [
+        f"{label} names field {named.dotted!r} of table {named.table!r}, which no seeded "
+        f"record of initial_state{'' if named.path else ' and no schema'} carries "
+        f"(known: {sorted(map(str, known))}). Fix a typo, seed a record carrying it, or set "
+        f"state_checks.relaxed_validation: true."
+    ]
+
+
+def _mappings_at(value: Any, segments: tuple[str, ...]) -> Iterator[Mapping[str, Any]]:
+    """The mappings at ``segments`` below ``value``, skipping whatever is not a mapping."""
+    if isinstance(value, list):
+        for item in value:
+            yield from _mappings_at(item, segments)
+    elif isinstance(value, Mapping):
+        if not segments:
+            yield value
+        else:
+            yield from _mappings_at(value.get(segments[0]), segments[1:])
