@@ -106,15 +106,18 @@ which is the source the `grading` row above describes.
   refuses a task that does not, at `tools`, and `RegisterTrial` refuses its trial.
 - `filesystem.copy`: files copied into `/env/fs/agent-visible`.
 - `mock_web.base_url`: base URL for mock web service (`http://mock-web:8080`).
-- `rag.corpus_dir`: directory of knowledge-base documents for per-trial RAG
-  indexing. The reader indexes the `.md` and `.txt` files sitting directly in
-  that directory (flat, non-recursive). Declaring `corpus_dir` requires
-  `search_kb` in `tools.agent.enabled` — the corpus files travel with the task,
-  the runner indexes them into the rag-service per trial, and the agent's
-  `search_kb` tool queries that index. The full stack must include the
-  rag-service (reached by DNS, like `db-service`/`mock-web`). Declaring
-  `corpus_dir` without `search_kb`, or pointing it at a directory that does not
-  exist, is rejected at validation time.
+- `rag.corpus_dir`: directory of knowledge-base documents for a per-trial
+  search index. The `.md` and `.txt` files sitting directly in that directory
+  (flat, non-recursive) travel with the task, and the runner builds the trial's
+  index from them with the task's search backend (`rag.backend`, default
+  `rag_service`). Declaring `corpus_dir` requires the search tool (`rag.tool.name`,
+  default `search_kb`) in an actor's `tools.<actor>.enabled`; that tool queries
+  the index. With the default backend the runner indexes into the rag-service,
+  so the run needs the full stack (reached by DNS, like `db-service`/`mock-web`),
+  which the orchestrator selects for such a task. Declaring `corpus_dir` without
+  the search tool, or pointing it at a directory that does not exist, is
+  rejected at validation time. `rag.backend_config` and `rag.tool.description`
+  are described in [CONFIG.md § `initial_state.rag:`](CONFIG.md#initial_staterag--the-knowledge-base-its-search-backend-and-the-agents-tool).
 
 ## Multi-container environments (`environment_manifest`)
 

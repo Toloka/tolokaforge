@@ -1136,45 +1136,6 @@ def cleanup_tools(agent_tools: dict[str, Any], user_tools: dict[str, Any]) -> No
 
 
 # =============================================================================
-# Search Tool Schema (for search_kb tool)
-# =============================================================================
-
-
-def create_search_kb_schema() -> ToolSchemaModel:
-    """Create the schema for the search_kb tool."""
-    return ToolSchemaModel(
-        name="search_kb",
-        description="Search the knowledge base for relevant information. Use this to find policies, procedures, FAQs, and other documentation.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query to find relevant documents",
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": "Number of results to return (default: 5)",
-                    "default": 5,
-                },
-                "alpha": {
-                    "type": "number",
-                    "description": "Weight for hybrid search: 0.0=keyword only, 1.0=semantic only, 0.5=balanced (default: 0.5)",
-                    "default": 0.5,
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                },
-            },
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-        category="read",
-        timeout_s=15.0,
-        source=None,  # RAG tools don't have a source - they're built-in
-    )
-
-
-# =============================================================================
 # Docker Compose Exec Tool Wrapper
 # =============================================================================
 
