@@ -75,6 +75,11 @@ def test_initial_state_rag_triggers_full_stack():
     )
 
 
+def test_an_empty_initial_state_rag_does_not_trigger_full_stack():
+    """``rag: {}`` declares no corpus: a typed block is truthy, the corpus is what counts."""
+    assert _tasks_need_full_stack([_task(initial_state={"rag": {}})]) is False
+
+
 def test_mixed_tasks_one_full_stack_tool_triggers():
     tasks = [_task(["bash"]), _task(["search_kb", "read_file"])]
     assert _tasks_need_full_stack(tasks) is True

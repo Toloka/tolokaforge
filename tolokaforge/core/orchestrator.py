@@ -436,7 +436,11 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
             if hasattr(initial_state, "rag")
             else (initial_state.get("rag") if isinstance(initial_state, dict) else None)
         )
-        if mock_web or rag:
+        # A typed ``rag`` block is truthy even when empty, so the corpus is what counts.
+        corpus_dir = (
+            rag.get("corpus_dir") if isinstance(rag, dict) else getattr(rag, "corpus_dir", None)
+        )
+        if mock_web or corpus_dir:
             return True
     return False
 

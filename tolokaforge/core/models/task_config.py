@@ -33,9 +33,11 @@ from tolokaforge.core.grading.state_composition import (
 from tolokaforge.core.hash import ColumnCompareRule
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
+    DEFAULT_SEARCH_TOOL_NAME,
     EnvironmentPatch,
     JudgeCustomization,
     LLMJudgeConfig,
+    SearchPlane,
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
@@ -44,6 +46,7 @@ __all__ = [
     "ActorSpec",
     "AssetsConfig",
     "DEFAULT_MAX_USER_TOOL_STEPS",
+    "DEFAULT_SEARCH_TOOL_DESCRIPTION",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -53,6 +56,8 @@ __all__ = [
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
+    "RagConfig",
+    "RagToolConfig",
     "SEED_KIND_BY_EXTENSION",
     "SIMULATOR_STOP_TOKEN",
     "SeedKind",
@@ -103,6 +108,69 @@ class InitializationAction(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+DEFAULT_SEARCH_TOOL_DESCRIPTION = (
+    "Search the knowledge base for relevant information. Use this to find policies, "
+    "procedures, FAQs, and other documentation."
+)
+"""The agent's search-tool description when ``initial_state.rag.tool`` names none."""
+
+
+def _dump_declared_fields_only(
+    model: BaseModel, handler: SerializerFunctionWrapHandler
+) -> dict[str, Any]:
+    """Dump only the fields the author wrote, so a default never materialises.
+
+    ``TaskConfig`` is dumped whole by the canonical snapshots and the round-trip
+    paths. A typed block would otherwise dump its defaults as if the author had
+    written them — a task declaring ``corpus_dir`` alone would grow a backend, a
+    config and a tool block. A default an author writes out is kept. Plain
+    pydantic 2.x (``Field(exclude_if=...)`` needs 2.11; the engine allows 2.0).
+    """
+    data = handler(model)
+    for name in type(model).model_fields.keys() - model.model_fields_set:
+        data.pop(name, None)
+    return data
+
+
+class RagToolConfig(BaseModel):
+    """``initial_state.rag.tool``: the agent's search tool over the corpus.
+
+    Which actor gets the tool is not declared here: the tool goes to the actor
+    whose ``tools.<actor>.enabled`` names it, as every tool does.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    name: str = DEFAULT_SEARCH_TOOL_NAME
+    description: str = DEFAULT_SEARCH_TOOL_DESCRIPTION
+
+    @model_serializer(mode="wrap")
+    def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _dump_declared_fields_only(self, handler)
+
+
+class RagConfig(BaseModel):
+    """``initial_state.rag``: the corpus, the search backend serving it, and its tool.
+
+    ``backend`` names a backend registered under ``tolokaforge.search_backends``
+    (ADR-0052; ``rag_service`` is the engine's rag-service) and travels on the wire
+    as ``search.plane``. ``backend_config`` is handed to that backend's factory
+    verbatim — the engine never reads its keys. The dump carries only the fields
+    the author wrote (see :func:`_dump_declared_fields_only`).
+    """
+
+    model_config = {"extra": "ignore"}
+
+    corpus_dir: str | None = None
+    backend: str = SearchPlane.RAG_SERVICE.value
+    backend_config: dict[str, Any] = Field(default_factory=dict)
+    tool: RagToolConfig = Field(default_factory=RagToolConfig)
+
+    @model_serializer(mode="wrap")
+    def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _dump_declared_fields_only(self, handler)
+
+
 class InitialStateConfig(BaseModel):
     """Initial environment state configuration"""
 
@@ -112,7 +180,7 @@ class InitialStateConfig(BaseModel):
     device_overrides: dict[str, Any] | None = None  # Per-task device state overrides
     filesystem: dict[str, Any] | None = None
     mock_web: dict[str, Any] | None = None
-    rag: dict[str, Any] | None = None
+    rag: RagConfig | None = None
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     initialization_actions: list[InitializationAction] | None = None
 

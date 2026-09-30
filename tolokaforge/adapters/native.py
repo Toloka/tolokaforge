@@ -1320,14 +1320,9 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         from tolokaforge.runner.models import SearchConfig, SearchPlane
 
         rag = task.initial_state.rag
-        corpus_dir = rag.get("corpus_dir") if rag else None
+        corpus_dir = rag.corpus_dir if rag is not None else None
         if not corpus_dir:
             return SearchConfig(enabled=False)
-        if not isinstance(corpus_dir, str):
-            raise ValueError(
-                f"Task {task_id!r} initial_state.rag.corpus_dir must be a string path, "
-                f"got {type(corpus_dir).__name__}={corpus_dir!r}"
-            )
 
         if "search_kb" not in declared_tool_names(task):
             raise ValueError(
