@@ -19,7 +19,7 @@ The behaviour is the one the runner had before the seam, moved here unchanged:
   :class:`~tolokaforge.core.grading.kb_search.RagServiceKnowledgeSearch` bound to
   the same client and trial, so it searches the index the agent searched.
 
-It declares ``stack_service = "rag_service"``: the orchestrator starts
+It declares ``stack_service = RAG_SERVICE_STACK_SERVICE``: the orchestrator starts
 ``full_stack`` for its tasks, and the runner hands it its client under that key
 in :attr:`~tolokaforge.core.search.backend.SearchBackendContext.stack_service_clients`.
 It takes no ``backend_config``.
@@ -36,6 +36,7 @@ from typing import Any, cast
 
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch, SearchHit
 from tolokaforge.core.search.backend import (
+    RAG_SERVICE_STACK_SERVICE,
     SearchBackendContext,
     SearchIndexBuildError,
     SearchOutcome,
@@ -169,7 +170,7 @@ class RagServiceBackend:
     """The ``rag_service`` :class:`~tolokaforge.core.search.backend.SearchBackend`."""
 
     name = SearchPlane.RAG_SERVICE.value
-    stack_service: str | None = SearchPlane.RAG_SERVICE.value
+    stack_service: str | None = RAG_SERVICE_STACK_SERVICE
 
     def __init__(self, context: SearchBackendContext) -> None:
         if context.backend_config:
@@ -200,7 +201,7 @@ class RagServiceBackend:
                 f"search backend {self.name!r} was asked to build an index from a trial-less "
                 "context; only the runner builds one, at RegisterTrial"
             )
-        client = self._context.stack_service_clients.get(SearchPlane.RAG_SERVICE.value)
+        client = self._context.stack_service_clients.get(RAG_SERVICE_STACK_SERVICE)
         if client is None:
             raise SearchIndexBuildError("Search enabled but RAG service not configured")
         rag_client = cast(RAGServiceClient, client)
