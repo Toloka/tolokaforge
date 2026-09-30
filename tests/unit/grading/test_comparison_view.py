@@ -311,7 +311,10 @@ def test_the_golden_is_not_a_parameter() -> None:
             {**_STATE, "recovery_expense_decisions": [{"purchase_allocations": "none"}]},
             "holds a str, not a list of records",
         ),
-        ({**_STATE, "transfer_holds": [{"status": "released"}]}, "has no id field 'id'"),
+        (
+            {**_STATE, "transfer_holds": [{"status": "released"}]},
+            "id field 'id' is missing or null",
+        ),
     ],
     ids=["table-not-a-list", "row-not-a-mapping", "path-not-a-list", "matched-row-without-id"],
 )
