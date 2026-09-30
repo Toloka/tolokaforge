@@ -87,13 +87,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    SerializeAsAny,
+    FieldSerializationInfo,
     StrictBool,
     StrictFloat,
     StrictInt,
     StrictStr,
     StringConstraints,
     ValidationError,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -204,7 +205,7 @@ def _segments(path: str) -> tuple[str, ...]:
 class InCondition(BaseModel):
     """``{in: [v1, v2, ...]}``: the field equals one of the listed scalars."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, serialize_by_alias=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     any_of: tuple[Scalar, ...] = Field(alias="in", min_length=1)
 
@@ -767,13 +768,15 @@ class ComparisonViewConfig(BaseModel):
     """The ``state_checks.comparison_view`` block: a schema version and rules in list order.
 
     ``kind`` resolves through :func:`comparison_view_rules`, not a static union, so
-    a rule the table gains later validates the same way the built-ins do.
+    a rule the table gains later validates the same way the built-ins do. Dump it
+    with ``by_alias=True``: the ``in`` operator serialises under its alias only
+    then, and only that dump validates back.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: int
-    rules: tuple[SerializeAsAny[ComparisonViewRuleConfig], ...]
+    rules: tuple[ComparisonViewRuleConfig, ...]
 
     @field_validator("version", mode="before")
     @classmethod
@@ -792,6 +795,22 @@ class ComparisonViewConfig(BaseModel):
             raise ValueError("comparison_view.rules must be a list of rule entries")
         return tuple(_resolve_entry(index, entry) for index, entry in enumerate(value))
 
+    @field_serializer("rules")
+    def _each_rule_as_its_own_model(
+        self, rules: tuple[ComparisonViewRuleConfig, ...], info: FieldSerializationInfo
+    ) -> list[dict[str, Any]]:
+        """Dump every rule with its own config model, not the base the field declares."""
+        return [
+            rule.model_dump(
+                mode=info.mode,
+                by_alias=info.by_alias,
+                exclude_unset=info.exclude_unset,
+                exclude_defaults=info.exclude_defaults,
+                exclude_none=info.exclude_none,
+            )
+            for rule in rules
+        ]
+
     @model_validator(mode="after")
     def _excluded_tables_are_named_once(self) -> ComparisonViewConfig:
         for index, rule in enumerate(self.rules):
@@ -800,14 +819,26 @@ class ComparisonViewConfig(BaseModel):
         return self
 
     def config_sha256(self) -> str:
-        """sha256 of the canonical JSON of the rules as validated, defaults included.
+        """sha256 of what the rules do: each rule's kind and its non-default settings.
 
-        Canonical as ``ModelsFingerprint`` hashes model data: sorted keys, ASCII,
-        no whitespace. The key order of the declaration does not change it.
+        The policy (ADR-0053 § Versioning): a setting at its default is left out,
+        so a new optional field whose default keeps a rule's behaviour keeps every
+        existing sha; a change to what a rule does bumps
+        :data:`COMPARISON_VIEW_FUNCTION_VERSION` instead; ``reason`` is prose, not
+        behaviour, and is not hashed. The JSON is canonical as ``ModelsFingerprint``
+        hashes model data (sorted keys, ASCII, no whitespace), so the key order of
+        the declaration does not change it either.
         """
-        payload = [rule.model_dump(mode="json") for rule in self.rules]
+        payload = [_hashed_rule(rule) for rule in self.rules]
         canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _hashed_rule(rule: ComparisonViewRuleConfig) -> dict[str, Any]:
+    settings = rule.model_dump(
+        mode="json", by_alias=True, exclude_defaults=True, exclude={"kind", "reason"}
+    )
+    return {"kind": rule.kind, **settings}
 
 
 def _resolve_entry(index: int, entry: Any) -> ComparisonViewRuleConfig:

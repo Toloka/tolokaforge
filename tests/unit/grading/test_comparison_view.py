@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import ast
 import copy
-import hashlib
 import inspect
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -60,6 +58,15 @@ _ZERO_ALLOCATIONS = {
     "table": "recovery_expense_decisions",
     "path": "purchase_allocations",
     "where": {"all_zero": ["amount", "tax"]},
+}
+_DRAFT_PROPOSALS = {
+    "kind": "exclude_records",
+    "table": "wallet_proposals",
+    "where": {
+        "status": {"in": ["draft", "superseded"]},
+        "accepted_at": {"is_null": True},
+        "id": {"starts_with": "WP-"},
+    },
 }
 _BOOKKEEPING = {
     "kind": "exclude_tables",
@@ -183,8 +190,10 @@ def test_a_config_instance_under_another_rules_kind_is_refused() -> None:
 
 
 def test_the_block_round_trips_through_its_json_dump() -> None:
-    view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _BOOKKEEPING)
-    again = ComparisonViewConfig.model_validate(view.model_dump(mode="json"))
+    view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _BOOKKEEPING)
+    dump = view.model_dump(mode="json", by_alias=True)
+    assert dump["rules"][2]["where"]["status"] == {"in": ["draft", "superseded"]}
+    again = ComparisonViewConfig.model_validate(dump)
     assert again == view
     assert again.config_sha256() == view.config_sha256()
 
@@ -311,7 +320,6 @@ def test_an_empty_view_returns_the_state_unchanged_with_a_record() -> None:
     assert result.applied == ()
     assert result.record.version == 1
     assert result.record.function_version == COMPARISON_VIEW_FUNCTION_VERSION
-    assert result.record.config_sha256 == hashlib.sha256(b"[]").hexdigest()
     assert result.record.applied == ()
 
 
@@ -352,22 +360,11 @@ def test_the_record_names_the_version_the_function_and_what_each_rule_did() -> N
     assert all(application.ids_rewritten == 0 for application in result.applied)
 
 
-def test_the_config_sha_is_the_canonical_json_of_the_rules_as_validated() -> None:
-    """Every rule with its kind and defaults, hashed as ``ModelsFingerprint`` hashes model data.
-
-    The canonical form is part of the record, so the digest is pinned as well:
-    changing the form changes every recorded sha.
-    """
-    as_validated = [
-        {**_RELEASED_HOLDS, "path": None},
-        {**_ZERO_ALLOCATIONS, "unless_referenced_by": [], "reason": None},
-        _BOOKKEEPING,
-    ]
-    canonical = json.dumps(as_validated, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _BOOKKEEPING)
-    assert view.config_sha256() == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def test_the_config_sha_is_pinned() -> None:
+    """The sha is part of the record: a change to what is hashed changes every recorded one."""
+    view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _BOOKKEEPING)
     assert view.config_sha256() == (
-        "921e81b7a94419601f83962144928152e54b1832f0d667bbcfa22d3f78b4818c"
+        "751b8799c0409f2594e6b5394e8b9a4302b82a0ee5e5935d660cc29d75454ef4"
     )
 
 
@@ -385,9 +382,17 @@ def test_the_key_order_of_the_declaration_does_not_change_the_sha() -> None:
     assert _view(swapped).config_sha256() == _view(two_conditions).config_sha256()
 
 
-def test_the_sha_covers_the_rules_as_validated_defaults_included() -> None:
+def test_a_setting_spelled_out_at_its_default_hashes_like_one_left_out() -> None:
+    """So a new optional field whose default keeps behaviour keeps every existing sha."""
     spelled_out = {**_ZERO_ALLOCATIONS, "unless_referenced_by": [], "reason": None}
     assert _view(spelled_out).config_sha256() == _view(_ZERO_ALLOCATIONS).config_sha256()
+
+
+def test_the_reason_is_not_hashed() -> None:
+    reworded = {**_BOOKKEEPING, "reason": "bookkeeping of the discovery tools"}
+    without = {key: value for key, value in _RELEASED_HOLDS.items() if key != "reason"}
+    assert _view(reworded).config_sha256() == _view(_BOOKKEEPING).config_sha256()
+    assert _view(without).config_sha256() == _view(_RELEASED_HOLDS).config_sha256()
 
 
 @pytest.mark.parametrize(
@@ -396,9 +401,9 @@ def test_the_sha_covers_the_rules_as_validated_defaults_included() -> None:
         [{**_RELEASED_HOLDS, "where": {"status": "cancelled"}}, _ZERO_ALLOCATIONS],
         [_ZERO_ALLOCATIONS, _RELEASED_HOLDS],
         [_RELEASED_HOLDS],
-        [{**_RELEASED_HOLDS, "reason": "another reason"}, _ZERO_ALLOCATIONS],
+        [{**_RELEASED_HOLDS, "unless_referenced_by": []}, _ZERO_ALLOCATIONS],
     ],
-    ids=["other-condition", "other-order", "fewer-rules", "other-reason"],
+    ids=["other-condition", "other-order", "fewer-rules", "no-references"],
 )
 def test_a_different_declaration_gives_a_different_sha(rules: list[dict[str, Any]]) -> None:
     assert (
