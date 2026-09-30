@@ -583,7 +583,10 @@ def assemble_build_context(
     dst_dockerfile.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src_dockerfile, dst_dockerfile)
 
-    # Copy declared context files.
+    # Copy declared context files. The staged contexts bypass the root
+    # .dockerignore, so apply its build-artifact exclusions while copying
+    # source directories as well.
+    ignore_build_artifacts = shutil.ignore_patterns("*.egg-info", "dist", "build")
     # Paths may be relative (resolved against repo_root) or absolute
     # (e.g. a wheel from the wheel-cache — copied flat into build_dir).
     # An entry may also be a ``(source, destination)`` pair when the name the
@@ -615,6 +618,7 @@ def assemble_build_context(
                     entry_path,
                     build_dir / entry_path.name,
                     dirs_exist_ok=True,
+                    ignore=ignore_build_artifacts,
                 )
             else:
                 shutil.rmtree(build_dir, ignore_errors=True)
@@ -624,7 +628,12 @@ def assemble_build_context(
             src = repo_root / entry
             dst = build_dir / entry
             if src.is_dir():
-                shutil.copytree(src, dst, dirs_exist_ok=True)
+                shutil.copytree(
+                    src,
+                    dst,
+                    dirs_exist_ok=True,
+                    ignore=ignore_build_artifacts,
+                )
             elif src.is_file():
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
