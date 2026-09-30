@@ -144,9 +144,9 @@ server says.
 2. **The corpus** — the task declares a knowledge base: `search.documents_path` is set.
 3. **The address** — an address resolved, so the run has a TypeSense plane to serve it.
 
-None of them is `search.enabled`. That flag means only "this task needs rag-service" and gates the separate RAG indexing block; a TypeSense-only domain sets `enabled: false` and still registers. All three are required, so a knowledge-base task in a TypeSense-disabled run does no TypeSense work and registers normally, a run with TypeSense configured does no TypeSense work for tasks that declare no knowledge base, and a rag corpus stays on its own plane in a run that offers both.
+None of them is `search.enabled`. That flag means only "this task needs rag-service" and gates the separate `rag_service` search backend's index build; a TypeSense-only domain sets `enabled: false` and still registers. All three are required, so a knowledge-base task in a TypeSense-disabled run does no TypeSense work and registers normally, a run with TypeSense configured does no TypeSense work for tasks that declare no knowledge base, and a rag corpus stays on its own plane in a run that offers both.
 
-The TypeSense gate runs before the RAG gate. A task that declares both and whose TypeSense plane is broken reports the TypeSense failure.
+The TypeSense gate runs before the search-backend build. A task that declares both and whose TypeSense plane is broken reports the TypeSense failure.
 
 ### Which plane serves a corpus
 

@@ -32,8 +32,7 @@ class Dispatch(StrEnum):
     schema's ``source`` field nor any per-task config influences the
     choice. ``GENERIC`` tools receive ``ToolSchema.tool_config`` as
     constructor kwargs; ``FILES`` tools take ``WORK_DIR`` from the runner
-    container layout; ``RAG`` tools take a ``rag_client`` + ``trial_id``
-    bound by the runner factory; ``PERSISTENT_SHELL`` tools are lifecycle
+    container layout; ``PERSISTENT_SHELL`` tools are lifecycle
     wrappers that hold a bash session for the trial, selecting a local or
     compose backend from ``tool_config`` without a second dispatch branch.
     ``EDITOR`` tools are stateless file editors matching Anthropic's
@@ -41,11 +40,14 @@ class Dispatch(StrEnum):
     ``tool_config``. ``JSON_DB`` tools read and write the trial's own store on
     db-service through the runner factory's ``db_client`` + ``trial_id``, and
     take no ``tool_config``.
+
+    The knowledge-base search tool is not a builtin: the task declares it
+    (``initial_state.rag.tool``) and the runner binds it to the trial's search
+    index by that declaration, before this registry is consulted (ADR-0052).
     """
 
     GENERIC = "generic"
     FILES = "files"
-    RAG = "rag"
     PERSISTENT_SHELL = "persistent_shell"
     EDITOR = "editor"
     JSON_DB = "json_db"
@@ -95,10 +97,6 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
     "list_dir": (
         BuiltinToolEntry("tolokaforge.tools.builtin.files", "ListDirTool"),
         Dispatch.FILES,
-    ),
-    "search_kb": (
-        BuiltinToolEntry("tolokaforge.tools.builtin.rag_search", "SearchKBTool"),
-        Dispatch.RAG,
     ),
     "bash_session": (
         BuiltinToolEntry("tolokaforge.tools.persistent_shell", "PersistentShellTool"),

@@ -12,11 +12,16 @@ Layering (AGENTS.md #6 / #7 — clean boundaries, interface-first):
   contract* the judge depends on; per the type-system guidance it is a Protocol,
   not Pydantic. The judge (:mod:`tolokaforge.core.grading.judge`) imports only
   this contract — never ``runner`` internals or mcp_core.
-* :class:`RagServiceKnowledgeSearch` is the tolokaforge-owned rag-service impl.
-  It lives here (its only dependency is :class:`RAGServiceClient`, which is
-  importable without pulling in mcp_core). The future TypeSense impl is
-  mcp_core-coupled and therefore lives runner-side behind this same contract —
-  this is the explicit extension point.
+* A search backend's per-trial index hands the judge its implementation
+  (:meth:`~tolokaforge.core.search.backend.SearchIndex.knowledge_search`, ADR-0052);
+  the runner binds it when an agent tool searched that same index. Two more
+  implementations serve other readers: the remote grader's gRPC ``KBSearch``
+  transport (``substrate_live``) and offline replay's recorded answers (``replay``).
+* :class:`RagServiceKnowledgeSearch` is the ``rag_service`` backend's
+  implementation. It lives here (its only dependency is
+  :class:`RAGServiceClient`, which is importable without pulling in mcp_core).
+  TypeSense has none: a TypeSense task's judge reuses the agent's ``search_policy``
+  tool through a read-only passthrough instead (``runner/service.py``).
 
 Reconciliation with ``tolokaforge/core/search/typesense.py`` (deliberate, see
 the plan's Decisions table): that module's ``SearchResult`` / ``SearchResponse``
@@ -65,8 +70,9 @@ class KnowledgeSearch(Protocol):
 
     Implementations are **per-trial** and point at the SAME index/collection the
     agent's KB tool used — that faithfulness is the whole point of the contract.
-    tolokaforge ships :class:`RagServiceKnowledgeSearch`; closed/mcp_core
-    adapters (TypeSense) register their own impl runner-side behind this Protocol.
+    A search backend's per-trial index supplies one through
+    :meth:`~tolokaforge.core.search.backend.SearchIndex.knowledge_search`;
+    tolokaforge ships :class:`RagServiceKnowledgeSearch` for ``rag_service``.
 
     Implementations MUST fail loud on transport/connection errors (raise), never
     degrade a failed search into empty results (AGENTS.md #1).
@@ -75,8 +81,8 @@ class KnowledgeSearch(Protocol):
     def search(self, query: str, top_k: int = 5, alpha: float = 0.5) -> list[SearchHit]:
         """Return up to ``top_k`` hits for ``query``.
 
-        ``alpha`` is a hybrid keyword/semantic weight; backends that do not
-        support it (e.g. TypeSense) ignore it. rag-service honours it.
+        ``alpha`` is a hybrid keyword/semantic weight; a backend without one
+        ignores it. rag-service honours it.
         """
         ...
 
@@ -85,9 +91,10 @@ class RagServiceKnowledgeSearch:
     """rag-service impl of :class:`KnowledgeSearch`, bound to one trial.
 
     Queries the **per-trial** ``/trials/{trial_id}/search`` endpoint — the SAME
-    index the agent's ``RAGSearchToolWrapper`` (``RAGServiceClient.search``)
-    used. This fixes the previous judge bug, where the builtin ``SearchKBTool``
-    POSTed to the GLOBAL ``/search`` (a different, legacy, non-isolated index).
+    index the agent's search tool (the ``rag_service`` backend's
+    ``RAGServiceClient.search``) used. This fixes the previous judge bug, where the
+    builtin ``SearchKBTool`` POSTed to the GLOBAL ``/search`` (a different, legacy,
+    non-isolated index).
 
     Async/sync boundary: :class:`RAGServiceClient.search` is async, but the judge
     loop runs synchronously in a worker thread (``run_in_executor``). Rather than
