@@ -11,7 +11,8 @@ where the backend is.
 
 Each test builds the backend under test through its factory and reads what a
 conforming backend must produce, never the implementation. Adoption is the repo's
-standard suite shape — subclass and supply the factory::
+standard suite shape — subclass and supply two fixtures, the factory and how its
+search fails::
 
     from tolokaforge.testing.search_backends import SearchBackendConformanceSuite
 
@@ -20,10 +21,19 @@ standard suite shape — subclass and supply the factory::
         def backend_factory(self):
             return my_search_backend_factory
 
+        @pytest.fixture
+        def make_searches_fail(self):
+            return lambda index: my_service.go_down()
+
 A backend that needs a stack service overrides ``trial_context`` too, handing it a
 client under the name its ``stack_service`` declares. ``corpus_dir`` and ``query``
 are overridable for a backend that reads other document shapes; the suite's
 defaults are three Markdown documents and a query that one of them answers.
+
+The suite runs the backend the way the runner does (:class:`RunnerLoop`): the index
+is built and the agent's search answered on one long-lived event loop on its own
+thread, and the judge's synchronous ``KnowledgeSearch.search`` is called from
+another thread while that loop keeps running.
 
 The base class carries no ``Test`` prefix so pytest does not collect it. Each test
 takes its inputs as parameters, so the suite can also be driven directly — which is
@@ -35,8 +45,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from collections.abc import Callable, Coroutine, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 
@@ -52,6 +65,7 @@ from tolokaforge.core.search.backend import (
 
 __all__ = [
     "CONFORMANCE_QUERY",
+    "RunnerLoop",
     "SearchBackendConformanceSuite",
     "declaration_context",
     "trial_context",
@@ -60,6 +74,7 @@ __all__ = [
 
 CONFORMANCE_QUERY = "refund window"
 _BUDGET_S = 15.0
+_CALL_TIMEOUT_S = 30.0
 _TRIAL_ID = "conformance:0"
 _LOGGER = logging.getLogger("tolokaforge.testing.search_backends")
 
@@ -68,6 +83,8 @@ _CORPUS = {
     "shipping.md": "# Shipping\n\nOrders ship within two business days.\n",
     "warranty.md": "# Warranty\n\nHardware carries a one year warranty.\n",
 }
+
+_T = TypeVar("_T")
 
 
 def write_corpus(directory: Path) -> Path:
@@ -96,22 +113,60 @@ def trial_context(**overrides: Any) -> SearchBackendContext:
     return declaration_context(**fields)
 
 
-async def _search_both_sides(
-    backend: SearchBackend, corpus_dir: Path, query: str
+class RunnerLoop:
+    """The runner's threading shape: one long-lived event loop on a thread of its own.
+
+    ``RegisterTrial`` awaits ``build_index`` and ``ExecuteTool`` awaits ``search`` on
+    that loop, while the judge calls ``KnowledgeSearch.search`` — synchronous — from an
+    executor thread (and the remote grader's ``KBSearch`` from a gRPC thread) with the
+    loop still running. A backend may bridge its judge search either way: a fresh
+    ``asyncio.run`` in the calling thread, or ``run_coroutine_threadsafe`` onto the
+    loop it built the index on. Both work under this shape; calling the judge's search
+    from inside the loop would break the first and deadlock the second.
+    """
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True, name="conformance-runner-loop"
+        )
+        self._thread.start()
+
+    def run(self, coroutine: Coroutine[Any, Any, _T]) -> _T:
+        """Await ``coroutine`` on the loop, as the runner's ``_run_async`` does."""
+        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        return future.result(timeout=_CALL_TIMEOUT_S)
+
+    def off_loop(self, call: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        """Call a synchronous ``call`` from another thread while the loop keeps running."""
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="conformance-judge")
+        try:
+            return pool.submit(call, *args, **kwargs).result(timeout=_CALL_TIMEOUT_S)
+        finally:
+            pool.shutdown(wait=False)
+
+    def close(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=_CALL_TIMEOUT_S)
+        self._loop.close()
+
+
+def _search_both_sides(
+    loop: RunnerLoop, backend: SearchBackend, corpus_dir: Path, query: str
 ) -> tuple[SearchIndex, SearchOutcome, list[SearchHit] | None]:
-    index = await backend.build_index(corpus_dir)
-    outcome = await index.search(query, {"query": query}, budget_s=_BUDGET_S)
+    index = loop.run(backend.build_index(corpus_dir))
+    outcome = loop.run(index.search(query, {"query": query}, budget_s=_BUDGET_S))
     knowledge_search = index.knowledge_search()
     judge_hits = (
         None
         if knowledge_search is None
-        else knowledge_search.search(query, top_k=max(len(outcome.hits), 1))
+        else loop.off_loop(knowledge_search.search, query, top_k=max(len(outcome.hits), 1))
     )
     return index, outcome, judge_hits
 
 
 class SearchBackendConformanceSuite:
-    """Subclass and override ``backend_factory`` to certify one search backend."""
+    """Subclass and override ``backend_factory`` and ``make_searches_fail``."""
 
     @pytest.fixture
     def backend_factory(self) -> SearchBackendFactory:
@@ -119,6 +174,16 @@ class SearchBackendConformanceSuite:
             "subclasses of SearchBackendConformanceSuite must override the "
             "`backend_factory` fixture to return a SearchBackendFactory — the same "
             "callable the `tolokaforge.search_backends` entry point resolves to"
+        )
+
+    @pytest.fixture
+    def make_searches_fail(self) -> Callable[[SearchIndex], None]:
+        raise NotImplementedError(
+            "subclasses of SearchBackendConformanceSuite must override the "
+            "`make_searches_fail` fixture to return a callable that, given a built index, "
+            "makes its searches fail the way they do in production (the service goes "
+            "away, a request errors) — the suite checks that such a failure is raised "
+            "rather than rendered as results"
         )
 
     @pytest.fixture(name="trial_context")
@@ -133,6 +198,12 @@ class SearchBackendConformanceSuite:
     @pytest.fixture
     def query(self) -> str:
         return CONFORMANCE_QUERY
+
+    @pytest.fixture
+    def runner_loop(self) -> Iterator[RunnerLoop]:
+        loop = RunnerLoop()
+        yield loop
+        loop.close()
 
     def test_the_factory_builds_a_search_backend(
         self, backend_factory: SearchBackendFactory, trial_context: SearchBackendContext
@@ -162,6 +233,21 @@ class SearchBackendConformanceSuite:
             ) from exc
         assert isinstance(backend, SearchBackend)
 
+    def test_build_index_refuses_a_trial_less_context(
+        self, backend_factory: SearchBackendFactory, corpus_dir: Path, runner_loop: RunnerLoop
+    ) -> None:
+        """Trial work belongs to the runner's context; a trial-less one builds nothing."""
+        backend = backend_factory(declaration_context())
+        try:
+            runner_loop.run(backend.build_index(corpus_dir))
+        except Exception:  # noqa: BLE001 — any refusal is the conforming answer
+            return
+        raise AssertionError(
+            "build_index built an index from a trial-less context; that context is what "
+            "the adapter and the stack rule build a backend from, so an index built from it "
+            "belongs to no trial"
+        )
+
     def test_tool_parameters_is_a_parameters_object_with_a_query(
         self, backend_factory: SearchBackendFactory
     ) -> None:
@@ -185,10 +271,12 @@ class SearchBackendConformanceSuite:
         trial_context: SearchBackendContext,
         corpus_dir: Path,
         query: str,
+        runner_loop: RunnerLoop,
     ) -> None:
-        """The agent reads ``rendered``; the judge, replay and the remote grader read hits."""
-        index, outcome, _ = asyncio.run(
-            _search_both_sides(backend_factory(trial_context), corpus_dir, query)
+        """The agent reads ``rendered``; the judge's search, replay and the remote grader
+        are the readers ``hits`` is shaped for."""
+        index, outcome, _ = _search_both_sides(
+            runner_loop, backend_factory(trial_context), corpus_dir, query
         )
         assert isinstance(index, SearchIndex), "build_index must return a SearchIndex"
         assert isinstance(outcome, SearchOutcome), (
@@ -214,10 +302,11 @@ class SearchBackendConformanceSuite:
         trial_context: SearchBackendContext,
         corpus_dir: Path,
         query: str,
+        runner_loop: RunnerLoop,
     ) -> None:
         """``knowledge_search()`` is the same index, or ``None`` for no judge search."""
-        index, outcome, judge_hits = asyncio.run(
-            _search_both_sides(backend_factory(trial_context), corpus_dir, query)
+        index, outcome, judge_hits = _search_both_sides(
+            runner_loop, backend_factory(trial_context), corpus_dir, query
         )
         knowledge_search = index.knowledge_search()
         if knowledge_search is None:
@@ -232,18 +321,51 @@ class SearchBackendConformanceSuite:
             "the agent searched"
         )
 
+    def test_a_failed_search_raises_rather_than_rendering_results(
+        self,
+        backend_factory: SearchBackendFactory,
+        make_searches_fail: Callable[[SearchIndex], None],
+        trial_context: SearchBackendContext,
+        corpus_dir: Path,
+        query: str,
+        runner_loop: RunnerLoop,
+    ) -> None:
+        """An agent reading "no documents" from a dead index is graded for the outage."""
+        index = runner_loop.run(backend_factory(trial_context).build_index(corpus_dir))
+        make_searches_fail(index)
+        try:
+            outcome = runner_loop.run(index.search(query, {"query": query}, budget_s=_BUDGET_S))
+        except Exception:  # noqa: BLE001 — raising is the conforming answer
+            outcome = None
+        assert outcome is None, (
+            f"a failed search answered {outcome!r}; the runner returns `rendered` to the "
+            "agent as a successful call, so a failure must raise"
+        )
+        knowledge_search = index.knowledge_search()
+        if knowledge_search is None:
+            return
+        try:
+            judge_hits = runner_loop.off_loop(knowledge_search.search, query)
+        except Exception:  # noqa: BLE001 — raising is the conforming answer
+            return
+        raise AssertionError(
+            f"the judge's search over a failed index answered {judge_hits!r}; "
+            "KnowledgeSearch must raise, never degrade a failure into empty results"
+        )
+
     def test_a_corpus_with_no_documents_is_refused(
         self,
         backend_factory: SearchBackendFactory,
         trial_context: SearchBackendContext,
         tmp_path: Path,
+        runner_loop: RunnerLoop,
     ) -> None:
         """A declared corpus that indexes empty is a bundling bug, not an agent failure."""
         empty = tmp_path / "empty_corpus"
         empty.mkdir(exist_ok=True)
         backend = backend_factory(trial_context)
         try:
-            asyncio.run(backend.build_index(empty))
+            runner_loop.run(backend.build_index(empty))
         except SearchIndexBuildError:
             return
         raise AssertionError(

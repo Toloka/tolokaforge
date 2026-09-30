@@ -37,6 +37,8 @@ class FakeRagService:
     def __init__(self) -> None:
         self.indexes: dict[str, list[dict[str, Any]]] = {}
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
+        self.searches_fail = False
+        """Answer every search with a 500, as a rag-service that fell over does."""
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         match = _TRIAL_PATH.match(request.url.path)
@@ -58,6 +60,8 @@ class FakeRagService:
                 },
                 request=request,
             )
+        if self.searches_fail:
+            return httpx.Response(500, json={"detail": "search backend down"}, request=request)
         documents = self.indexes.get(trial_id)
         if documents is None:
             return httpx.Response(
