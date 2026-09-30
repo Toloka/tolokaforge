@@ -390,7 +390,6 @@ cli.add_command(grade_run)
 
 # Default user model configuration
 DEFAULT_USER_MODEL_PROVIDER = "openrouter"
-DEFAULT_USER_MODEL_TEMPERATURE = 0.2
 
 _DEFAULT_DRY_RUN_SAMPLES = 3
 """Number of tasks rendered under ``tolokaforge run --dry-run``.
@@ -764,13 +763,14 @@ def run(
         config_data["evaluation"]["output_dir"] = f"results/run_{timestamp}"
 
     # Apply user model override: CLI flag > env var > YAML config
-    # Priority: --user-model flag takes precedence over USER_MODEL env var
+    # Priority: --user-model flag takes precedence over USER_MODEL env var.
+    # No temperature: the simulator never reads models.user.temperature, and
+    # writing one would only earn the run the warning about it.
     user_model_override = user_model or os.environ.get("USER_MODEL")
     if user_model_override:
         config_data.setdefault("models", {})["user"] = {
             "provider": DEFAULT_USER_MODEL_PROVIDER,
             "name": user_model_override,
-            "temperature": DEFAULT_USER_MODEL_TEMPERATURE,
         }
         console.print(f"[cyan]User model override: {user_model_override}[/cyan]")
 

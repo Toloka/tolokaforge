@@ -336,7 +336,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
@@ -710,7 +709,7 @@ task_defaults:
     user:                          # the conventional counterpart actor; more can be added
       mode: "llm"
       persona: "curious engineer"
-      backstory: "./shared/user_backstory.md"  # shared user backstory; each task may override
+      backstory: "You are a returning customer."  # shared user backstory; each task may override
       # simulator: "builtin"       # which registered simulator produces the dialogue
       #                            # (tolokaforge.user_simulators group; default "builtin")
       # simulator_config: {}       # opaque config the engine passes to a non-builtin
@@ -1046,9 +1045,19 @@ model; `models` is already an open map, not a fixed
 agent/user/judge trio. The legacy root-level `user_simulator`
 block is read as an alias for `actors.user` until M5 retires it.
 
-An `ActorSpec` carries `mode` (`llm` or `scripted`), `persona`,
-`backstory` (a path to a backstory file, or inline text), and
-`scripted_flow`. The project declares the shared defaults under
+An `ActorSpec` carries:
+
+- `mode` (`llm` or `scripted`), `persona`, `backstory` (inline text) and
+  `scripted_flow`;
+- the stop rule, `stop_tokens` and `stop_with_text` (see
+  [Declaring the stop tokens](TASKS.md#declaring-the-stop-tokens));
+- `tool_turns` and `max_tool_steps`, how the simulator's own tool calls run (see
+  [User tool turns](TASKS.md#user-tool-turns)). A task drops a project-level value
+  with `null`;
+- `first_agent_message`, a line of the agent's the transcript opens with (see
+  [The agent's opening line](TASKS.md#the-agents-opening-line)), dropped the same way.
+
+The project declares the shared defaults under
 `task_defaults.actors.user`; each task overrides field-by-field
 (delta-wins), so a task that adds only a `backstory` inherits the
 project's `mode` and `persona`:
@@ -1059,14 +1068,14 @@ actors:
   user:
     mode: "llm"
     persona: "customer"
-    backstory: "./shared/user_backstory.md"
+    backstory: "You are a returning customer of the shop."
 ```
 
 ```yaml
 # tasks/MAN-34/task.yaml
 actors:
   user:
-    backstory: "./tasks/MAN-34/backstory.md"
+    backstory: "Your desk arrived damaged. Ask for a replacement, not a refund."
 ```
 
 A task's `backstory` replaces the project default wholesale (same
@@ -1403,7 +1412,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
@@ -1451,7 +1459,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-haiku-4-5"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
@@ -1474,7 +1481,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"       # stronger judge for reliability
@@ -1549,7 +1555,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"

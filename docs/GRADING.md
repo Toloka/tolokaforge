@@ -661,8 +661,8 @@ reads `Trajectory.termination_reason`, and the host sends the same value on
 that reached its own end — `agent_done` under `agent_only`, where the agent took
 a turn without calling a tool and no user party could ask for more, or
 `user_stop` under `conversational`, where the simulated user closed it — from one
-cut off by a budget (`max_turns`, `timeout`). The same score means something
-different in each case.
+cut off by a budget (`max_turns`, `user_tool_loop_limit`, `timeout`). The same
+score means something different in each case.
 
 **It is grading input, not an author-matchable key.** There is no `grading.yaml`
 field for it and no key-manifest entry, so no task can score itself on it. That
@@ -670,7 +670,10 @@ is deliberate: a task's score must depend on what the agent did, not on how the
 harness or the provider happened to stop the run, and a matcher on the
 termination reason would let a task pass or fail on infrastructure weather.
 
-Only `agent_done`, `user_stop` and `max_turns` reach the runner. Every other
+Only `agent_done`, `user_stop`, `max_turns` and `user_tool_loop_limit` reach the
+runner. `user_tool_loop_limit` is the user's turn budget where `max_turns` is the
+agent's: an `isolated` user turn took more tool steps than its
+`actors.user.max_tool_steps` allows. Every other
 reason describes a trial the host grader resolves itself, without an RPC — see
 [`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrialrequest).
 [`tests/canonical/test_termination_reason_reachability.py`](../tests/canonical/test_termination_reason_reachability.py)
@@ -697,6 +700,12 @@ def build_trial_timeline(
     termination_reason: TerminationReason | None,
 ) -> TrialTimeline
 ```
+
+A user's `isolated` tool step (see [TASKS.md § User tool turns](TASKS.md#user-tool-turns))
+is a USER message whose calls TOOL messages answer. Nobody in the dialogue reads it,
+so it contributes its `tool_call` and `tool_result` events and no `user_message`
+event: a `messages` ordering counts the turns the dialogue had. A `shared` user
+turn carrying calls is still a `user_message`, since the agent reads it.
 
 It is a pure function — no services, no I/O — over three inputs both grading
 substrates already hold, which is what makes a check over the timeline mean the
@@ -925,8 +934,16 @@ missing on a kind it does apply to.
 `turn_index` is the assistant *generation* an event belongs to. Every event one
 assistant message emits — the message, the tool calls it requested, the results
 they produced, and the user message that answered it — carries that generation's
-index, so "in the same turn" means "in the same assistant generation". The
-initial user prompt precedes the first assistant message and carries index 0.
+index, so "in the same turn" means "in the same assistant generation". Without
+an opening line, the initial user prompt precedes the first assistant message and
+carries index 0.
+
+The agent's opening line (`actors.user.first_agent_message`,
+[TASKS.md § The agent's opening line](TASKS.md#the-agents-opening-line)) is an
+assistant message of the transcript like any other, so it is turn 0 and the agent's
+first generation is turn 1. The timeline reads the transcript as recorded:
+transcript rules, trace checks, a custom check's `transcript.agent_messages` and
+the rubric judge all see the line as the agent's first message.
 
 ### Guarantees
 
@@ -4146,9 +4163,10 @@ infrastructure:
 
 | Reason | Class | Why it counts |
 |---|---|---|
+| `user_tool_loop_limit` | measured | A declared budget, like `max_turns`, over the user's tool steps in one `isolated` turn. The dialogue it cuts off is graded as it stands |
 | `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
 | `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
-| `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)) |
+| `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)). So does an `isolated` simulator that takes more than `max_tool_steps` tool steps before its opening message: the agent has not spoken, so nothing of its is there to grade |
 | `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
 | `stuck_detected` | measured | The agent issued the identical tool call and got the same result back over and over. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
 | any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |

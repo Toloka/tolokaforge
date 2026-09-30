@@ -76,7 +76,6 @@ models:
   user:
     provider: "openai"
     name: "gpt-4o-mini"
-    temperature: 0.3
 
 orchestrator:
   workers: 1

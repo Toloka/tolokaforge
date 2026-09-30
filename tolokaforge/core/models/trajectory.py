@@ -87,7 +87,11 @@ class MessageRole(str, Enum):
 
 
 class FirstUserMessageSource(str, Enum):
-    """Where message index 0 came from."""
+    """Where the transcript's first user message came from.
+
+    It is message index 0 unless the agent's opening line
+    (``actors.user.first_agent_message``) or a user tool step precedes it.
+    """
 
     PINNED = "pinned"  # The task's initial_user_message, delivered verbatim
     SIMULATOR = "simulator"  # A user-simulator dispatch produced it

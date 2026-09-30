@@ -242,6 +242,47 @@ class TestBuildGradingEvents:
         )
         assert built.user_generations == 0
 
+    def test_a_user_tool_step_shows_its_calls_and_a_dialogue_turn_its_text(
+        self, tmp_path: Path
+    ) -> None:
+        """Under ``tool_turns: isolated`` a user tool step carries calls and no text; its
+        generation's output shows the calls, as the live projection's does."""
+        step_call = {"id": "u1", "name": "check_booking_app", "arguments": {"pnr": "P1"}}
+        trajectory = {
+            **TRAJECTORY,
+            "messages": [
+                TRAJECTORY["messages"][0],
+                TRAJECTORY["messages"][1],
+                {
+                    "role": "user",
+                    "content": "",
+                    "tool_calls": [step_call],
+                    "ts": "2026-09-16T19:50:03+00:00",
+                },
+                {
+                    "role": "tool",
+                    "content": "confirmed",
+                    "tool_call_id": "u1",
+                    "ts": "2026-09-16T19:50:03.500000+00:00",
+                },
+                TRAJECTORY["messages"][2],
+                TRAJECTORY["messages"][3],
+            ],
+        }
+        built = build_grading_events(
+            TRACE,
+            write_bundle(tmp_path / "T-7" / "0", trajectory=trajectory),
+            run_id=RUN_ID,
+        )
+        outputs = {
+            b["metadata"]["message_index"]: b["output"]
+            for b in _by_type(built.events)["generation-create"]
+            if b["metadata"]["role"] == "user"
+        }
+        assert outputs[2] == {"content": "", "tool_calls": [step_call]}
+        assert outputs[4] == {"content": "Booking 42"}
+        assert outputs[0] == {"content": "Hi, I need a refund"}
+
     def test_model_names_fall_back_to_the_task_config(self, tmp_path: Path) -> None:
         task = {
             **TASK,

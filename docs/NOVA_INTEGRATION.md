@@ -59,7 +59,6 @@ models:
   user:
     provider: "nova"
     name: "nova-orchestrator-v1"
-    temperature: 0.2
 
 orchestrator:
   workers: 2

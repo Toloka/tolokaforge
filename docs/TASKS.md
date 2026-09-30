@@ -263,6 +263,58 @@ actors:
 
 Scripted mode (`mode: "scripted"`) is available for simple deterministic flows but produces less realistic conversations.
 
+### User tool turns
+
+A user with tools of its own (`tools.user.enabled`) runs them one of two ways, set by
+`tool_turns`:
+
+```yaml
+actors:
+  user:
+    tool_turns: isolated   # default: shared
+    max_tool_steps: 10     # isolated only; this is the default
+```
+
+- **`shared`** (default) — the simulator gets one generation per turn. Its calls run,
+  and their results are appended to the text of its reply, which the agent reads. A
+  reply that is only calls is given the text "Let me check that." (#1089).
+- **`isolated`** — a reply that calls tools is a *tool step*. The calls, and a TOOL
+  message with each result, are recorded in the transcript but never sent to the
+  agent, and the simulator is asked again with the results in view, until it replies
+  with text alone. That text is the turn the agent reads. The simulator sees its own
+  steps and none of the agent's tool traffic: an agent message that calls tools is
+  left out of the simulator's view whole, text included: a message that calls tools
+  is addressed to the environment, not to the other party.
+  - A stop token inside a tool step is not a stop: a step is addressed to the
+    environment, and only a reply the agent would read can end the dialogue.
+  - A step beyond `max_tool_steps` ends the dialogue with `user_tool_loop_limit`, and
+    none of that step's calls run; the system message and the trial log name them. The
+    reason is graded, like `max_turns`.
+  - Between steps of a dialogue turn the episode timeout is checked.
+  - The opening turn records its steps ahead of the first message. Like the rest of
+    turn 0 it runs before the loop, so no timeout check interrupts it: `max_tool_steps`
+    bounds it, and a trial whose opening ran past the episode budget ends with
+    `timeout` on the loop's first turn. More than `max_tool_steps` steps before the
+    opening refuse the trial as an error rather than end it with
+    `user_tool_loop_limit`: the agent has not spoken yet, so there is nothing of its
+    to grade.
+  - A user tool that raises ends the trial as an error, after every call of the step
+    is answered with an `Error: …` result. A user-side environment that wants the
+    dialogue to go on after a failure returns the error as the tool's result instead
+    of raising.
+  - A run with `orchestrator.rate_limit_probe` enabled refuses `isolated` tasks: the
+    probe budgets one simulator reply per turn.
+
+`max_tool_steps` under `shared` is refused, since a shared turn never loops, and so is
+`isolated` on a `scripted` simulator, whose authored replies never call tools. Both are
+decided on what the task and its project declared: a task under a project that sets
+either key writes it as `null` to drop it. `isolated` without user tools loads, so an
+adapter can declare it on every task. In grading, a tool step's calls and results are
+timeline events and the step itself is not a `user_message` (see
+[GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)); the rubric
+judge's transcript labels the step and its results as the user's; a custom check's
+`transcript.user_messages` still lists it, as a user message carrying `tool_calls`.
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in
@@ -275,6 +327,40 @@ but a rule a model is asked to follow is still weaker than a turn the engine
 writes itself, and only `initial_user_message` is the guarantee. Leave the field
 unset when the opening turn should be improvised from the backstory; a blank
 value is refused at load.
+
+### The agent's opening line
+
+A transcript opens with the user's turn. `first_agent_message` puts a line of the
+agent's ahead of it, for a dialogue that must open with the agent's greeting:
+
+```yaml
+actors:
+  user:
+    first_agent_message: "Hi! How can I help you today?"   # default: none
+```
+
+- The line is written into the transcript as its first message, an assistant turn.
+  The agent reads it back as its own on every request, and the simulator answers it
+  in place of the built-in greeting it is otherwise shown. A pinned
+  `initial_user_message` follows the line; a user's `isolated` tool steps before its
+  opening follow it too.
+- The line is not a generation: it counts as no turn in `metrics.turns` and has no
+  usage. Grading reads the transcript as recorded, so the line is the agent's first
+  message there: the timeline's turn 0,
+  a text transcript rules read, and the first of a custom check's
+  `transcript.agent_messages` (see
+  [GRADING.md § Trial event timeline](GRADING.md#trial-event-timeline)). A rule that
+  should not credit the agent with it can say so, since the task wrote it.
+  Turning the line on for tasks written without it (through a project's
+  `task_defaults`, say) moves every generation one turn later on the timeline, so
+  a trace check's `first_turn` / `last_turn` window written for those tasks moves
+  by one too.
+- A summarize keeps the line and the user's opening on the wire.
+- The agent's first request opens with an assistant message. The engine adds
+  nothing ahead of it, so a provider or chat template that requires a user turn
+  first refuses that request with its own error and the trial ends as an error.
+- A blank line is refused, and so is the key under `interaction_mode: agent_only`,
+  where no user answers it. A task drops a project-level value with `null`.
 
 ### Specialised personas
 
@@ -315,7 +401,8 @@ policy corpus to derive it.
 The exit token belongs to the **user simulator**. The engine reads it from
 simulator output only — a dispatched user reply that is the bare token ends the
 trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
-it delivers that text first and stops on the next turn. The opening turn is the
+it delivers that text first and stops on the next turn (both are configurable, see
+[Declaring the stop tokens](#declaring-the-stop-tokens)). The opening turn is the
 exception: a bootstrap reply carrying the token seeds it literally, rather than
 ending a trial before the agent has spoken. Write it into the
 `backstory` (or a scripted flow), never into a task's agent-facing prompt: the
@@ -323,6 +410,48 @@ agent is never asked for the token and its output is never checked for it, so a
 prompt that instructed it would promise a signal nothing consumes.
 [`tests/canonical/test_agent_prompt_exit_token.py`](../tests/canonical/test_agent_prompt_exit_token.py)
 builds every example pack's agent system prompt and fails if one carries it.
+
+#### Declaring the stop tokens
+
+`actors.user` names the tokens the engine listens for and what happens to text
+written before one:
+
+```yaml
+actors:
+  user:
+    mode: llm
+    backstory: |
+      You want to move your booking to Friday. If the agent hands you over to a
+      person, reply ###TRANSFER###. If it cannot help with the request at all,
+      reply ###OUT-OF-SCOPE###.
+    stop_tokens: ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]  # default: ["###STOP###"]
+    stop_with_text: end    # default: deliver
+```
+
+- **`stop_tokens`** — the earliest listed token in a reply fires, and the
+  termination message names it (`User signaled stop (###TRANSFER###). Dialogue
+  ended.`). Under `stop_with_text: deliver` whatever the reply says after that
+  token is discarded; the trial log records how much. The reason is `USER_STOP`
+  for every token. The list must be
+  non-empty, without blank or repeated tokens, and no token may contain another.
+  The engine listens for the list and the model sends what its prompt tells it
+  to, so for an `llm` simulator the two must agree: on the built-in simulator
+  the list must contain `###STOP###`, which the built-in prompt instructs, and
+  every other listed token must be named in the backstory, which is where the
+  model learns when to send it. A `scripted` simulator may list any tokens, and
+  so may a non-`builtin` simulator (`actors.user.simulator`): it owns its prompt,
+  so checking that the prompt teaches the listed tokens is its own job.
+- **`stop_with_text`** — `deliver` hands the text before the token to the agent,
+  lets it answer, and ends the trial on the next user turn; a bare token ends the
+  trial at once. `end` records the reply as the simulator wrote it — the token,
+  the text around it, and a bare token alike — as the last user message and ends
+  the trial at once, so the agent never answers it. `end` is the shape for a
+  transcript that must keep the stop reply verbatim as its last user turn.
+- **A reply that also calls tools** still stops. The calls on a reply with text
+  run and are recorded on that message before the stop applies, and their
+  results are appended to its text, as on any user turn that calls tools, so
+  under `end` such a reply is recorded as written followed by those results; a
+  bare token ends the trial without running them.
 
 The agent's own completion is **structural**, not a phrase it emits: a trial ends
 with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls
@@ -398,7 +527,6 @@ models:
   user:
     provider: openrouter
     name: anthropic/claude-3.5-sonnet
-    temperature: 0.7
 
 evaluation:
   tasks_glob: "tasks/mobile/*/task.yaml"

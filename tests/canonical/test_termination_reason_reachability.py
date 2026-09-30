@@ -43,6 +43,7 @@ from litellm.exceptions import ContextWindowExceededError, RateLimitError
 
 from tests.canonical._factories import make_task_config, make_trajectory, make_trial_spec
 from tests.canonical.test_lost_trial_attribution import drive_lost_trial
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.failure_attribution import (
     EXCLUDED_TYPED_REASONS,
@@ -79,14 +80,16 @@ pytestmark = pytest.mark.canonical
 # The reasons a trial can end with and still be graded by the runner. Each names
 # a trial the agent drove to an end the harness planned for: it had no further
 # action to take and no counterparty could ask for one, it called a completion
-# tool to say so itself, the simulated user closed the dialogue, or the turn
-# budget ran out. Task grading is meaningful for exactly these.
+# tool to say so itself, the simulated user closed the dialogue, or a turn budget
+# ran out — the agent's, or the user's budget of tool steps. Task grading is
+# meaningful for exactly these.
 GRADED_REASONS = frozenset(
     {
         TerminationReason.AGENT_DONE,
         TerminationReason.AGENT_SUBMITTED,
         TerminationReason.USER_STOP,
         TerminationReason.MAX_TURNS,
+        TerminationReason.USER_TOOL_LOOP_LIMIT,
     }
 )
 
@@ -231,6 +234,34 @@ def _run_trial(
     ).run("You are an agent.", "Do the task.")
 
 
+class _ToolStepUser(BuiltinUserSimulator):
+    """An isolated LLM-mode user whose every reply is a tool call and never text."""
+
+    def __init__(self) -> None:
+        super().__init__(mode="llm", tool_turns="isolated")
+
+    def reply(
+        self, context: list[Message], *, observation: LLMCallObservation | None = None
+    ) -> GenerationResult:
+        return GenerationResult(
+            text="", tool_calls=[ToolCall(id="look", name="lookup", arguments={})]
+        )
+
+
+def _user_tool_loop_trajectory() -> Trajectory:
+    """Drive a user whose isolated turn takes one tool step more than it may."""
+    return TrialRunner(
+        task_id="reachability",
+        trial_index=0,
+        agent_client=_ScriptedAgent(_text("How can I help?")),
+        user_simulator=_ToolStepUser(),
+        tool_executor=ToolExecutor(ToolRegistry()),
+        tool_schemas=[],
+        user_tool_executor=ToolExecutor(ToolRegistry()),
+        user_tool_turns=UserToolTurnRule(mode="isolated", max_steps=1),
+    ).run("You are an agent.", "Do the task.")
+
+
 def _provision_failure_trajectory() -> Trajectory:
     """Drive the provisioning bracket with an environment that never comes up."""
     result = ProvisioningTrialExecutor(
@@ -263,6 +294,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(RuntimeError("something the classifier cannot name")),
         _run_trial(GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))),
         _run_trial(ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")),
+        _user_tool_loop_trajectory(),
         _provision_failure_trajectory(),
         drive_lost_trial()[0],
     ]
