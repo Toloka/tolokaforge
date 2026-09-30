@@ -150,8 +150,7 @@ class ComparisonViewError(ValueError): ...
 @dataclass(frozen=True)
 class ComparisonViewResult:
     state: dict[str, list[dict[str, Any]]]      # the view, a new object
-    applied: tuple[RuleApplication, ...]         # kind, table, path, rows_removed, ids_rewritten
-    record: ComparisonViewRecord                 # see Versioning
+    record: ComparisonViewRecord                 # see Versioning; applied: kind, table, path, ...
 
 def apply_comparison_view(
     state: Mapping[str, list[dict[str, Any]]], *,
@@ -225,12 +224,12 @@ state_checks:
 - **`kind` resolves through the rule table**, not through a static discriminated
   union. The rule validates its own entry into its `extra="forbid"` config model.
   This is the path a registered rule will take later.
-- **Tables and fields a rule names must exist** in `initial_state.tables` /
-  `schemas`. Under `relaxed_validation` a missing one is a warning, as for
-  `id_fields`. A field is checked where seeded records or a schema list it; a
-  field whose path reaches nothing seeded or declared is not checked, since its
-  rows may arrive later.
-- **An unknown `version` is refused at load.** So is an unknown `kind`.
+- **Tables a rule names must exist** in `initial_state`; fields are checked only
+  against a declared schema. Seeded records are not a schema: agents write
+  fields no seeded row carries. Under `relaxed_validation` a missing table is a
+  warning, as for `id_fields`.
+- **An unknown `version` is refused at load.** So is an unknown `kind`, and so
+  is an empty `rules` list: a view without rules is no view.
 - **With `hash` disabled** the block gets a `config validate` warning, not a
   refusal.
 - **No profiles in v1.** The first draft's shared `profiles` files are left out
@@ -240,7 +239,7 @@ state_checks:
 
 | kind | Effect | Guarantees |
 |---|---|---|
-| `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
+| `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them in another row. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
 | `exclude_tables` | Drops the named tables whole, key included, so a table present on one side only stops counting too; `reason` is required. | Refused for a table another rule names. |
 | `normalize_ids` | Rewrites the key of the records in `scope` to a deterministic key, built from `key` fields or from `ordinal_by` + `rank_by`, and every exact reference to it named in `references` (a top-level field or a nested path). | Bijective: distinct records stay distinct. A key collision raises. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`. |
 
@@ -259,9 +258,10 @@ Left out of v1, and where the need goes instead:
 @runtime_checkable
 class ComparisonViewRule(Protocol):
     kind: str
-    config_model: type[BaseModel]
+    config_model: type[ComparisonViewRuleConfig]
     def apply(self, state: dict[str, list[dict]], *, initial: Mapping | None,
-              id_fields: Mapping[str, str | list[str]], config: BaseModel) -> RuleOutcome: ...
+              id_fields: Mapping[str, str | list[str]],
+              config: ComparisonViewRuleConfig) -> RuleOutcome: ...
 
 _BUILTIN_RULES: Mapping[str, ComparisonViewRule] = {
     "exclude_records": ExcludeRecords(),
@@ -273,9 +273,11 @@ def comparison_view_rules() -> Mapping[str, ComparisonViewRule]:
     return _BUILTIN_RULES
 ```
 
-The shape follows `core/llm/presets.py`: a built-in table typed by a Protocol,
-and one function that resolves a name through it. Turning on third-party rules
-later changes only `comparison_view_rules()`:
+Every rule's config model derives from `ComparisonViewRuleConfig`, which
+carries `kind` and `names()`, the tables the entry names (the `exclude_tables`
+guard reads it). The shape follows `core/llm/presets.py`: a built-in table typed
+by a Protocol, and one function that resolves a name through it. Turning on
+third-party rules later changes only `comparison_view_rules()`:
 
 - it merges `discover_entry_points("tolokaforge.comparison_view_rules")` into
   the built-ins and refuses duplicates;
@@ -318,9 +320,15 @@ loader translates into it.
 - `version` — the block's schema version;
 - `function_version` — a module constant, bumped on any change to what a rule
   does;
-- `config_sha256` — canonical JSON of the rules as applied, the way
-  `ModelsFingerprint` hashes model data;
+- `config_sha256` — sha256 of what the rules do: per rule, its `kind` and its
+  settings that differ from their defaults, `reason` left out, as canonical JSON
+  the way `ModelsFingerprint` hashes model data;
 - `applied` — per rule and table touched (`exclude_tables` gives one entry per listed table): kind, table, path, rows removed, ids rewritten.
+
+The sha changes only when a declaration asks for something else. A new optional
+field whose default keeps a rule's behaviour keeps every recorded sha; a change
+to what a rule does bumps `function_version` instead; `reason` is prose, not
+behaviour, and is not hashed.
 
 A grade then says which transform produced the digest it compares. A later
 engine can tell whether it would compute the same view. An unknown major
