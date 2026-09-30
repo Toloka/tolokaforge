@@ -83,6 +83,7 @@ from tolokaforge.core.models import (
     TerminationReason,
 )
 from tolokaforge.core.plugin_registry import (
+    RAG_SERVICE_STACK_SERVICE,
     RegistryError,
     SearchBackendContext,
     SearchIndex,
@@ -3567,7 +3568,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"Trial {trial_id}: search backend {name!r} refused the task's declaration: "
                 f"{type(e).__name__}: {e}"
             ) from e
-        if backend.stack_service == SearchPlane.RAG_SERVICE and not search_config.enabled:
+        if backend.stack_service == RAG_SERVICE_STACK_SERVICE and not search_config.enabled:
             return None
         corpus_dir = _resolve_corpus_dir(trial_id, search_config.documents_path, artifacts_dir)
         index = self._run_backend_build(trial_id, name, backend.build_index(corpus_dir))
@@ -3590,4 +3591,4 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """This runner's handle on each stack service a backend may declare."""
         if self.rag_client is None:
             return {}
-        return {SearchPlane.RAG_SERVICE.value: self.rag_client}
+        return {RAG_SERVICE_STACK_SERVICE: self.rag_client}

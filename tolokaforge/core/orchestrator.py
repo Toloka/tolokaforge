@@ -94,6 +94,7 @@ from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregate
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
+    RAG_SERVICE_STACK_SERVICE,
     RegistryError,
     RuntimeBackendBuildContext,
     TrialGraderContext,
@@ -130,13 +131,7 @@ from tolokaforge.observability.factory import (
     write_tracing_receipt,
 )
 from tolokaforge.observability.observer import NullTrialObserver, TrialObserver, safely
-from tolokaforge.runner.models import (
-    AdapterType,
-    PlanShape,
-    SearchPlane,
-    StackScope,
-    TaskDescription,
-)
+from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
 from tolokaforge_coding_harnesses import ENGINE_LOOP
 
@@ -467,7 +462,7 @@ def _search_needs_rag_service(task: Any) -> bool:
     search = search_declaration(task)
     if not uses_search(task, search):
         return False
-    return declared_search_backend(search).stack_service == SearchPlane.RAG_SERVICE
+    return declared_search_backend(search).stack_service == RAG_SERVICE_STACK_SERVICE
 
 
 def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
