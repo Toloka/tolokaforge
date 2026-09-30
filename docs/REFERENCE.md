@@ -20,14 +20,13 @@ models:
   agent:
     provider: "openai"              # openai, anthropic, google, openrouter, azure, bedrock, ollama
     name: "gpt-4o-mini"             # Model name (provider-specific)
-    temperature: 0.0                # 0.0 = deterministic
+    temperature: 0.0                # 0.0 = deterministic; null sends none
     max_tokens: 4096
     seed: 42                        # For reproducibility (OpenAI, Anthropic)
 
   user:
     provider: "openai"
-    name: "gpt-4o-mini"
-    temperature: 0.7                # Higher for natural variation
+    name: "gpt-4o-mini"             # No temperature: the simulator does not read it
 
 orchestrator:
   workers: 4                        # Parallel worker threads

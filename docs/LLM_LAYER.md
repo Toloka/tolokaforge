@@ -525,6 +525,12 @@ provider error, the loop retries the whole turn, and the agent generates again
 before the simulator is asked. That retry predates tool turns; it leaves two
 assistant turns in a row in the agent's context.
 
+The request's `temperature` is 0.2, a per-call override the simulator passes on
+every generation; `models.user.temperature` never reaches it (see
+[`CONFIG.md`](CONFIG.md) § Notes). A simulator registered under
+`actors.user.simulator` owns its own client and sends whatever its
+`simulator_config` says.
+
 ### The prompt body
 
 The system prompt is a fixed opening line, the task's `Instruction` when the
