@@ -18,9 +18,8 @@ Every override in this module exists so the subset wheel:
   build variant is installed;
 - declares only the dependencies the runner runtime graph needs — the
   base wheel's ``[project].dependencies`` reachable from the subset, plus
-  the base wheel's ``[project.optional-dependencies].runner`` group
-  (which the runner image used to install behind
-  ``pip install tolokaforge[runner]``);
+  the base wheel's ``[project.optional-dependencies].runner`` group, each
+  with the base wheel's own specifier;
 - declares one console-script entry — ``tolokaforge = tolokaforge.runner._cli:main`` —
   binding the subset-native CLI shim (ADR-0027) that preserves the ADR-0024
   ``docker exec`` surface (``tolokaforge --version`` / ``tolokaforge run-trial``)
@@ -38,12 +37,14 @@ PyPI. The published surface remains one ``tolokaforge`` wheel.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import tomllib
 from hatchling.builders.wheel import WheelBuilder
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 if TYPE_CHECKING:
     from hatchling.builders.wheel import RecordFile, WheelArchive
@@ -131,68 +132,102 @@ def _build_subset_entry_points() -> str:
 SUBSET_ENTRY_POINTS: str = _build_subset_entry_points()
 
 
-# Runtime dependencies the runner container needs.
+# Runtime dependencies the runner container needs, named without version
+# specifiers. Each emitted ``Requires-Dist`` is the base project's own
+# requirement with the same name and extras, read from hatch's metadata at
+# build time, so a range edited in ``pyproject.toml`` reaches the runner image
+# without a second edit here. The set itself is locked by
+# ``tests/canonical/test_runner_subset_partition.py``.
 #
-# Union of:
+# Selected from:
 #   - the base wheel's ``[project.dependencies]`` — every entry the runner
 #     subset's import graph reaches at runtime, including
 #     ``tolokaforge-models`` which supplies the pricing / preset / provider
 #     binding data files the runner's model-data accessors resolve;
 #   - the base wheel's ``[project.optional-dependencies].runner`` — the
-#     domain-tool runtime deps (fastapi/uvicorn/sqlalchemy/asyncpg/...)
-#     the runner image previously pulled via ``tolokaforge[runner]``.
+#     domain-tool runtime deps (fastapi/uvicorn/sqlalchemy/asyncpg/...).
 #
 # ``docker`` and ``testcontainers`` are intentionally omitted: they are
 # reached only from orchestrator-side runtime backends
 # (``per_trial_runtime``, ``shared_stack_runtime``, ``docker_adapter``)
 # which live in the base wheel and are not shipped inside the subset.
-SUBSET_DEPENDENCIES: tuple[str, ...] = (
+SUBSET_REQUIREMENT_NAMES: tuple[str, ...] = (
     # Reachable from the runner subset (subset of ``[project.dependencies]``).
-    "tolokaforge-models>=1.0.0,<2.0.0",
-    "litellm>=1.83.14,!=1.92.0,<2.0.0",
-    "pydantic>=2.0.0",
-    "pydantic[email]>=2.0.0",
-    "jsonschema>=4.20.0",
-    "pyyaml>=6.0.1",
-    "python-dotenv>=1.0.0",
-    "click>=8.1.0,<8.2",
-    "jsonpath-ng>=1.6.0",
-    "httpx>=0.25.0",
-    "tenacity>=8.2.0",
-    "jinja2>=3.1.0",
-    "loguru>=0.7.0",
-    "docstring_parser>=0.16",
-    "deepdiff>=6.0.0",
-    "toml>=0.10.0",
-    "addict>=2.4.0",
-    "starlette>=0.52.1",
-    "typesense>=2.0.0",
-    "structlog>=24.0.0",
-    # See the pyproject.toml comment: the generated runner_pb2_grpc module
-    # the subset wheel ships enforces ``grpcio>=1.83.0`` at import time,
-    # so the subset wheel's declared floor must track the grpcio-tools
-    # version used to regenerate the stubs — mirror the base wheel here
-    # so a fresh ``pip install tolokaforge-runner-subset`` (or the runner
-    # Docker image install step) never resolves the pre-1.83 line.
-    "grpcio>=1.83.0",
-    "grpcio-health-checking>=1.83.0",
-    # See the pyproject.toml comment: the generated runner_pb2 module the
-    # subset wheel ships requires the 7.x protobuf runtime, so mirror the
-    # base wheel's explicit floor here so a fresh ``pip install
-    # tolokaforge-runner-subset`` (or the runner Docker image install step)
-    # never resolves the older 6.x line PyPI's default picks.
-    "protobuf>=7.35.1",
-    "mcp>=0.1.0",
-    # Domain-tool runtime deps (formerly ``[project.optional-dependencies].runner``).
-    "asyncpg>=0.29.0",
-    "psycopg2-binary>=2.9.0",
-    "alembic>=1.13.0",
-    "python-jose>=3.3.0",
-    "fastapi>=0.108.0",
-    "uvicorn>=0.25.0",
-    "sqlalchemy>=2.0.48",
-    "odata-query>=0.10.0",
+    "tolokaforge-models",
+    "litellm",
+    "pydantic",
+    "pydantic[email]",
+    "jsonschema",
+    "packaging",
+    "pyyaml",
+    "python-dotenv",
+    "click",
+    "jsonpath-ng",
+    "httpx",
+    "tenacity",
+    "jinja2",
+    "loguru",
+    "docstring_parser",
+    "deepdiff",
+    "toml",
+    "addict",
+    "starlette",
+    "typesense",
+    "structlog",
+    # The generated runner_pb2 / runner_pb2_grpc modules the subset ships
+    # check the grpcio and protobuf runtime versions at import time.
+    "grpcio",
+    "grpcio-health-checking",
+    "protobuf",
+    "mcp",
+    # Domain-tool runtime deps (``[project.optional-dependencies].runner``).
+    "asyncpg",
+    "psycopg2-binary",
+    "alembic",
+    "python-jose",
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "odata-query",
 )
+
+RequirementKey = tuple[str, frozenset[str]]
+
+
+def requirement_key(requirement: Requirement) -> RequirementKey:
+    """Identity of a requirement irrespective of its specifier and marker."""
+    return (canonicalize_name(requirement.name), frozenset(requirement.extras))
+
+
+def select_subset_requirements(
+    selection: Sequence[str], base_requirements: Iterable[str]
+) -> list[str]:
+    """Return the base requirement for each selected name, in selection order.
+
+    Raises ``ValueError`` when a selected name carries a specifier, marker or
+    URL, matches no base requirement, or matches more than one.
+    """
+    base_by_key: dict[RequirementKey, list[str]] = {}
+    for base in base_requirements:
+        base_by_key.setdefault(requirement_key(Requirement(base)), []).append(base)
+    selected: list[str] = []
+    for name in selection:
+        wanted = Requirement(name)
+        if str(wanted.specifier) or wanted.marker is not None or wanted.url:
+            raise ValueError(
+                f"runner-subset selection {name!r} must name a requirement "
+                "without a specifier, marker or URL — the specifier comes from "
+                "pyproject.toml"
+            )
+        matches = base_by_key.get(requirement_key(wanted), [])
+        if len(matches) != 1:
+            raise ValueError(
+                f"runner-subset selection {name!r} matches {len(matches)} "
+                "requirements in pyproject.toml [project.dependencies] ∪ "
+                f"[project.optional-dependencies].runner, expected 1: {matches}"
+            )
+        selected.append(matches[0])
+    return selected
 
 
 class RunnerSubsetBuilder(WheelBuilder):
@@ -252,7 +287,8 @@ class RunnerSubsetBuilder(WheelBuilder):
             for i, license_line in enumerate(core.license.splitlines()):
                 prefix = "License: " if i == 0 else "         "
                 parts.append(f"{prefix}{license_line}")
-        for dep in SUBSET_DEPENDENCIES:
+        base_requirements = [*core.dependencies, *core.optional_dependencies["runner"]]
+        for dep in select_subset_requirements(SUBSET_REQUIREMENT_NAMES, base_requirements):
             parts.append(f"Requires-Dist: {dep}")
         for dep in extra_dependencies:
             parts.append(f"Requires-Dist: {dep}")
