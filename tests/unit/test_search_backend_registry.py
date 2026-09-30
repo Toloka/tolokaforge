@@ -15,6 +15,7 @@ exercised without any installed plug-in:
 from __future__ import annotations
 
 import importlib.metadata
+import logging
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ from tolokaforge.core.plugin_registry import (
     load_search_backend,
 )
 from tolokaforge.core.search import backend as backend_module
+from tolokaforge.core.search.backend import SearchBackendContext
 from tolokaforge.runner.models import SearchPlane
 
 pytestmark = pytest.mark.unit
@@ -150,3 +152,22 @@ def test_plugin_registry_re_exports_the_seam_types() -> None:
     ):
         assert getattr(plugin_registry, name) is getattr(backend_module, name), name
         assert name in plugin_registry.__all__
+
+
+def test_a_backend_reads_a_read_only_copy_of_its_config() -> None:
+    """What the task declared is graded and bundled; a backend cannot change it."""
+    declared = {"ranking": {"top_k": 3}}
+    client = object()
+    context = SearchBackendContext(
+        backend_config=declared,
+        tool_name="search_kb",
+        tool_description=None,
+        logger=logging.getLogger("test"),
+        stack_service_clients={"rag_service": client},
+    )
+
+    with pytest.raises(TypeError):
+        context.backend_config["ranking"] = {}  # type: ignore[index]
+    context.backend_config["ranking"]["top_k"] = 99
+    assert declared == {"ranking": {"top_k": 3}}
+    assert context.stack_service_clients["rag_service"] is client, "clients are never copied"
