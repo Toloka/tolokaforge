@@ -130,7 +130,8 @@ Adopt **option 2 with plane shape P2**, as separate, independently reviewable
 changes:
 
 1. the seam, with rag-service moved onto it and the name `typesense` reserved;
-2. the built-in `bm25` backend;
+2. the built-in `bm25` backend, with the judge's snippet length
+   (`judge_snippet_chars`) its tasks need;
 3. TypeSense as a registered backend (see below).
 
 ### `SearchBackend` and `SearchIndex` Protocols
@@ -234,7 +235,11 @@ initial_state:
 
 - **The model.** `initial_state.rag` becomes a typed model (it is `dict | None`
   today). A wrap serializer dumps only `model_fields_set`, so a task that writes
-  `corpus_dir` alone dumps as `{corpus_dir: …}`, as now.
+  `corpus_dir` alone dumps as `{corpus_dir: …}`, as now. Unknown keys are refused
+  (`extra="forbid"`: every `rag` block in the engine and in the task repository
+  declares `corpus_dir` alone), and because typing moves a malformed block's
+  failure to load time, `load_tasks` refuses the run for one whatever
+  `orchestrator.strict_task_load` says, rather than dropping the task.
 - **The actor gets the tool as today.** Which actor gets it stays
   `tools.<actor>.enabled` naming the tool. The first draft's `tool.actors` is
   gone: it declared the same fact twice.
@@ -245,9 +250,16 @@ initial_state:
   `backend_config` on `SearchConfig` only when it is non-empty. A tool name other
   than `search_kb` travels as `SearchConfig.tool_name`, also emitted only when it
   is not the default.
-- **Refusal before any trial.** `Orchestrator.load_tasks` refuses the run once
-  per unregistered backend name, as `_refuse_an_unregistered_user_simulator`
-  does.
+- **A corpus declares search on the wire.** In change 1 the adapter emits a
+  `search` block only for a task that declares `corpus_dir`, as it does today. A
+  task that enables the search tool with no corpus gets the tool's schema and no
+  backend, and `RegisterTrial` refuses it when reconstructing the tool. A backend
+  that serves a task with no corpus is a follow-up.
+- **Refusal before any trial.** `Orchestrator.load_tasks` builds each searching
+  task's backend from the trial-less context, as
+  `_refuse_an_unregistered_user_simulator` resolves simulators: an unregistered
+  name, or a backend refusing the task's `backend_config`, is one refusal naming
+  the task and the backend.
 - **The corpus.** `_bundle_corpus_artifacts` accepts `.json` documents next to
   `.md` and `.txt` — in change 2, since it changes the `tool_artifacts` of any
   existing pack with JSON files in its corpus directory.
@@ -292,11 +304,12 @@ initial_state:
   renamed tool cannot fool it; it tests the generic wrapper.
 - **rag-service keeps its search.** For `rag_service`, `knowledge_search()` is
   the same `RagServiceKnowledgeSearch(client, trial_id)` as today.
-- **The snippet length.** `judge_snippet_chars` becomes a field of
+- **The snippet length (change 2).** `judge_snippet_chars` becomes a field of
   `JudgeCustomization`, next to `disable_knowledge_search`: default 200, `null`
   for full documents. It is passed to the judge's `SearchKbTool`. The default
   gives byte-identical output, and the wire does not change: `KBSearch` already
-  returns full text.
+  returns full text. It lands with `bm25`, whose tasks need full documents;
+  change 1 leaves the judge's 200-character cut as it is.
 - **The judge's schema stays fixed.** It keeps `alpha`, which a backend without
   a hybrid weight ignores.
 
@@ -390,12 +403,12 @@ We checked the claim that the default does not move with a prototype on
 - **`initial_state` in `TaskDefaults`**, so a project can set a pack-wide
   backend.
 - **A native `KnowledgeSearch` for TypeSense.**
+- **A backend with no corpus.** Change 1 declares a search backend on the wire
+  only for a task with a corpus; a backend that serves a tool-only declaration
+  needs the adapter to emit `search.plane` without `documents_path`.
 - **rag-service hygiene** (optional): sorted document loading, stable ordering
   of equal scores, a switch for the zero-score filter, ids from file names, and a
   call to `delete_index` when a trial ends.
-- **Stale docstrings.** `runner/service.py` (`_resolve_judge_kb_search`, about
-  `enabled=False` in native) and `core/grading/kb_search.py` (a promised
-  TypeSense implementation).
 
 ## Links
 
