@@ -128,7 +128,9 @@ glob in the same preset already covers the routed name. A new leading-`*`
 glob starts with `*/`. A model-specific preset declared ahead of its family
 preset also lists its vendor-dropped name (`gemini-3.5-flash` and
 `*/gemini-3.5-flash`), unless its axes were measured on the OpenRouter route
-alone (see [`LLM_LAYER.md`](LLM_LAYER.md#preset-coverage)).
+alone (see [`LLM_LAYER.md`](LLM_LAYER.md#preset-coverage)); declare such a
+preset in `_OPENROUTER_TIED_REPLAY_PRESETS` in
+`tests/canonical/test_preset_route_prefix_routing.py`.
 `tests/canonical/test_preset_route_prefix_routing.py` fails naming the
 `preset:glob` whose routed name resolves to another preset, and its message
 suggests the `*/G` sibling to add.

@@ -2413,14 +2413,17 @@ anywhere-matching globs shipped today are a frozen list.
 A model-specific preset declared ahead of its family preset also lists its
 vendor-dropped name (`gemini-3.5-flash` and `*/gemini-3.5-flash` on
 `gemini_35_flash_recursive`), so a gateway that serves the model without the
-vendor segment does not land in the family preset. The three
-`openai_summary_replay` presets (`xai_grok_4_6`, `z_ai_glm_5_3`,
-`deepseek_v4_flash_0731_resolve`) are the exception: the codec rebuilds
-OpenRouter's `reasoning_details` envelope and was measured on the OpenRouter
-route alone, and a vendor-dropped name is never an OpenRouter slug. They claim
-only vendor-anchored names under any route prefix, so `self-hosted/grok-4.6`
+vendor segment does not land in the family preset. Three
+`openai_summary_replay` presets measured on the OpenRouter route alone
+(`xai_grok_4_6`, `z_ai_glm_5_3`, `deepseek_v4_flash_0731_resolve`) are the
+exception: their replay rebuilds OpenRouter's `reasoning_details` envelope, and
+a vendor-dropped name is never an OpenRouter slug. What ties them to the route
+is where they were measured, not the codec: `cohere_command_a_plus_05_2026`
+shares the codec but was measured on `azure_ai`. The three claim only
+vendor-anchored names under any route prefix, so `self-hosted/grok-4.6`
 resolves to `xai_grok` and `self-hosted/glm-5.3` to
-`openrouter_dict_stringify_recovery`.
+`openrouter_dict_stringify_recovery`. The test names them in
+`_OPENROUTER_TIED_REPLAY_PRESETS`.
 
 [`test_preset_route_prefix_routing.py`](../tests/canonical/test_preset_route_prefix_routing.py)
 enforces all of this for every bundled glob and every `pricing.json` slug. A

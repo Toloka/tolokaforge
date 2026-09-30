@@ -8,7 +8,8 @@ they are named: for every bundled ``match`` glob G that does not start with
 covers it. A leading-``*`` glob is anchored on a ``/`` boundary unless it is
 one of the anywhere-matching globs shipped today. A model-specific preset
 declared ahead of its family preset also claims the vendor-dropped form of
-its model names, unless its reasoning codec is tied to the OpenRouter route.
+its model names, unless its axes were measured on the OpenRouter route alone
+(``_OPENROUTER_TIED_REPLAY_PRESETS``).
 
 Presets that route by ``match_provider`` are exempt: their name prefix is
 a litellm provider namespace, not a vendor segment.
@@ -72,7 +73,6 @@ _ANYWHERE_GLOBS = frozenset(
         "openrouter_dict_stringify_recovery:*deepseek-v4*",
         "openrouter_dict_stringify_recovery:*glm-5*",
         "openrouter_dict_stringify_recovery:*hy3-preview*",
-        "openrouter_dict_stringify_recovery:*nvidia-nemotron-*",
         "openrouter_dict_stringify_recovery:*nvidia.nemotron-*",
         "moonshot_kimi_k2:*kimi-k2*",
         "moonshot_kimi_k3:*kimi-k3*",
@@ -183,7 +183,9 @@ def test_vendor_dropped_name_never_lands_in_another_preset(preset_name: str, glo
     assert bare in (preset_name, "default") and routed == dict.fromkeys(routed, bare), (
         f"{glob!r} belongs to {preset_name!r}, but its vendor-dropped form {model!r} "
         f"resolves to {bare!r} bare and to {routed} routed. Add '{model}' and "
-        f"'*/{model}' to {preset_name!r}'s match list."
+        f"'*/{model}' to {preset_name!r}'s match list, unless the preset's axes were "
+        "measured on the OpenRouter route alone; then add it to "
+        "_OPENROUTER_TIED_REPLAY_PRESETS."
     )
 
 
@@ -203,6 +205,16 @@ def test_an_openrouter_tied_replay_codec_skips_the_vendor_dropped_name(
         f"(openai_summary_replay), but claims the vendor-dropped names {claimed}, "
         "which are never OpenRouter slugs"
     )
+
+
+def test_the_openrouter_tied_set_names_only_shipped_replay_presets() -> None:
+    presets = _bundled_presets()
+    stale = {
+        name: presets.get(name, {}).get("reasoning_codec")
+        for name in _OPENROUTER_TIED_REPLAY_PRESETS
+        if presets.get(name, {}).get("reasoning_codec") != "openai_summary_replay"
+    }
+    assert not stale, f"_OPENROUTER_TIED_REPLAY_PRESETS names non-replay presets: {stale}"
 
 
 def test_route_prefix_does_not_change_the_preset_of_a_priced_model() -> None:
@@ -276,9 +288,12 @@ class TestNemotronLine:
             ("openai", "nemotron-3-super-120b-a12b"),
             ("openai", "self-hosted/nemotron-3.5-lightning"),
             ("openai", "self-hosted/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B"),
+            ("openai", "NVIDIA-Nemotron-3-Super-120B-A12B"),
             ("fireworks_ai", "fireworks_ai/accounts/fireworks/models/nvidia-nemotron-nano-9b-v2"),
             ("bedrock", "bedrock/nvidia.nemotron-super-3-120b"),
+            ("bedrock", "us-gov.nvidia.nemotron-super-3-120b"),
             ("azure_ai", "azure_ai/FW-Nemotron-Lightning-3.5-30B-A3B"),
+            ("azure_ai", "FW-Nemotron-3-Ultra-NVFP4"),
         ],
     )
     def test_nemotron_model_routes_to_the_shared_preset(self, provider: str, model: str) -> None:

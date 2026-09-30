@@ -547,7 +547,10 @@ presets:
       # ``reasoning_details`` envelope and was measured on the OpenRouter route
       # alone. A vendor-dropped name (``self-hosted/deepseek-v4-flash-0731``) is
       # never an OpenRouter slug, so it resolves to the shared
-      # ``openrouter_dict_stringify_recovery`` preset.
+      # ``openrouter_dict_stringify_recovery`` preset. A vendor-anchored name on
+      # another route (``self-hosted/deepseek/deepseek-v4-flash-0731``) is
+      # claimed because it serves the same weights; the replay envelope is
+      # unmeasured there.
       - "deepseek/deepseek-v4-flash-0731"
       - "deepseek/deepseek-v4-flash-0731*"
       - "*/deepseek/deepseek-v4-flash-0731*"
@@ -648,7 +651,10 @@ presets:
   # prefix, in each spelling it ships under: ``nemotron-*`` (OpenRouter),
   # ``NVIDIA-Nemotron-*`` / ``nvidia-nemotron-*`` (Hugging Face, vLLM,
   # Fireworks), ``nvidia.nemotron-*`` (Bedrock) and ``FW-Nemotron-*`` (Fireworks
-  # builds on Azure AI). Llama-based fine-tunes such as
+  # builds on Azure AI). The Bedrock glob matches anywhere because a
+  # cross-region inference-profile id joins its region group with a dot
+  # (``us-gov.nvidia.nemotron-*``), not a ``/``, and AWS extends that set of
+  # groups. Llama-based fine-tunes such as
   # ``nvidia/llama-3.1-nemotron-70b-instruct`` only CONTAIN ``-nemotron-``;
   # nothing was measured on them, so they resolve to ``default``.
   # The Kimi K2 line carries the same wire-shape recovery from its own
@@ -668,13 +674,14 @@ presets:
       - "nvidia/nemotron*"
       - "nemotron-*"
       - "fw-nemotron-*"
-      - "*nvidia-nemotron-*"
+      - "nvidia-nemotron-*"
       - "*nvidia.nemotron-*"
       - "*/xiaomi/mimo*"
       - "*/tencent/hy3*"
       - "*/nvidia/nemotron*"
       - "*/nemotron-*"
       - "*/fw-nemotron-*"
+      - "*/nvidia-nemotron-*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
