@@ -20,12 +20,15 @@ from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
     ToolActor,
     actor_tool_block,
+    declared_search_backend,
     declared_tool_names,
     enabled_tool_names,
     grading_source_under_adapter,
     replay_world_under_adapter,
+    search_declaration,
     seeded_tables_under_adapter,
     tool_inventory_under_adapter,
+    uses_search,
     validate_grading_yaml,
 )
 from tolokaforge.core.budgets import (
@@ -89,12 +92,14 @@ from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregate
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
+    RegistryError,
     RuntimeBackendBuildContext,
     TrialGraderContext,
     UnknownImplementationError,
     load_agent_loop,
     load_conductor,
     load_runtime_backend,
+    load_search_backend,
     load_trial_grader,
     load_user_simulator,
 )
@@ -123,7 +128,13 @@ from tolokaforge.observability.factory import (
     write_tracing_receipt,
 )
 from tolokaforge.observability.observer import NullTrialObserver, TrialObserver, safely
-from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
+from tolokaforge.runner.models import (
+    AdapterType,
+    PlanShape,
+    SearchPlane,
+    StackScope,
+    TaskDescription,
+)
 from tolokaforge.secrets import register_runtime_secret
 from tolokaforge_coding_harnesses import ENGINE_LOOP
 
@@ -142,23 +153,27 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 # Tools / initial-state declarations that require ``full_stack`` (mock-web
 # at port 8080 and rag-service at 8001) on top of the core db-service +
-# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs;
-# ``search_kb`` reaches rag-service. Tasks may also declare
-# ``initial_state.mock_web`` / ``initial_state.rag`` directly without
-# enabling those tools — both shapes flip the switch.
+# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs. A task
+# may also declare ``initial_state.mock_web`` directly without enabling those
+# tools. Knowledge-base search needs rag-service when the task's search backend
+# says so (ADR-0052): not by the tool's name, which a task may choose, but by
+# the ``stack_service`` its backend (``initial_state.rag.backend``, default
+# ``rag_service``) declares — for a task that searches at all, i.e. declares a
+# corpus or enables its search tool (``initial_state.rag.tool.name``, default
+# ``search_kb``).
 #
 # Routing matrix, over either actor's block:
-# +--------------------------------------+--------------+
-# | Signal in task config                | Stack        |
-# +--------------------------------------+--------------+
-# | tools.<actor>.enabled ∋ browser      | full_stack   |
-# | tools.<actor>.enabled ∋ mobile       | full_stack   |
-# | tools.<actor>.enabled ∋ search_kb    | full_stack   |
-# | initial_state.mock_web is truthy     | full_stack   |
-# | initial_state.rag is truthy          | full_stack   |
-# | otherwise                            | core_stack   |
-# +--------------------------------------+--------------+
-_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile", "search_kb"})
+# +------------------------------------------------------+--------------+
+# | Signal in task config                                | Stack        |
+# +------------------------------------------------------+--------------+
+# | tools.<actor>.enabled ∋ browser                      | full_stack   |
+# | tools.<actor>.enabled ∋ mobile                       | full_stack   |
+# | initial_state.mock_web is truthy                     | full_stack   |
+# | the task searches, and its backend's stack_service   | full_stack   |
+# |   is rag_service (the default backend's)             |              |
+# | otherwise                                            | core_stack   |
+# +------------------------------------------------------+--------------+
+_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 # Where a bridged local TypeSense server answers from inside ``runner-net``.
 # The alias is attached when the bridge connects the container to the network,
@@ -418,6 +433,8 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     for task in tasks:
         if _FULL_STACK_TOOL_NAMES & declared_tool_names(task):
             return True
+        if _search_needs_rag_service(task):
+            return True
         initial_state = task.initial_state if task.initial_state is not None else None
         if initial_state is None:
             continue
@@ -426,18 +443,22 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
             if hasattr(initial_state, "mock_web")
             else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
         )
-        rag = (
-            initial_state.rag
-            if hasattr(initial_state, "rag")
-            else (initial_state.get("rag") if isinstance(initial_state, dict) else None)
-        )
-        # A typed ``rag`` block is truthy even when empty, so the corpus is what counts.
-        corpus_dir = (
-            rag.get("corpus_dir") if isinstance(rag, dict) else getattr(rag, "corpus_dir", None)
-        )
-        if mock_web or corpus_dir:
+        if mock_web:
             return True
     return False
+
+
+def _search_needs_rag_service(task: Any) -> bool:
+    """Whether the task searches with a backend that declares the rag-service stack service.
+
+    A typed ``rag: {}`` block declares no corpus, so it searches only if an actor
+    enables its search tool — as the empty dict it replaced never selected the
+    full stack on its own.
+    """
+    search = search_declaration(task)
+    if not uses_search(task, search):
+        return False
+    return declared_search_backend(search).stack_service == SearchPlane.RAG_SERVICE
 
 
 def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
@@ -2370,6 +2391,7 @@ class Orchestrator:
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
 
         self._refuse_an_unregistered_user_simulator()
+        self._refuse_an_unregistered_search_backend()
         if sets_user_temperature(self.config.models):
             self.logger.warning(
                 USER_TEMPERATURE_IGNORED, declared=self.config.models["user"].temperature
@@ -2418,6 +2440,34 @@ class Orchestrator:
                 load_user_simulator(name)
             except UnknownImplementationError as exc:
                 raise RuntimeError(f"task {task.task_id!r}: actors.user.simulator: {exc}") from exc
+
+    def _refuse_an_unregistered_search_backend(self) -> None:
+        """Resolve every task's search backend once, before any trial.
+
+        ``initial_state.rag.backend`` is task-scoped, so a run may mix backends;
+        each distinct name a task declares — or the default ``rag_service`` a
+        searching task gets — is resolved here, so an unregistered one (a typo, a
+        package not installed, or an editable install whose ``.dist-info``
+        predates the ``tolokaforge.search_backends`` group) is one refusal naming
+        the known registrations and the task that asked for it, not one refused
+        ``RegisterTrial`` per trial after the stack is already up. ``typesense``
+        is refused too: it is the plane an adapter declares for a corpus it
+        indexed host-side, not a backend a task selects.
+        """
+        checked: set[str] = set()
+        for task in self.tasks:
+            search = search_declaration(task)
+            if not (search.declared or uses_search(task, search)):
+                continue
+            if search.backend in checked:
+                continue
+            checked.add(search.backend)
+            try:
+                load_search_backend(search.backend)
+            except RegistryError as exc:
+                raise RuntimeError(
+                    f"task {task.task_id!r}: initial_state.rag.backend: {exc}"
+                ) from exc
 
     def _refuse_an_unregistered_agent_loop(self) -> None:
         """Resolve ``orchestrator.agent_loop`` once, before any trial work.
@@ -3043,8 +3093,9 @@ class Orchestrator:
                 # so the playwright/binds plumbing above still applies.
                 if _run_needs_full_stack(self.tasks, stack_requirements):
                     self.logger.info(
-                        "Full-stack-dependent run detected (task browser/mobile/search_kb, "
-                        "initial_state.mock_web/rag, or adapter-declared rag-service need) "
+                        "Full-stack-dependent run detected (task browser/mobile, "
+                        "initial_state.mock_web, a search backend needing rag-service, or "
+                        "adapter-declared rag-service need) "
                         "- using full_stack (db-service + runner + rag-service + mock-web)",
                         adapter_needs_rag_service=bool(
                             stack_requirements is not None
