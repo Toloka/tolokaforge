@@ -84,8 +84,8 @@ def hermetic_pricing(tmp_path: Path) -> Path:
 def _make_client(model_name: str) -> LLMClient:
     """Construct an LLMClient whose ``model_name`` matches ``model_name``.
 
-    Splits ``"<provider>/<name>"`` so :meth:`LLMClient._format_model_name`
-    leaves the slug unchanged — otherwise it would prepend a *second*
+    Splits ``"<provider>/<name>"`` so :func:`litellm_model_id` leaves the
+    slug unchanged — otherwise it would prepend a *second*
     provider segment and the pricing lookup would miss our hermetic
     fixture entries.
     """

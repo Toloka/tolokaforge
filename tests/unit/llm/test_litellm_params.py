@@ -119,17 +119,21 @@ class TestTheCanonicalContract:
 class TestWhatAnEntryAdmits:
     def test_a_declared_flag_admits_its_parameters(self, overlay):
         overlay({MID: _entry()})
-        assert allowed_openai_params(MID) == ["tools", "tool_choice", "parallel_tool_calls"]
+        assert allowed_openai_params("meta", NAME) == [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        ]
 
     def test_reasoning_is_admitted_only_when_declared(self, overlay):
         overlay({MID: _entry()})
-        assert "reasoning_effort" not in allowed_openai_params(MID)
+        assert "reasoning_effort" not in allowed_openai_params("meta", NAME)
         overlay({MID: _entry(supports_reasoning=True)})
-        assert "reasoning_effort" in allowed_openai_params(MID)
+        assert "reasoning_effort" in allowed_openai_params("meta", NAME)
 
     def test_a_flag_declared_false_admits_nothing(self, overlay):
         overlay({MID: _entry(supports_function_calling=False, supports_reasoning=True)})
-        assert allowed_openai_params(MID) == ["reasoning_effort"]
+        assert allowed_openai_params("meta", NAME) == ["reasoning_effort"]
 
     def test_every_declarable_flag_admits_a_parameter_we_actually_send(self):
         """A flag admitting something the engine never sends is a dead knob.
@@ -151,17 +155,17 @@ class TestTheEngineShipsNoList:
     def test_no_overlay_means_nothing_is_admitted(self):
         set_overlay_path(None)
         assert litellm_model_entries() == {}
-        assert allowed_openai_params(MID) == []
+        assert allowed_openai_params("meta", NAME) == []
 
     def test_a_model_no_overlay_mentions_is_left_alone(self, overlay):
         overlay({MID: _entry()})
-        assert allowed_openai_params("openrouter/deepseek/deepseek-v4-flash") == []
+        assert allowed_openai_params("openrouter", "deepseek/deepseek-v4-flash") == []
 
     def test_nothing_is_written_into_litellms_map(self, overlay):
         """No global mutation: no clobbering upstream, no cost relabelling."""
         before = dict(litellm.model_cost)
         overlay({MID: _entry(supports_reasoning=True)})
-        allowed_openai_params(MID)
+        allowed_openai_params("meta", NAME)
         assert litellm.model_cost == before
         assert MID not in litellm.model_cost
 
@@ -171,15 +175,15 @@ class TestAModelIdThatCarriesNoVendor:
 
     def test_the_entry_is_found_via_the_provider(self, overlay):
         overlay({"nova/some-nova-model": _entry()})
-        assert allowed_openai_params("some-nova-model", "nova") == [
+        assert allowed_openai_params("nova", "some-nova-model") == [
             "tools",
             "tool_choice",
             "parallel_tool_calls",
         ]
 
-    def test_without_a_provider_a_bare_id_matches_nothing(self, overlay):
+    def test_the_same_name_under_another_provider_matches_nothing(self, overlay):
         overlay({"nova/some-nova-model": _entry()})
-        assert allowed_openai_params("some-nova-model") == []
+        assert allowed_openai_params("meta", "some-nova-model") == []
 
 
 class TestOverlayValidation:
@@ -231,20 +235,24 @@ class TestCaseIsNotAWayToMiss:
     """
 
     @pytest.mark.parametrize(
-        "declared, asked",
+        "declared, provider",
         [
-            ("Meta/muse-spark-1.2", "meta/muse-spark-1.2"),
-            ("meta/muse-spark-1.2", "Meta/muse-spark-1.2"),
-            ("META/muse-spark-1.2", "meta/muse-spark-1.2"),
+            ("Meta/muse-spark-1.2", "meta"),
+            ("meta/muse-spark-1.2", "Meta"),
+            ("META/muse-spark-1.2", "meta"),
         ],
     )
-    def test_the_vendor_case_does_not_decide_whether_it_matches(self, overlay, declared, asked):
+    def test_the_vendor_case_does_not_decide_whether_it_matches(self, overlay, declared, provider):
         overlay({declared: _entry()})
-        assert allowed_openai_params(asked) == ["tools", "tool_choice", "parallel_tool_calls"]
+        assert allowed_openai_params(provider, "muse-spark-1.2") == [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        ]
 
     def test_and_on_the_bare_name_path_too(self, overlay):
         overlay({"Nova/some-nova-model": _entry()})
-        assert allowed_openai_params("some-nova-model", "NOVA") == [
+        assert allowed_openai_params("NOVA", "some-nova-model") == [
             "tools",
             "tool_choice",
             "parallel_tool_calls",
@@ -254,12 +262,12 @@ class TestCaseIsNotAWayToMiss:
         """Only the vendor is normalised: litellm's ids are lowercase, model
         names are the vendor's business."""
         overlay({"meta/Muse-Spark-1.2": _entry()})
-        assert allowed_openai_params("meta/Muse-Spark-1.2") == [
+        assert allowed_openai_params("meta", "Muse-Spark-1.2") == [
             "tools",
             "tool_choice",
             "parallel_tool_calls",
         ]
-        assert allowed_openai_params("meta/muse-spark-1.2") == []
+        assert allowed_openai_params("meta", "muse-spark-1.2") == []
 
 
 class TestTheClientActuallyAttachesIt:

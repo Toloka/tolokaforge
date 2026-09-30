@@ -420,7 +420,7 @@ Schema fields (see
 | `custom_llm_provider` | Value pinned into `kwargs["custom_llm_provider"]` — Nova: `"openai"`; OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`. |
 | `rate_limit_patterns` | Regex strings compiled once at construction and consulted by `LLMClient._is_rate_limit_exception`'s tier-3 text fallback and by `LLMClient.classify_loop_error`. Every shipped non-mock provider carries the same `DEFAULT_RATE_LIMIT_PATTERNS` list; onboarding a provider whose rate-limit prose differs is a YAML edit. |
 | `slug_rewrite` | Two-step per-attempt rewrite of `kwargs["model"]`: `strip_prefix` then `ensure_prefix`. Nova: `nova/` → `openai/`. |
-| `format_model_name_bare` | When `true`, `LLMClient._format_model_name` returns `config.name` as-is. Nova only. |
+| `format_model_name_bare` | When `true`, `litellm_model_id` (the model string `LLMClient` sends) returns `config.name` as-is. Nova only. |
 | `kwargs_pin_transport` | When `true`, `endpoint` and `api_key_env` are read fresh per attempt and pinned into `kwargs["api_base"]` / `kwargs["api_key"]` (fails loud when `api_key_env` resolves empty). Nova only. |
 
 `providers.yaml` ships inside the `tolokaforge-models` wheel at
@@ -466,7 +466,9 @@ litellm_models:                    # models litellm's own map does not carry
 Each entry declares what a model accepts on the wire, with the observation
 behind it, and admits exactly the parameters its flags name for that model's
 calls. Nothing else changes, and nothing is written into litellm's global
-map. See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
+map. The key is a full `<provider>/<model>` litellm id, where `<model>` is the
+config `name` verbatim, slashes included: `provider: openai` + `name:
+self-hosted/qwen3.6-35b-a3b` is keyed `openai/self-hosted/qwen3.6-35b-a3b`. See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
 `config validate` treats a model absent from litellm's map as an *unknown*,
 not a refusal — it emits an INFO with the exact `litellm_models:` entry to

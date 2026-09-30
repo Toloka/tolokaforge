@@ -385,7 +385,7 @@ class TestPreflightConsultsTheOverlay:
         """
         import yaml
 
-        from tolokaforge.core import config_validator as cv
+        from tolokaforge.core.llm.litellm_params import lookup_overlay
         from tolokaforge.core.llm.presets import set_overlay_path
 
         overlay = tmp_path / "overlay.yaml"
@@ -403,7 +403,7 @@ class TestPreflightConsultsTheOverlay:
         )
         set_overlay_path(str(overlay))
         try:
-            assert cv._declared_function_calling("muse-spark-1.2", provider) is True
+            assert "tools" in lookup_overlay(provider, "muse-spark-1.2").params
         finally:
             set_overlay_path(None)
 
@@ -472,11 +472,12 @@ class TestUnmappedAgentModelReportsInfoNotError:
         model id would flip with a litellm bump.
         """
         from tolokaforge.core import config_validator as cv
+        from tolokaforge.core.llm.presets import set_overlay_path
 
         monkeypatch.setattr(cv, "_model_supports_function_calling", lambda name: False)
-        # Also short-circuit the overlay lookup so we exercise the pure
-        # False-from-litellm path, not the overlay-declared shortcut.
-        monkeypatch.setattr(cv, "_declared_function_calling", lambda name, provider: False)
+        # No overlay, so nothing declares the model: the pure False-from-litellm
+        # path, not the overlay-declared shortcut.
+        set_overlay_path(None)
 
         cfg = _make_config(agent_provider="openai", agent_name="whisper-1")
         result = cv.validate_run_config(cfg)

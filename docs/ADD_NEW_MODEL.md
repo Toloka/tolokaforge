@@ -192,8 +192,8 @@ overlay path and the offending key):
 - Same-named overlay presets replace the bundled entry (logged at INFO so the
   swap is visible).
 - A `litellm_models:` entry needs a non-empty `evidence` and at least one
-  capability set true, its key must be a full `<provider>/<model>` litellm id,
-  and unknown keys are rejected. That block is how a model litellm's own map
+  capability set true, its key must be a full `<provider>/<model>` litellm id
+  (`<model>` is the config `name` verbatim, slashes included), and unknown keys are rejected. That block is how a model litellm's own map
   does not carry gets its parameters admitted - without it the provider
   refuses `tools` before the request is sent. See
   [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).

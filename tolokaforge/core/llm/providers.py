@@ -29,6 +29,7 @@ __all__ = [
     "SlugRewrite",
     "compile_rate_limit_patterns",
     "get_provider_binding",
+    "litellm_model_id",
 ]
 
 
@@ -158,6 +159,21 @@ def get_provider_binding(provider: str) -> ProviderBinding:
     """
     key = (provider or "").split("/", 1)[0].lower()
     return _load_bundled_providers().get(key, ProviderBinding())
+
+
+def litellm_model_id(provider: str, name: str) -> str:
+    """The model string litellm is asked about for a config's ``provider`` and ``name``.
+
+    ``<provider>/<name>`` with ``name`` verbatim, slashes included, unless
+    ``name`` already starts with ``<provider>/`` (compared case-sensitively,
+    against ``provider`` as written) or the binding sets
+    ``format_model_name_bare``.
+    """
+    if name.startswith(f"{provider}/"):
+        return name
+    if get_provider_binding(provider).format_model_name_bare:
+        return name
+    return f"{provider}/{name}"
 
 
 #: Every credential env-var name the CLI + runner mirror into ``os.environ``

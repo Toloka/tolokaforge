@@ -59,7 +59,11 @@ from tolokaforge.core.llm.litellm_params import allowed_openai_params
 from tolokaforge.core.llm.params_policy import RuleAction
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
-from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
+from tolokaforge.core.llm.providers import (
+    compile_rate_limit_patterns,
+    get_provider_binding,
+    litellm_model_id,
+)
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import (
@@ -649,10 +653,10 @@ class LLMClient:
         self.config = config
         self.provider = (config.provider or "").lower()
         self._provider_binding = get_provider_binding(self.provider)
-        self.model_name = self._format_model_name()
+        self.model_name = litellm_model_id(config.provider, config.name)
         # Parameters an overlay admits for a model litellm's map does not carry.
         # Empty for every model it does: the kwarg is then omitted entirely.
-        self.allowed_openai_params = allowed_openai_params(self.model_name, self.config.provider)
+        self.allowed_openai_params = allowed_openai_params(config.provider, config.name)
         self.capabilities = build_capabilities(
             self.config.name,
             self.config.provider,
@@ -1083,16 +1087,6 @@ class LLMClient:
 
         os.environ.setdefault("OPENROUTER_API_BASE", base_url)
         self._openrouter_base_url = base_url
-
-    def _format_model_name(self) -> str:
-        """Format model name for LiteLLM."""
-        if self.config.name.startswith(f"{self.config.provider}/"):
-            return self.config.name
-
-        if self._provider_binding.format_model_name_bare:
-            return self.config.name
-
-        return f"{self.config.provider}/{self.config.name}"
 
     # ------------------------------------------------------------------
     # JSON/argument repair helpers

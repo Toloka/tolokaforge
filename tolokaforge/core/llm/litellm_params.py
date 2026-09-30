@@ -36,6 +36,11 @@ data. So entries are operator data, declared in the preset overlay
         evidence: "2026-08-10, litellm 1.96.0: no entry, so meta refused tools
           before sending; admitting them returns a correct tool call."
 
+The key is the config's ``<provider>/<name>``, ``name`` verbatim, slashes
+included (``openai/self-hosted/qwen3.6-35b-a3b``): :func:`lookup_overlay` derives
+it from :func:`~tolokaforge.core.llm.providers.litellm_model_id`, the string the
+run sends, and ``config validate`` asks the same function.
+
 An entry DECLARES; it does not copy. Only the parameters its flags name are
 admitted, so a capability nothing observed is never asserted on the model's
 behalf, and an undeclared parameter is still refused loudly - the allow-list
@@ -58,15 +63,24 @@ invisible, which is the same failure wearing a different hat.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+
+from tolokaforge.core.llm.providers import litellm_model_id
 
 logger = logging.getLogger(__name__)
 
-#: Models whose evidence line has been logged. A client is built per trial per
+#: Overlay keys whose evidence line has been logged. A client is built per trial per
 #: role, so without this a 4000-trial eval repeats the same sentence thousands
 #: of times. Nothing reads it but the logger.
 _LOGGED: set[str] = set()
 
-__all__ = ["DECLARABLE_FLAGS", "FLAG_PARAMS", "allowed_openai_params"]
+__all__ = [
+    "DECLARABLE_FLAGS",
+    "FLAG_PARAMS",
+    "OverlayLookup",
+    "allowed_openai_params",
+    "lookup_overlay",
+]
 
 
 #: Declared capability -> the OpenAI parameters it admits. Every flag here
@@ -88,13 +102,22 @@ FLAG_PARAMS: dict[str, tuple[str, ...]] = {
 DECLARABLE_FLAGS: tuple[str, ...] = tuple(FLAG_PARAMS)
 
 
-def _entry_key(model_id: str, provider: str) -> str:
-    """The overlay key for a model id litellm will be asked about.
+@dataclass(frozen=True)
+class OverlayLookup:
+    """The overlay entry a config resolves to, and what that entry admits."""
 
-    Overlay keys are always ``<provider>/<model>`` - one shape to validate and
-    one to document - but the id litellm resolves is not always: the Nova path
-    sends a bare name. Composing the key from the provider keeps a config whose
-    model id carries no vendor reachable from the overlay.
+    key: str
+    params: tuple[str, ...]
+
+
+def _overlay_key(provider: str, name: str) -> str:
+    """The ``litellm_models`` key for a config's ``provider`` and ``name``.
+
+    Derived from :func:`litellm_model_id`, the string the run sends, so the
+    key for ``(openai, self-hosted/m)`` is ``openai/self-hosted/m``, never the
+    raw ``self-hosted/m``. Overlay keys are always ``<provider>/<model>`` - one
+    shape to validate and one to document - but the Nova id is bare, so a bare
+    id is keyed under the provider.
 
     The vendor is lowercased on both sides of this lookup (see
     ``presets._validate_litellm_models``), so a config and an overlay that
@@ -102,40 +125,51 @@ def _entry_key(model_id: str, provider: str) -> str:
     the lookup could not find would produce the one report nobody can act on:
     the overlay is loaded and the model still refuses tools.
     """
+    model_id = litellm_model_id(provider, name)
     if "/" in model_id:
-        vendor, _, name = model_id.partition("/")
-        return f"{vendor.lower()}/{name}"
-    vendor = (provider or "").strip().lower()
-    return f"{vendor}/{model_id}" if vendor else model_id
+        vendor, _, rest = model_id.partition("/")
+        return f"{vendor.lower()}/{rest}"
+    return f"{provider.lower()}/{model_id}"
 
 
-def allowed_openai_params(model_id: str, provider: str = "") -> list[str]:
-    """Parameters an overlay entry admits for *model_id*, for litellm's kwarg.
+def lookup_overlay(provider: str, name: str) -> OverlayLookup:
+    """The overlay entry for ``provider`` and ``name`` as the config states them.
 
-    Empty when no entry declares this model, which is every model litellm
-    already knows - the kwarg is then omitted and nothing about the request
-    changes.
-
-    *model_id* is the string litellm resolves (``_format_model_name``);
-    *provider* names the vendor for the ids that do not carry one.
+    ``config validate`` and :class:`LLMClient` both ask this, so the preflight
+    and the run cannot disagree about which entry applies. ``params`` is empty
+    when no entry declares the model, which is every model litellm already
+    knows.
     """
     from tolokaforge.core.llm.presets import litellm_model_entries
 
-    entry = litellm_model_entries().get(_entry_key(model_id, provider))
+    key = _overlay_key(provider, name)
+    entry = litellm_model_entries().get(key)
     if not entry:
-        return []
+        return OverlayLookup(key=key, params=())
 
     params: list[str] = []
     for flag, names in FLAG_PARAMS.items():
         if not entry.get(flag):
             continue
-        params.extend(name for name in names if name not in params)
-    if params and model_id not in _LOGGED:
-        _LOGGED.add(model_id)
+        params.extend(param for param in names if param not in params)
+    return OverlayLookup(key=key, params=tuple(params))
+
+
+def allowed_openai_params(provider: str, name: str) -> list[str]:
+    """Parameters an overlay entry admits for a config, for litellm's kwarg.
+
+    Empty when no entry declares the model; the kwarg is then omitted and
+    nothing about the request changes. Logs the entry's evidence once per key.
+    """
+    lookup = lookup_overlay(provider, name)
+    if lookup.params and lookup.key not in _LOGGED:
+        from tolokaforge.core.llm.presets import litellm_model_entries
+
+        _LOGGED.add(lookup.key)
         logger.info(
             "Admitting %s for %s, which litellm's map does not carry. %s",
-            ", ".join(params),
-            model_id,
-            entry.get("evidence"),
+            ", ".join(lookup.params),
+            lookup.key,
+            litellm_model_entries()[lookup.key].get("evidence"),
         )
-    return params
+    return list(lookup.params)

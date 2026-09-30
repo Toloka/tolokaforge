@@ -787,7 +787,18 @@ litellm_models:
       against api.meta.ai returned a correct tool call."
 ```
 
-The key is the litellm model id, because that is the lookup litellm performs.
+The key is the litellm model id, because that is the lookup litellm performs:
+`<provider>/<name>` with both as the config states them and `name` verbatim,
+slashes included. `provider: openai` + `name: self-hosted/qwen3.6-35b-a3b` is
+keyed `openai/self-hosted/qwen3.6-35b-a3b`, and `provider: openrouter` + `name:
+anthropic/claude-opus-4.7` is keyed `openrouter/anthropic/claude-opus-4.7`. A
+name that already starts with `<provider>/` is the id as it stands, and Nova's
+bare name is keyed `nova/<name>`. `config validate` and the run look the entry
+up through the same function
+([`litellm_params.lookup_overlay`](../tolokaforge/core/llm/litellm_params.py)),
+which derives the key from
+[`providers.litellm_model_id`](../tolokaforge/core/llm/providers.py), the
+string the client sends; the provider segment is compared case-insensitively.
 An entry **declares**; it does not copy. Only the parameters its flags name are
 admitted, so a capability nothing observed is never asserted on the model's
 behalf.
@@ -1175,7 +1186,7 @@ name: azure_ai/cohere-command-a-plus-05-2026
 
 List the routes a gateway serves with `GET {base_url}/models`.
 
-Gateway-specific names have two consequences, both following from the naming
+Gateway-specific names have three consequences, all following from the naming
 couplings described below:
 
 - **Cost may be unknown.** `normalize_model_name` cannot map
@@ -1188,6 +1199,11 @@ couplings described below:
   so reasoning routes through `reasoning_effort` rather than
   `extra_body.reasoning`. That is correct for an OpenAI-shaped gateway endpoint,
   but verify it for reasoning models before trusting a run.
+- **A `litellm_models:` entry is keyed on the formatted string.** A gateway
+  route litellm's map does not carry is declared under
+  `openai/self-hosted/<model>` (or `openai/openrouter/anthropic/claude-opus-4.7`),
+  the `<provider>/<name>` the client sends, not under the bare `name`. See
+  [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model).
 
 What `_build_kwargs` does differs by path. **On a resolved route** it rewrites
 `model` to the gateway's route name and forces `custom_llm_provider="openai"`.
@@ -1356,11 +1372,11 @@ credential lookup, key rotation, slug rewrite, rate-limit text.
 | `custom_llm_provider` | `_call_with_key_rotation` | Value pinned into `kwargs["custom_llm_provider"]`. Nova: `"openai"`. OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`; simple providers let litellm default. |
 | `rate_limit_patterns` | `LLMClient._is_rate_limit_exception` (tier-3 text fallback), `LLMClient.classify_loop_error` | Regex strings compiled once at construction. `DEFAULT_RATE_LIMIT_PATTERNS` in [`providers.py`](../tolokaforge/core/llm/providers.py) is the shipped default every non-mock provider declares verbatim; each entry is a shape an *engine wrapper* produces (`Error code: 429`, `HTTP/1.1 429`, `too many requests`, rate-limit prose in an error construction), not provider quota prose. |
 | `slug_rewrite` | `_call_with_key_rotation` | Two-step rewrite of `kwargs["model"]` per attempt: strip `strip_prefix`, then ensure `ensure_prefix`. Nova's binding declares `strip_prefix: "nova/"` and `ensure_prefix: "openai/"` — turning `nova/busan-v1` into `openai/busan-v1` on the wire without a Python conditional on provider name. |
-| `format_model_name_bare` | `LLMClient._format_model_name` | When `true`, `_format_model_name` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
+| `format_model_name_bare` | `providers.litellm_model_id` | When `true`, `litellm_model_id` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
 | `kwargs_pin_transport` | `_call_with_key_rotation` | When `true`, the client reads `endpoint` and `api_key_env` fresh per attempt and pins them into `kwargs["api_base"]` / `kwargs["api_key"]`. Fires the `NOVA_API_KEY is required for nova provider` fail-loud when `api_key_env` resolves empty. Nova only. |
 
 Nova's three sites (init `NOVA_API_BASE` `os.environ.setdefault`,
-`_format_model_name` bare-name return, `_call_with_key_rotation` per-attempt
+`litellm_model_id` bare-name return, `_call_with_key_rotation` per-attempt
 `api_base` / `api_key` / `custom_llm_provider` / slug rewrite) are expressed
 entirely through the fields above — a provider whose transport matches Nova's
 shape is a `providers.yaml` entry, not a `client.py` edit.

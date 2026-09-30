@@ -23,6 +23,7 @@ from tolokaforge.core.llm import (
     build_capabilities,
 )
 from tolokaforge.core.llm.presets import _match_preset
+from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
@@ -150,13 +151,13 @@ class TestGenerationResult:
 
 
 # ===================================================================
-# LLMClient construction and _format_model_name
+# LLMClient construction and the litellm model id
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestLLMClientConstruction:
-    """LLMClient initialisation and model name formatting."""
+    """LLMClient initialisation and the model id it sends litellm."""
 
     def test_basic_construction(self) -> None:
         client = _make_client(provider="openai", name="gpt-4")
@@ -164,18 +165,23 @@ class TestLLMClientConstruction:
         assert client.config.name == "gpt-4"
         assert client.model_name == "openai/gpt-4"
 
-    def test_format_model_name_already_prefixed(self) -> None:
-        client = _make_client(provider="openai", name="openai/gpt-4")
-        assert client.model_name == "openai/gpt-4"
-
-    def test_format_model_name_openrouter(self) -> None:
-        client = _make_client(provider="openrouter", name="google/gemini-2.5-flash")
-        assert client.model_name == "openrouter/google/gemini-2.5-flash"
-
-    def test_format_model_name_nova(self) -> None:
-        """Nova provider should use model name as-is without prefix."""
-        client = _make_client(provider="nova", name="nova-pro-v1")
-        assert client.model_name == "nova-pro-v1"
+    @pytest.mark.parametrize(
+        "provider, name, model_id",
+        [
+            ("openai", "openai/gpt-4", "openai/gpt-4"),
+            ("openrouter", "google/gemini-2.5-flash", "openrouter/google/gemini-2.5-flash"),
+            ("openai", "self-hosted/qwen3.6-35b-a3b", "openai/self-hosted/qwen3.6-35b-a3b"),
+            ("nova", "nova-pro-v1", "nova-pro-v1"),
+            ("openrouter/google", "gemini-2.5-flash", "openrouter/google/gemini-2.5-flash"),
+            ("OpenAI", "gpt-4", "OpenAI/gpt-4"),
+            ("OpenAI", "openai/gpt-4", "OpenAI/openai/gpt-4"),
+        ],
+    )
+    def test_model_id(self, provider: str, name: str, model_id: str) -> None:
+        """The provider is compared as written: only Nova's binding sends a bare name."""
+        client = _make_client(provider=provider, name=name)
+        assert client.model_name == model_id
+        assert client.model_name == litellm_model_id(provider, name)
 
     def test_provider_stored_lowercase(self) -> None:
         client = _make_client(provider="OpenAI", name="gpt-4")

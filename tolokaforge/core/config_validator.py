@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from tolokaforge.core.llm.litellm_params import lookup_overlay
+from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.models import (
     DOCKER_RUNTIME_ALIAS_TARGET,
     LEGACY_DOCKER_RUNTIME_ALIAS,
@@ -122,23 +124,6 @@ def _model_supports_reasoning(model_name: str) -> bool | None:
         if lower.startswith(pat):
             return False
     return None  # unknown – let the caller decide
-
-
-def _declared_function_calling(name: str, provider: str) -> bool:
-    """Whether an operator overlay admits tool calls for this model.
-
-    Asked through the same function the RUN asks, so the preflight cannot
-    disagree with it about which entry applies - a second lookup here would
-    have its own idea of how to build the key.
-    """
-    from tolokaforge.core.llm.litellm_params import allowed_openai_params
-
-    try:
-        return "tools" in allowed_openai_params(name, provider)
-    except (OSError, ValueError):
-        # A broken overlay has its own, louder error path at load; this check
-        # must not turn it into a confusing function-calling verdict.
-        return False
 
 
 def _model_supports_function_calling(model_name: str) -> bool | None:
@@ -298,9 +283,9 @@ def _validate_model(
 
     # --- function calling (agent only) ---
     if role == "agent" and provider:
-        litellm_name = f"{provider}/{name}" if not name.startswith(f"{provider}/") else name
-        fc_support = _model_supports_function_calling(litellm_name)
-        if fc_support is not True and _declared_function_calling(name, provider):
+        overlay = lookup_overlay(provider, name)
+        fc_support = _model_supports_function_calling(litellm_model_id(provider, name))
+        if fc_support is not True and "tools" in overlay.params:
             # An overlay entry answers the same question litellm's map cannot,
             # and this command already loads and schema-validates that block.
             # Reporting the model unable to call functions while the run works
@@ -337,7 +322,7 @@ def _validate_model(
                     ),
                     hint=(
                         "If the run needs tools, declare it in the presets overlay: "
-                        f"litellm_models.{provider}/{name} with supports_function_calling: true"
+                        f"litellm_models.{overlay.key} with supports_function_calling: true"
                     ),
                 )
             )
