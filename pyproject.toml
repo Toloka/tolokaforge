@@ -525,6 +525,7 @@ exclude = [
     "tolokaforge/core/grading/bundle_producer.py",
     "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
+    "tolokaforge/core/grading/comparison_view.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
     "tolokaforge/core/grading/judge_kinds/parity.py",
