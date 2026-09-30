@@ -24,14 +24,26 @@ from tests.utils.search_backends import register_search_backends
 from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter, NativeAdapterMisconfigurationError
 from tolokaforge.core.plugin_registry import ReservedNameError, UnknownImplementationError
-from tolokaforge.testing.search_backends import in_memory_search_backend_factory
+from tolokaforge.testing.search_backends import (
+    InMemorySearchBackend,
+    SearchBackendDefects,
+    in_memory_search_backend_factory,
+)
 
 pytestmark = pytest.mark.unit
 
 
+def _no_query_factory(context: Any) -> InMemorySearchBackend:
+    return InMemorySearchBackend(
+        context, defects=SearchBackendDefects(parameters_without_query=True)
+    )
+
+
 @pytest.fixture(autouse=True)
 def _in_memory_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    register_search_backends(monkeypatch, in_memory=in_memory_search_backend_factory)
+    register_search_backends(
+        monkeypatch, in_memory=in_memory_search_backend_factory, no_query=_no_query_factory
+    )
 
 
 def _task_dir(tmp_path: Path, *, rag: dict[str, Any], agent_tools: list[str]) -> Path:
@@ -155,4 +167,11 @@ def test_typesense_is_not_a_backend_a_native_task_can_declare(tmp_path: Path) ->
     """``typesense`` is the plane an adapter that indexes host-side declares itself."""
     rag = {"corpus_dir": "kb", "backend": "typesense"}
     with pytest.raises(ReservedNameError):
+        _describe(tmp_path, rag=rag, agent_tools=["search_kb"])
+
+
+def test_a_backend_declaring_no_query_parameter_is_refused(tmp_path: Path) -> None:
+    """The runner reads ``query`` off the agent's call; a schema without it searches nothing."""
+    rag = {"corpus_dir": "kb", "backend": "no_query"}
+    with pytest.raises(ValueError, match="no 'query' property"):
         _describe(tmp_path, rag=rag, agent_tools=["search_kb"])
