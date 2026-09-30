@@ -49,12 +49,13 @@ apart.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel
@@ -89,6 +90,7 @@ from tolokaforge.core.models import (
     CommunicateInfo,
     GradingCombineConfig,
     GradingFindingSeverity,
+    RagConfig,
     RequiredAction,
     StateChecksConfig,
     TaskConfig,
@@ -103,6 +105,10 @@ from tolokaforge.core.project_loader import (
     deep_merge,
     resolve_effective_grading_combine,
 )
+from tolokaforge.runner.models import ToolSchema
+
+if TYPE_CHECKING:
+    from tolokaforge.core.search.backend import SearchBackend
 
 logger = get_logger(__name__)
 
@@ -711,6 +717,103 @@ def declared_tool_names(task: Any) -> frozenset[str]:
     return frozenset().union(*(enabled_tool_names(task, actor) for actor in ToolActor))
 
 
+@dataclass(frozen=True)
+class SearchDeclaration:
+    """A task's knowledge-base search as ``initial_state.rag`` declares it, defaults filled in.
+
+    A task that writes no ``rag`` block declares the defaults: the ``rag_service``
+    backend behind a ``search_kb`` tool, and no corpus. That is what a task enabling
+    ``search_kb`` alone has always had.
+    """
+
+    backend: str
+    backend_config: Mapping[str, Any]
+    tool_name: str
+    tool_description: str
+    corpus_dir: str | None
+    declared: bool
+    """Whether the task wrote an ``initial_state.rag`` block at all."""
+
+
+def search_declaration(task: Any) -> SearchDeclaration:
+    """The task's search declaration — a ``TaskConfig``, or a stand-in carrying one."""
+    initial_state = getattr(task, "initial_state", None)
+    if isinstance(initial_state, Mapping):
+        raw = initial_state.get("rag")
+    else:
+        raw = getattr(initial_state, "rag", None)
+    rag = raw if isinstance(raw, RagConfig) or raw is None else RagConfig.model_validate(raw)
+    effective = rag if rag is not None else RagConfig()
+    return SearchDeclaration(
+        backend=effective.backend,
+        backend_config=dict(effective.backend_config),
+        tool_name=effective.tool.name,
+        tool_description=effective.tool.description,
+        corpus_dir=effective.corpus_dir,
+        declared=rag is not None,
+    )
+
+
+def uses_search(task: Any, declaration: SearchDeclaration) -> bool:
+    """Whether the task searches: it declares a corpus, or an actor enables its search tool."""
+    return bool(declaration.corpus_dir) or declaration.tool_name in declared_tool_names(task)
+
+
+def declared_search_backend(declaration: SearchDeclaration) -> SearchBackend:
+    """The task's search backend, built from a trial-less context to read its declaration.
+
+    What the adapter and the stack rule read — ``tool_parameters()`` and
+    ``stack_service`` — may depend on ``backend_config``, so they come off a backend
+    the registry built, never a class attribute. No trial and no stack-service
+    client: the runner builds the trial's own backend at ``RegisterTrial``.
+
+    Raises:
+        UnknownImplementationError: no backend is registered under the name.
+        ReservedNameError: the name is reserved (``typesense``).
+    """
+    from tolokaforge.core.plugin_registry import SearchBackendContext, load_search_backend
+
+    factory = load_search_backend(declaration.backend)
+    return factory(
+        SearchBackendContext(
+            backend_config=declaration.backend_config,
+            tool_name=declaration.tool_name,
+            tool_description=declaration.tool_description,
+            logger=logging.getLogger(f"tolokaforge.search_backends.{declaration.backend}"),
+        )
+    )
+
+
+SEARCH_TOOL_TIMEOUT_S = 15.0
+"""The per-call budget the agent's search tool is declared with, for every backend."""
+
+
+def search_tool_schema(declaration: SearchDeclaration, backend: SearchBackend) -> ToolSchema:
+    """The agent's search tool: the declared name and description over the backend's parameters.
+
+    Source-less on purpose: the runner binds a source-less schema of the declared
+    name to the trial's search index, so no invocation style names a backend on the
+    wire.
+
+    Raises:
+        ValueError: the backend gives the agent no tool of its own.
+    """
+    parameters = backend.tool_parameters()
+    if parameters is None:
+        raise ValueError(
+            f"search backend {declaration.backend!r} gives the agent no search tool, but "
+            f"{declaration.tool_name!r} is enabled; drop it from tools.<actor>.enabled"
+        )
+    return ToolSchema(
+        name=declaration.tool_name,
+        description=declaration.tool_description,
+        parameters=dict(parameters),
+        category="read",
+        timeout_s=SEARCH_TOOL_TIMEOUT_S,
+        source=None,
+    )
+
+
 TOOL_BLOCK_RESERVED_KEYS: frozenset[str] = frozenset({"output_max_chars"})
 """Keys the harness reads from a ``tools.<actor>.<tool_name>`` block for its own
 composition, not as tool ``__init__`` kwargs.
@@ -859,15 +962,15 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         **_declared_parameters(task, task_dir, ToolActor.USER, user_declared),
         **_declared_parameters(task, task_dir, ToolActor.AGENT, agent_declared),
     }
-    if "search_kb" in declared:
-        # The runner rebuilds search_kb as a source-less RAG wrapper, so the
-        # canonical schema is what the agent is handed whatever a fixture or the
-        # registry holds. ``NativeAdapter.to_task_description`` reads the same
-        # function for the whole wire object, whose category, timeout and absent
-        # source this projection cannot carry.
-        from tolokaforge.runner.tool_factory import create_search_kb_schema
-
-        parameters["search_kb"] = create_search_kb_schema().parameters
+    search = search_declaration(task)
+    if search.tool_name in declared:
+        # The runner binds the task's search tool to the trial's search index, so
+        # the parameters its backend declares are what the agent is handed whatever
+        # a fixture or the registry holds. ``NativeAdapter.to_task_description``
+        # builds the whole wire object from the same declaration.
+        tool_parameters = declared_search_backend(search).tool_parameters()
+        if tool_parameters is not None:
+            parameters[search.tool_name] = dict(tool_parameters)
     return ToolInventory(
         declared=declared,
         agent_declared=agent_declared,

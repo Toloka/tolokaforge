@@ -216,7 +216,7 @@ class SearchPlane(str, Enum):
 class SearchConfig(BaseModel):
     """Configuration for knowledge base search."""
     enabled: bool = False                         # This task needs rag-service
-    plane: Optional[str] = None                   # A search-backend name, or "typesense"
+    plane: Optional[str] = None                   # What serves documents_path (see below)
     domain_name: Optional[str] = None             # "external_retail_v3"
     documents_path: Optional[str] = None          # Path to the corpus directory
 
@@ -406,6 +406,30 @@ class TaskDescription(BaseModel):
 
     model_config = {"extra": "forbid"}
 ```
+
+### `search`: the plane, the backend's config, the tool name
+
+- **`plane`** names what serves the corpus: a search backend registered under the
+  `tolokaforge.search_backends` entry-point group (ADR-0052) — `rag_service` is the
+  engine's own — or `typesense`, the plane the runner serves itself for an adapter
+  that indexed the corpus host-side. `typesense` is reserved: no backend registers
+  under it. The native adapter writes the task's `initial_state.rag.backend` here.
+  The runner resolves the name at `RegisterTrial` and refuses the trial when nothing
+  is registered under it; an older image, whose `plane` is a closed enum, refuses a
+  name it predates at parse time.
+- **`enabled`** means "this task needs rag-service". It predates `plane`, and an
+  older runner image reads only it, so the native adapter still emits it — `true`
+  exactly when the backend `plane` names declares the rag-service stack service.
+  A task that carries `enabled: true` and no `plane` is served by `rag_service`.
+- **`backend_config`** is the task's `initial_state.rag.backend_config`, handed to
+  the backend's factory verbatim; the engine never reads its keys.
+- **`tool_name`** is the agent's search tool when the task names one other than
+  `search_kb` (`initial_state.rag.tool.name`). The runner binds the source-less
+  tool schema of that name to the trial's search index.
+
+`backend_config` and `tool_name` are left off the serialised description while they
+hold their default (an empty mapping, `search_kb`), so a task that declares neither
+serialises exactly as it did before they existed and an older image still accepts it.
 
 ---
 
