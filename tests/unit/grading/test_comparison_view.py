@@ -189,6 +189,18 @@ def test_a_config_instance_under_another_rules_kind_is_refused() -> None:
         ComparisonViewConfig(version=1, rules=(config,))
 
 
+def test_a_validated_view_cannot_change() -> None:
+    view = _view(_RELEASED_HOLDS, _DRAFT_PROPOSALS)
+    sha = view.config_sha256()
+    with pytest.raises(TypeError):
+        view.rules[1].where["status"] = "draft"  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        view.rules[0].table = "other"  # type: ignore[misc]
+    assert isinstance(view.rules, tuple)
+    assert isinstance(view.rules[0].unless_referenced_by, tuple)
+    assert view.config_sha256() == sha
+
+
 def test_the_block_round_trips_through_its_json_dump() -> None:
     view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _BOOKKEEPING)
     dump = view.model_dump(mode="json", by_alias=True)
