@@ -315,7 +315,8 @@ policy corpus to derive it.
 The exit token belongs to the **user simulator**. The engine reads it from
 simulator output only — a dispatched user reply that is the bare token ends the
 trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
-it delivers that text first and stops on the next turn. The opening turn is the
+it delivers that text first and stops on the next turn (both are configurable, see
+[Declaring the stop tokens](#declaring-the-stop-tokens)). The opening turn is the
 exception: a bootstrap reply carrying the token seeds it literally, rather than
 ending a trial before the agent has spoken. Write it into the
 `backstory` (or a scripted flow), never into a task's agent-facing prompt: the
@@ -323,6 +324,48 @@ agent is never asked for the token and its output is never checked for it, so a
 prompt that instructed it would promise a signal nothing consumes.
 [`tests/canonical/test_agent_prompt_exit_token.py`](../tests/canonical/test_agent_prompt_exit_token.py)
 builds every example pack's agent system prompt and fails if one carries it.
+
+#### Declaring the stop tokens
+
+`actors.user` names the tokens the engine listens for and what happens to text
+written before one:
+
+```yaml
+actors:
+  user:
+    mode: llm
+    backstory: |
+      You want to move your booking to Friday. If the agent hands you over to a
+      person, reply ###TRANSFER###. If it cannot help with the request at all,
+      reply ###OUT-OF-SCOPE###.
+    stop_tokens: ["###STOP###", "###TRANSFER###", "###OUT-OF-SCOPE###"]  # default: ["###STOP###"]
+    stop_with_text: end    # default: deliver
+```
+
+- **`stop_tokens`** — the earliest listed token in a reply fires, and the
+  termination message names it (`User signaled stop (###TRANSFER###). Dialogue
+  ended.`). Under `stop_with_text: deliver` whatever the reply says after that
+  token is discarded; the trial log records how much. The reason is `USER_STOP`
+  for every token. The list must be
+  non-empty, without blank or repeated tokens, and no token may contain another.
+  The engine listens for the list and the model sends what its prompt tells it
+  to, so for an `llm` simulator the two must agree: on the built-in simulator
+  the list must contain `###STOP###`, which the built-in prompt instructs, and
+  every other listed token must be named in the backstory, which is where the
+  model learns when to send it. A `scripted` simulator may list any tokens, and
+  so may a non-`builtin` simulator (`actors.user.simulator`): it owns its prompt,
+  so checking that the prompt teaches the listed tokens is its own job.
+- **`stop_with_text`** — `deliver` hands the text before the token to the agent,
+  lets it answer, and ends the trial on the next user turn; a bare token ends the
+  trial at once. `end` records the reply as the simulator wrote it — the token,
+  the text around it, and a bare token alike — as the last user message and ends
+  the trial at once, so the agent never answers it. `end` is the shape for a
+  transcript that must keep the stop reply verbatim as its last user turn.
+- **A reply that also calls tools** still stops. The calls on a reply with text
+  run and are recorded on that message before the stop applies, and their
+  results are appended to its text, as on any user turn that calls tools, so
+  under `end` such a reply is recorded as written followed by those results; a
+  bare token ends the trial without running them.
 
 The agent's own completion is **structural**, not a phrase it emits: a trial ends
 with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls

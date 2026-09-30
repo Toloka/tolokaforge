@@ -4,5 +4,9 @@
   "persona": "curious engineer",
   "scripted_flow": null,
   "simulator": "builtin",
-  "simulator_config": {}
+  "simulator_config": {},
+  "stop_tokens": [
+    "###STOP###"
+  ],
+  "stop_with_text": "deliver"
 }
