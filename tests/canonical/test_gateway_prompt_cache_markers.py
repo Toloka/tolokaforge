@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from tests.utils.secret_state import secret_manager_installed
 from tolokaforge.core.llm import gateway_route
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
@@ -90,24 +91,27 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-# Bound at import so the gateway URL is known when the secrets payload below is
-# parametrised; the fixture serves and closes it.
-_GATEWAY = _RecordingGateway(("127.0.0.1", 0), _GatewayHandler)
-_GATEWAY_SECRETS = {
-    "LLM_PROXY_BASE_URL": f"http://127.0.0.1:{_GATEWAY.server_port}/v1",
-    "LLM_PROXY_API_KEY": "sk-loopback-gateway",
-    "OPENROUTER_API_KEY": "sk-or-loopback",
-}
-
-
 @pytest.fixture(scope="module")
 def _serving_gateway() -> Iterator[_RecordingGateway]:
-    thread = threading.Thread(target=_GATEWAY.serve_forever, daemon=True)
+    server = _RecordingGateway(("127.0.0.1", 0), _GatewayHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield _GATEWAY
-    _GATEWAY.shutdown()
-    _GATEWAY.server_close()
+    yield server
+    server.shutdown()
+    server.server_close()
     thread.join()
+
+
+@pytest.fixture
+def installed_fake_secrets(_serving_gateway: _RecordingGateway) -> Iterator[dict[str, str]]:
+    """Point the process SecretManager at the loopback gateway."""
+    payload = {
+        "LLM_PROXY_BASE_URL": f"http://127.0.0.1:{_serving_gateway.server_port}/v1",
+        "LLM_PROXY_API_KEY": "sk-loopback-gateway",
+        "OPENROUTER_API_KEY": "sk-or-loopback",
+    }
+    with secret_manager_installed(payload):
+        yield payload
 
 
 @pytest.fixture
@@ -176,7 +180,6 @@ _ANTHROPIC_MARKER_SITES = {
 }
 
 
-@pytest.mark.parametrize("installed_fake_secrets", [_GATEWAY_SECRETS], indirect=True)
 def test_resolved_route_carries_the_anthropic_markers(gateway: _RecordingGateway) -> None:
     gateway.catalog = ["openrouter/anthropic/claude-sonnet-4.6", "openrouter/openai/gpt-5.2"]
 
@@ -188,7 +191,6 @@ def test_resolved_route_carries_the_anthropic_markers(gateway: _RecordingGateway
     assert _marker_sites(body) == _ANTHROPIC_MARKER_SITES
 
 
-@pytest.mark.parametrize("installed_fake_secrets", [_GATEWAY_SECRETS], indirect=True)
 def test_unreadable_catalog_carries_the_anthropic_markers(gateway: _RecordingGateway) -> None:
     _generate(ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"))
 
@@ -198,7 +200,6 @@ def test_unreadable_catalog_carries_the_anthropic_markers(gateway: _RecordingGat
     assert _marker_sites(body) == _ANTHROPIC_MARKER_SITES
 
 
-@pytest.mark.parametrize("installed_fake_secrets", [_GATEWAY_SECRETS], indirect=True)
 def test_no_cache_preset_sends_no_markers(gateway: _RecordingGateway) -> None:
     gateway.catalog = ["openrouter/anthropic/claude-sonnet-4.6", "openrouter/openai/gpt-5.2"]
 

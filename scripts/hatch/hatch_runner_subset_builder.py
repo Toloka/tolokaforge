@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import tomllib
 from hatchling.builders.wheel import WheelBuilder
@@ -191,12 +191,16 @@ SUBSET_REQUIREMENT_NAMES: tuple[str, ...] = (
     "odata-query",
 )
 
-RequirementKey = tuple[str, frozenset[str]]
+
+class RequirementKey(NamedTuple):
+    """Identity of a requirement irrespective of its specifier and marker."""
+
+    name: str
+    extras: frozenset[str]
 
 
 def requirement_key(requirement: Requirement) -> RequirementKey:
-    """Identity of a requirement irrespective of its specifier and marker."""
-    return (canonicalize_name(requirement.name), frozenset(requirement.extras))
+    return RequirementKey(canonicalize_name(requirement.name), frozenset(requirement.extras))
 
 
 def select_subset_requirements(

@@ -1130,10 +1130,11 @@ providers:
       reasoning_via_extra_body: true
 
   # Direct Gemini via litellm ``gemini/*`` provider.
-  # As of litellm v1.83.14 (2026-05-21), passing ``reasoning_effort='medium'``
-  # alongside tool calls produces empty responses for Gemini 3.1 Pro
+  # Measured on litellm 1.83.14 (2026-05-21); not re-measured on the
+  # supported range: passing ``reasoning_effort='medium'`` alongside tool
+  # calls produced empty responses for Gemini 3.1 Pro
   # (BerriAI/litellm#19403-class symptom — finish_reason=stop, zero
-  # completion tokens, no tool_calls emitted). ``low`` and ``high`` work.
+  # completion tokens, no tool_calls emitted). ``low`` and ``high`` worked.
   # We surface this loud per AGENTS.md rule #1 rather than silently mapping
   # to ``high`` — the caller decides how to react (lower/raise effort,
   # switch to OpenRouter transport, wait for upstream fix).

@@ -46,6 +46,11 @@ from typing import Any
 import pytest
 from packaging.requirements import Requirement
 
+from scripts.hatch.hatch_runner_subset_builder import (
+    RequirementKey,
+    requirement_key,
+    select_subset_requirements,
+)
 from tests.utils.wheel_builds import build_subset_wheel
 from tolokaforge.core._runner_subset import (
     RUNNER_SUBSET_DATA_FILES,
@@ -750,41 +755,41 @@ def test_subset_wheel_ships_cli_shim_module(subset_wheel_path: Path) -> None:
 
 # The runner subset's dependency surface. Adding or removing a runtime
 # dependency of the subset is a deliberate edit to this set.
-EXPECTED_SUBSET_REQUIREMENT_KEYS: frozenset[tuple[str, frozenset[str]]] = frozenset(
+EXPECTED_SUBSET_REQUIREMENT_KEYS: frozenset[RequirementKey] = frozenset(
     {
-        ("tolokaforge-models", frozenset()),
-        ("litellm", frozenset()),
-        ("pydantic", frozenset()),
-        ("pydantic", frozenset({"email"})),
-        ("jsonschema", frozenset()),
-        ("packaging", frozenset()),
-        ("pyyaml", frozenset()),
-        ("python-dotenv", frozenset()),
-        ("click", frozenset()),
-        ("jsonpath-ng", frozenset()),
-        ("httpx", frozenset()),
-        ("tenacity", frozenset()),
-        ("jinja2", frozenset()),
-        ("loguru", frozenset()),
-        ("docstring-parser", frozenset()),
-        ("deepdiff", frozenset()),
-        ("toml", frozenset()),
-        ("addict", frozenset()),
-        ("starlette", frozenset()),
-        ("typesense", frozenset()),
-        ("structlog", frozenset()),
-        ("grpcio", frozenset()),
-        ("grpcio-health-checking", frozenset()),
-        ("protobuf", frozenset()),
-        ("mcp", frozenset()),
-        ("asyncpg", frozenset()),
-        ("psycopg2-binary", frozenset()),
-        ("alembic", frozenset()),
-        ("python-jose", frozenset()),
-        ("fastapi", frozenset()),
-        ("uvicorn", frozenset()),
-        ("sqlalchemy", frozenset()),
-        ("odata-query", frozenset()),
+        RequirementKey("tolokaforge-models", frozenset()),
+        RequirementKey("litellm", frozenset()),
+        RequirementKey("pydantic", frozenset()),
+        RequirementKey("pydantic", frozenset({"email"})),
+        RequirementKey("jsonschema", frozenset()),
+        RequirementKey("packaging", frozenset()),
+        RequirementKey("pyyaml", frozenset()),
+        RequirementKey("python-dotenv", frozenset()),
+        RequirementKey("click", frozenset()),
+        RequirementKey("jsonpath-ng", frozenset()),
+        RequirementKey("httpx", frozenset()),
+        RequirementKey("tenacity", frozenset()),
+        RequirementKey("jinja2", frozenset()),
+        RequirementKey("loguru", frozenset()),
+        RequirementKey("docstring-parser", frozenset()),
+        RequirementKey("deepdiff", frozenset()),
+        RequirementKey("toml", frozenset()),
+        RequirementKey("addict", frozenset()),
+        RequirementKey("starlette", frozenset()),
+        RequirementKey("typesense", frozenset()),
+        RequirementKey("structlog", frozenset()),
+        RequirementKey("grpcio", frozenset()),
+        RequirementKey("grpcio-health-checking", frozenset()),
+        RequirementKey("protobuf", frozenset()),
+        RequirementKey("mcp", frozenset()),
+        RequirementKey("asyncpg", frozenset()),
+        RequirementKey("psycopg2-binary", frozenset()),
+        RequirementKey("alembic", frozenset()),
+        RequirementKey("python-jose", frozenset()),
+        RequirementKey("fastapi", frozenset()),
+        RequirementKey("uvicorn", frozenset()),
+        RequirementKey("sqlalchemy", frozenset()),
+        RequirementKey("odata-query", frozenset()),
     }
 )
 
@@ -806,10 +811,8 @@ def test_subset_wheel_requires_exactly_the_runner_dependency_set(
     dependency set, each once. ``tolokaforge-models`` supplies the runner's
     pricing / preset / provider tables; ``docker`` and ``testcontainers`` are
     orchestrator-side and must stay out of the runner image."""
-    from scripts.hatch.hatch_runner_subset_builder import requirement_key
-
     keys = [requirement_key(req) for req in _subset_wheel_requirements(subset_wheel_path)]
-    duplicated = sorted({key[0] for key in keys if keys.count(key) > 1})
+    duplicated = sorted({key.name for key in keys if keys.count(key) > 1})
     assert not duplicated, f"subset wheel METADATA repeats Requires-Dist for {duplicated}"
     assert set(keys) == EXPECTED_SUBSET_REQUIREMENT_KEYS, (
         "subset wheel Requires-Dist set drifted from the locked runner "
@@ -824,16 +827,14 @@ def test_subset_wheel_requirements_carry_the_base_specifiers(
     """Every subset ``Requires-Dist`` is the base project's requirement with
     the same name and extras — specifier and marker included — so a range
     raised in ``pyproject.toml`` is the range the runner image resolves."""
-    from scripts.hatch.hatch_runner_subset_builder import requirement_key
-
     base_by_key = {
         requirement_key(req): req for req in map(Requirement, _base_runner_requirements())
     }
     emitted_by_key = {
         requirement_key(req): req for req in _subset_wheel_requirements(subset_wheel_path)
     }
-    litellm = emitted_by_key[("litellm", frozenset())]
-    assert litellm == base_by_key[("litellm", frozenset())]
+    litellm = emitted_by_key[RequirementKey("litellm", frozenset())]
+    assert litellm == base_by_key[RequirementKey("litellm", frozenset())]
     # 1.89.7 strips gateway cache markers and 1.92.2 imports fastapi on the
     # tool-call path; the runner image must resolve neither.
     assert [v for v in ("1.89.7", "1.92.2", "1.93.0") if litellm.specifier.contains(v)] == [
@@ -849,15 +850,19 @@ def test_subset_wheel_requirements_carry_the_base_specifiers(
     )
 
 
-def test_subset_selection_refuses_a_name_pyproject_does_not_declare() -> None:
-    """A selected name with no base requirement fails the build and names
-    itself, instead of emitting an unpinned requirement."""
-    from scripts.hatch.hatch_runner_subset_builder import select_subset_requirements
-
-    with pytest.raises(ValueError, match=r"'not-a-declared-dependency' matches 0 requirements"):
-        select_subset_requirements(
-            ("litellm", "not-a-declared-dependency"), _base_runner_requirements()
-        )
+@pytest.mark.parametrize(
+    ("selection", "message"),
+    [
+        ("not-a-declared-dependency", r"'not-a-declared-dependency' matches 0 requirements"),
+        ("litellm>=1.0", r"'litellm>=1\.0' must name a requirement without a specifier"),
+    ],
+)
+def test_subset_selection_refuses_what_pyproject_cannot_back(selection: str, message: str) -> None:
+    """A selected name that pyproject does not declare, or that carries its
+    own specifier, fails the build and names itself, so pyproject stays the
+    only source of the subset's ranges."""
+    with pytest.raises(ValueError, match=message):
+        select_subset_requirements(("mcp", selection), _base_runner_requirements())
 
 
 def test_subset_wheel_does_not_ship_engine_data_dir(subset_wheel_path: Path) -> None:

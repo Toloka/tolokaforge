@@ -1057,6 +1057,10 @@ provider's own transport forwards them too.
 [`tests/canonical/test_gateway_prompt_cache_markers.py`](../tests/canonical/test_gateway_prompt_cache_markers.py)
 pins the markers on the wire for both paths.
 
+tolokaforge requires litellm >= 1.93.0; environments pinned below it must
+upgrade (earlier releases strip Anthropic `cache_control` on gateway routes,
+lack the native `meta` provider, or crash tool calls without `fastapi`).
+
 **The name.** Those two effects are coupled, so the name that arrives depends on the
 dialect, and the gateway's name for a model is not derivable from the engine's model
 string. It is whichever of `<provider>/<name>` or `<name>` the catalog contains:
@@ -1161,8 +1165,9 @@ so one gateway state cannot produce two different routing decisions.
 **Setting `api_base` does not make litellm speak OpenAI to that URL — it makes
 litellm speak that provider's native protocol to that URL.**
 [`tests/canonical/test_llm_gateway_envelope_contract.py`](../tests/canonical/test_llm_gateway_envelope_contract.py)
-pins the first two rows against the installed litellm and checks that the other
-two stay off the chat-completions path:
+pins the chat-completions path of the first two rows against the installed
+litellm and checks that the other two stay off it. The last two rows are
+litellm's documented native routes, not a captured request:
 
 | provider | request litellm sends to the gateway |
 |---|---|
@@ -1496,9 +1501,9 @@ The policy attaches Anthropic's ephemeral (5-minute TTL) `cache_control`
 markers on three attach sites — system, tools, and up to two message
 positions — so a second request with the same cacheable prefix reads from
 the Anthropic cache. Observable via non-zero
-`Metrics.usage.cache_read_input_tokens` on the second call. The same markers,
-and the same signal, hold through an LLM gateway on both of its paths (see
-[Speaking to the gateway](#speaking-to-the-gateway)).
+`Metrics.usage.cache_read_input_tokens` on the second call. The same markers
+reach an LLM gateway on both of its paths, and on a resolved route the same
+signal comes back (see [Speaking to the gateway](#speaking-to-the-gateway)).
 
 **4-breakpoint budget.** Anthropic's Messages API caps at 4 `cache_control`
 markers per request. The policy uses at most:

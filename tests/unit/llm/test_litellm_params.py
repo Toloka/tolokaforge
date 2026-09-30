@@ -72,9 +72,8 @@ def _params(allowed: list[str] | None = None, **kwargs) -> list[str] | None:
 class TestTheCanonicalContract:
     """What the installed litellm must keep doing for this design to hold.
 
-    The premise of the whole feature is that litellm patch releases change
-    parameter gating, so the escape hatch it offers is pinned here rather than
-    assumed. Measured on 1.93.0 and 1.96.0.
+    litellm releases can change parameter gating, so the escape hatch it offers
+    is pinned here rather than assumed. Measured on 1.93.0 and 1.96.0.
     """
 
     def test_an_unmapped_model_is_refused_its_tools(self):
