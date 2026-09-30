@@ -191,7 +191,7 @@ def test_matching_rows_go_and_the_rest_stay_in_order() -> None:
     other = [{"id": 9, "status": "released"}]
     result = _apply({"holds": rows, "other": other}, _exclude("holds", {"status": "released"}))
     assert result.state == {"holds": [rows[1], rows[3]], "other": other}
-    assert result.applied == (
+    assert result.record.applied == (
         RuleApplication(kind="exclude_records", table="holds", rows_removed=2),
     )
 
@@ -199,7 +199,7 @@ def test_matching_rows_go_and_the_rest_stay_in_order() -> None:
 def test_a_table_the_state_does_not_hold_is_left_alone() -> None:
     result = _apply({"other": [{"id": 1}]}, _exclude("holds", {"status": "released"}))
     assert result.state == {"other": [{"id": 1}]}
-    assert result.applied == (
+    assert result.record.applied == (
         RuleApplication(kind="exclude_records", table="holds", rows_removed=0),
     )
 
@@ -246,7 +246,7 @@ def test_path_filters_the_items_of_a_nested_list_in_each_row() -> None:
             {"id": "D3", "purchase_allocations": []},
         ]
     }
-    assert result.applied == (
+    assert result.record.applied == (
         RuleApplication(
             kind="exclude_records",
             table="decisions",
@@ -280,7 +280,7 @@ def test_path_traverses_a_list_on_the_way_element_by_element() -> None:
             ],
         }
     ]
-    assert result.applied[0].rows_removed == 2
+    assert result.record.applied[0].rows_removed == 2
 
 
 def test_path_descends_into_a_mapping() -> None:
@@ -306,7 +306,7 @@ def test_path_descends_into_a_mapping() -> None:
 def test_a_row_without_the_nested_list_stays_as_it_is(row: dict[str, Any], path: str) -> None:
     result = _apply({"decisions": [row]}, _exclude_zero("decisions", path))
     assert result.state == {"decisions": [row]}
-    assert result.applied[0].rows_removed == 0
+    assert result.record.applied[0].rows_removed == 0
 
 
 @pytest.mark.parametrize(
@@ -600,7 +600,7 @@ def test_exclude_tables_drops_the_named_tables_whole() -> None:
         },
     )
     assert result.state == {"orders": [{"id": 1}]}
-    assert result.applied == (
+    assert result.record.applied == (
         RuleApplication(kind="exclude_tables", table="agent_discoverable_tools", rows_removed=2),
         RuleApplication(kind="exclude_tables", table="settings", rows_removed=1),
         RuleApplication(kind="exclude_tables", table="user_discoverable_tools", rows_removed=0),
