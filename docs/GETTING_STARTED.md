@@ -33,6 +33,9 @@ pip install tolokaforge
 pip install "tolokaforge[all]"  # optional full feature set
 ```
 
+tolokaforge requires litellm >= 1.93.0; an environment pinned below it must
+upgrade (see [LLM_LAYER.md § Speaking to the gateway](LLM_LAYER.md#speaking-to-the-gateway)).
+
 ## Configure API Keys
 
 Create `.env` in the repo root (or copy from `.env.example`):

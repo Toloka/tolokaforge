@@ -285,7 +285,9 @@ section of [`pyproject.toml`](../pyproject.toml) declares the subset build
 target; the custom builder at
 [`scripts/hatch/hatch_runner_subset_builder.py`](../scripts/hatch/hatch_runner_subset_builder.py)
 renames the distribution to `tolokaforge-runner-subset`, replaces the base
-wheel's dependency list with the runner-runtime deps, and binds the
+wheel's dependency list with the runner-runtime deps (it names which
+requirements the subset carries; each specifier is read from `pyproject.toml`
+at build time, and the canonical partition test locks the set), and binds the
 subset-native CLI shim
 ([ADR-0027](adr/0027-subset-native-cli-shim.md)) — `tolokaforge =
 tolokaforge.runner._cli:main` — as the subset wheel's `[console_scripts]`
