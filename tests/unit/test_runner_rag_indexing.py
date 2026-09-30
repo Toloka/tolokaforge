@@ -17,12 +17,18 @@ through the registered ``rag_service`` backend with a recording client.
 
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from tests.utils.fake_rag_service import FakeRagService
+from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
+from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch
 from tolokaforge.core.search.backend import SearchIndexBuildError
+from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import SearchConfig, TaskDescription
 from tolokaforge.runner.rag_service_backend import RagServiceSearchIndex
 from tolokaforge.runner.service import RunnerServiceImpl
@@ -132,3 +138,81 @@ def test_empty_corpus_dir_raises(service: RunnerServiceImpl, tmp_path: Path) -> 
     with pytest.raises(SearchIndexBuildError, match="no documents"):
         _index(service, config, artifacts_dir=tmp_path)
     assert service.rag_client.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Version skew: what engines released before ``search.plane`` named a backend send.
+# ---------------------------------------------------------------------------
+
+_SKEWED_SEARCH = [
+    pytest.param({"enabled": True}, id="enabled-with-no-plane"),
+    pytest.param({"enabled": True, "plane": "typesense"}, id="typesense-plane-with-enabled"),
+]
+"""Every released engine emits ``enabled: true`` for a rag corpus and no plane (the
+native adapter's before ``plane`` existed, an external adapter's still); a task
+declaring the TypeSense plane with ``enabled`` has always had rag-service too."""
+
+
+@pytest.mark.parametrize("skewed", _SKEWED_SEARCH)
+def test_a_skewed_search_block_builds_the_rag_service_index(
+    service: RunnerServiceImpl, tmp_path: Path, skewed: dict
+) -> None:
+    _write_corpus(tmp_path / "rag" / "corpus")
+    config = SearchConfig(domain_name="rag_search", documents_path="rag/corpus", **skewed)
+
+    _index(service, config, artifacts_dir=tmp_path)
+
+    trial_id, domain_name, documents = service.rag_client.calls[0]
+    assert (trial_id, domain_name, len(documents)) == ("t:0", "rag_search", 2)
+
+
+@pytest.mark.parametrize("skewed", _SKEWED_SEARCH)
+def test_register_trial_serves_a_skewed_search_kb_from_rag_service(
+    skewed: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through ``RegisterTrial``: indexed, searched, and given to the judge."""
+    monkeypatch.delenv("TYPESENSE_HOST", raising=False)
+    monkeypatch.delenv("TYPESENSE_PORT", raising=False)
+    rag_service = FakeRagService()
+    runner = RunnerServiceImpl(db_client=MagicMock(), rag_client=rag_service.client())
+    trial_id = f"skew_{skewed.get('plane', 'none')}:0"
+    task = {
+        "task_id": "skew",
+        "name": "skew",
+        "category": "rag_search",
+        "description": "a search block as a released engine sends it",
+        "adapter_type": "tlk_mcp_core",
+        "system_prompt": "system",
+        "agent_tools": [
+            {
+                "name": "search_kb",
+                "description": "Search the knowledge base.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+                "category": "read",
+                "timeout_s": 15.0,
+            }
+        ],
+        "search": {"domain_name": "rag_search", "documents_path": "rag/corpus", **skewed},
+        "tool_artifacts": {
+            "rag/corpus/policies.md": base64.b64encode(
+                b"# Policies\n\nRefund code RX-7788.\n"
+            ).decode()
+        },
+    }
+    try:
+        registered = runner.RegisterTrial(
+            register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
+            MagicMock(),
+        )
+        assert registered.success is True, registered.error
+        assert [doc["source"] for doc in rag_service.indexes[trial_id]] == ["policies.md"]
+
+        answer = runner.ExecuteTool(
+            execute_request(trial_id, "search_kb", json.dumps({"query": "refund code"})),
+            MagicMock(),
+        )
+        assert answer.status == pb2.EXECUTION_STATUS_SUCCESS, answer.error
+        assert json.loads(answer.output)["results"][0]["source"] == "policies.md"
+        assert isinstance(runner.trials[trial_id].resolve_kb_search(), RagServiceKnowledgeSearch)
+    finally:
+        runner.shutdown()
