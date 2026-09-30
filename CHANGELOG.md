@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.27.5 (2026-09-30)
+
+### Feat
+
+- **core**: hand a user-simulator factory the task directory (#1669)
+- **core**: nullable model temperature, and a warning on the ignored models.user.temperature [TECHDEL-621] (#1641)
+- **core**: open a dialogue with a line of the agent's [TECHDEL-621] (#1663)
+- **core**: isolated user tool turns [TECHDEL-621] (#1662)
+- **core**: configurable user stop tokens and an immediate-stop mode [TECHDEL-621] (#1630)
+- **core**: UserSimulator Protocol + entry-point registry seam (ADR-0051) (#1660)
+
+### Fix
+
+- **grading**: core drops unstable_fields before the compare_columns pipeline, as the runner does (#1671)
+- **core**: keep a string-declared tool argument as the JSON text it is [TECHDEL-621] (#1664)
+
 ## v0.27.4 (2026-09-29)
 
 ### Feat
