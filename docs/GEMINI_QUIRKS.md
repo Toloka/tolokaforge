@@ -143,12 +143,13 @@ artifact reflects what the wire returned. Togglable via the
 `gemini_drop_placeholder_signature` capability override (default
 `True`).
 
-### 1.5 `litellm` direct `gemini/*` + `reasoning_effort=medium` is broken
+### 1.5 `litellm` direct `gemini/*` + `reasoning_effort=medium` returned empty responses
 
-As of `litellm==1.83.14`, the direct `gemini/*` provider returns
+Measured on `litellm==1.83.14` (2026-05-21); not re-measured on the
+supported range. There the direct `gemini/*` provider returned
 `finish_reason=stop` with zero completion tokens and no tool calls
-whenever `reasoning_effort=medium` is combined with `tool_choice`.
-`low` and `high` work correctly. The OpenRouter route is **unaffected**
+whenever `reasoning_effort=medium` was combined with `tool_choice`.
+`low` and `high` worked. The OpenRouter route is **unaffected**
 because it sends `extra_body.reasoning.effort=medium`, which OpenRouter
 translates upstream into Google's `thinking_level=medium`.
 
