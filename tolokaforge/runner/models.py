@@ -46,10 +46,18 @@ from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol
+from typing import Any, ClassVar, Literal, Protocol
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import (
     coerce_flat_stack_fields,
@@ -345,26 +353,56 @@ class RunnerUserSimulatorConfig(BaseModel):
 
 
 class SearchPlane(str, Enum):
-    """Which plane serves a task's ``documents_path``."""
+    """Built-in names ``SearchConfig.plane`` carries: what serves a task's corpus.
+
+    This enum is **not** an exhaustive, closed set: ``SearchConfig.plane`` is a free
+    ``str`` naming a backend registered under ``tolokaforge.search_backends``
+    (ADR-0052), so a backend the engine does not ship round-trips with its own name.
+    These members are the canonical constants for the names the engine itself
+    serves — first-party code references them instead of raw string literals.
+    """
 
     TYPESENSE = "typesense"
-    """The TypeSense collection the runner registers a search client against."""
+    """The TypeSense collection the runner registers a search client against.
+
+    Reserved in ``tolokaforge.search_backends``: the runner serves this plane itself.
+    """
 
     RAG_SERVICE = "rag_service"
     """The rag-service index built per trial from the bundled corpus."""
 
 
-class SearchConfig(BaseModel):
-    """Configuration for knowledge base search (TypeSense).
+DEFAULT_SEARCH_TOOL_NAME = "search_kb"
+"""The agent's search tool when a task names none (``initial_state.rag.tool.name``)."""
 
-    ``plane`` is a fact about the task — which plane serves its corpus — and is
-    the only thing that decides it. A task that declares none leaves the runner
-    to derive one from the connection details it carries, which is what an
-    adapter emits until it declares the plane instead.
+
+class SearchConfig(BaseModel):
+    """Configuration for knowledge base search.
+
+    ``plane`` is a fact about the task — what serves its corpus — and is the only
+    thing that decides it. Its value is the name of a search backend registered
+    under ``tolokaforge.search_backends`` (``rag_service`` for the engine's
+    rag-service), or ``typesense`` for the plane the runner serves itself. A task
+    that declares none leaves the runner to derive one from the connection details
+    it carries, which is what an adapter emits until it declares the plane instead.
+
+    ``enabled`` means "this task needs rag-service". It predates ``plane`` and an
+    older runner image reads only it, so the adapter keeps emitting it: true exactly
+    when the backend ``plane`` names declares the rag-service stack service.
+
+    ``backend_config`` is the task's opaque ``initial_state.rag.backend_config``,
+    handed to the backend's factory verbatim, and ``tool_name`` is the agent's
+    search tool when the task names one. Both are left off the wire at their
+    default (:attr:`OMITTED_AT_DEFAULT`), so a task that declares neither
+    serialises exactly as it did before they existed and an older image — which
+    forbids a key it does not declare — still accepts it.
     """
 
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"backend_config", "tool_name"})
+    """Fields the dump leaves out while they hold their default value."""
+
     enabled: bool = False
-    plane: SearchPlane | None = None
+    plane: str | None = None
     domain_name: str | None = None  # "external_retail_v3"
     documents_path: str | None = None  # Path to docindex/ directory
 
@@ -375,7 +413,22 @@ class SearchConfig(BaseModel):
     port: int | None = None  # 8108 (container port)
     api_key: str | None = None  # TypeSense API key
 
+    backend_config: dict[str, Any] = Field(default_factory=dict)
+    tool_name: str = DEFAULT_SEARCH_TOOL_NAME
+
     model_config = {"extra": "forbid"}
+
+    @model_serializer(mode="wrap")
+    def _omit_fields_at_their_default(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        data = handler(self)
+        for name in self.OMITTED_AT_DEFAULT:
+            if getattr(self, name) == type(self).model_fields[name].get_default(
+                call_default_factory=True
+            ):
+                data.pop(name, None)
+        return data
 
 
 # =============================================================================
