@@ -22,6 +22,7 @@ import pytest
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch, SearchHit
 from tolokaforge.core.plugin_registry import available_search_backends, load_search_backend
 from tolokaforge.core.search.backend import (
+    RAG_SERVICE_STACK_SERVICE,
     SearchBackend,
     SearchBackendContext,
     SearchIndex,
@@ -124,7 +125,7 @@ class TestRegistration:
         assert isinstance(backend, RagServiceBackend)
         assert isinstance(backend, SearchBackend)
         assert backend.name == "rag_service"
-        assert backend.stack_service == "rag_service"
+        assert backend.stack_service == RAG_SERVICE_STACK_SERVICE == "rag_service"
 
     def test_the_factory_needs_no_trial(self) -> None:
         """The adapter and the stack rule build it orchestrator-side to read its declaration."""

@@ -130,6 +130,7 @@ from tolokaforge.core.loop import (
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.search.backend import (
+    RAG_SERVICE_STACK_SERVICE,
     SearchBackend,
     SearchBackendContext,
     SearchBackendFactory,
@@ -177,6 +178,7 @@ __all__ = [
     "CustomCheckExecutorFactory",
     "DuplicateRegistrationError",
     "JudgeModelProviderFactory",
+    "RAG_SERVICE_STACK_SERVICE",
     "RESERVED_SEARCH_BACKEND_NAMES",
     "ReadinessProbeFactory",
     "RegistryError",

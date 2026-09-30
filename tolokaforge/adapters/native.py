@@ -1329,7 +1329,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             UnknownImplementationError: no backend is registered under
                 ``rag.backend``.
         """
-        from tolokaforge.runner.models import SearchConfig, SearchPlane
+        from tolokaforge.core.search.backend import RAG_SERVICE_STACK_SERVICE
+        from tolokaforge.runner.models import SearchConfig
 
         search = search_declaration(task)
         corpus_dir = search.corpus_dir
@@ -1354,7 +1355,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
         backend = declared_search_backend(search)
         return SearchConfig(
-            enabled=backend.stack_service == SearchPlane.RAG_SERVICE,
+            enabled=backend.stack_service == RAG_SERVICE_STACK_SERVICE,
             plane=search.backend,
             domain_name=task.category or task_id,
             documents_path=corpus_dir,

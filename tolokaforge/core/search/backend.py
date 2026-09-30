@@ -71,6 +71,7 @@ from typing import Any, Protocol, runtime_checkable
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
 
 __all__ = [
+    "RAG_SERVICE_STACK_SERVICE",
     "SearchBackend",
     "SearchBackendContext",
     "SearchBackendFactory",
@@ -78,6 +79,16 @@ __all__ = [
     "SearchIndexBuildError",
     "SearchOutcome",
 ]
+
+
+RAG_SERVICE_STACK_SERVICE = "rag_service"
+"""The rag-service stack service, as a backend names it in ``stack_service``.
+
+The orchestrator starts ``full_stack`` for a task whose backend declares it, the
+runner hands such a backend its rag-service client under this key, and the wire's
+``search.enabled`` says whether a task's backend declares it. It is a stack service,
+not a backend name: the ``rag_service`` backend happens to share the spelling.
+"""
 
 
 @dataclass(frozen=True)
