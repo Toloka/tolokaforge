@@ -1549,6 +1549,8 @@ reject it.
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
 | `search.plane` | every pack | `unreleased` | new engine → old image |
+| `search.backend_config` | a pack declaring a non-empty `initial_state.rag.backend_config` | `unreleased` | new engine → old image |
+| `search.tool_name` | a pack naming its search tool other than `search_kb` | `unreleased` | new engine → old image |
 | `grading.llm_judge.judge_kind` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading_method_config` | every pack | `unreleased` | new engine → old image |
@@ -1557,7 +1559,9 @@ reject it.
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing
 under it, and `null` is a key an image must still declare. That is why `trace_checks`
 bites a pack that grades no trajectory at all, and why `search.plane` bites a task
-with no knowledge base.
+with no knowledge base. `search.backend_config` and `search.tool_name` are the
+opposite case: `SearchConfig` leaves them off the wire while they hold their default
+(an empty mapping, `search_kb`), so they bite only a pack that declares a value.
 
 Three rows need more than a cell:
 

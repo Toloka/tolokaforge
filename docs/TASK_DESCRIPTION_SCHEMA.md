@@ -204,21 +204,21 @@ class UserSimulatorConfig(BaseModel):
 
 
 # =============================================================================
-# Search / TypeSense
+# Search
 # =============================================================================
 
 class SearchPlane(str, Enum):
-    """Which plane serves a task's ``documents_path``."""
+    """Built-in names `SearchConfig.plane` carries — constants, not a closed set."""
     TYPESENSE = "typesense"                       # The runner registers a search client
     RAG_SERVICE = "rag_service"                   # rag-service indexes the bundled corpus
 
 
 class SearchConfig(BaseModel):
-    """Configuration for knowledge base search (TypeSense)."""
+    """Configuration for knowledge base search."""
     enabled: bool = False                         # This task needs rag-service
-    plane: Optional[SearchPlane] = None           # Which plane serves documents_path
+    plane: Optional[str] = None                   # A search-backend name, or "typesense"
     domain_name: Optional[str] = None             # "external_retail_v3"
-    documents_path: Optional[str] = None          # Path to docindex/ directory
+    documents_path: Optional[str] = None          # Path to the corpus directory
 
     # TypeSense connection details, for a runner no stack told where TypeSense is.
     # The stack's TYPESENSE_HOST / TYPESENSE_PORT outrank them where both exist;
@@ -227,6 +227,10 @@ class SearchConfig(BaseModel):
     host: Optional[str] = None                    # "typesense" (Docker DNS alias)
     port: Optional[int] = None                    # 8108 (container port)
     api_key: Optional[str] = None                 # TypeSense API key
+
+    # Left off the serialised description while at their default.
+    backend_config: Dict[str, Any] = {}           # Opaque; handed to the backend's factory
+    tool_name: str = "search_kb"                  # The agent's search tool
 
 
 # =============================================================================
