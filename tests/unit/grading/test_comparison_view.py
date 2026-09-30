@@ -326,10 +326,15 @@ def test_the_same_inputs_give_the_same_view_and_record() -> None:
     assert first.record == second.record
 
 
-def test_the_golden_is_not_a_parameter() -> None:
-    parameters = inspect.signature(apply_comparison_view).parameters
-    assert list(parameters) == ["state", "initial", "view", "id_fields"]
-    assert [p.kind for p in parameters.values()][1:] == [inspect.Parameter.KEYWORD_ONLY] * 3
+def test_no_parameter_can_carry_the_other_side() -> None:
+    """One state positionally, its own context by keyword, and no catch-all."""
+    kinds: dict[Any, list[str]] = {}
+    for name, parameter in inspect.signature(apply_comparison_view).parameters.items():
+        kinds.setdefault(parameter.kind, []).append(name)
+    assert kinds == {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD: ["state"],
+        inspect.Parameter.KEYWORD_ONLY: ["initial", "view", "id_fields"],
+    }
 
 
 @pytest.mark.parametrize(

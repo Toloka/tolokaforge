@@ -74,6 +74,7 @@ _ZERO = {"all_zero": ["amount", "tax"]}
         ({"status": {"in": ["draft", "superseded"]}}, {"status": "accepted"}, False),
         ({"status": {"in": ["draft", None]}}, {}, True),
         ({"quantity": {"in": [0]}}, {"quantity": False}, False),
+        ({"quantity": {"in": [True]}}, {"quantity": 1}, False),
         # is_null
         ({"note": {"is_null": True}}, {}, True),
         ({"note": {"is_null": True}}, {"note": None}, True),
@@ -81,6 +82,7 @@ _ZERO = {"all_zero": ["amount", "tax"]}
         ({"note": {"is_null": True}}, {"note": ""}, False),
         ({"note": {"is_null": False}}, {"note": 0}, True),
         ({"note": {"is_null": False}}, {}, False),
+        ({"note": {"is_null": False}}, {"note": None}, False),
         # starts_with
         ({"id": {"starts_with": "AUT-"}}, {"id": "AUT-7"}, True),
         ({"id": {"starts_with": "AUT-"}}, {"id": "MAN-7"}, False),
@@ -256,6 +258,34 @@ def test_path_filters_the_items_of_a_nested_list_in_each_row() -> None:
             rows_removed=3,
         ),
     )
+
+
+_LEDGER_MONEY = [
+    "net_eligible_cost",
+    "category_limited_amount",
+    "stay_allocated_amount",
+    "prior_paid_offset",
+    "new_reimbursement",
+]
+
+
+def test_a_money_field_the_item_does_not_carry_is_not_zero() -> None:
+    """The ledger shape: seeded allocations carry an amount but none of the money fields."""
+    seeded = {"purchase_key": "P1", "amount": "0.00"}
+    created = {"purchase_key": "P2", **dict.fromkeys(_LEDGER_MONEY, "0.00")}
+    unused = {
+        "purchase_key": "P3",
+        **dict.fromkeys(_LEDGER_MONEY, "0.00"),
+        "prior_paid_offset": None,
+    }
+    ledger = [{"id": "L1", "purchase_allocations": [seeded, created, unused]}]
+    result = _apply(
+        {"recovery_expense_ledger": ledger},
+        _exclude(
+            "recovery_expense_ledger", {"all_zero": _LEDGER_MONEY}, path="purchase_allocations"
+        ),
+    )
+    assert result.state["recovery_expense_ledger"][0]["purchase_allocations"] == [seeded, unused]
 
 
 def test_path_traverses_a_list_on_the_way_element_by_element() -> None:
