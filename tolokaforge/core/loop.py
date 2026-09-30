@@ -237,9 +237,11 @@ class TerminationPolicy(Protocol):
 class UserTurnResult:
     """Outcome of an optional user turn.
 
-    Either the loop terminates (``termination`` set — e.g. ``###STOP###``) or a
-    user :class:`Message` is appended and the loop continues (``message`` set).
-    Exactly one is populated.
+    ``message`` alone appends a user :class:`Message` and the loop continues.
+    ``termination`` alone stops the loop (e.g. a bare stop token). Both together
+    append the message as the dialogue's last turn and then stop, so the agent
+    never answers it. With neither set, the loop moves on to the next agent turn
+    without a user message.
     """
 
     message: Message | None = None
@@ -252,6 +254,11 @@ class UserTurn(Protocol):
     Absent for the judge: when the engine has no :class:`UserTurn`, a
     no-tool-call assistant turn simply advances to the next turn (re-prompt),
     and the loop never touches user-simulator concepts.
+
+    ``messages`` is the recorded transcript. A user turn may append to it
+    before returning — the messages it appends are recorded and never sent to
+    the agent, which is how an ``isolated`` user's tool steps are kept; only
+    :attr:`UserTurnResult.message` is mirrored into the agent's wire.
     """
 
     def __call__(self, messages: list[Message]) -> UserTurnResult: ...
@@ -398,6 +405,25 @@ def classify_loop_error(
         reason=TerminationReason.ERROR,
         system_message=f"Error: {error_str}. Dialogue terminated.",
         status=TrialStatus.ERROR,
+    )
+
+
+def episode_timeout_decision(
+    start_time: float, episode_timeout_s: float, logger: StructuredLogger
+) -> TerminationDecision | None:
+    """The episode-timeout verdict once ``episode_timeout_s`` has passed since ``start_time``.
+
+    The loop checks it between turns; a user turn that asks its simulator more
+    than once checks it between those asks, since one turn can then run long.
+    """
+    elapsed = time.time() - start_time
+    if elapsed <= episode_timeout_s:
+        return None
+    logger.warning("Episode timeout reached", elapsed_s=elapsed, timeout_s=episode_timeout_s)
+    return TerminationDecision(
+        reason=TerminationReason.TIMEOUT,
+        system_message=f"Episode timeout reached ({episode_timeout_s}s). Dialogue terminated.",
+        status=TrialStatus.TIMEOUT,
     )
 
 
@@ -561,6 +587,11 @@ class AgentLoopContext:
         second actor draw from, so one actor's raw provider id is
         disambiguated rather than recorded twice. A ``None`` ``recorder`` is
         the judge's read-only shape, not a licence to execute tools unrecorded.
+    ``agent_view``
+        When set, what of the recorded transcript the agent may read: a user
+        turn records steps the agent is never sent, so a loop that builds its
+        input from ``messages`` passes them through this first. ``None`` reads
+        the whole record.
     """
 
     llm_client: LoopLLMClient
@@ -582,6 +613,7 @@ class AgentLoopContext:
     observer: LoopObserver | None = None
     validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
     tool_output_max_chars_by_tool: dict[str, int] | None = None
+    agent_view: Callable[[list[Message]], list[Message]] | None = None
 
 
 AgentLoopFactory = Callable[[AgentLoopContext], AgentLoop]
@@ -841,6 +873,18 @@ class ToolCallFunnel:
             call.arguments = normalized_args
 
 
+def _opening(wire: list[Message]) -> list[Message]:
+    """The head of *wire* a summarize keeps: everything through the first user turn.
+
+    That is the user's opening, and the agent's opening line ahead of it when the
+    task declared one (``actors.user.first_agent_message``).
+    """
+    for index, message in enumerate(wire):
+        if message.role is MessageRole.USER:
+            return wire[: index + 1]
+    return wire[:1]
+
+
 @dataclass
 class ToolCallingLoop:
     """Generic multi-turn tool-calling engine.
@@ -900,6 +944,12 @@ class ToolCallingLoop:
     # sequence, while a rubric judge's loop takes the default and disambiguates
     # only against its own calls.
     call_ids: EpisodeUniqueCallIds = field(default_factory=EpisodeUniqueCallIds)
+    # What of the recorded transcript the agent reads, where the loop builds its
+    # input from the record rather than from its own wire: the wire's start, the
+    # summarizer's input and the observer's view of a generation's request.
+    # ``None`` reads the whole record; a trial whose user takes isolated tool
+    # steps passes :func:`~tolokaforge.core.actors.tool_turns.agent_view`.
+    agent_view: Callable[[list[Message]], list[Message]] | None = None
 
     # The single path every tool call this loop makes travels: id assignment,
     # execution, recording, error wording, output cap, metrics and observer.
@@ -942,7 +992,7 @@ class ToolCallingLoop:
         """
         status = TrialStatus.COMPLETED
         termination_reason: TerminationReason | None = None
-        self._wire_messages = list(messages)
+        self._wire_messages = self._read_as_agent(messages)
         self._excluding_reason_evidence = None
 
         for turn in range(self.config.max_turns):
@@ -996,6 +1046,10 @@ class ToolCallingLoop:
         """
         messages.append(message)
         self._wire_messages.append(message)
+
+    def _read_as_agent(self, messages: list[Message]) -> list[Message]:
+        """A new list of what the agent reads of *messages*; see :attr:`agent_view`."""
+        return list(messages) if self.agent_view is None else self.agent_view(messages)
 
     def _attempt_turn(
         self,
@@ -1187,7 +1241,7 @@ class ToolCallingLoop:
             self.observer.generation(
                 index=len(messages) - 1,
                 turn=turn,
-                request=messages[:-1],
+                request=self._read_as_agent(messages[:-1]),
                 result=result,
                 started_at=ended_at - timedelta(seconds=max(0.0, result.latency_s or 0.0)),
                 ended_at=ended_at,
@@ -1273,7 +1327,7 @@ class ToolCallingLoop:
         policy = self.config.summarize_policy
         self.logger.info("Summarizing wire history", turn=turn, trigger=trigger)
         try:
-            recap = policy.summarize(system_prompt, list(messages))
+            recap = policy.summarize(system_prompt, self._read_as_agent(messages))
         except litellm.exceptions.ContextWindowExceededError as exc:
             return TerminationDecision(
                 reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
@@ -1291,9 +1345,8 @@ class ToolCallingLoop:
                 ),
                 status=TrialStatus.FAILED,
             )
-        first_user_message = self._wire_messages[0]
         self._wire_messages = [
-            first_user_message,
+            *_opening(self._wire_messages),
             Message(role=MessageRole.USER, content=recap, ts=_now()),
         ]
         marker = self._system_message(
@@ -1327,12 +1380,12 @@ class ToolCallingLoop:
             return None, None, False
 
         outcome = self.user_turn(messages)
+        if outcome.message is not None:
+            self._append_both(messages, outcome.message)
+
         if outcome.termination is not None:
             self._append_both(messages, self._system_message(outcome.termination.system_message))
             return self._stop_on(outcome.termination)
-
-        if outcome.message is not None:
-            self._append_both(messages, outcome.message)
         return None, None, False
 
     def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
@@ -1348,21 +1401,7 @@ class ToolCallingLoop:
         return len(messages) - 1
 
     def _check_episode_timeout(self, start_time: float) -> TerminationDecision | None:
-        elapsed = time.time() - start_time
-        if elapsed <= self.config.episode_timeout_s:
-            return None
-        self.logger.warning(
-            "Episode timeout reached",
-            elapsed_s=elapsed,
-            timeout_s=self.config.episode_timeout_s,
-        )
-        return TerminationDecision(
-            reason=TerminationReason.TIMEOUT,
-            system_message=(
-                f"Episode timeout reached ({self.config.episode_timeout_s}s). Dialogue terminated."
-            ),
-            status=TrialStatus.TIMEOUT,
-        )
+        return episode_timeout_decision(start_time, self.config.episode_timeout_s, self.logger)
 
     def _capture_effective_prompt(self, result: GenerationResult) -> None:
         if result.effective_system_prompt and not self._captured:
@@ -1446,4 +1485,5 @@ def _engine_loop_factory(context: AgentLoopContext) -> ToolCallingLoop:
         validation_schemas_by_tool=context.validation_schemas_by_tool,
         tool_output_max_chars_by_tool=context.tool_output_max_chars_by_tool,
         call_ids=context.call_ids,
+        agent_view=context.agent_view,
     )

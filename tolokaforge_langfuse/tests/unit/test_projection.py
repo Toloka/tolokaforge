@@ -10,11 +10,14 @@ from pathlib import Path
 
 import parity_bundle as pb
 import pytest
+import yaml
 from tolokaforge_langfuse.media import LangfuseApiError, iter_batches
 from tolokaforge_langfuse.model_names import RawModelNameResolver, build_model_name_resolver
 from tolokaforge_langfuse.projection import (
     LIVE_ONLY_KEYS,
     PRODUCER_KEYS,
+    USAGE_MATCH_GENERATION_ID,
+    USAGE_MATCH_POSITIONAL,
     ProjectionContext,
     build_projection,
     schema_keys,
@@ -445,3 +448,138 @@ class TestObserverProjection:
 
 def test_the_png_of_the_bundle_is_a_real_image() -> None:
     assert base64.b64encode(pb.PNG).decode().startswith("iVBORw0KGgo")
+
+
+class TestAgentOpeningLine:
+    """A trial run with ``actors.user.first_agent_message`` opens its transcript with
+    the agent's line: an agent message that no model generated."""
+
+    LINE = "Hi! How can I help you today?"
+
+    def _projection(
+        self,
+        tmp_path: Path,
+        *,
+        pinned: bool = False,
+        generation_ids: bool = True,
+        declared: bool = True,
+    ):
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        line = {
+            **trajectory["messages"][5],
+            "content": self.LINE,
+            "openrouter_generation_id": None,
+            "ts": "2026-09-17T09:00:00.100000Z",
+        }
+        trajectory["messages"] = [line, *trajectory["messages"]]
+        if pinned:
+            trajectory["first_user_message_source"] = "pinned"
+            trajectory["messages"][1]["openrouter_generation_id"] = None
+        if not generation_ids:
+            for message in trajectory["messages"]:
+                message["openrouter_generation_id"] = None
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        if declared:
+            task = pb.task()
+            task["user_actor"] = {**task["user_actor"], "first_agent_message": self.LINE}
+            (trial_dir / "task.yaml").write_text(yaml.safe_dump(task), encoding="utf-8")
+        resolver = RawModelNameResolver()
+        return build_projection(
+            IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
+        )
+
+    @staticmethod
+    def _generations(projection) -> list[str]:
+        return [e["body"]["name"] for e in projection.events if e["type"] == "generation-create"]
+
+    def test_the_line_is_an_event_and_no_generation(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path)
+        line = [
+            e["body"]
+            for e in projection.events
+            if e["type"] == "event-create" and e["body"]["name"] == "agent opening line"
+        ]
+        assert [event["output"] for event in line] == [self.LINE]
+        assert "assistant turn 0" not in self._generations(projection)
+
+    @pytest.mark.parametrize(
+        ("generation_ids", "match"),
+        [(True, USAGE_MATCH_GENERATION_ID), (False, USAGE_MATCH_POSITIONAL)],
+    )
+    def test_usage_still_pairs_with_every_generation(
+        self, tmp_path: Path, generation_ids: bool, match: str
+    ) -> None:
+        projection = self._projection(tmp_path, generation_ids=generation_ids)
+        assert projection.stats.usage_match == match
+        costs = [
+            e["body"].get("costDetails")
+            for e in projection.events
+            if e["type"] == "generation-create" and e["body"]["name"].startswith("assistant")
+        ]
+        assert costs == [{"total": 0.001}, {"total": 0.002}, {"total": 0.003}]
+
+    def test_an_undeclared_leading_agent_turn_stays_a_generation(self, tmp_path: Path) -> None:
+        """The line is read from ``task.yaml``, not guessed from the transcript's shape."""
+        projection = self._projection(tmp_path, declared=False)
+        assert "assistant turn 0" in self._generations(projection)
+        assert not any(e["body"]["name"] == "agent opening line" for e in projection.events)
+
+    def test_a_pinned_opener_after_the_line_is_no_user_generation(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path, pinned=True)
+        assert "user turn 1" not in self._generations(projection)
+        assert "user turn 7" in self._generations(projection)
+
+
+class TestUserToolSteps:
+    """A trial run with ``actors.user.tool_turns: isolated`` records the simulator's
+    tool steps as a user message carrying calls, then a tool message per result."""
+
+    @staticmethod
+    def _isolated_bundle(tmp_path: Path, *, with_tool_log: bool) -> Path:
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        step_call = {"id": "u1", "name": "check_booking_app", "arguments": {"pnr": "PLT001"}}
+        step = {**trajectory["messages"][0], "content": "", "tool_calls": [step_call]}
+        result = {
+            **trajectory["messages"][2],
+            "content": '{"pnr": "PLT001"}',
+            "tool_call_id": "u1",
+            "ts": "2026-09-17T09:00:00.500000Z",
+        }
+        step["ts"] = "2026-09-17T09:00:00.200000Z"
+        trajectory["messages"] = [step, result, *trajectory["messages"]]
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        if not with_tool_log:
+            (trial_dir / "tool_log.yaml").unlink()
+        return trial_dir
+
+    def _projection(self, tmp_path: Path, *, with_tool_log: bool):
+        trial_dir = self._isolated_bundle(tmp_path, with_tool_log=with_tool_log)
+        resolver = RawModelNameResolver()
+        return build_projection(
+            IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
+        )
+
+    def test_the_trace_input_is_the_opening_not_the_step_before_it(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path, with_tool_log=True)
+        assert projection.trace_body["input"] == pb.trajectory()["messages"][0]["content"]
+
+    def test_the_step_generation_shows_its_calls(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path, with_tool_log=True)
+        step = next(
+            e["body"]
+            for e in projection.events
+            if e["type"] == "generation-create" and e["body"]["name"] == "user turn 0"
+        )
+        assert step["output"]["tool_calls"][0]["name"] == "check_booking_app"
+
+    def test_without_a_tool_log_the_step_result_is_the_users(self, tmp_path: Path) -> None:
+        projection = self._projection(tmp_path, with_tool_log=False)
+        roles = {
+            e["body"]["metadata"]["call_id"]: e["body"]["metadata"]["role"]
+            for e in projection.events
+            if (e["body"].get("metadata") or {}).get("kind") == "tool"
+        }
+        assert roles["u1"] == "user_tool"
+        assert roles["call_1"] == "agent_tool"

@@ -19,7 +19,6 @@ models:
   user:
     provider: "openrouter"
     name: "anthropic/claude-haiku-4-5"
-    temperature: 0.2
 
 orchestrator:
   repeats: 2

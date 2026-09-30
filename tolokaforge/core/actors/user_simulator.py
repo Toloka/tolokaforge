@@ -21,12 +21,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.core.actors.actor import Actor
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import ModelConfig, RateLimitProbeConfig
+    from tolokaforge.core.models.task_config import UserToolTurns
 
 __all__ = [
     "UserSimulator",
@@ -61,13 +63,25 @@ class UserSimulatorContext:
     ``actors.user`` config. ``mode``, ``persona``, ``backstory`` and
     ``scripted_flow`` are the engine's built-in simulator fields; ``llm_config``,
     ``tool_schemas`` and ``rate_limit_probe`` are the trial dependencies the
-    built-in simulator needs.
+    built-in simulator needs. ``tool_turns`` is the actor's
+    ``actors.user.tool_turns``: under ``isolated`` the runner records the
+    simulator's tool calls as steps the agent never reads, and a simulator
+    builds its request from
+    :func:`~tolokaforge.core.actors.tool_turns.simulator_view` so it sees its
+    own steps; under ``shared`` (the default) from
+    :func:`~tolokaforge.core.actors.tool_turns.shared_view`.
 
     ``simulator_config`` is the escape hatch a non-built-in simulator reads its
     own configuration from: the engine passes ``actors.user.simulator_config``
     through verbatim and never interprets its keys, so a benchmark simulator
     declares its own fields there and validates them into its own model. The
     built-in simulator ignores it.
+
+    ``task_dir`` is the task's directory (the adapter's ``get_task_dir``), so a
+    simulator resolves a path its ``simulator_config`` names relative to the
+    task, and a task records the relative path rather than a machine's absolute
+    one. ``None`` where there is no task directory, as in the conformance kit's
+    contexts; the built-in simulator ignores it.
     """
 
     mode: str
@@ -77,7 +91,9 @@ class UserSimulatorContext:
     tool_schemas: list[dict[str, Any]] | None
     llm_config: ModelConfig | None = None
     rate_limit_probe: RateLimitProbeConfig | None = None
+    tool_turns: UserToolTurns = "shared"
     simulator_config: dict[str, Any] = field(default_factory=dict)
+    task_dir: Path | None = None
 
 
 UserSimulatorFactory = Callable[[UserSimulatorContext], UserSimulator]

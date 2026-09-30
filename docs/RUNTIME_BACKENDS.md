@@ -706,7 +706,7 @@ Ten swappable seams are each exposed as an `importlib.metadata` entry-point grou
 | `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
 | `tolokaforge.turn_policies` | `Callable[[TurnPolicyContext], TurnPolicy]` | `user_simulator` (the resolved user :class:`Actor`; ``None`` for policies that dispatch no user) |
 | `tolokaforge.agent_loops` | `Callable[[AgentLoopContext], AgentLoop]` | the trial's loop dependencies (LLM client, tool executor + schemas, loop budget, metrics sink, termination + user-turn seams, tool-call recorder, call-id assigner, logger, observation sinks) |
-| `tolokaforge.user_simulators` | `Callable[[UserSimulatorContext], UserSimulator]` | the resolved `actors.user` fields (`mode`, `persona`, `backstory`, `scripted_flow`), the trial deps the built-in needs (`tool_schemas`, `llm_config`, `rate_limit_probe`), and the opaque `simulator_config` mapping the engine passes through untouched for a non-built-in simulator to read |
+| `tolokaforge.user_simulators` | `Callable[[UserSimulatorContext], UserSimulator]` | the resolved `actors.user` fields (`mode`, `persona`, `backstory`, `scripted_flow`), the trial deps the built-in needs (`tool_schemas`, `llm_config`, `rate_limit_probe`), the opaque `simulator_config` mapping the engine passes through untouched for a non-built-in simulator to read, and `task_dir`, the task's directory that paths in `simulator_config` resolve against |
 | `tolokaforge.compose_materialisers` | `type[ComposeMaterialiser]` | *no context* — class is instantiated by the composer |
 | `tolokaforge.service_lifecycle_dispatchers` | `type[ServiceLifecycleDispatcher]` | *no context* — one class per `ServiceIsolation` label; the class's `isolation` ClassVar names the label the composer looks it up by |
 | `tolokaforge.substrate_composers` | `type[SubstrateComposer]` | *no context* — the backend instantiates the composer and injects its own materialiser + dispatcher registry |
@@ -777,7 +777,7 @@ mykind = "mypkg.readiness:my_probe_factory"
 
 tolokaforge ships `grpc`, `http`, and `tcp` built-ins under this group.
 
-**Turn policy** — `mypkg/turn_policy.py`. A turn policy choreographs the loop's turn cycle: `bootstrap` decides how message index 0 is delivered, and `next_actor` picks the actor to speak next (or returns `None` to end the turn cycle for an agent-monologue task). The policy is looked up by `TaskConfig.interaction_mode`, so a policy name in this group is a valid `interaction_mode` value:
+**Turn policy** — `mypkg/turn_policy.py`. A turn policy choreographs the loop's turn cycle: `bootstrap` decides how the dialogue's opening user message is delivered, and `next_actor` picks the actor to speak next (or returns `None` to end the turn cycle for an agent-monologue task). The policy is looked up by `TaskConfig.interaction_mode`, so a policy name in this group is a valid `interaction_mode` value:
 
 ```python
 from tolokaforge.core.plugin_registry import TurnPolicyContext
@@ -817,6 +817,8 @@ my_loop = "mypkg.loop:my_loop_factory"
 ```
 
 The `AgentLoop` docstring carries the four obligations the type checker does not: every call id comes from `context.call_ids.assign(...)` and is used identically on the assistant `Message`, in `recorder.record(...)` and in `tool_executor.execute(...)`; a failed tool call's message content carries `tolokaforge.core.tool_message_format.TOOL_ERROR_MESSAGE_PREFIX`; `metrics`, `should_terminate` and a supplied `user_turn` are fed, not optional; and a termination reason that excludes the trial from the measured denominator (`RATE_LIMIT`, `API_TIMEOUT`, `EMPTY_COMPLETION`, `PROVISION_ERROR`) is emitted only with typed evidence named in `LoopOutcome.excluding_reason_evidence` — otherwise the loop emits `ERROR`, which is counted, and an unevidenced claim is downgraded to `ERROR` by the caller. Routing the exception through `context.classify_error` discharges this: the `TerminationDecision` it returns carries `excluding_reason_evidence` on exactly the typed branches, so a loop copies it onto the outcome beside the reason it takes from the same decision. A loop with a text action format normalises each parsed action into a `ToolCall` before appending. See [ADR-0050](adr/0050-agent-loop-protocol-and-registry.md).
+
+When the trial's user takes isolated tool steps (`actors.user.tool_turns: isolated`), `context.agent_view` is set. The user turn records those steps in `messages`, and they are not the agent's to read, so a loop that builds its request from `messages` passes them through `context.agent_view` first.
 
 Route every tool call through `ToolCallFunnel` and the first two are discharged for you — it is the same implementation the built-in loop runs on:
 

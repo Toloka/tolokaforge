@@ -2,6 +2,8 @@
   "actors": {
     "user": {
       "backstory": null,
+      "first_agent_message": null,
+      "max_tool_steps": null,
       "mode": "scripted",
       "persona": null,
       "scripted_flow": [
@@ -11,7 +13,10 @@
         }
       ],
       "simulator": null,
-      "simulator_config": null
+      "simulator_config": null,
+      "stop_tokens": null,
+      "stop_with_text": null,
+      "tool_turns": null
     }
   },
   "adapter_settings": null,

@@ -19,8 +19,11 @@ from tolokaforge_coding_harnesses.usage_log import (
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
+from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
+from tolokaforge.core.actors.tool_turns import agent_view
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
 from tolokaforge.core.actors.user_simulator import UserSimulator
+from tolokaforge.core.actors.user_stop import UserStop, UserStopRule
 from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
@@ -42,6 +45,7 @@ from tolokaforge.core.loop import (
     MetricsSink,
     TerminationDecision,
     UserTurnResult,
+    episode_timeout_decision,
 )
 from tolokaforge.core.models import (
     CostByRoleMetrics,
@@ -110,6 +114,11 @@ _RECONCILIATION_DETAIL_CHARS = 400
 Enough for the first unlinkable call id and the counts around it, without
 copying an unbounded tool name or argument blob into the trial log.
 """
+
+
+def _call_names(calls: list[ToolCall]) -> str:
+    """The names of *calls*, in order, for a log line or a system message."""
+    return ", ".join(call.name for call in calls)
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -240,6 +249,9 @@ class TrialRunner:
         tool_output_max_chars_by_tool: dict[str, int] | None = None,
         loop_observer: "LoopObserver | None" = None,
         sourced_tool_names: Collection[str] = (),
+        user_stop: UserStopRule = UserStopRule(),
+        user_tool_turns: UserToolTurnRule = UserToolTurnRule(),
+        first_agent_message: str | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -275,6 +287,13 @@ class TrialRunner:
         self._probe_stats = probe_stats
         # Live tracing (ADR-0047): the trial's observer bound to the agent role, or None.
         self._loop_observer = loop_observer
+        self._user_stop = user_stop
+        self._user_tool_turns = user_tool_turns
+        # ``actors.user.first_agent_message``: written as the transcript's first
+        # message, ahead of turn 0, when set. The message written is kept, so the
+        # turn counts can leave out the one assistant message no model generated.
+        self._first_agent_message = first_agent_message
+        self._opening_line: Message | None = None
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
@@ -313,12 +332,12 @@ class TrialRunner:
         # One entry per dispatched user turn the reply guard did not accept on
         # its first generation, carried onto the trajectory.
         self._user_reply_guard_events: list[UserReplyGuardEvent] = []
-        # Set when the simulator emits a substantive final reply glued to the
-        # ``###STOP###`` token in the same message. On the next user turn the
-        # runner terminates before calling the simulator so the agent gets
-        # exactly one more turn to act on the delivered reply, then the loop
-        # ends with ``USER_STOP``.
-        self._user_stop_pending: bool = False
+        # Set when the simulator emits a substantive final reply glued to a stop
+        # token in the same message and the rule says ``deliver``. On the next
+        # user turn the runner terminates before calling the simulator so the
+        # agent gets exactly one more turn to act on the delivered reply, then
+        # the loop ends with ``USER_STOP``.
+        self._pending_user_stop: UserStop | None = None
 
     @property
     def effective_system_prompt(self) -> str | None:
@@ -525,6 +544,7 @@ class TrialRunner:
                             probe_stats=self._probe_stats,
                         ),
                         observer=self._loop_observer,
+                        agent_view=agent_view if self._user_tool_turns.isolated else None,
                     )
                 )
                 outcome = loop.run(system_prompt, self.messages, self.start_time)
@@ -890,9 +910,9 @@ class TrialRunner:
         trial recovers neither the money nor the cap, and a trial whose
         conversation is intact still grades.
         """
-        assistant_turns = sum(
-            1 for message in self.messages if message.role is MessageRole.ASSISTANT
-        )
+        # The agent's opening line (``first_agent_message``) is recorded, not
+        # generated, so it is no turn a model call should have paid for.
+        assistant_turns = self._agent_generations(self.messages)
         if not assistant_turns or self.metrics.api_calls:
             return
         self._report_postcondition_finding(
@@ -920,7 +940,7 @@ class TrialRunner:
         """
         end_ts = datetime.now(tz=timezone.utc)
         self.metrics.latency_total_s = time.time() - self.start_time
-        self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+        self.metrics.turns = self._agent_generations(self.messages)
         self._apply_probe_stats()
         self._apply_harness_telemetry()
         self._apply_cost_rollup()
@@ -1434,6 +1454,10 @@ class TrialRunner:
     ) -> None:
         """Determine and append the first user message before the loop runs.
 
+        A task's ``first_agent_message`` is appended ahead of it, as the agent's
+        first turn: the simulator then answers that line rather than the built-in
+        greeting, and the agent reads it back as its own.
+
         Delegates to ``policy.bootstrap(...)``: a policy may short-circuit to a
         caller-provided literal (tool-use / Tau style, agent-monologue seed),
         route to a user simulator to synthesise turn 0 (today's default
@@ -1449,6 +1473,15 @@ class TrialRunner:
         """
         seed = initial_user_message if initial_user_message.strip() else None
         decision = policy.bootstrap(task_config, seed)
+
+        if self._first_agent_message is not None:
+            self._opening_line = Message(
+                role=MessageRole.ASSISTANT,
+                content=self._first_agent_message,
+                ts=datetime.now(tz=timezone.utc),
+            )
+            self.messages.append(self._opening_line)
+            self.logger.info("Agent opening delivered", chars=len(self._first_agent_message))
 
         first_user_calls: list[ToolCall] = []
         if decision.first_user_message is not None:
@@ -1518,13 +1551,14 @@ class TrialRunner:
         ).record_generation(result)
 
     def _bootstrap_via_simulator(self) -> tuple[str, list[ToolCall]]:
-        """Synthesise turn 0 by dispatching the user simulator against a canned
-        agent greeting. Retries on rate limits only.
+        """Synthesise turn 0 by dispatching the user simulator against the agent's
+        opening line, or a canned agent greeting when the task declared none.
+        Retries on rate limits only.
 
         Returns the opening message text with any tool results inlined, and the
         calls that produced them. Only the tool-call half of a user turn is
-        shared with :meth:`_dispatch_user_actor`: turn 0 keeps its own
-        ``###STOP###`` reading, which seeds the token literally rather than
+        shared with :meth:`_dispatch_user_actor`: turn 0 does not read stop
+        tokens, so a token in the opening is seeded literally rather than
         terminating the trial before the agent has spoken.
 
         Probe mode collapses this to one attempt. The retry loop only ever
@@ -1545,18 +1579,14 @@ class TrialRunner:
                 "bootstrap_via_simulator requires a user simulator; the conductor "
                 "must construct one for interaction_mode='conversational'."
             )
-        greeting_context = [
-            Message(
-                role=MessageRole.ASSISTANT,
-                content=SIMULATOR_GREETING,
-                ts=datetime.now(tz=timezone.utc),
-            )
-        ]
+        greeting_context = self._greeting_context()
+        if self._user_tool_turns.isolated:
+            return self._bootstrap_isolated(self.user_simulator, greeting_context)
         init_attempts = 1 if self._rate_limit_probe_active else 4
         for attempt in range(1, init_attempts + 1):
             try:
                 first_user_result = self.user_simulator.reply(
-                    greeting_context, observation=self._user_observation
+                    greeting_context + self.messages, observation=self._user_observation
                 )
                 self._record_user_reply_guard(
                     message_index=len(self.messages),
@@ -1612,6 +1642,120 @@ class TrialRunner:
                 raise
 
         raise RuntimeError("Failed to generate initial user message")
+
+    def _agent_generations(self, messages: list[Message]) -> int:
+        """The assistant messages in *messages* the agent generated: all but the opening line."""
+        return sum(
+            1
+            for message in messages
+            if message.role == MessageRole.ASSISTANT and message is not self._opening_line
+        )
+
+    def _greeting_context(self) -> list[Message]:
+        """What leads the transcript in the simulator's turn-0 context.
+
+        Nothing, when the task declared a ``first_agent_message``: the transcript
+        already opens with it. Otherwise the canned :data:`SIMULATOR_GREETING`,
+        which the simulator's view prepends to every later context as well.
+        """
+        if self._first_agent_message is not None:
+            return []
+        return [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=SIMULATOR_GREETING,
+                ts=datetime.now(tz=timezone.utc),
+            )
+        ]
+
+    def _bootstrap_isolated(
+        self, simulator: UserSimulator, greeting_context: list[Message]
+    ) -> tuple[str, list[ToolCall]]:
+        """Turn 0 under ``isolated`` tool turns: tool steps first, then the opening.
+
+        The steps are recorded into the transcript ahead of the opening message,
+        in the order they happened, and each next ask sees them after the
+        greeting. The rate-limit retry wraps each ask on its own, so a step whose
+        calls already ran is never run again.
+
+        More steps than the rule allows refuse the trial rather than end it with
+        ``USER_TOOL_LOOP_LIMIT``: the agent has not spoken yet, so a simulator
+        that loops before its opening is a defect of the harness's own actor,
+        not an outcome the agent could be graded on.
+
+        Like the rest of turn 0 this runs before the loop, so no episode-timeout
+        check interrupts it; ``max_tool_steps`` bounds it, its wall time is spent
+        from the episode budget, and the loop's first turn ends a trial whose
+        opening ran past that budget with ``TIMEOUT``.
+        """
+        opening = self._bootstrap_reply(simulator, greeting_context + self.messages)
+        steps = 0
+        while opening.tool_calls:
+            steps += 1
+            if steps > self._user_tool_turns.max_steps:
+                raise RuntimeError(
+                    f"User simulator took more than {self._user_tool_turns.max_steps} tool "
+                    "step(s) before its opening message; the dialogue cannot start. The "
+                    f"next step called {_call_names(opening.tool_calls)}."
+                )
+            self._record_user_tool_step(self.messages, opening)
+            opening = self._bootstrap_reply(simulator, greeting_context + self.messages)
+        if not opening.text.strip():
+            raise RuntimeError(
+                "User simulator bootstrap produced an empty first message; "
+                "a blank opening cannot seed the conversation."
+            )
+        self.logger.debug("User simulator generated first message", tool_steps=steps)
+        return opening.text, []
+
+    def _bootstrap_reply(
+        self, simulator: UserSimulator, context: list[Message]
+    ) -> GenerationResult:
+        """One turn-0 ask of the simulator, retried on rate limits only.
+
+        The same budget :meth:`_bootstrap_via_simulator` applies to its single
+        ask, spent per ask here. Its probe-mode collapse to one attempt is kept in
+        step with that method, though a built trial never takes it: the conductor
+        refuses isolated tool turns under probe mode.
+        """
+        init_attempts = 1 if self._rate_limit_probe_active else 4
+        for attempt in range(1, init_attempts + 1):
+            try:
+                result = simulator.reply(context, observation=self._user_observation)
+            except UserReplyRefused as exc:
+                self._record_user_reply_guard(
+                    message_index=len(self.messages),
+                    outcome=UserReplyOutcome.REFUSED,
+                    rejected=exc.rejected,
+                )
+                raise
+            except Exception as exc:
+                self._wait_to_retry_the_opening(exc, attempt, init_attempts)
+                continue
+            self._record_user_reply_guard(
+                message_index=len(self.messages),
+                outcome=UserReplyOutcome.DELIVERED,
+                rejected=result.guard_rejections,
+            )
+            return result
+        raise RuntimeError("Failed to generate initial user message")
+
+    def _wait_to_retry_the_opening(self, exc: Exception, attempt: int, init_attempts: int) -> None:
+        """Back off before the next turn-0 ask, or re-raise *exc*.
+
+        Only a rate limit is retried, and only while attempts remain.
+        """
+        if not self._is_rate_limit_error(exc) or attempt >= init_attempts:
+            raise exc
+        wait_s = min(2**attempt, 12)
+        self.logger.warning(
+            "Initial user generation rate-limited; retrying",
+            attempt=attempt,
+            max_attempts=init_attempts,
+            wait_s=wait_s,
+            error=str(exc),
+        )
+        time.sleep(wait_s)
 
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
@@ -1685,7 +1829,7 @@ class TrialRunner:
         state = TurnState(
             messages=messages,
             last_agent_had_tool_calls=False,
-            turn_index=sum(1 for m in messages if m.role == MessageRole.ASSISTANT),
+            turn_index=self._agent_generations(messages),
         )
         decision = policy.next_actor(state)
         if decision is None:
@@ -1695,31 +1839,114 @@ class TrialRunner:
         return self._dispatch_user_actor(decision.actor, messages)
 
     def _dispatch_user_actor(self, actor: Actor, messages: list[Message]) -> UserTurnResult:
-        """Run one user actor turn: reply, ``###STOP###`` detection, user tools.
+        """Run one user actor turn: reply, stop-token detection, user tools.
 
-        Stop-token handling has two shapes:
+        Under ``isolated`` tool turns a reply that calls tools is a tool step,
+        not the turn's reply (see :meth:`_run_user_tool_steps`). A stop token
+        inside a step is not a stop, since a step is addressed to the
+        environment.
 
-        * Bare ``###STOP###`` (or the token with only whitespace before it) —
-          terminate immediately with ``USER_STOP``.
-        * Substantive text glued to ``###STOP###`` in one message — deliver the
-          pre-token text as a normal USER message, set a pending flag, and
-          terminate on the following user turn. Guarantees the agent sees the
-          final reply (e.g. a backstory-mandated verbal decline) before the
-          dialogue ends.
+        The trial's :class:`UserStopRule` names the tokens; the earliest one in the
+        reply decides. Stop-token handling has three shapes:
+
+        * Under ``stop_with_text: end``, any reply carrying a token — record the
+          reply as the simulator wrote it, token included, as the dialogue's last
+          USER message and terminate in the same turn, so the agent never answers
+          it (:meth:`_end_on_user_stop`).
+        * Under ``stop_with_text: deliver``, a bare token (or the token with only
+          whitespace before it) — terminate immediately with ``USER_STOP``.
+        * Under ``stop_with_text: deliver``, substantive text before the token —
+          deliver the pre-token text as a normal USER message, hold the stop
+          pending, and terminate on the following user turn. Guarantees the agent
+          sees the final reply (e.g. a backstory-mandated verbal decline) before
+          the dialogue ends.
         """
-        if self._user_stop_pending:
-            self.logger.info("User signaled completion (###STOP### after final reply)")
-            self._user_stop_pending = False
+        if self._pending_user_stop is not None:
+            stop = self._pending_user_stop
+            self.logger.info(f"User signaled completion ({stop.token} after final reply)")
+            self._pending_user_stop = None
             return UserTurnResult(
-                termination=TerminationDecision(
-                    reason=TerminationReason.USER_STOP,
-                    system_message="User signaled stop (###STOP### after final reply). Dialogue ended.",
-                )
+                termination=self._user_stop_decision(stop, after_final_reply=True)
             )
 
-        # Read before the dispatch: this is the position the turn's USER message
-        # will occupy, and on a stop token or a refusal the loop puts its own
-        # SYSTEM message there instead.
+        user_result = self._reply_as_user(actor, messages)
+        if self._user_tool_turns.isolated:
+            outcome = self._run_user_tool_steps(actor, messages, user_result)
+            if isinstance(outcome, TerminationDecision):
+                return UserTurnResult(termination=outcome)
+            user_result = outcome
+
+        stop = self._user_stop.find(user_result.text)
+        if stop is not None and self._user_stop.with_text == "end":
+            return self._end_on_user_stop(stop, user_result)
+        if stop is not None and stop.dropped:
+            self.logger.info(
+                f"Dropped the text after {stop.token} in the user reply",
+                dropped_chars=len(stop.dropped),
+            )
+        if stop is not None and not stop.text:
+            self.logger.info(
+                f"User signaled completion ({stop.token})",
+                dropped_tool_calls=len(user_result.tool_calls or []),
+            )
+            return UserTurnResult(termination=self._user_stop_decision(stop))
+        if stop is not None:
+            user_result.text = stop.text
+
+        user_message_text, executed_calls = self._run_user_tool_calls(
+            user_result.text, user_result.tool_calls
+        )
+        message = Message(
+            role=MessageRole.USER,
+            content=user_message_text,
+            tool_calls=executed_calls if executed_calls else None,
+            ts=datetime.now(tz=timezone.utc),
+        )
+
+        if stop is None:
+            return UserTurnResult(message=message)
+        self.logger.info(
+            f"User sent final reply with {stop.token} — delivering reply, stop pending"
+        )
+        self._pending_user_stop = stop
+        return UserTurnResult(message=message)
+
+    def _end_on_user_stop(self, stop: UserStop, user_result: GenerationResult) -> UserTurnResult:
+        """``stop_with_text: end``: record the stop reply as written and end the dialogue.
+
+        The reply becomes the dialogue's last USER message exactly as the simulator
+        wrote it — what precedes the token, the token and whatever follows it — so
+        a transcript keeps the stop reply verbatim, and the dialogue ends in the
+        same turn, so the agent never answers it. A bare token is recorded the
+        same way. The calls on a reply with text run and are recorded on the
+        message first, their results appended after the text as on any user
+        turn that calls tools; a bare token's calls are not run.
+        """
+        calls = user_result.tool_calls if stop.text else []
+        if not stop.text:
+            self.logger.info(
+                f"User signaled completion ({stop.token})",
+                dropped_tool_calls=len(user_result.tool_calls or []),
+            )
+        user_message_text, executed_calls = self._run_user_tool_calls(user_result.text, calls)
+        message = Message(
+            role=MessageRole.USER,
+            content=user_message_text,
+            tool_calls=executed_calls if executed_calls else None,
+            ts=datetime.now(tz=timezone.utc),
+        )
+        self.logger.info(
+            f"User sent final reply with {stop.token} — recording reply, dialogue ends"
+        )
+        return UserTurnResult(message=message, termination=self._user_stop_decision(stop))
+
+    def _reply_as_user(self, actor: Actor, messages: list[Message]) -> GenerationResult:
+        """Ask *actor* for its reply to *messages*, recording what the reply guard spent.
+
+        The guard event's index is read before the dispatch: it is the position
+        the reply's USER message will occupy, and on a bare stop token under
+        ``deliver`` or a refusal the loop puts its own SYSTEM message there instead.
+        """
         message_index = len(messages)
         try:
             user_result = actor.reply(messages, observation=self._user_observation)
@@ -1736,38 +1963,149 @@ class TrialRunner:
             rejected=user_result.guard_rejections,
         )
         self._record_actor_spend(user_result)
+        return user_result
 
-        if "###STOP###" in user_result.text:
-            pre_stop_text, _, _ = user_result.text.partition("###STOP###")
-            pre_stop_text = pre_stop_text.rstrip()
-            if not pre_stop_text:
-                self.logger.info(
-                    "User signaled completion (###STOP###)",
-                    dropped_tool_calls=len(user_result.tool_calls or []),
-                )
-                return UserTurnResult(
-                    termination=TerminationDecision(
-                        reason=TerminationReason.USER_STOP,
-                        system_message="User signaled stop (###STOP###). Dialogue ended.",
-                    )
-                )
-            self.logger.info(
-                "User sent final reply with ###STOP### — delivering reply, stop pending"
-            )
-            self._user_stop_pending = True
-            user_result.text = pre_stop_text
+    def _run_user_tool_steps(
+        self, actor: Actor, messages: list[Message], reply: GenerationResult
+    ) -> GenerationResult | TerminationDecision:
+        """Record *reply*'s tool steps until *actor* answers with text alone.
 
-        user_message_text, executed_calls = self._run_user_tool_calls(
-            user_result.text, user_result.tool_calls
+        Each step is recorded into *messages* — never the agent's wire — and the
+        actor is asked again with its results in view. Returns the text reply, or
+        the decision that ends the dialogue: a step past the rule's
+        ``max_steps``, none of whose calls run, or the episode timeout, which is
+        checked after every step.
+        """
+        steps = 0
+        while reply.tool_calls:
+            steps += 1
+            if steps > self._user_tool_turns.max_steps:
+                return self._user_tool_loop_limit_decision(reply.tool_calls)
+            self._record_user_tool_step(messages, reply)
+            timeout = episode_timeout_decision(self.start_time, self.episode_timeout_s, self.logger)
+            if timeout is not None:
+                return timeout
+            reply = self._reply_as_user(actor, messages)
+        return reply
+
+    def _user_tool_loop_limit_decision(self, unrun: list[ToolCall]) -> TerminationDecision:
+        """End the dialogue on a step past the limit, naming the calls it would have run.
+
+        The unrun step is not recorded into the transcript, so the log line and the
+        system message are where its calls stay visible.
+        """
+        limit = self._user_tool_turns.max_steps
+        self.logger.warning(
+            "User tool loop reached its step limit",
+            max_steps=limit,
+            unrun_calls=[{"name": call.name, "arguments": call.arguments} for call in unrun],
+        )
+        return TerminationDecision(
+            reason=TerminationReason.USER_TOOL_LOOP_LIMIT,
+            system_message=(
+                f"User took {limit} tool step(s) without replying; the next step's "
+                f"{len(unrun)} call(s), {_call_names(unrun)}, were not run. Dialogue terminated."
+            ),
         )
 
-        return UserTurnResult(
-            message=Message(
+    def _record_user_tool_step(self, messages: list[Message], result: GenerationResult) -> None:
+        """Run and record one isolated tool step: the user's calls, then a TOOL message each.
+
+        Appended to the recorded transcript as the step runs, so a failure part-way
+        leaves no executed call the transcript does not show. Each call is keyed
+        through the trial's assigner and recorded as the user's, like a ``shared``
+        user call. Results are not capped: ``tool_output_max_chars`` bounds what
+        the agent's model reads, and none of this reaches the agent.
+
+        When the executor raises, the failing call and every call after it in the
+        step still get a TOOL message before the exception propagates. The loop's
+        API-error retry can bring the same simulator back to this transcript, and
+        its provider refuses a request whose calls lack results.
+
+        Raises:
+            RuntimeError: the step carries calls and the trial has no user-side
+                executor (see :meth:`_run_user_tool_calls`).
+        """
+        if self.user_tool_executor is None:
+            raise RuntimeError(
+                f"the user simulator emitted {len(result.tool_calls)} tool call(s) "
+                f"({', '.join(call.name for call in result.tool_calls)}) and this trial has no "
+                "user-side executor to run them. The trial is built with both or neither"
+            )
+        calls = [
+            call.model_copy(update={"id": self._call_ids.assign(call.id)})
+            for call in result.tool_calls
+        ]
+        messages.append(
+            Message(
                 role=MessageRole.USER,
-                content=user_message_text,
-                tool_calls=executed_calls if executed_calls else None,
+                content=result.text,
+                tool_calls=calls,
+                reasoning=result.reasoning,
                 ts=datetime.now(tz=timezone.utc),
             )
+        )
+        for position, call in enumerate(calls):
+            tool_start = time.time()
+            try:
+                tool_result = self.user_tool_executor.execute(
+                    call.name, call.arguments, call_id=call.id
+                )
+            except Exception as exc:
+                self._answer_a_failed_step(messages, calls[position:], exc)
+                raise
+            tool_duration = time.time() - tool_start
+            self.tool_call_recorder.record(
+                call_id=call.id,
+                tool_name=call.name,
+                arguments=call.arguments or {},
+                executor=ToolExecutorIdentity.USER,
+                status=resolve_tool_status(tool_result),
+                output=resolve_tool_output(tool_result),
+                latency_seconds=tool_duration,
+            )
+            self.logger.debug(
+                "User tool executed",
+                tool=call.name,
+                success=tool_result.success,
+                duration_s=tool_duration,
+            )
+            content = (
+                tool_result.output
+                if tool_result.success
+                else f"Error: {resolve_tool_output(tool_result)}"
+            )
+            messages.append(self._user_tool_message(call.id, content))
+
+    def _answer_a_failed_step(
+        self, messages: list[Message], calls: list[ToolCall], exc: Exception
+    ) -> None:
+        """TOOL messages for a step whose first remaining call raised: its error, then
+        a "not run" answer for each call after it."""
+        failed, *unrun = calls
+        messages.append(self._user_tool_message(failed.id, f"Error: {exc}"))
+        messages.extend(
+            self._user_tool_message(call.id, "Error: not run, an earlier call of this step raised.")
+            for call in unrun
+        )
+
+    @staticmethod
+    def _user_tool_message(call_id: str, content: str) -> Message:
+        return Message(
+            role=MessageRole.TOOL,
+            content=content,
+            tool_call_id=call_id,
+            ts=datetime.now(tz=timezone.utc),
+        )
+
+    @staticmethod
+    def _user_stop_decision(
+        stop: UserStop, *, after_final_reply: bool = False
+    ) -> TerminationDecision:
+        when = " after final reply" if after_final_reply else ""
+        return TerminationDecision(
+            reason=TerminationReason.USER_STOP,
+            system_message=f"User signaled stop ({stop.token}{when}). Dialogue ended.",
         )
 
     def _run_user_tool_calls(

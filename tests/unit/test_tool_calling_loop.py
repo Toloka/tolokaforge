@@ -19,6 +19,7 @@ import time
 import pytest
 from litellm.exceptions import RateLimitError
 
+from tolokaforge.core.actors.tool_turns import agent_view
 from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError, ParserError
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
@@ -1592,6 +1593,109 @@ def test_summarize_fires_at_watermark_before_generate():
         (MessageRole.ASSISTANT, "reach for a tool"),
     ]
     assert any(m.role is MessageRole.SYSTEM and "Context summarized" in m.content for m in messages)
+
+
+def test_summarize_keeps_the_agent_opening_line_with_the_first_user_turn():
+    """A transcript that opens with the agent's own line (``first_agent_message``)
+    keeps that line and the user's opening on the wire across a summarize: the
+    recap replaces what came after them, not the user's first message."""
+    summarizer = _ScriptedSummarizer(["compact-recap"])
+    client = _RecordingClient(
+        [
+            GenerationResult(
+                text="reach for a tool",
+                tool_calls=[ToolCall(id="t1", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=950),
+            ),
+            GenerationResult(text="all done", usage=Usage(prompt_tokens=100)),
+        ]
+    )
+    opening_line = Message(role=MessageRole.ASSISTANT, content="Hi! How can I help you today?")
+    messages: list[Message] = [opening_line, _first_user()]
+    _summarize_loop(
+        client,
+        sink=_WatermarkSink([950, 100]),
+        summarizer=summarizer,
+        config=_summarize_config(
+            max_context_tokens=1000,
+            context_watermark=100,
+            summarize_policy=summarizer,
+            max_turns=2,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.wire_snapshots[0] == messages[:2]
+    assert [(m.role, m.content) for m in client.wire_snapshots[1][:3]] == [
+        (MessageRole.ASSISTANT, "Hi! How can I help you today?"),
+        (MessageRole.USER, "the original task"),
+        (MessageRole.USER, "compact-recap"),
+    ]
+    assert client.wire_snapshots[1][3].role is MessageRole.SYSTEM
+
+
+class _RequestRecordingObserver:
+    """Loop observer keeping what each generation was reported to have been sent."""
+
+    def __init__(self) -> None:
+        self.requests: list[list[Message]] = []
+
+    def generation(self, *, index, turn, request, result, started_at, ended_at) -> None:
+        self.requests.append(list(request))
+
+    def tool_call(self, *, index, call, result, started_at, ended_at) -> None:
+        pass
+
+
+def test_agent_view_shapes_every_input_the_loop_builds_from_the_record():
+    """An isolated user's tool step sits in the recorded transcript ahead of the
+    opening; the agent's first wire, the summarizer's input and the observer's view
+    of a request all leave it out, while the record keeps it."""
+    user_step = Message(
+        role=MessageRole.USER,
+        content="",
+        tool_calls=[ToolCall(id="u1", name="check_balance", arguments={})],
+    )
+    user_result = Message(role=MessageRole.TOOL, content="balance: 12.50", tool_call_id="u1")
+    summarizer = _ScriptedSummarizer(["compact-recap"])
+    client = _RecordingClient(
+        [
+            GenerationResult(
+                text="reach for a tool",
+                tool_calls=[ToolCall(id="t1", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=950),
+            ),
+            GenerationResult(text="all done", usage=Usage(prompt_tokens=100)),
+        ]
+    )
+    observer = _RequestRecordingObserver()
+    opening = _first_user()
+    messages: list[Message] = [user_step, user_result, opening]
+    ToolCallingLoop(
+        llm_client=client,
+        tool_executor=_RecordingExecutor(),
+        tool_schemas=[],
+        config=_summarize_config(
+            max_context_tokens=1000,
+            context_watermark=100,
+            summarize_policy=summarizer,
+            max_turns=2,
+        ),
+        metrics=_WatermarkSink([950, 100]),
+        should_terminate=_never_terminate,
+        classify_error=_classify_no_patterns,
+        logger=_logger(),
+        retry_sleep=lambda _s: None,
+        observer=observer,
+        agent_view=agent_view,
+    ).run("sys", messages, time.time())
+
+    assert client.wire_snapshots[0] == [opening]
+    assert client.wire_snapshots[1][0] == opening
+    assert user_step not in summarizer.received_messages[0]
+    assert user_result not in summarizer.received_messages[0]
+    assert [m.tool_call_id for m in summarizer.received_messages[0] if m.tool_call_id] == ["t1"]
+    assert all(user_step not in request for request in observer.requests)
+    assert messages[:2] == [user_step, user_result]
 
 
 def test_no_summarize_when_below_watermark():

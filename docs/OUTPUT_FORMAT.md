@@ -241,6 +241,11 @@ user_actor:                                  # resolved UserSimulatorConfig, or 
   persona: "frustrated commuter"
   backstory: "I lost my season pass last week."
   scripted_flow: null                        # full flow when mode is scripted
+  stop_tokens: ["###STOP###"]                # tokens that ended or could end the dialogue
+  stop_with_text: "deliver"                  # deliver | end
+  tool_turns: "shared"                       # shared | isolated
+  max_tool_steps: 10                         # tool steps an isolated turn may take
+  first_agent_message: null                  # the agent's opening line, or null
 grading_config:
   state_checks: {...}
   transcript_rules: {...}
@@ -297,8 +302,8 @@ the bundle alone, without re-reading the task pack at the commit the run used.
 | Key | Values | Meaning |
 |---|---|---|
 | `interaction_mode` | `conversational` \| `agent_only` | Turn-loop shape. `agent_only` never dispatches a user actor. |
-| `initial_user_message` | string \| `null` | The task's pinned opener, verbatim — leading and trailing whitespace included, since this is the text delivered as message index 0. `null` when the task pinned no opener. |
-| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`. `null` under `agent_only`, which resolves no simulator at all. |
+| `initial_user_message` | string \| `null` | The task's pinned opener, verbatim — leading and trailing whitespace included, since this is the text delivered as the first user message. `null` when the task pinned no opener. |
+| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`, `simulator`, `simulator_config`, `stop_tokens`, `stop_with_text`, `tool_turns`, `max_tool_steps`, `first_agent_message`. `null` under `agent_only`, which resolves no simulator at all. |
 
 `interaction_mode` is what makes a `null` actor readable: it is the only thing
 in the bundle that separates "no user actor by design" from a defect, since
@@ -307,8 +312,10 @@ in the bundle that separates "no user actor by design" from a defect, since
 
 `user_actor` records the resolution the run used, not what the pack declared —
 a task declaring no `actors.user` records the defaults that applied
-(`mode: llm`, `persona: cooperative`), the same way `tools`, `policies` and
-`model_config.<role>.resolved.*` read. `scripted_flow` is recorded in full: it
+(`mode: llm`, `persona: cooperative`, `stop_tokens: ["###STOP###"]`,
+`stop_with_text: deliver`, `tool_turns: shared`, `max_tool_steps: 10`), the same
+way `tools`, `policies` and `model_config.<role>.resolved.*` read. `scripted_flow`
+is recorded in full: it
 drove the conversation, and a trial whose user turns were scripted has no other
 record of what was said.
 
@@ -404,8 +411,8 @@ user_reply_guard_events:                              # [] on a trial no detecto
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
 | `simulator_schema_version` | `int` | always; [§ Schema Version Stamps](#schema-version-stamps) carries the current value | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. |
-| `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers message index 0 | Where the opening user turn came from. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. A bootstrap the reply guard *refused* is one way to reach the first of those: it leaves the source `null` **and** records a `user_reply_guard_events` entry at `message_index: 0` with `outcome: refused`, and that pair is the signature of a guard-refused opening. |
-| `user_reply_guard_events` | list of `{message_index, outcome, rejected[]}` | one entry per user turn the reply guard did not accept on its first generation | What a defective user turn cost. `[]` is the normal state — a turn accepted on its first generation records nothing. `outcome: delivered` means a later attempt passed the guard and the turn was delivered; `outcome: refused` means the attempt budget was spent, so no clean turn could be produced and the trial errored as a `harness_error`. `rejected` carries one `{detector, reason, excerpt}` per discarded attempt, in order, and is never empty — a turn that discarded nothing is recorded by the absence of an entry, not by an empty list. `detector` is the name the detector is registered under, and `excerpt` is the evidence that detector recorded, truncated to 200 characters — the matched phrase for `fourth_wall`, and for `scratchpad` the matched tag plus the text that follows it, because a bare think tag reads the same whether it leaked or was pasted. `message_index` is the position in `messages` the turn was **dispatched at** — for a turn whose accepted reply was a bare `###STOP###`, and for a refused turn, that position holds the loop's own SYSTEM message rather than a USER turn. |
+| `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers the first user message | Where the opening user turn came from. It is message index 0 unless the agent's opening line (`first_agent_message`) or a user's tool steps come first. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. A bootstrap the reply guard *refused* is one way to reach the first of those: it leaves the source `null` **and** records a `user_reply_guard_events` entry at the opening's `message_index` (0, or 1 after the agent's opening line) with `outcome: refused`, and that pair is the signature of a guard-refused opening. |
+| `user_reply_guard_events` | list of `{message_index, outcome, rejected[]}` | one entry per user turn the reply guard did not accept on its first generation | What a defective user turn cost. `[]` is the normal state — a turn accepted on its first generation records nothing. `outcome: delivered` means a later attempt passed the guard and the turn was delivered; `outcome: refused` means the attempt budget was spent, so no clean turn could be produced and the trial errored as a `harness_error`. `rejected` carries one `{detector, reason, excerpt}` per discarded attempt, in order, and is never empty — a turn that discarded nothing is recorded by the absence of an entry, not by an empty list. `detector` is the name the detector is registered under, and `excerpt` is the evidence that detector recorded, truncated to 200 characters — the matched phrase for `fourth_wall`, and for `scratchpad` the matched tag plus the text that follows it, because a bare think tag reads the same whether it leaked or was pasted. `message_index` is the position in `messages` the turn was **dispatched at** — for a turn whose accepted reply was a bare `###STOP###` under `stop_with_text: deliver`, and for a refused turn, that position holds the loop's own SYSTEM message rather than a USER turn. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
 | `provision_stage` | `"materialise_run"`, `"provision"`, `"await_ready"`, `"reset_recipe"`, `"register_trial"`, `"cycle"`, or `null` | non-null iff `termination_reason == provision_error` | Which point of the provisioning lifecycle raised `ProvisionError`. `materialise_run` — the composition-plan validation refused the plan before any substrate work; `provision` — compose-up failed; `await_ready` — the readiness gate rejected the substrate; `reset_recipe` — the per-trial reset hook failed; `register_trial` — the runner-side arming step refused registration after `provision` + `await_ready` succeeded; `cycle` — a `ServiceLifecycleDispatcher` refused a between-trial cycle. The same value also lands on the per-trial [`metrics.yaml`](#provision-failure-bundle) as `error_stage`, so a reader of either artifact alone tells them apart. `null` on every trial whose termination reason is not `provision_error`. |
 | `snapshot_status` | [`SnapshotStatus`](../tolokaforge/core/models/trajectory.py) mapping or `null` | non-null when the run enabled `grader.snapshot` and the trial reached the trial-end producer seam | The trial-end grade-bundle producer outcome — `outcome: stored` carries `uri` + `bundle_size_bytes`; `oversize` carries `bundle_size_bytes` + `cap_bytes` + `reason`; `produce_failed` carries `reason`; `ungraded` carries no side data. See [RUNNER.md § Snapshot bundle mode](RUNNER.md#snapshot-bundle-mode) for the producer lifecycle. `null` on a run with snapshot mode disabled or a trial that ended before grading. |
@@ -435,6 +442,51 @@ The `reasoning` block is extracted by the provider-specific `ReasoningCodec`
 registered on the preset (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) § `reasoning_codec`). Non-reasoning
 models emit `reasoning: null`.
+
+### The agent's opening line in `messages`
+
+A task that declares `actors.user.first_agent_message`
+([TASKS.md § The agent's opening line](TASKS.md#the-agents-opening-line)) has a
+transcript that opens with that line, an assistant message with no `tool_calls`,
+`reasoning` or `openrouter_generation_id`, ahead of the first user message:
+
+```yaml
+- role: "assistant"
+  content: "Hi! How can I help you today?"   # the task's line, not a generation
+- role: "user"
+  content: "I need to change my trip."
+```
+
+`task.yaml`'s `user_actor.first_agent_message` says whether a trial ran with the
+line. `metrics.turns` leaves it out, and the Langfuse projection records it as an
+event rather than a generation; grading reads it as the agent's first message.
+
+### A user's tool steps in `messages`
+
+How a user simulator's own tool calls appear depends on its actor's `tool_turns`
+([TASKS.md § User tool turns](TASKS.md#user-tool-turns)). Under `shared`, a user
+message carries its `tool_calls` and its `content` ends with the results; no
+`role: tool` message follows. Under `isolated`, each tool step is a user message
+carrying the calls — its `content` is whatever text the model wrote with them,
+often `""` — followed by one `role: tool` message per call, joined by
+`tool_call_id` the way the agent's are:
+
+```yaml
+- role: "user"
+  content: ""
+  tool_calls:
+    - {id: "call_7", name: "check_balance", arguments: {}}
+  reasoning: null            # the step's own reasoning, when the model produced any
+- role: "tool"
+  content: "balance: 12.50"  # "Error: …" when the call failed
+  tool_call_id: "call_7"
+- role: "user"
+  content: "It says 12.50."  # the turn the agent read
+```
+
+The agent was sent neither message of the step. A step's results are not capped by
+`tool_output_max_chars`, which bounds what the agent's model reads. `tool_log.yaml`
+records the step's calls with `executor: user`.
 
 ### `messages[*].openrouter_generation_id`
 
@@ -767,7 +819,7 @@ to tell the two apart.
 
 ```yaml
 latency_total_s: 174.14
-turns: 14
+turns: 14                  # agent generations; the agent's opening line is not one
 api_calls: 14
 usage:
   prompt_tokens: 2006
@@ -1899,9 +1951,9 @@ evidence about us, and our own defects stay counted. See
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
-| `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
+| `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
 | `metrics.yaml` | `schema_version` | `6` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `4` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane |
+| `aggregate.json` | `schema_version` | `4` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |

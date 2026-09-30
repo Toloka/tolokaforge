@@ -29,6 +29,7 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.observability import ids
 
 _log = logging.getLogger(__name__)
@@ -425,10 +426,14 @@ def _judge_observations(
 
 
 def _is_simulated_user(
-    message: Mapping[str, Any], index: int, trajectory: Mapping[str, Any], task: Mapping[str, Any]
+    message: Mapping[str, Any],
+    first_user_turn: bool,
+    trajectory: Mapping[str, Any],
+    task: Mapping[str, Any],
 ) -> bool:
     """The connector's rule: a ``role: user`` message the user simulator wrote, not the task's
-    pinned opener."""
+    pinned opener — the transcript's first user message, which the agent's opening line
+    (``first_agent_message``) moves off index 0."""
     if message.get("openrouter_generation_id"):
         return True
     user_block = (task.get("model_config") or {}).get("user") if isinstance(task, Mapping) else None
@@ -436,7 +441,7 @@ def _is_simulated_user(
         return False
     if task.get("interaction_mode") == "agent_only":
         return False
-    if index == 0:
+    if first_user_turn:
         return trajectory.get("first_user_message_source") == "simulator"
     return True
 
@@ -451,12 +456,23 @@ def _user_generations(
 ) -> list[tuple[str, dict[str, Any]]]:
     out: list[tuple[str, dict[str, Any]]] = []
     context: list[dict[str, Any]] = []
-    for index, message in enumerate(trajectory.get("messages") or []):
+    messages = trajectory.get("messages") or []
+    # A user tool step (``tool_turns: isolated``) carries calls and usually no text,
+    # so its output shows the calls, as the live projection's does.
+    steps = user_tool_step_positions_of([m if isinstance(m, Mapping) else {} for m in messages])
+    first_user = next(
+        (i for i, m in enumerate(messages) if isinstance(m, Mapping) and m.get("role") == "user"),
+        None,
+    )
+    for index, message in enumerate(messages):
         if not isinstance(message, Mapping):
             continue
         role = message.get("role")
-        if role == "user" and _is_simulated_user(message, index, trajectory, task):
+        if role == "user" and _is_simulated_user(message, index == first_user, trajectory, task):
             at = _clock(message.get("ts"))
+            output: dict[str, Any] = {"content": message.get("content")}
+            if index in steps:
+                output["tool_calls"] = message.get("tool_calls")
             body: dict[str, Any] = {
                 "id": ids.observation_id(trace_id, "ugen", index),
                 "traceId": trace_id,
@@ -465,7 +481,7 @@ def _user_generations(
                 "startTime": at,
                 "endTime": at,
                 "input": context[-CONTEXT_MESSAGES:],
-                "output": {"content": message.get("content")},
+                "output": output,
                 "level": "DEFAULT",
                 "metadata": {
                     "role": "user",

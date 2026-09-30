@@ -25,6 +25,7 @@ from tolokaforge.core.models import (
     LEGACY_DOCKER_RUNTIME_ALIAS,
     RunConfig,
 )
+from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED
 from tolokaforge.core.plugin_registry import available_agent_loops, available_runtime_backends
 
 logger = logging.getLogger(__name__)
@@ -253,6 +254,18 @@ def _validate_model(
                     hint="Verify with your provider that the model supports reasoning_effort",
                 )
             )
+
+    # --- a user temperature nothing reads ---
+    if role == "user" and "temperature" in cfg:
+        issues.append(
+            ValidationIssue(
+                severity=Severity.WARNING,
+                path=f"{base}.temperature",
+                message=USER_TEMPERATURE_IGNORED,
+                hint="Drop the key; a registered simulator takes its temperature from "
+                "actors.user.simulator_config",
+            )
+        )
 
     # --- temperature with reasoning ---
     temperature = cfg.get("temperature")

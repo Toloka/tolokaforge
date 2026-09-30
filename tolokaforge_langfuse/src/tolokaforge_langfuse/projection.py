@@ -37,6 +37,7 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.observability import ids
 from tolokaforge.observability.observer import TrialIdentity
 from tolokaforge_langfuse.attachments import ATTACHMENTS_SCHEMA
@@ -290,12 +291,17 @@ def trace_time(trajectory: Mapping[str, Any]) -> tuple[str | None, str]:
 
 
 def pair_usage(
-    messages: Sequence[Mapping[str, Any]], calls: Sequence[Mapping[str, Any]]
+    messages: Sequence[Mapping[str, Any]],
+    calls: Sequence[Mapping[str, Any]],
+    *,
+    opening: int | None = None,
 ) -> tuple[str, dict[int, Mapping[str, Any]]]:
     """assistant message index -> usage call: by ``openrouter_generation_id`` when every
     assistant message names one a call carries (ids unique), positionally only when the counts
-    are equal, else unmatched (the trace alone carries totals)."""
-    assistant = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+    are equal, else unmatched (the trace alone carries totals). *opening* is the position of
+    the agent's opening line (``first_agent_message``), which is no generation and has no
+    call, so it takes no part."""
+    assistant = [i for i, m in enumerate(messages) if m.get("role") == "assistant" and i != opening]
     by_generation: dict[str, Mapping[str, Any]] = {}
     duplicated = False
     for call in calls:
@@ -496,16 +502,23 @@ def _tool_body_from_log(
 
 
 def _is_simulated_user(
-    message: Mapping[str, Any], index: int, trajectory: Mapping[str, Any], task: Mapping[str, Any]
+    message: Mapping[str, Any],
+    first_user_turn: bool,
+    trajectory: Mapping[str, Any],
+    task: Mapping[str, Any],
 ) -> bool:
-    """A ``role: user`` message the user simulator wrote, not the task's pinned opener."""
+    """A ``role: user`` message the user simulator wrote, not the task's pinned opener.
+
+    The opener is the transcript's first user message, which the agent's opening line
+    (``first_agent_message``) moves off index 0.
+    """
     if message.get("openrouter_generation_id"):
         return True
     if not role_model(task, "user")[0]:
         return False
     if task.get("interaction_mode") == "agent_only":
         return False
-    if index == 0:
+    if first_user_turn:
         return trajectory.get("first_user_message_source") == "simulator"
     return True
 
@@ -520,7 +533,13 @@ def _user_generation(
     started: str | None,
     ended: str | None,
     user_model_name: str | None,
+    tool_step: bool = False,
 ) -> dict[str, Any]:
+    # A user tool step (``tool_turns: isolated``) carries calls and usually no text,
+    # so its output shows the calls; a dialogue turn's output stays its text.
+    output: dict[str, Any] = {"content": message.get("content")}
+    if tool_step:
+        output["tool_calls"] = message.get("tool_calls")
     body: dict[str, Any] = {
         "id": ids.observation_id(trace_id, "ugen", index),
         "traceId": trace_id,
@@ -529,7 +548,7 @@ def _user_generation(
         "startTime": started,
         "endTime": ended or started,
         "input": context[-CONTEXT_MESSAGES:],
-        "output": {"content": message.get("content")},
+        "output": output,
         "metadata": {
             "role": "user",
             "actor": "user_simulator",
@@ -606,6 +625,7 @@ def _tool_observation(
     ended: str | None,
     media: MediaHandler | None,
     stats: ProjectionStats,
+    user_step_result: bool = False,
 ) -> dict[str, Any]:
     call_id = message.get("tool_call_id")
     blocks = message.get("content_blocks")
@@ -639,7 +659,9 @@ def _tool_observation(
         "input": arguments,
         "output": tool_output,
         "metadata": {
-            "role": "agent_tool",
+            # Without a tool log the transcript's shape still tells a user tool
+            # step's result from the agent's.
+            "role": "user_tool" if user_step_result else "agent_tool",
             "kind": "tool",
             "source": "transcript",
             "message_index": index,
@@ -708,11 +730,20 @@ def _agent_observations(
     emitted_calls: set[str] = set()
     out: list[tuple[str, dict[str, Any]]] = []
     context: list[dict[str, Any]] = []
+    steps = user_tool_step_positions_of(messages)
+    opening = _opening_line_position(messages, bundle.task)
+    first_user = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
     for index, message in enumerate(messages):
         role = message.get("role")
         started = _normalize_ts(message.get("ts")) or start
         ended = _normalize_ts(messages[index + 1].get("ts")) if index + 1 < len(messages) else end
-        if role == "user" and _is_simulated_user(message, index, bundle.trajectory, bundle.task):
+        if index == opening:
+            out.append(
+                ("event-create", _opening_line_event(trace_id, root_id, index, message, at=started))
+            )
+        elif role == "user" and _is_simulated_user(
+            message, index == first_user, bundle.trajectory, bundle.task
+        ):
             body = _user_generation(
                 trace_id,
                 root_id,
@@ -722,6 +753,7 @@ def _agent_observations(
                 started=started,
                 ended=ended,
                 user_model_name=user_model_name,
+                tool_step=index in steps,
             )
             out.append(("generation-create", body))
             stats.user_generations += 1
@@ -757,6 +789,7 @@ def _agent_observations(
                 ended=ended,
                 media=media,
                 stats=stats,
+                user_step_result=index in steps,
             )
             out.append(("span-create", body))
         context.append({"role": role, "content": str(message.get("content") or "")[:CONTEXT_CHARS]})
@@ -770,6 +803,22 @@ def _agent_observations(
         )
     )
     return out
+
+
+def _opening_line_event(
+    trace_id: str, root_id: str, index: int, message: Mapping[str, Any], *, at: str | None
+) -> dict[str, Any]:
+    """The agent's opening line (``first_agent_message``): an agent message, not a generation."""
+    return _event(
+        trace_id,
+        root_id,
+        f"agent-opening-{index}",
+        name="agent opening line",
+        at=at,
+        level="DEFAULT",
+        message=str(message.get("content") or ""),
+        metadata={"role": "agent", "message_index": index},
+    )
 
 
 def _event(
@@ -1144,17 +1193,31 @@ def _trace_body(
     agent: ModelIdentity | None,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
+    # The trace's input is the dialogue's first user turn: a tool step the
+    # simulator took before its opening (``tool_turns: isolated``) is not one.
+    steps = user_tool_step_positions_of(messages)
+    opening = next(
+        (
+            m.get("content")
+            for position, m in enumerate(messages)
+            if m.get("role") == "user" and position not in steps
+        ),
+        None,
+    )
+    # The agent's last word; its opening line (``first_agent_message``) is not one it
+    # generated.
+    opening_line = _opening_line_position(messages, bundle.task)
     return {
         "id": trace_id,
         "name": f"{ctx.label}/{task_id}",
         "timestamp": start,
         "sessionId": ctx.session_id,
-        "input": next((m.get("content") for m in messages if m.get("role") == "user"), None),
+        "input": opening,
         "output": next(
             (
                 m.get("content")
-                for m in reversed(messages)
-                if m.get("role") == "assistant" and m.get("content")
+                for position, m in reversed(list(enumerate(messages)))
+                if m.get("role") == "assistant" and m.get("content") and position != opening_line
             ),
             None,
         ),
@@ -1224,7 +1287,9 @@ def build_projection(
     messages = [m for m in trajectory.get("messages") or [] if isinstance(m, Mapping)]
     usage = _mapping(bundle.metrics.get("usage"))
     calls = [c for c in (usage.get("calls") or []) if isinstance(c, Mapping)]
-    usage_match, paired = pair_usage(messages, calls)
+    usage_match, paired = pair_usage(
+        messages, calls, opening=_opening_line_position(messages, bundle.task)
+    )
     stats.usage_match = usage_match
     start, _ = trace_time(trajectory)
     end = _normalize_ts(trajectory.get("end_ts"))
@@ -1297,3 +1362,25 @@ def build_projection(
     )
     events = _projection_events(trace_body, typed, environment=ctx.environment, stats=stats)
     return Projection(trace_id=trace_id, events=events, trace_body=trace_body, stats=stats)
+
+
+def _opening_line_position(
+    messages: Sequence[Mapping[str, Any]], task: Mapping[str, Any]
+) -> int | None:
+    """Where the agent's opening line sits in *messages*, or ``None``.
+
+    Read from what the trial declared, ``task.yaml``'s ``user_actor.first_agent_message``,
+    not from the transcript's shape: a transcript may open with a generated assistant turn.
+    The line is the first message past any system message, and it carries that text.
+    """
+    actor = task.get("user_actor") if isinstance(task, Mapping) else None
+    line = actor.get("first_agent_message") if isinstance(actor, Mapping) else None
+    if not line:
+        return None
+    first = next((i for i, m in enumerate(messages) if m.get("role") != "system"), None)
+    if first is None:
+        return None
+    message = messages[first]
+    if message.get("role") == "assistant" and message.get("content") == line:
+        return first
+    return None

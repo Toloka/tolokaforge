@@ -20,14 +20,13 @@ models:
   agent:
     provider: "openai"              # openai, anthropic, google, openrouter, azure, bedrock, ollama
     name: "gpt-4o-mini"             # Model name (provider-specific)
-    temperature: 0.0                # 0.0 = deterministic
+    temperature: 0.0                # 0.0 = deterministic; null sends none
     max_tokens: 4096
     seed: 42                        # For reproducibility (OpenAI, Anthropic)
 
   user:
     provider: "openai"
-    name: "gpt-4o-mini"
-    temperature: 0.7                # Higher for natural variation
+    name: "gpt-4o-mini"             # No temperature: the simulator does not read it
 
 orchestrator:
   workers: 4                        # Parallel worker threads
@@ -97,6 +96,11 @@ actors:
       - if_assistant_contains: "name"
         user: "My name is Alice."
       - default: "Please proceed."
+    stop_tokens: ["###STOP###"]     # Tokens that end the dialogue
+    stop_with_text: "deliver"       # "deliver" (agent answers the final reply) or "end"
+    tool_turns: "isolated"          # Default "shared"; "isolated" keeps user tool steps from the agent
+    max_tool_steps: 10              # Isolated only (refused under "shared"): steps one user turn may take
+    first_agent_message: "Hi! How can I help you today?"  # The agent's line the transcript opens with
 
 policies:
   disallowed_actions:

@@ -474,7 +474,9 @@ generation it role-flips the shared transcript (its own past USER turns
 replay as `assistant`, the agent's ASSISTANT turns as `user`), skips
 turns carrying no dialogue text (agent tool-call turns, whitespace-only
 replies), and coalesces adjacent same-role turns so the request
-alternates strictly. Two invariants hold on the request it sends:
+alternates strictly
+([`shared_view`](../tolokaforge/core/actors/tool_turns.py)). Two
+invariants hold on the request it sends:
 
 1. **It leads with a user-role turn.** Whenever the flipped context starts
    assistant-side (the simulator's own opening comes first — caller-seeded
@@ -493,11 +495,44 @@ alternates strictly. Two invariants hold on the request it sends:
    improvising.
 
 The greeting exists only in the simulator's private request; it never
-enters the shared transcript or `trajectory.yaml`. A revision to the prompt
+enters the shared transcript or `trajectory.yaml`. A task that declares
+`actors.user.first_agent_message` has that line in the transcript instead, as its
+first message: it flips to the request's leading user-role turn, so no greeting is
+prepended, and the simulator answers the task's line at turn 0 and reads it on
+every later turn. The line is part of the agent's request as well, as its first
+message after the system prompt; the engine puts no user turn ahead of it, so a
+provider that requires one refuses the request with its own error. The line is opt-in and authored, so it is outside
+`simulator_schema_version`; a trial that ran it is identified by
+`user_actor.first_agent_message`. A revision to the prompt
 body or to this context shape bumps `Trajectory.simulator_schema_version`
 (see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps);
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
 holds the prompt body to the generation it is stamped with.
+
+Under `actors.user.tool_turns: isolated` the context is built by
+[`simulator_view`](../tolokaforge/core/actors/tool_turns.py) instead. The
+simulator's own tool steps replay as `assistant` messages carrying their
+`tool_calls` — and the step's reasoning, so a thinking model gets its signed blocks
+back with the tool use they preceded — and their results as `tool` messages. An
+agent message that calls tools is dropped whole, text included, and only adjacent
+text turns are joined. Invariant 2 then admits a trailing `tool` message: the
+simulator reads a step's results and goes on. A tool-call reply is never given the
+filler text, since it is a step rather than a dialogue turn. The shape of this
+context is new only under `isolated`, so `simulator_schema_version` stays; a trial
+that ran it is identified by `user_actor.tool_turns`.
+
+A step whose user tool raises still gets a `tool` message for every call before
+the exception propagates, because the simulator can be asked again on the same
+transcript: when a user turn fails with an error the loop classifies as a
+provider error, the loop retries the whole turn, and the agent generates again
+before the simulator is asked. That retry predates tool turns; it leaves two
+assistant turns in a row in the agent's context.
+
+The request's `temperature` is 0.2, a per-call override the simulator passes on
+every generation; `models.user.temperature` never reaches it (see
+[`CONFIG.md`](CONFIG.md) § Notes). A simulator registered under
+`actors.user.simulator` owns its own client and sends whatever its
+`simulator_config` says.
 
 ### The prompt body
 
@@ -2196,10 +2231,13 @@ Implementations:
 * `StandardResponse` — no-op (default for OpenAI / Anthropic).
 * `UnwrapInputResponse` — strips Nova/Bedrock's `{input: {...}}` wrapper.
 * `JsonCoerceResponse` — defence against open-weights stringification:
-  decodes JSON-encoded array / object arguments back to native shape.
-  When `param_types` is supplied, also coerces `''` → `[]` / `''` → `{}`
-  for declared `array` / `object` parameters (the qwen `equipment: ''`
-  bug class).
+  decodes JSON-encoded array / object arguments back to native shape,
+  except for a parameter the schema declares `string`: it carries text the
+  tool parses itself, so it is never decoded. A union of `string` with a
+  container (`str | list[str]`) is not a `string` parameter and is decoded as
+  before. When `param_types` is supplied, also coerces `''` → `[]` /
+  `''` → `{}` for declared `array` / `object` parameters (the qwen
+  `equipment: ''` bug class).
 * `ArrayDictMapResponse` — composes `JsonCoerceResponse` plus the reverse
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
   `openai_gpt5` and `xai_grok` presets.
@@ -2432,7 +2470,7 @@ Free functions, re-exported from `tolokaforge.core.llm`:
 
 | Helper | Module | What it does |
 |---|---|---|
-| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. |
+| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. With `param_types`, a parameter declared `string` carries text the tool parses itself and is never decoded. |
 | [`coerce_empty_containers`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Schema-aware recovery: coerces `""` → `[]` / `""` → `{}` for declared `array` / `object` / `dict_map` parameters. No-op without `param_types`; `""` on a `string` parameter passes through. |
 | [`find_additional_properties`](../tolokaforge/core/llm/dict_maps.py) | `dict_maps` | Locate an `additionalProperties` declaration on a property schema or any of its `anyOf` / `oneOf` branches. Handles the Pydantic `Optional[Dict[str, T]]` shape (`anyOf=[{additionalProperties:T}, {null}]`). |
 

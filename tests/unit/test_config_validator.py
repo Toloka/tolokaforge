@@ -45,7 +45,6 @@ def _make_config(
             "user": {
                 "provider": user_provider,
                 "name": user_name,
-                "temperature": 0.0,
             },
         },
         "orchestrator": {

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.27.4"
+version = "0.27.5"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -515,7 +515,9 @@ only-include = [
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
     # otherwise-included subpackage.
+    "tolokaforge/core/actors/tool_turn_rule.py",
     "tolokaforge/core/actors/turn_policy.py",
+    "tolokaforge/core/actors/user_stop.py",
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/bundle.py",
     "tolokaforge/core/grading/bundle_producer.py",

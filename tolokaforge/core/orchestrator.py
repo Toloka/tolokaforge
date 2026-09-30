@@ -78,6 +78,7 @@ from tolokaforge.core.models import (
     TypeSenseConfig,
     require_user_simulator_config,
 )
+from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
@@ -2360,6 +2361,10 @@ class Orchestrator:
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
 
         self._refuse_an_unregistered_user_simulator()
+        if sets_user_temperature(self.config.models):
+            self.logger.warning(
+                USER_TEMPERATURE_IGNORED, declared=self.config.models["user"].temperature
+            )
 
     def _refuse_an_unregistered_user_simulator(self) -> None:
         """Resolve every task's ``actors.user.simulator`` once, before any trial.

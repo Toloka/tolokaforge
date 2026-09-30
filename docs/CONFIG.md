@@ -31,7 +31,7 @@ models:
   user:
     provider: "openai"
     name: "gpt-4o-mini"
-    temperature: 0.3
+    # No temperature: the user simulator does not read it (see the notes below).
   # Optional: read-only rubric judge model. Required only when a selected task
   # grades with `llm_judge` — the run aborts up front if a rubric task is
   # selected but `judge` is absent (no default, no fallback to the agent model).
@@ -85,6 +85,7 @@ Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `evaluation.grading_validation.fail_on` (default `advisory`) names the least severe finding class the pre-run gate refuses the run over. `advisory` fails on both classes; `error` fails on errors alone. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). `unchecked` is not a value here: it is a channel rather than a severity, and is logged rather than enforced so a gate that could check nothing does not read as a clean bill of health.
 - **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
+- `models.<role>.temperature` (default `0.0`) is sent as the request's `temperature`; `null` sends none, so the provider's default applies. A preset's `fixed_temperature` overrides either. `ModelConfig` also crosses the grader RPC and the distributed-worker queue, so a run that writes `null` needs workers and a grader image of this engine version or newer; an older one refuses the payload. **`models.user.temperature` is not read**: the built-in user simulator samples at 0.2, and a simulator registered under `actors.user.simulator` at whatever its `simulator_config` says. Setting the key earns a warning from `tolokaforge config validate` and at run start; it has never changed what the simulator sends, and honouring it now would silently change every run config that sets it.
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated plan-shape coercion knob. Backend selection is composer-driven — the orchestrator always constructs `SharedStackRuntimeBackend` and the composer sequences the resolved plan's per-scope substrate. `shared` coerces every task's plan to run-scope, `per_trial` to trial-scope; multi-stack packs are refused under either coercion (declare stack-scope explicitly instead). Any other name registered in the `tolokaforge.runtime_backends` entry-point group (only `in_memory` in-tree today) is a legit backend swap, resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
@@ -537,6 +538,11 @@ actors:
       - default: "Please continue."
     # simulator: "builtin"      # which registered simulator produces the dialogue
     # simulator_config: {}      # opaque config for a non-builtin simulator
+    stop_tokens: ["###STOP###"]  # tokens that end the dialogue (see docs/TASKS.md)
+    stop_with_text: "deliver"    # "deliver" or "end"
+    tool_turns: "shared"         # "shared" or "isolated" (see docs/TASKS.md)
+    # max_tool_steps: 10         # isolated only
+    # first_agent_message: "Hi! How can I help you today?"  # the agent's opening line
 
 policies:
   guidance:
