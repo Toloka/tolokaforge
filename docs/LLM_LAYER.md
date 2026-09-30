@@ -1238,11 +1238,13 @@ ignores it. Two distinct couplings hang off
 model naming, and only the second is to the formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
-  overlay off `ModelConfig.provider` (see [`presets`](#presets)). Re-prefixing
-  the model, or renaming the provider to something gateway-specific, silently
-  drops the matched preset and the `reasoning_via_extra_body` overlay — the
-  reported `effective_preset` would not change, but the reasoning wire format
-  would.
+  overlay off `ModelConfig.provider` (see [`presets`](#presets)). A re-prefixed
+  name keeps its preset: `openrouter/anthropic/claude-opus-4.7` and
+  `self-hosted/qwen3.6-35b-a3b` resolve like `anthropic/claude-opus-4.7` and
+  `qwen3.6-35b-a3b` (see [§ Preset coverage](#preset-coverage)). Renaming the
+  provider to something gateway-specific does drop the
+  `reasoning_via_extra_body` overlay: the reported `effective_preset` does not
+  change, but the reasoning wire format does.
 - [`normalize_model_name`](../tolokaforge/core/pricing.py) strips exactly one
   leading `openrouter/` and then returns any remaining slash-bearing name
   verbatim. A second prefix guarantees a pricing-table miss, degrading
@@ -2369,8 +2371,8 @@ fresh `ModelCapabilities`. Presets live in
 
 ### Preset coverage
 
-Per-preset policy wiring as shipped today. The three `StrictSchema` presets
-all cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
+Per-preset policy wiring as shipped today. The `StrictSchema` presets
+(`openai_gpt5`, `xai_grok`) cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
 Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
 the same three policies. Keep this table in sync with
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
@@ -2379,10 +2381,10 @@ the same three policies. Keep this table in sync with
 |-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
 | `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
 | `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`             | `anthropic/*`, `*claude*`, `*/anthropic/*`                       | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`     | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `qwen`                  | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                       | `passthrough`      | `json_coerce`       | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
 | `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
 
@@ -2392,6 +2394,18 @@ thinking-kwarg routing instead of falling through to the adaptive-effort
 path that 4.7 ignores (see
 [plans/eval_output_new_diagnosis.md](../plans/eval_output_new_diagnosis.md)
 Part 4).
+
+A route prefix never changes the preset. Every glob that does not start with
+`*` has an anchored `*/`-prefixed sibling, so `openrouter/qwen/qwen3-coder`,
+`litellm_proxy/qwen/qwen3-coder` and `self-hosted/qwen3.6-35b-a3b` resolve to
+`qwen` exactly as `qwen/qwen3-coder` does. A model-specific preset declared
+ahead of its family preset also lists its vendor-dropped name (`grok-4.6*` and
+`*/grok-4.6*` on `xai_grok_4_6`), so `self-hosted/grok-4.6` does not land in
+`xai_grok`. `aws_nova` is the exception: it routes by `match_provider`, and its
+`nova` prefix is a litellm provider namespace, not a vendor segment.
+[`test_preset_route_prefix_routing.py`](../tests/canonical/test_preset_route_prefix_routing.py)
+enforces this for every bundled glob and every `pricing.json` slug, and names
+the preset that lacks a sibling.
 
 Because the match is whole-entry and first-match-wins, a slug that lands on a
 broad multi-vendor preset inherits that preset's silence on every budget knob

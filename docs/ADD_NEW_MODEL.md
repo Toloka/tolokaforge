@@ -121,6 +121,13 @@ Presets resolve via **first-match-wins** ordering. Anthropic 4.7 is
 listed before the generic `anthropic` preset so its `thinking`-kwarg
 routing takes precedence — see [`AGENTS.md`](../AGENTS.md) gotcha #15.
 
+Each `match:` glob that does not start with `*` needs a `*/`-prefixed sibling
+(`qwen/*` and `*/qwen/*`), so the model keeps its preset behind a gateway
+route prefix. A model-specific preset declared ahead of its family preset
+also lists its vendor-dropped name (`grok-4.6*` and `*/grok-4.6*`).
+`tests/canonical/test_preset_route_prefix_routing.py` fails naming the
+`preset:glob` that lacks one.
+
 Available policy slots (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the authoritative spec):
 

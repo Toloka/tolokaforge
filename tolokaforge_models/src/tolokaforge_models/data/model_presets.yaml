@@ -46,6 +46,16 @@ default:
     supports_seed: true
     reasoning_via_extra_body: false
 
+# Matching is first-match-wins over ``presets:`` in declaration order.
+# Gateway-prefixed routes (openrouter/…, litellm_proxy/…, self-hosted/…) reach
+# the same model through a transport prefix, so every glob that does not start
+# with ``*`` has a ``*/``-prefixed sibling: the prefix is anchored on a ``/``
+# boundary rather than matched anywhere in the string, because a bare
+# ``*grok*`` also claims foreign models whose name merely CONTAINS it. A
+# model-specific preset declared ahead of its family preset also lists its
+# vendor-dropped name (``grok-4.6*`` and ``*/grok-4.6*``), so a gateway that
+# serves the model without the vendor segment does not land in the family
+# preset. tests/canonical/test_preset_route_prefix_routing.py enforces both.
 presets:
   # Cohere Command A+ 05-2026 (the gateway ``azure_ai`` route) — landed via
   # auto-resolve (Slack-requested integration, PR #1124). Declared BEFORE the
@@ -318,6 +328,7 @@ presets:
   anthropic:
     match:
       - "anthropic/*"
+      - "*/anthropic/*"
       - "*claude*"
     content_policy: anthropic
     reasoning_codec: anthropic
@@ -416,13 +427,8 @@ presets:
     match:
       - "x-ai/grok-4.6*"
       - "xai/grok-4.6*"
-      # Gateway-prefixed routes (openrouter/…, litellm_proxy/…) reach the same
-      # model through a transport prefix, so the vendor segment is anchored
-      # rather than matched anywhere in the string: a bare "*grok-4.6*" also
-      # claims foreign models whose name merely CONTAINS it, and future
-      # siblings (grok-4.60, grok-4.6-fast) whose axes are unmeasured.
-      - "*/x-ai/grok-4.6*"
-      - "*/xai/grok-4.6*"
+      - "grok-4.6*"
+      - "*/grok-4.6*"
     schema_sanitizer: xai_grok_recursive
     content_policy: openai
     response_policy: scalar_array_dict_map
@@ -433,6 +439,9 @@ presets:
       - "x-ai/*"
       - "xai/*"
       - "grok*"
+      - "*/x-ai/*"
+      - "*/xai/*"
+      - "*/grok*"
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
@@ -478,6 +487,8 @@ presets:
     match:
       - "qwen/*"
       - "qwen3*"
+      - "*/qwen/*"
+      - "*/qwen3*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -526,6 +537,8 @@ presets:
     match:
       - "deepseek/deepseek-v4-flash-0731"
       - "deepseek/deepseek-v4-flash-0731*"
+      - "deepseek-v4-flash-0731*"
+      - "*/deepseek-v4-flash-0731*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -575,15 +588,16 @@ presets:
   # stays required. See registry.py.
   z_ai_glm_5_3:
     match:
-      # Exact shapes only -- the bare route and the gateway-prefixed form
-      # (openrouter/..., litellm_proxy/...) that reaches the same model through
-      # a transport prefix. No trailing "*": fnmatch's "*" also matches "." and
-      # "-", so "z-ai/glm-5.3*" would claim an unmeasured z-ai/glm-5.3.1,
-      # glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it this codec
-      # without a reprobe. Those fall through to the shared preset below; a new
-      # point release gets its own explicit entry with reprobe evidence.
+      # Exact shapes only -- the vendor route, the vendor-dropped name, and the
+      # gateway-prefixed form of either. No trailing "*": fnmatch's "*" also
+      # matches "." and "-", so "z-ai/glm-5.3*" would claim an unmeasured
+      # z-ai/glm-5.3.1, glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it
+      # this codec without a reprobe. Those fall through to the shared preset
+      # below; a new point release gets its own explicit entry with reprobe
+      # evidence.
       - "z-ai/glm-5.3"
-      - "*/z-ai/glm-5.3"
+      - "glm-5.3"
+      - "*/glm-5.3"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -631,6 +645,9 @@ presets:
       - "*hy3-preview*"
       - "nvidia/nemotron*"
       - "*nemotron-*"
+      - "*/xiaomi/mimo*"
+      - "*/tencent/hy3*"
+      - "*/nvidia/nemotron*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -829,6 +846,7 @@ presets:
     match:
       - "thinkingmachines/inkling"
       - "thinkingmachines/inkling*"
+      - "*/thinkingmachines/inkling*"
     schema_sanitizer: passthrough
     prompt_policy: dict_map_hints_ref
     reasoning_codec: openai
@@ -907,7 +925,8 @@ presets:
   gemini_35_flash_recursive:
     match:
       - "google/gemini-3.5-flash"
-      - "openrouter/google/gemini-3.5-flash"
+      - "gemini-3.5-flash"
+      - "*/gemini-3.5-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -923,7 +942,8 @@ presets:
   gemini_36_flash_recursive:
     match:
       - "google/gemini-3.6-flash"
-      - "openrouter/google/gemini-3.6-flash"
+      - "gemini-3.6-flash"
+      - "*/gemini-3.6-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -942,7 +962,8 @@ presets:
   gemini_37_flash_recursive:
     match:
       - "google/gemini-3.7-flash"
-      - "openrouter/google/gemini-3.7-flash"
+      - "gemini-3.7-flash"
+      - "*/gemini-3.7-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -974,7 +995,8 @@ presets:
   gemini_31_pro_preview:
     match:
       - "google/gemini-3.1-pro-preview"
-      - "openrouter/google/gemini-3.1-pro-preview"
+      - "gemini-3.1-pro-preview"
+      - "*/gemini-3.1-pro-preview"
     reasoning_codec: gemini
     schema_sanitizer: gemini
     response_policy: array_dict_map
@@ -991,7 +1013,7 @@ presets:
   gemini:
     match:
       - "google/gemini-*"
-      - "openrouter/google/gemini-*"
+      - "*/google/gemini-*"
       - "*gemini-3*"
       - "*gemini-2.5*"
     reasoning_codec: gemini
@@ -1035,6 +1057,7 @@ presets:
     match:
       - "google/gemma*"
       - "*gemma-*"
+      - "*/google/gemma*"
     schema_sanitizer: gemini
     response_policy: array_dict_map
 
