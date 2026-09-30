@@ -141,19 +141,20 @@ def test_an_unknown_kind_is_refused_naming_the_known_ones(kind: Any) -> None:
 
 @pytest.mark.parametrize("version", [2, 0, True, 1.0, "1", None])
 def test_an_unknown_version_is_refused_naming_the_known_ones(version: Any) -> None:
-    message = _refusal({"version": version, "rules": []})
+    message = _refusal({"version": version, "rules": [_BOOKKEEPING]})
     assert f"comparison_view.version {version!r} is not a version this engine reads" in message
     assert "known versions: [1]" in message
 
 
 def test_the_version_is_required() -> None:
-    assert "version" in _refusal({"rules": []})
+    assert "version\n  Field required" in _refusal({"rules": [_BOOKKEEPING]})
 
 
 @pytest.mark.parametrize(
     ("block", "fragment"),
     [
-        ({"version": 1, "rules": [], "profiles": {}}, "profiles\n  Extra inputs are not permitted"),
+        ({"version": 1, "rules": [_BOOKKEEPING], "profiles": {}}, "profiles\n  Extra inputs"),
+        ({"version": 1, "rules": []}, "comparison_view.rules is empty"),
         ({"version": 1}, "rules\n  Field required"),
         ({"version": 1, "rules": _BOOKKEEPING}, "must be a list of rule entries"),
         ({"version": 1, "rules": [{"table": "t"}]}, "rules[0] must be a mapping with a 'kind'"),
@@ -363,14 +364,14 @@ def test_a_failing_rule_raises_instead_of_returning_a_state(
     assert state == before
 
 
-def test_an_empty_view_returns_the_state_unchanged_with_a_record() -> None:
-    result = apply_comparison_view(_STATE, initial=None, view=_view(), id_fields={})
+def test_a_view_whose_rules_touch_nothing_returns_the_state_unchanged() -> None:
+    view = _view({"kind": "exclude_tables", "tables": ["absent"], "reason": "r"})
+    result = apply_comparison_view(_STATE, initial=None, view=view, id_fields={})
     assert result.state == _STATE
     assert result.state is not _STATE
-    assert result.applied == ()
-    assert result.record.version == 1
-    assert result.record.function_version == COMPARISON_VIEW_FUNCTION_VERSION
-    assert result.record.applied == ()
+    assert result.record.applied == (
+        RuleApplication(kind="exclude_tables", table="absent", rows_removed=0),
+    )
 
 
 def test_a_rule_handed_another_rules_config_is_a_programming_error() -> None:

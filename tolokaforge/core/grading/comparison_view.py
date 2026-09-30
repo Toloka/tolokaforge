@@ -21,7 +21,9 @@ Each rule is a mapping whose ``kind`` selects an entry of the rule table
     conjunction of conditions on fields of the row (or item); a missing field
     reads as null:
 
-    - ``field: value`` — equality with a scalar (a bool never equals a number);
+    - ``field: value`` — equality with a scalar (a bool never equals a number).
+      It is exact and runs before ``numeric_string_fields`` folds anything, so
+      ``"130.00"`` does not equal ``130``;
     - ``field: {in: [v1, v2]}`` — equality with one of the listed scalars;
     - ``field: {is_null: true}`` — null or missing (``false``: present, not null);
     - ``field: {starts_with: prefix}`` — a string beginning with ``prefix``;
@@ -828,7 +830,7 @@ class ComparisonViewConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: int
-    rules: tuple[ComparisonViewRuleConfig, ...]
+    rules: tuple[ComparisonViewRuleConfig, ...] = Field(min_length=1)
 
     @field_validator("version", mode="before")
     @classmethod
@@ -845,6 +847,11 @@ class ComparisonViewConfig(BaseModel):
     def _resolve_rules(cls, value: Any) -> Any:
         if not isinstance(value, list | tuple):
             raise ValueError("comparison_view.rules must be a list of rule entries")
+        if not value:
+            raise ValueError(
+                "comparison_view.rules is empty; a view without rules is no view, so "
+                "drop the block instead"
+            )
         return tuple(_resolve_entry(index, entry) for index, entry in enumerate(value))
 
     @field_serializer("rules")

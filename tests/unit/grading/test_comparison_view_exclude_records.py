@@ -58,6 +58,7 @@ _ZERO = {"all_zero": ["amount", "tax"]}
         ({"status": "released"}, {"status": "held"}, False),
         ({"quantity": 1}, {"quantity": 1.0}, True),
         ({"quantity": 1}, {"quantity": "1"}, False),
+        ({"amount": "130"}, {"amount": "130.00"}, False),
         ({"quantity": 1}, {"quantity": True}, False),
         ({"flag": True}, {"flag": 1}, False),
         ({"flag": False}, {"flag": 0}, False),
