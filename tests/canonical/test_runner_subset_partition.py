@@ -110,6 +110,11 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # time from ``judge.py``. Shipped in the subset because the runner
         # container calls each one on the grading path.
         "tolokaforge/core/grading/default_judge_model_provider.py",
+        # The built-in search backend, resolved through
+        # ``load_search_backend('rag_service')`` at ``RegisterTrial`` for a task
+        # whose ``search.plane`` names it — an entry-point load, never a
+        # module-level import, so the boot closure does not observe it.
+        "tolokaforge/runner/rag_service_backend.py",
         "tolokaforge/core/grading/default_rubric_evaluator.py",
         "tolokaforge/core/grading/default_state_check_backends.py",
         "tolokaforge/core/grading/default_transcript_rule_matcher.py",
