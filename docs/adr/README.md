@@ -85,3 +85,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0050](0050-agent-loop-protocol-and-registry.md) | The `AgentLoop` Protocol and entry-point registry — the in-process agent loop as an adapter-selectable plugin | Accepted |
 | [0051](0051-user-simulator-protocol-and-registry.md) | The `UserSimulator` Protocol and entry-point registry — the user simulator as a per-task-selectable plugin with an opaque config passthrough | Accepted |
 | [0052](0052-agent-reply-contract.md) | The agent reply contract — a named, composable prompt preamble telling a solo agent how to answer, selectable per task and per model preset | Accepted |
+| [0052](0052-search-backend-protocol-and-registry.md) | The `SearchBackend` Protocol and entry-point registry — retrieval as a per-task-selectable plugin keyed by `search.plane`, with rag-service as the registered built-in and an in-process `bm25` | Proposed |
