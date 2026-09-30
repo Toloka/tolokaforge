@@ -2375,9 +2375,9 @@ fresh `ModelCapabilities`. Presets live in
 ### Preset coverage
 
 Per-preset policy wiring as shipped today. The `StrictSchema` presets
-(`openai_gpt5`, `xai_grok`) cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
-Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
-the same three policies. Keep this table in sync with
+(`openai_gpt5`, `xai_grok`) cover `Decimal` look-ahead regex and typed
+`Dict[str, T]` parameters with `strict` + `array_dict_map`. Keep this table
+in sync with
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
 | Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
@@ -2398,17 +2398,34 @@ path that 4.7 ignores (see
 [plans/eval_output_new_diagnosis.md](../plans/eval_output_new_diagnosis.md)
 Part 4).
 
-A route prefix never changes the preset. Every glob that does not start with
-`*` has an anchored `*/`-prefixed sibling, so `openrouter/qwen/qwen3-coder`,
-`litellm_proxy/qwen/qwen3-coder` and `self-hosted/qwen3.6-35b-a3b` resolve to
-`qwen` exactly as `qwen/qwen3-coder` does. A model-specific preset declared
-ahead of its family preset also lists its vendor-dropped name (`grok-4.6*` and
-`*/grok-4.6*` on `xai_grok_4_6`), so `self-hosted/grok-4.6` does not land in
-`xai_grok`. `aws_nova` is the exception: it routes by `match_provider`, and its
-`nova` prefix is a litellm provider namespace, not a vendor segment.
+A route prefix does not change the preset, except for presets that route by
+`match_provider` (`aws_nova`, whose `nova` prefix is a litellm provider
+namespace, not a vendor segment). For every glob G that does not start with
+`*`, `<route>/G` resolves to the preset that owns G: G has an anchored `*/G`
+sibling unless a leading-`*` glob in the same preset already covers the routed
+name (`*gpt-5*` covers `openrouter/openai/gpt-5.5`). So
+`openrouter/qwen/qwen3-coder`, `litellm_proxy/qwen/qwen3-coder` and
+`self-hosted/qwen3.6-35b-a3b` resolve to `qwen` exactly as `qwen/qwen3-coder`
+does. A leading-`*` glob is anchored on a `/` boundary (`*/qwen3*`, not
+`*qwen3*`, which would claim any name that merely contains `qwen3`); the
+anywhere-matching globs shipped today are a frozen list.
+
+A model-specific preset declared ahead of its family preset also lists its
+vendor-dropped name (`gemini-3.5-flash` and `*/gemini-3.5-flash` on
+`gemini_35_flash_recursive`), so a gateway that serves the model without the
+vendor segment does not land in the family preset. The three
+`openai_summary_replay` presets (`xai_grok_4_6`, `z_ai_glm_5_3`,
+`deepseek_v4_flash_0731_resolve`) are the exception: the codec rebuilds
+OpenRouter's `reasoning_details` envelope and was measured on the OpenRouter
+route alone, and a vendor-dropped name is never an OpenRouter slug. They claim
+only vendor-anchored names under any route prefix, so `self-hosted/grok-4.6`
+resolves to `xai_grok` and `self-hosted/glm-5.3` to
+`openrouter_dict_stringify_recovery`.
+
 [`test_preset_route_prefix_routing.py`](../tests/canonical/test_preset_route_prefix_routing.py)
-enforces this for every bundled glob and every `pricing.json` slug, and names
-the preset that lacks a sibling.
+enforces all of this for every bundled glob and every `pricing.json` slug. A
+failure names the `preset:glob` whose routed name resolves elsewhere and
+suggests the `*/G` sibling to add.
 
 Because the match is whole-entry and first-match-wins, a slug that lands on a
 broad multi-vendor preset inherits that preset's silence on every budget knob
@@ -2419,15 +2436,17 @@ slug, plus the presets whose `max_context_tokens + context_watermark`
 disagrees with the smallest real window their globs cover. See
 [`scripts/README.md`](../scripts/README.md) § Preset fall-through audit.
 
-`qwen` additionally enables `dict_map_hints` (GPT-5-class presets currently
-opt-in to this via the legacy `capabilities: {dict_map_prompt_hints: true}`
-override on the model config — see the translation layer in
+`qwen` keeps the dict schema (`passthrough`) and pairs `dict_map_hints` with
+`json_coerce`: Qwen never picks the array shape, so the prompt hint names the
+dict format and `json_coerce` decodes the arguments Qwen sends as stringified
+JSON. The hint is baked in because every Qwen call with a typed dict-map needs
+it. Other presets opt in to the hint via the `capabilities:
+{dict_map_prompt_hints: true}` override on the model config — see the
+translation layer in
 [`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py) §
-`_apply_config_overrides`). Qwen bakes the hint in unconditionally because
-its stringification failure mode is not opt-in — every Qwen call with a
-typed dict-map needs the hint.
+`_apply_config_overrides`.
 
-### Fingerprint helpers (Stage 7, P6)
+### Fingerprint helpers
 
 Two public helpers on [`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
 produce the JSON-serialisable preset fingerprint landed on
@@ -2456,14 +2475,17 @@ parametrises over every preset in
 plants a rogue policy instance to confirm the raise path.
 
 Next to `resolve_effective_preset`,
-`unclaimed_route_family(model_name, provider) -> str | None` returns the
-preset a route-prefixed name's last `/` segment resolves to, when the full
-name resolves to `"default"` and the last segment does not, and `None`
-otherwise. It reads the merged table, overlays included.
-`unclaimed_route_family_warnings(models)` turns every hit across a run's
-model configs, fallbacks included, into the WARNING `config validate`
-reports at `<path>.name` and the run logs once after its tasks load. Unit
-guard: [`tests/unit/llm/test_route_family_warning.py`](../tests/unit/llm/test_route_family_warning.py).
+`unclaimed_route_family(model_name, provider) -> UnclaimedRouteFamily | None`
+reports a route-prefixed name whose full name resolves to `"default"` while
+its last `/` segment resolves to a preset, and `None` otherwise. The frozen
+`UnclaimedRouteFamily` carries `model_name`, `provider`, `last_segment` and
+`family` (the preset the last segment matches), plus the `remedy` text. It
+reads the merged table, overlays included. `unclaimed_route_families(models)`
+returns `(path, finding)` for every hit across a run's model configs,
+fallbacks included. `config validate` reports each as a WARNING at
+`<path>.name` with the remedy as its hint; the run logs each once after its
+tasks load as the `UNCLAIMED_ROUTE_FAMILY` event, with the finding's fields
+and `path` as context. Unit guard: [`tests/unit/llm/test_route_family_warning.py`](../tests/unit/llm/test_route_family_warning.py).
 
 ### Startup validation
 

@@ -26,7 +26,7 @@ from tolokaforge.core.llm.litellm_params import (
     overlay_key_mismatches,
     overlay_stray_entries,
 )
-from tolokaforge.core.llm.presets import unclaimed_route_family_warnings
+from tolokaforge.core.llm.presets import unclaimed_route_families
 from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.models import (
     DOCKER_RUNTIME_ALIAS_TARGET,
@@ -235,8 +235,17 @@ def _route_family_issues(run_config: RunConfig) -> list[ValidationIssue]:
     """A WARNING per model config whose route-prefixed name misses the preset its
     last segment matches."""
     return [
-        ValidationIssue(severity=Severity.WARNING, path=f"{path}.name", message=message)
-        for path, message in unclaimed_route_family_warnings(run_config.models)
+        ValidationIssue(
+            severity=Severity.WARNING,
+            path=f"{path}.name",
+            message=(
+                f"{finding.model_name!r} (provider {finding.provider!r}) resolves to the "
+                f"'default' preset, but its last segment {finding.last_segment!r} matches "
+                f"preset {finding.family!r}"
+            ),
+            hint=finding.remedy,
+        )
+        for path, finding in unclaimed_route_families(run_config.models)
     ]
 
 

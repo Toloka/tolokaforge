@@ -300,7 +300,7 @@ see [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the full translation table.
 
 ### Model Capability Presets
 
-Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. A route prefix (`openrouter/`, `litellm_proxy/`, `self-hosted/`) does not change the preset a bundled glob picks; a route-prefixed name that resolves to `default` while its last segment matches a preset earns a warning from `tolokaforge config validate` and at run start (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-route-prefixed-model-name-resolves-to-the-default-preset)). Override auto-detected capabilities via the `capabilities` field in model config:
+Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. A route prefix (`openrouter/`, `litellm_proxy/`, `self-hosted/`) does not change the preset a bundled glob picks, except for presets that route by `match_provider` (`aws_nova`); a route-prefixed name that resolves to `default` while its last segment matches a preset earns a warning from `tolokaforge config validate` and at run start (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-route-prefixed-model-name-resolves-to-the-default-preset)). To pin a name to a preset other than the one the bundled table picks for it, for example to keep the preset a recorded run used, declare an overlay preset whose `match` names it (`match: ["<name>"]`) and that carries that preset's axes; overlay presets are matched first (see [Preset overlay file](#preset-overlay-file-no-engine-release-required)). Override auto-detected capabilities via the `capabilities` field in model config:
 
 ```yaml
 models:

@@ -15,6 +15,7 @@ import fnmatch
 import inspect
 import logging
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -76,6 +77,8 @@ from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
 from tolokaforge.core.models.run_config import iter_model_configs
 
 __all__ = [
+    "UNCLAIMED_ROUTE_FAMILY",
+    "UnclaimedRouteFamily",
     "build_capabilities",
     "get_overlay_path",
     "get_resolved_presets",
@@ -84,8 +87,8 @@ __all__ = [
     "resolve_overlay_path",
     "resolve_policy_names",
     "set_overlay_path",
+    "unclaimed_route_families",
     "unclaimed_route_family",
-    "unclaimed_route_family_warnings",
     "validate_overlay_file",
 ]
 
@@ -1213,7 +1216,32 @@ def resolve_effective_preset(model_name: str, provider: str = "") -> str:
     return "default"
 
 
-def unclaimed_route_family(model_name: str, provider: str = "") -> str | None:
+UNCLAIMED_ROUTE_FAMILY: Final = (
+    "A route-prefixed model name resolves to the 'default' preset, "
+    "but its last segment matches another preset"
+)
+
+
+@dataclass(frozen=True)
+class UnclaimedRouteFamily:
+    """A route-prefixed name no preset claims, whose last segment matches preset ``family``."""
+
+    model_name: str
+    provider: str
+    last_segment: str
+    family: str
+
+    @property
+    def remedy(self) -> str:
+        return (
+            f"If preset {self.family!r} fits the model this route serves, add an overlay preset "
+            f"whose match covers the full name (match: ['*/{self.last_segment}'] or match: "
+            f"[{self.model_name!r}]) carrying the policies of preset {self.family!r}; or, when "
+            f"the route also serves the unprefixed name, name the model {self.last_segment!r}."
+        )
+
+
+def unclaimed_route_family(model_name: str, provider: str = "") -> UnclaimedRouteFamily | None:
     """The preset a route-prefixed name's last segment matches, when no preset claims the name.
 
     Returns ``None`` when *model_name* has no ``/``, when a preset matches it
@@ -1222,31 +1250,24 @@ def unclaimed_route_family(model_name: str, provider: str = "") -> str | None:
     """
     if "/" not in model_name or resolve_effective_preset(model_name, provider) != "default":
         return None
-    family = resolve_effective_preset(model_name.rsplit("/", 1)[-1], provider)
-    return None if family == "default" else family
+    last_segment = model_name.rsplit("/", 1)[-1]
+    family = resolve_effective_preset(last_segment, provider)
+    if family == "default":
+        return None
+    return UnclaimedRouteFamily(model_name, provider, last_segment, family)
 
 
-def unclaimed_route_family_warnings(models: Mapping[str, ModelConfig]) -> list[tuple[str, str]]:
-    """``(path, message)`` for every model config, fallbacks included, that
+def unclaimed_route_families(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, UnclaimedRouteFamily]]:
+    """``(path, finding)`` for every model config, fallbacks included, that
     :func:`unclaimed_route_family` reports. ``config validate`` and the run both give these."""
-    warnings: list[tuple[str, str]] = []
+    findings: list[tuple[str, UnclaimedRouteFamily]] = []
     for path, cfg in iter_model_configs(models):
-        family = unclaimed_route_family(cfg.name, cfg.provider)
-        if family is not None:
-            warnings.append((path, _unclaimed_route_family_message(path, cfg, family)))
-    return warnings
-
-
-def _unclaimed_route_family_message(path: str, cfg: ModelConfig, family: str) -> str:
-    model_name, provider = cfg.name, cfg.provider
-    last = model_name.rsplit("/", 1)[-1]
-    return (
-        f"{path}.name: {model_name!r} (provider {provider!r}) resolves to the 'default' preset, "
-        f"but its last segment {last!r} matches preset {family!r}. If that preset fits the "
-        f"model this route serves, add an overlay preset whose match covers the full name "
-        f"(match: ['*/{last}'] or match: [{model_name!r}]) carrying the policies of preset "
-        f"{family!r}; or, when the route also serves the unprefixed name, name the model {last!r}."
-    )
+        finding = unclaimed_route_family(cfg.name, cfg.provider)
+        if finding is not None:
+            findings.append((path, finding))
+    return findings
 
 
 def _check_class_names_resolve() -> None:

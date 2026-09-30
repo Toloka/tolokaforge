@@ -48,14 +48,18 @@ default:
 
 # Matching is first-match-wins over ``presets:`` in declaration order.
 # Gateway-prefixed routes (openrouter/…, litellm_proxy/…, self-hosted/…) reach
-# the same model through a transport prefix, so every glob that does not start
-# with ``*`` has a ``*/``-prefixed sibling: the prefix is anchored on a ``/``
-# boundary rather than matched anywhere in the string, because a bare
-# ``*grok*`` also claims foreign models whose name merely CONTAINS it. A
-# model-specific preset declared ahead of its family preset also lists its
-# vendor-dropped name (``grok-4.6*`` and ``*/grok-4.6*``), so a gateway that
-# serves the model without the vendor segment does not land in the family
-# preset. tests/canonical/test_preset_route_prefix_routing.py enforces both.
+# the same model through a transport prefix, so for every glob G that does not
+# start with ``*``, ``<route>/G`` resolves to the preset that owns G: add a
+# ``*/G`` sibling unless a leading-``*`` glob in the same preset already covers
+# the routed name. The prefix is anchored on a ``/`` boundary rather than
+# matched anywhere in the string, because a bare ``*grok*`` also claims foreign
+# models whose name merely CONTAINS it; a new leading-``*`` glob starts with
+# ``*/``. A model-specific preset declared ahead of its family preset also lists
+# its vendor-dropped name (``gemini-3.5-flash`` and ``*/gemini-3.5-flash``), so
+# a gateway that serves the model without the vendor segment does not land in
+# the family preset, unless its axes were measured on the OpenRouter route alone
+# (``xai_grok_4_6`` says why). Presets that route by ``match_provider`` are
+# exempt. tests/canonical/test_preset_route_prefix_routing.py enforces this.
 presets:
   # Cohere Command A+ 05-2026 (the gateway ``azure_ai`` route) — landed via
   # auto-resolve (Slack-requested integration, PR #1124). Declared BEFORE the
@@ -425,10 +429,14 @@ presets:
   # hypothesis (a fenced-JSON prompt directive, measured harmful).
   xai_grok_4_6:
     match:
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``grok-4.6``, ``self-hosted/grok-4.6``) is
+      # never an OpenRouter slug, so it resolves to ``xai_grok`` below.
       - "x-ai/grok-4.6*"
       - "xai/grok-4.6*"
-      - "grok-4.6*"
-      - "*/grok-4.6*"
+      - "*/x-ai/grok-4.6*"
+      - "*/xai/grok-4.6*"
     schema_sanitizer: xai_grok_recursive
     content_policy: openai
     response_policy: scalar_array_dict_map
@@ -535,10 +543,14 @@ presets:
   # ``known_unsupported`` (the sibling posture).
   deepseek_v4_flash_0731_resolve:
     match:
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``self-hosted/deepseek-v4-flash-0731``) is
+      # never an OpenRouter slug, so it resolves to the shared
+      # ``openrouter_dict_stringify_recovery`` preset.
       - "deepseek/deepseek-v4-flash-0731"
       - "deepseek/deepseek-v4-flash-0731*"
-      - "deepseek-v4-flash-0731*"
-      - "*/deepseek-v4-flash-0731*"
+      - "*/deepseek/deepseek-v4-flash-0731*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -588,16 +600,19 @@ presets:
   # stays required. See registry.py.
   z_ai_glm_5_3:
     match:
-      # Exact shapes only -- the vendor route, the vendor-dropped name, and the
-      # gateway-prefixed form of either. No trailing "*": fnmatch's "*" also
-      # matches "." and "-", so "z-ai/glm-5.3*" would claim an unmeasured
-      # z-ai/glm-5.3.1, glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it
-      # this codec without a reprobe. Those fall through to the shared preset
-      # below; a new point release gets its own explicit entry with reprobe
-      # evidence.
+      # Exact shapes only -- the bare route and the gateway-prefixed form
+      # (openrouter/..., litellm_proxy/...) that reaches the same model through
+      # a transport prefix. No trailing "*": fnmatch's "*" also matches "." and
+      # "-", so "z-ai/glm-5.3*" would claim an unmeasured z-ai/glm-5.3.1,
+      # glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it this codec
+      # without a reprobe. Those fall through to the shared preset below; a new
+      # point release gets its own explicit entry with reprobe evidence.
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``glm-5.3``, ``self-hosted/glm-5.3``) is
+      # never an OpenRouter slug, so it resolves to the shared preset below.
       - "z-ai/glm-5.3"
-      - "glm-5.3"
-      - "*/glm-5.3"
+      - "*/z-ai/glm-5.3"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -629,10 +644,13 @@ presets:
   # preset to make the capability reliable). All three also surface a
   # reasoning_content summary the ``openai`` codec lands in the logs.
   # Live 2026-06-05.
-  # The nemotron globs claim NVIDIA's Nemotron line (``nemotron-*`` models,
-  # under any vendor or route prefix). Llama-based fine-tunes such as
+  # The nemotron globs claim NVIDIA's Nemotron line under any vendor or route
+  # prefix, in each spelling it ships under: ``nemotron-*`` (OpenRouter),
+  # ``NVIDIA-Nemotron-*`` / ``nvidia-nemotron-*`` (Hugging Face, vLLM,
+  # Fireworks), ``nvidia.nemotron-*`` (Bedrock) and ``FW-Nemotron-*`` (Fireworks
+  # builds on Azure AI). Llama-based fine-tunes such as
   # ``nvidia/llama-3.1-nemotron-70b-instruct`` only CONTAIN ``-nemotron-``;
-  # nothing was measured on them, so they stay on ``default``.
+  # nothing was measured on them, so they resolve to ``default``.
   # The Kimi K2 line carries the same wire-shape recovery from its own
   # ``moonshot_kimi_k2`` preset below, which restates these four policies
   # alongside the turn budget that line needs. Matching is first-match-wins
@@ -649,10 +667,14 @@ presets:
       - "*hy3-preview*"
       - "nvidia/nemotron*"
       - "nemotron-*"
+      - "fw-nemotron-*"
+      - "*nvidia-nemotron-*"
+      - "*nvidia.nemotron-*"
       - "*/xiaomi/mimo*"
       - "*/tencent/hy3*"
       - "*/nvidia/nemotron*"
       - "*/nemotron-*"
+      - "*/fw-nemotron-*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
