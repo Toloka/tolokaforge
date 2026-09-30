@@ -952,14 +952,16 @@ def apply_comparison_view(
 
     ``initial`` is the initial state of the database ``state`` was read from, and
     ``id_fields`` is ``state_checks.id_fields`` (absent table → ``"id"``). Neither
-    input is mutated, and the returned state shares nothing with ``state``. A rule
+    input is mutated: the rules get private copies of both, and the returned state
+    shares nothing with ``state``. A rule
     that cannot apply raises :class:`ComparisonViewError`.
     """
-    working: dict[str, Any] = {table: copy.deepcopy(rows) for table, rows in state.items()}
+    working: dict[str, Any] = copy.deepcopy(dict(state))
+    initial_copy = None if initial is None else copy.deepcopy(dict(initial))
     applied: list[RuleApplication] = []
     for config in view.rules:
         rule = resolve_comparison_view_rule(config.kind)
-        outcome = rule.apply(working, initial=initial, id_fields=id_fields, config=config)
+        outcome = rule.apply(working, initial=initial_copy, id_fields=id_fields, config=config)
         working = outcome.state
         applied.extend(outcome.applied)
     record = ComparisonViewRecord(
