@@ -2,12 +2,15 @@
 Tool Factory for Runner
 
 This module provides tool reconstruction from ToolSource definitions.
-It creates callable wrappers for four invocation styles:
+It creates callable wrappers for the invocation styles:
 
 1. tau_sync - Tau environment tools (synchronous invoke())
 2. mcp_async - TlkMcpCore MCP tools (async run_with_validation())
 3. mcp_server - Native MCP server tools (subprocess JSON-RPC)
-4. rag_search - RAG service search tools (HTTP API)
+4. docker_compose_exec - a command run in a sibling compose service
+
+and, for a source-less schema, a builtin tool by name — or the task's search
+tool, bound to the trial's search index (``SearchToolWrapper``, ADR-0052).
 
 Each wrapper produces a callable with the same interface:
     async def execute(arguments: dict[str, Any]) -> str
@@ -37,6 +40,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tolokaforge.core.search.backend import SearchIndex
 from tolokaforge.runner.compose_naming import compose_container_name
 from tolokaforge.runner.db_client import (
     DBServiceClient,
@@ -48,6 +52,7 @@ from tolokaforge.runner.db_client import (
 from tolokaforge.runner.db_proxy import DBServiceProxy, SyncDBServiceProxy
 from tolokaforge.runner.id_resolution import TableKey, compute_diff_ops, table_key
 from tolokaforge.runner.models import (
+    DEFAULT_SEARCH_TOOL_NAME,
     InvocationStyle,
 )
 from tolokaforge.runner.models import (
@@ -55,11 +60,6 @@ from tolokaforge.runner.models import (
 )
 from tolokaforge.runner.models import (
     ToolSource as ToolSourceModel,
-)
-from tolokaforge.runner.rag_client import (
-    RAGServiceClient,
-    RAGServiceError,
-    SearchResponse,
 )
 from tolokaforge.tools.persistent_shell import (
     BashSession,
@@ -974,139 +974,43 @@ class JsonDBToolWrapper(ToolWrapper):
 
 
 # =============================================================================
-# RAG Search Tool Wrapper
+# Search Tool Wrapper
 # =============================================================================
 
 
-class RAGSearchToolWrapper(ToolWrapper):
+class SearchToolWrapper(ToolWrapper):
+    """The task's search tool, answering from the trial's :class:`SearchIndex`.
+
+    The index is what the task's search backend (``search.plane``, ADR-0052)
+    built for this trial at ``RegisterTrial``; this wrapper hands it the call's
+    ``query`` and arguments and returns the text the backend rendered, so what
+    the agent reads is the backend's own output. A failed search raises out of
+    ``execute`` like any other tool failure.
+
+    The judge's knowledge search is bound by instance of this class over the
+    trial's index — never by the tool's name — so a renamed tool keeps the
+    judge's search and a same-named tool of another kind cannot claim it.
     """
-    Wrapper for RAG service search tools.
 
-    This wrapper provides search_kb functionality by calling the RAG service
-    HTTP API. It handles:
-    - Query execution via RAG service
-    - Result formatting for LLM consumption
-    - Error handling with fail-fast behavior
-
-    The RAG service must be initialized with documents before search works.
-    """
-
-    def __init__(
-        self,
-        tool_schema: ToolSchemaModel,
-        rag_client: RAGServiceClient,
-        trial_id: str,
-    ):
+    def __init__(self, tool_schema: ToolSchemaModel, index: SearchIndex):
         super().__init__(tool_schema)
-        self.rag_client = rag_client
-        self.trial_id = trial_id
+        self.index = index
 
     @property
     def own_budget_s(self) -> float:
-        """The declared budget, which this wrapper hands to the RAG request.
+        """The declared budget, which this wrapper hands to every search.
 
-        The same shape the in-process ``search_kb`` uses
-        (:mod:`tolokaforge.tools.builtin.rag_search` passes its declared budget
-        to ``httpx``), so the two substrates bound the same call the same way
-        rather than one inheriting whatever the shared client was built with.
+        A backend whose search is a bounded call bounds it by this value —
+        rag-service's HTTP request does — so the runner's backstop sits
+        :data:`BACKSTOP_GRACE_S` above it rather than racing it.
         """
         return self.timeout_s
 
     async def execute(self, arguments: dict[str, Any]) -> str:
-        """
-        Execute RAG search.
-
-        Args:
-            arguments: Dict with 'query' (required), 'top_k' (optional), 'alpha' (optional)
-
-        Returns:
-            JSON string with search results
-
-        Raises:
-            RAGServiceError: If search fails (fail fast)
-        """
-        start_time = time.perf_counter()
-        logger.debug(
-            f"RAGSearchToolWrapper.execute() ENTRY: tool={self.name}, arguments={arguments}"
+        outcome = await self.index.search(
+            arguments.get("query", ""), arguments, budget_s=self.own_budget_s
         )
-        # RAG search is read-only, never changes state
-        state_changed = False
-
-        query = arguments.get("query", "")
-        if not query:
-            latency_ms = (time.perf_counter() - start_time) * 1000
-            logger.debug(
-                f"RAGSearchToolWrapper.execute() EXIT: tool={self.name}, "
-                f"success=True, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
-            )
-            return json.dumps({"error": "Query is required", "results": []})
-
-        top_k = arguments.get("top_k", arguments.get("limit", 5))
-        alpha = arguments.get("alpha", 0.5)
-
-        logger.debug(f"RAG search: trial={self.trial_id}, query={query[:50]}..., top_k={top_k}")
-
-        try:
-            response: SearchResponse = await self.rag_client.search(
-                trial_id=self.trial_id,
-                query=query,
-                limit=top_k,
-                alpha=alpha,
-                timeout=self.own_budget_s,
-            )
-
-            # Format results for LLM consumption
-            if not response.results:
-                output = json.dumps(
-                    {
-                        "message": "No relevant documents found.",
-                        "results": [],
-                        "query": query,
-                    }
-                )
-            else:
-                # Build formatted output
-                results = []
-                for result in response.results:
-                    results.append(
-                        {
-                            "doc_id": result.doc_id,
-                            "source": result.source,
-                            "score": result.score,
-                            "text": result.text,
-                            "retrieval_method": result.retrieval_method,
-                        }
-                    )
-
-                output = json.dumps(
-                    {
-                        "results": results,
-                        "total": len(results),
-                        "query": query,
-                    }
-                )
-
-            latency_ms = (time.perf_counter() - start_time) * 1000
-            logger.debug(
-                f"RAGSearchToolWrapper.execute() EXIT: tool={self.name}, "
-                f"success=True, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
-            )
-            return output
-
-        except RAGServiceError as e:
-            latency_ms = (time.perf_counter() - start_time) * 1000
-            logger.debug(
-                f"RAGSearchToolWrapper.execute() EXIT: tool={self.name}, "
-                f"success=False, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
-            )
-            # FAIL FAST: RAG errors should be visible
-            logger.error(f"RAG search failed: {e}")
-            raise
-
-    def cleanup(self) -> None:
-        """Clean up RAG client resources."""
-        # RAG client cleanup is handled at factory level
-        pass
+        return outcome.rendered
 
 
 # =============================================================================
@@ -1643,8 +1547,10 @@ class ToolFactory:
     - tau_sync: TauSyncToolWrapper
     - mcp_async: MCPAsyncToolWrapper
     - mcp_server: MCPServerToolWrapper
-    - rag_search: RAGSearchToolWrapper (for search_kb tool)
+    - docker_compose_exec: DockerComposeExecToolWrapper
+    - source-less, the task's search tool: SearchToolWrapper over the trial's index
     - db_query / db_update: JsonDBToolWrapper, bound to the trial's own JSON DB
+    - any other source-less schema: the builtin its name selects
 
     FAIL FAST: If any tool cannot be reconstructed, raises ToolReconstructionError.
     """
@@ -1653,10 +1559,12 @@ class ToolFactory:
         self,
         db_client: DBServiceClient,
         trial_id: str,
-        rag_client: RAGServiceClient | None = None,
         db_table_names: list[str] | None = None,
         initial_state_data: dict[str, list[dict]] | None = None,
         id_fields: Mapping[str, str | list[str]] | None = None,
+        *,
+        search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
+        search_index: SearchIndex | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1664,7 +1572,6 @@ class ToolFactory:
         Args:
             db_client: HTTP client for DB Service communication
             trial_id: Unique trial identifier
-            rag_client: Optional RAG service client for search tools
             db_table_names: Optional list of actual table names from initial_state.
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
@@ -1676,10 +1583,16 @@ class ToolFactory:
                        model registration and is forwarded to the DB proxy and to
                        TauSyncToolWrapper diff-sync so key resolution is
                        data-driven; a table absent resolves to ``"id"``.
+            search_tool_name: The task's search tool (``search.tool_name``). A
+                              source-less schema of this name is bound to
+                              ``search_index`` rather than looked up as a builtin.
+            search_index: The trial's search index, built by the backend
+                          ``search.plane`` names; ``None`` when the trial has none.
         """
         self.db_client = db_client
         self.trial_id = trial_id
-        self.rag_client = rag_client
+        self.search_tool_name = search_tool_name
+        self.search_index = search_index
         self.db_table_names = db_table_names or []
         self._initial_state_data = initial_state_data or {}
         self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
@@ -1751,6 +1664,12 @@ class ToolFactory:
             ToolConfigurationError: If tool has no source and is not a built-in
             ToolImportError: If tool module/class cannot be imported
         """
+        # The task's search tool is source-less and bound by the task's
+        # declaration (``search.tool_name``), before any builtin lookup, so a
+        # renamed search tool needs no registry entry of its own.
+        if schema.source is None and schema.name == self.search_tool_name:
+            return self._create_search_wrapper(schema)
+
         # Built-in tools (no source) dispatch by name through the unified registry.
         if schema.source is None:
             from tolokaforge.tools.builtin import registry as builtin_registry
@@ -1760,8 +1679,6 @@ class ToolFactory:
                     schema.name, _hint_source_configuration_missing(schema.name)
                 )
             dispatch = builtin_registry.get_dispatch(schema.name)
-            if dispatch is builtin_registry.Dispatch.RAG:
-                return self._create_rag_search_wrapper(schema)
             if dispatch is builtin_registry.Dispatch.FILES:
                 return BuiltinFileToolWrapper(schema)
             if dispatch is builtin_registry.Dispatch.PERSISTENT_SHELL:
@@ -2156,29 +2073,22 @@ class ToolFactory:
             compose_project_prefix=compose_project_prefix,
         )
 
-    def _create_rag_search_wrapper(self, schema: ToolSchemaModel) -> RAGSearchToolWrapper:
+    def _create_search_wrapper(self, schema: ToolSchemaModel) -> SearchToolWrapper:
+        """Bind the task's search tool to the trial's index (FAIL FAST).
+
+        Raises:
+            ToolConfigurationError: the trial has no search index — the task
+                declares the tool but no corpus a search backend indexed.
         """
-        Create a RAG search tool wrapper.
-
-        FAIL FAST: Raises ToolConfigurationError if RAG client not available.
-
-        Args:
-            schema: Tool schema for search_kb
-
-        Returns:
-            RAGSearchToolWrapper instance
-        """
-        if self.rag_client is None:
+        if self.search_index is None:
             raise ToolConfigurationError(
                 schema.name,
-                "RAG client not configured. Set RAG_SERVICE_URL environment variable.",
+                "no search index serves this tool: the task description names no search "
+                "backend that built one for this trial (search.plane, or search.enabled "
+                "for rag-service) and no corpus (search.documents_path). Declare "
+                "initial_state.rag.corpus_dir for the task, or drop the tool.",
             )
-
-        return RAGSearchToolWrapper(
-            tool_schema=schema,
-            rag_client=self.rag_client,
-            trial_id=self.trial_id,
-        )
+        return SearchToolWrapper(schema, self.search_index)
 
 
 # =============================================================================
@@ -2191,7 +2101,8 @@ def reconstruct_tools(
     db_client: DBServiceClient,
     trial_id: str,
     is_user_tools: bool = False,
-    rag_client: RAGServiceClient | None = None,
+    search_index: SearchIndex | None = None,
+    search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
 ) -> dict[str, ToolWrapper]:
     """
     Convenience function to reconstruct tools from schema dicts.
@@ -2203,7 +2114,8 @@ def reconstruct_tools(
         db_client: DB Service client
         trial_id: Trial identifier
         is_user_tools: Whether these are user-side tools
-        rag_client: Optional RAG service client for search tools
+        search_index: The trial's search index, for the task's search tool
+        search_tool_name: The task's search tool name (``search.tool_name``)
 
     Returns:
         Dictionary mapping tool name to wrapper
@@ -2211,7 +2123,9 @@ def reconstruct_tools(
     Raises:
         ToolReconstructionError: If any tool cannot be reconstructed
     """
-    factory = ToolFactory(db_client, trial_id, rag_client)
+    factory = ToolFactory(
+        db_client, trial_id, search_tool_name=search_tool_name, search_index=search_index
+    )
 
     if is_user_tools:
         result = factory.reconstruct_tools([], tools)
