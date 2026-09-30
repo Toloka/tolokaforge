@@ -777,7 +777,7 @@ def litellm_model_entries() -> dict[str, dict[str, Any]]:
 
     Empty unless an overlay declares them - the engine ships no list of its
     own, because a model missing from a third-party map is not a fact about
-    this release. See ``litellm_params.allowed_openai_params`` for what is done
+    this release. See ``litellm_params.lookup_overlay`` for what is done
     with them, and ``docs/LLM_LAYER.md`` for why they exist at all.
     """
     return dict(_load_presets().get("litellm_models") or {})

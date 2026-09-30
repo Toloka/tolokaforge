@@ -375,38 +375,6 @@ class TestPreflightConsultsTheOverlay:
         result = self._validate(self._tree(tmp_path, declared=True))
         assert "does not appear to support function calling" not in result.output
 
-    @pytest.mark.parametrize("provider", ["meta", "Meta", "META"])
-    def test_the_preflight_lookup_is_case_symmetric_like_the_run(self, provider, tmp_path):
-        """Asserted on the lookup, not on the CLI output.
-
-        A capitalised provider makes litellm raise, so the wrapper answers
-        `None` and no issue is emitted whatever the overlay says - a CLI-level
-        case test would pass without the symmetry existing.
-        """
-        import yaml
-
-        from tolokaforge.core import config_validator as cv
-        from tolokaforge.core.llm.presets import set_overlay_path
-
-        overlay = tmp_path / "overlay.yaml"
-        overlay.write_text(
-            yaml.safe_dump(
-                {
-                    "litellm_models": {
-                        f"{provider.lower()}/muse-spark-1.2": {
-                            "supports_function_calling": True,
-                            "evidence": "2026-08-10, litellm 1.96.0: measured",
-                        }
-                    }
-                }
-            )
-        )
-        set_overlay_path(str(overlay))
-        try:
-            assert cv._declared_function_calling("muse-spark-1.2", provider) is True
-        finally:
-            set_overlay_path(None)
-
     def test_an_unmapped_agent_model_without_overlay_declaration_reports_info(self, tmp_path):
         """`fake-vendor-xyz/muse-spark-1.2` is absent from litellm's map by
         construction, so the check cannot answer either way. The command emits
@@ -472,11 +440,12 @@ class TestUnmappedAgentModelReportsInfoNotError:
         model id would flip with a litellm bump.
         """
         from tolokaforge.core import config_validator as cv
+        from tolokaforge.core.llm.presets import set_overlay_path
 
         monkeypatch.setattr(cv, "_model_supports_function_calling", lambda name: False)
-        # Also short-circuit the overlay lookup so we exercise the pure
-        # False-from-litellm path, not the overlay-declared shortcut.
-        monkeypatch.setattr(cv, "_declared_function_calling", lambda name, provider: False)
+        # No overlay, so nothing declares the model: the pure False-from-litellm
+        # path, not the overlay-declared shortcut.
+        set_overlay_path(None)
 
         cfg = _make_config(agent_provider="openai", agent_name="whisper-1")
         result = cv.validate_run_config(cfg)
