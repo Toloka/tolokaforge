@@ -12,6 +12,7 @@ import copy
 import inspect
 import sys
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -27,6 +28,7 @@ from tolokaforge.core.grading.comparison_view import (
     ExcludeRecordsConfig,
     ExcludeTablesConfig,
     RuleApplication,
+    RuleOutcome,
     apply_comparison_view,
     comparison_view_rules,
     resolve_comparison_view_rule,
@@ -281,6 +283,39 @@ def test_the_input_is_never_mutated_and_the_view_shares_nothing_with_it() -> Non
             for allocation in row.get("purchase_allocations", []):
                 allocation["touched"] = True
     assert state == _STATE
+
+
+class _RuleThatMutatesTheInitialState:
+    """Stands in for a rule that breaks the Protocol's no-mutation contract."""
+
+    kind = "exclude_tables"
+    config_model = ExcludeTablesConfig
+
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+
+    def apply(self, state: dict[str, Any], *, initial: Any, id_fields: Any, config: Any) -> Any:
+        self.seen.append(initial)
+        initial["transfer_holds"].append({"id": "HOLD-9"})
+        return RuleOutcome(state=state, applied=())
+
+
+def test_the_rules_get_one_private_copy_of_the_initial_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    view = _view(
+        {"kind": "exclude_tables", "tables": ["a"], "reason": "r"},
+        {"kind": "exclude_tables", "tables": ["b"], "reason": "r"},
+    )
+    rule = _RuleThatMutatesTheInitialState()
+    monkeypatch.setattr(
+        comparison_view, "_BUILTIN_RULES", MappingProxyType({"exclude_tables": rule})
+    )
+    initial = copy.deepcopy(_INITIAL)
+    apply_comparison_view(_STATE, initial=initial, view=view, id_fields={})
+    assert initial == _INITIAL
+    assert rule.seen[0] is rule.seen[1]
+    assert rule.seen[0] is not initial
 
 
 def test_the_same_inputs_give_the_same_view_and_record() -> None:
