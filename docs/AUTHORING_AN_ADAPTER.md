@@ -281,7 +281,10 @@ simulator under the `tolokaforge.user_simulators` entry-point group and a task
 2. **Read your own config from `simulator_config`.** The engine passes
    `actors.user.simulator_config` to your factory on the `UserSimulatorContext`
    verbatim and never interprets it — validate that mapping into your own model.
-   Your benchmark's fields live there, not in the engine's `ActorSpec`.
+   Your benchmark's fields live there, not in the engine's `ActorSpec`. A file
+   the config names (a prompt template, say) stays a path relative to the task:
+   resolve it against `ctx.task_dir`, the task's directory, so the task records
+   no machine-specific path.
 3. **Register a factory.**
 
    ```toml

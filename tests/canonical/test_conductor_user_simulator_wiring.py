@@ -11,6 +11,9 @@ Two properties matter for the seam to be real:
   through ``load_user_simulator`` — the exact call the conductor makes with the
   task's declared name — and the declared name plus its opaque ``simulator_config``
   reach the resolved config the conductor reads.
+
+The context the conductor builds also carries the task's directory, so a
+simulator resolves the paths its ``simulator_config`` names against the task.
 """
 
 from __future__ import annotations
@@ -18,11 +21,15 @@ from __future__ import annotations
 import importlib.metadata
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
+from tolokaforge.core import conductor as conductor_module
 from tolokaforge.core.actors.user_simulator import UserSimulatorContext
+from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     ActorSpec,
     EvaluationConfig,
@@ -226,3 +233,62 @@ def test_declared_name_and_config_reach_the_resolved_config() -> None:
     resolved = task.resolve_user_simulator()
     assert resolved.simulator == "custom-sim"
     assert resolved.simulator_config == {"guidelines_file": "sim/user.md", "voice": True}
+
+
+def test_the_conductor_hands_the_simulator_its_task_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path ``simulator_config`` names resolves against the task (#1666).
+
+    The context carries the trial setup's ``task_dir`` — the directory the
+    adapter's ``get_task_dir`` returned — beside the config, which stays as the
+    task declared it.
+    """
+    built: list[UserSimulatorContext] = []
+
+    def recording_factory(context: UserSimulatorContext) -> InMemoryUserSimulator:
+        built.append(context)
+        return in_memory_user_simulator_factory(context)
+
+    monkeypatch.setattr(conductor_module, "load_user_simulator", lambda name: recording_factory)
+    agent_client = MagicMock()
+    agent_client.capabilities.default_max_turns = None
+    conductor = InProcessConductor(
+        adapter=MagicMock(),
+        artifact_writer=MagicMock(),
+        config=_make_run_config(),
+        logger=get_logger("user-simulator-wiring", strict=False),
+        agent_client=agent_client,
+        runtime_backend=MagicMock(),
+        trial_grader=MagicMock(),
+        output_dir=tmp_path,
+    )
+    task = TaskConfig(
+        task_id="TASK-DIR",
+        description="stub",
+        interaction_mode="conversational",
+        actors={
+            "user": ActorSpec(
+                mode="llm",
+                simulator="custom-sim",
+                simulator_config={"prompt_template": "user_prompt.md"},
+            )
+        },
+    )
+    setup = MagicMock()
+    setup.trial_idx = 0
+    setup.task_dir = tmp_path / "TASK-DIR"
+    setup.tool_schemas = []
+    setup.user_tool_schemas = []
+    spec = MagicMock()
+    spec.task.metadata = {}
+
+    with (
+        patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+        patch("tolokaforge.core.conductor.TrialRunner"),
+    ):
+        conductor._run_agent_loop(spec, task, setup)
+
+    assert len(built) == 1
+    assert built[0].task_dir == tmp_path / "TASK-DIR"
+    assert built[0].simulator_config == {"prompt_template": "user_prompt.md"}
