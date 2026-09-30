@@ -88,6 +88,7 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
+    SerializerFunctionWrapHandler,
     StrictBool,
     StrictFloat,
     StrictInt,
@@ -334,7 +335,7 @@ class ExcludeRecordsConfig(ComparisonViewRuleConfig):
     kind: Literal["exclude_records"] = "exclude_records"
     table: NonBlankStr
     path: DottedPath | None = None
-    where: dict[FieldName, WhereCondition]
+    where: Mapping[FieldName, WhereCondition]
     unless_referenced_by: tuple[RecordReference, ...] = ()
     reason: NonBlankStr | None = None
 
@@ -342,6 +343,18 @@ class ExcludeRecordsConfig(ComparisonViewRuleConfig):
     @classmethod
     def _conditions(cls, value: Any) -> Any:
         return _parse_where(value)
+
+    @field_validator("where")
+    @classmethod
+    def _read_only(cls, value: Mapping[str, WhereCondition]) -> Mapping[str, WhereCondition]:
+        """A validated view is immutable all the way down, so its sha cannot change."""
+        return MappingProxyType(dict(value))
+
+    @field_serializer("where", mode="wrap")
+    def _as_a_plain_mapping(
+        self, where: Mapping[str, WhereCondition], handler: SerializerFunctionWrapHandler
+    ) -> Any:
+        return handler(dict(where))
 
     @model_validator(mode="after")
     def _references_keep_rows_only(self) -> ExcludeRecordsConfig:
