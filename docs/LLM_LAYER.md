@@ -1241,7 +1241,10 @@ model naming, and only the second is to the formatted string:
   overlay off `ModelConfig.provider` (see [`presets`](#presets)). A re-prefixed
   name keeps its preset: `openrouter/anthropic/claude-opus-4.7` and
   `self-hosted/qwen3.6-35b-a3b` resolve like `anthropic/claude-opus-4.7` and
-  `qwen3.6-35b-a3b` (see [§ Preset coverage](#preset-coverage)). Renaming the
+  `qwen3.6-35b-a3b` (see [§ Preset coverage](#preset-coverage)). A
+  route-prefixed name that no preset claims while its last segment matches
+  one (`self-hosted/nova-pro-v1`, or an overlay preset without a `*/` sibling)
+  draws a WARNING from `config validate` and at run start. Renaming the
   provider to something gateway-specific does drop the
   `reasoning_via_extra_body` overlay: the reported `effective_preset` does not
   change, but the reasoning wire format does.
@@ -2451,6 +2454,16 @@ guard: [`tests/unit/llm/test_preset_fingerprint.py`](../tests/unit/llm/test_pres
 parametrises over every preset in
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
+
+Next to `resolve_effective_preset`,
+`unclaimed_route_family(model_name, provider) -> str | None` returns the
+preset a route-prefixed name's last `/` segment resolves to, when the full
+name resolves to `"default"` and the last segment does not, and `None`
+otherwise. It reads the merged table, overlays included.
+`unclaimed_route_family_warnings(models)` turns every hit across a run's
+model configs, fallbacks included, into the WARNING `config validate`
+reports at `<path>.name` and the run logs once after its tasks load. Unit
+guard: [`tests/unit/llm/test_route_family_warning.py`](../tests/unit/llm/test_route_family_warning.py).
 
 ### Startup validation
 

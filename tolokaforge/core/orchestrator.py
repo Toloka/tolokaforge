@@ -56,6 +56,7 @@ from tolokaforge.core.failure_attribution import (
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.presets import (
     get_overlay_path,
+    unclaimed_route_family_warnings,
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.metrics import (
@@ -2332,6 +2333,8 @@ class Orchestrator:
             self.logger.warning(
                 USER_TEMPERATURE_IGNORED, declared=self.config.models["user"].temperature
             )
+        for _path, message in unclaimed_route_family_warnings(self.config.models):
+            self.logger.warning(message)
 
     def _refuse_an_unregistered_user_simulator(self) -> None:
         """Resolve every task's ``actors.user.simulator`` once, before any trial.

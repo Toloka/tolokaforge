@@ -14,7 +14,7 @@ import difflib
 import fnmatch
 import inspect
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, Final
 
@@ -72,7 +72,8 @@ from tolokaforge.core.model_data import (
     bundled_presets_path,
     load_policy_registrations,
 )
-from tolokaforge.core.models.model_config import OpenRouterConfig
+from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
+from tolokaforge.core.models.run_config import iter_model_configs
 
 __all__ = [
     "build_capabilities",
@@ -83,6 +84,8 @@ __all__ = [
     "resolve_overlay_path",
     "resolve_policy_names",
     "set_overlay_path",
+    "unclaimed_route_family",
+    "unclaimed_route_family_warnings",
     "validate_overlay_file",
 ]
 
@@ -1208,6 +1211,42 @@ def resolve_effective_preset(model_name: str, provider: str = "") -> str:
     for preset_name, _preset in _iter_preset_matches(model_name, provider):
         return preset_name  # first match wins
     return "default"
+
+
+def unclaimed_route_family(model_name: str, provider: str = "") -> str | None:
+    """The preset a route-prefixed name's last segment matches, when no preset claims the name.
+
+    Returns ``None`` when *model_name* has no ``/``, when a preset matches it
+    whole, or when its last segment resolves to ``"default"`` too. Reads the
+    merged table, so an overlay preset whose globs miss the route prefix counts.
+    """
+    if "/" not in model_name or resolve_effective_preset(model_name, provider) != "default":
+        return None
+    family = resolve_effective_preset(model_name.rsplit("/", 1)[-1], provider)
+    return None if family == "default" else family
+
+
+def unclaimed_route_family_warnings(models: Mapping[str, ModelConfig]) -> list[tuple[str, str]]:
+    """``(path, message)`` for every model config, fallbacks included, that
+    :func:`unclaimed_route_family` reports. ``config validate`` and the run both give these."""
+    warnings: list[tuple[str, str]] = []
+    for path, cfg in iter_model_configs(models):
+        family = unclaimed_route_family(cfg.name, cfg.provider)
+        if family is not None:
+            warnings.append((path, _unclaimed_route_family_message(path, cfg, family)))
+    return warnings
+
+
+def _unclaimed_route_family_message(path: str, cfg: ModelConfig, family: str) -> str:
+    model_name, provider = cfg.name, cfg.provider
+    last = model_name.rsplit("/", 1)[-1]
+    return (
+        f"{path}.name: {model_name!r} (provider {provider!r}) resolves to the 'default' preset, "
+        f"but its last segment {last!r} matches preset {family!r}. If that preset fits the "
+        f"model this route serves, add an overlay preset whose match covers the full name "
+        f"(match: ['*/{last}'] or match: [{model_name!r}]) carrying the policies of preset "
+        f"{family!r}; or, when the route also serves the unprefixed name, name the model {last!r}."
+    )
 
 
 def _check_class_names_resolve() -> None:
