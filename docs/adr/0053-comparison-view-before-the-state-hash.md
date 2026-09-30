@@ -139,8 +139,10 @@ parity test. The wire carries the view's diff and record in one field,
 ### The function
 
 `tolokaforge/core/grading/comparison_view.py`. It depends on stdlib and
-pydantic only. It is runner-reachable, so it must not import `state_checks.py`
-or `combine.py`, which the subset wheel excludes.
+pydantic only. The wiring makes it runner-reachable, so it must not import
+`state_checks.py` or `combine.py`, which the subset wheel excludes. Until the
+wiring lands, `RUNNER_SUBSET_EXCLUDED_FILES` lists it: the partition lock refuses
+a subset file the runner never reaches.
 
 ```python
 class ComparisonViewError(ValueError): ...
@@ -225,7 +227,9 @@ state_checks:
   This is the path a registered rule will take later.
 - **Tables and fields a rule names must exist** in `initial_state.tables` /
   `schemas`. Under `relaxed_validation` a missing one is a warning, as for
-  `id_fields`.
+  `id_fields`. A field is checked where seeded records or a schema list it; a
+  field whose path reaches nothing seeded or declared is not checked, since its
+  rows may arrive later.
 - **An unknown `version` is refused at load.** So is an unknown `kind`.
 - **With `hash` disabled** the block gets a `config validate` warning, not a
   refusal.
@@ -237,7 +241,7 @@ state_checks:
 | kind | Effect | Guarantees |
 |---|---|---|
 | `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
-| `exclude_tables` | Drops named tables whole; `reason` is required. The same rule as `exclude_records`, with every row matched. | Refused for a table another rule names. |
+| `exclude_tables` | Drops the named tables whole, key included, so a table present on one side only stops counting too; `reason` is required. | Refused for a table another rule names. |
 | `normalize_ids` | Rewrites the key of the records in `scope` to a deterministic key, built from `key` fields or from `ordinal_by` + `rank_by`, and every exact reference to it named in `references` (a top-level field or a nested path). | Bijective: distinct records stay distinct. A key collision raises. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`. |
 
 Left out of v1, and where the need goes instead:
@@ -316,7 +320,7 @@ loader translates into it.
   does;
 - `config_sha256` — canonical JSON of the rules as applied, the way
   `ModelsFingerprint` hashes model data;
-- `applied` — per rule: kind, table, path, rows removed, ids rewritten.
+- `applied` — per rule and table touched (`exclude_tables` gives one entry per listed table): kind, table, path, rows removed, ids rewritten.
 
 A grade then says which transform produced the digest it compares. A later
 engine can tell whether it would compute the same view. An unknown major
