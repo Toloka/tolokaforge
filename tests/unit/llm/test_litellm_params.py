@@ -74,7 +74,7 @@ class TestTheCanonicalContract:
 
     The premise of the whole feature is that litellm patch releases change
     parameter gating, so the escape hatch it offers is pinned here rather than
-    assumed. Measured across 1.83.14 / 1.93.0 / 1.96.0.
+    assumed. Measured on 1.93.0 and 1.96.0.
     """
 
     def test_an_unmapped_model_is_refused_its_tools(self):

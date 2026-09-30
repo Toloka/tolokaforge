@@ -755,12 +755,10 @@ litellm.UnsupportedParamsError: meta does not support parameters:
 ['tools', 'tool_choice'], for model=muse-spark-1.2
 ```
 
-Measured 2026-08-10 across litellm versions with an identical request: 1.83.14
-passes the tools through, 1.93.0 and 1.96.0 refuse them. The strictness arrived
-in a patch release, so a routine dependency bump can turn a working
-vendor-native model into one that cannot make a single tool call — and the
-error names the provider rather than the missing data, so it reads as "this
-vendor does not do tool calls".
+Measured with an identical request on litellm 1.93.0 and 1.96.0: both refuse
+the tools. Whether a model is in the map depends on the installed litellm
+release, and the error names the provider rather than the missing data, so it
+reads as "this vendor does not do tool calls".
 
 It says nothing about the model. The identical request driven through litellm's
 `openai` transport against the same `api_base` returns a correct tool call —
@@ -1052,6 +1050,13 @@ call to a non-OpenRouter-backed route failed. The dialect also decides prefix
 handling: the OpenRouter transport strips one leading `openrouter/`, the OpenAI one
 does not.
 
+The OpenAI transport forwards `cache_control` unchanged to any `api_base` whose host
+is neither `openai.com` nor under `.openai.com`, so a preset's `anthropic_ephemeral`
+markers reach the gateway on a resolved route. On the unreadable-catalog path the
+provider's own transport forwards them too.
+[`tests/canonical/test_gateway_prompt_cache_markers.py`](../tests/canonical/test_gateway_prompt_cache_markers.py)
+pins the markers on the wire for both paths.
+
 **The name.** Those two effects are coupled, so the name that arrives depends on the
 dialect, and the gateway's name for a model is not derivable from the engine's model
 string. It is whichever of `<provider>/<name>` or `<name>` the catalog contains:
@@ -1084,6 +1089,12 @@ resolves as "not served" and the call goes to the provider directly, with only a
 per-client warning. On a gateway-only model that direct call fails; on any other it
 runs unattributed. If a deployment cannot rename such a route, the exact-name entry
 has to be added alongside the alias.
+
+**Hard requirement on the gateway: no `openai.com` hostname.** litellm strips every
+`cache_control` marker from a request whose `api_base` host is `openai.com` or ends
+in `.openai.com` (`api.openai.com`, `gw.openai.com`), so Claude routes behind such a
+host run uncached. The check is on the hostname only: `openai.com.gateway.example`,
+`myopenai.com` and `*.openai.azure.com` keep the markers.
 
 Wildcard entries (`openrouter/*`, `anthropic/*`) are **not** accepted as evidence by
 default: a wildcard says the gateway will forward the request, not that the model
@@ -1148,8 +1159,10 @@ so one gateway state cannot produce two different routing decisions.
 ### Which providers can be routed
 
 **Setting `api_base` does not make litellm speak OpenAI to that URL — it makes
-litellm speak that provider's native protocol to that URL.** Captured against
-litellm 1.87.0:
+litellm speak that provider's native protocol to that URL.**
+[`tests/canonical/test_llm_gateway_envelope_contract.py`](../tests/canonical/test_llm_gateway_envelope_contract.py)
+pins the first two rows against the installed litellm and checks that the other
+two stay off the chat-completions path:
 
 | provider | request litellm sends to the gateway |
 |---|---|
@@ -1483,7 +1496,9 @@ The policy attaches Anthropic's ephemeral (5-minute TTL) `cache_control`
 markers on three attach sites — system, tools, and up to two message
 positions — so a second request with the same cacheable prefix reads from
 the Anthropic cache. Observable via non-zero
-`Metrics.usage.cache_read_input_tokens` on the second call.
+`Metrics.usage.cache_read_input_tokens` on the second call. The same markers,
+and the same signal, hold through an LLM gateway on both of its paths (see
+[Speaking to the gateway](#speaking-to-the-gateway)).
 
 **4-breakpoint budget.** Anthropic's Messages API caps at 4 `cache_control`
 markers per request. The policy uses at most:

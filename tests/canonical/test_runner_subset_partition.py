@@ -832,7 +832,13 @@ def test_subset_wheel_requirements_carry_the_base_specifiers(
     emitted_by_key = {
         requirement_key(req): req for req in _subset_wheel_requirements(subset_wheel_path)
     }
-    assert emitted_by_key[("litellm", frozenset())] == base_by_key[("litellm", frozenset())]
+    litellm = emitted_by_key[("litellm", frozenset())]
+    assert litellm == base_by_key[("litellm", frozenset())]
+    # 1.89.7 strips gateway cache markers and 1.92.2 imports fastapi on the
+    # tool-call path; the runner image must resolve neither.
+    assert [v for v in ("1.89.7", "1.92.2", "1.93.0") if litellm.specifier.contains(v)] == [
+        "1.93.0"
+    ], f"subset wheel admits the wrong litellm releases: {litellm}"
     mismatched = {
         key: (str(emitted), str(base_by_key.get(key)))
         for key, emitted in emitted_by_key.items()

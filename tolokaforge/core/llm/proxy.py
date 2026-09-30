@@ -62,8 +62,10 @@ Which providers can actually be routed
 --------------------------------------
 
 **Setting ``api_base`` does not make litellm speak OpenAI to that URL — it
-makes litellm speak that provider's native protocol to that URL.** Verified by
-capturing the wire (litellm 1.87.0):
+makes litellm speak that provider's native protocol to that URL.**
+``tests/canonical/test_llm_gateway_envelope_contract.py`` pins the first two rows
+against the installed litellm and checks that the other two stay off the
+chat-completions path:
 
 ===================  ==========================================================
 provider             request litellm sends to the gateway

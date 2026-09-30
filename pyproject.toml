@@ -43,8 +43,12 @@ dependencies = [
     # rather than published as a sibling on PyPI, so ``pip install tolokaforge``
     # is self-contained. jinja2 below is coding_harnesses' template-render dep.
     "jinja2>=3.1.0",
-    # Core LLM integration
-    "litellm>=1.83.14,!=1.92.0,<2.0.0",
+    # Core LLM integration. 1.93.0 is the lowest release where the whole engine
+    # works: its OpenAI transport forwards ``cache_control`` to an ``api_base``
+    # outside openai.com (so Anthropic prompt caching survives a resolved LLM
+    # gateway route), it has the native ``meta`` provider, and it is past the
+    # 1.92.x line, which imports fastapi on the tool-call path.
+    "litellm>=1.93.0,<2.0.0",
     # Data validation and schemas
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",
