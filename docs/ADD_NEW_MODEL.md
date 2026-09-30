@@ -193,9 +193,10 @@ overlay path and the offending key):
   swap is visible).
 - A `litellm_models:` entry needs a non-empty `evidence` and at least one
   capability set true, its key must be a full `<provider>/<model>` litellm id
-  (`<model>` is the config `name` verbatim, slashes included), and unknown keys are rejected. That block is how a model litellm's own map
-  does not carry gets its parameters admitted - without it the provider
-  refuses `tools` before the request is sent. See
+  (`<model>` is the config `name` verbatim, slashes included), and unknown
+  keys are rejected. That block is how a model litellm's own map does not
+  carry gets its parameters admitted - without it the provider refuses
+  `tools` before the request is sent. See
   [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
 For distributed runs, the overlay path passed to `tolokaforge prepare` is

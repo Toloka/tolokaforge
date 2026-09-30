@@ -838,8 +838,9 @@ such as `anthropic/<model>` is also the key of the native `(anthropic,
 <model>)` config, which an operator can hold while running `(openrouter,
 anthropic/<model>)` too, and that openrouter config needs no entry of its own.
 So such a key is left alone for the openrouter config: it admits nothing there,
-and `config validate` says which provider the entry applies to and which key
-the config resolves. A key like `self-hosted/<model>`, `google/<model>` or
+and `config validate` emits an INFO, for every model in `models:` and each of
+its `fallbacks`, saying which provider the entry applies to and which key the
+config resolves. A key like `self-hosted/<model>`, `google/<model>` or
 `meta-llama/<model>` can be no config's key, so it is refused. `config validate`
 reports an ERROR for every model in `models:` and each of its `fallbacks`, and
 `run` / `prepare` / `worker` check the same models and raise the first before

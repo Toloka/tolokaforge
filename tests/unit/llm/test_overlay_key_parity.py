@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ EVIDENCE = "2026-09-30, litellm 1.93.0: no entry, so the route refused tools bef
 
 #: `(provider, name)` as a config states them. The names are absent from
 #: litellm's map by construction; the first two carry a `/` that is not the
-#: provider, which is where the two sides of the lookup used to part ways.
+#: provider.
 CONFIGS = [
     ("openai", "self-hosted/tolokaforge-canary-a"),
     ("openrouter", "fake-vendor-xyz/tolokaforge-canary-b"),
@@ -209,29 +210,89 @@ def test_an_entry_under_the_raw_name_is_inert_beside_the_canonical_one(tmp_path)
     assert not isinstance(run.exception, OverlayKeyMismatchError), run.exception
 
 
-def test_a_raw_name_key_that_names_a_provider_is_another_configs_entry(tmp_path):
-    """`anthropic/…` is the native `(anthropic, …)` config's own key, so holding
-    it while also running `(openrouter, anthropic/…)` is legitimate: the
+#: A first segment that names a provider in both sets the refusal consults, in
+#: litellm's `provider_list` only, and in `providers.yaml` only.
+PROVIDER_VENDORS = ["anthropic", "deepseek", "nova"]
+
+
+@pytest.mark.parametrize("vendor", PROVIDER_VENDORS)
+def test_a_raw_name_key_that_names_a_provider_is_another_configs_entry(vendor, tmp_path):
+    """`<vendor>/…` is the native `(<vendor>, …)` config's own key, so holding
+    it while also running `(openrouter, <vendor>/…)` is legitimate: the
     openrouter config is not refused, it is told which config the entry is for."""
-    stray = "anthropic/tolokaforge-canary"
+    stray = f"{vendor}/tolokaforge-canary"
     overlay = _write_overlay(tmp_path, [stray])
     config = _write_run_config(tmp_path, _run_config("openrouter", stray, overlay))
 
     set_overlay_path(str(overlay))
     lookup = lookup_overlay("openrouter", stray)
-    assert (lookup.params, lookup.stray_key) == ((), stray)
-    admitted = lookup_overlay("anthropic", "tolokaforge-canary")
-    assert (admitted.params, admitted.stray_key) == (
+    assert (lookup.params, lookup.stray_key, lookup.stray_provider) == ((), stray, vendor)
+    admitted = lookup_overlay(vendor, "tolokaforge-canary")
+    assert (admitted.params, admitted.evidence, admitted.stray_key) == (
         ("tools", "tool_choice", "parallel_tool_calls"),
+        EVIDENCE,
         None,
     )
 
     validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
     assert "[ERROR]" not in validated.output, validated.output
     assert (
-        f"`{stray}` applies to provider `anthropic`; "
-        f"this config resolves `openrouter/{stray}`" in validated.output
+        f"`{stray}` applies to provider `{vendor}`, "
+        f"not to this config, which resolves `openrouter/{stray}`" in validated.output
     ), validated.output
+
+
+STRAY = ("openrouter", "anthropic/tolokaforge-canary")
+
+
+@pytest.mark.parametrize(
+    "models, path",
+    [
+        pytest.param(
+            {"agent": _as_config(*STRAY), "user": NATIVE_AGENT}, "models.agent", id="agent"
+        ),
+        pytest.param({"agent": NATIVE_AGENT, "user": _as_config(*STRAY)}, "models.user", id="user"),
+        pytest.param(
+            {"agent": {**NATIVE_AGENT, "fallbacks": [_as_config(*STRAY)]}, "user": NATIVE_AGENT},
+            "models.agent.fallbacks[0]",
+            id="agent-fallback",
+        ),
+    ],
+)
+def test_validate_names_the_stray_entry_for_every_model_config(models, path, tmp_path):
+    _, stray = STRAY
+    set_overlay_path(str(_write_overlay(tmp_path, [stray])))
+
+    result = validate_run_config(_run_config_for(models))
+
+    assert [
+        (i.severity, i.path) for i in result.issues if f"entry `{stray}` applies to" in i.message
+    ] == [(Severity.INFO, f"{path}.name")]
+
+
+def test_the_refusal_survives_a_pickle_round_trip():
+    err = OverlayKeyMismatchError(
+        provider="openai",
+        name="self-hosted/m",
+        declared_key="self-hosted/m",
+        expected_key="openai/self-hosted/m",
+    )
+    back = pickle.loads(pickle.dumps(err))
+    assert (
+        type(back),
+        str(back),
+        back.provider,
+        back.name,
+        back.declared_key,
+        back.expected_key,
+    ) == (
+        OverlayKeyMismatchError,
+        str(err),
+        "openai",
+        "self-hosted/m",
+        "self-hosted/m",
+        "openai/self-hosted/m",
+    )
 
 
 def test_the_walk_reaches_every_fallback_depth_first():

@@ -63,7 +63,7 @@ invisible, which is the same failure wearing a different hat.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -87,6 +87,7 @@ __all__ = [
     "allowed_openai_params",
     "lookup_overlay",
     "overlay_key_mismatches",
+    "overlay_stray_entries",
 ]
 
 
@@ -113,6 +114,7 @@ DECLARABLE_FLAGS: tuple[str, ...] = tuple(FLAG_PARAMS)
 class OverlayLookup:
     """The overlay entry a config resolves to, and what that entry admits.
 
+    ``evidence`` is the entry's own, ``None`` when no entry sits under ``key``.
     ``stray_key`` names an entry stored under the config's raw ``name`` that
     is the canonical key of a different, provider-named config, so it does
     not apply here; ``None`` when there is no such entry.
@@ -120,7 +122,13 @@ class OverlayLookup:
 
     key: str
     params: tuple[str, ...]
+    evidence: str | None
     stray_key: str | None
+
+    @property
+    def stray_provider(self) -> str | None:
+        """The provider whose config ``stray_key`` is the key of."""
+        return _vendor(self.stray_key) if self.stray_key else None
 
 
 class OverlayKeyMismatchError(ValueError):
@@ -137,6 +145,27 @@ class OverlayKeyMismatchError(ValueError):
             f"{expected_key!r}, so the entry admits nothing. "
             f"Rename the entry to {expected_key!r}."
         )
+
+    def __reduce__(self):
+        return _rebuild_mismatch, (self.provider, self.name, self.declared_key, self.expected_key)
+
+
+def _rebuild_mismatch(
+    provider: str, name: str, declared_key: str, expected_key: str
+) -> OverlayKeyMismatchError:
+    return OverlayKeyMismatchError(
+        provider=provider, name=name, declared_key=declared_key, expected_key=expected_key
+    )
+
+
+def _vendor(key: str) -> str:
+    return key.partition("/")[0]
+
+
+def _lower_vendor(key: str) -> str:
+    """*key* with its first ``/`` segment lowercased, as the overlay validator stores it."""
+    vendor, _, rest = key.partition("/")
+    return f"{vendor.lower()}/{rest}"
 
 
 def _overlay_key(provider: str, name: str) -> str:
@@ -156,8 +185,7 @@ def _overlay_key(provider: str, name: str) -> str:
     """
     model_id = litellm_model_id(provider, name)
     if "/" in model_id:
-        vendor, _, rest = model_id.partition("/")
-        return f"{vendor.lower()}/{rest}"
+        return _lower_vendor(model_id)
     return f"{provider.lower()}/{model_id}"
 
 
@@ -169,15 +197,14 @@ def _raw_name_key(provider: str, name: str) -> str | None:
     """
     if "/" not in name or name.startswith(f"{provider}/"):
         return None
-    vendor, _, rest = name.partition("/")
-    return f"{vendor.lower()}/{rest}"
+    return _lower_vendor(name)
 
 
 def _names_a_provider(key: str) -> bool:
     """Whether *key*'s first segment is a provider, so the key can be another config's own."""
     import litellm
 
-    vendor = key.partition("/")[0]
+    vendor = _vendor(key)
     return vendor in provider_binding_names() or vendor in litellm.provider_list
 
 
@@ -202,16 +229,18 @@ def lookup_overlay(provider: str, name: str) -> OverlayLookup:
     key = _overlay_key(provider, name)
     entry = entries.get(key)
     if entry:
-        return OverlayLookup(key=key, params=_admitted_params(entry), stray_key=None)
+        return OverlayLookup(
+            key=key, params=_admitted_params(entry), evidence=entry["evidence"], stray_key=None
+        )
 
     raw_key = _raw_name_key(provider, name)
     if raw_key is None or raw_key not in entries:
-        return OverlayLookup(key=key, params=(), stray_key=None)
+        return OverlayLookup(key=key, params=(), evidence=None, stray_key=None)
     if not _names_a_provider(raw_key):
         raise OverlayKeyMismatchError(
             provider=provider, name=name, declared_key=raw_key, expected_key=key
         )
-    return OverlayLookup(key=key, params=(), stray_key=raw_key)
+    return OverlayLookup(key=key, params=(), evidence=None, stray_key=raw_key)
 
 
 def _admitted_params(entry: Mapping[str, object]) -> tuple[str, ...]:
@@ -221,6 +250,19 @@ def _admitted_params(entry: Mapping[str, object]) -> tuple[str, ...]:
             continue
         params.extend(param for param in names if param not in params)
     return tuple(params)
+
+
+def _lookup_each(
+    models: Mapping[str, ModelConfig],
+) -> Iterator[tuple[str, OverlayLookup | OverlayKeyMismatchError]]:
+    """Every model config, fallbacks included, with its path and lookup outcome."""
+    from tolokaforge.core.models.run_config import iter_model_configs
+
+    for path, cfg in iter_model_configs(models):
+        try:
+            yield path, lookup_overlay(cfg.provider, cfg.name)
+        except OverlayKeyMismatchError as err:
+            yield path, err
 
 
 def overlay_key_mismatches(
@@ -233,15 +275,20 @@ def overlay_key_mismatches(
     ``run`` / ``prepare`` / ``worker`` raise the first, so both refuse the same
     configs.
     """
-    from tolokaforge.core.models.run_config import iter_model_configs
+    return [
+        (path, outcome)
+        for path, outcome in _lookup_each(models)
+        if isinstance(outcome, OverlayKeyMismatchError)
+    ]
 
-    mismatches: list[tuple[str, OverlayKeyMismatchError]] = []
-    for path, cfg in iter_model_configs(models):
-        try:
-            lookup_overlay(cfg.provider, cfg.name)
-        except OverlayKeyMismatchError as err:
-            mismatches.append((path, err))
-    return mismatches
+
+def overlay_stray_entries(models: Mapping[str, ModelConfig]) -> list[tuple[str, OverlayLookup]]:
+    """Every model config, fallbacks included, whose raw name keys another config's entry."""
+    return [
+        (path, outcome)
+        for path, outcome in _lookup_each(models)
+        if isinstance(outcome, OverlayLookup) and outcome.stray_key
+    ]
 
 
 def allowed_openai_params(provider: str, name: str) -> list[str]:
@@ -252,13 +299,11 @@ def allowed_openai_params(provider: str, name: str) -> list[str]:
     """
     lookup = lookup_overlay(provider, name)
     if lookup.params and lookup.key not in _LOGGED:
-        from tolokaforge.core.llm.presets import litellm_model_entries
-
         _LOGGED.add(lookup.key)
         logger.info(
             "Admitting %s for %s, which litellm's map does not carry. %s",
             ", ".join(lookup.params),
             lookup.key,
-            litellm_model_entries()[lookup.key].get("evidence"),
+            lookup.evidence,
         )
     return list(lookup.params)

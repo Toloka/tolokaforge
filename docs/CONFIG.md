@@ -469,10 +469,14 @@ calls. Nothing else changes, and nothing is written into litellm's global
 map. The key is a full `<provider>/<model>` litellm id, where `<model>` is the
 config `name` verbatim, slashes included: `provider: openai` + `name:
 self-hosted/qwen3.6-35b-a3b` is keyed `openai/self-hosted/qwen3.6-35b-a3b`. An
-entry stored under the raw `name` instead (`self-hosted/qwen3.6-35b-a3b`) is an
-ERROR in `config validate` and stops `run` / `prepare` / `worker`, with a
-message naming the key found and the key to rename it to; the check covers
-every role in `models:` and every fallback. See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
+entry stored under the raw `name` instead, whose first segment names no
+provider (`self-hosted/qwen3.6-35b-a3b`), is an ERROR in `config validate` and
+stops `run` / `prepare` / `worker`, with a message naming the key found and the
+key to rename it to; the check covers every role in `models:` and every
+fallback. A raw key whose first segment names a provider (`anthropic/<model>`
+for `provider: openrouter`) is that provider's config's key: it is left alone,
+admits nothing for this config, and `config validate` reports it as an INFO.
+See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
 `config validate` treats a model absent from litellm's map as an *unknown*,
 not a refusal — it emits an INFO with the exact `litellm_models:` entry to

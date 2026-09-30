@@ -24,6 +24,7 @@ from tolokaforge.core.llm.litellm_params import (
     OverlayKeyMismatchError,
     lookup_overlay,
     overlay_key_mismatches,
+    overlay_stray_entries,
 )
 from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.models import (
@@ -176,12 +177,6 @@ def _function_calling_issues(base: str, provider: str, name: str) -> list[Valida
         # litellm's answers move between patch releases, and a future
         # `None` would quietly stop consulting the declaration.
         fc_support = True
-    stray = (
-        f"`{overlay.stray_key}` applies to provider "
-        f"`{overlay.stray_key.partition('/')[0]}`; this config resolves `{overlay.key}`. "
-        if overlay.stray_key
-        else ""
-    )
     if fc_support is False:
         severity = Severity.WARNING if provider.lower().startswith("openrouter") else Severity.ERROR
         return [
@@ -189,8 +184,7 @@ def _function_calling_issues(base: str, provider: str, name: str) -> list[Valida
                 severity=severity,
                 path=f"{base}.name",
                 message=f"Model {name!r} does not appear to support function calling (required for agent)",
-                hint=stray
-                + "Verify with your provider that the model supports tool use / function calling",
+                hint="Verify with your provider that the model supports tool use / function calling",
             )
         ]
     if fc_support is None:
@@ -206,7 +200,7 @@ def _function_calling_issues(base: str, provider: str, name: str) -> list[Valida
                     "cannot confirm function-calling support"
                 ),
                 hint=(
-                    stray + "If the run needs tools, declare it in the presets overlay: "
+                    "If the run needs tools, declare it in the presets overlay: "
                     f"litellm_models.{overlay.key} with supports_function_calling: true"
                 ),
             )
@@ -215,11 +209,25 @@ def _function_calling_issues(base: str, provider: str, name: str) -> list[Valida
 
 
 def _overlay_key_issues(run_config: RunConfig) -> list[ValidationIssue]:
-    """One ERROR per model config whose overlay entry sits under its raw name."""
-    return [
+    """An ERROR per model config whose overlay entry sits under its raw name, and
+    an INFO per model config whose raw name keys another config's entry."""
+    refused = [
         ValidationIssue(severity=Severity.ERROR, path=f"{path}.name", message=str(err))
         for path, err in overlay_key_mismatches(run_config.models)
     ]
+    stray = [
+        ValidationIssue(
+            severity=Severity.INFO,
+            path=f"{path}.name",
+            message=(
+                f"litellm_models entry `{lookup.stray_key}` applies to provider "
+                f"`{lookup.stray_provider}`, not to this config, which resolves `{lookup.key}`"
+            ),
+            hint=f"To admit parameters for this config, declare litellm_models.{lookup.key}",
+        )
+        for path, lookup in overlay_stray_entries(run_config.models)
+    ]
+    return refused + stray
 
 
 def _validate_schema(raw: dict[str, Any]) -> RunConfig | ValidationIssue:

@@ -115,10 +115,7 @@ export OPENROUTER_API_KEY=sk-or-...
 `run` / `prepare` / `worker` stop before any trial, with:
 
 ```text
-litellm_models entry 'self-hosted/qwen3.6-35b-a3b' does not apply to provider 'openai',
-name 'self-hosted/qwen3.6-35b-a3b': that config is looked up under
-'openai/self-hosted/qwen3.6-35b-a3b', so the entry admits nothing.
-Rename the entry to 'openai/self-hosted/qwen3.6-35b-a3b'.
+litellm_models entry 'self-hosted/qwen3.6-35b-a3b' does not apply to provider 'openai', name 'self-hosted/qwen3.6-35b-a3b': that config is looked up under 'openai/self-hosted/qwen3.6-35b-a3b', so the entry admits nothing. Rename the entry to 'openai/self-hosted/qwen3.6-35b-a3b'.
 ```
 
 **Cause.** A `litellm_models:` entry in the presets overlay is keyed on the
