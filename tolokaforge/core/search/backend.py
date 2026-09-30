@@ -62,10 +62,12 @@ so the runner subset ships it without dragging any backend's dependencies in.
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
@@ -184,8 +186,9 @@ class SearchBackendContext:
     """The inputs a search-backend factory receives.
 
     ``backend_config`` is the task's ``initial_state.rag.backend_config``, passed
-    through verbatim: the engine never reads its keys, and a backend validates
-    the mapping into a model of its own. ``tool_name`` and ``tool_description``
+    through verbatim as a read-only deep copy: the engine never reads its keys, a
+    backend validates the mapping into a model of its own, and nothing a backend
+    does changes the config the trial is graded and bundled with. ``tool_name`` and ``tool_description``
     are the agent's search tool as the task declares it (``initial_state.rag.tool``);
     ``tool_description`` is ``None`` at ``RegisterTrial`` when no actor's tool
     set carries the declared tool.
@@ -205,6 +208,16 @@ class SearchBackendContext:
     trial_id: str | None = None
     domain_name: str | None = None
     stack_service_clients: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # The task's config is graded and bundled as the task declared it, so a
+        # backend reads a read-only deep copy and cannot change what it was given.
+        # The clients are the runner's own handles: shared, never copied.
+        frozen = MappingProxyType(copy.deepcopy(dict(self.backend_config)))
+        object.__setattr__(self, "backend_config", frozen)
+        object.__setattr__(
+            self, "stack_service_clients", MappingProxyType(dict(self.stack_service_clients))
+        )
 
 
 SearchBackendFactory = Callable[[SearchBackendContext], SearchBackend]
