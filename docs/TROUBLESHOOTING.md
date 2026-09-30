@@ -126,6 +126,33 @@ never found and the provider still refuses `tools` before sending.
 **Fix.** Rename the key in the overlay to the one the message names. See
 [`LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
+## A route-prefixed model name resolves to the 'default' preset
+
+**Symptom.** `config validate` reports a WARNING at `models.<role>.name`:
+
+```text
+⚠ [WARNING] models.agent.name: 'self-hosted/nova-pro-v1' (provider 'openai') resolves to the 'default' preset, but its last segment 'nova-pro-v1' matches preset 'aws_nova' (hint: If preset 'aws_nova' fits the model this route serves, add an overlay preset whose match covers the full name (match: ['*/nova-pro-v1'] or match: ['self-hosted/nova-pro-v1']) carrying the policies of preset 'aws_nova'; or, when the route also serves the unprefixed name, name the model 'nova-pro-v1'.)
+```
+
+The run logs one WARNING per such model config after its tasks load, with the
+same facts and remedy as fields:
+
+```text
+WARNING | family=aws_nova last_segment=nova-pro-v1 model_name=self-hosted/nova-pro-v1 path=models.agent.name provider=openai remedy="If preset 'aws_nova' fits …" | A route-prefixed model name resolves to the 'default' preset, but its last segment matches another preset
+```
+
+**Cause.** No preset matches the full name, but the name's last segment alone
+matches a preset. The bundled presets claim their models under any route
+prefix, so this points at a preset whose globs do not: typically an overlay
+preset with a bare glob and no `*/`-prefixed sibling, or `aws_nova`, which
+routes by provider. The run proceeds on `default`, whose policies may not fit
+the model.
+
+**Fix.** If the preset fits the model this route serves, add an overlay preset
+whose `match` covers the full name, as the hint shows. When the route also
+serves the unprefixed name, naming the model that way works too. See
+[`LLM_LAYER.md`](LLM_LAYER.md#preset-coverage).
+
 ## Task Validation Fails
 
 ```bash

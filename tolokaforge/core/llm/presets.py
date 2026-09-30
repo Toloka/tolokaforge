@@ -14,7 +14,8 @@ import difflib
 import fnmatch
 import inspect
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -72,9 +73,12 @@ from tolokaforge.core.model_data import (
     bundled_presets_path,
     load_policy_registrations,
 )
-from tolokaforge.core.models.model_config import OpenRouterConfig
+from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
+from tolokaforge.core.models.run_config import iter_model_configs
 
 __all__ = [
+    "UNCLAIMED_ROUTE_FAMILY",
+    "UnclaimedRouteFamily",
     "build_capabilities",
     "get_overlay_path",
     "get_resolved_presets",
@@ -83,6 +87,8 @@ __all__ = [
     "resolve_overlay_path",
     "resolve_policy_names",
     "set_overlay_path",
+    "unclaimed_route_families",
+    "unclaimed_route_family",
     "validate_overlay_file",
 ]
 
@@ -1208,6 +1214,60 @@ def resolve_effective_preset(model_name: str, provider: str = "") -> str:
     for preset_name, _preset in _iter_preset_matches(model_name, provider):
         return preset_name  # first match wins
     return "default"
+
+
+UNCLAIMED_ROUTE_FAMILY: Final = (
+    "A route-prefixed model name resolves to the 'default' preset, "
+    "but its last segment matches another preset"
+)
+
+
+@dataclass(frozen=True)
+class UnclaimedRouteFamily:
+    """A route-prefixed name no preset claims, whose last segment matches preset ``family``."""
+
+    model_name: str
+    provider: str
+    last_segment: str
+    family: str
+
+    @property
+    def remedy(self) -> str:
+        return (
+            f"If preset {self.family!r} fits the model this route serves, add an overlay preset "
+            f"whose match covers the full name (match: ['*/{self.last_segment}'] or match: "
+            f"[{self.model_name!r}]) carrying the policies of preset {self.family!r}; or, when "
+            f"the route also serves the unprefixed name, name the model {self.last_segment!r}."
+        )
+
+
+def unclaimed_route_family(model_name: str, provider: str = "") -> UnclaimedRouteFamily | None:
+    """The preset a route-prefixed name's last segment matches, when no preset claims the name.
+
+    Returns ``None`` when *model_name* has no ``/``, when a preset matches it
+    whole, or when its last segment resolves to ``"default"`` too. Reads the
+    merged table, so an overlay preset whose globs miss the route prefix counts.
+    """
+    if "/" not in model_name or resolve_effective_preset(model_name, provider) != "default":
+        return None
+    last_segment = model_name.rsplit("/", 1)[-1]
+    family = resolve_effective_preset(last_segment, provider)
+    if family == "default":
+        return None
+    return UnclaimedRouteFamily(model_name, provider, last_segment, family)
+
+
+def unclaimed_route_families(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, UnclaimedRouteFamily]]:
+    """``(path, finding)`` for every model config, fallbacks included, that
+    :func:`unclaimed_route_family` reports. ``config validate`` and the run both give these."""
+    findings: list[tuple[str, UnclaimedRouteFamily]] = []
+    for path, cfg in iter_model_configs(models):
+        finding = unclaimed_route_family(cfg.name, cfg.provider)
+        if finding is not None:
+            findings.append((path, finding))
+    return findings
 
 
 def _check_class_names_resolve() -> None:
