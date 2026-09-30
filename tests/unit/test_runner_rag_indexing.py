@@ -18,8 +18,10 @@ through the registered ``rag_service`` backend with a recording client.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -216,3 +218,25 @@ def test_register_trial_serves_a_skewed_search_kb_from_rag_service(
         assert isinstance(runner.trials[trial_id].resolve_kb_search(), RagServiceKnowledgeSearch)
     finally:
         runner.shutdown()
+
+
+def test_a_build_the_loop_never_ran_is_closed_not_leaked(
+    service: RunnerServiceImpl, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scheduling failure refuses the trial and leaves no never-awaited coroutine."""
+    _write_corpus(tmp_path / "rag" / "corpus")
+    scheduled: list[Any] = []
+
+    def refuse_to_schedule(coroutine: Any, timeout: float = 300.0) -> Any:
+        scheduled.append(coroutine)
+        raise RuntimeError("Event loop is closed")
+
+    monkeypatch.setattr(service, "_run_async", refuse_to_schedule)
+    config = SearchConfig(
+        enabled=True, plane="rag_service", domain_name="rag_search", documents_path="rag/corpus"
+    )
+
+    with pytest.raises(SearchIndexBuildError, match="Event loop is closed"):
+        _index(service, config, artifacts_dir=tmp_path)
+    (build,) = scheduled
+    assert inspect.getcoroutinestate(build) == inspect.CORO_CLOSED

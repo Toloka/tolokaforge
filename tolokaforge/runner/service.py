@@ -98,6 +98,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.plugin_registry import (
     RAG_SERVICE_STACK_SERVICE,
     RegistryError,
+    SearchBackend,
     SearchBackendContext,
     SearchIndex,
     SearchIndexBuildError,
@@ -3781,17 +3782,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if backend.stack_service == RAG_SERVICE_STACK_SERVICE and not search_config.enabled:
             return None
         corpus_dir = _resolve_corpus_dir(trial_id, search_config.documents_path, artifacts_dir)
-        index = self._run_backend_build(trial_id, name, backend.build_index(corpus_dir))
+        index = self._run_backend_build(trial_id, name, backend, corpus_dir)
         logger.info(f"RegisterTrial: {trial_id} - search index built by backend {name!r}")
         return index
 
-    def _run_backend_build(self, trial_id: str, name: str, build: Any) -> SearchIndex:
-        """Await a backend's ``build_index`` on the runner's loop; any failure refuses."""
+    def _run_backend_build(
+        self, trial_id: str, name: str, backend: SearchBackend, corpus_dir: Path | None
+    ) -> SearchIndex:
+        """Await ``backend.build_index`` on the runner's loop; any failure refuses.
+
+        The coroutine is created here, inside the refusal's scope, and closed if it
+        never started (the loop refused to schedule it), so a failure leaves no
+        never-awaited coroutine behind.
+        """
+        build: Any = None
         try:
+            build = backend.build_index(corpus_dir)
             return self._run_async(build)
         except SearchIndexBuildError:
             raise
         except Exception as e:
+            if (
+                inspect.iscoroutine(build)
+                and inspect.getcoroutinestate(build) == inspect.CORO_CREATED
+            ):
+                build.close()
             raise SearchIndexBuildError(
                 f"Trial {trial_id}: search backend {name!r} failed to build the trial's index: "
                 f"{type(e).__name__}: {e}"
