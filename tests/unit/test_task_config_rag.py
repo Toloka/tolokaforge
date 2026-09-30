@@ -97,6 +97,24 @@ def test_a_corpus_dir_that_is_not_a_path_is_refused_at_load() -> None:
         InitialStateConfig(rag={"corpus_dir": 42})
 
 
+@pytest.mark.parametrize(
+    ("rag", "loc"),
+    [
+        ({"corpus_dir": "kb", "backnd": "bm25"}, ("initial_state", "rag", "backnd")),
+        ({"corpus_dir": "kb", "tool": {"nme": "lookup"}}, ("initial_state", "rag", "tool", "nme")),
+        ({"corpus_dir": "kb", "tool": None}, ("initial_state", "rag", "tool")),
+    ],
+    ids=["misspelt-backend", "misspelt-tool-name", "null-tool"],
+)
+def test_a_misspelt_or_malformed_key_is_refused_not_defaulted(
+    rag: dict[str, Any], loc: tuple[str, ...]
+) -> None:
+    """A typo would otherwise select the default backend or tool without a word."""
+    with pytest.raises(ValidationError) as excinfo:
+        _task(rag)
+    assert [tuple(detail["loc"]) for detail in excinfo.value.errors()] == [loc]
+
+
 def test_there_is_no_tool_actors_field() -> None:
     """The actor that gets the tool is ``tools.<actor>.enabled``, declared once."""
     assert set(RagToolConfig.model_fields) == {"name", "description"}

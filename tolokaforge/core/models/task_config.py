@@ -139,7 +139,7 @@ class RagToolConfig(BaseModel):
     whose ``tools.<actor>.enabled`` names it, as every tool does.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     name: str = DEFAULT_SEARCH_TOOL_NAME
     description: str = DEFAULT_SEARCH_TOOL_DESCRIPTION
@@ -157,9 +157,13 @@ class RagConfig(BaseModel):
     as ``search.plane``. ``backend_config`` is handed to that backend's factory
     verbatim — the engine never reads its keys. The dump carries only the fields
     the author wrote (see :func:`_dump_declared_fields_only`).
+
+    Unknown keys are refused: a misspelt ``backend`` or ``tool.name`` would
+    otherwise select the default silently. Every pack declaring a ``rag`` block
+    when this became typed carried ``corpus_dir`` alone.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     corpus_dir: str | None = None
     backend: str = SearchPlane.RAG_SERVICE.value

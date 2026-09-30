@@ -694,8 +694,10 @@ there and validates them itself; the built-in ignores it. See
 | `tool.name` | `search_kb` | The agent's search tool. It goes to whichever actor's `tools.<actor>.enabled` names it, and the runner binds it to the trial's index by this name. |
 | `tool.description` | the rag-service tool's description | What the agent reads about the tool. Its parameters come from the backend (`rag_service`: `query`, `top_k`, `alpha`). |
 
-A task that writes no `rag` block and enables `search_kb` gets the defaults. An
-unregistered `backend` is refused at run start, naming the registered backends and
+A task that writes no `rag` block and enables `search_kb` gets the defaults. Unknown
+keys in the block (a misspelt `backend`, `tool: {nme: …}`) are refused, and a
+malformed block refuses the run even under `orchestrator.strict_task_load: false`
+rather than dropping the task. An unregistered `backend` is refused at run start, naming the registered backends and
 the task that asked for it. The typed block dumps only the keys the author wrote,
 so `TaskConfig` dumps of a task declaring `corpus_dir` alone are unchanged.
 `task_defaults` has no `initial_state`, so the backend is chosen per task. See

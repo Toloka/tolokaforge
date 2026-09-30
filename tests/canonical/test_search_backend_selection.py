@@ -92,16 +92,90 @@ def _task(task_id: str, *, tools: list[str], rag: dict[str, Any] | None = None) 
     )
 
 
-def _orchestrator_with(*tasks: TaskConfig) -> Orchestrator:
-    orch = Orchestrator(
-        RunConfig(
-            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
-            orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
-            evaluation=EvaluationConfig(output_dir="/tmp/search_backend_selection"),
-        )
+def _run_config(*, strict_task_load: bool = False) -> RunConfig:
+    return RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(
+            workers=1, repeats=1, auto_start_services=False, strict_task_load=strict_task_load
+        ),
+        evaluation=EvaluationConfig(output_dir="/tmp/search_backend_selection"),
     )
+
+
+def _orchestrator_with(*tasks: TaskConfig) -> Orchestrator:
+    orch = Orchestrator(_run_config())
     orch.adapter = _StubAdapter({}, tasks={task.task_id: task for task in tasks})
     return orch
+
+
+class _RawTaskAdapter(_StubAdapter):
+    """Validates each task at ``get_task``, as a file-backed adapter does."""
+
+    def __init__(self, raw: dict[str, dict[str, Any]]):
+        super().__init__({}, tasks={})
+        self._raw = raw
+
+    def get_task_ids(self) -> list[str]:
+        return list(self._raw)
+
+    def get_task(self, task_id: str) -> TaskConfig:
+        return TaskConfig(**self._raw[task_id])
+
+
+def _raw_task(task_id: str, **overrides: Any) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "name": task_id,
+        "category": "kb",
+        "description": "stub",
+        "initial_user_message": "look it up",
+        "initial_state": {},
+        "tools": {"agent": {"enabled": ["calculator"]}, "user": {"enabled": []}},
+        "actors": {"user": {"mode": "llm"}},
+        "grading": "grading.yaml",
+        **overrides,
+    }
+
+
+class TestAMalformedRagBlockUnderANonStrictLoad:
+    """A block that loaded while untyped must not now drop its task in silence."""
+
+    @pytest.mark.parametrize(
+        "rag",
+        [
+            {"corpus_dir": 5},
+            {"corpus_dir": "kb", "tool": None},
+            {"corpus_dir": "kb", "backnd": "x"},
+        ],
+        ids=["corpus-dir-not-a-path", "null-tool", "misspelt-key"],
+    )
+    def test_refuses_the_run_naming_the_task(self, rag: dict[str, Any]) -> None:
+        orch = Orchestrator(_run_config(strict_task_load=False))
+        orch.adapter = _RawTaskAdapter(
+            {
+                "TASK-OK": _raw_task("TASK-OK"),
+                "TASK-RAG": _raw_task("TASK-RAG", initial_state={"rag": rag}),
+            }
+        )
+
+        message = _refusal(orch)
+
+        assert "TASK-RAG" in message
+        assert "initial_state.rag" in message
+        assert "strict_task_load" in message
+
+    def test_another_malformed_task_is_still_dropped_as_before(self) -> None:
+        orch = Orchestrator(_run_config(strict_task_load=False))
+        orch.adapter = _RawTaskAdapter(
+            {
+                "TASK-OK": _raw_task("TASK-OK"),
+                "TASK-BAD": _raw_task("TASK-BAD", interaction_mode="sideways"),
+            }
+        )
+
+        orch.load_tasks()
+
+        assert [task.task_id for task in orch.tasks] == ["TASK-OK"]
 
 
 def _refusal(orch: Orchestrator) -> str:

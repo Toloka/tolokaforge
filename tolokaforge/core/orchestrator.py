@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from pydantic import ValidationError
+
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
@@ -451,6 +453,13 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
         if mock_web:
             return True
     return False
+
+
+def _is_a_malformed_search_declaration(error: Exception) -> bool:
+    """Whether a task failed to load because its ``initial_state.rag`` is malformed."""
+    if not isinstance(error, ValidationError):
+        return False
+    return any(tuple(detail["loc"][:2]) == ("initial_state", "rag") for detail in error.errors())
 
 
 def _search_needs_rag_service(task: Any) -> bool:
@@ -2410,6 +2419,14 @@ class Orchestrator:
                         f"Failed to load task {task_id!r}: {e} "
                         "(orchestrator.strict_task_load=true — the run refuses "
                         "to start with a silently shorter task list)"
+                    ) from e
+                if _is_a_malformed_search_declaration(e):
+                    raise RuntimeError(
+                        f"Failed to load task {task_id!r}: {e} (a malformed "
+                        "initial_state.rag refuses the run whatever "
+                        "orchestrator.strict_task_load says: the block was untyped "
+                        "until ADR-0052, and a task that loaded then must not drop out "
+                        "of the run in silence now)"
                     ) from e
                 self.logger.error("Failed to load task", task_id=task_id, error=str(e))
         self.tasks.extend(loaded)
