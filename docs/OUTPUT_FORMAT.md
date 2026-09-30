@@ -324,7 +324,7 @@ authoring. `TaskConfig` ignores unknown keys, so `TaskConfig(**task.yaml)` drops
 it and resolves the default simulator — while `interaction_mode` and
 `initial_user_message`, both `TaskConfig` fields, are picked back up.
 
-### `model_config.<role>.resolved.*` (Stage 7, P6)
+### `model_config.<role>.resolved.*`
 
 Computed by the orchestrator at trial-start via
 [`tolokaforge.core.llm.presets.resolve_effective_preset`](../tolokaforge/core/llm/presets.py)

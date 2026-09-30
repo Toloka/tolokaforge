@@ -26,6 +26,7 @@ from tolokaforge.core.llm.litellm_params import (
     overlay_key_mismatches,
     overlay_stray_entries,
 )
+from tolokaforge.core.llm.presets import unclaimed_route_families
 from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.models import (
     DOCKER_RUNTIME_ALIAS_TARGET,
@@ -228,6 +229,24 @@ def _overlay_key_issues(run_config: RunConfig) -> list[ValidationIssue]:
         for path, lookup in overlay_stray_entries(run_config.models)
     ]
     return refused + stray
+
+
+def _route_family_issues(run_config: RunConfig) -> list[ValidationIssue]:
+    """A WARNING per model config whose route-prefixed name misses the preset its
+    last segment matches."""
+    return [
+        ValidationIssue(
+            severity=Severity.WARNING,
+            path=f"{path}.name",
+            message=(
+                f"{finding.model_name!r} (provider {finding.provider!r}) resolves to the "
+                f"'default' preset, but its last segment {finding.last_segment!r} matches "
+                f"preset {finding.family!r}"
+            ),
+            hint=finding.remedy,
+        )
+        for path, finding in unclaimed_route_families(run_config.models)
+    ]
 
 
 def _validate_schema(raw: dict[str, Any]) -> RunConfig | ValidationIssue:
@@ -474,8 +493,10 @@ def validate_run_config(raw: dict[str, Any]) -> ValidationResult:
         result.issues.append(run_config)
         return result
 
-    # 2. Overlay entries stored under a raw name, for every model and fallback
+    # 2. Overlay entries stored under a raw name, and route-prefixed names that
+    #    miss their last segment's preset, for every model and fallback
     result.issues.extend(_overlay_key_issues(run_config))
+    result.issues.extend(_route_family_issues(run_config))
 
     # 3. Per-model checks
     models = raw.get("models", {})
