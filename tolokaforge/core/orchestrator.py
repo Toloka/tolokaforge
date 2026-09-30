@@ -101,7 +101,6 @@ from tolokaforge.core.plugin_registry import (
     load_agent_loop,
     load_conductor,
     load_runtime_backend,
-    load_search_backend,
     load_trial_grader,
     load_user_simulator,
 )
@@ -2453,31 +2452,37 @@ class Orchestrator:
                 raise RuntimeError(f"task {task.task_id!r}: actors.user.simulator: {exc}") from exc
 
     def _refuse_an_unregistered_search_backend(self) -> None:
-        """Resolve every task's search backend once, before any trial.
+        """Build every searching task's search backend once, before any trial.
 
-        ``initial_state.rag.backend`` is task-scoped, so a run may mix backends;
-        each distinct name a task declares — or the default ``rag_service`` a
-        searching task gets — is resolved here, so an unregistered one (a typo, a
-        package not installed, or an editable install whose ``.dist-info``
-        predates the ``tolokaforge.search_backends`` group) is one refusal naming
-        the known registrations and the task that asked for it, not one refused
-        ``RegisterTrial`` per trial after the stack is already up. ``typesense``
-        is refused too: it is the plane an adapter declares for a corpus it
-        indexed host-side, not a backend a task selects.
+        ``initial_state.rag.backend`` is task-scoped, so a run may mix backends, and
+        ``backend_config`` is per task. Each task that declares a ``rag`` block or
+        enables its search tool has its backend built here from the trial-less
+        context the adapter and the stack rule build it from, so an unregistered
+        name (a typo, a package not installed, or an editable install whose
+        ``.dist-info`` predates the ``tolokaforge.search_backends`` group) — or a
+        backend refusing the task's ``backend_config`` — is one refusal naming the
+        task and the backend, not a bare error out of the stack rule or one refused
+        ``RegisterTrial`` per trial. ``typesense`` is refused too: it is the plane an
+        adapter declares for a corpus it indexed host-side, not a backend a task
+        selects.
         """
-        checked: set[str] = set()
         for task in self.tasks:
             search = search_declaration(task)
             if not (search.declared or uses_search(task, search)):
                 continue
-            if search.backend in checked:
-                continue
-            checked.add(search.backend)
+            where = (
+                "initial_state.rag.backend"
+                if search.declared
+                else f"the default search backend {search.backend!r}"
+            )
             try:
-                load_search_backend(search.backend)
+                declared_search_backend(search)
             except RegistryError as exc:
+                raise RuntimeError(f"task {task.task_id!r}: {where}: {exc}") from exc
+            except Exception as exc:
                 raise RuntimeError(
-                    f"task {task.task_id!r}: initial_state.rag.backend: {exc}"
+                    f"task {task.task_id!r}: {where}: search backend {search.backend!r} "
+                    f"refused the task's declaration: {type(exc).__name__}: {exc}"
                 ) from exc
 
     def _refuse_an_unregistered_agent_loop(self) -> None:

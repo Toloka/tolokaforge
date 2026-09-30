@@ -198,6 +198,36 @@ def test_an_unregistered_backend_is_refused_naming_the_task_and_the_registered_o
     assert "rag_service" in message, "the refusal names the registered backends"
 
 
+def test_a_backend_refusing_its_config_is_refused_at_load_naming_the_task() -> None:
+    """Before the stack rule would meet the same factory error with no task id on it."""
+    orch = _orchestrator_with(
+        _task("TASK-OK", tools=["search_kb"], rag={"corpus_dir": "kb"}),
+        _task(
+            "TASK-CFG",
+            tools=["search_kb"],
+            rag={"corpus_dir": "kb", "backend_config": {"top_k": 3}},
+        ),
+    )
+
+    message = _refusal(orch)
+
+    assert message.startswith("task 'TASK-CFG': initial_state.rag.backend: ")
+    assert "search backend 'rag_service' refused the task's declaration" in message
+    assert "takes no backend_config" in message
+
+
+def test_a_task_without_a_rag_block_is_refused_naming_the_default_backend(
+    no_search_backends: None,
+) -> None:
+    """It wrote no ``initial_state.rag``, so the refusal does not name that key."""
+    orch = _orchestrator_with(_task("TASK-KB", tools=["search_kb"]))
+
+    message = _refusal(orch)
+
+    assert message.startswith("task 'TASK-KB': the default search backend 'rag_service': ")
+    assert "initial_state.rag" not in message
+
+
 def test_typesense_is_refused_as_a_reserved_name() -> None:
     orch = _orchestrator_with(
         _task("TASK-TS", tools=["search_kb"], rag={"corpus_dir": "kb", "backend": "typesense"})
