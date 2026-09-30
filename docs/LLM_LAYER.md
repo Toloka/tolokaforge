@@ -1057,10 +1057,6 @@ provider's own transport forwards them too.
 [`tests/canonical/test_gateway_prompt_cache_markers.py`](../tests/canonical/test_gateway_prompt_cache_markers.py)
 pins the markers on the wire for both paths.
 
-tolokaforge requires litellm >= 1.93.0; environments pinned below it must
-upgrade (earlier releases strip Anthropic `cache_control` on gateway routes,
-lack the native `meta` provider, or crash tool calls without `fastapi`).
-
 **The name.** Those two effects are coupled, so the name that arrives depends on the
 dialect, and the gateway's name for a model is not derivable from the engine's model
 string. It is whichever of `<provider>/<name>` or `<name>` the catalog contains:
@@ -1112,6 +1108,10 @@ by the untranslated model string. A foreign-namespace wildcard never routes, exa
 entries always win, and a wildcard-resolved call is recorded as such on the per-call
 usage (`gateway_route_kind: "wildcard"`), so a board audit can tell the serving
 paths apart.
+
+tolokaforge requires litellm >= 1.93.0; environments pinned below it must
+upgrade (earlier releases strip Anthropic `cache_control` on resolved gateway
+routes, lack the native `meta` provider, or crash tool calls without `fastapi`).
 
 ### Serving a NEW provider behind the gateway
 
