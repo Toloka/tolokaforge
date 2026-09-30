@@ -686,60 +686,76 @@ def _referenced_ids(
             continue
         rows = _records(state[reference.table], f"unless_referenced_by: table {reference.table!r}")
         where = f"unless_referenced_by: '{reference.table}.{reference.field}'"
-        for row in rows:
-            for value in _values_at(row, _segments(reference.field), where):
-                if isinstance(value, Mapping):
-                    raise ComparisonViewError(f"{where} holds a mapping, not an id")
-                keys.add(_reference_key(value))
+        keys.update(map(_reference_key, _ids_at(rows, _segments(reference.field), where)))
     return frozenset(keys)
 
 
-def _values_at(value: Any, segments: Sequence[str], where: str) -> Iterator[Any]:
-    """The values at ``segments`` below ``value``; lists are traversed at every level."""
+def _ids_at(value: Any, segments: Sequence[str], where: str) -> list[Any]:
+    """The ids the reference field at ``segments`` holds below ``value``."""
+    found: list[Any] = []
+
+    def collect(leaf: Any) -> Any:
+        found.extend(_ids_in(leaf, where))
+        return leaf
+
+    _rewrite_at(value, segments, collect, where)
+    return found
+
+
+def _ids_in(value: Any, where: str) -> Iterator[Any]:
+    """The ids a reference field holds: a scalar, or the scalars of a (nested) list."""
     if value is None:
         return
     if isinstance(value, list):
         for item in value:
-            yield from _values_at(item, segments, where)
+            yield from _ids_in(item, where)
         return
-    if not segments:
-        yield value
-        return
-    if not isinstance(value, Mapping):
-        raise ComparisonViewError(
-            f"{where}: field {segments[0]!r} is read from a {type(value).__name__}, "
-            f"not a mapping or a list"
-        )
-    yield from _values_at(value.get(segments[0]), segments[1:], where)
+    if isinstance(value, Mapping):
+        raise ComparisonViewError(f"{where} holds a mapping, not an id")
+    yield value
 
 
 def _without_matching_items(
-    value: Any, segments: Sequence[str], matches: Callable[[Record], bool], where: str
-) -> tuple[Any, int]:
-    """``value`` without the matching items of the list at ``segments``, and how many went.
+    rows: list[Record], segments: Sequence[str], matches: Callable[[Record], bool], where: str
+) -> tuple[list[Record], int]:
+    """``rows`` without the matching items of the lists at ``segments``, and how many went."""
+    removed = 0
 
-    ``value`` is a row, a list met on the way (traversed element by element) or
-    the terminal list itself once ``segments`` is exhausted. A missing or null
-    field leaves the value as it is.
+    def drop_matching(items: Any) -> list[Record]:
+        nonlocal removed
+        records = _records(items, where)
+        kept = [item for item in records if not matches(item)]
+        removed += len(records) - len(kept)
+        return kept
+
+    return _rewrite_at(rows, segments, drop_matching, where), removed
+
+
+def _rewrite_at(value: Any, segments: Sequence[str], leaf: Callable[[Any], Any], where: str) -> Any:
+    """``value`` with ``leaf`` applied to each value ``segments`` reach below it.
+
+    The one path walker of the rules (see "Paths" above): each segment reads a
+    field of a mapping, and a list met before the path ends is walked item by
+    item. A missing or null field ends the walk and leaves the value as it is; a
+    value a field has to be read from that is neither a mapping nor a list raises
+    :class:`ComparisonViewError`. The mappings on the way are rebuilt, never
+    mutated.
     """
     if value is None:
-        return value, 0
-    if isinstance(value, list) and segments:
-        results = [_without_matching_items(item, segments, matches, where) for item in value]
-        return [item for item, _ in results], sum(removed for _, removed in results)
+        return value
     if not segments:
-        items = _records(value, where)
-        kept = [item for item in items if not matches(item)]
-        return kept, len(items) - len(kept)
+        return leaf(value)
+    if isinstance(value, list):
+        return [_rewrite_at(item, segments, leaf, where) for item in value]
     if not isinstance(value, Mapping):
         raise ComparisonViewError(
             f"{where}: field {segments[0]!r} is read from a {type(value).__name__}, "
             f"not a mapping or a list"
         )
-    if segments[0] not in value:
-        return value, 0
-    inner, removed = _without_matching_items(value[segments[0]], segments[1:], matches, where)
-    return {**value, segments[0]: inner}, removed
+    head = segments[0]
+    if head not in value:
+        return value
+    return {**value, head: _rewrite_at(value[head], segments[1:], leaf, where)}
 
 
 # ---------------------------------------------------------------------------
