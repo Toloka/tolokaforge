@@ -553,6 +553,11 @@ initial_state:
     base_url: "http://mock-web:8080"
   rag:
     corpus_dir: "rag/corpus"
+    # backend: "rag_service"     # which registered search backend serves the corpus
+    # backend_config: {}         # opaque config for that backend
+    # tool:
+    #   name: "search_kb"        # the agent's search tool
+    #   description: "..."       # default: the rag-service tool's description
 
 system_prompt: null
 
@@ -677,6 +682,22 @@ selected simulator untouched — a non-built-in simulator declares its own field
 there and validates them itself; the built-in ignores it. See
 [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md) and
 [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
+
+### `initial_state.rag:` — the knowledge base, its search backend and the agent's tool
+
+| key | default | meaning |
+|---|---|---|
+| `corpus_dir` | none | Directory of the corpus, relative to the task dir. Its `.md` / `.txt` files travel with the task and the runner builds the trial's index from them. Declaring it requires an actor to enable the search tool. |
+| `backend` | `rag_service` | The search backend that serves the corpus, resolved against the `tolokaforge.search_backends` entry-point group. `rag_service` is the engine's hybrid rag-service (BM25 + dense, one index per trial; its tasks run on `full_stack`). `typesense` is reserved: that plane is declared by an adapter that indexes host-side, not by a native task. |
+| `backend_config` | `{}` | An opaque mapping handed to the backend's factory verbatim; the engine never reads its keys. `rag_service` takes none and refuses a non-empty one. |
+| `tool.name` | `search_kb` | The agent's search tool. It goes to whichever actor's `tools.<actor>.enabled` names it, and the runner binds it to the trial's index by this name. |
+| `tool.description` | the rag-service tool's description | What the agent reads about the tool. Its parameters come from the backend (`rag_service`: `query`, `top_k`, `alpha`). |
+
+A task that writes no `rag` block and enables `search_kb` gets the defaults. The
+typed block dumps only the keys the author wrote, so `TaskConfig` dumps of a task
+declaring `corpus_dir` alone are unchanged. `task_defaults` has no `initial_state`,
+so the backend is chosen per task. See
+[ADR-0052](adr/0052-search-backend-protocol-and-registry.md).
 
 ## Grading Specification (`grading.yaml`)
 
