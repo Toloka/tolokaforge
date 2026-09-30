@@ -1,77 +1,36 @@
-"""The comparison view: a one-sided transform of a state before the state hash (ADR-0053).
+"""The comparison view: a one-sided transform of a state before the state hash.
 
-``state_checks.hash`` passes a trial when its final database and the state a
-golden replay produces hash equal. :func:`apply_comparison_view` shapes each of
-the two states on its own before the existing steps run: it decides which
-records of the state count. Its inputs are the state being viewed, that state's
-initial state and the declared ``state_checks.comparison_view`` block. The other
-side of the comparison is never an input, so the view of a state does not depend
-on what it is compared with.
-
-Rules
------
-The block is a schema ``version`` and a list of ``rules``, applied in list order.
-Each rule is a mapping whose ``kind`` selects an entry of the rule table
-(:func:`comparison_view_rules`); that rule validates the entry into its own
-``extra="forbid"`` config model. The built-in kinds:
+:func:`apply_comparison_view` computes the view of one state from that state, its
+initial state and the ``state_checks.comparison_view`` block; the other side of
+the comparison is never an input. ADR-0053 has the design, the order of the
+pre-hash steps and the versioning policy of the record. The semantics:
 
 ``exclude_records``
-    Drops the rows of ``table`` that match ``where`` — or, with ``path``, the
-    items of the nested list at that path in each row. ``where`` is a non-empty
-    conjunction of conditions on fields of the row (or item); a missing field
-    reads as null:
-
-    - ``field: value`` — equality with a scalar (a bool never equals a number).
-      It is exact and runs before ``numeric_string_fields`` folds anything, so
-      ``"130.00"`` does not equal ``130``;
-    - ``field: {in: [v1, v2]}`` — equality with one of the listed scalars;
-    - ``field: {is_null: true}`` — null or missing (``false``: present, not null);
-    - ``field: {starts_with: prefix}`` — a string beginning with ``prefix``;
-    - ``all_zero: [f1, f2]`` — every listed field holds a number equal to zero,
-      or a string holding a plain decimal literal equal to zero (``"0.00"``).
-      Null, a missing field and a non-numeric value are not zero.
-
-    With ``unless_referenced_by: [{table, field}]`` a matching row is kept when
-    any listed field of another row of the listed table holds its id; a row's
-    reference to itself does not count, and naming the table's own id field is
-    refused. The id field is the table's ``state_checks.id_fields`` entry,
-    ``"id"`` when absent; a composite key, a null id and an id or reference that
-    is not a JSON scalar are refused. Ids match as JSON values: ``1`` matches
-    ``1.0`` but not ``"1"`` or ``true``. References are read from the state the
-    rule receives, before it removes anything. ``path`` and
-    ``unless_referenced_by`` do not combine: nested items have no declared id.
+    Drops the rows of ``table`` that match ``where`` or, with ``path``, the items
+    of the nested list there. ``where`` is a non-empty conjunction, and a missing
+    field reads as null. ``field: value`` is exact equality with a scalar, before
+    any ``numeric_string_fields`` folding (``"130.00"`` is not ``"130"``, a bool is
+    never a number); ``{in: [...]}`` is equality with one of several;
+    ``{is_null: bool}``; ``{starts_with: prefix}`` matches strings only; and
+    ``all_zero: [fields]`` needs every field to hold a number, or a plain decimal
+    string, equal to zero (null and missing are not zero).
+    ``unless_referenced_by: [{table, field}]`` keeps a matching row whose id
+    another row holds in a listed field. The id field is the table's
+    ``state_checks.id_fields`` entry (``"id"`` when absent; one field, never
+    null). Ids match as JSON values, so ``1`` is ``1.0`` but not ``"1"``, and
+    references are read before the rule removes anything.
 ``exclude_tables``
-    Drops the named tables whole. ``reason`` is required, and a table another
-    rule of the same view names is refused, because the order of the two would
-    decide what the other rule sees.
+    Drops the named tables, key included; refused for a table another rule names.
 
-Paths
------
-``exclude_records.path`` and ``unless_referenced_by.field`` take a dotted path:
-field names joined by ``.`` (``purchase_allocations``,
-``expense_payments.purchase_allocations``). Read from a row, each name selects a
-field of the current mapping, and a list met on the way is traversed element by
-element, so ``expense_payments.purchase_allocations`` reaches the allocations of
-every payment of the row. For ``exclude_records`` the last name holds the list
-whose items the rule filters, and each item must be a mapping. A missing or null
-field ends the path with nothing below it. A value the path has to read a field
-from that is neither a mapping nor a list, or a last value that is not a list,
-raises :class:`ComparisonViewError`: the declaration and the data disagree. There
-is no index syntax, since a view must not depend on list order, and a field whose
-name contains ``.`` cannot be addressed.
+A path (``path``, ``unless_referenced_by.field``) is field names joined by ``.``.
+A list met on the way is walked item by item, a missing or null field ends the
+path, and a value that does not fit raises :class:`ComparisonViewError`, as does
+every rule that cannot apply. The input is never mutated, and the same inputs
+give the same view and the same :class:`ComparisonViewRecord`.
 
-Guarantees
-----------
-The input is never mutated: the view is a new object that shares nothing with
-it. The same inputs give the same view and the same record. A rule that cannot
-apply raises :class:`ComparisonViewError`; no partial or unchanged state is
-returned in its place. Every result carries a :class:`ComparisonViewRecord`: the
-block's version, :data:`COMPARISON_VIEW_FUNCTION_VERSION` and the sha256 of the
-rules as applied.
-
-This module depends on the standard library and pydantic only. The runner
-applies the view too, so it must not import ``state_checks`` or ``combine``,
-which the runner-subset wheel excludes.
+The module depends on the standard library and pydantic only: the runner will
+apply the view too, and the runner-subset wheel excludes ``state_checks`` and
+``combine``.
 """
 
 from __future__ import annotations
@@ -86,7 +45,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Annotated, Any, Final, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Final, Literal, Protocol, cast, runtime_checkable
 
 from pydantic import (
     AfterValidator,
@@ -107,7 +66,6 @@ from pydantic import (
 )
 
 __all__ = [
-    "ALL_ZERO",
     "COMPARISON_VIEW_FUNCTION_VERSION",
     "COMPARISON_VIEW_VERSIONS",
     "ComparisonViewConfig",
@@ -116,16 +74,8 @@ __all__ = [
     "ComparisonViewResult",
     "ComparisonViewRule",
     "ComparisonViewRuleConfig",
-    "ExcludeRecords",
-    "ExcludeRecordsConfig",
-    "ExcludeTables",
-    "ExcludeTablesConfig",
-    "InCondition",
-    "IsNullCondition",
-    "RecordReference",
     "RuleApplication",
     "RuleOutcome",
-    "StartsWithCondition",
     "apply_comparison_view",
     "comparison_view_rules",
     "resolve_comparison_view_rule",
@@ -449,7 +399,6 @@ class ComparisonViewResult:
     """The view of one state, and the record of how it was computed."""
 
     state: dict[str, list[dict[str, Any]]]
-    applied: tuple[RuleApplication, ...]
     record: ComparisonViewRecord
 
 
@@ -496,8 +445,7 @@ class ExcludeRecords:
         id_fields: Mapping[str, str | list[str]],
         config: ComparisonViewRuleConfig,
     ) -> RuleOutcome:
-        if not isinstance(config, ExcludeRecordsConfig):
-            raise TypeError(f"{self.kind} applies an ExcludeRecordsConfig, not {config!r}")
+        config = cast(ExcludeRecordsConfig, config)
         if config.table not in state:
             return RuleOutcome(state=state, applied=(self._application(config, removed=0),))
         rows = _records(state[config.table], f"exclude_records: table {config.table!r}")
@@ -533,8 +481,7 @@ class ExcludeTables:
         id_fields: Mapping[str, str | list[str]],
         config: ComparisonViewRuleConfig,
     ) -> RuleOutcome:
-        if not isinstance(config, ExcludeTablesConfig):
-            raise TypeError(f"{self.kind} applies an ExcludeTablesConfig, not {config!r}")
+        config = cast(ExcludeTablesConfig, config)
         dropped = set(config.tables)
         applied = tuple(
             RuleApplication(kind=self.kind, table=table, rows_removed=_row_count(state, table))
@@ -630,7 +577,7 @@ def _starts_with(value: Any, prefix: str) -> bool:
 def _is_numeric_zero(value: Any) -> bool:
     if isinstance(value, bool):
         return False
-    if isinstance(value, int | float | Decimal):
+    if isinstance(value, int | float):
         return value == 0
     if isinstance(value, str):
         text = value.strip()
@@ -789,7 +736,7 @@ def _without_matching_items(
 def _rewrite_at(value: Any, segments: Sequence[str], leaf: Callable[[Any], Any], where: str) -> Any:
     """``value`` with ``leaf`` applied to each value ``segments`` reach below it.
 
-    The one path walker of the rules (see "Paths" above): each segment reads a
+    The one path walker of the rules (see the module docstring): each segment reads a
     field of a mapping, and a list met before the path ends is walked item by
     item. A missing or null field ends the walk and leaves the value as it is; a
     value a field has to be read from that is neither a mapping nor a list raises
@@ -916,11 +863,6 @@ def _resolve_entry(index: int, entry: Any) -> ComparisonViewRuleConfig:
     except ComparisonViewError as exc:
         raise ValueError(f"rules[{index}]: {exc}") from None
     if isinstance(entry, ComparisonViewRuleConfig):
-        if not isinstance(entry, rule.config_model):
-            raise ValueError(
-                f"rules[{index}] is a {type(entry).__name__}, not the "
-                f"{rule.config_model.__name__} the {kind} rule validates"
-            )
         return entry
     try:
         return rule.config_model.model_validate(entry)
@@ -977,4 +919,4 @@ def apply_comparison_view(
         config_sha256=view.config_sha256(),
         applied=tuple(applied),
     )
-    return ComparisonViewResult(state=working, applied=record.applied, record=record)
+    return ComparisonViewResult(state=working, record=record)

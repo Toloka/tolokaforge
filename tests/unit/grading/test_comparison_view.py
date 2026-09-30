@@ -186,12 +186,6 @@ def test_a_config_instance_stands_in_for_its_entry() -> None:
     assert view.rules == (config,)
 
 
-def test_a_config_instance_under_another_rules_kind_is_refused() -> None:
-    config = ExcludeRecordsConfig.model_construct(kind="exclude_tables", table="t", where={"a": 1})
-    with pytest.raises(ValidationError, match="not the ExcludeTablesConfig the exclude_tables"):
-        ComparisonViewConfig(version=1, rules=(config,))
-
-
 def test_a_validated_view_cannot_change() -> None:
     view = _view(_RELEASED_HOLDS, _DRAFT_PROPOSALS)
     sha = view.config_sha256()
@@ -374,41 +368,24 @@ def test_a_view_whose_rules_touch_nothing_returns_the_state_unchanged() -> None:
     )
 
 
-def test_a_rule_handed_another_rules_config_is_a_programming_error() -> None:
-    config = ExcludeTablesConfig(tables=("t",), reason="r")
-    with pytest.raises(TypeError, match="applies an ExcludeRecordsConfig"):
-        ExcludeRecords().apply({}, initial=None, id_fields={}, config=config)
-
-
-# ---------------------------------------------------------------------------
-# The record
-# ---------------------------------------------------------------------------
-
-
 def test_the_record_names_the_version_the_function_and_what_each_rule_did() -> None:
     view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _BOOKKEEPING)
     result = apply_comparison_view(_STATE, initial=_INITIAL, view=view, id_fields={})
     assert result.record.version == 1
     assert result.record.function_version == COMPARISON_VIEW_FUNCTION_VERSION == 1
     assert result.record.config_sha256 == view.config_sha256()
-    assert (
-        result.record.applied
-        == result.applied
-        == (
-            RuleApplication(kind="exclude_records", table="transfer_holds", rows_removed=1),
-            RuleApplication(
-                kind="exclude_records",
-                table="recovery_expense_decisions",
-                path="purchase_allocations",
-                rows_removed=1,
-            ),
-            RuleApplication(
-                kind="exclude_tables", table="agent_discoverable_tools", rows_removed=2
-            ),
-            RuleApplication(kind="exclude_tables", table="user_discoverable_tools", rows_removed=0),
-        )
+    assert result.record.applied == (
+        RuleApplication(kind="exclude_records", table="transfer_holds", rows_removed=1),
+        RuleApplication(
+            kind="exclude_records",
+            table="recovery_expense_decisions",
+            path="purchase_allocations",
+            rows_removed=1,
+        ),
+        RuleApplication(kind="exclude_tables", table="agent_discoverable_tools", rows_removed=2),
+        RuleApplication(kind="exclude_tables", table="user_discoverable_tools", rows_removed=0),
     )
-    assert all(application.ids_rewritten == 0 for application in result.applied)
+    assert all(application.ids_rewritten == 0 for application in result.record.applied)
 
 
 def test_the_config_sha_is_pinned() -> None:
