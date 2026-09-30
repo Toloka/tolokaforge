@@ -150,7 +150,7 @@ The TypeSense gate runs before the RAG gate. A task that declares both and whose
 
 ### Which plane serves a corpus
 
-`search.plane` is a fact about the task — `typesense` or `rag_service` — and it is what condition 1 reads. A task that declares none has its plane derived from the connection details it carries: a task naming a `host` is read as `typesense`. `rag_service` is never derived, only declared, so no run changes which rag work it does.
+`search.plane` is a fact about the task — `typesense`, or the name of a search backend (`rag_service` is the engine's rag-service) — and it is what condition 1 reads. A task that declares none has its plane derived from the connection details it carries: a task naming a `host` is read as `typesense`. A search-backend name is never derived, only declared, so no run changes which rag work it does.
 
 The runner reports which of the two happened alongside the address: every refusal names the plane and whether it was `declared` or `derived_from_connection_details`.
 

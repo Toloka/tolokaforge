@@ -1,7 +1,9 @@
 """Which plane serves a task's corpus, where this runner reaches TypeSense, and who said so.
 
-The plane is a property of the task: a corpus is served by TypeSense or by
-rag-service, and the task description says which. The address is a property of
+The plane is a property of the task: a corpus is served by TypeSense or by a
+search backend the runner resolves by name (``rag_service``, the engine's
+rag-service, or one a package registers under ``tolokaforge.search_backends``),
+and the task description says which. The address is a property of
 the running stack: the container is created already knowing it, in
 ``TYPESENSE_HOST`` / ``TYPESENSE_PORT``. A task description may still carry
 connection details of its own — adapters emitted them before the stack did, and
@@ -44,9 +46,14 @@ class SearchPlaneBasis(str, Enum):
 
 @dataclass(frozen=True)
 class ResolvedSearchPlane:
-    """The plane serving this task's corpus, and whether the task said so."""
+    """The plane serving this task's corpus, and whether the task said so.
 
-    plane: SearchPlane
+    ``plane`` is the name ``search.plane`` carries — a registered search backend,
+    or :attr:`~tolokaforge.runner.models.SearchPlane.TYPESENSE` for the plane the
+    runner serves itself.
+    """
+
+    plane: str
     basis: SearchPlaneBasis
 
 
@@ -54,14 +61,15 @@ def resolve_search_plane(search_config: SearchConfig) -> ResolvedSearchPlane | N
     """Resolve which plane serves this task's corpus, or ``None`` if nothing says.
 
     Deriving from the task's own connection details serves the transition only,
-    and derives ``TYPESENSE`` alone: rag indexing is gated on ``enabled`` and no
-    run changes which rag work it does because a plane was worked out for it.
+    and derives ``TYPESENSE`` alone: an undeclared rag corpus is gated on
+    ``enabled`` and no run changes which rag work it does because a plane was
+    worked out for it.
     """
     if search_config.plane is not None:
         return ResolvedSearchPlane(plane=search_config.plane, basis=SearchPlaneBasis.DECLARED)
     if search_config.host is not None:
         return ResolvedSearchPlane(
-            plane=SearchPlane.TYPESENSE,
+            plane=SearchPlane.TYPESENSE.value,
             basis=SearchPlaneBasis.DERIVED_FROM_CONNECTION_DETAILS,
         )
     return None

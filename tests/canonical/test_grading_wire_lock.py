@@ -327,11 +327,33 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
     _WireKey(
         path="search.plane",
         emitted_for="",
-        wire_shape="Literal['typesense', 'rag_service'] | None",
+        wire_shape="str | None",
         since="unreleased",
         lock=_DocLock(
             doc_key="search.plane",
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
+    _WireKey(
+        path="search.backend_config",
+        emitted_for="search.backend_config",
+        wire_shape="dict[str, Any]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="search.backend_config",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack declaring a non-empty `initial_state.rag.backend_config`",
+        ),
+    ),
+    _WireKey(
+        path="search.tool_name",
+        emitted_for="search.tool_name",
+        wire_shape="str",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="search.tool_name",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack naming its search tool other than `search_kb`",
         ),
     ),
     _WireKey(
@@ -917,8 +939,11 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
     ``gate`` is the nearest ancestor a pack must declare — the nearest optional field or
     list above this one — which is a property of the ancestors and never of the field
     itself: an optional container is emitted unconditionally as ``null`` and only its
-    children wait on it.
+    children wait on it. The one exception is a field its model leaves off the wire at
+    its default (the model's ``OMITTED_AT_DEFAULT``): it appears only in a pack that
+    declares a value of its own, so it gates on itself.
     """
+    omitted_at_default: frozenset[str] = getattr(model, "OMITTED_AT_DEFAULT", frozenset())
     for name, field in model.model_fields.items():
         path = f"{prefix}.{name}" if prefix else name
         nested = _nested_model(field.annotation)
@@ -933,7 +958,7 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
             )
         yield _WalkedKey(
             path=path,
-            emitted_for=gate,
+            emitted_for=path if name in omitted_at_default else gate,
             wire_shape=rendered,
             descended=not stopped and (nested is not None or element is not None),
         )
@@ -1271,7 +1296,7 @@ def test_the_example_corpus_emits_what_the_census_says_it_emits() -> None:
             path
             for path, value in emitted.items()
             if isinstance(value, dict) or (isinstance(value, list) and value)
-        }
+        } | {path for path in emitted if gated.get(path) == path}
         expected = unconditional | {path for path, gate in gated.items() if gate in declared_gates}
         shapes.add(frozenset(expected))
         if set(emitted) != expected:

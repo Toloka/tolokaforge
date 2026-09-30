@@ -293,7 +293,7 @@ def _search_plane_context(
     """
     domain = search_config.domain_name or "default"
     plane = (
-        f"{resolved_plane.plane.value} ({resolved_plane.basis.value})"
+        f"{resolved_plane.plane} ({resolved_plane.basis.value})"
         if resolved_plane is not None
         else "none declared"
     )
@@ -3374,7 +3374,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         resolved_plane = resolve_search_plane(search_config)
         served_by_typesense = (
-            resolved_plane is not None and resolved_plane.plane is SearchPlane.TYPESENSE
+            resolved_plane is not None and resolved_plane.plane == SearchPlane.TYPESENSE
         )
         task_declares_kb = search_config.documents_path is not None
         address_resolved = binding is not None
