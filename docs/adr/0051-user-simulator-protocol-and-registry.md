@@ -98,10 +98,12 @@ an LLM turn leaves it `None`. Formalising the attribute turns the runner's
 
 `UserSimulatorContext` is a frozen dataclass in the same module carrying the
 per-trial inputs the conductor supplies today: `mode`, `persona`, `backstory`,
-`scripted_flow`, `tool_schemas`, `llm_config`, `rate_limit_probe`, and the
-opaque `simulator_config`. The first four are the engine's built-in simulator
-fields; `llm_config` / `tool_schemas` / `rate_limit_probe` are the trial
-dependencies the built-in needs.
+`scripted_flow`, `tool_schemas`, `llm_config`, `rate_limit_probe`, `tool_turns`,
+the opaque `simulator_config`, and `task_dir`. The first four are the engine's
+built-in simulator fields; `llm_config` / `tool_schemas` / `rate_limit_probe`
+are the trial dependencies the built-in needs. `task_dir` is the task's
+directory, against which a simulator resolves the paths its `simulator_config`
+names (#1666).
 
 Simulators register under a new entry-point group
 **`tolokaforge.user_simulators`**, resolved by `load_user_simulator(name)` and

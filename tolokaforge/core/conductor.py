@@ -871,6 +871,7 @@ class InProcessConductor:
                     rate_limit_probe=rate_limit_probe.for_simulator(),
                     tool_turns=sim.tool_turns,
                     simulator_config=sim.simulator_config,
+                    task_dir=setup.task_dir,
                 )
             )
         else:

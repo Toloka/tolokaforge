@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.core.actors.actor import Actor
@@ -75,6 +76,12 @@ class UserSimulatorContext:
     through verbatim and never interprets its keys, so a benchmark simulator
     declares its own fields there and validates them into its own model. The
     built-in simulator ignores it.
+
+    ``task_dir`` is the task's directory (the adapter's ``get_task_dir``), so a
+    simulator resolves a path its ``simulator_config`` names relative to the
+    task, and a task records the relative path rather than a machine's absolute
+    one. ``None`` where there is no task directory, as in the conformance kit's
+    contexts; the built-in simulator ignores it.
     """
 
     mode: str
@@ -86,6 +93,7 @@ class UserSimulatorContext:
     rate_limit_probe: RateLimitProbeConfig | None = None
     tool_turns: UserToolTurns = "shared"
     simulator_config: dict[str, Any] = field(default_factory=dict)
+    task_dir: Path | None = None
 
 
 UserSimulatorFactory = Callable[[UserSimulatorContext], UserSimulator]
