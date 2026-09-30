@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import pickle
+import uuid
 from pathlib import Path
 
+import litellm
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -13,6 +16,7 @@ from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.litellm_params import OverlayKeyMismatchError, lookup_overlay
 from tolokaforge.core.llm.presets import set_overlay_path
+from tolokaforge.core.llm.providers import provider_binding_names
 from tolokaforge.core.models.run_config import ModelConfig, iter_model_configs
 from tolokaforge.dx.cli.main import cli
 
@@ -89,6 +93,19 @@ def test_the_entry_keyed_provider_slash_name_satisfies_the_preflight_and_the_run
     set_overlay_path(str(overlay))
     client = LLMClient(ModelConfig(provider=provider, name=name))
     assert client.allowed_openai_params == ["tools", "tool_choice", "parallel_tool_calls"]
+
+
+def test_constructing_a_client_against_an_entry_logs_its_evidence(tmp_path, caplog):
+    provider, name = "openai", f"self-hosted/tolokaforge-canary-{uuid.uuid4().hex}"
+    set_overlay_path(str(_write_overlay(tmp_path, [f"{provider}/{name}"])))
+
+    with caplog.at_level(logging.INFO, logger="tolokaforge.core.llm.litellm_params"):
+        LLMClient(ModelConfig(provider=provider, name=name))
+
+    assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("Admitting")] == [
+        "Admitting tools, tool_choice, parallel_tool_calls for "
+        f"{provider}/{name}, which litellm's map does not carry. {EVIDENCE}"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -213,6 +230,17 @@ def test_an_entry_under_the_raw_name_is_inert_beside_the_canonical_one(tmp_path)
 #: A first segment that names a provider in both sets the refusal consults, in
 #: litellm's `provider_list` only, and in `providers.yaml` only.
 PROVIDER_VENDORS = ["anthropic", "deepseek", "nova"]
+
+
+def test_the_provider_vendor_rows_cover_each_membership_the_refusal_consults():
+    memberships = [
+        (vendor in provider_binding_names(), vendor in litellm.provider_list)
+        for vendor in PROVIDER_VENDORS
+    ]
+    assert memberships == [(True, True), (False, True), (True, False)], (
+        "providers.yaml or litellm.provider_list changed: re-pick PROVIDER_VENDORS so the "
+        "rows are again one vendor in both sets, one in litellm's only, one in providers.yaml's only"
+    )
 
 
 @pytest.mark.parametrize("vendor", PROVIDER_VENDORS)

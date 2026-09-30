@@ -63,7 +63,7 @@ invisible, which is the same failure wearing a different hat.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -146,7 +146,9 @@ class OverlayKeyMismatchError(ValueError):
             f"Rename the entry to {expected_key!r}."
         )
 
-    def __reduce__(self):
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[..., OverlayKeyMismatchError], tuple[str, str, str, str]]:
         return _rebuild_mismatch, (self.provider, self.name, self.declared_key, self.expected_key)
 
 
