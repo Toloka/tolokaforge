@@ -114,10 +114,8 @@ __all__ = [
     "ExcludeTablesConfig",
     "InCondition",
     "IsNullCondition",
-    "NamedField",
     "RecordReference",
     "RuleApplication",
-    "RuleNames",
     "RuleOutcome",
     "StartsWithCondition",
     "apply_comparison_view",
@@ -304,40 +302,6 @@ def _error_summary(exc: ValidationError) -> str:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class NamedField:
-    """A field a rule reads: ``field`` of the mappings at ``path`` in the rows of ``table``.
-
-    ``path`` is empty for a field of the row itself.
-    """
-
-    table: str
-    path: tuple[str, ...]
-    field: str
-
-    @property
-    def dotted(self) -> str:
-        return ".".join((*self.path, self.field))
-
-
-@dataclass(frozen=True)
-class RuleNames:
-    """What one rule entry names, for the load-time check and the ``exclude_tables`` guard.
-
-    ``keyed_tables`` are the tables whose record id (``state_checks.id_fields``,
-    ``"id"`` when absent) the rule reads.
-    """
-
-    tables: tuple[str, ...]
-    fields: tuple[NamedField, ...]
-    keyed_tables: tuple[str, ...] = ()
-
-
-def _path_fields(table: str, segments: tuple[str, ...]) -> list[NamedField]:
-    """Each segment of a path, as a field of the mappings its prefix reaches."""
-    return [NamedField(table, segments[:depth], segment) for depth, segment in enumerate(segments)]
-
-
 class ComparisonViewRuleConfig(BaseModel):
     """One entry of ``comparison_view.rules``, validated by the rule its ``kind`` names.
 
@@ -350,8 +314,8 @@ class ComparisonViewRuleConfig(BaseModel):
     kind: str
 
     @abstractmethod
-    def names(self) -> RuleNames:
-        """The tables and fields this entry names."""
+    def names(self) -> tuple[str, ...]:
+        """The tables this entry names, for the ``exclude_tables`` guard."""
 
 
 class RecordReference(BaseModel):
@@ -388,27 +352,9 @@ class ExcludeRecordsConfig(ComparisonViewRuleConfig):
             )
         return self
 
-    def names(self) -> RuleNames:
-        segments = _segments(self.path) if self.path else ()
-        where_fields = dict.fromkeys(_condition_fields(self.where))
-        fields = _path_fields(self.table, segments)
-        fields += [NamedField(self.table, segments, name) for name in where_fields]
-        for reference in self.unless_referenced_by:
-            fields += _path_fields(reference.table, _segments(reference.field))
-        tables = dict.fromkeys((self.table, *(ref.table for ref in self.unless_referenced_by)))
-        return RuleNames(
-            tables=tuple(tables),
-            fields=tuple(fields),
-            keyed_tables=(self.table,) if self.unless_referenced_by else (),
-        )
-
-
-def _condition_fields(where: Mapping[str, WhereCondition]) -> Iterator[str]:
-    for field, condition in where.items():
-        if field == ALL_ZERO and isinstance(condition, tuple):
-            yield from condition
-        else:
-            yield field
+    def names(self) -> tuple[str, ...]:
+        references = (reference.table for reference in self.unless_referenced_by)
+        return tuple(dict.fromkeys((self.table, *references)))
 
 
 class ExcludeTablesConfig(ComparisonViewRuleConfig):
@@ -425,8 +371,8 @@ class ExcludeTablesConfig(ComparisonViewRuleConfig):
             raise ValueError(f"lists a table more than once: {list(value)}")
         return value
 
-    def names(self) -> RuleNames:
-        return RuleNames(tables=self.tables, fields=())
+    def names(self) -> tuple[str, ...]:
+        return self.tables
 
 
 # ---------------------------------------------------------------------------
@@ -882,7 +828,7 @@ def _refuse_shared_tables(
     for other_index, other in enumerate(rules):
         if other_index == index:
             continue
-        shared = sorted(set(rule.tables) & set(other.names().tables))
+        shared = sorted(set(rule.tables) & set(other.names()))
         if shared:
             raise ValueError(
                 f"rules[{index}] (exclude_tables) drops table(s) {shared} that "
