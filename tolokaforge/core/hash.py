@@ -479,6 +479,13 @@ def apply_compare_columns_pipeline(
     ordering has been a load-bearing invariant. Callers pass both raw
     states and receive both processed states in one step.
 
+    A pack's ``unstable_fields`` are dropped from both states before this
+    runs, on both substrates: the runner's db-service drops them in
+    ``get_stable_state``, and core's ``StateChecker.check_hash`` /
+    ``check_hash_against_golden_replay`` call
+    :func:`filter_unstable_fields` first. The ordering step sorts whole
+    rows, so a generated id still present would decide the order.
+
     ``numeric_string_fields``, when provided, is threaded into the
     ordering step so an ID column the pack declared numeric folds
     ``"1"`` and ``"1.0"`` into the same sort position on both sides.

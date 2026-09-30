@@ -449,10 +449,11 @@ class StateChecker:
                 must have been computed against a pipelined expected state
                 on their side under the same config.
             unstable_fields: Dotted ``table.field`` paths the pack declared as
-                unstable (auto-ids, timestamps, random). Both sides of one
-                comparison must pass the same list, and the caller that
-                derived ``expected_hash`` from a stored digest also
-                pre-applied this filter on that side.
+                unstable (auto-ids, timestamps, random), dropped from both sides
+                before the ``compare_columns`` pipeline, as the runner's
+                db-service drops them. Both sides of one comparison must pass
+                the same list, and the caller that derived ``expected_hash``
+                from a stored digest also pre-applied this filter on that side.
 
         Returns:
             (score 0 or 1, reason)
@@ -477,7 +478,13 @@ class StateChecker:
                 "expected_hash to let this method own the pipeline)."
             )
         try:
+            # The unstable columns go first, before the pipeline, as the runner's
+            # db-service drops them in ``get_stable_state`` before its pipeline runs:
+            # an ``order: unordered`` sort that still saw a generated id would order
+            # the rows by it, and one trial would match on one substrate only.
+            state = filter_unstable_fields(state, unstable_fields)
             if expected_state is not None:
+                expected_state = filter_unstable_fields(expected_state, unstable_fields)
                 actual_processed, expected_processed = apply_compare_columns_pipeline(
                     state,
                     expected_state,
@@ -512,7 +519,7 @@ class StateChecker:
             if has_active_rules and expected_state_for_pipeline is not None:
                 state, _ = apply_compare_columns_pipeline(
                     state,
-                    expected_state_for_pipeline,
+                    filter_unstable_fields(expected_state_for_pipeline, unstable_fields),
                     compare_columns,
                     numeric_string_fields=(
                         frozenset(numeric_string_fields) if numeric_string_fields else None
@@ -701,13 +708,15 @@ class StateChecker:
             self.logger.error("Failed to execute golden actions", error=str(e))
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
 
-        # Run the per-column pipeline (equivalence folds, ordering, extras)
-        # symmetrically on both sides. Downstream diff reporting reads
-        # db_state and expected_state as they stand, so the author sees the
-        # actual disagreeing values rather than internal fold tokens.
+        # Drop the unstable columns, then run the per-column pipeline
+        # (equivalence folds, ordering, extras) symmetrically on both sides —
+        # the runner's order, whose db-service filters before its pipeline
+        # (see ``check_hash``). Downstream diff reporting reads db_state and
+        # expected_state as they stand, so the author sees the actual
+        # disagreeing values rather than internal fold tokens.
         db_state_folded, expected_state_folded = apply_compare_columns_pipeline(
-            db_state,
-            expected_state,
+            filter_unstable_fields(db_state, unstable_fields),
+            filter_unstable_fields(expected_state, unstable_fields),
             compare_columns,
             numeric_string_fields=frozenset(numeric_string_fields or ()),
             auto_normalize_nullables=auto_normalize_nullables,
