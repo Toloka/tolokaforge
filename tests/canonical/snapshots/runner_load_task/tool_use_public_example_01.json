@@ -2,6 +2,7 @@
   "actors": {
     "user": {
       "backstory": "You are an operations manager validating that the assistant can use tools to update ticket state safely and summarize next actions. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s).",
+      "first_agent_message": null,
       "max_tool_steps": null,
       "mode": null,
       "persona": null,

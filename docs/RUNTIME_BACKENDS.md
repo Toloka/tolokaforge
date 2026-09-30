@@ -777,7 +777,7 @@ mykind = "mypkg.readiness:my_probe_factory"
 
 tolokaforge ships `grpc`, `http`, and `tcp` built-ins under this group.
 
-**Turn policy** — `mypkg/turn_policy.py`. A turn policy choreographs the loop's turn cycle: `bootstrap` decides how message index 0 is delivered, and `next_actor` picks the actor to speak next (or returns `None` to end the turn cycle for an agent-monologue task). The policy is looked up by `TaskConfig.interaction_mode`, so a policy name in this group is a valid `interaction_mode` value:
+**Turn policy** — `mypkg/turn_policy.py`. A turn policy choreographs the loop's turn cycle: `bootstrap` decides how the dialogue's opening user message is delivered, and `next_actor` picks the actor to speak next (or returns `None` to end the turn cycle for an agent-monologue task). The policy is looked up by `TaskConfig.interaction_mode`, so a policy name in this group is a valid `interaction_mode` value:
 
 ```python
 from tolokaforge.core.plugin_registry import TurnPolicyContext

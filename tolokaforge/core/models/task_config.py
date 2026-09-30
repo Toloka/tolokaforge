@@ -129,11 +129,28 @@ def _refuse_first_message(data: Any) -> Any:
     """
     if isinstance(data, dict) and "first_message" in data:
         raise ValueError(
-            "first_message is not a field on the user actor. A task's opening turn is declared "
-            "task-level as initial_user_message, whose text is delivered verbatim as "
-            "the first user message — move the value there."
+            "first_message is not a field on the user actor. A task's opening user turn is "
+            "declared task-level as initial_user_message, whose text is delivered verbatim as "
+            "the first user message — move the value there. An opening line of the agent's "
+            "own, ahead of that turn, is actors.user.first_agent_message."
         )
     return data
+
+
+def _refuse_a_blank_first_agent_message(value: str | None) -> str | None:
+    """Reject a declared agent opening that carries no text.
+
+    The opening is written into the transcript as the agent's first turn, so a blank
+    one would open the dialogue with an empty agent message that both parties read.
+    """
+    if value is None or value.strip():
+        return value
+    raise ValueError(
+        f"first_agent_message is {value!r}. It is written into the transcript as the "
+        "agent's first turn, so a blank one would open the dialogue with an empty agent "
+        "message. Give it text, or drop the key (declared in a project's task_defaults, "
+        "write first_agent_message: null in the task)."
+    )
 
 
 SIMULATOR_STOP_TOKEN = "###STOP###"
@@ -224,6 +241,11 @@ class UserSimulatorConfig(BaseModel):
     config carries the default and ignores it; whether a task *declared* a limit
     nothing loops under is decided in :meth:`TaskConfig.resolve_user_simulator`, so
     this resolved config re-validates from its own dump."""
+    first_agent_message: str | None = None
+    """The agent's opening line, written into the transcript as its first turn before
+    the user speaks. The agent reads it back as its own, and the simulator answers it
+    in place of the built-in greeting. ``None`` keeps today's shape: the transcript
+    opens with the user's turn."""
 
     @model_validator(mode="before")
     @classmethod
@@ -234,6 +256,11 @@ class UserSimulatorConfig(BaseModel):
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str]) -> list[str]:
         return validate_stop_tokens(value)
+
+    @field_validator("first_agent_message")
+    @classmethod
+    def _refuse_a_blank_first_agent_message(cls, value: str | None) -> str | None:
+        return _refuse_a_blank_first_agent_message(value)
 
     @model_validator(mode="after")
     def _refuse_stop_tokens_the_prompt_does_not_match(self) -> Self:
@@ -302,6 +329,7 @@ class ActorSpec(BaseModel):
     stop_with_text: UserStopWithText | None = None
     tool_turns: UserToolTurns | None = None
     max_tool_steps: int | None = Field(default=None, ge=1)
+    first_agent_message: str | None = None
 
     model_config = {"extra": "ignore"}
 
@@ -314,6 +342,11 @@ class ActorSpec(BaseModel):
     @classmethod
     def _refuse_unusable_stop_tokens(cls, value: list[str] | None) -> list[str] | None:
         return value if value is None else validate_stop_tokens(value)
+
+    @field_validator("first_agent_message")
+    @classmethod
+    def _refuse_a_blank_first_agent_message(cls, value: str | None) -> str | None:
+        return _refuse_a_blank_first_agent_message(value)
 
 
 def _validate_actors_map(
@@ -565,6 +598,25 @@ class TaskConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _refuse_an_agent_opening_no_user_answers(self) -> Self:
+        """Refuse ``actors.user.first_agent_message`` where no user turn follows it.
+
+        ``agent_only`` never resolves the user actor, so the opening would be dropped
+        without a word; it is a line addressed to a user, and there is none.
+        """
+        spec = (self.actors or {}).get("user")
+        if self.interaction_mode != "agent_only" or spec is None:
+            return self
+        if spec.first_agent_message is None:
+            return self
+        raise ValueError(
+            f"actors.user.first_agent_message is {spec.first_agent_message!r}, and "
+            f"{_AGENT_ONLY_DISPATCHES_NO_USER_TURN}, so the opening would never be sent. "
+            f"{_TO_DISPATCH_A_USER_TURN}, or drop first_agent_message (declared in a "
+            "project's task_defaults, write first_agent_message: null in the task)."
+        )
+
+    @model_validator(mode="after")
     def _refuse_user_tools_no_turn_can_call(self) -> Self:
         """Refuse a ``tools.user.enabled`` no user turn of this task can ever call.
 
@@ -636,6 +688,7 @@ class TaskConfig(BaseModel):
             scripted_flow=spec.scripted_flow,
             simulator=spec.simulator or "builtin",
             simulator_config=spec.simulator_config or {},
+            first_agent_message=spec.first_agent_message,
             **declared,
         )
 

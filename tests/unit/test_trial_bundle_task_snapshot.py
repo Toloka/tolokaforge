@@ -102,6 +102,7 @@ def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
         "stop_with_text": "end",
         "tool_turns": "shared",
         "max_tool_steps": 10,
+        "first_agent_message": None,
     }
     assert list(snapshot) == [
         "task_id",
@@ -136,6 +137,7 @@ def test_a_task_declaring_no_user_actor_records_the_resolution_the_run_used(
         "stop_with_text": "deliver",
         "tool_turns": "shared",
         "max_tool_steps": 10,
+        "first_agent_message": None,
     }
 
 

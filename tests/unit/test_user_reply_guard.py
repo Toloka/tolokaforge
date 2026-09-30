@@ -492,6 +492,7 @@ def _run_trial(
     user_replies: list[str],
     agent_texts: list[str],
     opener: str = PINNED_OPENER,
+    first_agent_message: str | None = None,
 ) -> Trajectory:
     """One trial with a real runner, a real simulator, and scripted wires."""
     simulator, _ = _llm_simulator(user_replies)
@@ -505,6 +506,7 @@ def _run_trial(
         max_turns=4,
         turn_timeout_s=30,
         episode_timeout_s=600,
+        first_agent_message=first_agent_message,
     )
     return runner.run("System", opener)
 
@@ -581,6 +583,24 @@ class TestTheBundleRecordsWhatAUserTurnCost:
         assert event.outcome is UserReplyOutcome.REFUSED
         assert event.message_index == 0
         assert len(event.rejected) == USER_REPLY_MAX_ATTEMPTS
+
+    def test_a_refused_bootstrap_after_the_agents_opening_line_records_index_one(self) -> None:
+        """The agent's opening line takes index 0, so the opening the simulator was
+        refused at is dispatched at index 1, and the event says so."""
+        line = "Hi! How can I help you today?"
+        trajectory = _run_trial(
+            user_replies=[FOURTH_WALL_REPLY],
+            agent_texts=[AGENT_STOP],
+            opener="",
+            first_agent_message=line,
+        )
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.first_user_message_source is None
+        (event,) = trajectory.user_reply_guard_events
+        assert event.outcome is UserReplyOutcome.REFUSED
+        assert event.message_index == 1
+        assert [m.content for m in trajectory.messages if m.role is MessageRole.ASSISTANT] == [line]
 
     def test_a_bootstrap_turn_that_leaked_a_delimiter_records_index_zero(self) -> None:
         """The measured exposure is an *opening*-message rate, and turn 0 is a

@@ -934,8 +934,16 @@ missing on a kind it does apply to.
 `turn_index` is the assistant *generation* an event belongs to. Every event one
 assistant message emits — the message, the tool calls it requested, the results
 they produced, and the user message that answered it — carries that generation's
-index, so "in the same turn" means "in the same assistant generation". The
-initial user prompt precedes the first assistant message and carries index 0.
+index, so "in the same turn" means "in the same assistant generation". Without
+an opening line, the initial user prompt precedes the first assistant message and
+carries index 0.
+
+The agent's opening line (`actors.user.first_agent_message`,
+[TASKS.md § The agent's opening line](TASKS.md#the-agents-opening-line)) is an
+assistant message of the transcript like any other, so it is turn 0 and the agent's
+first generation is turn 1. The timeline reads the transcript as recorded:
+transcript rules, trace checks, a custom check's `transcript.agent_messages` and
+the rubric judge all see the line as the agent's first message.
 
 ### Guarantees
 

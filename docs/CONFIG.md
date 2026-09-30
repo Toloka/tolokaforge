@@ -541,6 +541,7 @@ actors:
     stop_with_text: "deliver"    # "deliver" or "end"
     tool_turns: "shared"         # "shared" or "isolated" (see docs/TASKS.md)
     # max_tool_steps: 10         # isolated only
+    # first_agent_message: "Hi! How can I help you today?"  # the agent's opening line
 
 policies:
   guidance:
