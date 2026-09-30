@@ -827,6 +827,24 @@ Validation is at overlay load and is louder than the preset blocks beside it: a
 preset that fails to apply changes how a request is shaped, while a dropped
 entry here decides whether a request is sent at all.
 
+The lookup refuses an entry stored under a config's raw `name` instead of its
+`<provider>/<name>` (`OverlayKeyMismatchError`, naming both keys and the one to
+rename to). It raises when all four hold: the `name` carries a `/` and does not
+start with `<provider>/`; no entry exists under `<provider>/<name>`; an entry
+exists under the raw `name` (vendor segment lowercased); and that key's first
+segment names no provider, being in neither `providers.yaml` nor litellm's
+`provider_list`. The last condition is what keeps the refusal honest. A raw key
+such as `anthropic/<model>` is also the key of the native `(anthropic,
+<model>)` config, which an operator can hold while running `(openrouter,
+anthropic/<model>)` too, and that openrouter config needs no entry of its own.
+So such a key is left alone for the openrouter config: it admits nothing there,
+and `config validate` says which provider the entry applies to and which key
+the config resolves. A key like `self-hosted/<model>`, `google/<model>` or
+`meta-llama/<model>` can be no config's key, so it is refused. `config validate`
+reports an ERROR for every model in `models:` and each of its `fallbacks`, and
+`run` / `prepare` / `worker` check the same models and raise the first before
+the orchestrator is built.
+
 Three things that look like fixes and are not:
 
 - **`drop_params: true`** silences the error by stripping `tools`, turning

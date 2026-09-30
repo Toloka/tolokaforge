@@ -109,6 +109,26 @@ Set a provider key in `.env` or your shell environment:
 export OPENROUTER_API_KEY=sk-or-...
 ```
 
+## litellm_models entry '…' does not apply to provider '…'
+
+**Symptom.** `config validate` reports an ERROR at `models.<role>.name`, or
+`run` / `prepare` / `worker` stop before any trial, with:
+
+```text
+litellm_models entry 'self-hosted/qwen3.6-35b-a3b' does not apply to provider 'openai',
+name 'self-hosted/qwen3.6-35b-a3b': that config is looked up under
+'openai/self-hosted/qwen3.6-35b-a3b', so the entry admits nothing.
+Rename the entry to 'openai/self-hosted/qwen3.6-35b-a3b'.
+```
+
+**Cause.** A `litellm_models:` entry in the presets overlay is keyed on the
+config's `name` alone. The key is `<provider>/<name>`, the model string the
+client sends, with the `name` verbatim, so an entry under the bare name is
+never found and the provider still refuses `tools` before sending.
+
+**Fix.** Rename the key in the overlay to the one the message names. See
+[`LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
+
 ## Task Validation Fails
 
 ```bash

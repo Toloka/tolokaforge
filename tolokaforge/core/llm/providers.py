@@ -30,6 +30,7 @@ __all__ = [
     "compile_rate_limit_patterns",
     "get_provider_binding",
     "litellm_model_id",
+    "provider_binding_names",
 ]
 
 
@@ -159,6 +160,11 @@ def get_provider_binding(provider: str) -> ProviderBinding:
     """
     key = (provider or "").split("/", 1)[0].lower()
     return _load_bundled_providers().get(key, ProviderBinding())
+
+
+def provider_binding_names() -> frozenset[str]:
+    """The provider names ``providers.yaml`` declares a binding for, lowercased."""
+    return frozenset(name.lower() for name in _load_bundled_providers())
 
 
 def litellm_model_id(provider: str, name: str) -> str:

@@ -10,8 +10,9 @@ from click.testing import CliRunner
 
 from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.client import LLMClient
+from tolokaforge.core.llm.litellm_params import OverlayKeyMismatchError, lookup_overlay
 from tolokaforge.core.llm.presets import set_overlay_path
-from tolokaforge.core.models.run_config import ModelConfig
+from tolokaforge.core.models.run_config import ModelConfig, iter_model_configs
 from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
@@ -29,17 +30,28 @@ CONFIGS = [
 ]
 
 
-def _overlay(tmp_path: Path) -> Path:
+def _write_overlay(tmp_path: Path, keys: list[str]) -> Path:
     path = tmp_path / "overlay.yaml"
-    entries = {
-        f"{provider}/{name}": {"supports_function_calling": True, "evidence": EVIDENCE}
-        for provider, name in CONFIGS
-    }
+    entries = {key: {"supports_function_calling": True, "evidence": EVIDENCE} for key in keys}
     path.write_text(yaml.safe_dump({"litellm_models": entries}))
     return path
 
 
+def _overlay(tmp_path: Path) -> Path:
+    return _write_overlay(tmp_path, [f"{provider}/{name}" for provider, name in CONFIGS])
+
+
 def _run_config(provider: str, name: str, overlay: Path | None = None) -> dict:
+    return _run_config_for(
+        {
+            "agent": {"provider": provider, "name": name},
+            "user": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"},
+        },
+        overlay,
+    )
+
+
+def _run_config_for(models: dict, overlay: Path | None = None) -> dict:
     raw: dict = {
         "evaluation": {
             "tasks_glob": "tasks/**/task.yaml",
@@ -47,14 +59,17 @@ def _run_config(provider: str, name: str, overlay: Path | None = None) -> dict:
             "harness_adapter": {"type": "frozen_mcp_core"},
         },
         "orchestrator": {"workers": 1, "repeats": 1},
-        "models": {
-            "agent": {"provider": provider, "name": name},
-            "user": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"},
-        },
+        "models": models,
     }
     if overlay is not None:
         raw["engine"] = {"presets_file": str(overlay)}
     return raw
+
+
+def _write_run_config(tmp_path: Path, raw: dict) -> Path:
+    path = tmp_path / "run.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return path
 
 
 @pytest.mark.parametrize("provider, name", CONFIGS)
@@ -62,8 +77,7 @@ def test_the_entry_keyed_provider_slash_name_satisfies_the_preflight_and_the_run
     provider, name, tmp_path
 ):
     overlay = _overlay(tmp_path)
-    config = tmp_path / "run.yaml"
-    config.write_text(yaml.safe_dump(_run_config(provider, name, overlay)))
+    config = _write_run_config(tmp_path, _run_config(provider, name, overlay))
 
     result = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
 
@@ -104,4 +118,133 @@ def test_the_undeclared_hint_names_the_key_the_lookup_uses(provider, name, key):
     assert hints == [
         "If the run needs tools, declare it in the presets overlay: "
         f"litellm_models.{key} with supports_function_calling: true"
+    ]
+
+
+GATEWAY = ("openai", "self-hosted/tolokaforge-canary")
+NATIVE_AGENT = {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}
+
+
+def _as_config(provider: str, name: str, **extra) -> dict:
+    return {"provider": provider, "name": name, **extra}
+
+
+#: `(models block, config path, provider, name)`: one entry under the raw
+#: name, placed on every kind of model config the run can build a client for.
+#: `openrouter/google/gemini-2.5-pro` is in litellm's map, so the agent's
+#: function-calling check never needs the overlay for it.
+RAW_NAME_PLACEMENTS = [
+    pytest.param(
+        {"agent": _as_config(*GATEWAY), "user": NATIVE_AGENT},
+        "models.agent",
+        *GATEWAY,
+        id="agent",
+    ),
+    pytest.param(
+        {"agent": NATIVE_AGENT, "user": _as_config(*GATEWAY)},
+        "models.user",
+        *GATEWAY,
+        id="user",
+    ),
+    pytest.param(
+        {"agent": {**NATIVE_AGENT, "fallbacks": [_as_config(*GATEWAY)]}, "user": NATIVE_AGENT},
+        "models.agent.fallbacks[0]",
+        *GATEWAY,
+        id="agent-fallback",
+    ),
+    pytest.param(
+        {"agent": _as_config("openrouter", "google/gemini-2.5-pro"), "user": NATIVE_AGENT},
+        "models.agent",
+        "openrouter",
+        "google/gemini-2.5-pro",
+        id="litellm-mapped-agent",
+    ),
+]
+
+
+@pytest.mark.parametrize("models, path, provider, name", RAW_NAME_PLACEMENTS)
+def test_an_entry_under_the_raw_name_is_refused_by_validate_and_run_alike(
+    models, path, provider, name, tmp_path
+):
+    raw_key = name
+    expected_key = f"{provider}/{name}"
+    overlay = _write_overlay(tmp_path, [raw_key])
+    config = _write_run_config(tmp_path, _run_config_for(models, overlay))
+
+    set_overlay_path(str(overlay))
+    with pytest.raises(OverlayKeyMismatchError) as lookup_error:
+        lookup_overlay(provider, name)
+    assert (lookup_error.value.declared_key, lookup_error.value.expected_key) == (
+        raw_key,
+        expected_key,
+    )
+    assert f"Rename the entry to {expected_key!r}" in str(lookup_error.value)
+    with pytest.raises(OverlayKeyMismatchError):
+        LLMClient(ModelConfig(provider=provider, name=name))
+
+    validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+    assert validated.exit_code != 0, validated.output
+    errors = [line for line in validated.output.splitlines() if "[ERROR]" in line]
+    assert len(errors) == 1, validated.output
+    assert f"{path}.name:" in errors[0]
+    assert repr(raw_key) in errors[0] and repr(expected_key) in errors[0]
+
+    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
+    assert run.exit_code != 0
+    assert isinstance(run.exception, OverlayKeyMismatchError), run.output
+    assert repr(raw_key) in str(run.exception) and repr(expected_key) in str(run.exception)
+
+
+def test_an_entry_under_the_raw_name_is_inert_beside_the_canonical_one(tmp_path):
+    provider, name = GATEWAY
+    overlay = _write_overlay(tmp_path, [name, f"{provider}/{name}"])
+    config = _write_run_config(tmp_path, _run_config(provider, name, overlay))
+
+    set_overlay_path(str(overlay))
+    assert lookup_overlay(provider, name).params == ("tools", "tool_choice", "parallel_tool_calls")
+
+    validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+    assert "[ERROR]" not in validated.output, validated.output
+    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
+    assert not isinstance(run.exception, OverlayKeyMismatchError), run.exception
+
+
+def test_a_raw_name_key_that_names_a_provider_is_another_configs_entry(tmp_path):
+    """`anthropic/…` is the native `(anthropic, …)` config's own key, so holding
+    it while also running `(openrouter, anthropic/…)` is legitimate: the
+    openrouter config is not refused, it is told which config the entry is for."""
+    stray = "anthropic/tolokaforge-canary"
+    overlay = _write_overlay(tmp_path, [stray])
+    config = _write_run_config(tmp_path, _run_config("openrouter", stray, overlay))
+
+    set_overlay_path(str(overlay))
+    lookup = lookup_overlay("openrouter", stray)
+    assert (lookup.params, lookup.stray_key) == ((), stray)
+    admitted = lookup_overlay("anthropic", "tolokaforge-canary")
+    assert (admitted.params, admitted.stray_key) == (
+        ("tools", "tool_choice", "parallel_tool_calls"),
+        None,
+    )
+
+    validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+    assert "[ERROR]" not in validated.output, validated.output
+    assert (
+        f"`{stray}` applies to provider `anthropic`; "
+        f"this config resolves `openrouter/{stray}`" in validated.output
+    ), validated.output
+
+
+def test_the_walk_reaches_every_fallback_depth_first():
+    fallback = ModelConfig(
+        provider="openai", name="b", fallbacks=[ModelConfig(provider="openai", name="c")]
+    )
+    models = {
+        "agent": ModelConfig(provider="openai", name="a", fallbacks=[fallback]),
+        "user": ModelConfig(provider="openai", name="d"),
+    }
+    assert [(path, cfg.name) for path, cfg in iter_model_configs(models)] == [
+        ("models.agent", "a"),
+        ("models.agent.fallbacks[0]", "b"),
+        ("models.agent.fallbacks[0].fallbacks[0]", "c"),
+        ("models.user", "d"),
     ]

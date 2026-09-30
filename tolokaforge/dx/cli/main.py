@@ -53,6 +53,7 @@ from tolokaforge.core.grading.trace_replay import (
 )
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
+from tolokaforge.core.llm.litellm_params import overlay_key_mismatches
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
     set_overlay_path,
@@ -441,7 +442,9 @@ def _activate_presets_overlay(
     contract (so tests can install paths cheaply), but at the CLI boundary
     we want a typo'd overlay to fail *here* — before the orchestrator is
     constructed, ``load_tasks()`` walks the task tree, or the Docker stack
-    auto-starts.
+    auto-starts. The same holds for a ``litellm_models`` entry stored under a
+    model's raw name (``litellm_params.OverlayKeyMismatchError``, the first in walk order
+    over every model and fallback).
     """
     config_value = run_config.engine.presets_file if run_config.engine else None
     queue_state_value = read_persisted_presets_file(run_dir) if run_dir is not None else None
@@ -452,6 +455,9 @@ def _activate_presets_overlay(
     set_overlay_path(resolved)
     if resolved is not None:
         validate_overlay_file(resolved)
+        mismatches = overlay_key_mismatches(run_config.models)
+        if mismatches:
+            raise mismatches[0][1]
     return resolved
 
 
