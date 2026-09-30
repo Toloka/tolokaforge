@@ -375,7 +375,7 @@ class ComparisonViewRecord(BaseModel):
 
     ``version`` is the block's schema version, ``function_version`` the engine's
     :data:`COMPARISON_VIEW_FUNCTION_VERSION`, and ``config_sha256`` the digest of
-    the rules as applied (:meth:`ComparisonViewConfig.config_sha256`).
+    what the rules do (:meth:`ComparisonViewConfig.config_sha256`).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
