@@ -1,5 +1,6 @@
 {
   "backstory": "I just joined the ops team and need help.",
+  "max_tool_steps": 10,
   "mode": "llm",
   "persona": "curious engineer",
   "scripted_flow": null,
@@ -8,5 +9,6 @@
   "stop_tokens": [
     "###STOP###"
   ],
-  "stop_with_text": "deliver"
+  "stop_with_text": "deliver",
+  "tool_turns": "shared"
 }

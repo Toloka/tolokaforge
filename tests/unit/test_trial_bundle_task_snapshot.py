@@ -100,6 +100,8 @@ def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
         "simulator_config": {},
         "stop_tokens": ["###DONE###"],
         "stop_with_text": "end",
+        "tool_turns": "shared",
+        "max_tool_steps": 10,
     }
     assert list(snapshot) == [
         "task_id",
@@ -132,6 +134,8 @@ def test_a_task_declaring_no_user_actor_records_the_resolution_the_run_used(
         "simulator_config": {},
         "stop_tokens": ["###STOP###"],
         "stop_with_text": "deliver",
+        "tool_turns": "shared",
+        "max_tool_steps": 10,
     }
 
 

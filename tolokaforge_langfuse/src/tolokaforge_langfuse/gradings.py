@@ -29,6 +29,7 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.observability import ids
 
 _log = logging.getLogger(__name__)
@@ -451,12 +452,19 @@ def _user_generations(
 ) -> list[tuple[str, dict[str, Any]]]:
     out: list[tuple[str, dict[str, Any]]] = []
     context: list[dict[str, Any]] = []
-    for index, message in enumerate(trajectory.get("messages") or []):
+    messages = trajectory.get("messages") or []
+    # A user tool step (``tool_turns: isolated``) carries calls and usually no text,
+    # so its output shows the calls, as the live projection's does.
+    steps = user_tool_step_positions_of([m if isinstance(m, Mapping) else {} for m in messages])
+    for index, message in enumerate(messages):
         if not isinstance(message, Mapping):
             continue
         role = message.get("role")
         if role == "user" and _is_simulated_user(message, index, trajectory, task):
             at = _clock(message.get("ts"))
+            output: dict[str, Any] = {"content": message.get("content")}
+            if index in steps:
+                output["tool_calls"] = message.get("tool_calls")
             body: dict[str, Any] = {
                 "id": ids.observation_id(trace_id, "ugen", index),
                 "traceId": trace_id,
@@ -465,7 +473,7 @@ def _user_generations(
                 "startTime": at,
                 "endTime": at,
                 "input": context[-CONTEXT_MESSAGES:],
-                "output": {"content": message.get("content")},
+                "output": output,
                 "level": "DEFAULT",
                 "metadata": {
                     "role": "user",

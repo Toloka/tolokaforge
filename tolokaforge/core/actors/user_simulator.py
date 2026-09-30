@@ -27,6 +27,7 @@ from tolokaforge.core.actors.actor import Actor
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import ModelConfig, RateLimitProbeConfig
+    from tolokaforge.core.models.task_config import UserToolTurns
 
 __all__ = [
     "UserSimulator",
@@ -61,7 +62,13 @@ class UserSimulatorContext:
     ``actors.user`` config. ``mode``, ``persona``, ``backstory`` and
     ``scripted_flow`` are the engine's built-in simulator fields; ``llm_config``,
     ``tool_schemas`` and ``rate_limit_probe`` are the trial dependencies the
-    built-in simulator needs.
+    built-in simulator needs. ``tool_turns`` is the actor's
+    ``actors.user.tool_turns``: under ``isolated`` the runner records the
+    simulator's tool calls as steps the agent never reads, and a simulator
+    builds its request from
+    :func:`~tolokaforge.core.actors.tool_turns.simulator_view` so it sees its
+    own steps; under ``shared`` (the default) from
+    :func:`~tolokaforge.core.actors.tool_turns.shared_view`.
 
     ``simulator_config`` is the escape hatch a non-built-in simulator reads its
     own configuration from: the engine passes ``actors.user.simulator_config``
@@ -77,6 +84,7 @@ class UserSimulatorContext:
     tool_schemas: list[dict[str, Any]] | None
     llm_config: ModelConfig | None = None
     rate_limit_probe: RateLimitProbeConfig | None = None
+    tool_turns: UserToolTurns = "shared"
     simulator_config: dict[str, Any] = field(default_factory=dict)
 
 

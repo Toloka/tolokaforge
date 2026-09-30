@@ -850,6 +850,55 @@ def test_a_user_executed_call_pairs_with_the_record_not_a_tool_message() -> None
     )
 
 
+def _isolated_user_step_trial() -> list[Message]:
+    """An ``isolated`` user checking its balance in one tool step, then replying."""
+    return [
+        _user("My card was declined."),
+        _assistant("Can you check your balance?"),
+        _user("", _call("call_U", "check_balance")),
+        _tool_message("call_U", "balance: 12.50"),
+        _user("It says 12.50."),
+    ]
+
+
+def test_an_isolated_user_tool_step_is_calls_not_a_message() -> None:
+    """Nobody in the dialogue reads a tool step, so a ``messages`` ordering that
+    counts turns must not count it; its call and result are still events."""
+    records = [
+        recorded_call(
+            "check_balance",
+            call_id="call_U",
+            executor=ToolExecutorIdentity.USER,
+            output="balance: 12.50",
+        )
+    ]
+
+    timeline = build_trial_timeline(_isolated_user_step_trial(), records, None)
+
+    assert _kinds(timeline) == [
+        TraceEventKind.USER_MESSAGE,
+        TraceEventKind.ASSISTANT_MESSAGE,
+        TraceEventKind.TOOL_CALL,
+        TraceEventKind.TOOL_RESULT,
+        TraceEventKind.USER_MESSAGE,
+    ]
+    assert [e.text for e in _of_kind(timeline, TraceEventKind.USER_MESSAGE)] == [
+        "My card was declined.",
+        "It says 12.50.",
+    ]
+    assert {e.executor for e in timeline.events if e.kind in _TOOL_EVENT_KINDS} == {
+        ToolExecutorIdentity.USER
+    }
+
+
+def test_a_bundle_takes_an_isolated_steps_result_from_its_tool_message() -> None:
+    timeline = build_trial_timeline(_isolated_user_step_trial(), [], None)
+
+    (result,) = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
+    assert result.result == "balance: 12.50"
+    assert TraceEventKind.USER_MESSAGE not in _kinds(timeline)[2:4]
+
+
 def test_an_empty_trial_has_no_events_and_neither_view() -> None:
     timeline = build_trial_timeline([], [], TerminationReason.PROVISION_ERROR)
 
