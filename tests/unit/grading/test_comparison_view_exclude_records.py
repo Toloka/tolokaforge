@@ -18,8 +18,10 @@ from tolokaforge.core.grading.comparison_view import (
     ComparisonViewError,
     ComparisonViewResult,
     RuleApplication,
+    _record_id_field,
     apply_comparison_view,
 )
+from tolokaforge.runner.id_resolution import IdFieldResolutionError, table_key
 
 pytestmark = pytest.mark.unit
 
@@ -419,6 +421,32 @@ def test_the_id_field_comes_from_id_fields(declared: str | list[str]) -> None:
     assert _kept_holds(result) == ["X1"]
 
 
+@pytest.mark.parametrize(
+    "id_fields",
+    [
+        {},
+        {"holds": ""},
+        {"holds": []},
+        {"holds": "hold_ref"},
+        {"holds": ["hold_ref"]},
+        {"holds": " "},
+    ],
+    ids=["absent", "blank", "empty-list", "one-field", "one-element-list", "whitespace"],
+)
+def test_the_id_field_resolves_as_the_runner_resolves_a_key(id_fields: dict[str, Any]) -> None:
+    assert (_record_id_field("holds", id_fields),) == table_key("holds", id_fields).fields
+
+
+@pytest.mark.parametrize(
+    "declared", [[""], [None], [5], 5], ids=["blank", "null", "int", "not-a-list"]
+)
+def test_a_key_that_names_no_field_is_refused_as_the_runner_refuses_it(declared: Any) -> None:
+    with pytest.raises(IdFieldResolutionError):
+        table_key("holds", {"holds": declared})
+    with pytest.raises(ComparisonViewError, match="which names no key field"):
+        _record_id_field("holds", {"holds": declared})
+
+
 def test_references_are_read_before_the_rule_removes_anything() -> None:
     """P1 is referenced by P2, which the rule drops; P1 stays."""
     proposals = [
@@ -527,7 +555,7 @@ def test_only_matching_rows_need_an_id() -> None:
         (
             {"holds": _HOLDS},
             {"holds": ["region", "id"]},
-            "is \\['region', 'id'\\]; unless_referenced_by needs one id field",
+            "is the composite key \\['region', 'id'\\]; unless_referenced_by needs one",
         ),
         (
             {"holds": _HOLDS, "equipment": [{"id": "E1", "hold_id": {"id": "H1"}}]},
