@@ -18,6 +18,7 @@ from tolokaforge.core.grading.golden_replay import (
     declared_failure,
     resolve_golden_action_names,
 )
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import (
     ColumnCompareRule,
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
     # stack core grading otherwise never touches: it is imported where a view is
     # declared, so a task without one imports nothing more than before.
     from tolokaforge.core.grading.pre_hash import PreHashDeclaration
-    from tolokaforge.runner.models import ComparisonViewGradeRecord
 
 # Tau-bench compatible hash types
 ToHashable = Union[str, int, float, dict[str, "ToHashable"], list["ToHashable"], set["ToHashable"]]
@@ -205,6 +205,22 @@ def _pre_hash_declaration(
         compare_columns=compare_columns or {},
         numeric_string_fields=tuple(numeric_string_fields or ()),
         auto_normalize_nullables=auto_normalize_nullables,
+    )
+
+
+_HASH_MATCHES = "State hash matches (tau-bench algorithm)"
+
+
+def _digest_verdict(
+    actual: str, expected: str, basis: HashComparisonBasis | None
+) -> HashGradingResult:
+    """The verdict of two digests, with the reason ``check_hash`` reports it by."""
+    if actual == expected:
+        return HashGradingResult(hash_match=True, reason=_HASH_MATCHES, basis=basis)
+    return HashGradingResult(
+        hash_match=False,
+        reason=f"State hash mismatch: expected {expected[:16]}..., got {actual[:16]}...",
+        basis=basis,
     )
 
 
@@ -439,7 +455,8 @@ class StateChecker:
         comparison_view: ComparisonViewConfig | None = None,
         initial_state: dict[str, Any] | None = None,
         id_fields: Mapping[str, str | list[str]] | None = None,
-    ) -> tuple[float, str, "ComparisonViewGradeRecord | None"]:
+        basis: HashComparisonBasis | None = None,
+    ) -> HashGradingResult:
         """
         Check state hash against expected using tau-bench algorithm.
 
@@ -496,10 +513,14 @@ class StateChecker:
             initial_state: The state both sides started from, which the view reads
                 (``scope: new_records``). Passed as a copy nobody else holds.
             id_fields: ``state_checks.id_fields``, which the view reads.
+            basis: The declared source the expected state comes from, carried onto the
+                result as the runner carries its own; ``None`` for a caller that names
+                none, such as one holding a stored digest.
 
         Returns:
-            (score 0 or 1, reason, the comparison view's record or ``None`` without a
-            view)
+            The shared :class:`HashGradingResult`: the verdict bit (``hash_score``
+            derives from it), the reason, the basis, and the comparison view's record
+            where one is declared.
 
         Raises:
             ComparisonViewError: the expected side's view cannot be computed. Not folded
@@ -556,7 +577,12 @@ class StateChecker:
                 )
                 if isinstance(outcome, TrialViewError):
                     unviewed = comparison_view_grade_record(outcome, matched=False)
-                    return 0.0, str(comparison_view_reason(unviewed)), unviewed
+                    return HashGradingResult(
+                        hash_match=False,
+                        reason=str(comparison_view_reason(unviewed)),
+                        basis=basis,
+                        comparison_view=unviewed,
+                    )
                 viewed_actual, viewed_expected = (
                     state_digest(
                         side,
@@ -568,13 +594,16 @@ class StateChecker:
                 )
                 matched = viewed_actual == viewed_expected
                 record = comparison_view_grade_record(outcome, matched=matched)
-                if matched:
-                    return 1.0, "State hash matches (tau-bench algorithm)", record
-                return (
-                    0.0,
-                    f"State hash mismatch: expected {viewed_expected[:16]}..., "
-                    f"got {viewed_actual[:16]}...; {comparison_view_reason(record)}",
-                    record,
+                return HashGradingResult(
+                    hash_match=matched,
+                    reason=(
+                        _HASH_MATCHES
+                        if matched
+                        else f"State hash mismatch: expected {viewed_expected[:16]}..., "
+                        f"got {viewed_actual[:16]}...; {comparison_view_reason(record)}"
+                    ),
+                    basis=basis,
+                    comparison_view=record,
                 )
             # The unstable columns go first, before the pipeline, as the runner's
             # db-service drops them in ``get_stable_state`` before its pipeline runs:
@@ -606,14 +635,7 @@ class StateChecker:
                     auto_normalize_nullables=auto_normalize_nullables,
                     unstable_fields=unstable_fields,
                 )
-                if actual_hash == computed_expected_hash:
-                    return 1.0, "State hash matches (tau-bench algorithm)", None
-                return (
-                    0.0,
-                    f"State hash mismatch: expected {computed_expected_hash[:16]}..., "
-                    f"got {actual_hash[:16]}...",
-                    None,
-                )
+                return _digest_verdict(actual_hash, computed_expected_hash, basis)
 
             if has_active_rules and expected_state_for_pipeline is not None:
                 state, _ = apply_compare_columns_pipeline(
@@ -632,19 +654,16 @@ class StateChecker:
                 auto_normalize_nullables=auto_normalize_nullables,
                 unstable_fields=unstable_fields,
             )
-            if actual_hash == expected_hash:
-                return 1.0, "State hash matches (tau-bench algorithm)", None
-            return (
-                0.0,
-                f"State hash mismatch: expected {expected_hash[:16]}..., got {actual_hash[:16]}...",
-                None,
-            )
+            assert expected_hash is not None
+            return _digest_verdict(actual_hash, expected_hash, basis)
         except ComparisonViewError:
             # A view that cannot be computed is no verdict at all: the trial is left with
             # a grading error, as the runner leaves it, never a 0.0 read as the agent's.
             raise
         except Exception as e:
-            return 0.0, f"Error computing hash: {str(e)}", None
+            return HashGradingResult(
+                hash_match=False, reason=f"Error computing hash: {str(e)}", basis=basis
+            )
 
     def _load_initial_state(self, task_dir: Path, initial_state_path: str) -> dict[str, Any]:
         """A fresh load of the task's initial-state file, which no other reader holds."""
@@ -769,9 +788,7 @@ class StateChecker:
         unstable_fields: list[str] | None = None,
         comparison_view: ComparisonViewConfig | None = None,
         id_fields: Mapping[str, str | list[str]] | None = None,
-    ) -> tuple[
-        float, str, dict[str, Any] | None, GoldenReplayRecord, "ComparisonViewGradeRecord | None"
-    ]:
+    ) -> HashGradingResult:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
 
@@ -804,10 +821,12 @@ class StateChecker:
             id_fields: ``state_checks.id_fields``, which the view reads.
 
         Returns:
-            (score 0 or 1, reason, diff_result dict or None, replay record, the
-            comparison view's record or ``None`` without a view). The verdict stands
-            whether or not every action ran; the replay record carries what did not,
-            for the caller to report beside the score.
+            The shared :class:`HashGradingResult` against
+            :attr:`HashComparisonBasis.GOLDEN_REPLAY`: the verdict bit (``hash_score``
+            derives from it), the reason, the diff on a mismatch, the replay record and
+            the comparison view's record where one is declared. The verdict stands
+            whether or not every action ran; the replay record carries what did not, for
+            the caller to report beside the score.
 
         Raises:
             GoldenReplayError: the replay could not be executed, so there is no
@@ -868,15 +887,25 @@ class StateChecker:
             )
             record = comparison_view_grade_record(outcome, matched=matched)
             if matched:
-                hash_score = 1.0
-                return hash_score, "State hash matches", None, replay, record
+                return HashGradingResult(
+                    hash_match=True,
+                    reason="State hash matches",
+                    basis=HashComparisonBasis.GOLDEN_REPLAY,
+                    golden_replay=replay,
+                    comparison_view=record,
+                )
             diff_result = calculate_state_diff(expected_state, db_state)
-            hash_score = 0.0
-            hash_reason = (
-                f"State hash mismatch. {comparison_view_reason(record)}\n"
-                f"Diff:\n{format_diff_summary(diff_result, max_lines=50)}"
+            return HashGradingResult(
+                hash_match=False,
+                reason=(
+                    f"State hash mismatch. {comparison_view_reason(record)}\n"
+                    f"Diff:\n{format_diff_summary(diff_result, max_lines=50)}"
+                ),
+                basis=HashComparisonBasis.GOLDEN_REPLAY,
+                golden_replay=replay,
+                state_diff=diff_result,
+                comparison_view=record,
             )
-            return hash_score, hash_reason, diff_result, replay, record
 
         # Drop the unstable columns, then run the per-column pipeline
         # (equivalence folds, ordering, extras) symmetrically on both sides —
@@ -908,31 +937,33 @@ class StateChecker:
             unstable_fields=unstable_fields,
         )
 
-        # Calculate diff if states don't match
-        diff_result = None
-        if expected_hash != actual_hash:
-            self.logger.info(
-                "State hash mismatch, calculating diff",
-                expected_hash=expected_hash[:16],
-                actual_hash=actual_hash[:16],
-            )
-            diff_result = calculate_state_diff(expected_state, db_state)
-            diff_summary = format_diff_summary(diff_result, max_lines=50)
-
-            hash_score = 0.0
-            hash_reason = f"State hash mismatch. Diff:\n{diff_summary}"
-
-            self.logger.error(
-                "State mismatch in golden set grading",
-                expected_hash=expected_hash[:16],
-                actual_hash=actual_hash[:16],
-                diff_lines=diff_result["diff_lines"],
-            )
-        else:
-            hash_score = 1.0
-            hash_reason = "State hash matches"
+        if expected_hash == actual_hash:
             self.logger.info(
                 "State hash matches", expected_hash=expected_hash[:16], actual_hash=actual_hash[:16]
             )
+            return HashGradingResult(
+                hash_match=True,
+                reason="State hash matches",
+                basis=HashComparisonBasis.GOLDEN_REPLAY,
+                golden_replay=replay,
+            )
 
-        return hash_score, hash_reason, diff_result, replay, None
+        self.logger.info(
+            "State hash mismatch, calculating diff",
+            expected_hash=expected_hash[:16],
+            actual_hash=actual_hash[:16],
+        )
+        diff_result = calculate_state_diff(expected_state, db_state)
+        self.logger.error(
+            "State mismatch in golden set grading",
+            expected_hash=expected_hash[:16],
+            actual_hash=actual_hash[:16],
+            diff_lines=diff_result["diff_lines"],
+        )
+        return HashGradingResult(
+            hash_match=False,
+            reason=f"State hash mismatch. Diff:\n{format_diff_summary(diff_result, max_lines=50)}",
+            basis=HashComparisonBasis.GOLDEN_REPLAY,
+            golden_replay=replay,
+            state_diff=diff_result,
+        )

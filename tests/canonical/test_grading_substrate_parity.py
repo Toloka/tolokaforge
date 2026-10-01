@@ -29,11 +29,10 @@ what a declared comparison view lets the hash count:
 6. both substrates fold a hash verdict and a JSONPath score into one
    ``state_checks`` component by the author's weight, pinned cell by cell to
    arithmetic this module computes for itself;
-7. the hash verdict either substrate can produce is binary — source-audited for
-   the producers whose verdict leaves as a bare float in a tuple, and a type
-   invariant of ``HashGradingResult`` for the producer whose verdict leaves
-   inside it — which is what makes lock 6's canonical-tier hash inputs the only
-   values that path yields rather than a stand-in for it;
+7. the hash verdict either substrate can produce is binary — a type invariant of
+   the one ``HashGradingResult`` every hash producer declares it returns — which is
+   what makes lock 6's canonical-tier hash inputs the only values that path yields
+   rather than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
    enumerated here, and the tables those claims rest on — lock 6's weight sweep,
    lock 9's method answers, lock 19's folding matrix, lock 21's view matrix — stay
@@ -125,7 +124,7 @@ import json
 import re
 import shutil
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, UnionType
@@ -133,7 +132,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import pytest
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_COMPONENTS,
@@ -166,8 +165,9 @@ from tolokaforge.core.grading.composite_fold import (
     resolve_state_checks_component,
 )
 from tolokaforge.core.grading.default_state_check_backends import DbProbesStateCheckBackend
-from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
+from tolokaforge.core.grading.golden_replay import resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.hash_grading_result import HashGradingResult
 from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
@@ -280,22 +280,16 @@ _NUMERIC_STRING_FIELDS_KEY = "state_checks.numeric_string_fields"
 _GOLDEN_REPLAY_PACK = "shop_orders_02"
 
 # Every function that can hand a hash verdict to the shared composer, as
-# (repo-relative module, function name), partitioned by the shape the verdict
-# leaves in. Tuple-verdict producers hand it on as a bare float in a tuple, so
-# lock 7 audits their sources; the model-verdict producer returns it inside
-# ``HashGradingResult``, which derives the score from ``hash_match``, so lock 7
-# proves that invariant instead of reading its source. The union is asserted as
-# set equality against the hash family's declared evaluators, so a fourth
-# producer forces an edit here instead of landing with lock 7 green and lock
-# 6's binariness premise false.
-_TUPLE_VERDICT_PRODUCERS = frozenset(
+# (repo-relative module, function name). Each returns the shared ``HashGradingResult``,
+# which derives the score from ``hash_match``, so lock 7 proves that invariant and each
+# producer's declared return type instead of reading any source. The set is asserted
+# as equality against the hash family's declared evaluators, so a fourth producer
+# forces an edit here instead of landing with lock 7 green and lock 6's binariness
+# premise false.
+_HASH_VERDICT_PRODUCERS = frozenset(
     {
         ("tolokaforge/core/grading/state_checks.py", "check_hash"),
         ("tolokaforge/core/grading/state_checks.py", "check_hash_against_golden_replay"),
-    }
-)
-_MODEL_VERDICT_PRODUCERS = frozenset(
-    {
         ("tolokaforge/runner/service.py", "_execute_hash_grading"),
     }
 )
@@ -621,13 +615,13 @@ def _evaluator_source(evaluator: str) -> tuple[str, str]:
 def _declared_hash_verdict_producers() -> dict[tuple[str, str], Any]:
     """Every evaluator the manifest names for a *scored* member of the hash family.
 
-    Keyed by source location — what the frozen producer partitions pin — with the
-    resolved callable as the value, so lock 7's model-verdict clause reads the
-    declared return type off the same walk its gate reads the set from.
+    Keyed by source location — what the frozen producer set pins — with the resolved
+    callable as the value, so lock 7 reads each declared return type off the same walk
+    its gate reads the set from.
 
     ``state_checks.hash.weight`` is ``CONFIG_INPUT`` — it names the composer that
     consumes a verdict, not a function that produces one — so the ``SCORED_CHECK``
-    filter is what keeps the fold itself out of the audit.
+    filter is what keeps the fold itself out of the lock.
     """
     return {
         _evaluator_source(evaluator): _import_dotted(evaluator)
@@ -1635,122 +1629,15 @@ def test_the_composite_moves_with_the_weight_at_a_fixed_hash_verdict(test_data_d
 # --------------------------------------------------------------------------
 
 
-def _verdict_constants(expression: ast.expr) -> frozenset[float] | None:
-    """The values a hash-score expression can hold, or ``None`` if it computes one.
-
-    ``None`` is the interesting answer: a producer that derives a hash score instead
-    of choosing between two literals would make lock 6's ``0.0``/``1.0`` runner
-    inputs a stand-in for a value the path never yields.
-    """
-    if isinstance(expression, ast.Constant) and isinstance(expression.value, (int, float)):
-        return None if isinstance(expression.value, bool) else frozenset({float(expression.value)})
-    if isinstance(expression, ast.IfExp):
-        branches = (_verdict_constants(expression.body), _verdict_constants(expression.orelse))
-        if any(branch is None for branch in branches):
-            return None
-        return frozenset().union(*branches)
-    if isinstance(expression, ast.Name) and expression.id == _HASH_SCORE_NAME:
-        return frozenset()
-    return None
-
-
-def _verdict_expression(node: ast.AST) -> ast.expr | None:
-    """The expression ``node`` puts in the hash-score position, or ``None``.
-
-    Two shapes carry a verdict out of a tuple-verdict producer: the first element
-    of a returned tuple (the ``(score, reason, …)`` pair both audited producers
-    return) and an assignment to ``hash_score``, which a later return then hands on.
-    """
-    if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-        return node.value.elts[0]
-    assigned = (
-        isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == _HASH_SCORE_NAME
-    )
-    return node.value if assigned else None
-
-
-def _sole_function(module_path: str, function_name: str) -> ast.AST:
-    tree = ast.parse((_REPO_ROOT / module_path).read_text())
-    found = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
-    ]
-    assert len(found) == 1, (
-        f"{module_path} declares {len(found)} functions named {function_name!r}, so the "
-        "hash-verdict audit cannot say which one produces the verdict"
-    )
-    return found[0]
-
-
-def _carries_a_verdict(exit_node: ast.Return) -> bool:
-    """Whether a ``return`` puts its verdict somewhere this audit can read it."""
-    return any(_verdict_expression(node) is not None for node in ast.walk(exit_node))
-
-
-def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[float]:
-    """Every value the named producer can hand on as a hash score.
-
-    Fails when a score position holds a computed expression rather than a choice
-    between literals: a derived partial verdict would make lock 6's ``0.0``/``1.0``
-    runner inputs a stand-in for values that path never yields. Fails too when the
-    producer leaves by a ``return`` whose verdict sits outside the two positions
-    :func:`_verdict_expression` reads — otherwise a refactor to ``return result``
-    routes the verdict past the audit while the literals it left behind keep the
-    binariness assertion green.
-    """
-    producer = _sole_function(module_path, function_name)
-    constants: set[float] = set()
-    for node in ast.walk(producer):
-        expression = _verdict_expression(node)
-        if expression is None:
-            continue
-        reachable = _verdict_constants(expression)
-        assert reachable is not None, (
-            f"{module_path}::{function_name} computes a hash score at line "
-            f"{expression.lineno} instead of choosing between literals"
-        )
-        constants |= reachable
-
-    unaudited = [
-        node.lineno
-        for node in ast.walk(producer)
-        if isinstance(node, ast.Return) and not _carries_a_verdict(node)
-    ]
-    assert not unaudited, (
-        f"{module_path}::{function_name} returns at lines {unaudited} without putting a "
-        "verdict in a position this audit reads — the first element of a returned tuple, "
-        f"or an assignment to {_HASH_SCORE_NAME}. The literals it leaves behind would "
-        "keep the binariness assertion green while the verdict it actually returns "
-        "went unread"
-    )
-    return frozenset(constants)
-
-
-def _minimal_hash_result(**score_fields: Any) -> runner_models.HashGradingResult:
-    """A ``HashGradingResult`` carrying only what lock 7's model clause varies."""
-    return runner_models.HashGradingResult(
-        basis=runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE,
-        golden_replay=GoldenReplayRecord(authored=0),
-        **score_fields,
-    )
-
-
 def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
-    """Each producer is held to binariness by the shape its verdict leaves in.
+    """Every producer is held to binariness by the one type its verdict leaves in.
 
-    The two core producers hand their verdict on as a bare float in a tuple, and
-    core's golden-replay producer needs a task's MCP server, so their sources are
-    read: each must choose its score between literals, and every ``return`` must
-    carry it somewhere the audit reads. The runner's producer returns its verdict
-    inside ``HashGradingResult``, which derives ``hash_score`` from ``hash_match``
-    — so instead of reading that function's source, the lock proves the derivation
-    by exhaustion over the model's one free bit, that supplying a score at
-    construction is refused, and that the producer's declared return type keeps
-    the verdict inside the model.
+    Core's two checks and the runner's evaluator each declare that they return the
+    shared ``HashGradingResult``, whose ``hash_score`` is derived from ``hash_match`` —
+    so instead of reading any producer's source, the lock proves the declared return
+    types, the derivation by exhaustion over the one free bit, and that the type has no
+    score to set: not at construction, not afterwards, and not through a ``hash_match``
+    that is not a bool.
 
     What is callable is ``check_hash``, which core's ``expect_initial_state``
     branch reaches by hashing the pack's declared initial state; the composition
@@ -1759,43 +1646,42 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
     runner as the ones core's own evaluator returns for the same states.
     """
     producers = _declared_hash_verdict_producers()
-    assert frozenset(producers) == _TUPLE_VERDICT_PRODUCERS | _MODEL_VERDICT_PRODUCERS, (
+    assert frozenset(producers) == _HASH_VERDICT_PRODUCERS, (
         "the set of functions the manifest names as hash-verdict producers changed. Every "
-        "one is guarded below — tuple-verdict producers by source audit, the model-verdict "
-        "producer by the model's own derivation — and lock 6 hands the runner's fold a "
-        "0.0/1.0 verdict on the strength of that guard, so widening either partition is an "
-        "edit a reviewer sees"
+        "one is held to the shared result type below, and lock 6 hands the runner's fold a "
+        "0.0/1.0 verdict on the strength of that guard, so widening the set is an edit a "
+        "reviewer sees"
     )
-    for module_path, function_name in sorted(_TUPLE_VERDICT_PRODUCERS):
-        reachable = _reachable_hash_verdicts(module_path, function_name)
-        assert reachable == _BINARY_HASH_VERDICT, (
-            f"{module_path}::{function_name} can produce hash scores {sorted(reachable)}, "
-            f"not {sorted(_BINARY_HASH_VERDICT)}"
+    for module_path, function_name in sorted(_HASH_VERDICT_PRODUCERS):
+        declared_return = get_type_hints(producers[(module_path, function_name)]).get("return")
+        assert declared_return is HashGradingResult, (
+            f"{module_path}::{function_name} declares return type {declared_return!r}, not "
+            "HashGradingResult — its verdict would leave outside the type whose derivation "
+            "is the whole of what holds a producer to a binary verdict"
         )
 
-    for module_path, function_name in sorted(_MODEL_VERDICT_PRODUCERS):
-        declared_return = get_type_hints(producers[(module_path, function_name)]).get("return")
-        assert declared_return is runner_models.HashGradingResult, (
-            f"{module_path}::{function_name} declares return type {declared_return!r}, not "
-            "HashGradingResult — its verdict would leave outside the model whose derivation "
-            "is the whole of what holds this producer to a binary verdict"
-        )
     for match in (True, False):
-        derived = _minimal_hash_result(hash_match=match).hash_score
+        derived = HashGradingResult(hash_match=match).hash_score
         assert derived == (1.0 if match else 0.0), (
             f"HashGradingResult(hash_match={match}) derives hash_score {derived}, so the "
             "score no longer restates the verdict bit"
         )
     assert {
-        _minimal_hash_result(hash_match=match).hash_score for match in (True, False)
+        HashGradingResult(hash_match=match).hash_score for match in (True, False)
     } == _BINARY_HASH_VERDICT, (
         "exhausting hash_match yields hash scores outside "
-        f"{sorted(_BINARY_HASH_VERDICT)}, so the model-verdict producer's path can hand "
-        "the fold a value lock 6 never drives"
+        f"{sorted(_BINARY_HASH_VERDICT)}, so a producer's path can hand the fold a value "
+        "lock 6 never drives"
     )
     for match, score in ((True, 0.0), (True, 1.0), (False, 0.37)):
-        with pytest.raises(ValidationError, match=_HASH_SCORE_NAME):
-            _minimal_hash_result(hash_match=match, hash_score=score)
+        with pytest.raises(TypeError, match=_HASH_SCORE_NAME):
+            HashGradingResult(hash_match=match, hash_score=score)  # type: ignore[call-arg]
+        result = HashGradingResult(hash_match=match)
+        with pytest.raises(FrozenInstanceError):
+            result.hash_score = score  # type: ignore[misc]
+    for not_a_bit in (1, 0, 0.5, "true", None):
+        with pytest.raises(TypeError, match="hash_match is the hash verdict, a bool"):
+            HashGradingResult(hash_match=not_a_bit)  # type: ignore[arg-type]
 
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
     task_id = _task_id_for(_COMPOSITION_KEY)
@@ -1808,7 +1694,8 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
     )
     for case, hash_score in _COMPOSITION_HASH_CASES:
         db_state = extract_db_state(load_case(pack, case).state)
-        actual, _, _ = StateChecker().check_hash(db_state, expected_hash)
+        result = StateChecker().check_hash(db_state, expected_hash)
+        actual = result.hash_score
         assert actual == hash_score, (
             f"the composition fixture's {case!r} case scores {actual} against the hash of "
             f"the state its task declares it starts in, not the {hash_score} lock 6 assumes"

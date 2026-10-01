@@ -821,12 +821,13 @@ class TestPipelineExpectInitialState:
         expected_hash = state_digest(
             _fold_via_pipeline(db_state, initial_state, rules)[1],
         )
-        score, _reason, _ = StateChecker().check_hash(
+        result = StateChecker().check_hash(
             db_state,
             expected_hash,
             compare_columns=rules,
             expected_state_for_pipeline=initial_state,
         )
+        score = result.hash_score
         assert score == 1.0
 
     def test_pipeline_absent_falls_back_to_raw_digest(self):
@@ -835,7 +836,8 @@ class TestPipelineExpectInitialState:
         db_state = {"t": [{"id": "a", "note": ""}]}
         initial_state = {"t": [{"id": "a", "note": None}]}
         expected_hash = state_digest(initial_state)
-        score, _reason, _ = StateChecker().check_hash(db_state, expected_hash)
+        result = StateChecker().check_hash(db_state, expected_hash)
+        score = result.hash_score
         assert score == 0.0
 
 
@@ -1220,10 +1222,12 @@ class TestAutoNormalizeGuards:
         state = {"t": [{"id": "1", "note": "ok"}]}
         expected_hash_local = state_digest(state)
         # Empty top-level dict: no active rule.
-        score, _, _ = checker.check_hash(state, expected_hash_local, compare_columns={})
+        result = checker.check_hash(state, expected_hash_local, compare_columns={})
+        score = result.hash_score
         assert score == 1.0
         # Table entry with no per-column rules: still no active rule.
-        score, _, _ = checker.check_hash(state, expected_hash_local, compare_columns={"t": {}})
+        result = checker.check_hash(state, expected_hash_local, compare_columns={"t": {}})
+        score = result.hash_score
         assert score == 1.0
 
     def test_check_hash_accepts_auto_normalize_without_expected(self):
@@ -1236,12 +1240,13 @@ class TestAutoNormalizeGuards:
         checker = StateChecker()
         state = {"t": [{"id": "1", "tags": None}]}
         expected_hash = state_digest(state, auto_normalize_nullables=True)
-        score, _, _ = checker.check_hash(
+        result = checker.check_hash(
             state,
             expected_hash,
             auto_normalize_nullables=True,
             expected_state_for_pipeline=None,
         )
+        score = result.hash_score
         assert score == 1.0
 
 
