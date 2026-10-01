@@ -56,13 +56,24 @@ class SearchHit:
 
     The minimal common denominator across RAG backends — every backend can
     populate these honestly. ``score`` is "higher is better"; ``text`` is the
-    snippet/document text the judge reads.
+    snippet/document text the judge reads. ``title`` is the document's title
+    when the backend has one (``bm25``'s JSON documents carry it; rag-service
+    hits do not), ``None`` otherwise.
     """
 
     doc_id: str
     source: str
     score: float
     text: str
+    title: str | None = None
+
+
+DEFAULT_JUDGE_SNIPPET_CHARS = 200
+"""How many characters of a hit's ``text`` the judge's ``search_kb`` shows by default.
+
+``grading.llm_judge.customization.judge_snippet_chars`` overrides it per task;
+``null`` there shows whole documents.
+"""
 
 
 @runtime_checkable
@@ -135,6 +146,7 @@ class RagServiceKnowledgeSearch:
 
 
 __all__ = [
+    "DEFAULT_JUDGE_SNIPPET_CHARS",
     "KnowledgeSearch",
     "RagServiceKnowledgeSearch",
     "SearchHit",

@@ -41,7 +41,11 @@ from tolokaforge.core.grading.judge import (
 )
 from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
-from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
+from tolokaforge.core.grading.kb_search import (
+    DEFAULT_JUDGE_SNIPPET_CHARS,
+    KnowledgeSearch,
+    SearchHit,
+)
 from tolokaforge.core.grading.replay_layout import (
     JUDGE_REPLAY_DIRNAME,
     discover_trial_bundles,
@@ -386,6 +390,10 @@ class ReplayInputs:
     kb_search: KnowledgeSearch | None = None
     extra_read_tools: list[Tool] = field(default_factory=list)
     workspace_dir: Path | None = None
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
+    """How much of each hit the judge's ``search_kb`` shows: the bundle's recorded
+    ``customization.judge_snippet_chars`` (``None`` for whole documents), or the
+    default for a bundle recorded before the field existed."""
 
 
 def _parse_yaml(path: Path) -> Any:
@@ -646,6 +654,31 @@ def _resolve_include_agent_system_prompt(
     return recorded, ProvenanceSource.RECORDED
 
 
+def _resolve_judge_snippet_chars(trial_dir: Path, task: dict[str, Any] | None) -> int | None:
+    """The snippet length the recorded task's judge read hits at.
+
+    Absent from the recorded customization (a bundle written before the field, or
+    a task that never set it) is the default; a recorded ``null`` is whole
+    documents. A recorded value that is not a positive integer fails loud — the
+    writer never records one, so it is a corrupted or hand-edited bundle. A
+    ``--grading`` override does not carry it: the offline knowledge search answers
+    with a marker, not documents, so there is nothing for an override to cut.
+    """
+    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
+    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
+    if not isinstance(customization, dict) or "judge_snippet_chars" not in customization:
+        return DEFAULT_JUDGE_SNIPPET_CHARS
+    recorded = customization["judge_snippet_chars"]
+    if recorded is None:
+        return None
+    if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 1:
+        raise MissingReplayInputError(
+            f"recorded customization.judge_snippet_chars in {trial_dir / TASK_FILENAME} "
+            "is not a positive integer or null"
+        )
+    return recorded
+
+
 def _resolve_judge_model(
     task: dict[str, Any] | None, judge_model_override: str | None
 ) -> tuple[ModelConfig, ProvenanceSource]:
@@ -768,6 +801,7 @@ def read_replay_inputs(
         trial_dir, task, grading_override
     )
     judge_model_config, judge_model_source = _resolve_judge_model(task, judge_model_override)
+    judge_snippet_chars = _resolve_judge_snippet_chars(trial_dir, task)
 
     trajectory = Trajectory.model_validate(trajectory_raw)
     recorded_agent_prompt = prompts.get("system_prompt") or ""
@@ -813,6 +847,7 @@ def read_replay_inputs(
         disable_knowledge_search=disable_knowledge_search,
         custom_system_prompt=custom_system_prompt,
         explicit_system_prompt=explicit_system_prompt,
+        judge_snippet_chars=judge_snippet_chars,
         include_agent_system_prompt=include_agent_system_prompt,
         judge_kind=judge_kind,
         kind_config=kind_config,
@@ -859,6 +894,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
             custom_system_prompt=inputs.custom_system_prompt,
             explicit_system_prompt=inputs.explicit_system_prompt,
             include_agent_system_prompt=inputs.include_agent_system_prompt,
+            judge_snippet_chars=inputs.judge_snippet_chars,
             llm_client=judge_client,
         )
         return judge.run(
@@ -892,6 +928,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
         disable_knowledge_search=inputs.disable_knowledge_search,
         custom_system_prompt=inputs.custom_system_prompt,
         include_agent_system_prompt=inputs.include_agent_system_prompt,
+        judge_snippet_chars=inputs.judge_snippet_chars,
         kind_config=inputs.kind_config,
         logger=get_logger("tolokaforge.core.grading.replay"),
     )

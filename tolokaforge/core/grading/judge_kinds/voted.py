@@ -28,6 +28,7 @@ from tolokaforge.core.grading.judge_kinds._shared import (
     sum_usage,
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.rubric import GRADED_MET_THRESHOLD, aggregate_rubric
 from tolokaforge.runner.models import CriterionResult
 
@@ -83,6 +84,7 @@ class VotedRubricJudgeKind:
         disable_knowledge_search: bool,
         custom_system_prompt: str | None,
         include_agent_system_prompt: bool,
+        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -119,6 +121,7 @@ class VotedRubricJudgeKind:
                 disable_knowledge_search=disable_knowledge_search,
                 custom_system_prompt=custom_system_prompt,
                 include_agent_system_prompt=include_agent_system_prompt,
+                judge_snippet_chars=judge_snippet_chars,
                 kind_config=wrapped_kind_config,
                 logger=logger,
             )
