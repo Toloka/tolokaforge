@@ -247,10 +247,12 @@ builtin = "tolokaforge.core.llm.client:_builtin_user_simulator_factory"
 # A task names its backend in ``initial_state.rag.backend``, carried on the wire
 # as ``search.plane``; the runner resolves it at ``RegisterTrial``, so the group
 # is runner-reachable. ``rag_service`` is the engine's hybrid rag-service and
-# goes through this registry like any other registration. ``typesense`` is
-# reserved: the runner serves that plane itself.
+# goes through this registry like any other registration; ``bm25`` is Okapi BM25
+# in the runner process, over the bundled corpus, with no stack service.
+# ``typesense`` is reserved: the runner serves that plane itself.
 [project.entry-points."tolokaforge.search_backends"]
 rag_service = "tolokaforge.runner.rag_service_backend:_rag_service_backend_factory"
+bm25 = "tolokaforge.core.search.bm25:_bm25_backend_factory"
 
 # Runner-side dispatch selector on ``RunnerGradingConfig.grading_method``: the
 # registered names are the ones ``RegisterTrial`` accepts. Two markers ship
