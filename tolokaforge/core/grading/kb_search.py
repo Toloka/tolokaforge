@@ -119,8 +119,8 @@ class RagServiceKnowledgeSearch:
         )
         response.raise_for_status()
         data = response.json()
-        # Per-trial endpoint returns {"results": [...]}; the legacy global
-        # endpoint returned a bare list. Accept both so the impl is robust to the
+        # The per-trial endpoint answers {"results": [...]}; the legacy global
+        # /search answers a bare list. Accept both so the impl is robust to the
         # service's response shape, without ever hitting the global path.
         rows = data["results"] if isinstance(data, dict) else data
         return [
