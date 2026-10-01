@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -274,3 +276,16 @@ def test_the_engine_leaves_a_trial_ungraded_when_the_expected_side_cannot_be_vie
     )
     with pytest.raises(ComparisonViewError, match="lacks the key field"):
         engine.grade_trajectory(_trajectory(), {"db": copy.deepcopy(_INITIAL)})
+
+
+def test_importing_the_core_hash_checks_does_not_pull_the_runner_stack() -> None:
+    """The view's composition is imported where a view is declared, as before it existed."""
+    probe = (
+        "import sys, tolokaforge.core.grading.state_checks; "
+        "print(sorted(m for m in ('grpc', 'tolokaforge.runner.models', "
+        "'tolokaforge.core.grading.pre_hash') if m in sys.modules))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    ).stdout
+    assert out.strip() == "[]", out
