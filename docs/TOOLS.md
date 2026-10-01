@@ -30,7 +30,9 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   (`$.tickets[0].note`) or appends to a list parent (`$.tickets.-`). An op that
   would change nothing it names is refused rather than reported as a success:
   an `add` whose parent matches nothing or holds a scalar, an `add` path ending
-  in an index or filter, and a `replace` or `remove` of the root `$`. A
+  in an index or filter, an `add` naming a key on a list (`$.tickets.extra`;
+  `.-` is the only form a list takes), and a `replace` or `remove` of the root
+  `$`. Each match of a multi-match write gets its own copy of the value. A
   `remove` matching nothing is a no-op. The full op table is in
   [DB_SERVICE_API.md § Update State](DB_SERVICE_API.md#11-update-state-jsonpath).
 - `search_kb`: RAG search over a per-trial corpus index. Functional for native

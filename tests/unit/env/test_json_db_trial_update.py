@@ -150,6 +150,41 @@ def test_a_write_op_lands_in_the_state_and_the_sql_mirror(db_test_client, op, ti
     assert mirrored == [{column: row.get(column) for column in columns} for row in tickets]
 
 
+@pytest.mark.parametrize(
+    ("multi_match_write", "targeted_write", "field", "values"),
+    [
+        pytest.param(
+            {"op": "add", "path": "$.tickets[*].meta", "value": {"n": 0}},
+            {"op": "replace", "path": "$.tickets[0].meta.n", "value": 5},
+            "meta",
+            [{"n": 5}, {"n": 0}],
+            id="add-then-replace-inside-one-row",
+        ),
+        pytest.param(
+            {"op": "replace", "path": "$.tickets[*].tags", "value": []},
+            {"op": "add", "path": "$.tickets[0].tags.-", "value": "x"},
+            "tags",
+            [["x"], []],
+            id="replace-then-append-inside-one-row",
+        ),
+    ],
+)
+def test_a_multi_match_write_gives_each_match_its_own_value(
+    db_test_client, multi_match_write, targeted_write, field, values
+):
+    tagged = [{**row, "tags": ["seed"]} for row in TWO_TICKETS["tickets"]]
+    trial_id = _new_trial(db_test_client, {"tickets": tagged})
+
+    assert _update(db_test_client, trial_id, [multi_match_write]).status_code == 200
+    resp = _update(db_test_client, trial_id, [targeted_write])
+
+    assert resp.status_code == 200, resp.text
+    rows = _state(db_test_client, trial_id)["data"]["tickets"]
+    assert [row[field] for row in rows] == values
+    mirrored = _sql(db_test_client, trial_id, f"SELECT {field} FROM tickets ORDER BY id")
+    assert [json.loads(row[field]) for row in mirrored] == values
+
+
 def test_remove_of_a_path_matching_nothing_changes_no_row_and_still_bumps_the_version(
     db_test_client,
 ):
@@ -207,6 +242,18 @@ def test_remove_of_a_path_matching_nothing_changes_no_row_and_still_bumps_the_ve
             {"op": "add", "path": "$", "value": []},
             "add path '$' does not end in a key name",
             id="add-on-the-root",
+        ),
+        pytest.param(
+            {"op": "add", "path": "$.tickets.extra", "value": {"id": "T-300"}},
+            "add path '$.tickets.extra' names key 'extra' on a list; "
+            "append to a list with '$.tickets.-'",
+            id="add-a-named-key-onto-a-list",
+        ),
+        pytest.param(
+            {"op": "add", "path": "$.tickets[0].-", "value": 1},
+            "add path '$.tickets[0].-' appends, but its parent holds an object; "
+            "set a key on an object with a path ending in that key",
+            id="append-onto-an-object",
         ),
         pytest.param(
             {"op": "replace", "path": "$", "value": {"tickets": []}},
@@ -292,6 +339,31 @@ def test_a_key_holding_a_double_quote_is_mirrored_to_sql(db_test_client):
 
     assert resp.status_code == 200, resp.text
     assert _sql(db_test_client, trial_id, 'SELECT "a""b" AS quoted FROM tickets') == [{"quoted": 1}]
+
+
+def test_injection_shaped_names_mirror_as_literal_sql_identifiers(db_test_client):
+    trial_id = _new_trial(db_test_client, {**TICKETS, "users": [{"id": "U-1"}]})
+    key = 'x" TEXT); DROP TABLE tickets; --'
+    table = 't"; DROP TABLE users; --'
+
+    resp = _update(
+        db_test_client,
+        trial_id,
+        [
+            {"op": "add", "path": f"$.tickets[0].'{key}'", "value": "k"},
+            {"op": "add", "path": f"$.'{table}'", "value": [{"id": "N-1"}]},
+        ],
+    )
+
+    assert resp.status_code == 200, resp.text
+    tables = _sql(db_test_client, trial_id, "SELECT name FROM sqlite_master WHERE type='table'")
+    assert sorted(row["name"] for row in tables) == sorted([table, "tickets", "users"])
+    quoted_key = '"' + key.replace('"', '""') + '"'
+    quoted_table = '"' + table.replace('"', '""') + '"'
+    assert _sql(db_test_client, trial_id, f"SELECT {quoted_key} AS v FROM tickets") == [{"v": "k"}]
+    assert _sql(db_test_client, trial_id, f"SELECT id FROM {quoted_table}") == [{"id": "N-1"}]
+    assert _sql_count(db_test_client, trial_id, "tickets") == 1
+    assert _sql_count(db_test_client, trial_id, "users") == 1
 
 
 @pytest.mark.parametrize(

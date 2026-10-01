@@ -507,7 +507,7 @@ description: "Navigate to the mock Example Domain page"
 initial_user_message: "Open example.com and tell me the page title."   # optional — pinned opener, delivered verbatim as turn 1
 
 initial_state:
-  json_db: "initial_state.json"          # optional
+  json_db: "initial_state.json"          # required when db_query or db_update is enabled
   filesystem:
     copy:
       - from: "fixtures/file.txt"

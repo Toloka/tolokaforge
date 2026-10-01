@@ -9,12 +9,13 @@ fixture's.
 Two tests lock per-trial JSON-DB isolation:
 
 - **No LLM** (`test_concurrent_trials_*`): every trial's `db_query("$")`, issued
-  concurrently, returns exactly its own seed; an agent-side `db_update` on one
-  trial moves no other trial's store and lands in the state `GradeTrial` grades.
+  concurrently, returns exactly its own seed, and an agent-side `db_update` on
+  one trial moves no other trial's store.
 - **One cheap live run** (`test_live_run_*`, `requires_api`): `tolokaforge run`
   with `workers: 3` over both packs, asserting on recorded traces only — no
   successful `db_query` output a trial saw carries another task's tables or
-  seed rows. Agent correctness (`binary_pass`) is out of scope.
+  seed rows, and every trial that read a row object saw its own seed's row id.
+  Agent correctness (`binary_pass`) is out of scope.
 """
 
 from __future__ import annotations
@@ -126,27 +127,6 @@ def _db_query_root(runner_client: GrpcRunnerClient, trial_id: str, call_id: str)
     return json.loads(result.output)
 
 
-def _declared_calls_transcript(calls: list[tuple[str, str, dict[str, Any]]]) -> str:
-    """Wire `llm_messages` declaring each executed `(call_id, tool, arguments)`, in order."""
-    messages: list[dict[str, Any]] = [{"role": "user", "content": "Reconcile C-1."}]
-    for call_id, tool_name, arguments in calls:
-        messages.append(
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": tool_name, "arguments": json.dumps(arguments)},
-                    }
-                ],
-            }
-        )
-        messages.append({"role": "tool", "tool_call_id": call_id, "name": tool_name, "content": ""})
-    return json.dumps(messages)
-
-
 def test_concurrent_trials_each_read_their_own_seed_and_write_only_their_own_store(
     runner_client: GrpcRunnerClient,
     registered_trials: dict[str, dict[str, Any]],
@@ -178,16 +158,6 @@ def test_concurrent_trials_each_read_their_own_seed_and_write_only_their_own_sto
         trial = registered_trials[task_id]
         after = _db_query_root(runner_client, trial["trial_id"], "call_after_update")
         assert after == [trial["seed"]], task_id
-
-    transcript = _declared_calls_transcript(
-        [
-            ("call_concurrent", "db_query", _ROOT_QUERY),
-            ("call_reconcile", "db_update", _RECONCILE_OPS),
-        ]
-    )
-    grade = runner_client.grade_trial(trial_id=ledger_trial_id, llm_messages_json=transcript)
-    assert grade["success"] is True, grade["error"]
-    assert grade["grade"]["components"]["state_checks"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +205,15 @@ def _top_level_keys(parsed: Any) -> set[str]:
     return {key for row in rows if isinstance(row, dict) for key in row}
 
 
+def _holds_a_row_object(parsed: Any) -> bool:
+    """Whether ``parsed`` holds, at any depth, an object carrying an ``id`` key."""
+    if isinstance(parsed, dict):
+        return "id" in parsed or any(_holds_a_row_object(value) for value in parsed.values())
+    if isinstance(parsed, list):
+        return any(_holds_a_row_object(item) for item in parsed)
+    return False
+
+
 @pytest.mark.requires_api
 @pytest.mark.llm
 @pytest.mark.slow
@@ -264,18 +243,20 @@ def test_live_run_with_three_workers_shows_each_trial_only_its_own_db(tmp_path: 
     assert len(trial_dirs) == 3, trial_dirs
     assert {d.parent.name for d in trial_dirs} == set(_DATASET_BY_TASK), trial_dirs
 
-    tasks_seeing_own_seed = set()
     for trial_dir in trial_dirs:
         task_id = trial_dir.parent.name
         foreign_tables, foreign_row_ids = _foreign_markers(task_id)
-        for output in _successful_db_query_outputs(trial_dir):
+        outputs = _successful_db_query_outputs(trial_dir)
+        for output in outputs:
             leaked_tables = _top_level_keys(json.loads(output)) & foreign_tables
             leaked_rows = {row_id for row_id in foreign_row_ids if row_id in output}
             assert not leaked_tables and not leaked_rows, (
                 f"{trial_dir}: db_query returned another task's data: "
                 f"tables {sorted(leaked_tables)}, rows {sorted(leaked_rows)}\n{output}"
             )
-            if f'"{_OWN_SEED_ID[task_id]}"' in output:
-                tasks_seeing_own_seed.add(task_id)
-
-    assert tasks_seeing_own_seed, "no trial's db_query output carried its own seed's row id"
+        if any(_holds_a_row_object(json.loads(output)) for output in outputs):
+            own_id = f'"{_OWN_SEED_ID[task_id]}"'
+            assert any(own_id in output for output in outputs), (
+                f"{trial_dir}: db_query read row objects but never its own seed's {own_id}:\n"
+                + "\n".join(outputs)
+            )

@@ -497,8 +497,8 @@ are refused with 422.
 
 | Op | Effect |
 |----|--------|
-| `replace` | Sets every match of `path` to `value`. A path that matches nothing, or that matches the root `$`, refuses the batch. |
-| `add` | Parses `path` as JSONPath and resolves only its parent. The path must end in one key name, which is the key as JSONPath reads it, so `$.tickets[0]."note"` and `$.tickets[0].note` both set `note`, and a query on the same path finds it. A path ending in anything else refuses the batch: the root `$`, an index (`$.tickets[0]`), a filter, a wildcard, a union (`a|b`) or more than one key (`a,b`). The one form JSONPath does not parse is a trailing `.-`, which appends (`$.tickets.-`). Every parent match must be a dict, which gains the key set to `value`, or a list, which has `value` appended whatever the key. A parent that matches nothing, or matches a scalar, refuses the batch. |
+| `replace` | Sets every match of `path` to its own copy of `value`. A path that matches nothing, or that matches the root `$`, refuses the batch. |
+| `add` | Parses `path` as JSONPath and resolves only its parent. The path must end in one key name, which is the key as JSONPath reads it, so `$.tickets[0]."note"` and `$.tickets[0].note` both set `note`, and a query on the same path finds it. A path ending in anything else refuses the batch: the root `$`, an index (`$.tickets[0]`), a filter, a wildcard, a union (`a|b`) or more than one key (`a,b`). The one form JSONPath does not parse is a trailing `.-`, which appends (`$.tickets.-`). Every parent match must be a dict, which gains the key set to its own copy of `value`, or, for the `.-` form only, a list, which has a copy of `value` appended. A key other than `.-` on a list parent refuses the batch and names the append form (`$.tickets.extra` → `$.tickets.-`); `.-` on a dict parent refuses it too. A parent that matches nothing, or matches a scalar, refuses the batch. |
 | `remove` | Deletes every match of `path` from its parent dict or list. A path that matches the root `$` refuses the batch. A path that matches nothing deletes nothing and still commits: `version` increments and `stable_hash` is unchanged. |
 
 #### Atomicity
@@ -873,8 +873,9 @@ its code is [`tolokaforge/env/json_db_service/app.py`](../tolokaforge/env/json_d
 `create_trial` (behind `POST /trials/{trial_id}/init`) refuses an id that exists
 (`409 TrialAlreadyExists`), and `get_trial` (behind every other trial endpoint) raises
 `TrialNotFound` for an id nobody initialized. Each trial carries its own lock, held for
-the whole of a request on it, so concurrent requests on different trials do not
-serialize on each other.
+the whole of a request on it, so no request sees another's half-applied write. Every
+handler does its work synchronously on the event loop of the one uvicorn worker the
+image runs, so requests are processed one at a time, across all trials.
 
 ---
 

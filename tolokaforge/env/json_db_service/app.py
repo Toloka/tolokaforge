@@ -595,6 +595,11 @@ class SQLMirrorError(ValueError):
 
 
 def _sql_identifier(name: str) -> str:
+    """Quote ``name`` as a SQLite identifier: the only way a table or key name enters SQL.
+
+    Inside a double-quoted identifier only ``"`` is special, and doubling it makes
+    every character literal, so no name can end the identifier or add SQL.
+    """
     return '"' + name.replace('"', '""') + '"'
 
 
@@ -821,7 +826,9 @@ def _refuse_op(op_index: int, op: JSONPathOp, reason: str) -> NoReturn:
 
 
 _ADD_APPEND_SUFFIX = ".-"
+_ADD_APPEND_KEY = "-"
 _ADD_APPEND_EXAMPLE = f"$.tickets{_ADD_APPEND_SUFFIX}"
+_TRAILING_KEY = re.compile(r"""\.(?:[^.'"\[\]]+|'[^']*'|"[^"]*")$""")
 
 
 def _matches_below_root(data: dict[str, Any], op: JSONPathOp, op_index: int) -> list[Any]:
@@ -842,7 +849,7 @@ def _replace_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
     if not matches:
         _refuse_op(op_index, op, f"replace path '{op.path}' matches nothing")
     for match in matches:
-        match.full_path.update(data, op.value)
+        match.full_path.update(data, copy.deepcopy(op.value))
 
 
 def _add_target(op: JSONPathOp, op_index: int) -> tuple[JSONPath, str]:
@@ -852,7 +859,7 @@ def _add_target(op: JSONPathOp, op_index: int) -> tuple[JSONPath, str]:
     """
     if op.path.endswith(_ADD_APPEND_SUFFIX):
         parent_path = op.path.removesuffix(_ADD_APPEND_SUFFIX)
-        return _parse_jsonpath(parent_path, op.path, op_index), "-"
+        return _parse_jsonpath(parent_path, op.path, op_index), _ADD_APPEND_KEY
     expr = _parse_jsonpath(op.path, op.path, op_index)
     if isinstance(expr, Child) and isinstance(expr.right, Fields):
         fields = expr.right.fields
@@ -873,17 +880,38 @@ def _add_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
     if not parents:
         _refuse_op(op_index, op, f"add path '{op.path}' has a parent that matches nothing")
     for parent in parents:
-        if isinstance(parent.value, dict):
-            parent.value[key] = op.value
-        elif isinstance(parent.value, list):
-            parent.value.append(op.value)
-        else:
-            _refuse_op(
-                op_index,
-                op,
-                f"add path '{op.path}' has a parent holding a "
-                f"{type(parent.value).__name__}; add needs an object or a list there",
-            )
+        _add_to_parent(parent.value, key, op, op_index)
+
+
+def _add_to_parent(parent: Any, key: str, op: JSONPathOp, op_index: int) -> None:
+    """Set ``key`` on an object parent, or append for the ``-`` key on a list parent."""
+    appends = key == _ADD_APPEND_KEY
+    if isinstance(parent, dict) and not appends:
+        parent[key] = copy.deepcopy(op.value)
+    elif isinstance(parent, list) and appends:
+        parent.append(copy.deepcopy(op.value))
+    elif isinstance(parent, dict):
+        _refuse_op(
+            op_index,
+            op,
+            f"add path '{op.path}' appends, but its parent holds an object; "
+            "set a key on an object with a path ending in that key",
+        )
+    elif isinstance(parent, list):
+        append_path = _TRAILING_KEY.sub(_ADD_APPEND_SUFFIX, op.path)
+        _refuse_op(
+            op_index,
+            op,
+            f"add path '{op.path}' names key '{key}' on a list; "
+            f"append to a list with '{append_path}'",
+        )
+    else:
+        _refuse_op(
+            op_index,
+            op,
+            f"add path '{op.path}' has a parent holding a "
+            f"{type(parent).__name__}; add needs an object or a list there",
+        )
 
 
 def _remove_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
@@ -904,9 +932,10 @@ def _apply_jsonpath_op(data: dict[str, Any], op: JSONPathOp, op_index: int) -> N
     ``replace`` refuses a path that matches nothing. ``add`` takes the key its
     path ends in as JSONPath parses it, which must be a single key name, or a
     trailing ``.-``; every match of the parent must be a dict, which gains that
-    key, or a list, which has the value appended; a parent matching nothing is
-    refused. ``replace`` and ``remove`` refuse the root ``$``. ``remove`` of a
-    path that matches nothing is a no-op.
+    key, or, for ``.-`` only, a list, which has the value appended; a parent
+    matching nothing is refused. Every match gets its own copy of the value.
+    ``replace`` and ``remove`` refuse the root ``$``. ``remove`` of a path that
+    matches nothing is a no-op.
     """
     apply = _JSONPATH_OPS.get(op.op)
     if apply is None:
@@ -1374,11 +1403,8 @@ def _commit_mirrored(trial: TrialState, working: dict[str, Any]) -> None:
     trial.data = working
     try:
         trial.sync_json_to_sql()
-    except Exception as e:
-        trial.data = previous
-        trial.sync_json_to_sql()
-        if not isinstance(e, SQLMirrorError):
-            raise
+    except SQLMirrorError as e:
+        _restore_mirrored(trial, previous)
         raise HTTPException(
             status_code=400,
             detail=error_response(
@@ -1388,6 +1414,20 @@ def _commit_mirrored(trial: TrialState, working: dict[str, Any]) -> None:
                 {"table": e.table},
             ),
         ) from e
+    except Exception:
+        # Restores the previous state, then re-raises: never swallows.
+        _restore_mirrored(trial, previous)
+        raise
+
+
+def _restore_mirrored(trial: TrialState, previous: dict[str, Any]) -> None:
+    """Re-mirror ``previous``; a restore that fails chains to the fault being handled."""
+    trial.data = previous
+    try:
+        trial.sync_json_to_sql()
+    except Exception:
+        logger.exception("trial %s: restoring the SQL mirror failed", trial.trial_id)
+        raise
 
 
 @app.post("/trials/{trial_id}/update")
