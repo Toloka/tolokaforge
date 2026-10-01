@@ -211,6 +211,7 @@ class SearchPlane(str, Enum):
     """Built-in names `SearchConfig.plane` carries — constants, not a closed set."""
     TYPESENSE = "typesense"                       # The runner registers a search client
     RAG_SERVICE = "rag_service"                   # rag-service indexes the bundled corpus
+    BM25 = "bm25"                                 # Okapi BM25 in the runner process
 
 
 class SearchConfig(BaseModel):
@@ -410,8 +411,8 @@ class TaskDescription(BaseModel):
 ### `search`: the plane, the backend's config, the tool name
 
 - **`plane`** names what serves the corpus: a search backend registered under the
-  `tolokaforge.search_backends` entry-point group (ADR-0052) — `rag_service` is the
-  engine's own — or `typesense`, the plane the runner serves itself for an adapter
+  `tolokaforge.search_backends` entry-point group (ADR-0052) — `rag_service` and
+  `bm25` are the engine's own — or `typesense`, the plane the runner serves itself for an adapter
   that indexed the corpus host-side. `typesense` is reserved: no backend registers
   under it. The native adapter writes the task's `initial_state.rag.backend` here.
   The runner resolves the name at `RegisterTrial` and refuses the trial when nothing

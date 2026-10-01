@@ -305,6 +305,9 @@ Which plane serves the task's `documents_path`:
   corpus bundled in `tool_artifacts`, per trial. Set `enabled: true` alongside
   it: that flag means "this task needs rag-service", an older runner reads only
   it, and `enabled: false` switches the indexing off.
+- **`"bm25"`** — the engine's in-process Okapi BM25 backend indexes the bundled
+  corpus per trial in the runner, with no stack service; `search.backend_config`
+  carries its configuration. `enabled` stays `false`.
 - **any other name** — a search backend registered under the
   `tolokaforge.search_backends` entry-point group (ADR-0052). The runner builds
   the trial's index with it at `RegisterTrial`, binds the source-less tool named
