@@ -417,6 +417,31 @@ The backend landed as the table says, with these refinements, documented in
 - `_bundle_corpus_artifacts` accepts `.json` next to `.md` / `.txt`. No shipped pack
   had a `.json` file under its corpus directory, so no `tool_artifacts` moved.
 
+#### As built (change 2b)
+
+- **`SearchHit.title`** is `str | None = None`. `bm25` fills it from the document;
+  rag-service leaves it `None`. It crosses to the remote grader as
+  `SubstrateSearchHit.title`, an `optional string` (tag 5), so an absent title
+  reads back as `None`, never as an empty string. The judge's `search_kb` shows a
+  `Title:` line only for a hit that has one, so a rag-service judge's output does
+  not change.
+- **`judge_snippet_chars`** is a field of `JudgeCustomization`: a strict positive
+  integer or `null`, default `200`. It is not tri-state like its siblings: `null`
+  means whole documents, so a task undoes a project figure by writing `200`. The
+  dump leaves it out at its default, so every existing `TaskDescription` is
+  byte-identical and an older image accepts a task that does not set it.
+- **It reaches the judge as a keyword of `JudgeKind.evaluate`**, beside
+  `disable_knowledge_search`, from each of the four dispatch sites (runner
+  composite, grader composite dispatch, offline composite regrade, `judge_only`)
+  and from replay, which reads it from the bundle's recorded customization. This
+  is the first parameter added to the Protocol since it shipped; a downstream
+  kind must accept it. No kind outside the engine is registered in the tasks or
+  tools repositories.
+- **Left out:** the run-level `grader.judge` overrides (`JudgeGraderConfig`),
+  whose `None` means "inherit" and so cannot carry a `null` that means whole
+  documents; and the judge report's provenance fields, since replay already reads
+  the value from the recorded task.
+
 ### Snapshots
 
 We checked the claim that the default does not move with a prototype on
