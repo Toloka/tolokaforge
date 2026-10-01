@@ -26,9 +26,9 @@ pre-hash steps and the versioning policy of the record. The semantics:
     those whose id the initial state's table lacks; or ``all``) and rewrites every
     exact reference to them in the listed ``references`` fields. The new key is
     ``<table>:<canonical JSON of its fields>``, built from the record's ``key``
-    fields (``fee_credit_journal:{"account_id":"A1","delta":-5,"fee_id":"F2"}``) or
+    fields (``line_items:{"order_id":"O1","quantity":2,"sku":"S2"}``) or
     from its ``ordinal_by`` group plus ``#<ordinal>`` ranked by ``rank_by``
-    (``fee_credit_journal:{"account_id":"A1"}#2``); an integral float renders as
+    (``line_items:{"order_id":"O1"}#2``); an integral float renders as
     the int it equals. The re-keying is bijective or raises: a key two records
     share, a key a kept record already holds, a rank tie and a reference that
     already holds a new key are refused. A reference to no re-keyed record stays
