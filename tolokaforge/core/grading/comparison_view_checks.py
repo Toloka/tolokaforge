@@ -75,12 +75,23 @@ class ComparisonViewFindings:
 
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    unchecked: tuple[str, ...] = ()
+    """Checks not run, and why: the masked-field checks where the caller could not say
+    which unstable fields the task declares."""
 
 
 @dataclass
 class _Findings:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    unchecked: list[str] = field(default_factory=list)
+
+
+_UNREPORTED_UNSTABLE_FIELDS = (
+    "the seeded-tables layer reports no unstable fields for this task, so whether the "
+    "unstable filter drops a normalize_ids key or reference field is not checked here; "
+    "RegisterTrial checks it against the task description's own unstable fields"
+)
 
 
 def comparison_view_findings(
@@ -88,7 +99,7 @@ def comparison_view_findings(
     *,
     tables: Mapping[str, Any],
     id_fields: Mapping[str, str | list[str]],
-    unstable_fields: Iterable[str] = (),
+    unstable_fields: Iterable[str] | None = (),
     numeric_string_fields: Iterable[str] = (),
     auto_mask_clock_columns: bool = False,
     schemas: Mapping[str, Collection[str]] | None = None,
@@ -103,7 +114,8 @@ def comparison_view_findings(
         tables: The tables the task's initial state seeds.
         id_fields: ``state_checks.id_fields``.
         unstable_fields: The task's unstable fields as dotted ``table.field`` paths,
-            table names as declared.
+            table names as declared. ``None`` is a caller that cannot say: the checks
+            against them are reported in ``unchecked`` rather than run.
         numeric_string_fields: ``state_checks.numeric_string_fields``.
         auto_mask_clock_columns: ``state_checks.auto_mask_clock_columns``.
         schemas: Declared field names per table, for the tasks that declare a schema;
@@ -118,7 +130,7 @@ def comparison_view_findings(
             list counts too.
     """
     found = _Findings()
-    masked = _masked_columns(view, tables, id_fields, unstable_fields)
+    masked = _masked_columns(view, tables, id_fields, unstable_fields or ())
     folded = frozenset(numeric_string_fields)
     for index, rule in enumerate(view.rules):
         where = f"{_BLOCK}.rules[{index}] ({rule.kind})"
@@ -129,19 +141,18 @@ def comparison_view_findings(
         if isinstance(rule, NormalizeIdsConfig):
             _check_key_fields(found, where, rule, masked, folded, auto_mask_clock_columns)
             _check_references(found, where, rule, masked, auto_mask_clock_columns)
-    for rekeyed in _rekeyed_fields(view, id_fields):
-        if auto_mask_clock_columns and rekeyed.field in AUTO_MASKED_CLOCK_COLUMNS:
-            found.errors.append(
-                f"{_BLOCK}: normalize_ids re-keys {rekeyed.dotted}, a column "
-                f"auto_mask_clock_columns drops; a re-keyed id must reach the hash, so name "
-                f"the table's id field differently in state_checks.id_fields or turn the "
-                f"clock mask off"
-            )
+            _check_rekeyed_id_field(found, where, rule, id_fields, auto_mask_clock_columns)
+    if unstable_fields is None and any(isinstance(r, NormalizeIdsConfig) for r in view.rules):
+        found.unchecked.append(_UNREPORTED_UNSTABLE_FIELDS)
     if not hash_enabled:
         found.warnings.append(
             f"{_BLOCK} is declared but state_checks.hash is not enabled, so no hash reads the view"
         )
-    return ComparisonViewFindings(errors=tuple(found.errors), warnings=tuple(found.warnings))
+    return ComparisonViewFindings(
+        errors=tuple(found.errors),
+        warnings=tuple(found.warnings),
+        unchecked=tuple(found.unchecked),
+    )
 
 
 def check_comparison_view(view: ComparisonViewConfig, *, context: str, **task: Any) -> str | None:
@@ -375,6 +386,29 @@ def _check_key_fields(
                 f"{where} builds its key from {column}, which numeric_string_fields folds; "
                 f"the key reads the value before the fold, so two values the hash equates "
                 f"would key two records apart"
+            )
+
+
+def _check_rekeyed_id_field(
+    found: _Findings,
+    where: str,
+    rule: NormalizeIdsConfig,
+    id_fields: Mapping[str, str | list[str]],
+    clock_mask: bool,
+) -> None:
+    """A re-keyed id must reach the hash, and the clock mask after the view would drop it."""
+    if not clock_mask:
+        return
+    try:
+        rekeyed = rule.rekeyed_fields(id_fields)
+    except ComparisonViewError:
+        return  # refused by the rule's own id_field_errors
+    for field_ in rekeyed:
+        if field_.field in AUTO_MASKED_CLOCK_COLUMNS:
+            found.errors.append(
+                f"{where} re-keys {field_.dotted}, a column auto_mask_clock_columns drops; a "
+                f"re-keyed id must reach the hash, so name the table's id field differently in "
+                f"state_checks.id_fields or turn the clock mask off"
             )
 
 
