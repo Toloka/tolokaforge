@@ -17,15 +17,15 @@ rag-service registers there as ``rag_service``, like any third-party backend.
 
 ``build_index`` and ``search`` are coroutines the runner awaits on its own event
 loop. A factory is also built orchestrator-side from a *trial-less* context
-(``trial_id`` ``None``, no clients) to read ``tool_parameters()`` and
+(``trial_id`` ``None``, no stack-service handles) to read ``tool_parameters()`` and
 ``stack_service``, which may depend on ``backend_config``; so a factory does no
 trial work, and ``build_index`` refuses that context.
 
 A backend that declares a ``stack_service`` reads the runner's handle on it from
-``stack_service_clients`` under that name — the runner's one client, shared with
-the judge's search — typed ``object`` so this module names no service. It
-imports only the standard library and the judge's search contract, so the runner
-subset ships it light.
+``stack_services``, the declared, versioned surface of
+:mod:`tolokaforge.core.search.stack_services` — the runner's one client per service,
+shared with the judge's search. This module imports only the standard library, that
+surface and the judge's search contract, so the runner subset ships it light.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
+from tolokaforge.core.search.stack_services import RAG_SERVICE_STACK_SERVICE, StackServices
 
 __all__ = [
     "RAG_SERVICE_STACK_SERVICE",
@@ -48,17 +49,8 @@ __all__ = [
     "SearchIndex",
     "SearchIndexBuildError",
     "SearchOutcome",
+    "StackServices",
 ]
-
-
-RAG_SERVICE_STACK_SERVICE = "rag_service"
-"""The rag-service stack service, as a backend names it in ``stack_service``.
-
-The orchestrator starts ``full_stack`` for a task whose backend declares it, the
-runner hands such a backend its rag-service client under this key, and the wire's
-``search.enabled`` says whether a task's backend declares it. It is a stack service,
-not a backend name: the ``rag_service`` backend happens to share the spelling.
-"""
 
 
 @dataclass(frozen=True)
@@ -111,11 +103,13 @@ class SearchBackend(Protocol):
     """A retrieval implementation a task selects by name (``search.plane``).
 
     ``name`` is the name the backend is registered under. ``stack_service`` names
-    the stack service the backend needs, or is ``None`` for a backend that runs
-    in the runner process alone: the orchestrator starts ``full_stack`` for a task
-    whose backend declares ``"rag_service"``, and the runner hands the backend its
-    handle on that service through
-    :attr:`SearchBackendContext.stack_service_clients`.
+    the stack service the backend needs — one of
+    :data:`~tolokaforge.core.search.stack_services.DECLARED_STACK_SERVICES` — or is
+    ``None`` for a backend that runs in the runner process alone. The orchestrator
+    starts ``full_stack`` for a task whose backend declares ``"rag_service"``, and
+    the runner builds the trial's index only when it reaches the declared service,
+    whose handle the backend reads from :attr:`SearchBackendContext.stack_services`.
+    A name outside the declared ones is refused at load and at ``RegisterTrial``.
     """
 
     name: str
@@ -166,12 +160,13 @@ class SearchBackendContext:
     ``tool_description`` is ``None`` at ``RegisterTrial`` when no actor's tool
     set carries the declared tool.
 
-    ``trial_id``, ``domain_name`` and ``stack_service_clients`` are what the
-    runner knows at ``RegisterTrial``: the trial, the knowledge base's
-    ``search.domain_name``, and the runner's handle on each stack service it
-    reaches, keyed by the ``stack_service`` name a backend declares. A context
-    built orchestrator-side to read what a backend declares leaves ``trial_id``
-    ``None`` and ``stack_service_clients`` empty; see the module docstring.
+    ``trial_id``, ``domain_name`` and ``stack_services`` are what the runner knows
+    at ``RegisterTrial``: the trial, the knowledge base's ``search.domain_name``,
+    and the runner's handle on each declared stack service it reaches
+    (:class:`~tolokaforge.core.search.stack_services.StackServices`; a backend
+    reads one with ``stack_services.get(RAG_SERVICE)``). A context built
+    orchestrator-side to read what a backend declares leaves ``trial_id`` ``None``
+    and ``stack_services`` empty; see the module docstring.
     """
 
     backend_config: Mapping[str, Any]
@@ -180,17 +175,20 @@ class SearchBackendContext:
     logger: logging.Logger
     trial_id: str | None = None
     domain_name: str | None = None
-    stack_service_clients: Mapping[str, object] = field(default_factory=dict)
+    stack_services: StackServices = field(default_factory=StackServices)
 
     def __post_init__(self) -> None:
         # The task's config is graded and bundled as the task declared it, so a
         # backend reads a read-only deep copy and cannot change what it was given.
-        # The clients are the runner's own handles: shared, never copied.
+        # The handles are the runner's own: shared, never copied.
         frozen = MappingProxyType(copy.deepcopy(dict(self.backend_config)))
         object.__setattr__(self, "backend_config", frozen)
-        object.__setattr__(
-            self, "stack_service_clients", MappingProxyType(dict(self.stack_service_clients))
-        )
+        if not isinstance(self.stack_services, StackServices):
+            raise TypeError(
+                f"stack_services is {type(self.stack_services).__name__}; a backend reads "
+                "the runner's handles from a StackServices, the declared stack-service "
+                "surface (tolokaforge.core.search.stack_services)"
+            )
 
 
 SearchBackendFactory = Callable[[SearchBackendContext], SearchBackend]

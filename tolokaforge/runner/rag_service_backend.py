@@ -8,9 +8,7 @@ task gets when ``initial_state.rag.backend`` is left at its default.
 The behaviour is the one the runner had before the seam, moved here unchanged:
 
 * :meth:`RagServiceBackend.build_index` indexes the corpus into rag-service
-  through the runner's :class:`~tolokaforge.runner.rag_client.RAGServiceClient`,
-  refusing a trial on a runner that has no client and a corpus that loads no
-  documents;
+  through the runner's handle on it, refusing a corpus that loads no documents;
 * :meth:`RagServiceSearchIndex.search` answers the agent's call with the same
   JSON — ``top_k`` 5 and ``alpha`` 0.5 unless the call names them, ``limit`` read
   as an alias of ``top_k``, ``{"error": "Query is required", "results": []}``
@@ -20,9 +18,10 @@ The behaviour is the one the runner had before the seam, moved here unchanged:
   the same client and trial, so it searches the index the agent searched.
 
 It declares ``stack_service = RAG_SERVICE_STACK_SERVICE``: the orchestrator starts
-``full_stack`` for its tasks, and the runner hands it its client under that key
-in :attr:`~tolokaforge.core.search.backend.SearchBackendContext.stack_service_clients`.
-It takes no ``backend_config``.
+``full_stack`` for its tasks, and the runner builds its index only when it reaches
+rag-service, whose handle (:class:`~tolokaforge.core.search.stack_services.RagServiceHandle`)
+it reads with ``context.stack_services.get(RAG_SERVICE)``. It takes no
+``backend_config``.
 """
 
 from __future__ import annotations
@@ -32,18 +31,22 @@ import json
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch, SearchHit
 from tolokaforge.core.search.backend import (
-    RAG_SERVICE_STACK_SERVICE,
     SearchBackendContext,
     SearchIndexBuildError,
     SearchOutcome,
 )
+from tolokaforge.core.search.stack_services import (
+    RAG_SERVICE,
+    RAG_SERVICE_STACK_SERVICE,
+    RagServiceHandle,
+    StackServiceUnavailableError,
+)
 from tolokaforge.runner.models import SearchPlane
 from tolokaforge.runner.rag_client import (
-    RAGServiceClient,
     RAGServiceError,
     SearchResponse,
     load_documents_from_directory,
@@ -83,10 +86,10 @@ _DEFAULT_ALPHA = 0.5
 
 
 class RagServiceSearchIndex:
-    """One trial's rag-service index, searched over the runner's client."""
+    """One trial's rag-service index, searched over the runner's handle on rag-service."""
 
     def __init__(
-        self, *, client: RAGServiceClient, trial_id: str, context: SearchBackendContext
+        self, *, client: RagServiceHandle, trial_id: str, context: SearchBackendContext
     ) -> None:
         self._client = client
         self._trial_id = trial_id
@@ -136,7 +139,7 @@ class RagServiceSearchIndex:
         return outcome
 
     def knowledge_search(self) -> RagServiceKnowledgeSearch:
-        """The judge's search over this trial's index, through the same client."""
+        """The judge's search over this trial's index, through the same handle."""
         return RagServiceKnowledgeSearch(self._client, self._trial_id)
 
     def _log_exit(self, start_time: float, *, success: bool) -> None:
@@ -189,11 +192,11 @@ class RagServiceBackend:
         """Index the trial's corpus into rag-service (FAIL FAST).
 
         Raises:
-            SearchIndexBuildError: the runner holds no rag-service client — the
-                task needs ``full_stack`` and ran on the core stack — or indexing
-                failed, which includes a corpus that is unset or loads no
-                documents: a declared corpus that indexes empty is a bundling bug,
-                not an agent failure.
+            SearchIndexBuildError: the context holds no rag-service handle (the
+                runner refuses such a trial before it builds, so this reaches a
+                caller that builds outside the runner), or indexing failed, which
+                includes a corpus that is unset or loads no documents: a declared
+                corpus that indexes empty is a bundling bug, not an agent failure.
         """
         trial_id = self._context.trial_id
         if trial_id is None:
@@ -201,18 +204,18 @@ class RagServiceBackend:
                 f"search backend {self.name!r} was asked to build an index from a trial-less "
                 "context; only the runner builds one, at RegisterTrial"
             )
-        client = self._context.stack_service_clients.get(RAG_SERVICE_STACK_SERVICE)
-        if client is None:
-            raise SearchIndexBuildError("Search enabled but RAG service not configured")
-        rag_client = cast(RAGServiceClient, client)
         try:
-            await self._index_corpus(rag_client, trial_id, corpus_dir)
+            client = self._context.stack_services.get(RAG_SERVICE)
+        except StackServiceUnavailableError as e:
+            raise SearchIndexBuildError(f"Trial {trial_id}: {e}") from e
+        try:
+            await self._index_corpus(client, trial_id, corpus_dir)
         except RAGServiceError as e:
             raise SearchIndexBuildError(f"RAG indexing failed: {e}") from e
-        return RagServiceSearchIndex(client=rag_client, trial_id=trial_id, context=self._context)
+        return RagServiceSearchIndex(client=client, trial_id=trial_id, context=self._context)
 
     async def _index_corpus(
-        self, client: RAGServiceClient, trial_id: str, corpus_dir: Path | None
+        self, client: RagServiceHandle, trial_id: str, corpus_dir: Path | None
     ) -> None:
         if corpus_dir is None:
             raise RAGServiceError(

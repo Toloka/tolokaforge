@@ -101,6 +101,12 @@ from tolokaforge.core.plugin_registry import (
     load_state_check_backend,
     load_transcript_rule_matcher,
 )
+from tolokaforge.core.search.stack_services import (
+    StackServices,
+    StackServiceUnavailableError,
+    UndeclaredStackServiceError,
+    declared_stack_service,
+)
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
@@ -382,6 +388,29 @@ def _registry_search_backend_name(search_config: SearchConfig) -> str | None:
     if plane is not None and plane != SearchPlane.TYPESENSE:
         return plane
     return SearchPlane.RAG_SERVICE.value if search_config.enabled else None
+
+
+def _refuse_an_unreached_stack_service(
+    trial_id: str, name: str, backend: SearchBackend, stack_services: StackServices
+) -> None:
+    """Refuse the trial unless this runner reaches the stack service its backend declares.
+
+    The declaration is the contract: a backend that names a stack service gets its
+    index built only on a runner holding that service's handle, so no backend words
+    the refusal of its own.
+
+    Raises:
+        SearchIndexBuildError: the declared name is not a declared stack service, or
+            this runner does not reach it.
+    """
+    if backend.stack_service is None:
+        return
+    try:
+        stack_services.get(declared_stack_service(backend.stack_service))
+    except (UndeclaredStackServiceError, StackServiceUnavailableError) as e:
+        raise SearchIndexBuildError(
+            f"Trial {trial_id}: search backend {name!r} cannot build the trial's index: {e}"
+        ) from e
 
 
 def _declared_tool_description(task_description: TaskDescription, tool_name: str) -> str | None:
@@ -3538,8 +3567,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Raises:
             SearchIndexBuildError: the name is not registered, the backend refused
-                the trial, or building the index failed — each the refusal
-                ``RegisterTrial`` returns.
+                the trial, it declares a stack service that is not declared or that
+                this runner does not reach, or building the index failed — each the
+                refusal ``RegisterTrial`` returns.
         """
         search_config = task_description.search
         name = _registry_search_backend_name(search_config)
@@ -3556,7 +3586,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger=logging.getLogger(f"tolokaforge.search_backends.{name}"),
             trial_id=trial_id,
             domain_name=search_config.domain_name,
-            stack_service_clients=self._stack_service_clients(),
+            stack_services=self._stack_services(),
         )
         try:
             backend = factory(context)
@@ -3567,6 +3597,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             ) from e
         if backend.stack_service == RAG_SERVICE_STACK_SERVICE and not search_config.enabled:
             return None
+        _refuse_an_unreached_stack_service(trial_id, name, backend, context.stack_services)
         corpus_dir = _resolve_corpus_dir(trial_id, search_config.documents_path, artifacts_dir)
         index = self._run_backend_build(trial_id, name, backend, corpus_dir)
         logger.info(f"RegisterTrial: {trial_id} - search index built by backend {name!r}")
@@ -3598,8 +3629,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"{type(e).__name__}: {e}"
             ) from e
 
-    def _stack_service_clients(self) -> dict[str, object]:
-        """This runner's handle on each stack service a backend may declare."""
-        if self.rag_client is None:
-            return {}
-        return {RAG_SERVICE_STACK_SERVICE: self.rag_client}
+    def _stack_services(self) -> StackServices:
+        """This runner's handle on each declared stack service it reaches."""
+        return StackServices(rag_service=self.rag_client)

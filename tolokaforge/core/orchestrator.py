@@ -115,6 +115,7 @@ from tolokaforge.core.run_display_events import (
 )
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
+from tolokaforge.core.search.stack_services import UndeclaredStackServiceError
 from tolokaforge.core.trial import (
     DEFAULT_TOOL_TIMEOUT_S,
     EnvEndpoints,
@@ -2460,8 +2461,9 @@ class Orchestrator:
         context the adapter and the stack rule build it from, so an unregistered
         name (a typo, a package not installed, or an editable install whose
         ``.dist-info`` predates the ``tolokaforge.search_backends`` group) — or a
-        backend refusing the task's ``backend_config`` — is one refusal naming the
-        task and the backend, not a bare error out of the stack rule or one refused
+        backend refusing the task's ``backend_config``, or one declaring a stack
+        service the engine does not declare — is one refusal naming the task and the
+        backend, not a bare error out of the stack rule or one refused
         ``RegisterTrial`` per trial. ``typesense`` is refused too: it is the plane an
         adapter declares for a corpus it indexed host-side, not a backend a task
         selects.
@@ -2479,6 +2481,11 @@ class Orchestrator:
                 declared_search_backend(search)
             except RegistryError as exc:
                 raise RuntimeError(f"task {task.task_id!r}: {where}: {exc}") from exc
+            except UndeclaredStackServiceError as exc:
+                raise RuntimeError(
+                    f"task {task.task_id!r}: {where}: search backend {search.backend!r} needs "
+                    f"a stack service this engine does not declare: {exc}"
+                ) from exc
             except Exception as exc:
                 raise RuntimeError(
                     f"task {task.task_id!r}: {where}: search backend {search.backend!r} "

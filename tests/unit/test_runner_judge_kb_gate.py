@@ -22,6 +22,7 @@ import pytest
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch
 from tolokaforge.core.search.backend import SearchBackendContext
+from tolokaforge.core.search.stack_services import StackServices
 from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.rag_service_backend import RagServiceSearchIndex
@@ -44,7 +45,7 @@ def _trial_index(rag_client: RAGServiceClient, trial_id: str) -> RagServiceSearc
         tool_description="Search the knowledge base.",
         logger=logging.getLogger("test.judge_kb_gate"),
         trial_id=trial_id,
-        stack_service_clients={"rag_service": rag_client},
+        stack_services=StackServices(rag_service=rag_client),
     )
     return RagServiceSearchIndex(client=rag_client, trial_id=trial_id, context=context)
 

@@ -36,6 +36,7 @@ from tolokaforge.core.search.backend import (
     SearchIndex,
     SearchOutcome,
 )
+from tolokaforge.core.search.stack_services import StackServices
 from tolokaforge.runner.rag_service_backend import RagServiceBackend
 from tolokaforge.testing.search_backends import (
     InMemorySearchBackend,
@@ -89,7 +90,7 @@ class TestRagServiceConformance(SearchBackendConformanceSuite):
 
     @pytest.fixture(name="trial_context")
     def trial_context_fixture(self, rag_service: FakeRagService) -> SearchBackendContext:
-        return trial_context(stack_service_clients={"rag_service": rag_service.client()})
+        return trial_context(stack_services=StackServices(rag_service=rag_service.client()))
 
     @pytest.fixture
     def make_searches_fail(self, rag_service: FakeRagService) -> Any:
@@ -236,6 +237,11 @@ _VECTORS = [
         {"renders_failed_searches_as_empty": True},
         "test_a_failed_search_raises_rather_than_rendering_results",
         id="failed-search-rendered-as-empty",
+    ),
+    pytest.param(
+        {"declares_an_undeclared_stack_service": True},
+        "test_stack_service_is_a_declared_stack_service",
+        id="undeclared-stack-service",
     ),
 ]
 
