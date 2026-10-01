@@ -304,7 +304,8 @@ entry, and carries every runner-reachable seam group verbatim from
 `tolokaforge.judge_model_providers`, `tolokaforge.rubric_evaluators`,
 `tolokaforge.transcript_rule_matchers`, `tolokaforge.state_check_backends`,
 `tolokaforge.trace_check_operators`, `tolokaforge.grading_methods`,
-`tolokaforge.grader_kinds`, and `tolokaforge.judge_kinds`. Without these, the runner boots
+`tolokaforge.grader_kinds`, `tolokaforge.judge_kinds`, and `tolokaforge.comparison_view_rules`
+(the trial spec's `state_checks.comparison_view` resolves its rules at `RegisterTrial`). Without these, the runner boots
 then crashes at first seam load with "Unknown implementation …". The
 canonical enumeration lives at
 `scripts/hatch/hatch_runner_subset_builder.py::RUNNER_REACHABLE_ENTRY_POINT_GROUPS`

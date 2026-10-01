@@ -821,7 +821,8 @@ def _registry() -> ModuleType:
     """:mod:`tolokaforge.core.plugin_registry`, imported where a kind resolves.
 
     Not at module level: the registry imports every seam's module and the engine's
-    config models, which importing this module must not load.
+    config models, which import this module themselves, so a module-level import
+    would close a cycle.
     """
     from tolokaforge.core import plugin_registry
 
