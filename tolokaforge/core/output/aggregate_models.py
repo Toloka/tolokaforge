@@ -58,6 +58,8 @@ Two wire-format invariants pinned by the canonical tests:
 from __future__ import annotations
 
 from enum import Enum
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
@@ -81,6 +83,22 @@ __all__ = [
 ]
 
 AGGREGATE_SCHEMA_VERSION = 4
+
+
+def _engine_version() -> str:
+    """The installed tolokaforge version, or ``"unknown"`` off-distribution.
+
+    Read from distribution metadata rather than through ``tolokaforge``'s own
+    namespace: this module is imported during that package's initialisation,
+    and the metadata lookup is the same source ``tolokaforge.__version__``
+    uses, so the two cannot disagree.
+    """
+    try:
+        return _pkg_version("tolokaforge")
+    except PackageNotFoundError:  # pragma: no cover - source checkout, not installed
+        return "unknown"
+
+
 """The ``aggregate.json`` wire generation.
 
 Rates are over ``measured_trials`` — the trials that measured the agent,
@@ -410,6 +428,16 @@ class RunAggregate(AggregateMetrics):
     """
 
     schema_version: int = AGGREGATE_SCHEMA_VERSION
+
+    tolokaforge_version: str = Field(default_factory=lambda: _engine_version())
+    """The engine version that produced this run.
+
+    A benchmark number is only reproducible against the code that made it, and
+    the version was the one component of a run the artifacts did not record —
+    reconstructing it afterwards means reading release dates and guessing.
+    Read from the installed distribution metadata, so it is the version that
+    actually ran rather than one a config declared.
+    """
 
     captured_service_logs: CapturedServiceLogsRollup | None = None
 

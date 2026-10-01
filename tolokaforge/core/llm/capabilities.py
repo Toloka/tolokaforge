@@ -126,6 +126,22 @@ class ModelCapabilities:
     every resampled generation because the trial paid for each call.
     """
 
+    reasoning_stall_retry_count: int = 1
+    """Resample budget for an actionless turn the model deliberated before.
+
+    The actionless shape of :attr:`empty_retry_count`, but with reasoning
+    tokens billed or ``finish_reason == "length"`` — whether the model was cut
+    off mid-thought at the output ceiling or stopped of its own accord after a
+    short deliberation. On the ``(N + 1)``-th such result the trial terminates
+    with ``TerminationReason.REASONING_WITHOUT_ACTION``.
+
+    The default is ``1`` rather than ``0`` because, unlike an empty completion,
+    the evidence is positive: the provider billed output tokens, so there is a
+    next sample worth drawing. One resample costs a fraction of the trial it
+    saves — the whole trajectory's spend is forfeit when a stall ends a trial —
+    and a model that never stalls never pays it.
+    """
+
     output_length_retry_count: int = 0
     """Resample budget for a content-carrying max-tokens truncation.
 

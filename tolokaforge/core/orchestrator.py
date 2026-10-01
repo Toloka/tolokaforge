@@ -79,7 +79,7 @@ from tolokaforge.core.models import (
     require_user_simulator_config,
 )
 from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
-from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
+from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
@@ -4059,6 +4059,7 @@ class Orchestrator:
             )
 
         aggregate["schema_version"] = AGGREGATE_SCHEMA_VERSION
+        aggregate["tolokaforge_version"] = _engine_version()
         aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
             by_alias=True, mode="json"
         )
@@ -4081,10 +4082,20 @@ class Orchestrator:
             failure_attribution_payload,
         )
 
-        # Log summary
+        # Log summary. ``measured_trials`` and the aborts that reduced it ride
+        # beside the rates they are the denominator for: a run reporting 1.0
+        # over four of five trials and a run reporting 1.0 over five of five
+        # read identically without them, and the difference is the whole
+        # question of whether the number describes the model.
         self.logger.info(
             "Aggregate Results",
             total_trials=aggregate["total_trials"],
+            measured_trials=aggregate.get("measured_trials"),
+            infrastructure_aborts={
+                reason: count
+                for reason, count in (aggregate.get("infrastructure_aborts") or {}).items()
+                if count
+            },
             total_tasks=aggregate["total_tasks"],
             success_rate_micro=aggregate.get("success_rate_micro"),
             avg_score_micro=aggregate.get("avg_score_micro"),
