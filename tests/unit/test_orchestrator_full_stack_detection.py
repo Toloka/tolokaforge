@@ -97,6 +97,27 @@ def test_a_rag_block_that_searches_nothing_does_not_trigger_full_stack():
     assert _tasks_need_full_stack([task]) is False
 
 
+class TestTheBuiltInBm25BackendKeepsTheCoreStack:
+    """``bm25`` runs in the runner process and declares no stack service."""
+
+    def test_its_corpus_and_search_kb_tool_keep_the_core_stack(self):
+        rag = {"corpus_dir": "kb", "backend": "bm25"}
+        assert _tasks_need_full_stack([_task(["search_kb"], initial_state={"rag": rag})]) is False
+
+    def test_a_configured_bm25_task_keeps_the_core_stack(self):
+        rag = {
+            "corpus_dir": "kb",
+            "backend": "bm25",
+            "backend_config": {"render": {"kind": "text"}, "ranking": {"top_k": 3}},
+            "tool": {"name": "search_docs"},
+        }
+        assert _tasks_need_full_stack([_task(["search_docs"], initial_state={"rag": rag})]) is False
+
+    def test_a_rag_service_task_beside_it_still_needs_the_full_stack(self):
+        bm25 = _task(["search_kb"], initial_state={"rag": {"backend": "bm25", "corpus_dir": "kb"}})
+        assert _tasks_need_full_stack([bm25, _task(["search_kb"])]) is True
+
+
 class TestABackendWithoutAStackService:
     """The backend's declaration selects the stack; a tool named ``search_kb`` does not."""
 
