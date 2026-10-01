@@ -41,6 +41,7 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
+from tolokaforge.core.grading.comparison_view_checks import check_wire_comparison_view
 from tolokaforge.core.grading.composite_fold import CompositeFold
 from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
@@ -1138,6 +1139,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if err:
             logger.error(err)
             return pb2.RegisterTrialResponse(success=False, error=err)
+        # The same belt-and-suspenders for a declared comparison view: refused here, before
+        # the trial is paid for, rather than at GradeTrial.
+        if state_checks is not None:
+            err = check_wire_comparison_view(
+                state_checks, initial_state, context=f"RegisterTrial: {trial_id}"
+            )
+            if err:
+                logger.error(err)
+                return pb2.RegisterTrialResponse(success=False, error=err)
         try:
             tool_factory = ToolFactory(
                 self.db_client,

@@ -3,6 +3,7 @@
 import base64
 import glob as glob_module
 import json
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -38,6 +39,10 @@ from tolokaforge.adapters.native_harness_synthesis import (
     materialise_harness_environment,
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
+from tolokaforge.core.grading.comparison_view_checks import (
+    check_authored_comparison_view,
+    check_wire_comparison_view,
+)
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
@@ -242,6 +247,15 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             )
         )
     return schemas
+
+
+def _declared_unstable_paths(task_dir: Path) -> tuple[str, ...]:
+    """The task's ``fixtures/unstable_fields.json`` as dotted paths, as the run path reads it."""
+    from tolokaforge.runner.models import read_unstable_field_specs
+
+    return tuple(
+        f"{spec.table_name}.{spec.field_name}" for spec in read_unstable_field_specs(task_dir)
+    )
 
 
 class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
@@ -583,12 +597,22 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
             )
-            return construct_config(
+            config = construct_config(
                 GradingConfig,
                 {**grading_data, "combine": combine},
                 source=grading_path,
                 section="grading",
             )
+            if config.state_checks is not None and config.state_checks.comparison_view:
+                err = check_authored_comparison_view(
+                    config.state_checks,
+                    tables=seeded_tables_from_task(task, task_dir),
+                    unstable_fields=_declared_unstable_paths(task_dir),
+                    context=task_id,
+                )
+                if err:
+                    raise ValueError(err)
+            return config
 
         raise ValueError(f"Grading config not found: {grading_path}")
 
@@ -636,9 +660,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         The reading a declared ``id_fields`` primary key is held against — the same
         one the run path builds when it turns the task description into the trial's
         starting state — so a key naming a table the task does not seed is caught
-        before the trial is paid for rather than raising during grading.
+        before the trial is paid for rather than raising during grading. The unstable
+        fields ``fixtures/unstable_fields.json`` declares ride along, read the way the
+        run path reads them, for the rule holding a comparison view to the masks.
         """
-        return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
+        return SeededTablesLayer(
+            tables=seeded_tables_from_task(task, task_dir),
+            unstable_fields=partial(_declared_unstable_paths, task_dir),
+        )
 
     @classmethod
     def grading_source(cls, task: TaskConfig, task_dir: Path) -> GradingSource:
@@ -1042,6 +1071,10 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             unstable_fields=read_unstable_field_specs(task_dir),
             filesystem=initial_filesystem,
         )
+        if state_checks is not None:
+            err = check_wire_comparison_view(state_checks, initial_state, context=task_id)
+            if err:
+                raise ValueError(err)
 
         # Build source files for debugging
         source_files = {
