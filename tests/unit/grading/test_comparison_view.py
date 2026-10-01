@@ -81,6 +81,15 @@ _DRAFT_PROPOSALS = {
         "id": {"starts_with": "WP-"},
     },
 }
+_JOURNAL_KEYS = {
+    "kind": "normalize_ids",
+    "table": "fee_credit_journal",
+    "key": ["account_id", "fee_id", "delta"],
+    "references": [
+        {"table": "notices", "field": "entry"},
+        {"table": "payments", "field": "lines.journal_id"},
+    ],
+}
 _BOOKKEEPING = {
     "kind": "exclude_tables",
     "tables": ["agent_discoverable_tools", "user_discoverable_tools"],
@@ -417,9 +426,9 @@ def test_the_config_sha_is_pinned() -> None:
 
     Per rule it hashes the kind, the rule's ``VERSION`` and the non-default settings.
     """
-    view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _BOOKKEEPING)
+    view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _JOURNAL_KEYS, _BOOKKEEPING)
     assert view.config_sha256() == (
-        "777ab1ab86b84ea2d911f659c0f1b8f20723a01cb25b77975e3bb01b74d66ce2"
+        "1cd70f872024238566d74b839b6f30cefe9533924d2a6cc50d2d30f847e05147"
     )
 
 
@@ -441,6 +450,24 @@ def test_a_setting_spelled_out_at_its_default_hashes_like_one_left_out() -> None
     """So a new optional field whose default keeps behaviour keeps every existing sha."""
     spelled_out = {**_ZERO_ALLOCATIONS, "unless_referenced_by": [], "reason": None}
     assert _view(spelled_out).config_sha256() == _view(_ZERO_ALLOCATIONS).config_sha256()
+
+
+def test_an_order_without_effect_does_not_change_the_sha() -> None:
+    reordered = {
+        **_JOURNAL_KEYS,
+        "key": ["delta", "account_id", "fee_id"],
+        "references": list(reversed(_JOURNAL_KEYS["references"])),
+    }
+    grouped = {"kind": "normalize_ids", "table": "t", "ordinal_by": ["a", "b"], "rank_by": ["c"]}
+    regrouped = {**grouped, "ordinal_by": ["b", "a"]}
+    assert _view(reordered).config_sha256() == _view(_JOURNAL_KEYS).config_sha256()
+    assert _view(regrouped).config_sha256() == _view(grouped).config_sha256()
+
+
+def test_the_order_of_rank_by_changes_the_sha() -> None:
+    ranked = {"kind": "normalize_ids", "table": "t", "rank_by": ["day", "seq"]}
+    reranked = {**ranked, "rank_by": ["seq", "day"]}
+    assert _view(reranked).config_sha256() != _view(ranked).config_sha256()
 
 
 def test_the_reason_is_not_hashed() -> None:
