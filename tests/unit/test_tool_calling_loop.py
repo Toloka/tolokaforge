@@ -382,9 +382,11 @@ def test_reasoning_only_truncation_is_not_an_empty_completion():
         ]
     )
     messages: list[Message] = []
-    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
-        "sys", messages, time.time()
-    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
+    ).run("sys", messages, time.time())
 
     assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
     assert outcome.status == TrialStatus.FAILED
@@ -392,8 +394,12 @@ def test_reasoning_only_truncation_is_not_an_empty_completion():
     assert "reasoning" in messages[-1].content
 
 
-def test_reasoning_only_truncation_resamples_under_the_length_budget():
-    """It gets the resample the content-carrying truncation already gets."""
+def test_reasoning_only_truncation_resamples_by_default():
+    """Out of the box, with no preset opt-in: the stall costs a sample, not the trial.
+
+    The budget defaults to 1 because the evidence is positive — the provider
+    billed output tokens, so a next sample is worth drawing. A model that
+    never stalls never pays for it."""
     client = _ScriptedClient(
         [
             GenerationResult(
@@ -409,7 +415,7 @@ def test_reasoning_only_truncation_resamples_under_the_length_budget():
     outcome = _loop(
         client,
         should_terminate=_never_terminate,
-        config=LoopConfig(max_turns=1, episode_timeout_s=10_000, output_length_retry_count=1),
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
     ).run("sys", messages, time.time())
 
     assert client.calls == 2
@@ -434,7 +440,11 @@ def test_reasoning_only_truncation_carries_its_token_counts():
             )
         ]
     )
-    loop = _loop(client, should_terminate=_never_terminate, max_turns=5)
+    loop = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
+    )
     loop.run("sys", [], time.time())
 
     evidence = loop._excluding_reason_evidence
@@ -474,9 +484,11 @@ def test_reasoning_only_without_a_length_signal_is_still_a_stall():
             )
         ]
     )
-    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
-        "sys", [], time.time()
-    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
+    ).run("sys", [], time.time())
 
     assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
 
@@ -969,6 +981,7 @@ def test_length_finish_reason_with_empty_content_takes_the_stall_path():
             episode_timeout_s=10_000,
             empty_retry_count=0,
             output_length_retry_count=0,
+            reasoning_stall_retry_count=0,
         ),
     ).run("sys", messages, time.time())
 

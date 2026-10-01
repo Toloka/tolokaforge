@@ -904,16 +904,6 @@ presets:
   #
   # ``reasoning_codec: gemini`` matches the shared preset (decodes the Flash
   # ``reasoning.encrypted`` envelope). Reprobe went 5/5 on every fix-target.
-  # ``empty_retry_count: 1`` covers the reasoning-only completion class the
-  # Opus-5 and Kimi presets opt into on the same grounds. Live evidence,
-  # 2026-10-01 terminal-bench 5-task smoke: the final call of
-  # ``repair_voyage_attribution_provenance`` billed 15358 completion tokens
-  # of which 15358 were reasoning — the whole 16384 budget spent
-  # deliberating, no text and no tool call — and the trial was lost. Four
-  # more calls in the same run returned at exactly 16380 across three other
-  # tasks, which survived only because a token of text escaped. The engine
-  # now routes this shape to a resample rather than ending the trial; this
-  # budget is the second line of defence, not the only one.
   gemini_35_flash_recursive:
     match:
       - "google/gemini-3.5-flash"
@@ -921,7 +911,6 @@ presets:
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
-    empty_retry_count: 1
 
   # Gemini 3.6 Flash - same two Flash-observed schema-loss fixes as its 3.5
   # sibling above, routed through the SAME ``gemini_recursive`` +
@@ -938,7 +927,6 @@ presets:
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
-    empty_retry_count: 1
 
   # Gemini 3.7 Flash - third model in this Flash lineage to land the SAME
   # pair of axes as its 3.5/3.6 siblings above. The observe baseline
@@ -958,7 +946,6 @@ presets:
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
-    empty_retry_count: 1
 
   # Gemini 3.1 Pro Preview — model-specific overlay carrying the generic
   # ``gemini`` policy trio (reasoning_codec + schema_sanitizer +
@@ -992,7 +979,6 @@ presets:
     schema_sanitizer: gemini
     response_policy: array_dict_map
     default_max_turns: 90
-    empty_retry_count: 1
 
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
@@ -1021,7 +1007,6 @@ presets:
     # for the failure surface the routing closes.
     schema_sanitizer: gemini
     response_policy: array_dict_map
-    empty_retry_count: 1
 
   # ---- Arena lineup refresh (2026-06) ----------------------------------
   # GPT-OSS 120B (OpenAI open-weights via OpenRouter) — NOT the GPT-5 API

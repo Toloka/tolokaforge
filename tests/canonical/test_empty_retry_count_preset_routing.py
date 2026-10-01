@@ -20,18 +20,6 @@ resample budget:
   T-Bench balanced-10). Anthropic direct is not reachable via
   OpenRouter's provider fan-out, so only the empty-completion resample
   applies here (the ``openrouter_defaults`` pin is Moonshot-specific).
-* the Gemini presets — ``gemini``, ``gemini_31_pro_preview`` and the
-  3.5 / 3.6 / 3.7 Flash overlays. Terminal-bench 5-task smoke,
-  2026-10-01: ``repair_voyage_attribution_provenance`` on
-  ``google/gemini-3.7-flash`` lost its trial to a final call billing
-  15358 completion tokens of which 15358 were reasoning — the whole
-  16384 budget spent deliberating, no text and no tool call. Four more
-  calls in the same run returned at exactly 16380 across three other
-  tasks, which survived only because a token of text escaped, so the
-  shape is the run's normal condition rather than one task's bad luck.
-  The engine now routes this shape to a resample under
-  ``output_length_retry_count`` instead of ending the trial; this
-  budget is the second line of defence.
 
 Every other preset carries the default ``empty_retry_count == 0`` —
 adding a resample budget doubles reasoning spend on the failing sample,
@@ -55,9 +43,6 @@ _EMPTY_RETRY_OPT_IN_MODELS = [
     ("moonshotai/kimi-k2.6", "openrouter", 1),
     ("moonshotai/kimi-k2.7-code", "openrouter", 1),
     ("claude-opus-5", "anthropic", 1),
-    ("google/gemini-3.1-pro-preview", "openrouter", 1),
-    ("google/gemini-3.7-flash", "openrouter", 1),
-    ("google/gemini-4-pro", "openrouter", 1),
 ]
 
 
@@ -68,6 +53,7 @@ _EMPTY_RETRY_ZERO_MODELS = [
     "openai/gpt-5.5",
     "x-ai/grok-4",
     "qwen/qwen3-coder",
+    "google/gemini-3.1-pro-preview",
 ]
 
 

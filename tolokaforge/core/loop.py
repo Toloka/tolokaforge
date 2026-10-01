@@ -189,6 +189,7 @@ class LoopConfig:
     api_error_retries: int = 1
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
+    reasoning_stall_retry_count: int = 1
     output_length_retry_count: int = 0
     parser_error_retry_count: int = 0
     tool_output_max_chars: int | None = None
@@ -1263,7 +1264,7 @@ class ToolCallingLoop:
                 # through to ``break`` above and the trial carries on. Arriving
                 # without one is the worse case, so it gets the same resample
                 # the content-carrying path has rather than ending the trial.
-                if reasoning_stall_attempts < self.config.output_length_retry_count:
+                if reasoning_stall_attempts < self.config.reasoning_stall_retry_count:
                     reasoning_stall_attempts += 1
                     self._append_both(
                         messages,
@@ -1281,7 +1282,7 @@ class ToolCallingLoop:
                         "Resampling after reasoning-only truncation",
                         turn=turn,
                         attempt=reasoning_stall_attempts,
-                        max_attempts=self.config.output_length_retry_count + 1,
+                        max_attempts=self.config.reasoning_stall_retry_count + 1,
                         reasoning_tokens=(
                             result.usage.reasoning_tokens if result.usage is not None else 0
                         ),
