@@ -7,11 +7,10 @@ import httpx
 
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
-# Runner-side default. ``RAG_SERVICE_URL`` is set in the runner container
-# (see ``tolokaforge/docker/stacks/core.py``) to point at the actual
-# tolokaforge-rag-service network alias on ``runner-net``. Without this
-# env-var fallback the tool defaulted to ``http://rag-service:8001`` —
-# a hostname that has not existed since the docker-compose retirement.
+# A stack that runs a rag-service sets the runner container's ``RAG_SERVICE_URL``
+# to it (``tolokaforge/docker/stacks/core.py``). Unset, the tool reaches
+# ``rag-service``, the alias the full stack and the standalone compose recipe give
+# that service.
 _DEFAULT_RAG_URL_ENV = "RAG_SERVICE_URL"
 _DEFAULT_RAG_URL_FALLBACK = "http://rag-service:8001"
 

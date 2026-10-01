@@ -14,6 +14,7 @@ contexts across services (#123).
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterable
 from enum import StrEnum
 from functools import cache
 from typing import NamedTuple
@@ -170,3 +171,11 @@ def list_builtins() -> frozenset[str]:
 def list_for_dispatch(dispatch: Dispatch) -> frozenset[str]:
     """Return the set of names that route to *dispatch*."""
     return frozenset(name for name, (_, d) in _REGISTRY.items() if d is dispatch)
+
+
+def json_db_tool_config_refusal(name: str, keys: Iterable[str]) -> str:
+    """Why the ``JSON_DB`` builtin *name* refuses a ``tool_config`` carrying *keys*."""
+    return (
+        f"'{name}' reads the trial's own JSON DB and takes no tool_config; "
+        f"got keys {sorted(keys)}"
+    )

@@ -1,8 +1,9 @@
 """Serve a real ASGI app over HTTP on an ephemeral loopback port.
 
-For code under test that reaches a service through a URL with its own HTTP
-client (sync ``httpx.post`` included), where an in-process ``TestClient`` or
-``set_test_client`` injection cannot reach it.
+For a test whose requests must cross a real ``httpx`` transport. The in-process
+``MockAsyncClient`` drops a per-request ``timeout=``, so a client that passes
+its own budget per request, as the JSON-DB tool wrapper does, is only exercised
+end to end here.
 """
 
 from __future__ import annotations

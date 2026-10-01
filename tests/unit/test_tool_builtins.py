@@ -76,6 +76,17 @@ class TestDBUpdateTool:
         assert "op" in item_schema["properties"]
         assert "path" in item_schema["properties"]
 
+    def test_an_op_item_declares_exactly_the_fields_db_service_accepts(self) -> None:
+        from tolokaforge.env.json_db_service.app import JSONPathOp
+
+        item_schema = DBUpdateTool().get_schema()["function"]["parameters"]["properties"]["ops"][
+            "items"
+        ]
+
+        assert set(item_schema["properties"]) == set(JSONPathOp.model_fields)
+        assert JSONPathOp.model_config["extra"] == "forbid"
+        assert item_schema["additionalProperties"] is False
+
 
 # ===================================================================
 # HTTPRequestTool

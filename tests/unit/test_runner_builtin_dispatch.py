@@ -82,12 +82,9 @@ def test_str_replace_editor_routes_to_editor_wrapper(factory):
 
 
 @pytest.mark.parametrize("name", ["db_query", "db_update"])
-def test_json_db_builtins_route_to_a_wrapper_bound_to_the_factorys_trial(factory, name):
+def test_json_db_builtins_route_to_the_json_db_wrapper(factory, name):
     schema = ToolSchema(name=name, description="x", parameters={"type": "object"})
-    wrapper = factory._create_wrapper(schema)
-    assert isinstance(wrapper, JsonDBToolWrapper)
-    assert wrapper.db_client is factory.db_client
-    assert wrapper.trial_id == "test-trial"
+    assert isinstance(factory._create_wrapper(schema), JsonDBToolWrapper)
 
 
 @pytest.mark.parametrize("arguments", [{}, {"jsonpath": "$", "limit": 5}])

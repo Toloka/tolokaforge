@@ -87,11 +87,14 @@ class DBUpdateTool(Tool):
                                         "description": (
                                             "replace: set the value at every match of the "
                                             "path; refused when it matches nothing. "
-                                            "add: set the path's last key on the object at its "
-                                            "parent (`$.tickets[0].note`); when the parent is a "
-                                            "list, append the value to it (`$.audit_log.entry` "
-                                            "appends to audit_log). "
-                                            "remove: delete every match of the path"
+                                            "add: the path ends in a key name; set that key on "
+                                            "the object at its parent (`$.tickets[0].note`), or "
+                                            "append the value when the parent is a list "
+                                            "(`$.tickets.-`); refused when the parent matches "
+                                            "nothing or holds neither. "
+                                            "remove: delete every match of the path; a path "
+                                            "matching nothing changes nothing. replace and "
+                                            "remove refuse the root `$`"
                                         ),
                                     },
                                     "path": {
@@ -104,6 +107,7 @@ class DBUpdateTool(Tool):
                                     "value": {"description": "The value to set; unused by remove"},
                                 },
                                 "required": ["op", "path"],
+                                "additionalProperties": False,
                             },
                         }
                     },

@@ -39,7 +39,7 @@ import logging
 import re
 import types
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -176,6 +176,10 @@ class ToolInventory:
     it then reports unchecked; ``frozenset()`` is the answer that none are.
     """
 
+    json_db_tool_config_keys: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """Each of :attr:`json_db_builtins` whose ``tools.<actor>.<name>`` block carries init
+    kwargs, to those keys — the ``tool_config`` ``RegisterTrial`` refuses on that tool."""
+
     def __post_init__(self) -> None:
         carried = sorted(self.declared | self.agent_declared | self.user_declared)
         if not self.known and (carried or self.parameters):
@@ -194,6 +198,12 @@ class ToolInventory:
             raise ValueError(
                 f"the JSON-DB builtins {sorted(self.json_db_builtins - self.declared)} are not "
                 f"declared by the task, which declares {sorted(self.declared)}"
+            )
+        configured = set(self.json_db_tool_config_keys)
+        if configured and not configured <= (self.json_db_builtins or frozenset()):
+            raise ValueError(
+                f"the tools {sorted(configured)} carry JSON-DB builtin tool_config keys, but "
+                f"the JSON-DB builtins are {self.json_db_builtins!r}"
             )
         if not self.known and self.actor_split_known:
             raise ValueError(
@@ -1059,6 +1069,7 @@ def inspect_grading_authoring(
     if inventory.known:
         reports += [
             _check_json_db_builtins_have_a_seeded_store(inventory, seeded_tables),
+            _check_json_db_builtins_take_no_tool_config(inventory),
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
             _check_required_action_names(rules.required_actions if rules else (), inventory),
@@ -1936,6 +1947,25 @@ def _check_json_db_builtins_have_a_seeded_store(
     return AuthoringReport(
         errors=(
             Finding(_TOOLS_ADDRESS, _JSON_DB_BUILTINS_WITH_NO_SEEDED_STORE.format(tools=tools)),
+        )
+    )
+
+
+def _check_json_db_builtins_take_no_tool_config(inventory: ToolInventory) -> AuthoringReport:
+    """A JSON-DB builtin's ``tools.<actor>.<name>`` block names no init kwargs.
+
+    ``db_query`` and ``db_update`` read the trial's own store and construct with no
+    arguments, so ``RegisterTrial`` refuses a ``tool_config`` on either; this rule
+    refuses the same block at validate, with the message the runner gives.
+
+    ``relaxed_validation`` does not downgrade this: a refused pack does not run.
+    """
+    from tolokaforge.tools.builtin.registry import json_db_tool_config_refusal
+
+    return AuthoringReport(
+        errors=tuple(
+            Finding(_TOOLS_ADDRESS, json_db_tool_config_refusal(name, keys))
+            for name, keys in sorted(inventory.json_db_tool_config_keys.items())
         )
     )
 

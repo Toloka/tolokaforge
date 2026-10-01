@@ -117,6 +117,9 @@ Each adapter must subclass `BaseAdapter` and implement:
       the source-less JSON-DB builtins (`db_query` / `db_update`), which the
       gate refuses on a task seeding no table; leave it `None` when you cannot
       say, and the rule is reported unchecked for a task declaring either name.
+      Its `json_db_tool_config_keys` maps each of those builtins whose tool
+      block carries init kwargs to those keys, which the gate refuses as
+      `RegisterTrial` does; it names only tools in `json_db_builtins`.
 
 15. `grading_replay_world(task: TaskConfig, task_dir: Path) -> ReplayWorld`
     — a **classmethod**

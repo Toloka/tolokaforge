@@ -28,6 +28,7 @@ as green, and the content assertions here catch on the first run.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import logging
 from dataclasses import dataclass
@@ -105,8 +106,11 @@ from tolokaforge.core.models import (
     ToolExpectations,
     TranscriptRulesConfig,
 )
+from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
 from tolokaforge.runner.service import _unseeded_json_db_tools_refusal
+from tolokaforge.runner.tool_factory import ToolConfigurationError, ToolFactory
+from tolokaforge.tools.builtin.registry import json_db_tool_config_refusal
 
 pytestmark = pytest.mark.unit
 
@@ -299,7 +303,9 @@ class _Rule:
     authored block is the whole layer — so only the rows about the layer say who else
     may supply the source. ``seeded_tables`` defaults the other way, to unresolvable:
     no other row's fixture declares ``id_fields``, so the rows about the seeded tables
-    are the only ones that name what the task seeds.
+    are the only ones that name what the task seeds. ``inventory`` replaces the one
+    built from ``task`` for a defect no committed pack may carry, since every pack on
+    disk faces the whole gate in the corpus sweep.
     """
 
     label: str
@@ -312,9 +318,29 @@ class _Rule:
     world: ReplayWorld = ReplayWorld.unresolvable()
     hash_sources: HashSourceLayer = _THE_BLOCK_IS_THE_WHOLE_LAYER
     seeded_tables: SeededTablesLayer = _NO_CALLER_READ_WHAT_THE_TASK_SEEDS
+    inventory: ToolInventory | None = None
+
+    def tool_inventory(self) -> ToolInventory:
+        return self.inventory if self.inventory is not None else _inventory(self.task)
+
+
+_A_DB_QUERY_CARRYING_A_TOOL_CONFIG = dataclasses.replace(
+    _inventory(_TOOL_USE), json_db_tool_config_keys={"db_query": frozenset({"db_url"})}
+)
 
 
 _RULES: tuple[_Rule, ...] = (
+    _Rule(
+        label="json_db_builtin_carrying_a_tool_config",
+        task=_TOOL_USE,
+        grading=_trace_block(_tool_call("db_query")),
+        checker="_check_json_db_builtins_take_no_tool_config",
+        channel="errors",
+        message="'db_query' reads the trial's own JSON DB and takes no tool_config; "
+        "got keys ['db_url']",
+        seeded_tables=SeededTablesLayer(tables={"tickets": []}),
+        inventory=_A_DB_QUERY_CARRYING_A_TOOL_CONFIG,
+    ),
     _Rule(
         label="json_db_builtins_on_a_task_that_seeds_no_table",
         task=_TOOL_USE,
@@ -756,7 +782,7 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
     """
     report = inspect_grading_authoring(
         rule.grading,
-        _inventory(rule.task),
+        rule.tool_inventory(),
         effective_combine=rule.combine,
         replay_world=rule.world,
         hash_sources=rule.hash_sources,
@@ -801,7 +827,7 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
     for rule in _RULES:
         inspect_grading_authoring(
             rule.grading,
-            _inventory(rule.task),
+            rule.tool_inventory(),
             effective_combine=rule.combine,
             replay_world=rule.world,
             hash_sources=rule.hash_sources,
@@ -1661,6 +1687,82 @@ def test_the_gate_and_register_trial_refuse_the_same_unseeded_json_db_tools(
     assert at_validate is not None
     assert f"tools: this task enables the JSON-DB tools {refused}" in at_validate
     assert 'json_db: {"<table>": []}' in at_validate
+
+
+@pytest.mark.parametrize(
+    ("tools", "refused"),
+    [
+        pytest.param(
+            {"agent": {"enabled": ["db_query"], "db_query": {"db_url": "http://json-db:8000"}}},
+            ("db_query", ["db_url"]),
+            id="an_agent_block_builtin",
+        ),
+        pytest.param(
+            {"agent": {"enabled": []}, "user": {"enabled": ["db_update"], "db_update": {"x": 1}}},
+            ("db_update", ["x"]),
+            id="a_user_block_builtin",
+        ),
+        pytest.param(
+            {"agent": {"enabled": ["db_query"], "db_query": {"output_max_chars": 500}}},
+            None,
+            id="a_harness_side_key_is_not_a_tool_config",
+        ),
+        pytest.param(
+            {
+                "agent": {
+                    "enabled": ["db_query"],
+                    "mcp_server": "mcp_server.py",
+                    "db_query": {"db_url": "http://json-db:8000"},
+                }
+            },
+            None,
+            id="served_by_the_agents_mcp_server",
+        ),
+    ],
+)
+def test_the_gate_and_register_trial_refuse_the_same_json_db_tool_config(
+    tmp_path: Path, tools: dict[str, Any], refused: tuple[str, list[str]] | None
+) -> None:
+    """``validate`` refuses a JSON-DB builtin's ``tool_config`` with the runner's own message.
+
+    The runtime half is the production ``ToolFactory`` building the trial's tools from
+    the task description the native adapter emits for the same pack.
+    """
+    task_dir = _json_db_pack(tmp_path, tools, {"tickets": []})
+    task, effective_dir = load_task_yaml(task_dir / "task.yaml")
+    description = NativeAdapter(
+        {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+    ).to_task_description("json_db_probe")
+    wire_tools = [
+        tool.model_dump(mode="json") for tool in (*description.agent_tools, *description.user_tools)
+    ]
+
+    try:
+        ToolFactory(DBServiceClient("http://db-service.invalid"), "probe").reconstruct_tools(
+            wire_tools
+        )
+    except ToolConfigurationError as exc:
+        runtime: str | None = str(exc)
+    else:
+        runtime = None
+    try:
+        validate_grading_yaml(
+            task_dir / "grading.yaml",
+            inventory=build_tool_inventory(task, effective_dir),
+            seeded_tables=seeded_tables_under_adapter(task, effective_dir, task.adapter_type),
+        )
+    except ValueError as exc:
+        at_validate: str | None = str(exc)
+    else:
+        at_validate = None
+
+    if refused is None:
+        assert runtime is None
+        assert at_validate is None
+        return
+    reason = json_db_tool_config_refusal(*refused)
+    assert runtime is not None and reason in runtime
+    assert at_validate is not None and f"tools: {reason}" in at_validate
 
 
 def _json_db_inventory(**overrides: Any) -> ToolInventory:
@@ -2992,6 +3094,27 @@ def test_the_json_db_builtins_are_declared_tools() -> None:
             parameters={},
             known=True,
             json_db_builtins=frozenset({"db_query", "db_update"}),
+        )
+
+
+@pytest.mark.parametrize(
+    "json_db_builtins",
+    [pytest.param(None, id="builtins_unknown"), pytest.param(frozenset(), id="no_builtins")],
+)
+def test_a_tool_config_is_carried_only_for_a_json_db_builtin(
+    json_db_builtins: frozenset[str] | None,
+) -> None:
+    """Config keys on a tool the inventory does not call a JSON-DB builtin are a contradiction."""
+    with pytest.raises(ValueError, match=r"the tools \['db_query'\] carry JSON-DB builtin"):
+        ToolInventory(
+            declared=frozenset({"db_query"}),
+            agent_declared=frozenset({"db_query"}),
+            user_declared=frozenset(),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+            json_db_builtins=json_db_builtins,
+            json_db_tool_config_keys={"db_query": frozenset({"db_url"})},
         )
 
 

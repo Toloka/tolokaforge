@@ -876,6 +876,7 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         parameters=parameters,
         known=True,
         json_db_builtins=_json_db_builtins(task),
+        json_db_tool_config_keys=_json_db_tool_config_keys(task),
     )
 
 
@@ -891,6 +892,24 @@ def _json_db_builtins(task: TaskConfig) -> frozenset[str]:
             if effective_mcp_server(task, actor) is None
         )
     )
+
+
+def _json_db_tool_config_keys(task: TaskConfig) -> dict[str, frozenset[str]]:
+    """The source-less ``Dispatch.JSON_DB`` builtins whose block carries init kwargs, to those keys."""
+    from tolokaforge.tools.builtin import registry
+
+    json_db_names = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+    configured = (
+        (name, frozenset(kwargs))
+        for actor in ToolActor
+        if effective_mcp_server(task, actor) is None
+        for name, kwargs in tool_configs(task, actor).items()
+        if name in json_db_names
+    )
+    keys: dict[str, frozenset[str]] = {}
+    for name, kwargs in configured:
+        keys[name] = keys.get(name, frozenset()) | kwargs
+    return keys
 
 
 def _declared_parameters(

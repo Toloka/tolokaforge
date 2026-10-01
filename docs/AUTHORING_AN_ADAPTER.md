@@ -129,7 +129,9 @@ declares exactly six methods, mapped to the numbered list in
   `ToolInventory.unresolvable()`. A concrete inventory may report
   `json_db_builtins` — the declared tools its runtime serves as source-less
   JSON-DB builtins — or leave it `None` when it cannot say, which skips the
-  rule refusing those tools on a task that seeds no table.
+  rule refusing those tools on a task that seeds no table — and
+  `json_db_tool_config_keys`, each of those builtins whose tool block carries
+  init kwargs mapped to the keys, which the gate refuses.
 - `grading_replay_world(task, task_dir) -> ReplayWorld` (item 15) — the
   initial-state + `mcp_server` a golden-action replay executes against.
   Default: `ReplayWorld.unresolvable()`.

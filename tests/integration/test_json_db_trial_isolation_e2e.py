@@ -6,7 +6,7 @@ db-service. Their builtin `db_query` / `db_update` calls go over real gRPC
 `ExecuteTool`, so the trial binding under test is the runner's own, not a
 fixture's.
 
-Two tests lock the issue's bar:
+Two tests lock per-trial JSON-DB isolation:
 
 - **No LLM** (`test_concurrent_trials_*`): every trial's `db_query("$")`, issued
   concurrently, returns exactly its own seed; an agent-side `db_update` on one

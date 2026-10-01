@@ -487,7 +487,7 @@ writes through this endpoint.
 {
   "ops": [
     {"op": "replace", "path": "$.tickets[0].status", "value": "closed"},
-    {"op": "add", "path": "$.audit_log.entry", "value": {"ticket_id": "T-100", "action": "close"}}
+    {"op": "add", "path": "$.audit_log.-", "value": {"ticket_id": "T-100", "action": "close"}}
   ]
 }
 ```
@@ -497,18 +497,23 @@ are refused with 422.
 
 | Op | Effect |
 |----|--------|
-| `replace` | Sets every match of `path` to `value`. A path that matches nothing refuses the batch. |
-| `add` | Splits `path` at its last `.` and resolves only the parent: a dict parent gains the trailing key set to `value`, a list parent has `value` appended (the trailing segment is ignored), and a path with no `.` sets that top-level key. A parent that matches nothing is a no-op. |
-| `remove` | Deletes every match of `path` from its parent dict or list. A path that matches nothing is a no-op. |
+| `replace` | Sets every match of `path` to `value`. A path that matches nothing, or that matches the root `$`, refuses the batch. |
+| `add` | Splits `path` at its last `.` and resolves only the parent. The trailing segment must be a key name: one that is empty or holds any of `$ [ ] ( ) @ *` (`$`, `$.tickets[0]`, a trailing filter or wildcard) refuses the batch. Every parent match must be a dict, which gains the trailing key set to `value`, or a list, which has `value` appended whatever the trailing key (`$.tickets.-`). A parent that matches nothing, or matches a scalar, refuses the batch. |
+| `remove` | Deletes every match of `path` from its parent dict or list. A path that matches the root `$` refuses the batch. A path that matches nothing deletes nothing and still commits: `version` increments and `stable_hash` is unchanged. |
 
 #### Atomicity
 
 The ops run in order on a copy of the state. The batch commits only when every
-op succeeds **and** every top-level key still holds a list of row objects
+op succeeds, every top-level key still holds a list of row objects
 (`{"<table>": [{...}, ...]}`), the shape every state reader and grader
-requires. A refused batch changes nothing: rows, `version` and the SQL mirror
-are untouched. A committed batch increments `version` once and re-syncs the SQL
-mirror.
+requires, **and** the SQL mirror can store the result. A refused batch changes
+nothing: rows, `version` and the SQL mirror are as they were. A committed batch
+re-syncs the SQL mirror and increments `version` once.
+
+The SQL mirror refuses a state whose values or keys SQLite cannot hold: an
+integer outside the signed 64-bit range, or two keys of one table (or two
+table names) that differ only in letter case, since SQLite identifiers are
+case-insensitive.
 
 #### Response
 
@@ -525,15 +530,18 @@ mirror.
 | Code | Meaning |
 |------|---------|
 | 200 | Success |
-| 400 | `InvalidJSONPath`: a path does not start with `$`, does not parse, or cannot be evaluated. `InvalidOperation`: an unknown op, `replace` of a path that matches nothing, or an op that would leave a top-level key that is not a list or a row that is not an object |
+| 400 | `InvalidJSONPath`: a path does not start with `$`, does not parse, or cannot be evaluated. `InvalidOperation`: an unknown op, a `replace` / `add` / `remove` the op table above refuses, an op that would leave a top-level key that is not a list or a row that is not an object, or a result the SQL mirror cannot store |
 | 404 | Trial not found |
 | 422 | Request body validation failed (e.g. `ops` not a list, or an op missing `op` / `path`) |
 
 Any other failure is a 500.
 
-A 400's message names the zero-based op index and the reason; an
-`InvalidJSONPath` message also gives an example path. `details` carries
-`op_index` and `path` (plus `op` for `InvalidOperation`):
+A 400's message names the zero-based op index and the reason, and the path as
+the client sent it; an `InvalidJSONPath` message also gives an example path.
+`details` carries `op_index` and `path` (plus `op` for `InvalidOperation`). A
+refusal by the SQL mirror concerns the whole batch: its message names the
+table, and the row, field and value where one is to blame, and `details`
+carries `table`:
 
 ```json
 {

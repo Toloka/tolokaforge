@@ -651,7 +651,8 @@ class DBServiceClient:
         Args:
             trial_id: Trial identifier
             jsonpath: JSONPath expression
-            timeout: Budget for this one request, overriding the client's
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             QueryResponse with results and count

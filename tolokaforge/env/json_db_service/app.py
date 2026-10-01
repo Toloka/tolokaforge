@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import re
+import reprlib
 import sqlite3
 from threading import Lock
 from typing import Any, NoReturn
@@ -324,12 +325,16 @@ class TrialState(BaseModel):
         self._sql_conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._sql_conn.row_factory = sqlite3.Row
 
-    def sync_json_to_sql(self):
-        """Sync JSON data to SQL tables.
+    def sync_json_to_sql(self) -> None:
+        """Rebuild the SQL mirror from ``data``, one table per top-level key.
 
-        BUG FIX: Previously only looked at first record to infer schema.
-        Now scans ALL records to build complete schema with all possible columns.
-        This handles inconsistent records (e.g., some devices have last_esim_transfer_date, others don't).
+        A table's columns are the union of every row's keys, so rows with
+        differing fields mirror into one table. A table with no rows has no SQL
+        table.
+
+        Raises:
+            SQLMirrorError: If a table, key or value cannot be stored in SQLite.
+                The mirror is then partly rebuilt; re-sync from a storable state.
         """
         if not self._sql_conn:
             self._init_sql_db()
@@ -337,57 +342,54 @@ class TrialState(BaseModel):
         assert self._sql_conn is not None  # For type checker
         cursor = self._sql_conn.cursor()
 
-        # Drop all existing tables
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = cursor.fetchall()
-        for table in tables:
-            cursor.execute(f'DROP TABLE IF EXISTS "{table[0]}"')
+        for (existing,) in cursor.fetchall():
+            cursor.execute(f"DROP TABLE IF EXISTS {_sql_identifier(existing)}")
 
-        # Create tables from JSON structure
-        for table_name, table_data in self.data.items():
-            if isinstance(table_data, list) and len(table_data) > 0:
-                # BUG FIX: Scan ALL records to build complete schema
-                # Records may have inconsistent fields - we need the union of all fields
-                all_columns: dict[str, str] = {}  # column_name -> sql_type
-                for record in table_data:
-                    if isinstance(record, dict):
-                        for key, value in record.items():
-                            if key not in all_columns:
-                                all_columns[key] = self._infer_sql_type(value)
-                            # If we already have this column but current value gives better type info
-                            # (e.g., previous was None -> TEXT, now we have an int)
-                            elif all_columns[key] == "TEXT" and value is not None:
-                                inferred = self._infer_sql_type(value)
-                                if inferred != "TEXT":
-                                    all_columns[key] = inferred
-
-                if all_columns:
-                    columns = [f'"{key}" {col_type}' for key, col_type in all_columns.items()]
-                    create_sql = f'CREATE TABLE "{table_name}" ({", ".join(columns)})'
-                    cursor.execute(create_sql)
-
-                    # Insert all records using the complete column list
-                    column_names = list(all_columns.keys())
-                    placeholders = ", ".join(["?" for _ in column_names])
-                    keys = ", ".join([f'"{k}"' for k in column_names])
-                    insert_sql = f'INSERT INTO "{table_name}" ({keys}) VALUES ({placeholders})'
-
-                    for record in table_data:
-                        if isinstance(record, dict):
-                            # Use None for missing columns, serialize complex types
-                            values = [
-                                self._serialize_for_sql(record.get(col)) for col in column_names
-                            ]
-                            cursor.execute(insert_sql, values)
-
+        try:
+            for table_name, table_data in self.data.items():
+                self._mirror_table(cursor, table_name, table_data)
+        except SQLMirrorError:
+            self._sql_conn.rollback()
+            raise
         self._sql_conn.commit()
 
-    def _serialize_for_sql(self, value: Any) -> Any:
-        """Serialize a value for SQLite storage.
+    def _mirror_table(self, cursor: sqlite3.Cursor, table_name: str, rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        records = [row for row in rows if isinstance(row, dict)]
+        all_columns = self._infer_columns(records)
+        if not all_columns:
+            return
+        table = _sql_identifier(table_name)
+        columns = ", ".join(f"{_sql_identifier(key)} {kind}" for key, kind in all_columns.items())
+        try:
+            cursor.execute(f"CREATE TABLE {table} ({columns})")
+        except sqlite3.Error as e:
+            raise SQLMirrorError(table_name, f"cannot be created in SQL ({e})") from e
+        column_names = list(all_columns)
+        keys = ", ".join(_sql_identifier(key) for key in column_names)
+        placeholders = ", ".join("?" for _ in column_names)
+        insert_sql = f"INSERT INTO {table} ({keys}) VALUES ({placeholders})"
+        for row_index, record in enumerate(records):
+            values = [self._serialize_for_sql(record.get(col)) for col in column_names]
+            try:
+                cursor.execute(insert_sql, values)
+            except (sqlite3.Error, OverflowError) as e:
+                raise SQLMirrorError(
+                    table_name, _unstorable_row_reason(cursor, row_index, column_names, values, e)
+                ) from e
 
-        BUG FIX: SQLite can't handle complex Python types (lists, dicts).
-        These need to be serialized to JSON strings.
-        """
+    def _infer_columns(self, records: list[dict[str, Any]]) -> dict[str, str]:
+        """Column name to SQL type over every row; a ``TEXT`` column takes a later non-null type."""
+        columns: dict[str, str] = {}
+        for key, value in (item for record in records for item in record.items()):
+            if key not in columns or (columns[key] == "TEXT" and value is not None):
+                columns[key] = self._infer_sql_type(value)
+        return columns
+
+    def _serialize_for_sql(self, value: Any) -> Any:
+        """A value SQLite can bind: a list or dict as JSON text, a bool as an int."""
         if value is None:
             return None
         elif isinstance(value, (list, dict)):
@@ -586,6 +588,37 @@ class DBService:
 # =============================================================================
 
 
+class SQLMirrorError(ValueError):
+    """The JSON state holds a table, key or value the SQLite mirror cannot store."""
+
+    def __init__(self, table: str, reason: str):
+        self.table = table
+        super().__init__(f"table '{table}' {reason}")
+
+
+def _sql_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _unstorable_row_reason(
+    cursor: sqlite3.Cursor,
+    row_index: int,
+    columns: list[str],
+    values: list[Any],
+    error: Exception,
+) -> str:
+    """Name the first field of a refused row SQLite cannot bind, else the row itself."""
+    for column, value in zip(columns, values, strict=True):
+        try:
+            cursor.execute("SELECT ?", (value,))
+        except (sqlite3.Error, OverflowError):
+            return (
+                f"row {row_index} field '{column}' holds {reprlib.repr(value)}, "
+                f"which SQLite cannot store ({error})"
+            )
+    return f"row {row_index} cannot be stored in SQL ({error})"
+
+
 class TrialNotFoundError(Exception):
     """Trial not found."""
 
@@ -728,25 +761,25 @@ def validate_upsert_operations(
 _JSONPATH_EXAMPLE = "$.tickets[0].status"
 
 
-def _parse_jsonpath(path: str, op_index: int | None = None) -> Any:
-    """Parse ``path``, refusing a parse failure with 400 ``InvalidJSONPath``."""
-    try:
-        return parse(path)
-    except JSONPathError as e:
-        _refuse_jsonpath(path, f"is not a valid JSONPath ({e})", op_index)
-
-
-def _find_jsonpath(path: str, data: Any, op_index: int | None = None) -> list[Any]:
+def _find_jsonpath(
+    path: str, data: Any, op_index: int | None = None, *, reported_path: str | None = None
+) -> list[Any]:
     """Match ``path`` against ``data``, refusing a parse or evaluation fault with 400.
 
     A filter's regex and an ``.ext`` string function are compiled lazily, so a
-    bad one surfaces at match time rather than at parse time.
+    bad one surfaces at match time rather than at parse time. A refusal names
+    ``reported_path`` when given: the path the client sent, of which ``path``
+    is a part.
     """
-    expr = _parse_jsonpath(path, op_index)
+    shown = path if reported_path is None else reported_path
+    try:
+        expr = parse(path)
+    except JSONPathError as e:
+        _refuse_jsonpath(shown, f"is not a valid JSONPath ({e})", op_index)
     try:
         return expr.find(data)
     except (re.error, DefintionInvalid) as e:
-        _refuse_jsonpath(path, f"cannot be evaluated ({e})", op_index)
+        _refuse_jsonpath(shown, f"cannot be evaluated ({e})", op_index)
 
 
 def _refuse_jsonpath(path: str, reason: str, op_index: int | None) -> NoReturn:
@@ -775,8 +808,25 @@ def _refuse_op(op_index: int, op: JSONPathOp, reason: str) -> NoReturn:
     )
 
 
-def _replace_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
+_ADD_APPEND_EXAMPLE = "$.tickets.-"
+_KEY_SYNTAX = frozenset("$[]()@*")
+
+
+def _matches_below_root(data: dict[str, Any], op: JSONPathOp, op_index: int) -> list[Any]:
+    """``op.path``'s matches, refusing a match on the root ``$`` itself."""
     matches = _find_jsonpath(op.path, data, op_index)
+    if any(match.context is None for match in matches):
+        _refuse_op(
+            op_index,
+            op,
+            f"{op.op} path '{op.path}' addresses the root '$'; "
+            "address a table or a row in one, e.g. '$.tickets[0]'",
+        )
+    return matches
+
+
+def _replace_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
+    matches = _matches_below_root(data, op, op_index)
     if not matches:
         _refuse_op(op_index, op, f"replace path '{op.path}' matches nothing")
     for match in matches:
@@ -785,18 +835,33 @@ def _replace_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
 
 def _add_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
     parent_path, _, key = op.path.rpartition(".")
-    if not parent_path:
-        data[key] = op.value
-        return
-    for parent in _find_jsonpath(parent_path, data, op_index):
+    if not key or _KEY_SYNTAX & set(key):
+        _refuse_op(
+            op_index,
+            op,
+            f"add path '{op.path}' does not end in a key name: add sets a named key on "
+            f"the object its parent path matches, or appends to a list parent, "
+            f"e.g. '{_ADD_APPEND_EXAMPLE}'",
+        )
+    parents = _find_jsonpath(parent_path, data, op_index, reported_path=op.path)
+    if not parents:
+        _refuse_op(op_index, op, f"add path '{op.path}' has a parent that matches nothing")
+    for parent in parents:
         if isinstance(parent.value, dict):
             parent.value[key] = op.value
         elif isinstance(parent.value, list):
             parent.value.append(op.value)
+        else:
+            _refuse_op(
+                op_index,
+                op,
+                f"add path '{op.path}' has a parent holding a "
+                f"{type(parent.value).__name__}; add needs an object or a list there",
+            )
 
 
 def _remove_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
-    for match in _find_jsonpath(op.path, data, op_index):
+    for match in _matches_below_root(data, op, op_index):
         parent = match.context.value
         if isinstance(parent, dict) and match.path.fields:
             del parent[match.path.fields[0]]
@@ -811,10 +876,11 @@ def _apply_jsonpath_op(data: dict[str, Any], op: JSONPathOp, op_index: int) -> N
     """Apply one op to ``data`` in place, refusing a client-caused fault with 400.
 
     ``replace`` refuses a path that matches nothing. ``add`` splits the path at
-    its last ``.`` and parses only the parent: a dict parent gains the trailing
-    key, a list parent has the value appended, a path with no ``.`` sets that
-    top-level key, and a parent path that matches nothing is a no-op.
-    ``remove`` of a path that matches nothing is a no-op.
+    its last ``.``: the trailing segment must be a plain key name, and every
+    match of the parent must be a dict, which gains that key, or a list, which
+    has the value appended; a parent matching nothing is refused. ``replace``
+    and ``remove`` refuse the root ``$``. ``remove`` of a path that matches
+    nothing is a no-op.
     """
     apply = _JSONPATH_OPS.get(op.op)
     if apply is None:
@@ -1272,13 +1338,38 @@ async def query_trial(trial_id: str, req: QueryRequest) -> dict[str, Any]:
         return {"results": results, "count": len(results)}
 
 
+def _commit_mirrored(trial: TrialState, working: dict[str, Any]) -> None:
+    """Make ``working`` the trial's state, or refuse with 400 if the SQL mirror cannot store it.
+
+    On a refusal the previous state is restored and re-mirrored, so the trial is
+    left exactly as it was.
+    """
+    previous = trial.data
+    trial.data = working
+    try:
+        trial.sync_json_to_sql()
+    except SQLMirrorError as e:
+        trial.data = previous
+        trial.sync_json_to_sql()
+        raise HTTPException(
+            status_code=400,
+            detail=error_response(
+                "InvalidOperation",
+                f"the batch would leave a state the SQL mirror cannot store: {e}; "
+                "nothing was applied",
+                {"table": e.table},
+            ),
+        ) from e
+
+
 @app.post("/trials/{trial_id}/update")
 async def update_trial(trial_id: str, req: TrialUpdateRequest) -> dict[str, Any]:
     """Apply a batch of JSONPath ops to the trial state, all or nothing.
 
     The ops run in order on a copy of the state, which is committed only if
-    every op succeeds and every top-level key still holds a list of row
-    objects. A refused batch leaves rows, version and the SQL mirror untouched.
+    every op succeeds, every top-level key still holds a list of row objects,
+    and the SQL mirror can store the result. A refused batch leaves rows,
+    version and the SQL mirror as they were.
     """
     try:
         trial = db_service.get_trial(trial_id)
@@ -1290,9 +1381,8 @@ async def update_trial(trial_id: str, req: TrialUpdateRequest) -> dict[str, Any]
         for op_index, op in enumerate(req.ops):
             _apply_jsonpath_op(working, op, op_index)
             _refuse_non_table_shape(working, op, op_index)
-        trial.data = working
+        _commit_mirrored(trial, working)
         trial.version += 1
-        trial.sync_json_to_sql()
         return {
             "status": "ok",
             "version": trial.version,

@@ -22,7 +22,17 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   A task enabling `db_query` or `db_update` must seed at least one table under
   `initial_state.json_db`; an intentionally empty store is declared as
   `json_db: {"<table>": []}`. A trial that seeds no table is refused at
-  registration. Neither tool takes a per-tool config.
+  registration. Neither tool takes a per-tool config: a
+  `tools.<actor>.db_query` or `db_update` block naming an init kwarg is
+  refused at `validate` and at registration.
+
+  `add` sets a named key on the object the path's parent matches
+  (`$.tickets[0].note`) or appends to a list parent (`$.tickets.-`). An op that
+  would change nothing it names is refused rather than reported as a success:
+  an `add` whose parent matches nothing or holds a scalar, an `add` path ending
+  in an index or filter, and a `replace` or `remove` of the root `$`. A
+  `remove` matching nothing is a no-op. The full op table is in
+  [DB_SERVICE_API.md § Update State](DB_SERVICE_API.md#11-update-state-jsonpath).
 - `search_kb`: RAG search over a per-trial corpus index. Functional for native
   tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
   corpus into the rag-service per trial (see `docs/TASKS.md`). Each search is
@@ -290,6 +300,8 @@ tools:
     enabled: ["browser", "db_query", "db_update", "search_kb"]
   user:
     enabled: []
+initial_state:
+  json_db: initial_state.json   # db_query / db_update read and write this seed
 ```
 
 ### Persistent shell and editor

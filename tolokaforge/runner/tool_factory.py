@@ -21,6 +21,7 @@ Usage:
 """
 
 import asyncio
+import functools
 import importlib
 import json
 import logging
@@ -907,7 +908,16 @@ class BuiltinGenericToolWrapper(ToolWrapper):
 # =============================================================================
 
 
-_JSON_DB_ARGUMENT = {"db_query": "jsonpath", "db_update": "ops"}
+@functools.cache
+def _json_db_argument_by_tool() -> dict[str, str]:
+    """Each ``JSON_DB`` builtin's one required argument, read off its own LLM-facing schema."""
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    arguments: dict[str, str] = {}
+    for name in builtin_registry.list_for_dispatch(builtin_registry.Dispatch.JSON_DB):
+        schema = builtin_registry.get_class(name)().get_schema()
+        (arguments[name],) = schema["function"]["parameters"]["required"]
+    return arguments
 
 
 class JsonDBToolWrapper(ToolWrapper):
@@ -920,21 +930,23 @@ class JsonDBToolWrapper(ToolWrapper):
     """
 
     def __init__(self, tool_schema: ToolSchemaModel, db_client: DBServiceClient, trial_id: str):
+        from tolokaforge.tools.builtin.registry import json_db_tool_config_refusal
+
         super().__init__(tool_schema)
-        if tool_schema.name not in _JSON_DB_ARGUMENT:
+        arguments = _json_db_argument_by_tool()
+        if tool_schema.name not in arguments:
             raise ToolConfigurationError(
                 tool_schema.name,
-                f"JsonDBToolWrapper serves {sorted(_JSON_DB_ARGUMENT)}, not '{tool_schema.name}'",
+                f"JsonDBToolWrapper serves {sorted(arguments)}, not '{tool_schema.name}'",
             )
         if tool_schema.tool_config:
             raise ToolConfigurationError(
                 tool_schema.name,
-                f"'{tool_schema.name}' reads the trial's own JSON DB and takes no tool_config; "
-                f"got keys {sorted(tool_schema.tool_config)}",
+                json_db_tool_config_refusal(tool_schema.name, tool_schema.tool_config),
             )
         self.db_client = db_client
         self.trial_id = trial_id
-        self._argument = _JSON_DB_ARGUMENT[tool_schema.name]
+        self._argument = arguments[tool_schema.name]
 
     @property
     def own_budget_s(self) -> float:
