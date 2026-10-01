@@ -701,7 +701,7 @@ rather than dropping the task. An unregistered `backend` is refused at run start
 the task that asked for it. The typed block dumps only the keys the author wrote,
 so `TaskConfig` dumps of a task declaring `corpus_dir` alone are unchanged.
 `task_defaults` has no `initial_state`, so the backend is chosen per task. See
-[ADR-0052](adr/0052-search-backend-protocol-and-registry.md) and
+[ADR-0053](adr/0053-search-backend-protocol-and-registry.md) and
 [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 
 ## Grading Specification (`grading.yaml`)

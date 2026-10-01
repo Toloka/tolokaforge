@@ -158,7 +158,7 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 # runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs. A task
 # may also declare ``initial_state.mock_web`` directly without enabling those
 # tools. Knowledge-base search needs rag-service when the task's search backend
-# says so (ADR-0052): not by the tool's name, which a task may choose, but by
+# says so (ADR-0053): not by the tool's name, which a task may choose, but by
 # the ``stack_service`` its backend (``initial_state.rag.backend``, default
 # ``rag_service``) declares — for a task that searches at all, i.e. declares a
 # corpus or enables its search tool (``initial_state.rag.tool.name``, default

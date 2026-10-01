@@ -4024,7 +4024,7 @@ able to read the **same knowledge base the agent read** — never a different
 corpus, and never none while still scoring policy compliance. The judge's KB
 capability is therefore resolved **per-trial to mirror the agent's** (issue #95):
 
-* **A search backend (`search.plane`, ADR-0052)** — when an agent tool is the
+* **A search backend (`search.plane`, ADR-0053)** — when an agent tool is the
   task's search tool (a `SearchToolWrapper` over the index the trial's backend
   built — matched by instance, not by the tool's name, so a renamed tool keeps
   it), the judge gets `search_kb` over that index's own `knowledge_search()`.

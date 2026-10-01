@@ -287,7 +287,7 @@ _RESERVED_SEARCH_BACKEND_REASONS: Mapping[str, str] = {
 }
 
 RESERVED_SEARCH_BACKEND_NAMES: frozenset[str] = frozenset(_RESERVED_SEARCH_BACKEND_REASONS)
-"""Names ``tolokaforge.search_backends`` refuses to resolve (ADR-0052).
+"""Names ``tolokaforge.search_backends`` refuses to resolve (ADR-0053).
 
 ``typesense`` is the plane the runner serves itself: an adapter indexes the corpus
 host-side and declares ``search.plane: typesense``, and ``RegisterTrial`` registers

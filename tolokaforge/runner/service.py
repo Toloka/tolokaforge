@@ -3763,7 +3763,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return None
 
     # =========================================================================
-    # Search Index (ADR-0052)
+    # Search Index (ADR-0053)
     # =========================================================================
 
     def _build_search_index(

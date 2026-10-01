@@ -359,7 +359,7 @@ class SearchPlane(str, Enum):
 
     This enum is **not** an exhaustive, closed set: ``SearchConfig.plane`` is a free
     ``str`` naming a backend registered under ``tolokaforge.search_backends``
-    (ADR-0052), so a backend the engine does not ship round-trips with its own name.
+    (ADR-0053), so a backend the engine does not ship round-trips with its own name.
     These members are the canonical constants for the names the engine itself
     serves — first-party code references them instead of raw string literals.
     """

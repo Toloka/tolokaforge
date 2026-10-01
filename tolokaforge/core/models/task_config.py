@@ -159,7 +159,7 @@ class RagConfig(BaseModel):
     """``initial_state.rag``: the corpus, the search backend serving it, and its tool.
 
     ``backend`` names a backend registered under ``tolokaforge.search_backends``
-    (ADR-0052; ``rag_service`` is the engine's rag-service) and travels on the wire
+    (ADR-0053; ``rag_service`` is the engine's rag-service) and travels on the wire
     as ``search.plane``. ``backend_config`` is handed to that backend's factory
     verbatim — the engine never reads its keys. The dump carries only the fields
     the author wrote (see :func:`_dump_declared_fields_only`).

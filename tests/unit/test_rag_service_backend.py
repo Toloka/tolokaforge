@@ -1,7 +1,7 @@
 """The ``rag_service`` search backend keeps the behaviour the runner had before the seam.
 
 The expectations are literals on purpose: they are what the agent read, the request
-rag-service received and the refusals ``RegisterTrial`` returned before ADR-0052
+rag-service received and the refusals ``RegisterTrial`` returned before ADR-0053
 moved the code here, and a backend that drifted from any of them would change a
 default every rag task runs under.
 

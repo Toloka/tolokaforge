@@ -1,5 +1,5 @@
 """``SearchConfig`` on the wire: the backend's name in ``plane``, and two keys that stay off
-the wire at their default (ADR-0052).
+the wire at their default (ADR-0053).
 
 Every existing task must serialise exactly as before, because the runner and the
 grader parse ``TaskDescription`` with ``extra="forbid"`` models: a key an older image
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.unit
 
 
 class _PreSeamSearchConfig(BaseModel):
-    """``SearchConfig`` as an image released before ADR-0052 declares it."""
+    """``SearchConfig`` as an image released before ADR-0053 declares it."""
 
     enabled: bool = False
     plane: Literal["typesense", "rag_service"] | None = None
