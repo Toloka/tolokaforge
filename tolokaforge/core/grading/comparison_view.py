@@ -53,10 +53,12 @@ group: the three above register there like any rule a distribution ships. A rule
 decides which states hash equal, so registering one is a grading decision; the
 trust boundary is stated on :class:`ComparisonViewRule`.
 
-The module depends on the standard library and pydantic, and reaches the registry
-(:mod:`tolokaforge.core.plugin_registry`) only where a kind resolves: the runner
-applies the view too (:mod:`tolokaforge.core.grading.pre_hash`), and the
-runner-subset wheel excludes ``state_checks`` and ``combine``.
+The module depends on the standard library, pydantic and
+:mod:`tolokaforge.core.grading.omitted_fields` (the serializer helper the wire models
+share), and reaches the registry (:mod:`tolokaforge.core.plugin_registry`) only where
+a kind resolves: the runner applies the view too
+(:mod:`tolokaforge.core.grading.pre_hash`), and the runner-subset wheel excludes
+``state_checks`` and ``combine``.
 """
 
 from __future__ import annotations
@@ -80,7 +82,6 @@ from typing import (
     Final,
     Literal,
     Protocol,
-    TypeVar,
     cast,
     runtime_checkable,
 )
@@ -103,6 +104,8 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+
+from tolokaforge.core.grading.omitted_fields import schema_from_the_fields
 
 __all__ = [
     "COMPARISON_VIEW_FUNCTION_VERSION",
@@ -206,21 +209,6 @@ DottedPath = Annotated[StrictStr, AfterValidator(_dotted_path)]
 Scalar = StrictStr | StrictInt | StrictFloat | StrictBool | None
 
 
-_Serializer = TypeVar("_Serializer", bound=Callable[..., Any])
-
-
-def _schema_from_the_fields(serializer: _Serializer) -> _Serializer:
-    """Drop a model serializer's runtime return annotation, so the model keeps its schema.
-
-    Pydantic derives a wrap serializer's JSON schema from its return annotation, and a
-    ``dict[str, Any]`` one erases the model's; without one it keeps the schema the fields
-    give. (:mod:`tolokaforge.core.grading.omitted_fields` holds the same for the models
-    outside this standard-library-and-pydantic module.)
-    """
-    serializer.__annotations__.pop("return", None)
-    return serializer
-
-
 def _scalar(value: Any, what: str) -> Any:
     """``value`` if it is a JSON scalar; the unions below then see only values that fit."""
     if value is not None and not isinstance(value, str | int | float | bool):
@@ -259,7 +247,7 @@ class InCondition(BaseModel):
         return tuple(_scalar(item, "each value") for item in value)
 
     @model_serializer(mode="wrap")
-    @_schema_from_the_fields
+    @schema_from_the_fields
     def _under_its_alias(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         dumped = handler(self)
         return {"in": dumped["in"] if "in" in dumped else dumped["any_of"]}

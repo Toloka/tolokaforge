@@ -145,8 +145,9 @@ parity test. The wire carries the view's diff and record in one field,
 
 ### The function
 
-`tolokaforge/core/grading/comparison_view.py`. It depends on stdlib and
-pydantic, and reaches `tolokaforge.core.plugin_registry` only where a kind
+`tolokaforge/core/grading/comparison_view.py`. It depends on stdlib, pydantic
+and `core/grading/omitted_fields.py` (the serializer helper the wire models
+share), and reaches `tolokaforge.core.plugin_registry` only where a kind
 resolves. The wiring makes it runner-reachable — it ships in the runner subset
 wheel — so it must not import `state_checks.py` or `combine.py`, which the subset
 wheel excludes. The composition of steps 1–3 below is `core/grading/pre_hash.py`
