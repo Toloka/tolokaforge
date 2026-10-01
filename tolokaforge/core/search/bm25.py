@@ -65,10 +65,15 @@ __all__ = [
     "Bm25SearchBackend",
     "Bm25SearchIndex",
     "Bm25TextRender",
+    "CorpusFile",
     "IndexedCorpus",
     "OkapiBm25",
     "clear_index_cache",
+    "corpus_fingerprint",
+    "documents_from_files",
+    "files_fingerprint",
     "load_bm25_corpus",
+    "read_corpus_files",
 ]
 
 
@@ -458,78 +463,113 @@ _TEXT_SUFFIXES = frozenset({".md", ".txt"})
 _JSON_SUFFIX = ".json"
 
 
-def _document_from_json(path: Path) -> Bm25Document:
+@dataclass(frozen=True)
+class CorpusFile:
+    """One regular file of the corpus directory, read once: its name and its bytes."""
+
+    name: str
+    data: bytes
+
+    @property
+    def stem(self) -> str:
+        return Path(self.name).stem
+
+    @property
+    def suffix(self) -> str:
+        return Path(self.name).suffix.lower()
+
+    def text(self) -> str:
+        try:
+            return self.data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise Bm25CorpusError(f"{self.name}: not UTF-8 text: {exc}") from exc
+
+
+def read_corpus_files(corpus_dir: Path) -> tuple[CorpusFile, ...]:
+    """Every regular file of ``corpus_dir`` in file-name order, each read exactly once.
+
+    The fingerprint and the documents are both derived from these bytes, so a
+    build opens each file once.
+
+    Raises:
+        Bm25CorpusError: the directory does not exist.
+    """
+    if not corpus_dir.is_dir():
+        raise Bm25CorpusError(f"corpus directory {corpus_dir} does not exist")
+    return tuple(
+        CorpusFile(name=path.name, data=path.read_bytes())
+        for path in sorted(corpus_dir.iterdir(), key=lambda p: p.name)
+        if path.is_file()
+    )
+
+
+def _document_from_json(file: CorpusFile) -> Bm25Document:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise Bm25CorpusError(f"{path.name}: not a JSON document: {exc}") from exc
+        payload = json.loads(file.text())
+    except ValueError as exc:
+        raise Bm25CorpusError(f"{file.name}: not a JSON document: {exc}") from exc
     if not isinstance(payload, dict):
         raise Bm25CorpusError(
-            f"{path.name}: a JSON document is one object with id, title and content, "
+            f"{file.name}: a JSON document is one object with id, title and content, "
             f"got {type(payload).__name__}"
         )
     missing = [key for key in ("id", "title", "content") if key not in payload]
     if missing:
-        raise Bm25CorpusError(f"{path.name}: JSON document is missing {missing}")
+        raise Bm25CorpusError(f"{file.name}: JSON document is missing {missing}")
     values: dict[str, str] = {}
     for key in ("id", "title", "content"):
         value = payload[key]
         if not isinstance(value, str):
             raise Bm25CorpusError(
-                f"{path.name}: JSON document's {key!r} is {type(value).__name__}, not a string"
+                f"{file.name}: JSON document's {key!r} is {type(value).__name__}, not a string"
             )
         values[key] = value
     if not values["id"].strip():
-        raise Bm25CorpusError(f"{path.name}: JSON document's 'id' is blank")
+        raise Bm25CorpusError(f"{file.name}: JSON document's 'id' is blank")
     return Bm25Document(
-        id=values["id"], title=values["title"], content=values["content"], source=path.name
+        id=values["id"], title=values["title"], content=values["content"], source=file.name
     )
 
 
-def _document_from_text(path: Path) -> Bm25Document:
-    try:
-        content = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise Bm25CorpusError(f"{path.name}: not UTF-8 text: {exc}") from exc
-    return Bm25Document(id=path.stem, title=path.stem, content=content, source=path.name)
+def _document_from_text(file: CorpusFile) -> Bm25Document:
+    return Bm25Document(id=file.stem, title=file.stem, content=file.text(), source=file.name)
 
 
-def _reader_for(path: Path, document_format: str) -> Callable[[Path], Bm25Document] | None:
-    suffix = path.suffix.lower()
-    if document_format in ("auto", "json") and suffix == _JSON_SUFFIX:
+def _reader_for(
+    file: CorpusFile, document_format: str
+) -> Callable[[CorpusFile], Bm25Document] | None:
+    if document_format in ("auto", "json") and file.suffix == _JSON_SUFFIX:
         return _document_from_json
-    if document_format in ("auto", "text") and suffix in _TEXT_SUFFIXES:
+    if document_format in ("auto", "text") and file.suffix in _TEXT_SUFFIXES:
         return _document_from_text
     return None
 
 
-def load_bm25_corpus(corpus_dir: Path, config: Bm25DocumentsConfig) -> tuple[Bm25Document, ...]:
-    """The documents of ``corpus_dir`` in corpus order, per :class:`Bm25DocumentsConfig`.
+def documents_from_files(
+    files: Sequence[CorpusFile], config: Bm25DocumentsConfig, *, corpus_dir: Path
+) -> tuple[Bm25Document, ...]:
+    """The documents among ``files`` in corpus order, per :class:`Bm25DocumentsConfig`.
 
     Raises:
-        Bm25CorpusError: the directory is missing, a document is malformed or
-            blank, two documents share an id, or nothing loads.
+        Bm25CorpusError: a document is malformed or blank, two documents share an
+            id, or nothing loads. ``corpus_dir`` names the directory in the refusal.
     """
-    if not corpus_dir.is_dir():
-        raise Bm25CorpusError(f"corpus directory {corpus_dir} does not exist")
     documents: list[Bm25Document] = []
     seen: dict[str, str] = {}
-    for path in sorted(corpus_dir.iterdir(), key=lambda p: p.name):
-        if not path.is_file():
+    for file in files:
+        if config.skip_prefix and file.name.startswith(config.skip_prefix):
             continue
-        if config.skip_prefix and path.name.startswith(config.skip_prefix):
-            continue
-        reader = _reader_for(path, config.format)
+        reader = _reader_for(file, config.format)
         if reader is None:
             continue
-        document = reader(path)
+        document = reader(file)
         if not document.content.strip():
-            raise Bm25CorpusError(f"{path.name}: document {document.id!r} has no content")
+            raise Bm25CorpusError(f"{file.name}: document {document.id!r} has no content")
         if document.id in seen:
             raise Bm25CorpusError(
-                f"{path.name}: document id {document.id!r} is already used by {seen[document.id]}"
+                f"{file.name}: document id {document.id!r} is already used by {seen[document.id]}"
             )
-        seen[document.id] = path.name
+        seen[document.id] = file.name
         documents.append(document)
     if not documents:
         raise Bm25CorpusError(
@@ -539,20 +579,30 @@ def load_bm25_corpus(corpus_dir: Path, config: Bm25DocumentsConfig) -> tuple[Bm2
     return tuple(documents)
 
 
-def corpus_fingerprint(corpus_dir: Path) -> str:
-    """A digest of every regular file's name and bytes, the other half of the cache key."""
-    if not corpus_dir.is_dir():
-        raise Bm25CorpusError(f"corpus directory {corpus_dir} does not exist")
+def load_bm25_corpus(corpus_dir: Path, config: Bm25DocumentsConfig) -> tuple[Bm25Document, ...]:
+    """The documents of ``corpus_dir`` in corpus order, per :class:`Bm25DocumentsConfig`.
+
+    Raises:
+        Bm25CorpusError: the directory is missing, a document is malformed or
+            blank, two documents share an id, or nothing loads.
+    """
+    return documents_from_files(read_corpus_files(corpus_dir), config, corpus_dir=corpus_dir)
+
+
+def files_fingerprint(files: Sequence[CorpusFile]) -> str:
+    """A digest of every file's name and bytes, the other half of the cache key."""
     digest = hashlib.sha256()
-    for path in sorted(corpus_dir.iterdir(), key=lambda p: p.name):
-        if not path.is_file():
-            continue
-        data = path.read_bytes()
-        digest.update(path.name.encode("utf-8"))
+    for file in files:
+        digest.update(file.name.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(len(data).to_bytes(8, "big"))
-        digest.update(data)
+        digest.update(len(file.data).to_bytes(8, "big"))
+        digest.update(file.data)
     return digest.hexdigest()
+
+
+def corpus_fingerprint(corpus_dir: Path) -> str:
+    """:func:`files_fingerprint` over the directory's files, read for this call."""
+    return files_fingerprint(read_corpus_files(corpus_dir))
 
 
 # =============================================================================
@@ -598,13 +648,14 @@ def _indexed_corpus(corpus_dir: Path, config: Bm25BackendConfig) -> tuple[Indexe
     The key is the corpus's content, not its path: every trial of a task extracts
     the same files to a fresh directory. The sixteen most recently used corpora stay.
     """
-    key = (corpus_fingerprint(corpus_dir), config.fingerprint())
+    files = read_corpus_files(corpus_dir)
+    key = (files_fingerprint(files), config.fingerprint())
     with _cache_lock:
         cached = _cache.get(key)
         if cached is not None:
             _cache.move_to_end(key)
             return cached, True
-    documents = load_bm25_corpus(corpus_dir, config.documents)
+    documents = documents_from_files(files, config.documents, corpus_dir=corpus_dir)
     tokenizer = TOKENIZERS[config.tokenizer]
     scorer = OkapiBm25(
         [tokenizer(document.indexed_text(config.documents.fields)) for document in documents],
