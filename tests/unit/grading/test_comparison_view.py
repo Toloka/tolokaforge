@@ -245,6 +245,39 @@ def test_the_block_round_trips_through_its_json_dump() -> None:
     assert again.config_sha256() == view.config_sha256()
 
 
+_DUMP_OPTIONS = (
+    pytest.param({}, id="default"),
+    pytest.param({"mode": "json"}, id="json"),
+    pytest.param({"by_alias": True}, id="by-alias"),
+    pytest.param({"exclude_unset": True}, id="exclude-unset"),
+    pytest.param({"exclude_defaults": True}, id="exclude-defaults"),
+    pytest.param({"exclude_none": True}, id="exclude-none"),
+    pytest.param({"mode": "json", "exclude_defaults": True, "exclude_none": True}, id="all"),
+)
+
+
+@pytest.mark.parametrize("options", _DUMP_OPTIONS)
+def test_every_dump_validates_back(options: dict[str, Any]) -> None:
+    view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _JOURNAL_KEYS, _BOOKKEEPING)
+    dumped = view.model_dump(**options)
+    assert [rule["kind"] for rule in dumped["rules"]] == [rule.kind for rule in view.rules]
+    assert ComparisonViewConfig.model_validate(dumped) == view
+    assert (
+        ComparisonViewConfig.model_validate_json(
+            view.model_dump_json(**{key: value for key, value in options.items() if key != "mode"})
+        )
+        == view
+    )
+
+
+def test_a_rule_built_without_its_kind_dumps_it_under_exclude_unset() -> None:
+    view = ComparisonViewConfig(version=1, rules=(ExcludeTablesConfig(tables=("t",), reason="r"),))
+    assert view.model_dump(exclude_unset=True)["rules"] == [
+        {"kind": "exclude_tables", "tables": ("t",), "reason": "r"}
+    ]
+    assert ComparisonViewConfig.model_validate(view.model_dump(exclude_unset=True)) == view
+
+
 def test_the_in_operator_dumps_under_its_alias_without_being_asked() -> None:
     """The trial spec crosses as a plain ``model_dump_json()``, which must validate back."""
     view = _view(_DRAFT_PROPOSALS)

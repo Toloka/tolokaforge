@@ -179,3 +179,16 @@ def test_leaving_the_key_out_keeps_the_serialization_schema(model: type[BaseMode
 def test_the_in_operator_keeps_its_serialization_schema() -> None:
     schema = InCondition.model_json_schema(mode="serialization")
     assert set(schema["properties"]) == {"in"} and schema["required"] == ["in"]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"exclude_defaults": True}, {"exclude_unset": True}, {"exclude_none": True}],
+    ids=["default", "exclude-defaults", "exclude-unset", "exclude-none"],
+)
+@pytest.mark.parametrize("model", [StateChecksConfig, RunnerStateChecksConfig])
+def test_a_block_with_a_view_validates_back_under_every_dump_option(
+    model: type[BaseModel], options: dict[str, Any]
+) -> None:
+    block = model(comparison_view=_VIEW)
+    assert model.model_validate_json(block.model_dump_json(**options)) == block

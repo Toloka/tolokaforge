@@ -1445,15 +1445,23 @@ class ComparisonViewConfig(BaseModel):
     def _each_rule_as_its_own_model(
         self, rules: tuple[ComparisonViewRuleConfig, ...], info: FieldSerializationInfo
     ) -> list[dict[str, Any]]:
-        """Dump every rule with its own config model, not the base the field declares."""
+        """Dump every rule with its own config model, not the base the field declares.
+
+        ``kind`` is kept under every dump option: it is what the entry resolves through,
+        so a dump leaving it out (``exclude_defaults`` drops a ``kind`` at its default,
+        ``exclude_unset`` one a constructor filled in) would not validate back.
+        """
         return [
-            rule.model_dump(
-                mode=info.mode,
-                by_alias=info.by_alias,
-                exclude_unset=info.exclude_unset,
-                exclude_defaults=info.exclude_defaults,
-                exclude_none=info.exclude_none,
-            )
+            {
+                "kind": rule.kind,
+                **rule.model_dump(
+                    mode=info.mode,
+                    by_alias=info.by_alias,
+                    exclude_unset=info.exclude_unset,
+                    exclude_defaults=info.exclude_defaults,
+                    exclude_none=info.exclude_none,
+                ),
+            }
             for rule in rules
         ]
 
