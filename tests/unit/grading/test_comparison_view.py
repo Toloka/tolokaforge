@@ -1,8 +1,9 @@
-"""The comparison view's block, rule table, invariants and record (ADR-0053).
+"""The comparison view's block, rule resolution, invariants and record (ADR-0053).
 
 What each ``exclude_records`` condition, path and reference matches is covered in
 ``test_comparison_view_exclude_records.py``; the load-time check against a task's
-initial state in ``test_comparison_view_findings.py``.
+initial state in ``test_comparison_view_findings.py``; a rule registered out of tree,
+and the rule contract, in ``tests/canonical/test_comparison_view_rule_registry.py``.
 """
 
 from __future__ import annotations
@@ -18,6 +19,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from tests.utils.comparison_view_rules import (
+    RecordsWhatItIsHanded,
+    install_rule_distribution,
+    target,
+)
+from tolokaforge.core._runner_subset import is_in_runner_subset
 from tolokaforge.core.grading import comparison_view
 from tolokaforge.core.grading.comparison_view import (
     COMPARISON_VIEW_FUNCTION_VERSION,
@@ -26,14 +33,17 @@ from tolokaforge.core.grading.comparison_view import (
     ComparisonViewRule,
     ExcludeRecords,
     ExcludeRecordsConfig,
+    ExcludeTables,
     ExcludeTablesConfig,
     RuleApplication,
-    RuleOutcome,
     apply_comparison_view,
-    comparison_view_rules,
     resolve_comparison_view_rule,
 )
 from tolokaforge.core.hash import compute_stable_hash
+from tolokaforge.core.plugin_registry import (
+    UnknownImplementationError,
+    available_comparison_view_rules,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -103,28 +113,29 @@ _INITIAL: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
-# The rule table
+# Rule resolution
 # ---------------------------------------------------------------------------
 
 
-def test_the_rule_table_holds_each_built_in_rule_under_its_kind() -> None:
-    table = comparison_view_rules()
-    assert sorted(table) == ["exclude_records", "exclude_tables"]
-    for kind, rule in table.items():
-        assert isinstance(rule, ComparisonViewRule)
-        assert rule.kind == kind
-        assert rule.config_model.model_fields["kind"].default == kind
-        assert resolve_comparison_view_rule(kind) is rule
+@pytest.mark.parametrize(
+    ("kind", "rule"), [("exclude_records", ExcludeRecords), ("exclude_tables", ExcludeTables)]
+)
+def test_each_built_in_rule_resolves_through_the_entry_point_group(
+    kind: str, rule: type[ComparisonViewRule]
+) -> None:
+    assert kind in available_comparison_view_rules()
+    assert resolve_comparison_view_rule(kind) is rule
+    assert kind == rule.NAME
+    assert rule.VERSION == 1
+    assert rule.config_model.model_fields["kind"].default == kind
+    assert isinstance(rule(), ComparisonViewRule)
 
 
-def test_the_rule_table_cannot_be_changed_in_place() -> None:
-    with pytest.raises(TypeError):
-        comparison_view_rules()["custom"] = ExcludeRecords()  # type: ignore[index]
-
-
-def test_resolving_an_unknown_kind_names_the_known_ones() -> None:
-    with pytest.raises(ComparisonViewError, match=r"'custom'; known kinds: \['exclude_records'"):
+def test_resolving_an_unknown_kind_names_the_registered_ones() -> None:
+    with pytest.raises(UnknownImplementationError) as caught:
         resolve_comparison_view_rule("custom")
+    assert caught.value.known == available_comparison_view_rules()
+    assert "'tolokaforge.comparison_view_rules'" in str(caught.value)
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +144,11 @@ def test_resolving_an_unknown_kind_names_the_known_ones() -> None:
 
 
 @pytest.mark.parametrize("kind", ["drop_fields", "unordered", "custom", 3, ["exclude_tables"]])
-def test_an_unknown_kind_is_refused_naming_the_known_ones(kind: Any) -> None:
+def test_an_unknown_kind_is_refused_naming_the_registered_ones(kind: Any) -> None:
     message = _refusal({"version": 1, "rules": [{"kind": kind}]})
     assert f"rules[0]: unknown comparison_view rule kind {kind!r}" in message
-    assert "known kinds: ['exclude_records', 'exclude_tables']" in message
+    assert f"registered kinds: {available_comparison_view_rules()}" in message
+    assert "'tolokaforge.comparison_view_rules' entry-point group" in message
 
 
 @pytest.mark.parametrize("version", [2, 0, True, 1.0, "1", None])
@@ -184,6 +196,15 @@ def test_a_config_instance_stands_in_for_its_entry() -> None:
     config = ExcludeTablesConfig(tables=("agent_discoverable_tools",), reason="bookkeeping")
     view = ComparisonViewConfig(version=1, rules=(config,))
     assert view.rules == (config,)
+
+
+def test_a_config_instance_of_another_rules_model_is_refused() -> None:
+    config = ExcludeTablesConfig(tables=("agent_discoverable_tools",), reason="bookkeeping")
+    impostor = ExcludeTablesConfig.model_construct(**{**dict(config), "kind": "exclude_records"})
+    message = _refusal({"version": 1, "rules": [impostor]})
+    assert (
+        "rules[0] is a ExcludeTablesConfig, not the exclude_records rule's config model" in message
+    )
 
 
 def test_a_validated_view_cannot_change() -> None:
@@ -280,37 +301,29 @@ def test_the_input_is_never_mutated_and_the_view_shares_nothing_with_it() -> Non
     assert state == _STATE
 
 
-class _RuleThatMutatesTheInitialState:
-    """Stands in for a rule that breaks the Protocol's no-mutation contract."""
-
-    kind = "exclude_tables"
-    config_model = ExcludeTablesConfig
-
-    def __init__(self) -> None:
-        self.seen: list[Any] = []
-
-    def apply(self, state: dict[str, Any], *, initial: Any, id_fields: Any, config: Any) -> Any:
-        self.seen.append(initial)
-        initial["transfer_holds"].append({"id": "HOLD-9"})
-        return RuleOutcome(state=state, applied=())
-
-
-def test_the_rules_get_one_private_copy_of_the_initial_state(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_rules_get_one_private_copy_of_the_initial_state_and_the_id_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    view = _view(
-        {"kind": "exclude_tables", "tables": ["a"], "reason": "r"},
-        {"kind": "exclude_tables", "tables": ["b"], "reason": "r"},
+    """A rule that tries to change what it is handed changes nothing of the caller's."""
+    install_rule_distribution(
+        monkeypatch, tmp_path, {"drop_field": target("RecordsWhatItIsHanded")}
     )
-    rule = _RuleThatMutatesTheInitialState()
-    monkeypatch.setattr(
-        comparison_view, "_BUILTIN_RULES", MappingProxyType({"exclude_tables": rule})
+    monkeypatch.setattr(RecordsWhatItIsHanded, "seen", [])
+    view = _view(
+        {"kind": "drop_field", "table": "transfer_holds", "field": "status"},
+        {"kind": "drop_field", "table": "transfer_equipment", "field": "hold_id"},
     )
     initial = copy.deepcopy(_INITIAL)
-    apply_comparison_view(_STATE, initial=initial, view=view, id_fields={})
+    id_fields: dict[str, str | list[str]] = {"transfer_holds": ["id"]}
+    apply_comparison_view(_STATE, initial=initial, view=view, id_fields=id_fields)
+    first, second = RecordsWhatItIsHanded.seen
     assert initial == _INITIAL
-    assert rule.seen[0] is rule.seen[1]
-    assert rule.seen[0] is not initial
+    assert first["initial"] is second["initial"]
+    assert first["initial"] is not initial
+    assert first["state"] is not _STATE
+    assert isinstance(first["id_fields"], MappingProxyType)
+    assert first["id_fields"] == id_fields
+    assert first["id_fields"]["transfer_holds"] is not id_fields["transfer_holds"]
 
 
 def test_the_same_inputs_give_the_same_view_and_record() -> None:
@@ -394,10 +407,13 @@ def test_the_record_names_the_version_the_function_and_what_each_rule_did() -> N
 
 
 def test_the_config_sha_is_pinned() -> None:
-    """The sha is part of the record: a change to what is hashed changes every recorded one."""
+    """The sha is part of the record: a change to what is hashed changes every recorded one.
+
+    Per rule it hashes the kind, the rule's ``VERSION`` and the non-default settings.
+    """
     view = _view(_RELEASED_HOLDS, _ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _BOOKKEEPING)
     assert view.config_sha256() == (
-        "751b8799c0409f2594e6b5394e8b9a4302b82a0ee5e5935d660cc29d75454ef4"
+        "777ab1ab86b84ea2d911f659c0f1b8f20723a01cb25b77975e3bb01b74d66ce2"
     )
 
 
@@ -521,13 +537,26 @@ def test_a_trial_that_differs_only_in_optional_records_gets_the_goldens_digest(
 # ---------------------------------------------------------------------------
 
 
-def test_the_module_depends_on_the_standard_library_and_pydantic_only() -> None:
-    """The runner applies the view too, so the module must not reach an orchestrator-only file."""
+def test_the_module_depends_on_the_standard_library_pydantic_and_the_registry_only() -> None:
+    """The runner applies the view too, so the module must not reach an orchestrator-only file.
+
+    The one engine module it imports is the registry its kinds resolve through, which
+    ships in the runner subset.
+    """
     tree = ast.parse(Path(comparison_view.__file__).read_text(encoding="utf-8"))
-    roots: set[str] = set()
+    imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            roots.update(alias.name.partition(".")[0] for alias in node.names)
+            imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            roots.add("<relative>" if node.level else (node.module or "").partition(".")[0])
-    assert roots - set(sys.stdlib_module_names) - {"pydantic"} == set()
+            module = "<relative>" if node.level else (node.module or "")
+            names = [alias.name for alias in node.names]
+            imported.update(
+                f"{module}.{name}" if module == "tolokaforge.core" else module for name in names
+            )
+    roots = {name.partition(".")[0] for name in imported}
+    assert roots - set(sys.stdlib_module_names) - {"pydantic", "tolokaforge"} == set()
+    assert {name for name in imported if name.startswith("tolokaforge")} == {
+        "tolokaforge.core.plugin_registry"
+    }
+    assert is_in_runner_subset("tolokaforge/core/plugin_registry.py")

@@ -28,8 +28,15 @@ path, and a value that does not fit raises :class:`ComparisonViewError`, as does
 every rule that cannot apply. The input is never mutated, and the same inputs
 give the same view and the same :class:`ComparisonViewRecord`.
 
-The module depends on the standard library and pydantic only: the runner will
-apply the view too, and the runner-subset wheel excludes ``state_checks`` and
+A rule is a class registered in the ``tolokaforge.comparison_view_rules``
+entry-point group (:class:`ComparisonViewRule`), and ``kind`` resolves through the
+group: the two above register there like any rule a distribution ships. A rule
+decides which states hash equal, so registering one is a grading decision; the
+trust boundary is stated on :class:`ComparisonViewRule`.
+
+The module depends on the standard library and pydantic, and reaches the registry
+(:mod:`tolokaforge.core.plugin_registry`) only where a kind resolves: the runner
+will apply the view too, and the runner-subset wheel excludes ``state_checks`` and
 ``combine``.
 """
 
@@ -44,8 +51,8 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from types import MappingProxyType
-from typing import Annotated, Any, Final, Literal, Protocol, cast, runtime_checkable
+from types import MappingProxyType, ModuleType
+from typing import Annotated, Any, ClassVar, Final, Literal, Protocol, cast, runtime_checkable
 
 from pydantic import (
     AfterValidator,
@@ -77,14 +84,15 @@ __all__ = [
     "RuleApplication",
     "RuleOutcome",
     "apply_comparison_view",
-    "comparison_view_rules",
     "resolve_comparison_view_rule",
 ]
 
 COMPARISON_VIEW_FUNCTION_VERSION: Final[int] = 1
-"""Version of what the rules compute. Bumped on any change to the view a rule
-produces from the same inputs, so a recorded view can be told apart from one a
-later engine would compute."""
+"""Version of how :func:`apply_comparison_view` composes its rules: their order,
+what each is handed and what the record holds. Bumped on any change to the view it
+composes from the same rules, so a recorded view can be told apart from one a later
+engine would compute. A change to what one rule computes bumps that rule's
+``VERSION`` instead (:class:`ComparisonViewRule`)."""
 
 COMPARISON_VIEW_VERSIONS: Final[tuple[int, ...]] = (1,)
 """Schema versions of the ``comparison_view`` block this engine reads."""
@@ -264,8 +272,11 @@ def _error_summary(exc: ValidationError) -> str:
 class ComparisonViewRuleConfig(BaseModel):
     """One entry of ``comparison_view.rules``, validated by the rule its ``kind`` names.
 
-    Every rule's config model derives from this class. ``kind`` is the entry's
-    key in the rule table; everything else belongs to the rule.
+    Every rule's config model derives from this class and keeps its
+    ``extra="forbid"``, so an entry key the rule does not declare is refused.
+    ``kind`` is the name the rule is registered under; everything else belongs to
+    the rule. A field named ``reason`` is prose: :meth:`ComparisonViewConfig.config_sha256`
+    leaves it out.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -403,7 +414,7 @@ class ComparisonViewResult:
 
 
 # ---------------------------------------------------------------------------
-# The rule table
+# The seam
 # ---------------------------------------------------------------------------
 
 
@@ -411,15 +422,57 @@ class ComparisonViewResult:
 class ComparisonViewRule(Protocol):
     """A rule the ``kind`` of a ``comparison_view`` entry resolves to.
 
-    ``config_model`` validates the entry. ``apply`` is a pure function of one
-    state, its initial state and the rule's config: it must not mutate ``state``
-    or ``initial``, returns the next state in its outcome (unchanged tables may
-    be shared with ``state``), and raises :class:`ComparisonViewError` when the
-    state does not fit the declaration.
+    A rule is a class a distribution registers under its ``NAME`` in the
+    ``tolokaforge.comparison_view_rules`` entry-point group; the view instantiates
+    it, without arguments, for each entry naming it::
+
+        [project.entry-points."tolokaforge.comparison_view_rules"]
+        drop_drafts = "acme_rules:DropDrafts"
+
+    - ``NAME`` equals the entry-point name.
+    - ``VERSION`` is a positive int, the version of what the rule computes: bump it
+      on any change to the view the rule produces from the same inputs.
+      :meth:`ComparisonViewConfig.config_sha256` hashes it with ``NAME`` and the
+      entry's settings, so a recorded view names the implementation behind it.
+    - ``config_model`` validates the entry. It derives from
+      :class:`ComparisonViewRuleConfig`, keeps ``extra="forbid"``, and narrows
+      ``kind`` to ``Literal[NAME]``.
+    - ``apply`` is a pure function of one state, its initial state and the rule's
+      config. It must not mutate ``state``, ``initial`` or ``id_fields``; it returns
+      the next state in its outcome (unchanged tables may be shared with
+      ``state``) with a :class:`RuleApplication` per table it touched, recorded
+      under its ``NAME``; and it raises :class:`ComparisonViewError` when the state
+      does not fit the declaration.
+
+    :func:`resolve_comparison_view_rule` refuses a registration that breaks the
+    declared parts of this contract, and :func:`apply_comparison_view` an outcome
+    that does.
+
+    **The trust boundary.** A rule decides which two states hash equal, so a
+    registered rule can turn a failing trial into a passing one: a rule that drops
+    every table passes anything. That is a stronger grant than a judge kind's or a
+    search backend's. A rule rewrites the evidence the binary hash verdict is
+    computed from, before every mask, and only its identity in the grade shows that
+    it did. The engine holds a rule to four things:
+
+    - it runs only for a task whose ``comparison_view`` names its kind, so
+      installing a distribution changes the grade of no other task;
+    - a name has one registration: a second distribution registering a name, a
+      built-in's included, fails every lookup into the group
+      (:class:`~tolokaforge.core.plugin_registry.DuplicateRegistrationError`);
+    - it sees one side: the other state is never an input, and the view hands
+      its rules a deep copy of the state, the initial state and ``id_fields``;
+    - its identity is in the grade: ``NAME`` and ``VERSION`` are hashed into the
+      record's ``config_sha256``, and what it did is recorded under its ``NAME``.
+
+    Nothing in the engine tells a sound rule from an unsound one. A rule is part of
+    the answer key: review and pin a distribution that registers one as a task's
+    golden actions are reviewed.
     """
 
-    kind: str
-    config_model: type[ComparisonViewRuleConfig]
+    NAME: ClassVar[str]
+    VERSION: ClassVar[int]
+    config_model: ClassVar[type[ComparisonViewRuleConfig]]
 
     def apply(
         self,
@@ -434,8 +487,9 @@ class ComparisonViewRule(Protocol):
 class ExcludeRecords:
     """The ``exclude_records`` rule."""
 
-    kind = "exclude_records"
-    config_model: type[ComparisonViewRuleConfig] = ExcludeRecordsConfig
+    NAME: ClassVar[str] = "exclude_records"
+    VERSION: ClassVar[int] = 1
+    config_model: ClassVar[type[ComparisonViewRuleConfig]] = ExcludeRecordsConfig
 
     def apply(
         self,
@@ -463,15 +517,16 @@ class ExcludeRecords:
 
     def _application(self, config: ExcludeRecordsConfig, *, removed: int) -> RuleApplication:
         return RuleApplication(
-            kind=self.kind, table=config.table, path=config.path, rows_removed=removed
+            kind=self.NAME, table=config.table, path=config.path, rows_removed=removed
         )
 
 
 class ExcludeTables:
     """The ``exclude_tables`` rule."""
 
-    kind = "exclude_tables"
-    config_model: type[ComparisonViewRuleConfig] = ExcludeTablesConfig
+    NAME: ClassVar[str] = "exclude_tables"
+    VERSION: ClassVar[int] = 1
+    config_model: ClassVar[type[ComparisonViewRuleConfig]] = ExcludeTablesConfig
 
     def apply(
         self,
@@ -484,7 +539,7 @@ class ExcludeTables:
         config = cast(ExcludeTablesConfig, config)
         dropped = set(config.tables)
         applied = tuple(
-            RuleApplication(kind=self.kind, table=table, rows_removed=_row_count(state, table))
+            RuleApplication(kind=self.NAME, table=table, rows_removed=_row_count(state, table))
             for table in config.tables
         )
         kept = {table: rows for table, rows in state.items() if table not in dropped}
@@ -498,30 +553,85 @@ def _row_count(state: Mapping[str, Any], table: str) -> int:
     return len(rows) if isinstance(rows, list) else 1
 
 
-_BUILTIN_RULES: Final[Mapping[str, ComparisonViewRule]] = MappingProxyType(
-    {rule.kind: rule for rule in (ExcludeRecords(), ExcludeTables())}
-)
+def _registry() -> ModuleType:
+    """:mod:`tolokaforge.core.plugin_registry`, imported where a kind resolves.
 
-
-def comparison_view_rules() -> Mapping[str, ComparisonViewRule]:
-    """The rule table a ``comparison_view`` entry's ``kind`` resolves through.
-
-    Only the built-in rules. Turning third-party rules on later changes this
-    function alone: it merges the ``tolokaforge.comparison_view_rules``
-    entry-point group into the built-ins and refuses duplicates (ADR-0053
-    § Extensibility).
+    Not at module level: the registry imports every seam's module and the engine's
+    config models, which importing this module must not load.
     """
-    return _BUILTIN_RULES
+    from tolokaforge.core import plugin_registry
+
+    return plugin_registry
 
 
-def resolve_comparison_view_rule(kind: str) -> ComparisonViewRule:
-    """The rule ``kind`` names, or :class:`ComparisonViewError` naming the known kinds."""
-    rules = comparison_view_rules()
-    if not isinstance(kind, str) or kind not in rules:
-        raise ComparisonViewError(
-            f"unknown comparison_view rule kind {kind!r}; known kinds: {sorted(rules)}"
+def resolve_comparison_view_rule(kind: str) -> type[ComparisonViewRule]:
+    """The rule class registered as ``kind`` in ``tolokaforge.comparison_view_rules``.
+
+    Raises:
+        UnknownImplementationError: nothing registers ``kind``; the error lists what
+            is registered.
+        DuplicateRegistrationError: two distributions register one name.
+        TypeError: the registration is not a rule — see :func:`_a_rule`.
+    """
+    return _a_rule(kind, _registry().load_comparison_view_rule(kind))
+
+
+def _a_rule(kind: str, loaded: object) -> type[ComparisonViewRule]:
+    """``loaded`` as the rule registered as ``kind``, or :class:`TypeError` naming what it lacks.
+
+    Checks the declared parts of :class:`ComparisonViewRule`: a class whose ``NAME``
+    is ``kind``, whose ``VERSION`` is a positive int, whose ``config_model`` derives
+    from :class:`ComparisonViewRuleConfig` and forbids extra keys, and which has an
+    ``apply``.
+    """
+    where = f"the comparison_view rule registered as {kind!r}"
+    if not isinstance(loaded, type):
+        raise TypeError(f"{where} is {loaded!r}, not a class")
+    name = getattr(loaded, "NAME", None)
+    if name != kind:
+        raise TypeError(
+            f"{where} is {loaded.__qualname__}, whose NAME is {name!r}; a rule is "
+            f"registered under its NAME"
         )
-    return rules[kind]
+    version = getattr(loaded, "VERSION", None)
+    if type(version) is not int or version < 1:
+        raise TypeError(
+            f"{where} declares VERSION {version!r}; a rule's VERSION is a positive int, "
+            f"hashed into the view's config_sha256"
+        )
+    config_model = getattr(loaded, "config_model", None)
+    if not (isinstance(config_model, type) and issubclass(config_model, ComparisonViewRuleConfig)):
+        raise TypeError(
+            f"{where} declares config_model {config_model!r}, which does not derive from "
+            f"ComparisonViewRuleConfig"
+        )
+    if config_model.model_config.get("extra") != "forbid":
+        raise TypeError(
+            f"{where} declares config_model {config_model.__qualname__}, which does not "
+            f'forbid extra keys; a rule\'s entry refuses a key it does not declare (extra="forbid")'
+        )
+    if not callable(getattr(loaded, "apply", None)):
+        raise TypeError(f"{where} has no apply method")
+    return cast(type[ComparisonViewRule], loaded)
+
+
+def _checked_outcome(rule: type[ComparisonViewRule], outcome: object) -> RuleOutcome:
+    """``outcome`` as ``rule`` returned it, or :class:`TypeError` if it breaks the contract."""
+    where = f"comparison_view rule {rule.NAME!r}"
+    if not isinstance(outcome, RuleOutcome) or not isinstance(outcome.state, dict):
+        raise TypeError(
+            f"{where} returned {outcome!r}; apply returns a RuleOutcome holding the next "
+            f"state as a dict"
+        )
+    if not all(isinstance(application, RuleApplication) for application in outcome.applied):
+        raise TypeError(f"{where} reports {outcome.applied!r}, not RuleApplication entries")
+    foreign = sorted({application.kind for application in outcome.applied} - {rule.NAME})
+    if foreign:
+        raise TypeError(
+            f"{where} reports applications under {foreign}; a rule records what it did "
+            f"under its own NAME"
+        )
+    return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -773,8 +883,9 @@ def _rewrite_at(value: Any, segments: Sequence[str], leaf: Callable[[Any], Any],
 class ComparisonViewConfig(BaseModel):
     """The ``state_checks.comparison_view`` block: a schema version and rules in list order.
 
-    ``kind`` resolves through :func:`comparison_view_rules`, not a static union, so
-    a rule the table gains later validates the same way the built-ins do. Dump it
+    ``kind`` resolves through the ``tolokaforge.comparison_view_rules`` entry-point
+    group (:func:`resolve_comparison_view_rule`), not a static union, so a rule a
+    distribution registers validates the way the built-ins do. Dump it
     with ``by_alias=True``: the ``in`` operator serialises under its alias only
     then, and only that dump validates back.
     """
@@ -830,12 +941,12 @@ class ComparisonViewConfig(BaseModel):
         return self
 
     def config_sha256(self) -> str:
-        """sha256 of what the rules do: each rule's kind and its non-default settings.
+        """sha256 of what the rules do: each rule's kind, its ``VERSION`` and its settings.
 
         The policy (ADR-0053 § Versioning): a setting at its default is left out,
         so a new optional field whose default keeps a rule's behaviour keeps every
-        existing sha; a change to what a rule does bumps
-        :data:`COMPARISON_VIEW_FUNCTION_VERSION` instead; ``reason`` is prose, not
+        existing sha; a change to what a rule computes bumps the rule's ``VERSION``,
+        which changes the sha of every view naming it; ``reason`` is prose, not
         behaviour, and is not hashed. The JSON is canonical as ``ModelsFingerprint``
         hashes model data (sorted keys, ASCII, no whitespace), so the key order of
         the declaration does not change it either.
@@ -849,30 +960,42 @@ def _hashed_rule(rule: ComparisonViewRuleConfig) -> dict[str, Any]:
     settings = rule.model_dump(
         mode="json", by_alias=True, exclude_defaults=True, exclude={"kind", "reason"}
     )
-    return {"kind": rule.kind, **settings}
+    version = resolve_comparison_view_rule(rule.kind).VERSION
+    return {"kind": rule.kind, "version": version, "settings": settings}
 
 
 def _resolve_entry(index: int, entry: Any) -> ComparisonViewRuleConfig:
     """Validate one entry of ``rules`` through the rule its ``kind`` names."""
+    registry = _registry()
     if isinstance(entry, ComparisonViewRuleConfig):
-        kind = entry.kind
+        kind: Any = entry.kind
     elif isinstance(entry, Mapping) and "kind" in entry:
         kind = entry["kind"]
     else:
         raise ValueError(
-            f"rules[{index}] must be a mapping with a 'kind'; known kinds: "
-            f"{sorted(comparison_view_rules())}"
+            f"rules[{index}] must be a mapping with a 'kind'; registered kinds: "
+            f"{registry.available_comparison_view_rules()}"
         )
-    try:
-        rule = resolve_comparison_view_rule(kind)
-    except ComparisonViewError as exc:
-        raise ValueError(f"rules[{index}]: {exc}") from None
+    registered = registry.available_comparison_view_rules()
+    if not isinstance(kind, str) or kind not in registered:
+        raise ValueError(
+            f"rules[{index}]: unknown comparison_view rule kind {kind!r}; registered kinds: "
+            f"{registered} (a rule registers in the "
+            f"{registry.COMPARISON_VIEW_RULES_GROUP!r} entry-point group: install the "
+            f"distribution that provides it, or check the name)"
+        )
+    rule = resolve_comparison_view_rule(kind)
     if isinstance(entry, ComparisonViewRuleConfig):
+        if not isinstance(entry, rule.config_model):
+            raise ValueError(
+                f"rules[{index}] is a {type(entry).__name__}, not the {kind} rule's config "
+                f"model {rule.config_model.__name__}"
+            )
         return entry
     try:
         return rule.config_model.model_validate(entry)
     except ValidationError as exc:
-        raise ValueError(f"rules[{index}] ({rule.kind}): {_error_summary(exc)}") from None
+        raise ValueError(f"rules[{index}] ({rule.NAME}): {_error_summary(exc)}") from None
 
 
 def _refuse_shared_tables(
@@ -905,18 +1028,22 @@ def apply_comparison_view(
     """The view of ``state`` under ``view``: its rules applied in order to a copy of it.
 
     ``initial`` is the initial state of the database ``state`` was read from, and
-    ``id_fields`` is ``state_checks.id_fields`` (absent table → ``"id"``). Neither
-    input is mutated: the rules get private copies of both, and the returned state
-    shares nothing with ``state``. A rule
-    that cannot apply raises :class:`ComparisonViewError`.
+    ``id_fields`` is ``state_checks.id_fields`` (absent table → ``"id"``). No input
+    is mutated: the rules get private copies of all three, and the returned state
+    shares nothing with ``state``. A rule that cannot apply raises
+    :class:`ComparisonViewError`; a rule whose outcome breaks the
+    :class:`ComparisonViewRule` contract, :class:`TypeError`.
     """
     working: dict[str, Any] = copy.deepcopy(dict(state))
     initial_copy = None if initial is None else copy.deepcopy(dict(initial))
+    id_fields_copy = MappingProxyType(copy.deepcopy(dict(id_fields)))
     applied: list[RuleApplication] = []
     for config in view.rules:
         rule = resolve_comparison_view_rule(config.kind)
-        outcome = rule.apply(working, initial=initial_copy, id_fields=id_fields, config=config)
-        working = outcome.state
+        outcome = rule().apply(
+            working, initial=initial_copy, id_fields=id_fields_copy, config=config
+        )
+        working = _checked_outcome(rule, outcome).state
         applied.extend(outcome.applied)
     record = ComparisonViewRecord(
         version=view.version,

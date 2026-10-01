@@ -30,6 +30,7 @@ from tolokaforge.core.conductor import (
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.docker_compose_materialiser import DockerComposeMaterialiser
 from tolokaforge.core.grading.bundle_store import LocalDiskBundleStore, S3BundleStore
+from tolokaforge.core.grading.comparison_view import ExcludeRecords, ExcludeTables
 from tolokaforge.core.grading.grading_method import (
     CompositeGradingMethod,
     TestExecutionGradingMethod,
@@ -46,6 +47,7 @@ from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
     AGENT_LOOPS_GROUP,
     BUNDLE_STORES_GROUP,
+    COMPARISON_VIEW_RULES_GROUP,
     COMPOSE_MATERIALISERS_GROUP,
     GRADER_KINDS_GROUP,
     GRADING_METHODS_GROUP,
@@ -61,6 +63,7 @@ from tolokaforge.core.plugin_registry import (
     UnknownImplementationError,
     available_agent_loops,
     available_bundle_stores,
+    available_comparison_view_rules,
     available_compose_materialisers,
     available_conductors,
     available_grader_kinds,
@@ -73,6 +76,7 @@ from tolokaforge.core.plugin_registry import (
     available_trial_graders,
     available_turn_policies,
     load_bundle_store,
+    load_comparison_view_rule,
     load_compose_materialiser,
     load_conductor,
     load_grader_kind,
@@ -247,6 +251,19 @@ def test_bundle_store_name_resolves_to_its_class(name: str, expected_cls: type) 
     assert load_bundle_store(name) is expected_cls
 
 
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
+        ("exclude_records", ExcludeRecords),
+        ("exclude_tables", ExcludeTables),
+    ],
+)
+def test_comparison_view_rule_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
+    rule_cls = load_comparison_view_rule(name)
+    assert rule_cls is expected_cls
+    assert name == rule_cls.NAME
+
+
 def test_available_listings_match_the_builtin_set() -> None:
     assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
     assert available_trial_graders() == ["grader_rpc", "judge_only", "queue", "runner_rpc"]
@@ -264,6 +281,7 @@ def test_available_listings_match_the_builtin_set() -> None:
         "voted_rubric",
     ]
     assert available_bundle_stores() == ["local_disk", "s3"]
+    assert available_comparison_view_rules() == ["exclude_records", "exclude_tables"]
     assert available_compose_materialisers() == ["docker_compose"]
     assert available_service_lifecycle_dispatchers() == ["ephemeral", "reset", "shared"]
     assert available_substrate_composers() == ["default"]
@@ -289,6 +307,13 @@ def test_raw_entry_point_probe_lists_turn_policies() -> None:
 def test_raw_entry_point_probe_lists_agent_loops() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=AGENT_LOOPS_GROUP))
     assert names == ["engine-loop"]
+
+
+def test_raw_entry_point_probe_lists_comparison_view_rules() -> None:
+    names = sorted(
+        ep.name for ep in importlib.metadata.entry_points(group=COMPARISON_VIEW_RULES_GROUP)
+    )
+    assert names == ["exclude_records", "exclude_tables"]
 
 
 def test_raw_entry_point_probe_lists_grading_methods() -> None:
