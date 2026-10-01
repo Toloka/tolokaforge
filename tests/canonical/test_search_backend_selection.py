@@ -142,7 +142,7 @@ def _raw_task(task_id: str, **overrides: Any) -> dict[str, Any]:
 
 
 class TestAMalformedRagBlockUnderANonStrictLoad:
-    """A block that loaded while untyped must not now drop its task in silence."""
+    """A malformed ``initial_state.rag`` refuses the run; it never drops its task in silence."""
 
     @pytest.mark.parametrize(
         "rag",
@@ -165,10 +165,12 @@ class TestAMalformedRagBlockUnderANonStrictLoad:
         message = _refusal(orch)
 
         assert "TASK-RAG" in message
-        assert "initial_state.rag" in message
-        assert "strict_task_load" in message
+        assert message.endswith(
+            "(a malformed initial_state.rag refuses the run whatever "
+            "orchestrator.strict_task_load says)"
+        )
 
-    def test_another_malformed_task_is_still_dropped_as_before(self) -> None:
+    def test_another_malformed_task_is_dropped_under_a_non_strict_load(self) -> None:
         orch = Orchestrator(_run_config(strict_task_load=False))
         orch.adapter = _RawTaskAdapter(
             {
