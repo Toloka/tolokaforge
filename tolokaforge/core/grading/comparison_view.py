@@ -93,6 +93,7 @@ __all__ = [
     "COMPARISON_VIEW_FUNCTION_VERSION",
     "COMPARISON_VIEW_VERSIONS",
     "ComparisonViewConfig",
+    "ComparisonViewCollision",
     "ComparisonViewError",
     "ComparisonViewRecord",
     "ComparisonViewResult",
@@ -132,6 +133,25 @@ class ComparisonViewError(ValueError):
     It is an evaluation error, never a pass or a fail: the grade reports it as a
     grading error.
     """
+
+
+class ComparisonViewCollision(ComparisonViewError):
+    """``normalize_ids`` cannot re-key this state bijectively.
+
+    Two records would share a key, a new key is the id of a kept record, two
+    records tie on ``rank_by``, or a reference already holds a new key. On the
+    golden side it is an evaluation error like any :class:`ComparisonViewError`.
+    On the trial side, once the golden's view succeeded, it is the trial's own
+    state that cannot be told apart, and the caller fails the trial with it as
+    the reason. ``ids`` are the ids involved.
+    """
+
+    def __init__(self, message: str, ids: tuple[Any, ...]) -> None:
+        super().__init__(message, ids)
+        self.ids = ids
+
+    def __str__(self) -> str:
+        return str(self.args[0])
 
 
 # ---------------------------------------------------------------------------
@@ -1184,10 +1204,11 @@ def _ordinal_keys(
 def _refuse_rank_ties(config: NormalizeIdsConfig, members: list[_Ranked]) -> None:
     for first, second in zip(members, members[1:]):
         if first.order == second.order:
-            raise ComparisonViewError(
+            raise ComparisonViewCollision(
                 f"{_NORMALIZE}: records {first.old_id!r} and {second.old_id!r} of table "
                 f"{config.table!r} tie on rank_by {list(config.rank_by)}, so their ordinals "
-                f"would depend on row order"
+                f"would depend on row order",
+                (first.old_id, second.old_id),
             )
 
 
@@ -1207,9 +1228,10 @@ def _refuse_colliding_keys(table: str, rendered: list[tuple[Any, str]], kept: li
     for old, new in rendered:
         other = owners.get(_reference_key(new))
         if other is not None:
-            raise ComparisonViewError(
+            raise ComparisonViewCollision(
                 f"{_NORMALIZE}: record {old!r} of table {table!r} gets the key {new!r}, which "
-                f"record {other!r} already holds; the key does not tell them apart"
+                f"record {other!r} already holds; the key does not tell them apart",
+                (other, old),
             )
         owners[_reference_key(new)] = old
 
@@ -1225,7 +1247,7 @@ def _follow_references(
     state: dict[str, Any], config: NormalizeIdsConfig, new_keys: Mapping[IdKey, str]
 ) -> tuple[dict[str, Any], int]:
     """``state`` with every listed reference to a re-keyed record rewritten, and how many were."""
-    taken = frozenset(map(_reference_key, new_keys.values()))
+    owners = {_reference_key(new): old_key[1] for old_key, new in new_keys.items()}
     rewritten = 0
 
     def follow(value: Any, where: str) -> Any:
@@ -1240,10 +1262,11 @@ def _follow_references(
         if key in new_keys:
             rewritten += _reference_key(new_keys[key]) != key
             return new_keys[key]
-        if key in taken:
-            raise ComparisonViewError(
-                f"{where} holds {value!r}, the new key of another record, as a reference "
-                f"to a record that is not re-keyed; it would follow the wrong record"
+        if key in owners:
+            raise ComparisonViewCollision(
+                f"{where} holds {value!r}, the new key of record {owners[key]!r}, as a "
+                f"reference to a record that is not re-keyed; it would follow the wrong record",
+                (value, owners[key]),
             )
         return value
 
