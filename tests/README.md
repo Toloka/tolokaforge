@@ -130,6 +130,7 @@ tests/
     ├── doc_anchors.py        # GitHub-style anchor + section extraction for the canonical doc locks
     ├── wheel_builds.py       # Subset / models wheels built from the tree under test, into a caller-supplied dir
     ├── mock_clients.py       # MockAsyncClient — canonical source
+    ├── loopback_asgi.py      # A real ASGI app under uvicorn on an ephemeral loopback port, for code that reaches a service by URL
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
     ├── docker_helpers.py     # Compose/daemon helpers for the Docker tiers
@@ -586,6 +587,7 @@ All markers are enforced via `--strict-markers`.
 | `mock_env_state` | `utils/fixtures.py` | Unit tests for user tools |
 | `test_task_path` | `utils/fixtures.py` | Integration Docker service tests |
 | `temp_output_dir` | `utils/fixtures.py` | Integration Docker service tests |
+| `db_service_loopback_url` | `utils/fixtures.py` | Unit tests driving the real db-service over HTTP (tools that call it by URL) |
 | `canon_snapshot` | `canonical/conftest.py` | All canonical tests |
 | `food_delivery_2_*` | `canonical/conftest.py` | Canonical golden-set tests |
 | `json_db_container` | `utils/containers.py` | Integration security tests |
