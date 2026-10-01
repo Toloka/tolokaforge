@@ -16,7 +16,7 @@ non-default ``k1`` / ``b`` / ``epsilon``.
 
 Run from the repository root::
 
-    .venv/bin/python scripts/tests/generate_bm25_okapi_reference.py
+    uv run python scripts/tests/generate_bm25_okapi_reference.py
 
 It refuses to run against any other ``rank_bm25`` version: the fixture states
 which library it reproduces.

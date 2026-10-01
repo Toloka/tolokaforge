@@ -697,8 +697,8 @@ def _indexed_corpus(corpus_dir: Path, config: Bm25BackendConfig) -> tuple[Indexe
 
 
 def _hit(document: Bm25Document, score: float) -> SearchHit:
-    # ``source`` is the file name; the title has no field on SearchHit yet (ADR-0053
-    # change 2b adds one, with its proto field) and is read from the rendering.
+    # ``source`` is the file name. SearchHit has no title field; the title is carried
+    # only in the rendering.
     return SearchHit(doc_id=document.id, source=document.source, score=score, text=document.content)
 
 
