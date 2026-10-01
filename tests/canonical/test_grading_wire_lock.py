@@ -211,7 +211,7 @@ predicate leaves: both readers would step over neither, agree on a short count, 
 # fails rather than silently shrinking the walk over it. ``coding_harness`` ships
 # a placeholder ``grading.yaml`` — its trial verifier overrides at run time, but the
 # static file exists so the standard pre-run gate accepts it and this walk counts it.
-_NATIVE_PACK_COUNT = 30
+_NATIVE_PACK_COUNT = 31
 
 
 class _Direction(str, Enum):

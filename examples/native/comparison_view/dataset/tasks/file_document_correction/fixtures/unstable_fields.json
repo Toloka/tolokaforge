@@ -1,0 +1,8 @@
+[
+  {"table_name": "documents", "field_name": "id", "reason": "auto_id"},
+  {"table_name": "documents", "field_name": "created_at", "reason": "timestamp"},
+  {"table_name": "corrections", "field_name": "id", "reason": "auto_id"},
+  {"table_name": "corrections", "field_name": "created_at", "reason": "timestamp"},
+  {"table_name": "holds", "field_name": "id", "reason": "auto_id"},
+  {"table_name": "holds", "field_name": "created_at", "reason": "timestamp"}
+]
