@@ -676,14 +676,15 @@ Packs declaring `state_checks.db_probes` or judge criteria that need KB
 search grade correctly on `InProcess` / `LiveCallback`; snapshot mode
 routes those trials to a live-callback path in the caller.
 
-<a id="extension-points-the-nine-plug-in-groups"></a>
+<a id="extension-points-the-plug-in-groups"></a>
 
-## Extension points — the nine plug-in groups
+## Extension points — the plug-in groups
 
-Nine `importlib.metadata` entry-point groups let a downstream package
+Ten `importlib.metadata` entry-point groups let a downstream package
 extend the grader without a framework change: one runner-side dispatch
-selector (paired with the typed-kind registry), one substrate group, and
-six sub-component seams. Each group has a matching loader on
+selector (paired with the typed-kind registry), one substrate group, six
+sub-component seams, and the comparison-view rules the state hash is
+computed through. Each group has a matching loader on
 [`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
 
 - `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Every shipped name also registers in `tolokaforge.grader_kinds` below — `RegisterTrial` validates the wire name against both groups.
@@ -695,6 +696,7 @@ six sub-component seams. Each group has a matching loader on
 - `tolokaforge.transcript_rule_matchers` — `load_transcript_rule_matcher(name)` returns a factory.
 - `tolokaforge.state_check_backends` — `load_state_check_backend(name)` returns a factory.
 - `tolokaforge.trace_check_operators` — `load_trace_check_operator(name)` returns the **operator callable** directly (no factory wrapper; the callable itself is the contract).
+- `tolokaforge.comparison_view_rules` — `load_comparison_view_rule(kind)` returns the `ComparisonViewRule` **class** a comparison view's `kind` names ([ADR-0053](adr/0053-comparison-view-before-the-state-hash.md)): `NAME` is the entry-point name, `VERSION` the version of what the rule computes, `config_model` the `extra="forbid"` model its entry validates into, and `apply(state, *, initial, id_fields, config)` a pure, one-sided transform of one state. Two built-ins ship, `exclude_records` and `exclude_tables`, and resolve through the group like any other rule. **This group is a trust boundary.** A rule decides which two states hash equal, so a registered rule can turn a failing trial into a passing one through the deterministic hash verdict, with nothing but its identity in the grade to show it. The engine runs a rule only for a task whose view names its kind, refuses a name two distributions register (a built-in's included), hands the rule one side's copies and never the other side, and hashes the rule's `NAME` and `VERSION` into the grade's `config_sha256`. It cannot tell a sound rule from an unsound one: review a distribution that registers a rule as you would a task's golden actions. The contract and the guarantees are on [`comparison_view.py::ComparisonViewRule`](../tolokaforge/core/grading/comparison_view.py).
 
 Copy-paste block for a downstream `pyproject.toml`:
 
@@ -725,13 +727,16 @@ my_state_backend = "my_package:my_state_backend_factory"
 
 [project.entry-points."tolokaforge.trace_check_operators"]
 my_operator = "my_package:my_operator"
+
+[project.entry-points."tolokaforge.comparison_view_rules"]
+my_rule = "my_package:MyComparisonViewRule"
 ```
 
 `tolokaforge.trial_graders` is the top-level grader-name seam ADR-0038
 shipped, already documented in
 [Registering a downstream grader](#registering-a-downstream-grader).
 A downstream package registering a new grader name lands there, not
-in any of the nine groups above.
+in any of the groups above.
 
 The bundle-transport seam `tolokaforge.bundle_stores` is documented in
 the [Bundle store seam](#bundle-store-seam) section below — it extends a
