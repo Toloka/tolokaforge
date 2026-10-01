@@ -249,7 +249,17 @@ state_checks:
 |---|---|---|
 | `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them in another row. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
 | `exclude_tables` | Drops the named tables whole, key included, so a table present on one side only stops counting too; `reason` is required. | Refused for a table another rule names. |
-| `normalize_ids` | Rewrites the key of the records in `scope` to a deterministic key, built from `key` fields or from `ordinal_by` + `rank_by`, and every exact reference to it named in `references` (a top-level field or a nested path). | Bijective: distinct records stay distinct. A key collision raises. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`. |
+| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. |
+
+**The rendered key** of `normalize_ids` is `<table>:<canonical JSON of its key
+fields>`, for example `fee_credit_journal:{"account_id":"A1","delta":-5,"fee_id":"F2"}`;
+the ordinal form appends `#<n>`, counting from 1 among the records in scope, as in
+`fee_credit_journal:{"account_id":"A1"}#2`. It is a JSON string, stable, injective,
+and readable in a diff, and an integral float renders as the int it equals so `5`
+and `5.0` keep one key. No prefix is impossible for a real id, so the collision
+checks above, not the form, keep it apart from the ids it does not replace. A table
+is re-keyed by one rule, and `key`, `ordinal_by` and `rank_by` may not name the id
+field itself.
 
 Left out of v1, and where the need goes instead:
 
@@ -369,7 +379,7 @@ loader translates into it.
 - `config_sha256` — sha256 of what the rules do: per rule, its `kind`, its
   `VERSION` and its settings that differ from their defaults, `reason` left
   out, as canonical JSON the way `ModelsFingerprint` hashes model data;
-- `applied` — per rule and table touched (`exclude_tables` gives one entry per listed table): kind, table, path, rows removed, ids rewritten.
+- `applied` — per rule and table touched (`exclude_tables` gives one entry per listed table): kind, table, path, rows removed, ids rewritten and references rewritten.
 
 The sha changes when a declaration asks for something else, or when a rule it
 names changes what it computes. A new optional field whose default keeps a
