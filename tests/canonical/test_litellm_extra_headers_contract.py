@@ -14,20 +14,12 @@ silently. Raise the litellm floor past the regression or pin below it.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
 import litellm
 import pytest
 
-from tests.utils.recording_gateway import RecordingGateway, serving_recording_gateway
+from tests.utils.recording_gateway import RecordingGateway
 
 pytestmark = pytest.mark.canonical
-
-
-@pytest.fixture
-def gateway() -> Iterator[RecordingGateway]:
-    with serving_recording_gateway() as server:
-        yield server
 
 
 @pytest.mark.parametrize(

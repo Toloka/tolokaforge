@@ -3,9 +3,13 @@
 import json
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+from tests.utils.recording_gateway import RecordingGateway, serving_recording_gateway
+from tolokaforge.core.llm import gateway_route
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +26,24 @@ def _pin_fake_secrets(installed_fake_secrets: dict[str, str]) -> None:
     package rather than the modules that happen to reach it today keeps the
     next such test deterministic without anyone having to notice.
     """
+
+
+@pytest.fixture(scope="module")
+def serving_gateway() -> Iterator[RecordingGateway]:
+    """One loopback LLM gateway per module; point the SecretManager at
+    ``serving_gateway.base_url`` by overriding ``installed_fake_secrets``."""
+    with serving_recording_gateway() as server:
+        yield server
+
+
+@pytest.fixture
+def gateway(serving_gateway: RecordingGateway) -> Iterator[RecordingGateway]:
+    """The module's gateway with no catalog, scripts or recorded requests, and a
+    cold catalog cache."""
+    serving_gateway.reset()
+    gateway_route.clear_catalog_cache()
+    yield serving_gateway
+    gateway_route.clear_catalog_cache()
 
 
 def pytest_addoption(parser):

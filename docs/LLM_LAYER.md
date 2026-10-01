@@ -744,6 +744,19 @@ Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
 
+Sampling parameters split the same way. The OpenRouter transport forwards
+`temperature` / `top_p` for GPT-5, GPT-6 and the o-series unchanged; a gateway's
+resolved route (`openrouter/openai/gpt-5.2`) goes out through the `openai`
+transport, whose `OpenAIGPT5Config` / `OpenAIOSeriesConfig` refuse any
+`temperature` but `1` in-process (`UnsupportedParamsError`). OpenRouter lists no
+sampling parameter for these models and no endpoint serves one when asked to
+honour it, so `openai_gpt5`, `openai_gpt6` and `openai_o_series` declare
+`supports_sampling_params: false`: both routes send the same request, with no
+sampling key. The escape hatch, `capabilities: {supports_sampling_params: true}`,
+belongs on a `provider: openai` config, whose bare names (`gpt-5.2`) litellm
+admits a `temperature` for; on a `provider: openrouter` config it breaks the
+gateway route again.
+
 ## When litellm has never heard of the model
 
 litellm decides which OpenAI parameters a provider may be sent by looking the
@@ -1807,12 +1820,13 @@ Rules made explicit:
 
 ### Preset → routing table
 
-| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` |
-|---|---|---|---|---|
-| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** |
-| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — |
-| `openai_gpt5` / `xai_grok` / `qwen` | `true`* | `false` | `false` | — |
-| `default` / `aws_nova` | `false` | `false` | `false` | — |
+| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` | `supports_sampling_params` |
+|---|---|---|---|---|---|
+| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** | `true` |
+| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — | `true` |
+| `openai_gpt5` / `openai_gpt6` / `openai_o_series` | `true`* | `false` | `false` | — | **`false`** |
+| `xai_grok` / `qwen` | `true`* | `false` | `false` | — | `true` |
+| `default` / `aws_nova` | `false` | `false` | `false` | — | `true` |
 
 \* `reasoning_via_extra_body` comes from the `openrouter` provider overlay, not
 the preset itself. Anthropic direct (non-OpenRouter) would have `false`.
@@ -2412,8 +2426,9 @@ fresh `ModelCapabilities`. Presets live in
 
 Per-preset policy wiring as shipped today. The `StrictSchema` presets
 (`openai_gpt5`, `xai_grok`) cover `Decimal` look-ahead regex and typed
-`Dict[str, T]` parameters with `strict` + `array_dict_map`. Keep this table
-in sync with
+`Dict[str, T]` parameters with `strict` + `array_dict_map`. `openai_gpt5`,
+`openai_gpt6` and `openai_o_series` also declare `supports_sampling_params:
+false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
 | Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
@@ -2422,6 +2437,8 @@ in sync with
 | `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `anthropic`             | `anthropic/*`, `*claude*`, `*/anthropic/*`                       | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_gpt6`           | `openai/gpt-6*`, `*gpt-6*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_o_series`       | `openai/o{1,3,4}*`, `o{1,3,4}*` and their `*/` siblings          | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
 | `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`     | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `qwen`                  | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                       | `passthrough`      | `json_coerce`       | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |

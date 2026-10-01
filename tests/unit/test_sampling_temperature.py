@@ -244,6 +244,25 @@ class TestAPresetThatTakesNoSampling:
         assert _sampling_sent(_model()) == {"temperature": 0.0}
 
 
+class TestTheBundledGpt5EscapeHatch:
+    """``capabilities: {supports_sampling_params: true}`` is scoped to its own config."""
+
+    def test_a_provider_openai_config_that_takes_it_sends_its_temperature(self) -> None:
+        model = ModelConfig(
+            provider="openai",
+            name="gpt-5.2",
+            temperature=0.7,
+            capabilities={"supports_sampling_params": True},
+        )
+        assert _sampling_sent(model) == {"temperature": 0.7}
+
+    @pytest.mark.parametrize(
+        ("provider", "name"), [("openai", "gpt-5.2"), ("openrouter", "openai/gpt-5.2")]
+    )
+    def test_a_config_without_it_sends_none(self, provider: str, name: str) -> None:
+        assert _sampling_sent(ModelConfig(provider=provider, name=name, temperature=0.7)) == {}
+
+
 def test_thinking_drops_the_config_top_p_too() -> None:
     model = ModelConfig(
         provider="openrouter",

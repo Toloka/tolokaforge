@@ -324,6 +324,20 @@ Available overrides:
 - `unwrap_input_key` (bool) — unwrap Nova/Bedrock `{input: args}` wrapper
 - `reasoning_via_extra_body` (bool) — send reasoning via `extra_body` (OpenRouter)
 
+GPT-5, GPT-6 and the o-series presets declare `supports_sampling_params: false`, so these models get no `temperature` / `top_p` from any config. A direct-OpenAI config that wants its temperature honoured takes it back for itself:
+
+```yaml
+models:
+  agent:
+    provider: openai
+    name: gpt-5.2
+    temperature: 0.7
+    capabilities:
+      supports_sampling_params: true
+```
+
+or, for every `provider: openai` config of a run, in an operator overlay: `providers: {openai: {params: {supports_sampling_params: true}}}`. Both are for direct-OpenAI transports only. Do not set it on a `provider: openrouter` config, and do not flip it on the `openai_gpt5` preset itself in an overlay: a gateway's resolved route for an OpenRouter-namespaced name goes out through litellm's `openai` transport, which refuses the `temperature` before sending (`UnsupportedParamsError`, see [LLM_LAYER.md § litellm OpenRouter routing caveat](LLM_LAYER.md#litellm-openrouter-routing-caveat)).
+
 #### Prompt caching (preset-driven only)
 
 Prompt caching (Anthropic ephemeral `cache_control`) is preset-driven, **not**
