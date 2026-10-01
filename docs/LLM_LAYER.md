@@ -760,7 +760,8 @@ litellm.UnsupportedParamsError: meta does not support parameters:
 Measured with an identical request on litellm 1.93.0 and 1.96.0: both refuse
 the tools. Whether a model is in the map depends on the installed litellm
 release, and the error names the provider rather than the missing data, so it
-reads as "this vendor does not do tool calls".
+reads as "this vendor does not do tool calls". The outer retry does not
+re-attempt it (§ Outer retry controllers).
 
 It says nothing about the model. The identical request driven through litellm's
 `openai` transport against the same `api_base` returns a correct tool call —
@@ -2742,7 +2743,18 @@ to every request's `extra_headers`, gateway on or off. Wire delivery is pinned f
 
 Both install the same `before_sleep` hook (`_make_before_sleep`), so
 `llm_retry_scheduled` events are identical on either path. `retry` is
-`_should_retry_exception` on both.
+`_should_retry_exception` on both. It re-attempts every error except three,
+which end the call after one outer attempt:
+
+- `LLMApiTimeoutError` — the per-call timeout budget is already spent;
+- `openai.AuthenticationError` (which litellm's `AuthenticationError`
+  subclasses for every provider) — a 401 does not clear on retry;
+- `litellm.UnsupportedParamsError` — litellm refuses the parameter set
+  in-process, before any request is sent, so every attempt is refused the same.
+
+`_call_with_key_rotation` re-raises provider errors as `RuntimeError(...) from
+e`, so the predicate finds these types anywhere in the `__cause__` chain
+(bounded by `_EXCEPTION_CAUSE_DEPTH`), not only on the outer exception.
 
 The probe's split accounting is load-bearing: a 5xx must not inherit the
 multi-hour 429 budget, so the non-429 attempt cap counts only non-429
@@ -2766,8 +2778,9 @@ because `_call_with_key_rotation` re-raises provider errors as
    a spent credential set as transient and hand it the multi-hour budget —
    permanently, since `_rotate_key` only ever advances its index. The type stops
    the walk and returns `False`, so the condition takes the ordinary
-   five-attempt exponential branch instead. `_should_retry_exception` is
-   deliberately unchanged, so a probe-off run retries it exactly as before.
+   five-attempt exponential branch instead. `_should_retry_exception` does
+   not treat it as terminal, so a probe-off run gives it the same five
+   attempts.
 3. **Anchored text** (`binding.rate_limit_patterns` — see § Provider bindings),
    last resort: a 429 must sit in a status position (`Error code: 429`,
    `status_code=429`, `HTTP/1.1 429`), or the message must carry the HTTP reason

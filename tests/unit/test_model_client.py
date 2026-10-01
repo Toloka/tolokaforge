@@ -7,6 +7,9 @@ import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
+import litellm
+import openai
 import pytest
 import yaml
 
@@ -22,6 +25,7 @@ from tolokaforge.core.llm import (
     UnwrapInputResponse,
     build_capabilities,
 )
+from tolokaforge.core.llm.client import LLMApiTimeoutError
 from tolokaforge.core.llm.presets import _match_preset
 from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.llm.usage import Usage
@@ -88,6 +92,39 @@ class TestShouldRetryException:
         from tolokaforge.core.llm.client import _should_retry_exception
 
         assert _should_retry_exception(OSError("network")) is True
+
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapped"])
+    @pytest.mark.parametrize(
+        "terminal",
+        [
+            litellm.UnsupportedParamsError(message="openai does not support parameters"),
+            litellm.AuthenticationError(message="bad key", llm_provider="openai", model="m"),
+            openai.AuthenticationError(
+                "bad key",
+                response=httpx.Response(401, request=httpx.Request("POST", "http://x")),
+                body=None,
+            ),
+            LLMApiTimeoutError("timed out"),
+        ],
+        ids=lambda exc: type(exc).__module__.split(".")[0] + "." + type(exc).__name__,
+    )
+    def test_returns_false_for_a_terminal_error_anywhere_in_the_cause_chain(
+        self, terminal: BaseException, wrapped: bool
+    ) -> None:
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = terminal
+        if wrapped:
+            exc = RuntimeError(f"LLM API call failed: {terminal}")
+            exc.__cause__ = terminal
+        assert _should_retry_exception(exc) is False
+
+    def test_a_self_referencing_cause_chain_terminates(self) -> None:
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = RuntimeError("loop")
+        exc.__cause__ = exc
+        assert _should_retry_exception(exc) is True
 
 
 # ===================================================================
