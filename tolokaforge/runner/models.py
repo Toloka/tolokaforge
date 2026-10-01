@@ -46,10 +46,18 @@ from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol
+from typing import Any, ClassVar, Literal, Protocol
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import (
     coerce_flat_stack_fields,
@@ -58,6 +66,7 @@ from tolokaforge.core.deprecations import (
     warn_deprecated,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
@@ -544,11 +553,41 @@ class RunnerStateChecksConfig(BaseModel):
     # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
     auto_normalize_nullables: bool = False
 
+    # Opt-in: the one-sided transform both sides' full states go through before the
+    # unstable filter, the compare_columns pipeline and the masks (ADR-0053). Declared,
+    # it moves the hash onto the client path: ``_execute_hash_grading`` reads both full
+    # states and runs :func:`tolokaforge.core.grading.pre_hash.view_the_pair`. Absent,
+    # the key is left out of the wire dump, so an image predating it still accepts
+    # every spec that does not declare one — and refuses one that does.
+    comparison_view: ComparisonViewConfig | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``.
+
+    Read by the dump below and by the wire census, which gates such a key on itself:
+    it is on the wire only for a pack that declares it."""
+
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
 
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a dump that has none — the wire's absence.
+
+        A ``null`` would be a key an image predating the field refuses under
+        ``extra="forbid"``; leaving it out keeps every spec without a view
+        byte-identical to the one an older engine emitted.
+        """
+        dumped: dict[str, Any] = handler(self)
+        for name in self.omitted_when_absent:
+            if getattr(self, name) is None:
+                dumped.pop(name, None)
+        return dumped
 
     @model_validator(mode="before")
     @classmethod

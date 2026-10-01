@@ -64,6 +64,7 @@ from tolokaforge.core.deprecations import (
     source_context,
     warn_deprecated,
 )
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.config_validation import (
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
@@ -249,6 +250,7 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
         retired_keys=RETIRED_STATE_CHECK_KEYS,
         nested_block_models=(
             _NestedBlock("hash", StateHashConfig, retired_keys=frozenset(RETIRED_HASH_KEYS)),
+            _NestedBlock("comparison_view", ComparisonViewConfig),
         ),
     ),
     # A turn window whose floor sits above its ceiling admits no assistant-turn count,

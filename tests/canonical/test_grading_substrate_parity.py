@@ -358,6 +358,7 @@ _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
         "state_checks.auto_mask_clock_columns",
         "state_checks.auto_normalize_nullables",
         "state_checks.compare_columns",
+        "state_checks.comparison_view",
         "state_checks.hash.description",
         "state_checks.id_fields",
         "state_checks.relaxed_validation",
@@ -1250,6 +1251,8 @@ def test_both_substrates_discriminate_each_shared_scored_key(
 
 
 _EXPECT_INITIAL_STATE_PACK = _task_id_for(_EXPECT_INITIAL_STATE_KEY)
+_COMPARISON_VIEW_KEY = "state_checks.comparison_view"
+_COMPARISON_VIEW_PACK = _task_id_for(_COMPARISON_VIEW_KEY)
 
 _TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
     {
@@ -1257,6 +1260,7 @@ _TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
         _PROBE_PACK: _TASKS_GLOB,
         _GOLDEN_REPLAY_PACK: _TASKS_GLOB,
         _EXPECT_INITIAL_STATE_PACK: _PARITY_GLOB,
+        _COMPARISON_VIEW_PACK: _PARITY_GLOB,
     }
 )
 """The packs whose declared keys together carry the manifest, and the glob loading each.
@@ -1276,14 +1280,16 @@ _TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType(
         _PROBES_KEY: _PROBE_PACK,
         _GOLDEN_ACTIONS_KEY: _GOLDEN_REPLAY_PACK,
         _EXPECT_INITIAL_STATE_KEY: _EXPECT_INITIAL_STATE_PACK,
+        _COMPARISON_VIEW_KEY: _COMPARISON_VIEW_PACK,
     }
 )
 """The pack that must carry a key to the runner as something other than the field default.
 
 Two reasons put a key here. The first is legality: a key ``all_keys`` cannot declare
 beside the rest needs a pack that can. The second is attribution — ``expect_initial_state``
-is legal there, but the pack named for it declares that key alone, so nothing else in the
-pack could be what put the field off its default. ``all_keys`` owns every key neither
+and ``comparison_view`` are legal there, but the pack named for each declares it beside
+nothing but the hash it shapes, so nothing else in the pack could be what put the field
+off its default. ``all_keys`` owns every key neither
 reason claims, so a key added to the manifest has an owner from the start and fails the
 lock until some pack declares it. Ownership is per key rather than per pack because
 declaring a key is not translating it: ``db_probe_grading`` writes

@@ -392,7 +392,6 @@ canonical test rejects drift between them and the pyproject mirror.
 | `tolokaforge/core/actors/turn_policy.py` | Reaches `core.plugin_registry` (orchestrator-only) for `TurnPolicyContext`. |
 | `tolokaforge/core/grading/agreement.py` | Shared-spine imports only; consumed by the offline rubric-migration commands. |
 | `tolokaforge/core/grading/combine.py` | Imports `core.grading.state_checks`, itself orchestrator-only. |
-| `tolokaforge/core/grading/comparison_view.py` | Standard library and pydantic only; no runner caller until the [ADR-0053](adr/0053-comparison-view-before-the-state-hash.md) wiring lands. |
 | `tolokaforge/core/grading/config_validation.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
 | `tolokaforge/core/grading/corpus_curation.py` | Imports `core.output.artifacts` and `core.output_writer` (orchestrator-only). |
 | `tolokaforge/core/grading/migration_declaration.py` | Reaches the same two through its `corpus_curation` import. |

@@ -89,6 +89,7 @@ from pydantic import (
     ValidationError,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -212,7 +213,12 @@ def _segments(path: str) -> tuple[str, ...]:
 
 
 class InCondition(BaseModel):
-    """``{in: [v1, v2, ...]}``: the field equals one of the listed scalars."""
+    """``{in: [v1, v2, ...]}``: the field equals one of the listed scalars.
+
+    It dumps as ``{in: [...]}`` whether or not the caller asks for aliases: the trial
+    spec crosses the wire as a plain ``model_dump_json()``, and only the aliased form
+    validates back.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -224,6 +230,11 @@ class InCondition(BaseModel):
         if not isinstance(value, list | tuple):
             raise ValueError("must be a list of values")
         return tuple(_scalar(item, "each value") for item in value)
+
+    @model_serializer(mode="wrap")
+    def _under_its_alias(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        dumped = handler(self)
+        return {"in": dumped["in"] if "in" in dumped else dumped["any_of"]}
 
 
 class IsNullCondition(BaseModel):
@@ -333,6 +344,24 @@ class ComparisonViewRuleConfig(BaseModel):
     def names(self) -> tuple[str, ...]:
         """The tables this entry names, for the ``exclude_tables`` guard."""
 
+    def id_field_errors(self, id_fields: Mapping[str, str | list[str]]) -> tuple[str, ...]:
+        """What applying this entry would refuse about an id field, read without a state.
+
+        :func:`apply_comparison_view` checks a rule's id fields when it runs, because
+        only it receives ``id_fields``. A task's load repeats the checks through this
+        method, which runs the same functions, so the author hears of a conflict before
+        a trial is paid for. A rule reading no id field has nothing to refuse.
+        """
+        return ()
+
+    def rekeyed_fields(self, id_fields: Mapping[str, str | list[str]]) -> tuple[RekeyedField, ...]:
+        """The id fields this entry re-keys, from the declaration alone (see :class:`RekeyedField`).
+
+        Raises:
+            ComparisonViewError: the id field cannot be resolved (a composite key).
+        """
+        return ()
+
 
 class RecordReference(BaseModel):
     """A field of another table's rows that may hold the ids of the rows a rule drops."""
@@ -383,6 +412,11 @@ class ExcludeRecordsConfig(ComparisonViewRuleConfig):
     def names(self) -> tuple[str, ...]:
         references = (reference.table for reference in self.unless_referenced_by)
         return tuple(dict.fromkeys((self.table, *references)))
+
+    def id_field_errors(self, id_fields: Mapping[str, str | list[str]]) -> tuple[str, ...]:
+        if not self.unless_referenced_by:
+            return ()
+        return _refusal(lambda: _unless_referenced_id_field(self, id_fields))
 
 
 class ExcludeTablesConfig(ComparisonViewRuleConfig):
@@ -468,6 +502,13 @@ class NormalizeIdsConfig(ComparisonViewRuleConfig):
     def names(self) -> tuple[str, ...]:
         references = (reference.table for reference in self.references)
         return tuple(dict.fromkeys((self.table, *references)))
+
+    def id_field_errors(self, id_fields: Mapping[str, str | list[str]]) -> tuple[str, ...]:
+        return _refusal(lambda: _normalized_id_field(self, id_fields))
+
+    def rekeyed_fields(self, id_fields: Mapping[str, str | list[str]]) -> tuple[RekeyedField, ...]:
+        field = _record_id_field(self.table, id_fields, needed_by=_NORMALIZE)
+        return (RekeyedField(table=self.table, field=field),)
 
     def key_fields(self) -> frozenset[str]:
         """The fields of the table's records the new key is built from."""
@@ -727,11 +768,9 @@ class NormalizeIds:
         config: ComparisonViewRuleConfig,
     ) -> RuleOutcome:
         config = cast(NormalizeIdsConfig, config)
-        id_field = _record_id_field(config.table, id_fields, needed_by=_NORMALIZE)
-        _refuse_id_in_the_key(config, id_field)
-        _refuse_own_id_references(config.table, config.references, id_field, option="references")
+        id_field = _normalized_id_field(config, id_fields)
         kept_ids = _ids_that_keep_their_key(config, initial, id_field)
-        rekeyed_fields = (RekeyedField(table=config.table, field=id_field),)
+        rekeyed_fields = config.rekeyed_fields(id_fields)
         if config.table not in state:
             application = RuleApplication(kind=self.NAME, table=config.table)
             return RuleOutcome(state=state, applied=(application,), rekeyed=rekeyed_fields)
@@ -903,14 +942,31 @@ def _rows_to_keep(
 ) -> list[Record]:
     if not config.unless_referenced_by:
         return [row for row in rows if not matches(row)]
-    id_field = _record_id_field(config.table, id_fields, needed_by=_UNLESS)
-    _refuse_own_id_references(config.table, config.unless_referenced_by, id_field, option=_UNLESS)
+    id_field = _unless_referenced_id_field(config, id_fields)
     counts = _reference_counts(state, config.unless_referenced_by)
     return [
         row
         for row in rows
         if not matches(row) or _referenced_by_another_row(row, config, id_field, counts)
     ]
+
+
+def _unless_referenced_id_field(
+    config: ExcludeRecordsConfig, id_fields: Mapping[str, str | list[str]]
+) -> str:
+    """The id field ``unless_referenced_by`` reads, once the rule's own checks pass."""
+    id_field = _record_id_field(config.table, id_fields, needed_by=_UNLESS)
+    _refuse_own_id_references(config.table, config.unless_referenced_by, id_field, option=_UNLESS)
+    return id_field
+
+
+def _refusal(check: Callable[[], object]) -> tuple[str, ...]:
+    """The message ``check`` raises :class:`ComparisonViewError` with, or nothing."""
+    try:
+        check()
+    except ComparisonViewError as exc:
+        return (str(exc),)
+    return ()
 
 
 def _refuse_own_id_references(
@@ -1086,6 +1142,16 @@ def _rewrite_at(value: Any, segments: Sequence[str], leaf: Callable[[Any], Any],
 # ---------------------------------------------------------------------------
 # normalize_ids helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalized_id_field(
+    config: NormalizeIdsConfig, id_fields: Mapping[str, str | list[str]]
+) -> str:
+    """The id field ``normalize_ids`` re-keys, once the rule's own checks pass."""
+    id_field = _record_id_field(config.table, id_fields, needed_by=_NORMALIZE)
+    _refuse_id_in_the_key(config, id_field)
+    _refuse_own_id_references(config.table, config.references, id_field, option="references")
+    return id_field
 
 
 def _refuse_id_in_the_key(config: NormalizeIdsConfig, id_field: str) -> None:
@@ -1313,9 +1379,9 @@ class ComparisonViewConfig(BaseModel):
 
     ``kind`` resolves through the ``tolokaforge.comparison_view_rules`` entry-point
     group (:func:`resolve_comparison_view_rule`), not a static union, so a rule a
-    distribution registers validates the way the built-ins do. Dump it
-    with ``by_alias=True``: the ``in`` operator serialises under its alias only
-    then, and only that dump validates back.
+    distribution registers validates the way the built-ins do. Every dump validates
+    back: the ``in`` operator serialises under its alias whether or not the caller
+    asks for aliases.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -1389,6 +1455,18 @@ class ComparisonViewConfig(BaseModel):
                 )
             normalized[rule.table] = index
         return self
+
+    def rekeyed_fields(self, id_fields: Mapping[str, str | list[str]]) -> tuple[RekeyedField, ...]:
+        """Every id field the rules re-key, from the declaration and ``id_fields`` alone.
+
+        What :attr:`ComparisonViewRecord.rekeyed_fields` will name for any state, read
+        before there is one, so a task's load can check what the masks after the view
+        would do to them.
+
+        Raises:
+            ComparisonViewError: a re-keyed table's id field cannot be resolved.
+        """
+        return tuple(field for rule in self.rules for field in rule.rekeyed_fields(id_fields))
 
     def config_sha256(self) -> str:
         """sha256 of what the rules do: each rule's kind, its ``VERSION`` and its settings.
