@@ -46,6 +46,20 @@ default:
     supports_seed: true
     reasoning_via_extra_body: false
 
+# Matching is first-match-wins over ``presets:`` in declaration order.
+# Gateway-prefixed routes (openrouter/…, litellm_proxy/…, self-hosted/…) reach
+# the same model through a transport prefix, so for every glob G that does not
+# start with ``*``, ``<route>/G`` resolves to the preset that owns G: add a
+# ``*/G`` sibling unless a leading-``*`` glob in the same preset already covers
+# the routed name. The prefix is anchored on a ``/`` boundary rather than
+# matched anywhere in the string, because a bare ``*grok*`` also claims foreign
+# models whose name merely CONTAINS it; a new leading-``*`` glob starts with
+# ``*/``. A model-specific preset declared ahead of its family preset also lists
+# its vendor-dropped name (``gemini-3.5-flash`` and ``*/gemini-3.5-flash``), so
+# a gateway that serves the model without the vendor segment does not land in
+# the family preset, unless its axes were measured on the OpenRouter route alone
+# (``xai_grok_4_6`` says why). Presets that route by ``match_provider`` are
+# exempt. tests/canonical/test_preset_route_prefix_routing.py enforces this.
 presets:
   # Cohere Command A+ 05-2026 (the gateway ``azure_ai`` route) — landed via
   # auto-resolve (Slack-requested integration, PR #1124). Declared BEFORE the
@@ -318,6 +332,7 @@ presets:
   anthropic:
     match:
       - "anthropic/*"
+      - "*/anthropic/*"
       - "*claude*"
     content_policy: anthropic
     reasoning_codec: anthropic
@@ -325,6 +340,25 @@ presets:
     params:
       supports_seed: false
 
+  # ``supports_sampling_params: false``: no OpenRouter endpoint applies a
+  # sampling parameter for these models except gpt-5-image*, which this preset
+  # still claims, so it loses its ``temperature`` too. Direct OpenAI applies
+  # ``temperature`` to bare gpt-5.1+ without reasoning, which is what the
+  # per-config ``supports_sampling_params: true`` escape hatch on a
+  # ``provider: openai`` config is for; it is gpt-5-image*'s only way back, as
+  # none is gateway-safe on ``provider: openrouter``. litellm
+  # 1.93.0's ``openai`` transport refuses ``temperature`` in-process for the
+  # gpt-5 and o-series names on a gateway route (``openrouter/openai/gpt-5.2``);
+  # sending none keeps the gateway and direct routes identical. 2026-10-01:
+  # OpenRouter's /api/v1/models lists neither ``temperature`` nor ``top_p`` in
+  # ``supported_parameters`` for any openai/gpt-5*, openai/gpt-6* or
+  # openai/o1|o3|o4* model except gpt-5-image / -image-mini, and a request
+  # carrying ``temperature: 0`` with ``provider.require_parameters: true``
+  # returns 404 "No endpoints found that can handle the requested parameters"
+  # for openai/gpt-5.2 and openai/o3 (200 without it). ``openai_gpt6`` declares
+  # the knob on that support list alone (litellm's transport accepts
+  # ``temperature`` for the gpt-6 names); ``openai_o_series`` shares this
+  # evidence.
   openai_gpt5:
     match:
       - "openai/gpt-5*"
@@ -332,6 +366,8 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+    params:
+      supports_sampling_params: false
 
   # openai/gpt-6-astra (and its -pro tier): the gpt-5 axes for the GPT-6 line,
   # landed by hand after the auto-integration run on PR #1511 stopped at the
@@ -354,6 +390,8 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+    params:
+      supports_sampling_params: false
 
   # x-ai/grok-4.6 — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #1161). Declared BEFORE the generic
@@ -414,13 +452,12 @@ presets:
   # hypothesis (a fenced-JSON prompt directive, measured harmful).
   xai_grok_4_6:
     match:
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``grok-4.6``, ``self-hosted/grok-4.6``) is
+      # never an OpenRouter slug, so it resolves to ``xai_grok`` below.
       - "x-ai/grok-4.6*"
       - "xai/grok-4.6*"
-      # Gateway-prefixed routes (openrouter/…, litellm_proxy/…) reach the same
-      # model through a transport prefix, so the vendor segment is anchored
-      # rather than matched anywhere in the string: a bare "*grok-4.6*" also
-      # claims foreign models whose name merely CONTAINS it, and future
-      # siblings (grok-4.60, grok-4.6-fast) whose axes are unmeasured.
       - "*/x-ai/grok-4.6*"
       - "*/xai/grok-4.6*"
     schema_sanitizer: xai_grok_recursive
@@ -433,6 +470,9 @@ presets:
       - "x-ai/*"
       - "xai/*"
       - "grok*"
+      - "*/x-ai/*"
+      - "*/xai/*"
+      - "*/grok*"
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
@@ -478,6 +518,8 @@ presets:
     match:
       - "qwen/*"
       - "qwen3*"
+      - "*/qwen/*"
+      - "*/qwen3*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -524,8 +566,17 @@ presets:
   # ``known_unsupported`` (the sibling posture).
   deepseek_v4_flash_0731_resolve:
     match:
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``self-hosted/deepseek-v4-flash-0731``) is
+      # never an OpenRouter slug, so it resolves to the shared
+      # ``openrouter_dict_stringify_recovery`` preset. A vendor-anchored name on
+      # another route (``self-hosted/deepseek/deepseek-v4-flash-0731``) is
+      # claimed because it serves the same weights; the replay envelope is
+      # unmeasured there.
       - "deepseek/deepseek-v4-flash-0731"
       - "deepseek/deepseek-v4-flash-0731*"
+      - "*/deepseek/deepseek-v4-flash-0731*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -582,6 +633,10 @@ presets:
       # glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it this codec
       # without a reprobe. Those fall through to the shared preset below; a new
       # point release gets its own explicit entry with reprobe evidence.
+      # Vendor-anchored only: ``openai_summary_replay`` rebuilds the OpenRouter
+      # ``reasoning_details`` envelope and was measured on the OpenRouter route
+      # alone. A vendor-dropped name (``glm-5.3``, ``self-hosted/glm-5.3``) is
+      # never an OpenRouter slug, so it resolves to the shared preset below.
       - "z-ai/glm-5.3"
       - "*/z-ai/glm-5.3"
     schema_sanitizer: passthrough
@@ -615,6 +670,16 @@ presets:
   # preset to make the capability reliable). All three also surface a
   # reasoning_content summary the ``openai`` codec lands in the logs.
   # Live 2026-06-05.
+  # The nemotron globs claim NVIDIA's Nemotron line under any vendor or route
+  # prefix, in each spelling it ships under: ``nemotron-*`` (OpenRouter),
+  # ``NVIDIA-Nemotron-*`` / ``nvidia-nemotron-*`` (Hugging Face, vLLM,
+  # Fireworks), ``nvidia.nemotron-*`` (Bedrock) and ``FW-Nemotron-*`` (Fireworks
+  # builds on Azure AI). The Bedrock glob matches anywhere because a
+  # cross-region inference-profile id joins its region group with a dot
+  # (``us-gov.nvidia.nemotron-*``), not a ``/``, and AWS extends that set of
+  # groups. Llama-based fine-tunes such as
+  # ``nvidia/llama-3.1-nemotron-70b-instruct`` only CONTAIN ``-nemotron-``;
+  # nothing was measured on them, so they resolve to ``default``.
   # The Kimi K2 line carries the same wire-shape recovery from its own
   # ``moonshot_kimi_k2`` preset below, which restates these four policies
   # alongside the turn budget that line needs. Matching is first-match-wins
@@ -630,7 +695,16 @@ presets:
       - "tencent/hy3*"
       - "*hy3-preview*"
       - "nvidia/nemotron*"
-      - "*nemotron-*"
+      - "nemotron-*"
+      - "fw-nemotron-*"
+      - "nvidia-nemotron-*"
+      - "*nvidia.nemotron-*"
+      - "*/xiaomi/mimo*"
+      - "*/tencent/hy3*"
+      - "*/nvidia/nemotron*"
+      - "*/nemotron-*"
+      - "*/fw-nemotron-*"
+      - "*/nvidia-nemotron-*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -829,6 +903,7 @@ presets:
     match:
       - "thinkingmachines/inkling"
       - "thinkingmachines/inkling*"
+      - "*/thinkingmachines/inkling*"
     schema_sanitizer: passthrough
     prompt_policy: dict_map_hints_ref
     reasoning_codec: openai
@@ -907,7 +982,8 @@ presets:
   gemini_35_flash_recursive:
     match:
       - "google/gemini-3.5-flash"
-      - "openrouter/google/gemini-3.5-flash"
+      - "gemini-3.5-flash"
+      - "*/gemini-3.5-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -923,7 +999,8 @@ presets:
   gemini_36_flash_recursive:
     match:
       - "google/gemini-3.6-flash"
-      - "openrouter/google/gemini-3.6-flash"
+      - "gemini-3.6-flash"
+      - "*/gemini-3.6-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -942,7 +1019,8 @@ presets:
   gemini_37_flash_recursive:
     match:
       - "google/gemini-3.7-flash"
-      - "openrouter/google/gemini-3.7-flash"
+      - "gemini-3.7-flash"
+      - "*/gemini-3.7-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
@@ -974,7 +1052,8 @@ presets:
   gemini_31_pro_preview:
     match:
       - "google/gemini-3.1-pro-preview"
-      - "openrouter/google/gemini-3.1-pro-preview"
+      - "gemini-3.1-pro-preview"
+      - "*/gemini-3.1-pro-preview"
     reasoning_codec: gemini
     schema_sanitizer: gemini
     response_policy: array_dict_map
@@ -991,7 +1070,7 @@ presets:
   gemini:
     match:
       - "google/gemini-*"
-      - "openrouter/google/gemini-*"
+      - "*/google/gemini-*"
       - "*gemini-3*"
       - "*gemini-2.5*"
     reasoning_codec: gemini
@@ -1035,6 +1114,7 @@ presets:
     match:
       - "google/gemma*"
       - "*gemma-*"
+      - "*/google/gemma*"
     schema_sanitizer: gemini
     response_policy: array_dict_map
 
@@ -1067,32 +1147,53 @@ presets:
     reasoning_codec: openai
     response_policy: minimax_m3_tags
 
+  # OpenAI o-series (o1 / o3 / o4 and their -mini / -preview / -pro /
+  # -deep-research / -high tiers and dated snapshots): the ``default`` axes plus
+  # the sampling rule ``openai_gpt5`` records the evidence for. Declared last, so
+  # it claims only names no earlier preset matches. The ``openai/`` globs claim
+  # every vendor-named o1|o3|o4 model: over the bundled pricing.json they match
+  # exactly the 14 openai/o1|o3|o4* slugs, and with the vendor-dropped globs
+  # every one of litellm.model_cost's 62 o-series keys (``o3``, ``azure/o3``,
+  # ``azure/eu/o3-2025-04-16``). The vendor-dropped globs name the bare model
+  # and its known tiers rather than ``o3*`` / ``o3-*``: a glob's ``*`` also
+  # spans ``/``, and the broad forms claim foreign models whose name merely
+  # starts ``o1`` / ``o3`` (``O1-OPEN/OpenO1-LLaMA-8B``, ``self-hosted/o3-qwen``),
+  # which would then silently stop sending ``temperature``. A tier not listed
+  # here is claimed under ``openai/`` only.
+  openai_o_series:
+    match:
+      - "openai/o1*"
+      - "openai/o3*"
+      - "openai/o4*"
+      - "*/openai/o1*"
+      - "*/openai/o3*"
+      - "*/openai/o4*"
+      - "o1"
+      - "o1-20*"
+      - "o1-mini*"
+      - "o1-preview*"
+      - "o1-pro*"
+      - "o3"
+      - "o3-20*"
+      - "o3-mini*"
+      - "o3-pro*"
+      - "o3-deep-research*"
+      - "o4-mini*"
+      - "*/o1"
+      - "*/o1-20*"
+      - "*/o1-mini*"
+      - "*/o1-preview*"
+      - "*/o1-pro*"
+      - "*/o3"
+      - "*/o3-20*"
+      - "*/o3-mini*"
+      - "*/o3-pro*"
+      - "*/o3-deep-research*"
+      - "*/o4-mini*"
+    params:
+      supports_sampling_params: false
+
 providers:
   openrouter:
     params:
       reasoning_via_extra_body: true
-
-  # Direct Gemini via litellm ``gemini/*`` provider.
-  # As of litellm v1.83.14 (2026-05-21), passing ``reasoning_effort='medium'``
-  # alongside tool calls produces empty responses for Gemini 3.1 Pro
-  # (BerriAI/litellm#19403-class symptom — finish_reason=stop, zero
-  # completion tokens, no tool_calls emitted). ``low`` and ``high`` work.
-  # We surface this loud per AGENTS.md rule #1 rather than silently mapping
-  # to ``high`` — the caller decides how to react (lower/raise effort,
-  # switch to OpenRouter transport, wait for upstream fix).
-  # The OpenRouter route is unaffected because it sends
-  # ``extra_body.reasoning.effort=medium`` which OpenRouter translates
-  # directly into Google's ``thinking_level=medium``.
-  gemini:
-    params:
-      param_value_rules:
-        reasoning_effort:
-          medium:
-            action: reject
-            evidence: >-
-              2026-05-21, litellm 1.83.14: reasoning_effort='medium' alongside
-              tool calls returns an empty response on the direct gemini route
-              (finish_reason=stop, zero completion tokens, no tool_calls) for
-              Gemini 3.1 Pro. BerriAI/litellm#19403-class. low and high work;
-              the OpenRouter route is unaffected because it sends
-              extra_body.reasoning.effort

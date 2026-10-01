@@ -23,6 +23,9 @@ models:
     # Optional: override auto-detected model capabilities
     capabilities:
       dict_map_prompt_hints: true
+    # Optional: request header carrying a per-conversation id (see the notes below)
+    session:
+      header: "x-session-id"
   # Required when the run dispatches a user simulator. The orchestrator
   # fails loud if `models.user` is absent — there is no hardcoded provider
   # default, so a run always names the provider it ships user turns to.
@@ -85,8 +88,10 @@ Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `evaluation.grading_validation.fail_on` (default `advisory`) names the least severe finding class the pre-run gate refuses the run over. `advisory` fails on both classes; `error` fails on errors alone. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). `unchecked` is not a value here: it is a channel rather than a severity, and is logged rather than enforced so a gate that could check nothing does not read as a clean bill of health.
 - **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
-- `models.<role>.temperature` (default `0.0`) is sent as the request's `temperature`; `null` sends none, so the provider's default applies. A preset's `fixed_temperature` overrides either. `ModelConfig` also crosses the grader RPC and the distributed-worker queue, so a run that writes `null` needs workers and a grader image of this engine version or newer; an older one refuses the payload. **`models.user.temperature` is not read**: the built-in user simulator samples at 0.2, and a simulator registered under `actors.user.simulator` at whatever its `simulator_config` says. Setting the key earns a warning from `tolokaforge config validate` and at run start; it has never changed what the simulator sends, and honouring it now would silently change every run config that sets it.
-- `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
+- `models.<role>.temperature` (default `0.0`) is sent as the request's `temperature`; `null` sends none, so the provider's default applies. A preset or override `fixed_temperature` is sent in place of either. A preset that declares `supports_sampling_params: false` sends neither `temperature` nor `top_p` (a `fixed_temperature` is still sent); an explicit value on such a model config earns a warning from `tolokaforge config validate` and at run start, and `capabilities: {supports_sampling_params: true}` sends it again. `ModelConfig` also crosses the grader RPC and the distributed-worker queue, so a run that writes `null` needs workers and a grader image of this engine version or newer; an older one refuses the payload. **`models.user.temperature` is not read**: the built-in user simulator samples at 0.2, and a simulator registered under `actors.user.simulator` at whatever its `simulator_config` says. Setting the key earns a warning from `tolokaforge config validate` and at run start; it has never changed what the simulator sends, and honouring it now would silently change every run config that sets it.
+- `models.<role>.session.header` names a request header that carries a conversation id, for backends that route one conversation to one replica (for example a gateway ingress that hashes the header to pick a replica). The engine adds it to the `extra_headers` of every request that model makes, whether or not the gateway transport is on; wire delivery is pinned for litellm's `openai` and `openrouter` transports by [`tests/canonical/test_litellm_extra_headers_contract.py`](../tests/canonical/test_litellm_extra_headers_contract.py). A trial's agent sends `<trace_id>-agent` and its user simulator `<trace_id>-user`, where `<trace_id>` is the trial attempt's trace id ([OBSERVABILITY.md](OBSERVABILITY.md)): one value on every turn, tool round, retry, reply-guard regeneration and fallback hop of that conversation, and a new one when the orchestrator retries the trial. Calls that carry no conversation id (the summarizer, the rubric judge, anchor warm-up, certification) send a fresh UUID per call, the same across its retries; a per-judgment id for the judge is tracked in #1690. The name must be an HTTP header token and not one the engine or litellm sets itself (`Authorization`, `Content-Type`, `Content-Length`, `Host`, `X-Api-Key`, `Api-Key`, `Anthropic-Version`, `Anthropic-Beta`, case-insensitively); a misspelled `session:` key or a misspelled key inside the block is refused at load (see the unknown-key note below). Each model config owns its block: a `fallbacks:` entry does not inherit its parent's, so a fallback without one sends no session header. A name that another header source also sets (case-insensitive) is refused: `LLM_PROXY_HEADERS` keys and `LLM_PROXY_REQUEST_ID_HEADER` for a provider the gateway routes, and the engine's OpenRouter defaults (`HTTP-Referer`, `X-Title`, `X-Data-Collection-Opt-Out`) for an OpenRouter provider. `tolokaforge config validate` reports every such config, `run` / `prepare` / `worker` refuse the first before scheduling anything (fallbacks included), and building an `LLMClient` refuses its own config. `config validate` judges against the gateway variables of the shell it runs in, so the run-start check is the authoritative one; both read those variables only when some model config declares `session`. Worker and grader images released before this engine version drop `session` without a word, so distributed workers must run this version for the header to be sent. Value, merge order and collision detail: [LLM_LAYER.md § Session header](LLM_LAYER.md#session-header).
+- **Unknown keys under `models.<role>` are refused.** A key that `ModelConfig` does not declare, at the role's top level or in a `fallbacks:` entry, and a key outside the `openrouter:`, `session:` or `reasoning:` block's own fields, fails the run config's load. The error is located at the block (`models.agent`, `models.agent.fallbacks.0`, `models.agent.openrouter`, …), names every offending key with the closest declared field, and lists the block's accepted keys; rename or delete the key. The same rule holds wherever a model config is built: the Python API, the trial-spec wire to workers and graders, and the readers of a bundle's recorded model configs. A preset overlay's `openrouter_defaults:` block is refused the same way when the overlay loads.
+- `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. The accepted keys are listed under [Model Capability Presets](#model-capability-presets) "Available overrides". Any other key is refused on every model config, fallbacks included, whether or not the run builds that role (a judge on a deterministic-only task set is checked too): `tolokaforge config validate` reports each as an ERROR at `<path>.capabilities`, and `run` / `prepare` / `worker` refuse to start naming every one. A recognised key the matched preset's policies cannot take (`gemini_drop_placeholder_signature` on a GPT-5 name: `OpenAIReasoningCodec() takes no arguments`) is refused the same way, at the same path.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated plan-shape coercion knob. Backend selection is composer-driven — the orchestrator always constructs `SharedStackRuntimeBackend` and the composer sequences the resolved plan's per-scope substrate. `shared` coerces every task's plan to run-scope, `per_trial` to trial-scope; multi-stack packs are refused under either coercion (declare stack-scope explicitly instead). Any other name registered in the `tolokaforge.runtime_backends` entry-point group (only `in_memory` in-tree today) is a legit backend swap, resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
 - `orchestrator.agent_loop` (default `engine-loop`) names the in-process loop that drives the agent's turns, resolved against the `tolokaforge.agent_loops` entry-point group. `engine-loop` is the built-in tool-calling loop; a downstream package registering a loop with a different prompt contract or action format selects it here without a framework PR. An unregistered name is refused at run start with the known names listed. See [ADR-0050](adr/0050-agent-loop-protocol-and-registry.md) and [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
@@ -300,7 +305,7 @@ see [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the full translation table.
 
 ### Model Capability Presets
 
-Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. Override auto-detected capabilities via the `capabilities` field in model config:
+Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. A route prefix (`openrouter/`, `litellm_proxy/`, `self-hosted/`) does not change the preset a bundled glob picks, except for presets that route by `match_provider` (`aws_nova`); a route-prefixed name that resolves to `default` while its last segment matches a preset earns a warning from `tolokaforge config validate` and at run start (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-route-prefixed-model-name-resolves-to-the-default-preset)). To pin a name to a preset other than the one the bundled table picks for it, for example to keep the preset a recorded run used, declare an overlay preset whose `match` names it (`match: ["<name>"]`) and that carries that preset's axes; overlay presets are matched first (see [Preset overlay file](#preset-overlay-file-no-engine-release-required)). Override auto-detected capabilities via the `capabilities` field in model config:
 
 ```yaml
 models:
@@ -314,10 +319,31 @@ Available overrides:
 - `dict_map_prompt_hints` (bool) — enables the `DictMapHints` prompt policy which appends explicit hints to the system prompt about dict-map parameters (`additionalProperties: {schema}`). When enabled together with `StrictSchema` (auto-enabled for GPT-5 models), both schema-level enriched descriptions AND system prompt hints are applied. Dict-map detection uses the shared `detect_dict_maps()` utility in [`tolokaforge/core/llm/dict_maps.py`](../tolokaforge/core/llm/dict_maps.py).
 - `supports_typed_dict_maps` (bool) — whether model handles typed dict-map schemas natively (without `StrictSchema` rewriting)
 - `supports_schema_extras` (bool) — whether model accepts `title`, `examples`, `minProperties`
-- `fixed_temperature` (float | null) — force specific temperature
+- `fixed_temperature` (float | null) — force specific temperature; sent even when sampling parameters are declared unsupported
 - `supports_seed` (bool) — whether model accepts seed parameter
+- `supports_sampling_params` (bool) — `false` sends no `temperature` / `top_p` / `top_k` from the config or the caller; `true` sends them on a model whose preset declares `false`
 - `unwrap_input_key` (bool) — unwrap Nova/Bedrock `{input: args}` wrapper
+- `tool_content_format` (`"anthropic"` | `"openai"`) — selects the content policy that formats tool results; any other value leaves the preset's in place
+- `supports_tool_images` (bool) — `true` selects the `anthropic` content policy, which sends image blocks in tool results; `false` selects the text-only `openai` one
+- `gemini_drop_placeholder_signature` (bool) — passed to the preset's reasoning codec as `drop_placeholder_signature`: whether the `gemini` codec drops OpenRouter's short placeholder `thought_signature` blocks before replaying them (on by default). A codec that takes no such argument refuses it
 - `reasoning_via_extra_body` (bool) — send reasoning via `extra_body` (OpenRouter)
+- `reasoning_via_thinking_kwarg` (bool) — send `reasoning.mode: budget` as litellm's top-level `thinking={"type": "enabled", "budget_tokens": N}` (direct Anthropic transport); `reasoning_via_extra_body` wins when both are set
+- `drop_sampling_when_thinking` (bool) — drop `temperature` / `top_p` / `top_k` from a request that carries a reasoning kwarg
+- `reasoning_budget_default` (int | null) — the `budget_tokens` sent when `reasoning.mode: budget` names none
+
+GPT-5, GPT-6 and the o-series presets declare `supports_sampling_params: false`, so these models get no `temperature` / `top_p` from any config. A direct-OpenAI config that wants its temperature honoured takes it back for itself:
+
+```yaml
+models:
+  agent:
+    provider: openai
+    name: gpt-5.2
+    temperature: 0.7
+    capabilities:
+      supports_sampling_params: true
+```
+
+or, for every `provider: openai` config of a run, in an operator overlay: `providers: {openai: {params: {supports_sampling_params: true}}}`. Both are for direct-OpenAI transports only. Do not set it on a `provider: openrouter` config, and do not flip it on the `openai_gpt5`, `openai_gpt6` or `openai_o_series` preset itself in an overlay: a gateway's resolved route for an OpenRouter-namespaced name goes out through litellm's `openai` transport, which refuses the `temperature` for the GPT-5 and o-series names before sending (`UnsupportedParamsError`); for GPT-6, no OpenRouter endpoint applies it (see [LLM_LAYER.md § litellm OpenRouter routing caveat](LLM_LAYER.md#litellm-openrouter-routing-caveat)).
 
 #### Prompt caching (preset-driven only)
 
@@ -339,8 +365,9 @@ To add support for a new model, add an entry to
 a class registry in
 [`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py).
 The overlay validator rejects unknown slot names (`ValueError` with a
-`difflib.get_close_matches` suggestion) and unknown nested `params:`
-keys inside a slot block. See
+`difflib.get_close_matches` suggestion), unknown nested `params:`
+keys inside a slot block, and unknown `openrouter_defaults:` keys (refused
+in the same words as an unknown key under `models.<role>`). See
 [ADR-0030 § Extension-point surface](adr/0030-tolokaforge-models-split.md#extension-point-surface-new--widening).
 
 Each slot value takes one of two shapes:
@@ -420,7 +447,7 @@ Schema fields (see
 | `custom_llm_provider` | Value pinned into `kwargs["custom_llm_provider"]` — Nova: `"openai"`; OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`. |
 | `rate_limit_patterns` | Regex strings compiled once at construction and consulted by `LLMClient._is_rate_limit_exception`'s tier-3 text fallback and by `LLMClient.classify_loop_error`. Every shipped non-mock provider carries the same `DEFAULT_RATE_LIMIT_PATTERNS` list; onboarding a provider whose rate-limit prose differs is a YAML edit. |
 | `slug_rewrite` | Two-step per-attempt rewrite of `kwargs["model"]`: `strip_prefix` then `ensure_prefix`. Nova: `nova/` → `openai/`. |
-| `format_model_name_bare` | When `true`, `LLMClient._format_model_name` returns `config.name` as-is. Nova only. |
+| `format_model_name_bare` | When `true`, `litellm_model_id` (the model string `LLMClient` sends) returns `config.name` as-is. Nova only. |
 | `kwargs_pin_transport` | When `true`, `endpoint` and `api_key_env` are read fresh per attempt and pinned into `kwargs["api_base"]` / `kwargs["api_key"]` (fails loud when `api_key_env` resolves empty). Nova only. |
 
 `providers.yaml` ships inside the `tolokaforge-models` wheel at
@@ -466,7 +493,17 @@ litellm_models:                    # models litellm's own map does not carry
 Each entry declares what a model accepts on the wire, with the observation
 behind it, and admits exactly the parameters its flags name for that model's
 calls. Nothing else changes, and nothing is written into litellm's global
-map. See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
+map. The key is a full `<provider>/<model>` litellm id, where `<model>` is the
+config `name` verbatim, slashes included: `provider: openai` + `name:
+self-hosted/qwen3.6-35b-a3b` is keyed `openai/self-hosted/qwen3.6-35b-a3b`. An
+entry stored under the raw `name` instead, whose first segment names no
+provider (`self-hosted/qwen3.6-35b-a3b`), is an ERROR in `config validate` and
+stops `run` / `prepare` / `worker`, with a message naming the key found and the
+key to rename it to; the check covers every role in `models:` and every
+fallback. A raw key whose first segment names a provider (`anthropic/<model>`
+for `provider: openrouter`) is that provider's config's key: it is left alone,
+admits nothing for this config, and `config validate` reports it as an INFO.
+See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
 `config validate` treats a model absent from litellm's map as an *unknown*,
 not a refusal — it emits an INFO with the exact `litellm_models:` entry to

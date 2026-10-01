@@ -121,6 +121,20 @@ Presets resolve via **first-match-wins** ordering. Anthropic 4.7 is
 listed before the generic `anthropic` preset so its `thinking`-kwarg
 routing takes precedence — see [`AGENTS.md`](../AGENTS.md) gotcha #15.
 
+For each `match:` glob G that does not start with `*`, `<route>/G` must still
+resolve to the preset, so the model keeps its preset behind a gateway route
+prefix: add a `*/G` sibling (`qwen/*` and `*/qwen/*`) unless a leading-`*`
+glob in the same preset already covers the routed name. A new leading-`*`
+glob starts with `*/`. A model-specific preset declared ahead of its family
+preset also lists its vendor-dropped name (`gemini-3.5-flash` and
+`*/gemini-3.5-flash`), unless its axes were measured on the OpenRouter route
+alone (see [`LLM_LAYER.md`](LLM_LAYER.md#preset-coverage)); declare such a
+preset in `_OPENROUTER_TIED_REPLAY_PRESETS` in
+`tests/canonical/test_preset_route_prefix_routing.py`.
+`tests/canonical/test_preset_route_prefix_routing.py` fails naming the
+`preset:glob` whose routed name resolves to another preset, and its message
+suggests the `*/G` sibling to add.
+
 Available policy slots (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the authoritative spec):
 
@@ -192,10 +206,11 @@ overlay path and the offending key):
 - Same-named overlay presets replace the bundled entry (logged at INFO so the
   swap is visible).
 - A `litellm_models:` entry needs a non-empty `evidence` and at least one
-  capability set true, its key must be a full `<provider>/<model>` litellm id,
-  and unknown keys are rejected. That block is how a model litellm's own map
-  does not carry gets its parameters admitted - without it the provider
-  refuses `tools` before the request is sent. See
+  capability set true, its key must be a full `<provider>/<model>` litellm id
+  (`<model>` is the config `name` verbatim, slashes included), and unknown
+  keys are rejected. That block is how a model litellm's own map does not
+  carry gets its parameters admitted - without it the provider refuses
+  `tools` before the request is sent. See
   [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
 For distributed runs, the overlay path passed to `tolokaforge prepare` is

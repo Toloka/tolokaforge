@@ -7,6 +7,9 @@ import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
+import litellm
+import openai
 import pytest
 import yaml
 
@@ -22,7 +25,9 @@ from tolokaforge.core.llm import (
     UnwrapInputResponse,
     build_capabilities,
 )
+from tolokaforge.core.llm.client import LLMApiTimeoutError
 from tolokaforge.core.llm.presets import _match_preset
+from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
@@ -88,6 +93,61 @@ class TestShouldRetryException:
 
         assert _should_retry_exception(OSError("network")) is True
 
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "wrapped"])
+    @pytest.mark.parametrize(
+        "terminal",
+        [
+            litellm.UnsupportedParamsError(message="openai does not support parameters"),
+            litellm.AuthenticationError(message="bad key", llm_provider="openai", model="m"),
+            openai.AuthenticationError(
+                "bad key",
+                response=httpx.Response(401, request=httpx.Request("POST", "http://x")),
+                body=None,
+            ),
+            LLMApiTimeoutError("timed out"),
+        ],
+        ids=lambda exc: type(exc).__module__.split(".")[0] + "." + type(exc).__name__,
+    )
+    def test_returns_false_for_a_terminal_error_anywhere_in_the_cause_chain(
+        self, terminal: BaseException, wrapped: bool
+    ) -> None:
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = terminal
+        if wrapped:
+            exc = RuntimeError(f"LLM API call failed: {terminal}")
+            exc.__cause__ = terminal
+        assert _should_retry_exception(exc) is False
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            litellm.BadRequestError(message="provider 400", model="m", llm_provider="openrouter"),
+            litellm.PermissionDeniedError(
+                message="provider 403",
+                model="m",
+                llm_provider="openrouter",
+                response=httpx.Response(403, request=httpx.Request("POST", "http://x")),
+            ),
+        ],
+        ids=lambda exc: type(exc).__name__,
+    )
+    def test_a_wrapped_provider_400_or_403_is_still_retried(self, refusal: BaseException) -> None:
+        """``UnsupportedParamsError`` subclasses ``BadRequestError``; only the subclass
+        is terminal. A provider's own 400 / 403 can be transient (a gateway's quota)."""
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = RuntimeError(f"LLM API call failed: {refusal}")
+        exc.__cause__ = refusal
+        assert _should_retry_exception(exc) is True
+
+    def test_a_self_referencing_cause_chain_terminates(self) -> None:
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = RuntimeError("loop")
+        exc.__cause__ = exc
+        assert _should_retry_exception(exc) is True
+
 
 # ===================================================================
 # GenerationResult construction
@@ -150,13 +210,13 @@ class TestGenerationResult:
 
 
 # ===================================================================
-# LLMClient construction and _format_model_name
+# LLMClient construction and the litellm model id
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestLLMClientConstruction:
-    """LLMClient initialisation and model name formatting."""
+    """LLMClient initialisation and the model id it sends litellm."""
 
     def test_basic_construction(self) -> None:
         client = _make_client(provider="openai", name="gpt-4")
@@ -164,18 +224,23 @@ class TestLLMClientConstruction:
         assert client.config.name == "gpt-4"
         assert client.model_name == "openai/gpt-4"
 
-    def test_format_model_name_already_prefixed(self) -> None:
-        client = _make_client(provider="openai", name="openai/gpt-4")
-        assert client.model_name == "openai/gpt-4"
-
-    def test_format_model_name_openrouter(self) -> None:
-        client = _make_client(provider="openrouter", name="google/gemini-2.5-flash")
-        assert client.model_name == "openrouter/google/gemini-2.5-flash"
-
-    def test_format_model_name_nova(self) -> None:
-        """Nova provider should use model name as-is without prefix."""
-        client = _make_client(provider="nova", name="nova-pro-v1")
-        assert client.model_name == "nova-pro-v1"
+    @pytest.mark.parametrize(
+        "provider, name, model_id",
+        [
+            ("openai", "openai/gpt-4", "openai/gpt-4"),
+            ("openrouter", "google/gemini-2.5-flash", "openrouter/google/gemini-2.5-flash"),
+            ("openai", "self-hosted/qwen3.6-35b-a3b", "openai/self-hosted/qwen3.6-35b-a3b"),
+            ("nova", "nova-pro-v1", "nova-pro-v1"),
+            ("openrouter/google", "gemini-2.5-flash", "openrouter/google/gemini-2.5-flash"),
+            ("OpenAI", "gpt-4", "OpenAI/gpt-4"),
+            ("OpenAI", "openai/gpt-4", "OpenAI/openai/gpt-4"),
+        ],
+    )
+    def test_model_id(self, provider: str, name: str, model_id: str) -> None:
+        """The provider is compared as written: only Nova's binding sends a bare name."""
+        client = _make_client(provider=provider, name=name)
+        assert client.model_name == model_id
+        assert client.model_name == litellm_model_id(provider, name)
 
     def test_provider_stored_lowercase(self) -> None:
         client = _make_client(provider="OpenAI", name="gpt-4")

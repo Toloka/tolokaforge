@@ -1,11 +1,27 @@
-# fix-billing-holds under gemini-cli via the ``toloka_litellm`` gateway route.
+# fix-billing-holds under gemini-cli, on the shipped entry's default path.
+#
+# The host needs a real ``GEMINI_API_KEY`` (Google AI Studio or a Vertex SA),
+# and the CLI sends its requests to Google's Generative Language API. The
+# shipped entry declares a ``credential_gateway``, but no runtime in this repo
+# starts that sidecar yet: the key sits in the trial container's environment
+# and is not shielded (#1711).
+#
+# A LiteLLM gateway is reached through a ``harness_presets_file`` overlay that
+# whole-replaces the entry; keep ``models.agent.harness: gemini-cli`` and add:
+#
+#   evaluation:
+#     harness_adapter:
+#       params:
+#         harness_presets_file: examples/terminal_bench/gemini_litellm_overlay.yaml
+#
+# ``gemini_openrouter_overlay.yaml`` is the sibling for a LiteLLM that answers
+# from OpenRouter.
 
 models:
   agent:
     provider: "openrouter"
     name: "google/gemini-2.5-flash"
     harness: "gemini-cli"
-    gateway_route: "toloka_litellm"
     temperature: 0.0
     max_tokens: 4096
 

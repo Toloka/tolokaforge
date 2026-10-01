@@ -4,16 +4,35 @@ Tests exercise ``tolokaforge.core.config_validator`` without network or
 API keys.
 """
 
-import pytest
+import json
+from types import MappingProxyType
 
+import pytest
+import yaml
+from pydantic import ValidationError
+
+from tests.utils.secret_state import secret_manager_installed
 from tolokaforge.core.config_validator import (
     Severity,
     ValidationResult,
     _model_supports_reasoning,
     validate_run_config,
 )
+from tolokaforge.core.models import ModelConfig, RunConfig
 
 pytestmark = pytest.mark.unit
+
+_REGISTERABLE_TASK = {
+    "task_id": "wire_task",
+    "name": "wire_task",
+    "category": "test",
+    "description": "A task the trial spec can carry.",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {"tables": {}, "schemas": []},
+    "agent_tools": [],
+    "user_tools": [],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +171,155 @@ class TestSchemaValidation:
         assert result.ok
         assert not [i for i in result.issues if i.path == "orchestrator.agent_loop"]
 
+    @pytest.mark.parametrize(
+        "session, offending",
+        [
+            pytest.param({}, "header", id="missing-header"),
+            pytest.param({"header": "x session"}, "'x session'", id="space"),
+            pytest.param({"header": "x:y"}, "'x:y'", id="colon"),
+            pytest.param({"header": "Authorization"}, "'Authorization'", id="reserved"),
+            pytest.param({"header": "X-Api-Key"}, "'X-Api-Key'", id="reserved-x-api-key"),
+            pytest.param({"header": "api-key"}, "'api-key'", id="reserved-api-key"),
+            pytest.param(
+                {"header": "Anthropic-Version"},
+                "'Anthropic-Version'",
+                id="reserved-anthropic-version",
+            ),
+            pytest.param(
+                {"header": "anthropic-beta"}, "'anthropic-beta'", id="reserved-anthropic-beta"
+            ),
+            pytest.param({"header": "x-session-id", "ttl": 30}, "ttl", id="unknown-key"),
+        ],
+    )
+    def test_a_malformed_session_block_is_refused_at_load(self, session, offending):
+        cfg = _make_config()
+        cfg["models"]["agent"]["session"] = session
+        with pytest.raises(ValidationError) as refused:
+            RunConfig(**cfg)
+        assert offending in str(refused.value)
+        result = validate_run_config(cfg)
+        assert [(i.path, offending in i.message) for i in result.errors] == [("(root)", True)]
+
+    def test_a_fallback_does_not_inherit_its_parents_session(self):
+        cfg = _make_config()
+        cfg["models"]["agent"]["session"] = {"header": "x-session-id"}
+        cfg["models"]["agent"]["fallbacks"] = [{"provider": "openrouter", "name": "openai/gpt-4o"}]
+        agent = RunConfig(**cfg).models["agent"]
+        assert agent.session is not None and agent.session.header == "x-session-id"
+        assert agent.fallbacks[0].session is None
+
+
+_BOOL_KEY_CLAUSE = (
+    "unknown key True, which YAML read as bool — config keys must be strings. "
+    "Quote it to write it as one."
+)
+
+
+class TestModelConfigRefusesUndeclaredKeys:
+    """Every block under ``models.<role>`` refuses a key its type does not declare."""
+
+    @pytest.mark.parametrize(
+        "mutate, location, clause",
+        [
+            pytest.param(
+                lambda agent: agent.update(
+                    fallbacks=[{"provider": "openrouter", "name": "openai/gpt-4o", "sesion": {}}]
+                ),
+                "models.agent.fallbacks.0",
+                "unknown key 'sesion' — did you mean 'session'?",
+                id="fallback",
+            ),
+            pytest.param(
+                lambda agent: agent.update(session={"hedaer": "x-session-id"}),
+                "models.agent.session",
+                "unknown key 'hedaer' — did you mean 'header'?",
+                id="session",
+            ),
+            pytest.param(
+                lambda agent: agent.update({True: "x"}),
+                "models.agent",
+                _BOOL_KEY_CLAUSE,
+                id="non-string-key",
+            ),
+            pytest.param(
+                lambda agent: agent.update(reasoning={True: 1}),
+                "models.agent.reasoning",
+                _BOOL_KEY_CLAUSE,
+                id="reasoning-non-string-key",
+            ),
+        ],
+    )
+    def test_an_undeclared_key_is_refused_at_its_path_with_its_fix(self, mutate, location, clause):
+        cfg = _make_config()
+        mutate(cfg["models"]["agent"])
+
+        with pytest.raises(ValidationError) as refused:
+            RunConfig(**cfg)
+
+        [error] = refused.value.errors()
+        assert ".".join(str(part) for part in error["loc"]) == location
+        assert clause in error["msg"]
+
+    def test_a_mapping_that_is_not_a_dict_gets_the_named_refusal(self):
+        block = MappingProxyType({"provider": "openrouter", "name": "a/b", "tempreature": 0.1})
+
+        with pytest.raises(ValidationError) as refused:
+            ModelConfig.model_validate(block)
+
+        assert "did you mean 'temperature'?" in refused.value.errors()[0]["msg"]
+
+        reasoning = MappingProxyType({"mdoe": "budget"})
+        with pytest.raises(ValidationError) as refused:
+            ModelConfig.model_validate(
+                {"provider": "openrouter", "name": "a/b", "reasoning": reasoning}
+            )
+
+        [error] = refused.value.errors()
+        assert error["loc"] == ("reasoning",)
+        assert "did you mean 'mode'?" in error["msg"]
+
+    def test_every_undeclared_key_in_one_block_is_named_in_one_refusal(self):
+        cfg = _make_config()
+        cfg["models"]["agent"].update(sesion={}, gateway_route="toloka_litellm")
+
+        with pytest.raises(ValidationError) as refused:
+            RunConfig(**cfg)
+
+        [error] = refused.value.errors()
+        assert "unknown key 'sesion'" in error["msg"]
+        assert "unknown key 'gateway_route'" in error["msg"]
+
+    def test_the_trial_spec_wire_refuses_an_undeclared_model_config_key(self):
+        from tests.utils.runner_requests import trial_spec_json
+        from tolokaforge.core.trial import TrialSpec
+
+        spec = json.loads(trial_spec_json(_REGISTERABLE_TASK))
+        spec["agent_model_config"]["sesion"] = {"header": "x-session-id"}
+
+        with pytest.raises(ValidationError) as refused:
+            TrialSpec.model_validate_json(json.dumps(spec))
+
+        [error] = refused.value.errors()
+        assert error["loc"] == ("agent_model_config",)
+        assert "did you mean 'session'?" in error["msg"]
+
+    def test_config_validate_reports_the_refusal_as_an_error(self, tmp_path):
+        from click.testing import CliRunner
+
+        from tolokaforge.dx.cli.main import cli
+
+        cfg = _make_config()
+        cfg["models"]["agent"]["sesion"] = {"header": "x-session-id"}
+        config = tmp_path / "run.yaml"
+        config.write_text(yaml.safe_dump(cfg))
+
+        result = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+
+        assert result.exit_code != 0
+        assert "[ERROR]" in result.output
+        assert "\nmodels.agent\n" in result.output
+        assert "did you mean 'session'" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Reasoning compatibility
@@ -281,6 +449,37 @@ class TestOrchestratorValidation:
         assert len(turn_warns) == 1
 
 
+class TestApiKeyProbe:
+    """The provider-key warning asks the SecretManager, so a key from `.env` or an
+    installed secrets payload counts, and the process environment only through it."""
+
+    @pytest.mark.parametrize(
+        "payload, process_env, warned",
+        [
+            pytest.param({"ANTHROPIC_API_KEY": "sk-fake"}, {}, False, id="secret-manager-only"),
+            pytest.param({}, {"ANTHROPIC_API_KEY": "sk-fake"}, True, id="process-env-only"),
+        ],
+    )
+    def test_the_key_is_read_through_the_secret_manager(
+        self, payload, process_env, warned, monkeypatch
+    ):
+        cfg = _make_config(
+            agent_provider="anthropic",
+            agent_name="claude-sonnet-4-6",
+            user_provider="anthropic",
+            user_name="claude-sonnet-4-6",
+        )
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        for name, value in process_env.items():
+            monkeypatch.setenv(name, value)
+        with secret_manager_installed(payload):
+            result = validate_run_config(cfg)
+        key_warnings = [
+            (i.severity, i.path) for i in result.issues if "expects API key" in i.message
+        ]
+        assert key_warnings == ([(Severity.WARNING, "models.agent.provider")] if warned else [])
+
+
 # ---------------------------------------------------------------------------
 # ValidationResult helpers
 # ---------------------------------------------------------------------------
@@ -375,38 +574,6 @@ class TestPreflightConsultsTheOverlay:
         result = self._validate(self._tree(tmp_path, declared=True))
         assert "does not appear to support function calling" not in result.output
 
-    @pytest.mark.parametrize("provider", ["meta", "Meta", "META"])
-    def test_the_preflight_lookup_is_case_symmetric_like_the_run(self, provider, tmp_path):
-        """Asserted on the lookup, not on the CLI output.
-
-        A capitalised provider makes litellm raise, so the wrapper answers
-        `None` and no issue is emitted whatever the overlay says - a CLI-level
-        case test would pass without the symmetry existing.
-        """
-        import yaml
-
-        from tolokaforge.core import config_validator as cv
-        from tolokaforge.core.llm.presets import set_overlay_path
-
-        overlay = tmp_path / "overlay.yaml"
-        overlay.write_text(
-            yaml.safe_dump(
-                {
-                    "litellm_models": {
-                        f"{provider.lower()}/muse-spark-1.2": {
-                            "supports_function_calling": True,
-                            "evidence": "2026-08-10, litellm 1.96.0: measured",
-                        }
-                    }
-                }
-            )
-        )
-        set_overlay_path(str(overlay))
-        try:
-            assert cv._declared_function_calling("muse-spark-1.2", provider) is True
-        finally:
-            set_overlay_path(None)
-
     def test_an_unmapped_agent_model_without_overlay_declaration_reports_info(self, tmp_path):
         """`fake-vendor-xyz/muse-spark-1.2` is absent from litellm's map by
         construction, so the check cannot answer either way. The command emits
@@ -472,11 +639,12 @@ class TestUnmappedAgentModelReportsInfoNotError:
         model id would flip with a litellm bump.
         """
         from tolokaforge.core import config_validator as cv
+        from tolokaforge.core.llm.presets import set_overlay_path
 
         monkeypatch.setattr(cv, "_model_supports_function_calling", lambda name: False)
-        # Also short-circuit the overlay lookup so we exercise the pure
-        # False-from-litellm path, not the overlay-declared shortcut.
-        monkeypatch.setattr(cv, "_declared_function_calling", lambda name, provider: False)
+        # No overlay, so nothing declares the model: the pure False-from-litellm
+        # path, not the overlay-declared shortcut.
+        set_overlay_path(None)
 
         cfg = _make_config(agent_provider="openai", agent_name="whisper-1")
         result = cv.validate_run_config(cfg)

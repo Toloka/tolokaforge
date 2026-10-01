@@ -36,6 +36,11 @@ data. So entries are operator data, declared in the preset overlay
         evidence: "2026-08-10, litellm 1.96.0: no entry, so meta refused tools
           before sending; admitting them returns a correct tool call."
 
+The key is the config's ``<provider>/<name>``, ``name`` verbatim, slashes
+included (``openai/self-hosted/qwen3.6-35b-a3b``): :func:`lookup_overlay` derives
+it from :func:`~tolokaforge.core.llm.providers.litellm_model_id`, the string the
+run sends, and ``config validate`` asks the same function.
+
 An entry DECLARES; it does not copy. Only the parameters its flags name are
 admitted, so a capability nothing observed is never asserted on the model's
 behalf, and an undeclared parameter is still refused loudly - the allow-list
@@ -58,15 +63,32 @@ invisible, which is the same failure wearing a different hat.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from tolokaforge.core.llm.providers import litellm_model_id, provider_binding_names
+
+if TYPE_CHECKING:
+    from tolokaforge.core.models import ModelConfig
 
 logger = logging.getLogger(__name__)
 
-#: Models whose evidence line has been logged. A client is built per trial per
+#: Overlay keys whose evidence line has been logged. A client is built per trial per
 #: role, so without this a 4000-trial eval repeats the same sentence thousands
 #: of times. Nothing reads it but the logger.
 _LOGGED: set[str] = set()
 
-__all__ = ["DECLARABLE_FLAGS", "FLAG_PARAMS", "allowed_openai_params"]
+__all__ = [
+    "DECLARABLE_FLAGS",
+    "FLAG_PARAMS",
+    "OverlayKeyMismatchError",
+    "OverlayLookup",
+    "allowed_openai_params",
+    "lookup_overlay",
+    "overlay_key_mismatches",
+    "overlay_stray_entries",
+]
 
 
 #: Declared capability -> the OpenAI parameters it admits. Every flag here
@@ -88,13 +110,74 @@ FLAG_PARAMS: dict[str, tuple[str, ...]] = {
 DECLARABLE_FLAGS: tuple[str, ...] = tuple(FLAG_PARAMS)
 
 
-def _entry_key(model_id: str, provider: str) -> str:
-    """The overlay key for a model id litellm will be asked about.
+@dataclass(frozen=True)
+class OverlayLookup:
+    """The overlay entry a config resolves to, and what that entry admits.
 
-    Overlay keys are always ``<provider>/<model>`` - one shape to validate and
-    one to document - but the id litellm resolves is not always: the Nova path
-    sends a bare name. Composing the key from the provider keeps a config whose
-    model id carries no vendor reachable from the overlay.
+    ``evidence`` is the entry's own, ``None`` when no entry sits under ``key``.
+    ``stray_key`` names an entry stored under the config's raw ``name`` that
+    is the canonical key of a different, provider-named config, so it does
+    not apply here; ``None`` when there is no such entry.
+    """
+
+    key: str
+    params: tuple[str, ...]
+    evidence: str | None
+    stray_key: str | None
+
+    @property
+    def stray_provider(self) -> str | None:
+        """The provider whose config ``stray_key`` is the key of."""
+        return _vendor(self.stray_key) if self.stray_key else None
+
+
+class OverlayKeyMismatchError(ValueError):
+    """An overlay entry sits under a config's raw name instead of its ``<provider>/<name>``."""
+
+    def __init__(self, *, provider: str, name: str, declared_key: str, expected_key: str):
+        self.provider = provider
+        self.name = name
+        self.declared_key = declared_key
+        self.expected_key = expected_key
+        super().__init__(
+            f"litellm_models entry {declared_key!r} does not apply to "
+            f"provider {provider!r}, name {name!r}: that config is looked up under "
+            f"{expected_key!r}, so the entry admits nothing. "
+            f"Rename the entry to {expected_key!r}."
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[..., OverlayKeyMismatchError], tuple[str, str, str, str]]:
+        return _rebuild_mismatch, (self.provider, self.name, self.declared_key, self.expected_key)
+
+
+def _rebuild_mismatch(
+    provider: str, name: str, declared_key: str, expected_key: str
+) -> OverlayKeyMismatchError:
+    return OverlayKeyMismatchError(
+        provider=provider, name=name, declared_key=declared_key, expected_key=expected_key
+    )
+
+
+def _vendor(key: str) -> str:
+    return key.partition("/")[0]
+
+
+def _lower_vendor(key: str) -> str:
+    """*key* with its first ``/`` segment lowercased, as the overlay validator stores it."""
+    vendor, _, rest = key.partition("/")
+    return f"{vendor.lower()}/{rest}"
+
+
+def _overlay_key(provider: str, name: str) -> str:
+    """The ``litellm_models`` key for a config's ``provider`` and ``name``.
+
+    Derived from :func:`litellm_model_id`, the string the run sends, so the
+    key for ``(openai, self-hosted/m)`` is ``openai/self-hosted/m``, never the
+    raw ``self-hosted/m``. Overlay keys are always ``<provider>/<model>`` - one
+    shape to validate and one to document - but the Nova id is bare, so a bare
+    id is keyed under the provider.
 
     The vendor is lowercased on both sides of this lookup (see
     ``presets._validate_litellm_models``), so a config and an overlay that
@@ -102,40 +185,127 @@ def _entry_key(model_id: str, provider: str) -> str:
     the lookup could not find would produce the one report nobody can act on:
     the overlay is loaded and the model still refuses tools.
     """
+    model_id = litellm_model_id(provider, name)
     if "/" in model_id:
-        vendor, _, name = model_id.partition("/")
-        return f"{vendor.lower()}/{name}"
-    vendor = (provider or "").strip().lower()
-    return f"{vendor}/{model_id}" if vendor else model_id
+        return _lower_vendor(model_id)
+    return f"{provider.lower()}/{model_id}"
 
 
-def allowed_openai_params(model_id: str, provider: str = "") -> list[str]:
-    """Parameters an overlay entry admits for *model_id*, for litellm's kwarg.
+def _raw_name_key(provider: str, name: str) -> str | None:
+    """The key a config's raw ``name`` would be stored under, when it differs from its own.
 
-    Empty when no entry declares this model, which is every model litellm
-    already knows - the kwarg is then omitted and nothing about the request
-    changes.
+    Only a name carrying a ``/`` that is not ``<provider>/`` has one; the vendor
+    segment is lowercased as the overlay validator lowercases it.
+    """
+    if "/" not in name or name.startswith(f"{provider}/"):
+        return None
+    return _lower_vendor(name)
 
-    *model_id* is the string litellm resolves (``_format_model_name``);
-    *provider* names the vendor for the ids that do not carry one.
+
+def _names_a_provider(key: str) -> bool:
+    """Whether *key*'s first segment is a provider, so the key can be another config's own."""
+    import litellm
+
+    vendor = _vendor(key)
+    return vendor in provider_binding_names() or vendor in litellm.provider_list
+
+
+def lookup_overlay(provider: str, name: str) -> OverlayLookup:
+    """The overlay entry for ``provider`` and ``name`` as the config states them.
+
+    ``config validate`` and :class:`LLMClient` both ask this, so the preflight
+    and the run cannot disagree about which entry applies. ``params`` is empty
+    when no entry declares the model, which is every model litellm already
+    knows.
+
+    Raises :class:`OverlayKeyMismatchError` when the only entry for the config
+    sits under its raw ``name`` and that key's first segment names no provider,
+    so it can be no other config's key either (``self-hosted/m`` for
+    ``(openai, self-hosted/m)``). A raw key that names a provider
+    (``anthropic/m`` for ``(openrouter, anthropic/m)``) is the key of the native
+    ``(anthropic, m)`` config and comes back as ``stray_key``.
     """
     from tolokaforge.core.llm.presets import litellm_model_entries
 
-    entry = litellm_model_entries().get(_entry_key(model_id, provider))
-    if not entry:
-        return []
+    entries = litellm_model_entries()
+    key = _overlay_key(provider, name)
+    entry = entries.get(key)
+    if entry:
+        return OverlayLookup(
+            key=key, params=_admitted_params(entry), evidence=entry["evidence"], stray_key=None
+        )
 
+    raw_key = _raw_name_key(provider, name)
+    if raw_key is None or raw_key not in entries:
+        return OverlayLookup(key=key, params=(), evidence=None, stray_key=None)
+    if not _names_a_provider(raw_key):
+        raise OverlayKeyMismatchError(
+            provider=provider, name=name, declared_key=raw_key, expected_key=key
+        )
+    return OverlayLookup(key=key, params=(), evidence=None, stray_key=raw_key)
+
+
+def _admitted_params(entry: Mapping[str, object]) -> tuple[str, ...]:
     params: list[str] = []
     for flag, names in FLAG_PARAMS.items():
         if not entry.get(flag):
             continue
-        params.extend(name for name in names if name not in params)
-    if params and model_id not in _LOGGED:
-        _LOGGED.add(model_id)
+        params.extend(param for param in names if param not in params)
+    return tuple(params)
+
+
+def _lookup_each(
+    models: Mapping[str, ModelConfig],
+) -> Iterator[tuple[str, OverlayLookup | OverlayKeyMismatchError]]:
+    """Every model config, fallbacks included, with its path and lookup outcome."""
+    from tolokaforge.core.models.run_config import iter_model_configs
+
+    for path, cfg in iter_model_configs(models):
+        try:
+            yield path, lookup_overlay(cfg.provider, cfg.name)
+        except OverlayKeyMismatchError as err:
+            yield path, err
+
+
+def overlay_key_mismatches(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, OverlayKeyMismatchError]]:
+    """Every model config, fallbacks included, whose overlay entry sits under its raw name.
+
+    Pairs each refusal with the config path it came from (``models.agent``,
+    ``models.agent.fallbacks[0]``). ``config validate`` reports all of them and
+    ``run`` / ``prepare`` / ``worker`` raise the first, so both refuse the same
+    configs.
+    """
+    return [
+        (path, outcome)
+        for path, outcome in _lookup_each(models)
+        if isinstance(outcome, OverlayKeyMismatchError)
+    ]
+
+
+def overlay_stray_entries(models: Mapping[str, ModelConfig]) -> list[tuple[str, OverlayLookup]]:
+    """Every model config, fallbacks included, whose raw name keys another config's entry."""
+    return [
+        (path, outcome)
+        for path, outcome in _lookup_each(models)
+        if isinstance(outcome, OverlayLookup) and outcome.stray_key
+    ]
+
+
+def allowed_openai_params(provider: str, name: str) -> list[str]:
+    """Parameters an overlay entry admits for a config, for litellm's kwarg.
+
+    Empty when no entry declares the model; the kwarg is then omitted and
+    nothing about the request changes. Logs the entry's evidence once per key.
+    """
+    lookup = lookup_overlay(provider, name)
+    if lookup.params and lookup.key not in _LOGGED:
+        _LOGGED.add(lookup.key)
         logger.info(
             "Admitting %s for %s, which litellm's map does not carry. %s",
-            ", ".join(params),
-            model_id,
-            entry.get("evidence"),
+            ", ".join(lookup.params),
+            lookup.key,
+            lookup.evidence,
         )
-    return params
+    return list(lookup.params)

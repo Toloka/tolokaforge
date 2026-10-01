@@ -7,7 +7,7 @@ base — plus the rate-limit probe budget invariant.
 """
 
 import warnings
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
@@ -1280,6 +1280,22 @@ def sets_user_temperature(models: Mapping[str, ModelConfig]) -> bool:
     """
     user = models.get("user")
     return user is not None and "temperature" in user.model_fields_set
+
+
+def iter_model_configs(models: Mapping[str, ModelConfig]) -> Iterator[tuple[str, ModelConfig]]:
+    """Every model config the run can build a client for, with its config path.
+
+    Yields ``("models.<role>", cfg)`` for each role in mapping order, each
+    followed by its ``fallbacks`` as ``"<path>.fallbacks[<i>]"``, recursively.
+    """
+    for role, cfg in models.items():
+        yield from _iter_with_fallbacks(f"models.{role}", cfg)
+
+
+def _iter_with_fallbacks(path: str, cfg: ModelConfig) -> Iterator[tuple[str, ModelConfig]]:
+    yield path, cfg
+    for index, fallback in enumerate(cfg.fallbacks):
+        yield from _iter_with_fallbacks(f"{path}.fallbacks[{index}]", fallback)
 
 
 class RunConfig(BaseModel):

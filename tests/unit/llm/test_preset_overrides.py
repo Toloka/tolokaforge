@@ -1,28 +1,37 @@
-"""Unit tests for :func:`_apply_config_overrides`.
+"""A run config's ``capabilities:`` override keys, and the refusal of one no override
+recognises.
 
-The AGENTS.md rule #1 says "Surface failures explicitly". A typo in a run
-config's ``capabilities:`` block used to silently no-op — these tests pin
-the new contract: unknown keys raise :class:`ValueError` with a message
-that (a) names every offending key, (b) names the recognised keys, and
-(c) points the reader at the contract doc.
+:func:`_apply_config_overrides` raises :class:`ValueError` on an unknown key, with a
+message that (a) names every offending key, (b) names the recognised keys, and (c)
+points the reader at the contract doc. ``config validate`` reports that key, or a
+recognised override the config's capabilities cannot build with, on every model
+config, fallbacks included, as an ERROR at ``<path>.capabilities``, and ``run`` /
+``prepare`` / ``worker`` refuse to start naming every one of them.
 
-The belt-and-braces test ``test_recognised_keys_are_the_documented_set``
-additionally prevents the set / body from drifting apart: every key in
-:data:`_RECOGNISED_OVERRIDE_KEYS` must appear as a literal inside the
-function body, so a future contributor cannot add a key to the allowlist
-without also teaching the function how to translate it.
+``test_recognised_keys_are_the_documented_set`` keeps the set and the body from
+drifting apart: every key in :data:`_RECOGNISED_OVERRIDE_KEYS` must appear as a
+literal inside the function body, so a key cannot join the allowlist without the
+function learning how to translate it.
 """
 
 from __future__ import annotations
 
 import inspect
+import pickle
+from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
+from click.testing import CliRunner
 
+from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.presets import (
     _RECOGNISED_OVERRIDE_KEYS,
+    CapabilityOverrideError,
     _apply_config_overrides,
 )
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 
@@ -38,7 +47,7 @@ class TestApplyConfigOverridesRejectsUnknown:
             _apply_config_overrides({}, {"bravo": 1, "alpha": 2})
 
     def test_error_points_at_contract_doc(self) -> None:
-        with pytest.raises(ValueError, match=r"docs/CONFIG\.md § ModelConfig\.capabilities"):
+        with pytest.raises(ValueError, match=r"docs/CONFIG\.md § Model Capability Presets"):
             _apply_config_overrides({}, {"nope": 1})
 
     def test_recognised_keys_do_not_raise(self) -> None:
@@ -67,3 +76,115 @@ class TestApplyConfigOverridesRejectsUnknown:
                 f"{key!r} is in _RECOGNISED_OVERRIDE_KEYS but not referenced "
                 f"in _apply_config_overrides body"
             )
+
+
+_MODEL = {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}
+_TYPO = {**_MODEL, "capabilities": {"not_a_key": 1}}
+_UNBUILDABLE = {
+    "provider": "openrouter",
+    "name": "openai/gpt-5.2",
+    "capabilities": {"gemini_drop_placeholder_signature": True},
+}
+_TYPO_REASON = "['not_a_key']"
+_UNBUILDABLE_REASON = "OpenAIReasoningCodec() takes no arguments"
+
+
+def _run_config(models: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "evaluation": {
+            "tasks_glob": "tasks/**/task.yaml",
+            "output_dir": "output",
+            "harness_adapter": {"type": "frozen_mcp_core"},
+        },
+        "orchestrator": {"workers": 1, "repeats": 1},
+        "models": {"user": _MODEL, **models},
+    }
+
+
+class TestEveryConfigsOverridesAreChecked:
+    @pytest.mark.parametrize(
+        ("models", "refused", "reason"),
+        [
+            pytest.param({"agent": _TYPO}, ["models.agent"], _TYPO_REASON, id="agent"),
+            pytest.param(
+                {"agent": {**_MODEL, "fallbacks": [_TYPO]}},
+                ["models.agent.fallbacks[0]"],
+                _TYPO_REASON,
+                id="fallback",
+            ),
+            pytest.param(
+                {"agent": _MODEL, "judge": _TYPO},
+                ["models.judge"],
+                _TYPO_REASON,
+                id="judge-never-built",
+            ),
+            pytest.param(
+                {"agent": _TYPO, "judge": _TYPO},
+                ["models.agent", "models.judge"],
+                _TYPO_REASON,
+                id="two",
+            ),
+            pytest.param(
+                {"agent": _UNBUILDABLE},
+                ["models.agent"],
+                _UNBUILDABLE_REASON,
+                id="unbuildable",
+            ),
+            pytest.param(
+                {"agent": {**_UNBUILDABLE, "temperature": 0.7}},
+                ["models.agent"],
+                _UNBUILDABLE_REASON,
+                id="unbuildable-with-temperature",
+            ),
+            pytest.param(
+                {"agent": _MODEL, "judge": _UNBUILDABLE},
+                ["models.judge"],
+                _UNBUILDABLE_REASON,
+                id="unbuildable-judge-never-built",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(["run", "--dry-run"], id="run"),
+            pytest.param(["prepare", "--run-dir", "{run_dir}"], id="prepare"),
+            pytest.param(["worker", "--run-dir", "{run_dir}"], id="worker"),
+        ],
+    )
+    def test_validate_and_run_start_refuse_the_same_configs(
+        self,
+        tmp_path: Path,
+        models: dict[str, Any],
+        refused: list[str],
+        reason: str,
+        command: list[str],
+    ) -> None:
+        config = tmp_path / "run.yaml"
+        config.write_text(yaml.safe_dump(_run_config(models)))
+        paths = [f"{path}.capabilities" for path in refused]
+
+        errors = [
+            (i.path, i.message)
+            for i in validate_run_config(_run_config(models)).issues
+            if i.severity is Severity.ERROR
+        ]
+        assert [path for path, _ in errors] == paths
+        assert all(reason in message for _, message in errors)
+
+        argv = [arg.format(run_dir=tmp_path / "run_dir") for arg in command]
+        started = CliRunner().invoke(cli, [argv[0], "--config", str(config), *argv[1:]])
+        assert started.exit_code == 1, started.output
+        refusals = [line for line in started.output.splitlines() if ".capabilities: " in line]
+        assert [line.removeprefix("Error: ").split(": ", 1)[0] for line in refusals] == paths
+        assert all(reason in line for line in refusals)
+
+    def test_the_refusal_survives_a_pickle_round_trip(self) -> None:
+        err = CapabilityOverrideError(path="models.agent.capabilities", reason="unknown keys")
+        back = pickle.loads(pickle.dumps(err))
+        assert (type(back), str(back), back.path, back.reason) == (
+            CapabilityOverrideError,
+            str(err),
+            "models.agent.capabilities",
+            "unknown keys",
+        )

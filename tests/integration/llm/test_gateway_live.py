@@ -16,7 +16,7 @@ installs a SecretManager that overrides that name for the test's duration, so a
 CI budget for integration tests stays separate from a deployment's production
 gateway budget, and a local ``.env`` cannot accidentally charge the wrong key.
 
-Three calls reach the network (the pinned-upstream check is opt-in), each capped at a few dozen output tokens.
+Six calls reach the network (the pinned-upstream check is opt-in), each capped at a few hundred output tokens.
 
 Environment contract
 --------------------
@@ -56,6 +56,7 @@ Environment contract
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
@@ -71,6 +72,7 @@ from tolokaforge.core.llm.proxy import (
 )
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.core.run_display_events import _NULL_EVENTS, LLMCallObservation
 from tolokaforge.secrets import DictProvider, SecretManager, get_default
 from tolokaforge.secrets import manager as secrets_manager
 
@@ -86,6 +88,7 @@ ENV_TEST_PROVIDER = "LLM_PROXY_INT_TEST_PROVIDER"
 # retroactive /generation lookup.
 ENV_TEST_PINNED_MODEL = "LLM_PROXY_INT_TEST_PINNED_MODEL"
 ENV_TEST_PINNED_PROVIDER = "LLM_PROXY_INT_TEST_PINNED_PROVIDER"
+SESSION_HEADER = "x-session-id"
 
 _WEATHER_TOOL = {
     "type": "function",
@@ -104,7 +107,7 @@ _WEATHER_TOOL = {
 }
 
 
-def _secret(name: str) -> str:
+def _secret(secrets: SecretManager, name: str) -> str:
     """Read a configuration value through ``SecretManager``.
 
     Not ``os.environ``: the repo's secrets contract routes credential reads
@@ -112,20 +115,35 @@ def _secret(name: str) -> str:
     living only in ``.env`` resolves deterministically rather than depending on
     a dependency's import-time ``load_dotenv`` side effect.
     """
-    return (get_default().get_secret(name) or "").strip()
+    return (secrets.get_secret(name) or "").strip()
+
+
+def _gateway_base_url(secrets: SecretManager) -> str:
+    return _secret(secrets, ENV_TEST_BASE_URL) or _secret(secrets, ENV_BASE_URL)
 
 
 @pytest.fixture(scope="module")
-def gateway_key() -> str:
+def ambient_secrets() -> SecretManager:
+    """The process SecretManager before any test here swaps it.
+
+    ``gateway_client`` keeps its gateway-only manager installed until module
+    teardown, so a test that reads ``get_default()`` after it would see only
+    the gateway's names.
+    """
+    return get_default()
+
+
+@pytest.fixture(scope="module")
+def gateway_key(ambient_secrets: SecretManager) -> str:
     """The dedicated integration-test credential, or skip."""
-    api_key = _secret(ENV_TEST_API_KEY)
+    api_key = _secret(ambient_secrets, ENV_TEST_API_KEY)
     if not api_key:
         pytest.skip(f"{ENV_TEST_API_KEY} not set — skipping live gateway test.")
     return api_key
 
 
 @pytest.fixture(scope="module")
-def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
+def gateway_client(ambient_secrets: SecretManager, gateway_key: str) -> Iterator[LLMClient]:
     """An ``LLMClient`` pointed at the gateway, billed to the test credential.
 
     Skips unless the dedicated key and a gateway route name are both present, so
@@ -136,7 +154,7 @@ def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
     # a misconfiguration, not an opt-out, and must fail rather than skip — a
     # pipeline that holds the secret but lacks the route name would otherwise go
     # green while testing nothing.
-    model = _secret(ENV_TEST_MODEL)
+    model = _secret(ambient_secrets, ENV_TEST_MODEL)
     if not model:
         pytest.fail(
             f"{ENV_TEST_API_KEY} is set but {ENV_TEST_MODEL} is not. The gateway's own "
@@ -144,7 +162,7 @@ def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
             f"Unset {ENV_TEST_API_KEY} to disable this test deliberately."
         )
 
-    base_url = _secret(ENV_TEST_BASE_URL) or _secret(ENV_BASE_URL)
+    base_url = _gateway_base_url(ambient_secrets)
     if not base_url:
         pytest.fail(
             f"{ENV_TEST_API_KEY} is set but neither {ENV_TEST_BASE_URL} nor "
@@ -152,10 +170,24 @@ def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
             f"{ENV_TEST_API_KEY} to disable this test deliberately."
         )
 
-    provider = _secret(ENV_TEST_PROVIDER) or "openai"
+    provider = _secret(ambient_secrets, ENV_TEST_PROVIDER) or "openai"
 
-    # Override the gateway credential so this run bills to the test budget even
-    # when a production LLM_PROXY_API_KEY is present in .env or the environment.
+    original = secrets_manager._default_manager
+    secrets_manager._default_manager = _gateway_secrets(ambient_secrets, base_url, gateway_key)
+    try:
+        client = LLMClient(_test_model_config(provider, model))
+        assert client._proxy is not None, (
+            "gateway did not claim this provider; check LLM_PROXY_INT_TEST_PROVIDER "
+            "against DEFAULT_ROUTED_PROVIDERS"
+        )
+        yield client
+    finally:
+        secrets_manager._default_manager = original
+
+
+def _gateway_secrets(ambient: SecretManager, base_url: str, gateway_key: str) -> SecretManager:
+    """The gateway transport billed to the test credential, even when a production
+    ``LLM_PROXY_API_KEY`` is present in .env or the environment."""
     secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: gateway_key}
     for passthrough in (
         ENV_HEADERS,
@@ -164,33 +196,25 @@ def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
         ENV_PREFERRED_ROUTE,
         ENV_TRUST_WILDCARDS,
     ):
-        value = _secret(passthrough)
+        value = _secret(ambient, passthrough)
         if value:
             secrets[passthrough] = value
+    return SecretManager([DictProvider(secrets)])
 
-    original = secrets_manager._default_manager
-    secrets_manager._default_manager = SecretManager([DictProvider(secrets)])
-    try:
-        client = LLMClient(
-            ModelConfig(
-                provider=provider,
-                name=model,
-                temperature=0.0,
-                # Enough headroom for a tool call from a model that emits
-                # preamble or reasoning text first. At 64 a Cohere model
-                # truncated before emitting the call, which surfaces as an empty
-                # response and reads like a gateway fault rather than a cap.
-                max_tokens=256,
-                reasoning=ReasoningConfig(mode="off"),
-            )
-        )
-        assert client._proxy is not None, (
-            "gateway did not claim this provider; check LLM_PROXY_INT_TEST_PROVIDER "
-            "against DEFAULT_ROUTED_PROVIDERS"
-        )
-        yield client
-    finally:
-        secrets_manager._default_manager = original
+
+def _test_model_config(provider: str, model: str, **extra: Any) -> ModelConfig:
+    return ModelConfig(
+        provider=provider,
+        name=model,
+        temperature=0.0,
+        # Enough headroom for a tool call from a model that emits
+        # preamble or reasoning text first. At 64 a Cohere model
+        # truncated before emitting the call, which surfaces as an empty
+        # response and reads like a gateway fault rather than a cap.
+        max_tokens=256,
+        reasoning=ReasoningConfig(mode="off"),
+        **extra,
+    )
 
 
 def test_request_is_addressed_to_the_gateway(gateway_client: LLMClient, gateway_key: str) -> None:
@@ -212,13 +236,15 @@ def test_request_is_addressed_to_the_gateway(gateway_client: LLMClient, gateway_
     # production gateway key the ambient environment holds.
     assert kwargs["api_key"] == gateway_key
 
-    # The model string must survive intact — re-prefixing it would silently
-    # miss the pricing table (see docs/LLM_LAYER.md § proxy).
-    expected_model = (
-        gateway_client.config.name
-        if gateway_client.config.name.startswith(f"{gateway_client.config.provider}/")
-        else f"{gateway_client.config.provider}/{gateway_client.config.name}"
-    )
+    # A route the catalog resolved goes out under the gateway's own route name;
+    # otherwise the model string must survive intact — re-prefixing it would
+    # silently miss the pricing table (see docs/LLM_LAYER.md § proxy).
+    if gateway_client._gateway_route is not None:
+        expected_model = str(gateway_client._gateway_route)
+    elif gateway_client.config.name.startswith(f"{gateway_client.config.provider}/"):
+        expected_model = gateway_client.config.name
+    else:
+        expected_model = f"{gateway_client.config.provider}/{gateway_client.config.name}"
     assert kwargs["model"] == expected_model, (
         f"model string was rewritten: {kwargs['model']!r} != {expected_model!r}; "
         f"a re-prefix breaks normalize_model_name and degrades cost_source"
@@ -268,7 +294,45 @@ def test_gateway_serves_a_tool_call(gateway_client: LLMClient) -> None:
     assert "unit" in arguments
 
 
-def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
+def test_a_session_header_rides_a_live_completion(gateway_client: LLMClient) -> None:
+    """A model declaring ``session`` still gets a completion, and its request
+    carries the conversation id. The gateway cannot echo the header back, so wire
+    delivery is pinned by tests/canonical/test_session_header_per_conversation.py."""
+    client = LLMClient(
+        _test_model_config(
+            gateway_client.config.provider,
+            gateway_client.config.name,
+            session={"header": SESSION_HEADER},
+        )
+    )
+    observation = LLMCallObservation(
+        events=_NULL_EVENTS, trial_id="live:0", role="agent", session_id="live-smoke-agent"
+    )
+    kwargs = client._build_kwargs(
+        system="Be terse.",
+        messages=[Message(role=MessageRole.USER, content="ping")],
+        tools=None,
+        tool_choice=None,
+        temperature=None,
+        seed=None,
+        reasoning=None,
+        top_p=None,
+        max_tokens=None,
+        session_id=client._session_id_for_call(observation),
+    )
+    assert kwargs["extra_headers"][SESSION_HEADER] == "live-smoke-agent"
+
+    result = client.generate(
+        system="Answer with a single word.",
+        messages=[Message(role=MessageRole.USER, content="Say OK")],
+        observation=observation,
+    )
+    assert result.text.strip(), "gateway returned empty text"
+
+
+def test_pinned_provider_reaches_the_upstream(
+    ambient_secrets: SecretManager, gateway_key: str
+) -> None:
     """A provider-pinned call through the gateway is served by THE pinned upstream.
 
     This is the check the request shape cannot give: litellm's proxy may or may
@@ -281,14 +345,14 @@ def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
     import json
     import urllib.request
 
-    pinned_model = _secret(ENV_TEST_PINNED_MODEL)
-    pinned_provider = _secret(ENV_TEST_PINNED_PROVIDER)
+    pinned_model = _secret(ambient_secrets, ENV_TEST_PINNED_MODEL)
+    pinned_provider = _secret(ambient_secrets, ENV_TEST_PINNED_PROVIDER)
     if not pinned_model or not pinned_provider:
         pytest.skip(
             f"{ENV_TEST_PINNED_MODEL} / {ENV_TEST_PINNED_PROVIDER} not set - "
             "skipping the pinned-upstream check."
         )
-    openrouter_key = _secret("OPENROUTER_API_KEY")
+    openrouter_key = _secret(ambient_secrets, "OPENROUTER_API_KEY")
     if not openrouter_key:
         pytest.fail(
             f"{ENV_TEST_PINNED_MODEL} is set but OPENROUTER_API_KEY is not - the "
@@ -296,27 +360,15 @@ def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
             "this test deliberately."
         )
 
-    base_url = _secret(ENV_TEST_BASE_URL) or _secret(ENV_BASE_URL)
+    base_url = _gateway_base_url(ambient_secrets)
     if not base_url:
         pytest.fail(
             f"{ENV_TEST_PINNED_MODEL} is set but no gateway base URL is; set "
             f"{ENV_TEST_BASE_URL} or {ENV_BASE_URL}."
         )
 
-    secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: gateway_key}
-    for passthrough in (
-        ENV_HEADERS,
-        ENV_REQUEST_ID_HEADER,
-        ENV_PROVIDERS,
-        ENV_PREFERRED_ROUTE,
-        ENV_TRUST_WILDCARDS,
-    ):
-        value = _secret(passthrough)
-        if value:
-            secrets[passthrough] = value
-
     original = secrets_manager._default_manager
-    secrets_manager._default_manager = SecretManager([DictProvider(secrets)])
+    secrets_manager._default_manager = _gateway_secrets(ambient_secrets, base_url, gateway_key)
     try:
         client = LLMClient(
             ModelConfig(
@@ -358,3 +410,39 @@ def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
         f"the pin did not hold through the gateway: pinned {pinned_provider!r}, "
         f"served by {served_by!r} - the proxy dropped extra_body.provider"
     )
+
+
+def test_a_gpt5_default_config_succeeds_routed_and_direct(
+    ambient_secrets: SecretManager, gateway_key: str
+) -> None:
+    """``openai/gpt-5.2`` on the default config (``temperature`` left at 0.0) succeeds
+    through the gateway's resolved route and directly on OpenRouter. That neither
+    request carries a sampling parameter is pinned by
+    tests/canonical/test_sampling_params_wire_parity.py."""
+    openrouter_key = _secret(ambient_secrets, "OPENROUTER_API_KEY")
+    if not openrouter_key:
+        pytest.skip("OPENROUTER_API_KEY not set - skipping the direct half.")
+    base_url = _gateway_base_url(ambient_secrets)
+    if not base_url:
+        pytest.fail(f"{ENV_TEST_API_KEY} is set but no gateway base URL is.")
+    config = ModelConfig(provider="openrouter", name="openai/gpt-5.2", max_tokens=256)
+    paths = {
+        "routed": _gateway_secrets(ambient_secrets, base_url, gateway_key),
+        "direct": SecretManager([DictProvider({"OPENROUTER_API_KEY": openrouter_key})]),
+    }
+
+    original = secrets_manager._default_manager
+    try:
+        for path, secrets in paths.items():
+            secrets_manager._default_manager = secrets
+            client = LLMClient(config)
+            if path == "routed" and client._gateway_route is None:
+                pytest.skip("the gateway's catalog serves no route for openai/gpt-5.2")
+            assert (client._proxy is None) == (path == "direct")
+            result = client.generate(
+                system="Answer with a single word.",
+                messages=[Message(role=MessageRole.USER, content="Say OK")],
+            )
+            assert result.text.strip(), f"empty completion on the {path} path"
+    finally:
+        secrets_manager._default_manager = original

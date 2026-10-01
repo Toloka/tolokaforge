@@ -16,7 +16,8 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable
+import uuid
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -56,12 +57,21 @@ from tolokaforge.core.llm.gateway_route import (
     resolve_gateway_route,
 )
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
+from tolokaforge.core.llm.openrouter_headers import (
+    configure_openrouter_default_headers,
+    is_openrouter_provider,
+)
 from tolokaforge.core.llm.params_policy import RuleAction
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
-from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
+from tolokaforge.core.llm.providers import (
+    compile_rate_limit_patterns,
+    get_provider_binding,
+    litellm_model_id,
+)
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
+from tolokaforge.core.llm.session_header import session_header_conflict
 from tolokaforge.core.llm.usage import (
     CostSource,
     Usage,
@@ -309,22 +319,54 @@ def _is_dict_map_array_shape(schema: dict[str, Any]) -> bool:
     return _STRICT_SCHEMA_KEY_FIELD in item_props
 
 
+_EXCEPTION_CAUSE_DEPTH = 4
+"""How far :func:`_cause_chain` walks ``__cause__``.
+
+``_call_with_key_rotation`` re-raises every non-timeout provider error as
+``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed error the
+provider raised is one link down the chain by the time the outer controller
+sees it. Four links cover that wrap plus any future one.
+"""
+
+
+def _cause_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield *exc*, then its ``__cause__`` links, at most :data:`_EXCEPTION_CAUSE_DEPTH`."""
+    candidate: BaseException | None = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH):
+        if candidate is None:
+            return
+        yield candidate
+        cause = candidate.__cause__
+        candidate = cause if cause is not candidate else None
+
+
+_NON_RETRIED_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    LLMApiTimeoutError,
+    openai.AuthenticationError,
+    litellm.UnsupportedParamsError,
+)
+
+
 def _should_retry_exception(exc: BaseException) -> bool:
     """Predicate for the outer :class:`tenacity.Retrying` controller in ``generate``.
 
-    Returns ``True`` for all transient errors, with two exclusions:
+    Returns ``True`` for all transient errors. It returns ``False`` when *exc*
+    or any link of its :func:`_cause_chain` is one of:
 
     - :class:`LLMApiTimeoutError` — already the result of an exhausted
       per-call retry budget inside
       :meth:`LLMClient._call_completion_with_timeout_retry`; must not
       cascade into another ``stop_after_attempt(5)`` multiplier.
-    - :class:`openai.AuthenticationError` — deterministic 401/403 that
-      does not become truthy by retrying. Litellm wraps provider auth
-      failures in this class regardless of the underlying vendor, so a
-      single ``isinstance`` check covers OpenAI, OpenRouter, Anthropic,
-      Google, and every other supported provider. Retrying wastes ~32s
-      of exponential-backoff wall time per trial and hides the actual
-      failure signal from the operator.
+    - :class:`openai.AuthenticationError` — a deterministic 401 that does not
+      become truthy by retrying. litellm's ``AuthenticationError`` subclasses
+      it for every provider it routes.
+    - :class:`litellm.UnsupportedParamsError` — litellm refuses the parameter
+      set in-process, before any request is sent, so every attempt is refused
+      identically.
+
+    The chain is walked because ``_call_with_key_rotation`` wraps every
+    provider error in a ``RuntimeError``, so the outer controller never sees
+    the provider's exception directly.
 
     Rate limits (429) ride the same outer exponential backoff as other
     transient errors — the long waits (up to 60s between attempts) give
@@ -332,22 +374,7 @@ def _should_retry_exception(exc: BaseException) -> bool:
     both controllers; rate-limit probe mode differentiates 429s in ``stop``
     and ``wait`` (see :meth:`LLMClient._build_probe_retrying`), not here.
     """
-    if isinstance(exc, LLMApiTimeoutError):
-        return False
-    if isinstance(exc, openai.AuthenticationError):
-        return False
-    return True
-
-
-_EXCEPTION_CAUSE_DEPTH = 4
-"""How far :meth:`LLMClient._is_rate_limit_exception` walks ``__cause__``.
-
-``_call_with_key_rotation`` re-raises every non-timeout provider error as
-``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed 429 the
-provider raised is one link down the chain by the time the outer controller
-sees it. Four links cover that wrap plus any future one without risking an
-unbounded walk on a self-referencing chain.
-"""
+    return not any(isinstance(link, _NON_RETRIED_EXCEPTIONS) for link in _cause_chain(exc))
 
 
 def matches_rate_limit_text(text: str, patterns: Iterable[re.Pattern[str]]) -> bool:
@@ -383,8 +410,8 @@ class _RateLimitTypeEvidence(str, Enum):
 def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
     """Walk *exc* and its causes for 429 evidence carried by type or status.
 
-    The walk is bounded by :data:`_EXCEPTION_CAUSE_DEPTH` because the outer
-    controller never sees the provider's exception directly.
+    It walks :func:`_cause_chain` because the outer controller never sees the
+    provider's exception directly.
     ``litellm.exceptions.RateLimitError`` subclasses ``openai.RateLimitError``,
     so one ``isinstance`` covers every provider litellm routes, and
     ``status_code == 429`` catches a bare ``APIStatusError``.
@@ -394,11 +421,8 @@ def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
     :meth:`LLMClient._rotate_key` only ever advances its index, so the condition
     never clears.
     """
-    candidate: BaseException | None = exc
     saw_http_status = False
-    for _ in range(_EXCEPTION_CAUSE_DEPTH):
-        if candidate is None:
-            break
+    for candidate in _cause_chain(exc):
         if isinstance(candidate, openai.RateLimitError):
             return _RateLimitTypeEvidence.TYPED_429
         status = getattr(candidate, "status_code", None)
@@ -408,8 +432,6 @@ def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
             saw_http_status = True
         if isinstance(candidate, AllApiKeysExhaustedError):
             return _RateLimitTypeEvidence.TERMINAL_EXHAUSTION
-        cause = candidate.__cause__
-        candidate = cause if cause is not candidate else None
 
     if saw_http_status:
         return _RateLimitTypeEvidence.OTHER_HTTP_STATUS
@@ -649,10 +671,10 @@ class LLMClient:
         self.config = config
         self.provider = (config.provider or "").lower()
         self._provider_binding = get_provider_binding(self.provider)
-        self.model_name = self._format_model_name()
+        self.model_name = litellm_model_id(config.provider, config.name)
         # Parameters an overlay admits for a model litellm's map does not carry.
         # Empty for every model it does: the kwarg is then omitted entirely.
-        self.allowed_openai_params = allowed_openai_params(self.model_name, self.config.provider)
+        self.allowed_openai_params = allowed_openai_params(config.provider, config.name)
         self.capabilities = build_capabilities(
             self.config.name,
             self.config.provider,
@@ -679,6 +701,9 @@ class LLMClient:
         # scope for this provider, so downstream checks are a single
         # ``is None`` test. See ``tolokaforge/core/llm/proxy.py``.
         self._proxy = resolve_proxy_config()
+        conflict = session_header_conflict(config, self._proxy, header_path="session.header")
+        if conflict is not None:
+            raise conflict
         if self._proxy is not None and not self._proxy.applies_to(self.provider):
             if not self._provider_binding.unroutable:
                 # Warn rather than drop quietly: a deployment that configured a
@@ -737,7 +762,7 @@ class LLMClient:
                     self._proxy = None
 
         self._openrouter_headers = (
-            self._configure_openrouter_headers() if self.provider.startswith("openrouter") else {}
+            configure_openrouter_default_headers() if is_openrouter_provider(self.provider) else {}
         )
         if self._proxy is not None:
             self.logger.info(
@@ -754,7 +779,7 @@ class LLMClient:
                     "unless this gateway authenticates by network position.",
                     base_url=self._proxy.base_url,
                 )
-        elif self.provider.startswith("openrouter"):
+        elif is_openrouter_provider(self.provider):
             self._configure_openrouter_base_url()
         elif self._provider_binding.endpoint and self._provider_binding.api_base_env:
             os.environ.setdefault(
@@ -1050,25 +1075,6 @@ class LLMClient:
         )
         return configured
 
-    def _configure_openrouter_headers(self) -> dict[str, str]:
-        """Ensure OpenRouter requests include the required headers."""
-        existing_headers = dict(getattr(litellm, "openai_headers", {}) or {})
-
-        referer = os.getenv(
-            "TOLOKAFORGE_OPENROUTER_REFERER", "https://github.com/Toloka-F/tolokaforge"
-        )
-        title = os.getenv("TOLOKAFORGE_OPENROUTER_TITLE", "Tolokaforge Evaluation")
-
-        existing_headers.setdefault("HTTP-Referer", referer)
-        existing_headers.setdefault("X-Title", title)
-
-        opt_out_pref = os.getenv("TOLOKAFORGE_OPENROUTER_OPT_OUT", "true").lower()
-        if opt_out_pref in {"1", "true", "yes", "on"}:
-            existing_headers.setdefault("X-Data-Collection-Opt-Out", "true")
-
-        litellm.openai_headers = existing_headers
-        return existing_headers
-
     def _configure_openrouter_base_url(self) -> None:
         """Propagate OpenRouter base URL overrides to LiteLLM."""
         from tolokaforge.secrets import get_default
@@ -1083,16 +1089,6 @@ class LLMClient:
 
         os.environ.setdefault("OPENROUTER_API_BASE", base_url)
         self._openrouter_base_url = base_url
-
-    def _format_model_name(self) -> str:
-        """Format model name for LiteLLM."""
-        if self.config.name.startswith(f"{self.config.provider}/"):
-            return self.config.name
-
-        if self._provider_binding.format_model_name_bare:
-            return self.config.name
-
-        return f"{self.config.provider}/{self.config.name}"
 
     # ------------------------------------------------------------------
     # JSON/argument repair helpers
@@ -1492,6 +1488,7 @@ class LLMClient:
             return self._mock_generate(messages, tools)
 
         role: LLMCallRole = observation.role if observation is not None else "agent"
+        session_id = self._session_id_for_call(observation)
         retrying = self._build_retrying(observation)
         for attempt in retrying:
             with attempt:
@@ -1510,6 +1507,7 @@ class LLMClient:
                         top_p=top_p,
                         max_tokens=max_tokens,
                         role=role,
+                        session_id=session_id,
                     )
                 except BaseException as exc:
                     self._fire_call_finished(
@@ -1521,6 +1519,18 @@ class LLMClient:
                 )
                 return result
         raise RuntimeError("Retrying controller exited without a result")
+
+    def _session_id_for_call(self, observation: LLMCallObservation | None) -> str | None:
+        """The session header value every attempt of one ``generate()`` call sends.
+
+        ``None`` when this model declares no session header. Otherwise the
+        observation's conversation id, or one UUID4 for this call alone.
+        """
+        if self.config.session is None:
+            return None
+        if observation is not None and observation.session_id is not None:
+            return observation.session_id
+        return str(uuid.uuid4())
 
     def _build_retrying(self, observation: LLMCallObservation | None) -> Retrying:
         """Build the per-call outer :class:`Retrying` controller.
@@ -1752,6 +1762,7 @@ class LLMClient:
         top_p: float | None,
         max_tokens: int | None,
         role: LLMCallRole = "agent",
+        session_id: str | None,
     ) -> GenerationResult:
         """One outer-retry attempt: prepare → build → call → detect → assemble.
 
@@ -1772,6 +1783,7 @@ class LLMClient:
             reasoning=reasoning,
             top_p=top_p,
             max_tokens=max_tokens,
+            session_id=session_id,
         )
         start_time = time.time()
         response = self._call_with_key_rotation(kwargs)
@@ -1875,14 +1887,18 @@ class LLMClient:
         reasoning: ReasoningConfig | None,
         top_p: float | None,
         max_tokens: int | None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Build the complete kwargs dict for the downstream litellm call.
 
         Composes four independent parameter sources: ``params_policy.adapt``
-        (temperature / seed / reasoning routing), explicit per-call overrides
+        (temperature / seed / reasoning routing, and dropping sampling keys,
+        ``top_p`` included), explicit per-call overrides
         (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
+        ``session_id`` is the value of this model's session header, required
+        when ``config.session`` is set (see :meth:`_session_id_for_call`).
         Providers whose binding declares ``kwargs_pin_transport`` defer their
         transport pinning to :meth:`_call_with_key_rotation` so the API key
         is read fresh per attempt.
@@ -1895,6 +1911,11 @@ class LLMClient:
             # still refused, so the declaration stays the boundary.
             kwargs["allowed_openai_params"] = list(self.allowed_openai_params)
 
+        # Attached before ``adapt`` so a policy that drops sampling sees it.
+        top_p_value = top_p if top_p is not None else self.config.top_p
+        if top_p_value is not None:
+            kwargs["top_p"] = top_p_value
+
         # Adapt model-specific parameters (temperature, seed, reasoning)
         kwargs = self.capabilities.params_policy.adapt(
             kwargs=kwargs,
@@ -1905,10 +1926,6 @@ class LLMClient:
             seed=seed,
             reasoning=reasoning,
         )
-
-        top_p_value = top_p if top_p is not None else self.config.top_p
-        if top_p_value is not None:
-            kwargs["top_p"] = top_p_value
 
         max_tokens_value = max_tokens if max_tokens is not None else self.config.max_tokens
         if max_tokens_value is not None:
@@ -1989,7 +2006,7 @@ class LLMClient:
             self._convert_messages(system, messages)
         )
 
-        if self.provider.startswith("openrouter"):
+        if is_openrouter_provider(self.provider):
             extra_headers = dict(self._openrouter_headers)
             existing_extra = kwargs.get("extra_headers")
             if isinstance(existing_extra, dict):
@@ -2065,7 +2082,24 @@ class LLMClient:
             merged_headers.update(self._proxy.request_headers())
             kwargs["extra_headers"] = merged_headers
 
+        self._apply_session_header(kwargs, session_id)
         return kwargs
+
+    def _apply_session_header(self, kwargs: dict[str, Any], session_id: str | None) -> None:
+        """Add this model's session header to ``kwargs['extra_headers']``, if it declares one."""
+        session = self.config.session
+        if session is None:
+            return
+        if session_id is None:
+            raise ValueError(
+                f"{self.model_name} declares session header {session.header!r} but the "
+                f"request was built without a session id"
+            )
+        # Construction refused a name the gateway or OpenRouter defaults set, so this adds.
+        kwargs["extra_headers"] = {
+            **(kwargs.get("extra_headers") or {}),
+            session.header: session_id,
+        }
 
     def _is_timeout_error(self, exc: BaseException) -> bool:
         """Detect transport-level timeout errors from the LLM client stack.
