@@ -33,10 +33,11 @@ pre-hash steps and the versioning policy of the record. The semantics:
     share, a key a kept record already holds, a rank tie and a reference that
     already holds a new key are refused. A reference to no re-keyed record stays
     as it is. A re-keyed id is a function of its record's content, not a
-    generated value, so it must reach the hash: the unstable filter and the
-    clock mask after the view must not drop the fields the record lists in
-    ``rekeyed_fields``, even when ``unstable_fields`` names them. Key fields are
-    read as they are, before ``numeric_string_fields`` or
+    generated value, so it must reach the hash: the unstable filter after the
+    view leaves the fields the record lists in ``rekeyed_fields`` in, even when
+    ``unstable_fields`` names them, and a task whose clock mask would drop one is
+    refused when it loads (:mod:`tolokaforge.core.grading.comparison_view_checks`).
+    Key fields are read as they are, before ``numeric_string_fields`` or
     ``auto_normalize_nullables`` fold anything (``""`` and null give different
     keys), and a missing key field raises.
 
@@ -54,8 +55,8 @@ trust boundary is stated on :class:`ComparisonViewRule`.
 
 The module depends on the standard library and pydantic, and reaches the registry
 (:mod:`tolokaforge.core.plugin_registry`) only where a kind resolves: the runner
-will apply the view too, and the runner-subset wheel excludes ``state_checks`` and
-``combine``.
+applies the view too (:mod:`tolokaforge.core.grading.pre_hash`), and the
+runner-subset wheel excludes ``state_checks`` and ``combine``.
 """
 
 from __future__ import annotations
@@ -554,8 +555,8 @@ class RekeyedField(BaseModel):
     """An id field ``normalize_ids`` re-keyed, whose values are a function of content.
 
     A masked id is unstable because it is generated; a re-keyed one is not, so it
-    must reach the hash. The masks applied after the view (the unstable filter and
-    the clock mask) must not drop it.
+    must reach the hash. The unstable filter after the view leaves it in, and a task
+    whose clock mask would drop it is refused when it loads.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
