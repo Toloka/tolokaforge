@@ -421,6 +421,17 @@ class NormalizeIdsConfig(ComparisonViewRuleConfig):
             raise ValueError(f"lists a field more than once: {list(value)}")
         return value
 
+    @field_validator("references")
+    @classmethod
+    def _each_reference_once(
+        cls, value: tuple[RecordReference, ...]
+    ) -> tuple[RecordReference, ...]:
+        named = [f"{reference.table}.{reference.field}" for reference in value]
+        repeated = sorted({name for name in named if named.count(name) > 1})
+        if repeated:
+            raise ValueError(f"lists the reference(s) {repeated} more than once")
+        return value
+
     @model_validator(mode="after")
     def _one_key_form(self) -> NormalizeIdsConfig:
         if bool(self.key) == bool(self.rank_by):

@@ -434,6 +434,10 @@ def test_two_records_sharing_an_id_are_refused() -> None:
         (_normalize(scope="initial_records"), "Input should be 'new_records' or 'all'"),
         (_normalize(references=[{"table": "notices"}]), "field: Field required"),
         (_normalize(references=[{"table": "notices", "field": "a..b"}]), "empty segment"),
+        (
+            _normalize(references=[{"table": "notices", "field": "entry"}] * 2),
+            "lists the reference(s) ['notices.entry'] more than once",
+        ),
         (_normalize(reason=" "), "reason: must not be blank"),
         (_normalize(table=""), "table: must not be blank"),
         (_normalize(order="unordered"), "order: Extra inputs are not permitted"),
