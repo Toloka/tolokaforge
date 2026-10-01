@@ -393,8 +393,8 @@ def _registry_search_backend_name(search_config: SearchConfig) -> str | None:
     (:meth:`RunnerServiceImpl._register_search_plane`), and ``enabled`` is
     rag-service's own flag: it predates ``plane`` and an adapter that has not
     declared a plane sets it alone, so an undeclared or TypeSense plane with
-    ``enabled`` set is still served by ``rag_service`` — which is also what a task
-    declaring both planes has always had.
+    ``enabled`` set is served by ``rag_service``, as is a task declaring both
+    planes.
     """
     plane = search_config.plane
     if plane is not None and plane != SearchPlane.TYPESENSE:

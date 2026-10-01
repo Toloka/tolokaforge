@@ -5,11 +5,11 @@ The engine's built-in retrieval: the hybrid BM25 + dense rag-service
 ``tolokaforge.search_backends`` group like any third-party backend and is what a
 task gets when ``initial_state.rag.backend`` is left at its default.
 
-The behaviour is the one the runner had before the seam, moved here unchanged:
+Its behaviour:
 
 * :meth:`RagServiceBackend.build_index` indexes the corpus into rag-service
   through the runner's handle on it, refusing a corpus that loads no documents;
-* :meth:`RagServiceSearchIndex.search` answers the agent's call with the same
+* :meth:`RagServiceSearchIndex.search` answers the agent's call with this
   JSON — ``top_k`` 5 and ``alpha`` 0.5 unless the call names them, ``limit`` read
   as an alias of ``top_k``, ``{"error": "Query is required", "results": []}``
   for an empty query — and lets a rag-service failure propagate;

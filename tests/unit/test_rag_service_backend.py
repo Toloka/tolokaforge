@@ -1,9 +1,8 @@
-"""The ``rag_service`` search backend keeps the behaviour the runner had before the seam.
+"""The ``rag_service`` search backend's behaviour, pinned byte for byte.
 
-The expectations are literals on purpose: they are what the agent read, the request
-rag-service received and the refusals ``RegisterTrial`` returned before ADR-0053
-moved the code here, and a backend that drifted from any of them would change a
-default every rag task runs under.
+The expectations are literals on purpose: they are what the agent reads, the request
+rag-service receives and the refusals ``RegisterTrial`` returns, and a backend that
+drifted from any of them would change a default every rag task runs under.
 
 A recording client stands in for rag-service, so the backend's own work — what it
 indexes, what it asks for, what it renders, what it refuses — is what is asserted.

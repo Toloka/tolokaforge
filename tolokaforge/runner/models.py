@@ -389,15 +389,15 @@ class SearchConfig(BaseModel):
     it carries, which is what an adapter emits until it declares the plane instead.
 
     ``enabled`` means "this task needs rag-service". It predates ``plane`` and an
-    older runner image reads only it, so the adapter keeps emitting it: true exactly
+    older runner image reads only it, so the adapter emits it: true exactly
     when the backend ``plane`` names declares the rag-service stack service.
 
     ``backend_config`` is the task's opaque ``initial_state.rag.backend_config``,
     handed to the backend's factory verbatim, and ``tool_name`` is the agent's
     search tool when the task names one. Both are left off the wire at their
     default (:attr:`OMITTED_AT_DEFAULT`), so a task that declares neither
-    serialises exactly as it did before they existed and an older image — which
-    forbids a key it does not declare — still accepts it.
+    serialises without them, and an older image — which forbids a key it does not
+    declare — accepts it.
     """
 
     OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"backend_config", "tool_name"})
