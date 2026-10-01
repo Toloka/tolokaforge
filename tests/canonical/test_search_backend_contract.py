@@ -2,11 +2,13 @@
 
 Three things are locked here.
 
-**The built-in backend conforms.** ``rag_service`` resolves through the
+**The built-in backends conform.** ``rag_service`` resolves through the
 ``tolokaforge.search_backends`` registry and runs the whole
 :class:`~tolokaforge.testing.search_backends.SearchBackendConformanceSuite` against a
 rag-service stand-in that answers the runner's client and the judge's search from one
-store, so the kit is proven by the implementation it describes.
+store, so the kit is proven by the implementation it describes. ``bm25`` runs the same
+suite in process; its searches are made to fail the way an in-process index can — the
+ranking itself raising.
 
 **The reference fixture conforms.** :class:`InMemorySearchBackend` is the worked example
 an external implementer copies; a reference that does not pass the suite teaches the
@@ -36,6 +38,7 @@ from tolokaforge.core.search.backend import (
     SearchIndex,
     SearchOutcome,
 )
+from tolokaforge.core.search.bm25 import Bm25SearchBackend, Bm25SearchIndex
 from tolokaforge.core.search.stack_services import StackServices
 from tolokaforge.runner.rag_service_backend import RagServiceBackend
 from tolokaforge.testing.search_backends import (
@@ -53,8 +56,12 @@ pytestmark = pytest.mark.canonical
 
 
 class TestProtocolSurface:
-    def test_both_shipped_backends_satisfy_the_protocol(self) -> None:
-        for factory in (load_search_backend("rag_service"), in_memory_search_backend_factory):
+    def test_every_shipped_backend_satisfies_the_protocol(self) -> None:
+        for factory in (
+            load_search_backend("rag_service"),
+            load_search_backend("bm25"),
+            in_memory_search_backend_factory,
+        ):
             assert isinstance(factory(trial_context()), SearchBackend)
 
     def test_an_object_without_build_index_is_not_a_backend(self) -> None:
@@ -103,6 +110,32 @@ class TestRagServiceConformance(SearchBackendConformanceSuite):
         self, backend_factory: Any, trial_context: SearchBackendContext
     ) -> None:
         assert isinstance(backend_factory(trial_context), RagServiceBackend)
+
+
+class TestBm25Conformance(SearchBackendConformanceSuite):
+    """``bm25`` — through the registry, in process, over the suite's Markdown corpus."""
+
+    @pytest.fixture
+    def backend_factory(self) -> Any:
+        return load_search_backend("bm25")
+
+    @pytest.fixture
+    def make_searches_fail(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        def fail(index: SearchIndex) -> None:
+            assert isinstance(index, Bm25SearchIndex)
+
+            def raising(query: str, top_k: int) -> Any:
+                raise RuntimeError("the ranking failed")
+
+            # Both the agent's search and the judge's read rank through this one method.
+            monkeypatch.setattr(index, "rank", raising)
+
+        return fail
+
+    def test_the_suite_ran_the_registered_built_in(
+        self, backend_factory: Any, trial_context: SearchBackendContext
+    ) -> None:
+        assert isinstance(backend_factory(trial_context), Bm25SearchBackend)
 
 
 def _fail_in_memory_searches(index: SearchIndex) -> None:
