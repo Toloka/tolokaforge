@@ -309,3 +309,44 @@ class TestNemotronLine:
     )
     def test_llama_nemotron_fine_tune_falls_through_to_default(self, model: str) -> None:
         assert resolve_effective_preset(model, "openrouter") == "default"
+
+
+class TestOpenAIOSeries:
+    """The o-series preset claims OpenAI's o1 / o3 / o4 models under every spelling a
+    route uses, and no foreign model whose name merely starts ``o1`` / ``o3`` / ``o4``."""
+
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [
+            ("openrouter", "openai/o3"),
+            ("openrouter", "openai/o4-mini:batch"),
+            ("openai", "openrouter/openai/o1-pro"),
+            ("openai", "o3"),
+            ("openai", "o1-2024-12-17"),
+            ("openai", "o3-deep-research"),
+            ("openai", "o4-mini-high"),
+            ("azure", "azure/eu/o3-mini-2025-01-31"),
+            ("openai", "self-hosted/o3-mini"),
+        ],
+    )
+    def test_an_o_series_model_routes_to_the_preset(self, provider: str, model: str) -> None:
+        assert resolve_effective_preset(model, provider) == "openai_o_series"
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "O1-OPEN/OpenO1-LLaMA-8B-v0.1",
+            "huggingface/O1-OPEN/OpenO1-Qwen-7B-v0.1",
+            "self-hosted/o3-qwen",
+            "meta/o4x-instruct",
+        ],
+    )
+    def test_a_foreign_model_named_like_one_falls_through_to_default(self, model: str) -> None:
+        assert resolve_effective_preset(model, "openai") == "default"
+
+    def test_it_claims_exactly_the_priced_openai_o_series_slugs(self) -> None:
+        claimed = [s for s in _priced_slugs() if resolve_effective_preset(s) == "openai_o_series"]
+        assert claimed == [
+            s for s in _priced_slugs() if s.startswith(("openai/o1", "openai/o3", "openai/o4"))
+        ]
+        assert len(claimed) == 14

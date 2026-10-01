@@ -55,8 +55,10 @@ from tolokaforge.core.failure_attribution import (
 )
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.presets import (
+    IGNORED_SAMPLING_PARAM,
     UNCLAIMED_ROUTE_FAMILY,
     get_overlay_path,
+    ignored_sampling_params,
     unclaimed_route_families,
 )
 from tolokaforge.core.logging import get_logger
@@ -2376,6 +2378,16 @@ class Orchestrator:
                 last_segment=finding.last_segment,
                 family=finding.family,
                 remedy=finding.remedy,
+            )
+        for path, sampling in ignored_sampling_params(self.config.models):
+            self.logger.warning(
+                IGNORED_SAMPLING_PARAM,
+                path=path,
+                field=sampling.field,
+                model_name=sampling.model_name,
+                provider=sampling.provider,
+                preset=sampling.preset,
+                remedy=sampling.remedy,
             )
 
     def _refuse_an_unregistered_user_simulator(self) -> None:

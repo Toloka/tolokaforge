@@ -587,7 +587,7 @@ All markers are enforced via `--strict-markers`.
 | `test_task_path` | `utils/fixtures.py` | Integration Docker service tests |
 | `temp_output_dir` | `utils/fixtures.py` | Integration Docker service tests |
 | `canon_snapshot` | `canonical/conftest.py` | All canonical tests |
-| `food_delivery_2_*` | `canonical/conftest.py` | Canonical golden-set tests |
+| `serving_gateway` / `gateway` | `canonical/conftest.py` | Canonical tests against the loopback LLM gateway (`utils/recording_gateway.py`): `serving_gateway` is one server per module, `gateway` resets it per test with a cold catalog cache. A module overrides `installed_fake_secrets` to point the SecretManager at `serving_gateway.base_url` |
 | `json_db_container` | `utils/containers.py` | Integration security tests |
 | `rag_service_container` | `utils/containers.py` | Integration tests needing `search_kb` |
 | `runner_container` | `utils/containers.py` | Integration security tests |

@@ -25,9 +25,8 @@ from typing import Any
 
 import pytest
 
-from tests.utils.recording_gateway import RecordingGateway, serving_recording_gateway
+from tests.utils.recording_gateway import RecordingGateway
 from tests.utils.secret_state import secret_manager_installed
-from tolokaforge.core.llm import gateway_route
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
@@ -36,30 +35,16 @@ pytestmark = pytest.mark.canonical
 _EPHEMERAL = {"type": "ephemeral"}
 
 
-@pytest.fixture(scope="module")
-def _serving_gateway() -> Iterator[RecordingGateway]:
-    with serving_recording_gateway() as server:
-        yield server
-
-
 @pytest.fixture
-def installed_fake_secrets(_serving_gateway: RecordingGateway) -> Iterator[dict[str, str]]:
+def installed_fake_secrets(serving_gateway: RecordingGateway) -> Iterator[dict[str, str]]:
     """Point the process SecretManager at the loopback gateway."""
     payload = {
-        "LLM_PROXY_BASE_URL": _serving_gateway.base_url,
+        "LLM_PROXY_BASE_URL": serving_gateway.base_url,
         "LLM_PROXY_API_KEY": "sk-loopback-gateway",
         "OPENROUTER_API_KEY": "sk-or-loopback",
     }
     with secret_manager_installed(payload):
         yield payload
-
-
-@pytest.fixture
-def gateway(_serving_gateway: RecordingGateway) -> Iterator[RecordingGateway]:
-    _serving_gateway.reset()
-    gateway_route.clear_catalog_cache()
-    yield _serving_gateway
-    gateway_route.clear_catalog_cache()
 
 
 def _generate(model: ModelConfig) -> None:

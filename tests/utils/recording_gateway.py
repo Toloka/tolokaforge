@@ -22,6 +22,7 @@ __all__ = [
     "GatewayReply",
     "RecordedRequest",
     "RecordingGateway",
+    "auth_error_reply",
     "server_error_reply",
     "serving_recording_gateway",
     "synthetic_error_reply",
@@ -91,6 +92,12 @@ def synthetic_error_reply() -> GatewayReply:
 
 def server_error_reply() -> GatewayReply:
     return GatewayReply(500, {"error": "loopback upstream failure"})
+
+
+def auth_error_reply() -> GatewayReply:
+    return GatewayReply(
+        401, {"error": {"message": "invalid loopback key", "code": "invalid_api_key"}}
+    )
 
 
 class RecordingGateway(ThreadingHTTPServer):
