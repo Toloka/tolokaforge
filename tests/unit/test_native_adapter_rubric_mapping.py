@@ -384,8 +384,8 @@ def test_judge_snippet_chars_task_null_overrides_a_project_figure(tmp_path: Path
 
 
 def test_judge_snippet_chars_is_off_the_wire_when_no_layer_sets_it(tmp_path: Path):
-    """A customization block without the key dumps exactly as it did before the
-    field existed, so an older image still accepts the task."""
+    """A customization block without the key dumps without it, so an older image,
+    which forbids a key it does not declare, accepts the task."""
     adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
     description = adapter.to_task_description("rubric_task")
 
