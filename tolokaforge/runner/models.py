@@ -3682,16 +3682,37 @@ class TableDiff(BaseModel):
 
 
 class StateDiff(BaseModel):
-    """Human-readable diff between two stable states."""
+    """Human-readable diff between two stable states.
+
+    ``tables_on_one_side`` names the tables only one of the two states holds, and which
+    one: the diff of a table reads an absent one as empty, so a table one side holds
+    empty and the other not at all otherwise shows no difference while the two hash
+    apart. Only a comparison view's diff fills it in
+    (:func:`tolokaforge.core.grading.trial_golden_diff.compute_view_diff`); it is left out
+    of every dump while absent, so every other diff dumps as before.
+    """
 
     tables: dict[str, TableDiff] = Field(default_factory=dict)
     summary: str = ""
+    tables_on_one_side: dict[str, Literal["trial", "golden"]] | None = None
 
     model_config = {"extra": "forbid"}
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"tables_on_one_side"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_absent_one_sided_tables(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
 
     @property
     def identical(self) -> bool:
         """Check if states are identical (no differences)."""
+        if self.tables_on_one_side:
+            return False
         for table_diff in self.tables.values():
             if (
                 table_diff.missing

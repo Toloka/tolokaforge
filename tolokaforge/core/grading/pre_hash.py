@@ -52,7 +52,7 @@ from tolokaforge.core.grading.comparison_view import (
     RekeyedField,
     apply_comparison_view,
 )
-from tolokaforge.core.grading.trial_golden_diff import compute_state_diff
+from tolokaforge.core.grading.trial_golden_diff import compute_view_diff
 from tolokaforge.core.hash import (
     ColumnCompareRule,
     apply_compare_columns_pipeline,
@@ -209,10 +209,11 @@ def comparison_view_grade_record(
 ) -> ComparisonViewGradeRecord:
     """What a grade records about the view: both records, and the view diff on a mismatch.
 
-    The view diff is :func:`~tolokaforge.core.grading.trial_golden_diff.compute_state_diff`
-    over the two views after step 2, the one diff function both substrates' grades
-    carry, so a mismatched digest of the view always comes with a non-identical diff of
-    it (#1444). A trial whose state could not be viewed records the golden's record and
+    The view diff is :func:`~tolokaforge.core.grading.trial_golden_diff.compute_view_diff`
+    over the two views after step 2 — the one diff function both substrates' grades
+    carry, which names a table only one side holds as well as every row that differs.
+    Identical views hash equal on either substrate, so a mismatched digest of the views
+    comes with a non-identical view diff (#1444). A trial whose state could not be viewed records the golden's record and
     the error — its type, its message and the ids it names — and no trial record: the
     trial has no view.
     """
@@ -228,7 +229,7 @@ def comparison_view_grade_record(
     return ComparisonViewGradeRecord(
         golden=outcome.golden_record,
         trial=outcome.trial_record,
-        view_diff=None if matched else compute_state_diff(outcome.trial_view, outcome.golden_view),
+        view_diff=None if matched else compute_view_diff(outcome.trial_view, outcome.golden_view),
     )
 
 
