@@ -69,3 +69,29 @@ def test_query_wildcard_still_works(db_test_client):
     )
     assert resp.status_code == 200, resp.text
     assert sorted(resp.json()["results"]) == ["closed", "open"]
+
+
+@pytest.mark.parametrize(
+    ("trial_id", "jsonpath", "reason"),
+    [
+        pytest.param(
+            "t_json_pointer", "/orders/0/status", "is not a valid JSONPath", id="json-pointer"
+        ),
+        pytest.param(
+            "t_bad_regex", '$.orders[?(@.id =~ "(")]', "cannot be evaluated", id="bad-filter-regex"
+        ),
+    ],
+)
+def test_query_refuses_a_jsonpath_fault_with_400_naming_jsonpath(
+    db_test_client, trial_id, jsonpath, reason
+):
+    _init(db_test_client, trial_id, {"orders": [{"id": "A"}]})
+
+    resp = db_test_client.post(f"/trials/{trial_id}/query", json={"jsonpath": jsonpath})
+
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "InvalidJSONPath"
+    assert reason in detail["message"]
+    assert "paths are JSONPath, e.g. '$.tickets[0].status'" in detail["message"]
+    assert detail["details"] == {"path": jsonpath}

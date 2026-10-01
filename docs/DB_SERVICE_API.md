@@ -436,7 +436,7 @@ Clean up all data for a trial (state, schemas, snapshots).
 
 **`POST /trials/{trial_id}/query`**
 
-Query state using JSONPath expressions. Preserved from original json-db.
+Query state using JSONPath expressions.
 
 #### Request Body
 
@@ -457,9 +457,91 @@ Query state using JSONPath expressions. Preserved from original json-db.
 }
 ```
 
+#### Status Codes
+
+| Code | Meaning |
+|------|---------|
+| 200 | Success (an expression that matches nothing returns `"results": []`) |
+| 400 | `InvalidJSONPath`: the expression does not parse, or a filter regex / string function in it cannot be evaluated |
+| 404 | Trial not found |
+| 422 | Request body validation failed (e.g. `jsonpath` missing) |
+
+Any other failure is a 500.
+
 ---
 
-### 11. SQL Query
+### 11. Update State (JSONPath)
+
+**`POST /trials/{trial_id}/update`**
+
+Apply a batch of JSONPath ops to the trial state. The builtin `db_update` tool
+writes through this endpoint.
+
+#### Request Body
+
+```json
+{
+  "ops": [
+    {"op": "replace", "path": "$.tickets[0].status", "value": "closed"},
+    {"op": "add", "path": "$.audit_log.entry", "value": {"ticket_id": "T-100", "action": "close"}}
+  ]
+}
+```
+
+`path` is a JSONPath starting with `$`. Unknown keys on the body or on an op
+are refused with 422.
+
+| Op | Effect |
+|----|--------|
+| `replace` | Sets every match of `path` to `value`. A path that matches nothing refuses the batch. |
+| `add` | Splits `path` at its last `.` and resolves only the parent: a dict parent gains the trailing key set to `value`, a list parent has `value` appended (the trailing segment is ignored), and a path with no `.` sets that top-level key. A parent that matches nothing is a no-op. |
+| `remove` | Deletes every match of `path` from its parent dict or list. A path that matches nothing is a no-op. |
+
+#### Atomicity
+
+The ops run in order on a copy of the state. The batch commits only when every
+op succeeds **and** every top-level key still holds a list of row objects
+(`{"<table>": [{...}, ...]}`), the shape every state reader and grader
+requires. A refused batch changes nothing: rows, `version` and the SQL mirror
+are untouched. A committed batch increments `version` once and re-syncs the SQL
+mirror.
+
+#### Response
+
+```json
+{
+  "status": "ok",
+  "version": 5,
+  "stable_hash": "abc123..."
+}
+```
+
+#### Status Codes
+
+| Code | Meaning |
+|------|---------|
+| 200 | Success |
+| 400 | `InvalidJSONPath`: a path does not start with `$`, does not parse, or cannot be evaluated. `InvalidOperation`: an unknown op, `replace` of a path that matches nothing, or an op that would leave a top-level key that is not a list or a row that is not an object |
+| 404 | Trial not found |
+| 422 | Request body validation failed (e.g. `ops` not a list, or an op missing `op` / `path`) |
+
+Any other failure is a 500.
+
+A 400's message names the zero-based op index and the reason; an
+`InvalidJSONPath` message also gives an example path. `details` carries
+`op_index` and `path` (plus `op` for `InvalidOperation`):
+
+```json
+{
+  "error": "InvalidJSONPath",
+  "message": "op 0: path '/tickets/0/status' is not a JSONPath; paths are JSONPath, e.g. '$.tickets[0].status'",
+  "details": {"path": "/tickets/0/status", "op_index": 0}
+}
+```
+
+---
+
+### 12. SQL Query
 
 **`POST /trials/{trial_id}/sql`**
 
@@ -487,7 +569,7 @@ Execute SQL queries on the state. Preserved from original json-db.
 
 ---
 
-### 12. Get Schema
+### 13. Get Schema
 
 **`GET /trials/{trial_id}/schema`**
 
@@ -512,7 +594,7 @@ Get registered schemas and unstable field specifications.
 
 ---
 
-### 13. Health Check
+### 14. Health Check
 
 **`GET /health`**
 
@@ -690,20 +772,16 @@ DELETE /trials/airline_task_001:0
 | `POST /reset` | `POST /trials/{trial_id}/init` | Extended with schemas + unstable_fields |
 | `GET /dump` | `GET /trials/{trial_id}/state` | Same functionality |
 | `POST /query` | `POST /trials/{trial_id}/query` | Same JSONPath support |
+| `POST /update` | `POST /trials/{trial_id}/update` | Same ops; atomic, keeps the table shape |
 | `POST /sql` | `POST /trials/{trial_id}/sql` | Same SQL support |
 | `GET /schema` | `GET /trials/{trial_id}/schema` | Extended with unstable_fields |
 | `GET /health` | `GET /health` | Unchanged (global) |
-
-### Modified Endpoints
-
-| Original | New | Changes |
-|----------|-----|---------|
-| `POST /update` | `PATCH /trials/{trial_id}/state/{table}` | Per-table mutations, structured operations |
 
 ### New Endpoints
 
 | Endpoint | Purpose |
 |----------|---------|
+| `PATCH /trials/{trial_id}/state/{table}` | Per-table structured mutations |
 | `GET /trials/{trial_id}/state/stable` | Stable state (unstable fields filtered) |
 | `GET /trials/{trial_id}/state/hash` | Stable hash for grading |
 | `POST /trials/{trial_id}/snapshots/{name}` | Create snapshot |
@@ -784,9 +862,12 @@ All error responses follow this format:
 | `TableNotFound` | 404 | Table name not in state |
 | `SnapshotNotFound` | 404 | Snapshot name not found |
 | `SnapshotAlreadyExists` | 409 | Snapshot name already used |
-| `InvalidOperation` | 400 | Invalid mutation operation |
+| `InvalidOperation` | 400 | Invalid mutation or update operation |
+| `InvalidJSONPath` | 400 | A path is not a JSONPath, does not parse, or cannot be evaluated |
 | `ETagMismatch` | 409 | Optimistic locking conflict |
-| `ValidationError` | 400 | Request body validation failed |
+
+A request body that fails validation is refused with FastAPI's 422 shape
+instead: `{"detail": [{"loc": ["body", "ops", 0, "op"], "msg": "Field required", ...}]}`.
 
 ---
 

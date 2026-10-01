@@ -3534,6 +3534,16 @@ class MutateResponse(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class UpdateResponse(BaseModel):
+    """Response from DB Service JSONPath update endpoint."""
+
+    status: str
+    version: int
+    stable_hash: str
+
+    model_config = {"extra": "allow"}
+
+
 class SnapshotResponse(BaseModel):
     """Response from DB Service create_snapshot endpoint."""
 

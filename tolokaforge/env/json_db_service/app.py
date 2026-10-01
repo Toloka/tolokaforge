@@ -21,6 +21,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from threading import Lock
 from typing import Any, NoReturn
@@ -36,7 +37,9 @@ except ImportError as exc:  # noqa: BLE001 -- explicit re-raise below
         "the runner extra: `pip install 'tolokaforge[runner]'`."
     ) from exc
 
+from jsonpath_ng.exceptions import JSONPathError
 from jsonpath_ng.ext import parse  # .ext: supports filter exprs, superset of base grammar
+from jsonpath_ng.ext.string import DefintionInvalid
 from pydantic import BaseModel, Field, PrivateAttr
 
 logger = logging.getLogger(__name__)
@@ -272,6 +275,24 @@ class UpdateRequest(BaseModel):
 
     ops: list[UpdateOp]
     etag: str | None = None
+
+
+class JSONPathOp(BaseModel):
+    """One ``add`` / ``replace`` / ``remove`` op addressed by a JSONPath."""
+
+    op: str
+    path: str
+    value: Any = None
+
+    model_config = {"extra": "forbid"}
+
+
+class TrialUpdateRequest(BaseModel):
+    """A batch of JSONPath ops applied to one trial as a unit."""
+
+    ops: list[JSONPathOp]
+
+    model_config = {"extra": "forbid"}
 
 
 # =============================================================================
@@ -720,6 +741,125 @@ def validate_upsert_operations(
     return key_fields_by_op
 
 
+_JSONPATH_EXAMPLE = "$.tickets[0].status"
+
+
+def _parse_jsonpath(path: str, op_index: int | None = None) -> Any:
+    """Parse ``path``, refusing a parse failure with 400 ``InvalidJSONPath``."""
+    try:
+        return parse(path)
+    except JSONPathError as e:
+        _refuse_jsonpath(path, f"is not a valid JSONPath ({e})", op_index)
+
+
+def _find_jsonpath(path: str, data: Any, op_index: int | None = None) -> list[Any]:
+    """Match ``path`` against ``data``, refusing a parse or evaluation fault with 400.
+
+    A filter's regex and an ``.ext`` string function are compiled lazily, so a
+    bad one surfaces at match time rather than at parse time.
+    """
+    expr = _parse_jsonpath(path, op_index)
+    try:
+        return expr.find(data)
+    except (re.error, DefintionInvalid) as e:
+        _refuse_jsonpath(path, f"cannot be evaluated ({e})", op_index)
+
+
+def _refuse_jsonpath(path: str, reason: str, op_index: int | None) -> NoReturn:
+    where = "" if op_index is None else f"op {op_index}: "
+    details: dict[str, Any] = {"path": path}
+    if op_index is not None:
+        details["op_index"] = op_index
+    raise HTTPException(
+        status_code=400,
+        detail=error_response(
+            "InvalidJSONPath",
+            f"{where}path '{path}' {reason}; paths are JSONPath, e.g. '{_JSONPATH_EXAMPLE}'",
+            details,
+        ),
+    )
+
+
+def _refuse_op(op_index: int, op: JSONPathOp, reason: str) -> NoReturn:
+    raise HTTPException(
+        status_code=400,
+        detail=error_response(
+            "InvalidOperation",
+            f"op {op_index}: {reason}",
+            {"op_index": op_index, "op": op.op, "path": op.path},
+        ),
+    )
+
+
+def _replace_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
+    matches = _find_jsonpath(op.path, data, op_index)
+    if not matches:
+        _refuse_op(op_index, op, f"replace path '{op.path}' matches nothing")
+    for match in matches:
+        match.full_path.update(data, op.value)
+
+
+def _add_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
+    parent_path, _, key = op.path.rpartition(".")
+    if not parent_path:
+        data[key] = op.value
+        return
+    for parent in _find_jsonpath(parent_path, data, op_index):
+        if isinstance(parent.value, dict):
+            parent.value[key] = op.value
+        elif isinstance(parent.value, list):
+            parent.value.append(op.value)
+
+
+def _remove_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
+    for match in _find_jsonpath(op.path, data, op_index):
+        parent = match.context.value
+        if isinstance(parent, dict) and match.path.fields:
+            del parent[match.path.fields[0]]
+        elif isinstance(parent, list):
+            parent.remove(match.value)
+
+
+_JSONPATH_OPS = {"replace": _replace_at, "add": _add_at, "remove": _remove_at}
+
+
+def _apply_jsonpath_op(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
+    """Apply one op to ``data`` in place, refusing a client-caused fault with 400.
+
+    ``replace`` refuses a path that matches nothing. ``add`` splits the path at
+    its last ``.`` and parses only the parent: a dict parent gains the trailing
+    key, a list parent has the value appended, a path with no ``.`` sets that
+    top-level key, and a parent path that matches nothing is a no-op.
+    ``remove`` of a path that matches nothing is a no-op.
+    """
+    apply = _JSONPATH_OPS.get(op.op)
+    if apply is None:
+        _refuse_op(op_index, op, f"unknown op '{op.op}'; expected add, replace or remove")
+    if not op.path.startswith("$"):
+        _refuse_jsonpath(op.path, "is not a JSONPath", op_index)
+    apply(data, op, op_index)
+
+
+def _refuse_non_table_shape(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
+    """Refuse a state that is no longer a map of table name to a list of row objects."""
+    for table, rows in data.items():
+        if not isinstance(rows, list):
+            _refuse_op(
+                op_index,
+                op,
+                f"would leave table '{table}' as {type(rows).__name__}; "
+                "every top-level key must hold a list of row objects",
+            )
+        bad_row = next((row for row in rows if not isinstance(row, dict)), None)
+        if bad_row is not None:
+            _refuse_op(
+                op_index,
+                op,
+                f"would put a {type(bad_row).__name__} row in table '{table}'; "
+                "every top-level key must hold a list of row objects",
+            )
+
+
 def handle_trial_not_found(e: TrialNotFoundError):
     """Handle TrialNotFoundError."""
     raise HTTPException(
@@ -1156,13 +1296,36 @@ async def query_trial(trial_id: str, req: QueryRequest) -> dict[str, Any]:
         handle_trial_not_found(e)
 
     with trial._lock:
-        try:
-            jsonpath_expr = parse(req.jsonpath)
-            matches = jsonpath_expr.find(trial.data)
-            results = [match.value for match in matches]
-            return {"results": results, "count": len(results)}
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Query failed: {str(e)}")
+        results = [match.value for match in _find_jsonpath(req.jsonpath, trial.data)]
+        return {"results": results, "count": len(results)}
+
+
+@app.post("/trials/{trial_id}/update")
+async def update_trial(trial_id: str, req: TrialUpdateRequest) -> dict[str, Any]:
+    """Apply a batch of JSONPath ops to the trial state, all or nothing.
+
+    The ops run in order on a copy of the state, which is committed only if
+    every op succeeds and every top-level key still holds a list of row
+    objects. A refused batch leaves rows, version and the SQL mirror untouched.
+    """
+    try:
+        trial = db_service.get_trial(trial_id)
+    except TrialNotFoundError as e:
+        handle_trial_not_found(e)
+
+    with trial._lock:
+        working = copy.deepcopy(trial.data)
+        for op_index, op in enumerate(req.ops):
+            _apply_jsonpath_op(working, op, op_index)
+            _refuse_non_table_shape(working, op, op_index)
+        trial.data = working
+        trial.version += 1
+        trial.sync_json_to_sql()
+        return {
+            "status": "ok",
+            "version": trial.version,
+            "stable_hash": trial.compute_stable_hash(),
+        }
 
 
 @app.post("/trials/{trial_id}/sql")
