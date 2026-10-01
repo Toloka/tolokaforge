@@ -3,9 +3,10 @@ recognises.
 
 :func:`_apply_config_overrides` raises :class:`ValueError` on an unknown key, with a
 message that (a) names every offending key, (b) names the recognised keys, and (c)
-points the reader at the contract doc. ``config validate`` reports the same key on
-every model config, fallbacks included, as an ERROR at ``<path>.capabilities``, and
-``run`` / ``prepare`` / ``worker`` refuse to start naming every one of them.
+points the reader at the contract doc. ``config validate`` reports that key, or a
+recognised override the config's capabilities cannot build with, on every model
+config, fallbacks included, as an ERROR at ``<path>.capabilities``, and ``run`` /
+``prepare`` / ``worker`` refuse to start naming every one of them.
 
 ``test_recognised_keys_are_the_documented_set`` keeps the set and the body from
 drifting apart: every key in :data:`_RECOGNISED_OVERRIDE_KEYS` must appear as a
@@ -46,7 +47,7 @@ class TestApplyConfigOverridesRejectsUnknown:
             _apply_config_overrides({}, {"bravo": 1, "alpha": 2})
 
     def test_error_points_at_contract_doc(self) -> None:
-        with pytest.raises(ValueError, match=r"docs/CONFIG\.md § ModelConfig\.capabilities"):
+        with pytest.raises(ValueError, match=r"docs/CONFIG\.md § Model Capability Presets"):
             _apply_config_overrides({}, {"nope": 1})
 
     def test_recognised_keys_do_not_raise(self) -> None:
@@ -79,6 +80,13 @@ class TestApplyConfigOverridesRejectsUnknown:
 
 _MODEL = {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}
 _TYPO = {**_MODEL, "capabilities": {"not_a_key": 1}}
+_UNBUILDABLE = {
+    "provider": "openrouter",
+    "name": "openai/gpt-5.2",
+    "capabilities": {"gemini_drop_placeholder_signature": True},
+}
+_TYPO_REASON = "['not_a_key']"
+_UNBUILDABLE_REASON = "OpenAIReasoningCodec() takes no arguments"
 
 
 def _run_config(models: dict[str, Any]) -> dict[str, Any]:
@@ -93,29 +101,64 @@ def _run_config(models: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class TestEveryConfigsOverrideKeysAreChecked:
-    """No config sets ``temperature`` or ``top_p``, so the refusal cannot come from the
-    sampling sweep."""
-
+class TestEveryConfigsOverridesAreChecked:
     @pytest.mark.parametrize(
-        ("models", "refused"),
+        ("models", "refused", "reason"),
         [
-            pytest.param({"agent": _TYPO}, ["models.agent"], id="agent"),
+            pytest.param({"agent": _TYPO}, ["models.agent"], _TYPO_REASON, id="agent"),
             pytest.param(
                 {"agent": {**_MODEL, "fallbacks": [_TYPO]}},
                 ["models.agent.fallbacks[0]"],
+                _TYPO_REASON,
                 id="fallback",
             ),
             pytest.param(
-                {"agent": _MODEL, "judge": _TYPO}, ["models.judge"], id="judge-never-built"
+                {"agent": _MODEL, "judge": _TYPO},
+                ["models.judge"],
+                _TYPO_REASON,
+                id="judge-never-built",
             ),
             pytest.param(
-                {"agent": _TYPO, "judge": _TYPO}, ["models.agent", "models.judge"], id="two"
+                {"agent": _TYPO, "judge": _TYPO},
+                ["models.agent", "models.judge"],
+                _TYPO_REASON,
+                id="two",
+            ),
+            pytest.param(
+                {"agent": _UNBUILDABLE},
+                ["models.agent"],
+                _UNBUILDABLE_REASON,
+                id="unbuildable",
+            ),
+            pytest.param(
+                {"agent": {**_UNBUILDABLE, "temperature": 0.7}},
+                ["models.agent"],
+                _UNBUILDABLE_REASON,
+                id="unbuildable-with-temperature",
+            ),
+            pytest.param(
+                {"agent": _MODEL, "judge": _UNBUILDABLE},
+                ["models.judge"],
+                _UNBUILDABLE_REASON,
+                id="unbuildable-judge-never-built",
             ),
         ],
     )
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(["run", "--dry-run"], id="run"),
+            pytest.param(["prepare", "--run-dir", "{run_dir}"], id="prepare"),
+            pytest.param(["worker", "--run-dir", "{run_dir}"], id="worker"),
+        ],
+    )
     def test_validate_and_run_start_refuse_the_same_configs(
-        self, tmp_path: Path, models: dict[str, Any], refused: list[str]
+        self,
+        tmp_path: Path,
+        models: dict[str, Any],
+        refused: list[str],
+        reason: str,
+        command: list[str],
     ) -> None:
         config = tmp_path / "run.yaml"
         config.write_text(yaml.safe_dump(_run_config(models)))
@@ -127,12 +170,14 @@ class TestEveryConfigsOverrideKeysAreChecked:
             if i.severity is Severity.ERROR
         ]
         assert [path for path, _ in errors] == paths
-        assert all("['not_a_key']" in message for _, message in errors)
+        assert all(reason in message for _, message in errors)
 
-        run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-        assert run.exit_code == 1, run.output
-        refusals = [line for line in run.output.splitlines() if ".capabilities: " in line]
+        argv = [arg.format(run_dir=tmp_path / "run_dir") for arg in command]
+        started = CliRunner().invoke(cli, [argv[0], "--config", str(config), *argv[1:]])
+        assert started.exit_code == 1, started.output
+        refusals = [line for line in started.output.splitlines() if ".capabilities: " in line]
         assert [line.removeprefix("Error: ").split(": ", 1)[0] for line in refusals] == paths
+        assert all(reason in line for line in refusals)
 
     def test_the_refusal_survives_a_pickle_round_trip(self) -> None:
         err = CapabilityOverrideError(path="models.agent.capabilities", reason="unknown keys")

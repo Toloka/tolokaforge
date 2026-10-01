@@ -756,7 +756,9 @@ same request, with no sampling key. GPT-6 is declared on OpenRouter's support li
 alone; litellm's `openai` transport accepts its `temperature`. The escape hatch,
 `capabilities: {supports_sampling_params: true}`, belongs on a `provider: openai`
 config, whose bare names (`gpt-5.2`) litellm admits a `temperature` for; on a
-`provider: openrouter` config it breaks the gateway route.
+`provider: openrouter` config it breaks the gateway route. gpt-5-image* is still
+claimed by `openai_gpt5` and loses its `temperature` too; that `provider: openai`
+hatch is its only way back, as none is gateway-safe on `provider: openrouter`.
 
 ## When litellm has never heard of the model
 
@@ -2433,18 +2435,18 @@ Per-preset policy wiring as shipped today. The `StrictSchema` presets
 false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
-| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
-|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
-| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
-| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `anthropic`             | `anthropic/*`, `*claude*`, `*/anthropic/*`                       | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `openai_gpt6`           | `openai/gpt-6*`, `*gpt-6*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `openai_o_series`       | `openai/o{1,3,4}*`, bare `o1` / `o3` and their known tiers (`o3-mini*`, `o4-mini*`, dated `o3-20*`, …), and their `*/` siblings | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`     | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `qwen`                  | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                       | `passthrough`      | `json_coerce`       | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
-| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
+| Preset                 | Match globs                                                                                                               | `schema_sanitizer` | `response_policy` | `prompt_policy`  | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
+|------------------------|---------------------------------------------------------------------------------------------------------------------------|--------------------|-------------------|------------------|------------------|-------------------|---------------------------|-------------------------|
+| `default`              | *(fallthrough)*                                                                                                           | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `anthropic_claude_4_7` | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*`                                                       | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`            | `anthropic/*`, `*claude*`, `*/anthropic/*`                                                                                | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `openai_gpt5`          | `openai/gpt-5*`, `*gpt-5*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_gpt6`          | `openai/gpt-6*`, `*gpt-6*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_o_series`      | `openai/o{1,3,4}*`, bare `o1` / `o3`, their tiers (`o3-mini*`, dated `o3-20*`, …) and `o4-mini*`, and their `*/` siblings | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `xai_grok`             | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`                                                              | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `qwen`                 | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                                                                                | `passthrough`      | `json_coerce`     | `dict_map_hints` | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `aws_nova`             | `nova*` (+ provider `nova`)                                                                                               | `passthrough`      | `unwrap_input`    | `none`           | `nova`           | `none`            | `nova`                    | `passthrough`           |
+| `moonshot_kimi_k3`     | `moonshotai/kimi-k3*`, `*kimi-k3*`                                                                                        | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
@@ -2553,15 +2555,20 @@ capabilities (its own `capabilities` overrides applied) do not send. The frozen
 plus the `remedy` text; `path` is `<config path>.<field>`. `config validate`
 reports each as a WARNING at that path with the remedy as its hint; the run logs
 each once after its tasks load as the `IGNORED_SAMPLING_PARAM` event, with the
-finding's fields and `path` as context. A preset or overlay conflict that stops a
-config's capabilities from building is a `config validate` ERROR at `(presets)`
-carrying `build_capabilities`'s own message. `capability_override_errors(models)`
+finding's fields and `path` as context. `capability_override_errors(models)`
 returns `(path, CapabilityOverrideError)` for every model config, fallbacks
-included, whose `capabilities` block carries a key outside the recognised
-overrides; the keyword-only error carries `path` (`<config path>.capabilities`)
-and `reason`, and pickles. `config validate` reports each as an ERROR at
-`err.path`, `run` / `prepare` / `worker` refuse to start naming all of them, and
-`ignored_sampling_params` passes such a config over. Unit guards:
+included, whose capabilities do not build, whether or not it sets a sampling
+value or the run builds that role. The keyword-only error carries `path` and
+`reason`, and pickles. `path` is `<config path>.capabilities` when the config's
+own `capabilities` block is the cause: a key outside the recognised overrides, or
+a recognised one the matched preset's policies cannot take (`OpenAIReasoningCodec()
+takes no arguments`). It is `(presets)` when the same name and provider do not
+build without that block either (a preset or overlay conflict), and such a
+conflict several configs share is named once with `build_capabilities`'s own
+message. `config validate` reports each as an ERROR at `err.path`, `run` /
+`prepare` / `worker` refuse to start naming all of them, and
+`ignored_sampling_params` passes every such config over while still reporting the
+others. Unit guards:
 [`tests/unit/test_sampling_temperature.py`](../tests/unit/test_sampling_temperature.py),
 [`tests/unit/llm/test_preset_overrides.py`](../tests/unit/llm/test_preset_overrides.py).
 

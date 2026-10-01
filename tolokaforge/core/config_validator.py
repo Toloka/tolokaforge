@@ -271,8 +271,7 @@ def _route_family_issues(run_config: RunConfig) -> list[ValidationIssue]:
 
 
 def _capability_override_issues(run_config: RunConfig) -> list[ValidationIssue]:
-    """An ERROR per model config, fallbacks included, whose ``capabilities`` block
-    carries an unrecognised key."""
+    """An ERROR per model config, fallbacks included, whose capabilities do not build."""
     return [
         ValidationIssue(severity=Severity.ERROR, path=err.path, message=err.reason)
         for _, err in capability_override_errors(run_config.models)
@@ -281,11 +280,7 @@ def _capability_override_issues(run_config: RunConfig) -> list[ValidationIssue]:
 
 def _ignored_sampling_issues(run_config: RunConfig) -> list[ValidationIssue]:
     """A WARNING per explicit sampling value, fallbacks included, that the model's
-    capabilities would not send, or the ERROR a preset or overlay conflict gives."""
-    try:
-        findings = ignored_sampling_params(run_config.models)
-    except ValueError as err:
-        return [ValidationIssue(severity=Severity.ERROR, path="(presets)", message=str(err))]
+    capabilities would not send."""
     return [
         ValidationIssue(
             severity=Severity.WARNING,
@@ -296,7 +291,7 @@ def _ignored_sampling_issues(run_config: RunConfig) -> list[ValidationIssue]:
             ),
             hint=finding.remedy,
         )
-        for path, finding in findings
+        for path, finding in ignored_sampling_params(run_config.models)
     ]
 
 

@@ -475,9 +475,9 @@ def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
         raise conflicts[0][1]
 
 
-def _refuse_unrecognised_capability_overrides(run_config: RunConfig) -> None:
+def _refuse_unbuildable_capabilities(run_config: RunConfig) -> None:
     """Refuse a run naming every model config, fallbacks included, whose
-    ``capabilities`` block carries an unrecognised key.
+    capabilities do not build.
 
     Every configured role is checked, including one this run never builds (a judge
     on a deterministic-only task set), so the refusal does not depend on the tasks.
@@ -891,7 +891,7 @@ def run(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
     _refuse_session_header_conflicts(run_config)
-    _refuse_unrecognised_capability_overrides(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     # Fallback-model chain lives on ``models.agent.fallbacks`` in the run
     # config (list of ModelConfig entries, in order). Empty list → no
@@ -1617,7 +1617,7 @@ def prepare(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
     _refuse_session_header_conflicts(run_config)
-    _refuse_unrecognised_capability_overrides(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,
@@ -1713,7 +1713,7 @@ def worker(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
     _refuse_session_header_conflicts(run_config)
-    _refuse_unrecognised_capability_overrides(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,

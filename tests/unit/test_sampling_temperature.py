@@ -362,19 +362,35 @@ class TestAnIgnoredSamplingValueIsReported:
         assert (Severity.WARNING, "models.agent.fallbacks[0].top_p") in found
         assert (Severity.WARNING, "models.agent.temperature") not in found
 
-    def test_a_preset_conflict_is_not_blamed_on_the_configs_capabilities(
-        self, write_overlay: Callable[[dict], str]
+    @pytest.mark.parametrize(
+        "sampling",
+        [pytest.param({}, id="no-sampling"), pytest.param({"temperature": 0.7}, id="temperature")],
+    )
+    def test_a_preset_conflict_is_named_once_and_hides_no_other_warning(
+        self, write_overlay: Callable[[dict], str], sampling: dict[str, Any]
     ) -> None:
-        """The bundled ``anthropic_claude_4_7`` preset ships ``params:``; an overlay
-        ``default.params_policy`` lands beside it, and the two do not build."""
-        conflict = {"params_policy": {"name": "generation_params", "params": {}}}
-        set_overlay_path(write_overlay({"default": conflict}))
-        agent = {"provider": "openrouter", "name": "anthropic/claude-opus-4.7", "temperature": 0.7}
-        raw = {**TestTheIgnoredUserKeyIsReported._RUN, "models": {"agent": agent}}
-        errors = [
-            (i.path, i.message)
-            for i in validate_run_config(raw).issues
-            if i.severity is Severity.ERROR
-        ]
-        assert [path for path, _ in errors] == ["(presets)"]
-        assert "'anthropic/claude-opus-4.7'" in errors[0][1]
+        """The bundled ``default`` ships ``params:``; the overlay's ``acme_conflict``
+        preset sets ``params_policy`` beside it, and the two do not build."""
+        conflict = {
+            "match": ["acme/conflict*"],
+            "params_policy": {"name": "generation_params", "params": {}},
+        }
+        reasoner = {"match": ["acme/reasoner*"], "params": {"supports_sampling_params": False}}
+        set_overlay_path(
+            write_overlay({"presets": {"acme_conflict": conflict, "acme_reasoner": reasoner}})
+        )
+        conflicted = {"provider": "openrouter", "name": "acme/conflict-1", **sampling}
+        reasoner_cfg = {"provider": "openrouter", "name": _NO_SAMPLING, "top_p": 0.9}
+        raw = {
+            **TestTheIgnoredUserKeyIsReported._RUN,
+            "models": {
+                "agent": {**conflicted, "fallbacks": [conflicted, reasoner_cfg]},
+                "judge": {**conflicted, "capabilities": {"supports_seed": True}},
+            },
+        }
+        issues = validate_run_config(raw).issues
+        errors = [i.message for i in issues if i.severity is Severity.ERROR]
+        warned = [i.path for i in issues if IGNORED_SAMPLING_PARAM in i.message]
+        assert [i.path for i in issues if i.severity is Severity.ERROR] == ["(presets)"]
+        assert "'acme/conflict-1'" in errors[0]
+        assert warned == ["models.agent.fallbacks[1].top_p"]

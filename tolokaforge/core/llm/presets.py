@@ -892,7 +892,7 @@ def _unrecognised_override_keys(overrides: Mapping[str, Any]) -> str | None:
     return (
         f"Unknown capability override keys: {sorted(unknown)}. "
         f"Recognised keys: {sorted(_RECOGNISED_OVERRIDE_KEYS)}. "
-        f"See docs/CONFIG.md § ModelConfig.capabilities for the contract."
+        f"See docs/CONFIG.md § Model Capability Presets for the contract."
     )
 
 
@@ -908,7 +908,7 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         :data:`_RECOGNISED_OVERRIDE_KEYS`. Typos in run-config YAML must
         surface loudly rather than silently no-op, per AGENTS.md rule #1
         ("Surface failures explicitly"). See ``docs/CONFIG.md`` §
-        ``ModelConfig.capabilities`` for the current contract.
+        "Model Capability Presets" for the current contract.
     """
     refusal = _unrecognised_override_keys(overrides)
     if refusal is not None:
@@ -1296,7 +1296,8 @@ _USER_TEMPERATURE_PATH: Final = "models.user.temperature"
 
 
 class CapabilityOverrideError(ValueError):
-    """A model config's ``capabilities`` block carries a key no override recognises."""
+    """A model config's capabilities do not build, at ``<path>.capabilities`` when its
+    own overrides are the cause and at ``(presets)`` when a preset or overlay is."""
 
     def __init__(self, *, path: str, reason: str) -> None:
         self.path = path
@@ -1311,22 +1312,52 @@ def _rebuild_capability_override_error(path: str, reason: str) -> CapabilityOver
     return CapabilityOverrideError(path=path, reason=reason)
 
 
+_PRESETS_PATH: Final = "(presets)"
+
+
+def _capabilities_or_error(
+    path: str, cfg: ModelConfig
+) -> ModelCapabilities | CapabilityOverrideError:
+    """The capabilities *cfg* builds, or why they do not, blamed on its ``capabilities``
+    block only when the same name and provider build without it."""
+    overrides = cfg.capabilities or {}
+    reason = _unrecognised_override_keys(overrides)
+    if reason is not None:
+        return CapabilityOverrideError(path=f"{path}.capabilities", reason=reason)
+    try:
+        return build_capabilities(cfg.name, cfg.provider, overrides=overrides)
+    except (ValueError, TypeError) as err:
+        failure = err
+    try:
+        build_capabilities(cfg.name, cfg.provider)
+    except (ValueError, TypeError) as err:
+        return CapabilityOverrideError(path=_PRESETS_PATH, reason=str(err))
+    return CapabilityOverrideError(
+        path=f"{path}.capabilities",
+        reason=(
+            f"the overrides {sorted(overrides)} do not build for {cfg.name!r} "
+            f"(provider {cfg.provider!r}): {failure}"
+        ),
+    )
+
+
 def capability_override_errors(
     models: Mapping[str, ModelConfig],
 ) -> list[tuple[str, CapabilityOverrideError]]:
-    """Every model config, fallbacks included, whose ``capabilities`` block carries an
-    unrecognised key, whether or not the run ever builds that role.
+    """Every model config, fallbacks included, whose capabilities do not build, whether
+    or not the run ever builds that role or sets a sampling value; a preset or overlay
+    conflict several configs share is named once.
 
-    ``config validate`` reports each as an ERROR at ``<path>.capabilities``, and
+    ``config validate`` reports each as an ERROR at the error's ``path``, and
     ``run`` / ``prepare`` / ``worker`` refuse to start naming all of them.
     """
     errors: list[tuple[str, CapabilityOverrideError]] = []
+    named: set[str] = set()
     for path, cfg in iter_model_configs(models):
-        reason = _unrecognised_override_keys(cfg.capabilities or {})
-        if reason is not None:
-            errors.append(
-                (path, CapabilityOverrideError(path=f"{path}.capabilities", reason=reason))
-            )
+        built = _capabilities_or_error(path, cfg)
+        if isinstance(built, CapabilityOverrideError) and str(built) not in named:
+            named.add(str(built))
+            errors.append((path, built))
     return errors
 
 
@@ -1359,10 +1390,8 @@ def ignored_sampling_params(
     ``capabilities`` overrides applied, would not send. ``config validate`` and the
     run both give these.
 
-    A config whose ``capabilities`` carry an unrecognised key is
-    :func:`capability_override_errors`'s finding and is passed over here. Any other
-    reason its capabilities do not build (a preset or overlay conflict) raises the
-    ``ValueError`` :func:`build_capabilities` gives."""
+    A config whose capabilities do not build is :func:`capability_override_errors`'s
+    finding and is passed over here."""
     findings: list[tuple[str, IgnoredSamplingParam]] = []
     for path, cfg in iter_model_configs(models):
         explicit = [
@@ -1372,9 +1401,11 @@ def ignored_sampling_params(
             and getattr(cfg, field) is not None
             and f"{path}.{field}" != _USER_TEMPERATURE_PATH
         ]
-        if not explicit or _unrecognised_override_keys(cfg.capabilities or {}) is not None:
+        if not explicit:
             continue
-        capabilities = build_capabilities(cfg.name, cfg.provider, overrides=cfg.capabilities)
+        capabilities = _capabilities_or_error(path, cfg)
+        if isinstance(capabilities, CapabilityOverrideError):
+            continue
         preset = resolve_effective_preset(cfg.name, cfg.provider)
         findings.extend(
             (f"{path}.{field}", IgnoredSamplingParam(field, cfg.name, cfg.provider, preset))
