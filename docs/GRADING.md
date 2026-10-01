@@ -1412,9 +1412,9 @@ as `unstable(auto_id)` would let a reference to the wrong record pass.
 
 The golden's view succeeding shows the declaration fits the state the task's own golden
 path builds, so what the trial side cannot view is the trial's state — the same wrong
-state a hash without a view scores `0.0`, not a defect of the grader. Core no longer
-folds a `ComparisonViewError` into `0.0, "Error computing hash"`; every other hashing
-error still scores `0.0` there.
+state a hash without a view scores `0.0`, not a defect of the grader. A golden-side
+`ComparisonViewError` is a grading error, not a `0.0` verdict; every other hashing
+error folds into `0.0, "Error computing hash"`.
 
 **What the grade records.** A grade reached through a view carries a record of it —
 `Grade.comparison_view` on the host (and in `grade.yaml`), the JSON in the

@@ -762,8 +762,8 @@ state_checks:
 ```
 
 The block is validated when the task loads, against the tables it seeds and the masks
-the hash applies after it; a block without a view leaves every config dump, wire spec
-and digest as it was. The rule vocabulary, the order of the pre-hash steps, the record
+the hash applies after it. A pack without the block dumps, crosses the wire and hashes
+byte-identically to a pack graded by an engine without the key. The rule vocabulary, the order of the pre-hash steps, the record
 a grade carries and the load-time refusals are in
 [GRADING.md § Comparison view](GRADING.md#comparison-view).
 

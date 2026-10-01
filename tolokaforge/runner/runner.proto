@@ -303,7 +303,7 @@ message Grade {
   // collision that kept the trial from having one), and on a mismatch the diff of the
   // two views (runner.models.ComparisonViewGradeRecord). Unset when no view is declared
   // or no hash was computed — `optional` so a grade without one encodes, and prints,
-  // exactly as it did before the field existed.
+  // byte-identically to a grade that has no field 12.
   optional string comparison_view_json = 12;
 }
 

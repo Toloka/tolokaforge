@@ -3661,7 +3661,8 @@ class StateDiff(BaseModel):
     empty and the other not at all otherwise shows no difference while the two hash
     apart. Only a comparison view's diff fills it in
     (:func:`tolokaforge.core.grading.trial_golden_diff.compute_view_diff`); it is left out
-    of every dump while absent, so every other diff dumps as before.
+    of every dump while absent, so a diff without it dumps byte-identically to one from
+    an engine without the field.
     """
 
     tables: dict[str, TableDiff] = Field(default_factory=dict)

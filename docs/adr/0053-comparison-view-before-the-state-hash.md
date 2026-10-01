@@ -469,9 +469,9 @@ implementation that built it.
 A grade then says which transform produced the digest it compares. A later
 engine can tell whether it would compute the same view. The host refuses a
 record it cannot read when the grade arrives. Refusing an unknown major
-`function_version` when a recorded grade is read back, as bundle versions are,
-waits for a reader that consumes the record: no bundle reader does yet, so it is
-a follow-up. This is what a `checks.py` hook cannot provide.
+`function_version` when a recorded grade is read back, as bundle versions are, is
+a follow-up: no bundle reader consumes the record. This is what a `checks.py` hook
+cannot provide.
 
 ### Wiring
 
@@ -486,7 +486,8 @@ a follow-up. This is what a `checks.py` hook cannot provide.
     `Grade.comparison_view_json` (field 12, proto3 `optional`, mirrored on the
     grader's `Grade`), which carries both, and the host writes it into
     `Grade.comparison_view` in `grade.yaml`. Without a view the field is unset and
-    the key is absent, so a grade without one encodes and prints as before.
+    the key is absent, so a grade without one encodes and prints byte-identically
+    to a grade that has no field 12.
   - On the wire `comparison_view` is left out of the dump while it is absent, so
     every existing `TaskDescription` serialises byte-identically and an image
     predating the key accepts it; a spec declaring a view is refused by such an
@@ -511,9 +512,9 @@ a follow-up. This is what a `checks.py` hook cannot provide.
   - `check_hash` and `check_hash_against_golden_replay` apply the view first,
     with a fresh copy of the initial state. The golden replay mutates the loaded
     initial state in place, so the view needs its own copy.
-  - `check_hash` stops folding a `ComparisonViewError` into
-    `0.0, "Error computing hash"` and lets it propagate; every other error is still
-    folded. The rule for trial-side errors is the runner's.
+  - A golden-side `ComparisonViewError` propagates out of `check_hash` as a
+    grading error, not a `0.0` verdict; every other hashing error folds into
+    `0.0, "Error computing hash"`. The rule for trial-side errors is the runner's.
   - Both checks return the `HashGradingResult` the runner returns, and
     `GradingEngine` puts its record on `Grade.comparison_view`: the same JSON the
     runner puts on the wire.

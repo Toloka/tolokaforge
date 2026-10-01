@@ -799,8 +799,8 @@ class StateChecksConfig(BaseModel):
     # Opt-in: a one-sided transform each side's full state goes through before every
     # other step of the hash — records that do not count dropped, generated ids
     # re-keyed together with the references to them (ADR-0053). Validated by its own
-    # model; checked against the task when it loads. Absent, the hash reads the
-    # states exactly as before, and the key is left out of every dump.
+    # model; checked against the task when it loads. Absent, the hash reads the states
+    # as written, and the key is left out of every dump.
     comparison_view: ComparisonViewConfig | None = None
 
     omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})

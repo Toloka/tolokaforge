@@ -3,8 +3,8 @@
 ``check_hash`` and ``check_hash_against_golden_replay`` run both full states through
 :func:`~tolokaforge.core.grading.pre_hash.view_the_pair` before core's own masks and
 digest. A view that cannot be computed is no verdict: it propagates, where every other
-hashing error still scores ``0.0``. The golden replay mutates the initial state it
-loads, so the view reads a load of its own.
+hashing error scores ``0.0``. The golden replay mutates the initial state it loads, so
+the view reads a load of its own.
 """
 
 from __future__ import annotations
@@ -123,8 +123,8 @@ def test_a_golden_view_error_propagates_instead_of_scoring_zero() -> None:
         _check(_filed("D3"), golden)
 
 
-def test_every_other_hashing_error_still_scores_zero() -> None:
-    """No behaviour change outside the view: the catch-all is kept for the rest."""
+def test_every_other_hashing_error_scores_zero() -> None:
+    """A hashing error outside the view folds into ``0.0``, the error as the reason."""
     result = StateChecker().check_hash(
         {"t": [{"id": 1}]},
         expected_state={"t": [{"id": 1}]},
@@ -285,7 +285,7 @@ def test_the_engine_leaves_a_trial_ungraded_when_the_expected_side_cannot_be_vie
 
 
 def test_importing_the_core_hash_checks_does_not_pull_the_runner_stack() -> None:
-    """The view's composition is imported where a view is declared, as before it existed."""
+    """The view's composition is imported only where a view is declared."""
     probe = (
         "import sys, tolokaforge.core.grading.state_checks; "
         "print(sorted(m for m in ('grpc', 'tolokaforge.runner.models', "

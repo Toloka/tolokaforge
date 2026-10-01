@@ -437,8 +437,8 @@ message Grade {
   // state_checks.comparison_view: the golden's and the trial's view records (or the
   // error that kept the trial's state from being viewed) and, on a mismatch, the
   // diff of the two views. `optional`, and unset without a view, so a grade without
-  // one encodes exactly as before. A payload the Host cannot read fails the grade
-  // parse. See docs/GRADING.md § Comparison view.
+  // one encodes byte-identically to a grade that has no field 12. A payload the Host
+  // cannot read fails the grade parse. See docs/GRADING.md § Comparison view.
   optional string comparison_view_json = 12;
 }
 
@@ -859,8 +859,8 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     # after the replay), and only after the restore above does the runner run the
     # view, the unstable filter and compare_columns (pre_hash.view_the_pair) and hash
     # both sides with compute_stable_hash. A view that cannot be computed fails the
-    # RPC (success=false); a trial whose own state cannot be viewed after the golden's
-    # was fails (state_score 0.0). See docs/GRADING.md § Comparison view.
+    # RPC (success=false); a trial whose own state cannot be viewed once the golden's
+    # view succeeded fails (state_score 0.0). See docs/GRADING.md § Comparison view.
     
     # 6. Compare hashes
     if trial_hash == golden_hash:
