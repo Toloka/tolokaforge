@@ -61,9 +61,8 @@ class SearchOutcome:
     formats it. ``hits`` are the same answer in the backend-neutral
     :class:`~tolokaforge.core.grading.kb_search.SearchHit` shape the judge's
     search, the remote grader's ``KBSearch`` and offline replay read. No engine
-    code reads an outcome's ``hits`` yet: they are there for the readers that
-    will record the agent's retrievals (replay of the agent's own searches is the
-    first), so a backend fills them honestly now.
+    code reads an outcome's ``hits``; a backend fills them faithfully all the
+    same, as the record of what the agent retrieved.
     """
 
     hits: tuple[SearchHit, ...]
