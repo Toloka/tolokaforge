@@ -66,7 +66,7 @@ from tolokaforge.core.deprecations import (
     warn_deprecated,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
-from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
@@ -3891,6 +3891,48 @@ class TraceChecksResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ComparisonViewCollisionRecord(BaseModel):
+    """A trial whose state ``normalize_ids`` cannot re-key bijectively, and the ids involved."""
+
+    message: str
+    ids: list[Any] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class ComparisonViewGradeRecord(BaseModel):
+    """What a grade records about a comparison view (ADR-0053 § Versioning).
+
+    ``golden`` and ``trial`` are the records of the two views: the same ``version``,
+    ``function_version`` and ``config_sha256``, with each side's own ``applied``. A
+    trial whose view collided has no record of its own and carries
+    ``trial_collision`` instead. ``view_diff`` is the diff of the two views on a
+    mismatch, the diff the hash verdict agrees with (#1444); ``None`` on a match or a
+    collision. Both substrates build it with
+    :func:`tolokaforge.core.grading.pre_hash.comparison_view_grade_record`, so the
+    runner's ``Grade.comparison_view_json`` and core's ``Grade.comparison_view`` carry
+    the same JSON.
+    """
+
+    golden: ComparisonViewRecord
+    trial: ComparisonViewRecord | None = None
+    view_diff: StateDiff | None = None
+    trial_collision: ComparisonViewCollisionRecord | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _a_trial_has_a_view_or_a_collision(self) -> ComparisonViewGradeRecord:
+        if (self.trial is None) == (self.trial_collision is None):
+            raise ValueError(
+                "a comparison-view record carries the trial's view record or its collision, "
+                "exactly one of the two"
+            )
+        if self.trial_collision is not None and self.view_diff is not None:
+            raise ValueError("a trial whose view collided has no view to diff")
+        return self
+
+
 class HashGradingResult(BaseModel):
     """Result of hash-based grading."""
 
@@ -3909,6 +3951,12 @@ class HashGradingResult(BaseModel):
 
     An unresolvable name never reaches the replay — it fails the whole grade — so every
     failure here describes an action that ran against a world it did not fit.
+    """
+    comparison_view: ComparisonViewGradeRecord | None = None
+    """Both views' records and, on a mismatch, the view diff — ``None`` without a view.
+
+    With a view declared, ``hash_match`` compares the two views and ``state_diff`` is
+    the raw diff of the stable states, kept for the author beside the view diff.
     """
 
     model_config = {"extra": "forbid"}

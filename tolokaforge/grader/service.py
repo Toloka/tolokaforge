@@ -97,6 +97,9 @@ def _grade_to_wire(grade: Grade) -> grader_pb2.Grade:
         # runner.Grade.state_diff_json which the ``_parse_grade_result`` mapper
         # deserialises on receipt.
         wire.state_diff_json = json.dumps(grade.state_diff)
+    if grade.comparison_view is not None:
+        # The comparison view's record, JSON-encoded as on runner.Grade.
+        wire.comparison_view_json = json.dumps(grade.comparison_view)
     if grade.components is not None:
         wire.components.state_checks = _sentinel(grade.components.state_checks)
         wire.components.transcript_rules = _sentinel(grade.components.transcript_rules)

@@ -297,6 +297,14 @@ message Grade {
   // is a gate silently opening, and the host must tell that apart from a runner
   // that evaluated the gate and found it held.
   TraceChecksSummary trace_checks_summary = 11;
+
+  // What the comparison view did, when the pack declares state_checks.comparison_view:
+  // a JSON object with the golden's view record, the trial's view record (or the
+  // collision that kept the trial from having one), and on a mismatch the diff of the
+  // two views (runner.models.ComparisonViewGradeRecord). Unset when no view is declared
+  // or no hash was computed — `optional` so a grade without one encodes, and prints,
+  // exactly as it did before the field existed.
+  optional string comparison_view_json = 12;
 }
 
 // The rubric judge's own accounting + audit transcript (see docs/RUBRIC_GRADING_DESIGN.md
