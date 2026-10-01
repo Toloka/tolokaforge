@@ -277,6 +277,10 @@ class StateChecksConfig(BaseModel):
     numeric_string_fields: List[str] = Field(default_factory=list)  # per-field string folding
     id_fields: Dict[str, Union[str, List[str]]] = Field(default_factory=dict)  # per-table PK: one field, or an ordered component list for a composite key; absent => "id"
     relaxed_validation: bool = False              # legacy escape hatch for the id_fields check
+    compare_columns: Dict[str, Dict[str, ColumnCompareRule]] = Field(default_factory=dict)  # per-(table, column) folds, ordering, subset extras
+    auto_mask_clock_columns: bool = False         # drop write-time clock columns before hashing
+    auto_normalize_nullables: bool = False        # fold None ≡ [] ≡ {} ≡ "" before hashing
+    comparison_view: Optional[ComparisonViewConfig] = None  # one-sided pre-hash transform (docs/GRADING.md § Comparison view); left out of the dump when absent
 
     # JSONPath assertions
     jsonpath_checks: List[Dict[str, Any]] = Field(default_factory=list)

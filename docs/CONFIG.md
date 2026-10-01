@@ -742,6 +742,31 @@ same shape is reported unchecked at the same address. Every other authoring rule
 grading block is checked against — tool names, argument names, `regex` compilation —
 is in [GRADING.md](GRADING.md#what-is-validated-before-a-run).
 
+`state_checks.comparison_view` (optional) shapes both sides of that hash before it is
+computed: a `version` and a list of `rules`, each an `exclude_records`, `exclude_tables`
+or `normalize_ids` entry. It drops the records that do not count and re-keys generated
+ids by their records' content, together with the references to them:
+
+```yaml
+state_checks:
+  hash: { enabled: true, golden_actions: [...] }
+  comparison_view:
+    version: 1
+    rules:
+      - { kind: exclude_tables, tables: [lookup_log], reason: written by the read tools }
+      - { kind: exclude_records, table: documents, where: { status: superseded } }
+      - kind: normalize_ids
+        table: documents
+        key: [client_id, source_id]
+        references: [{ table: corrections, field: document_ref }]
+```
+
+The block is validated when the task loads, against the tables it seeds and the masks
+the hash applies after it; a block without a view leaves every config dump, wire spec
+and digest as it was. The rule vocabulary, the order of the pre-hash steps, the record
+a grade carries and the load-time refusals are in
+[GRADING.md § Comparison view](GRADING.md#comparison-view).
+
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
 not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,
 or a per-task judge-model field is rejected at load with a migration message.
