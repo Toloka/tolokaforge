@@ -78,7 +78,7 @@ the adapter-side inputs that drove the trials.
     "package_version": "1.0.0",
     "content_sha256": "9f0d…64-hex chars…",
     "api_version": 1,
-    "minimum_engine_version": ">=0.17,<1.0"
+    "minimum_engine_version": ">=0.28,<1.0"
   },
   "adapter_fingerprints": {}
 }
