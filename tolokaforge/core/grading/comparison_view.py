@@ -443,7 +443,7 @@ class RuleApplication(BaseModel):
     kind: str
     table: str
     path: str | None = None
-    rows_removed: int = Field(ge=0)
+    rows_removed: int = Field(default=0, ge=0)
     ids_rewritten: int = Field(default=0, ge=0)
     references_rewritten: int = Field(default=0, ge=0)
 
@@ -641,7 +641,7 @@ class NormalizeIds:
         _refuse_own_id_references(config.table, config.references, id_field, option="references")
         kept_ids = _ids_that_keep_their_key(config, initial, id_field)
         if config.table not in state:
-            application = RuleApplication(kind=self.NAME, table=config.table, rows_removed=0)
+            application = RuleApplication(kind=self.NAME, table=config.table)
             return RuleOutcome(state=state, applied=(application,))
         rows = _records(state[config.table], f"{_NORMALIZE}: table {config.table!r}")
         new_keys = _new_keys(config, rows, id_field, kept_ids)
@@ -652,7 +652,6 @@ class NormalizeIds:
         application = RuleApplication(
             kind=self.NAME,
             table=config.table,
-            rows_removed=0,
             ids_rewritten=sum(new is not old for new, old in zip(rekeyed, rows)),
             references_rewritten=references_rewritten,
         )
@@ -745,6 +744,8 @@ def _checked_outcome(rule: type[ComparisonViewRule], outcome: object) -> RuleOut
 # ---------------------------------------------------------------------------
 
 Record = Mapping[str, Any]
+IdKey = tuple[bool, Any]
+"""An id or a reference as :func:`_reference_key` compares it."""
 
 
 def _records(value: Any, where: str) -> list[Record]:
@@ -832,7 +833,7 @@ def _refuse_own_id_references(
 
 
 def _referenced_by_another_row(
-    row: Record, config: ExcludeRecordsConfig, id_field: str, counts: Counter[tuple[bool, Any]]
+    row: Record, config: ExcludeRecordsConfig, id_field: str, counts: Counter[IdKey]
 ) -> bool:
     """Whether a reference other than the row's own references to itself holds its id."""
     key = _reference_key(_record_id(row, config.table, id_field, needed_by=_UNLESS))
@@ -895,7 +896,7 @@ def _record_id(row: Record, table: str, id_field: str, *, needed_by: str) -> Any
     return value
 
 
-def _reference_key(value: Any) -> tuple[bool, Any]:
+def _reference_key(value: Any) -> IdKey:
     """The key an id and a reference to it share, compared as JSON values.
 
     A bool never matches a number, ``1`` matches ``1.0``, and ``1`` does not match
@@ -906,9 +907,9 @@ def _reference_key(value: Any) -> tuple[bool, Any]:
 
 def _reference_counts(
     state: Mapping[str, Any], references: Sequence[RecordReference]
-) -> Counter[tuple[bool, Any]]:
+) -> Counter[IdKey]:
     """How many times each id is referenced by the listed fields, over every row."""
-    counts: Counter[tuple[bool, Any]] = Counter()
+    counts: Counter[IdKey] = Counter()
     for reference in references:
         if reference.table not in state:
             continue
@@ -994,8 +995,6 @@ def _rewrite_at(value: Any, segments: Sequence[str], leaf: Callable[[Any], Any],
 # normalize_ids helpers
 # ---------------------------------------------------------------------------
 
-IdKey = tuple[bool, Any]
-
 
 def _refuse_id_in_the_key(config: NormalizeIdsConfig, id_field: str) -> None:
     for option, fields in (
@@ -1052,7 +1051,7 @@ def _new_keys(
 
 
 def _refuse_duplicate_ids(table: str, ids: list[Any]) -> None:
-    seen: dict[IdKey, Any] = {}
+    seen: set[IdKey] = set()
     for value in ids:
         key = _reference_key(value)
         if key in seen:
@@ -1060,7 +1059,7 @@ def _refuse_duplicate_ids(table: str, ids: list[Any]) -> None:
                 f"{_NORMALIZE}: two records of table {table!r} share the id {value!r}, so a "
                 f"reference to it cannot follow one of them"
             )
-        seen[key] = value
+        seen.add(key)
 
 
 def _key_fields(
