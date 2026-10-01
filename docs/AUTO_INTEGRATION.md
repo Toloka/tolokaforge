@@ -509,8 +509,10 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   the one-line job-log digest of an agent run's result event.
 - `automation langfuse-upload <dir>` - sends the agents' own `claude -p` output to a Langfuse
   receiver, one trace per file (`agent_iter_<i>.jsonl` -> `resolve/<i>`, `agent_finalize.jsonl`
-  -> `finalize`; from a directory only those names are read, so the stage's `decision.json` and
-  reprobe findings are listed as not read, not refused), through `tolokaforge_langfuse.transcripts`: a file with a shape the reader does
+  -> `finalize`, and an evaluation analysis's dimension agents: `analysis_<dimension>.json` ->
+  `analysis/<dimension>`, a later run `analysis_<dimension>.<n>.json` (n from 2) ->
+  `analysis/<dimension>/<n>`; from a directory only those names are read, so the stage's
+  `decision.json` and reprobe findings are listed as not read, not refused), through `tolokaforge_langfuse.transcripts`: a file with a shape the reader does
   not know is refused, tool inputs and outputs are dropped unless `--tool-io scrub`, the serialised
   payload is scanned by the outbound sentinel, keys that open another project than `--project`
   refuse the upload, and a trace the receiver already holds in another environment is not

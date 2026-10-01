@@ -1,9 +1,9 @@
 """Send a pipeline agent's transcripts to the tracing receiver.
 
-The agents this repository runs in CI (the resolve loop and the finalize step of a model
-integration) write their Claude Code output to the runner and nowhere else: it is never an
-artifact, because a tool result can carry the run's credentials. This is the one step that takes
-those files off the runner, and it is deliberately narrow.
+The agents a pipeline runs in CI (the resolve loop and the finalize step of a model integration,
+the dimension agents of an evaluation's analysis) write their Claude Code output to the runner
+and nowhere else: it is never an artifact, because a tool result can carry the run's credentials.
+This is the one step that takes those files off the runner, and it is deliberately narrow.
 
 What it does, in order, per file:
 
@@ -58,8 +58,15 @@ DEFAULT_RUN_TAG = "v1"
 READ_TIMEOUT_S = 10.0
 
 # ``agent_iter_3.jsonl`` is the third resolve iteration; ``agent_finalize.jsonl`` is the finalize
-# step. Anything else keeps its own stem, so a new agent step needs no change here to be traced.
+# step. A file named on the command line under any other name keeps its own stem.
 _ITERATION = re.compile(r"^agent_iter_(\d+)$")
+# ``analysis_<dimension>.json`` is one dimension agent of an evaluation's analysis, and
+# ``analysis_<dimension>.<n>.json`` a later run of the same dimension in the same directory. The
+# writer keeps ``[A-Za-z0-9_.-]`` of the dimension and numbers its later runs from 2, so only a
+# trailing ``.<n>`` from 2 up is a run number: ``harness_infra`` stays whole and ``v1.5_x`` keeps
+# its dot. A dimension that itself ends in such a number cannot be told from a later run by its
+# file name, here or anywhere else.
+_ANALYSIS = re.compile(r"^analysis_(?P<dimension>[A-Za-z0-9_.-]+?)(?:\.(?P<run>[2-9]|[1-9]\d+))?$")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -199,12 +206,14 @@ def _extra_headers(raw: str | None) -> dict[str, str]:
 
 
 def is_agent_output(path: Path) -> bool:
-    """Whether a file is one of the agents' own outputs (the names cost_summary reads too).
+    """Whether a file is one of the agents' own outputs: an integration's resolve iterations and
+    finalize step (the names cost_summary reads too), or an evaluation analysis's dimension agents.
 
     A stage directory also holds the compose step's ``decision.json`` and the reprobe findings,
     which are not transcripts and must not count as refused ones.
     """
-    return bool(_ITERATION.match(path.stem)) or path.stem == "agent_finalize"
+    stem = path.stem
+    return stem == "agent_finalize" or bool(_ITERATION.match(stem) or _ANALYSIS.match(stem))
 
 
 def transcript_id_for(path: Path) -> str:
@@ -215,6 +224,10 @@ def transcript_id_for(path: Path) -> str:
         return f"resolve/{int(match.group(1))}"
     if stem == "agent_finalize":
         return "finalize"
+    analysis = _ANALYSIS.match(stem)
+    if analysis:
+        dimension, run = analysis.group("dimension", "run")
+        return f"analysis/{dimension}/{run}" if run else f"analysis/{dimension}"
     return stem
 
 

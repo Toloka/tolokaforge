@@ -109,12 +109,71 @@ class TestTheTranscriptId:
             ("agent_iter_1.jsonl", "resolve/1"),
             ("agent_iter_12.json", "resolve/12"),
             ("agent_finalize.jsonl", "finalize"),
-            ("analysis_harness.json", "analysis_harness"),
             ("agent_iter_x.jsonl", "agent_iter_x"),
+            ("capture.jsonl", "capture"),
         ],
     )
     def test_the_file_name_names_the_step(self, name: str, expected: str) -> None:
         assert lu.transcript_id_for(Path(name)) == expected
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            # the dimension keeps its own underscores: they are not separators
+            ("analysis_harness_infra.json", "analysis/harness_infra"),
+            ("analysis_task_design_oracle.json", "analysis/task_design_oracle"),
+            # the writer numbers a dimension's later runs from 2 in the same directory
+            ("analysis_harness_infra.2.json", "analysis/harness_infra/2"),
+            ("analysis_four_bucket.12.json", "analysis/four_bucket/12"),
+            # a dot inside the dimension, and a trailing number the writer never puts there
+            ("analysis_v1.5_x.json", "analysis/v1.5_x"),
+            ("analysis_codec.1.json", "analysis/codec.1"),
+            ("analysis_codec.02.json", "analysis/codec.02"),
+            ("analysis_codec.0.json", "analysis/codec.0"),
+            ("analysis_agent.jsonl", "analysis/agent"),
+        ],
+    )
+    def test_an_analysis_file_names_its_dimension_and_its_run(
+        self, name: str, expected: str
+    ) -> None:
+        assert lu.transcript_id_for(Path(name)) == expected
+
+    def test_two_runs_of_one_dimension_are_two_transcripts(self) -> None:
+        """A retried dimension keeps both files: the first attempt is the one worth reading when
+        it died on a budget, so the two must not merge into one trace."""
+        first = lu.transcript_id_for(Path("analysis_four_bucket.json"))
+        retry = lu.transcript_id_for(Path("analysis_four_bucket.2.json"))
+        assert first != retry
+        assert retry.startswith(first + "/")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "agent_iter_1.jsonl",
+            "agent_finalize.jsonl",
+            "analysis_harness_infra.json",
+            "analysis_consistency_passk.3.json",
+            "analysis_v1.5_x.jsonl",
+        ],
+    )
+    def test_an_agent_output_name_is_read_from_a_directory(self, name: str) -> None:
+        assert lu.is_agent_output(Path(name))
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "decision.json",
+            "last_reprobe.json",
+            "verdict.harness_infra.json",
+            "analysis.json",
+            "analysis_.json",
+            "analysis-harness_infra.json",
+            "cost_summary.json",
+            "agent_iter_x.jsonl",
+        ],
+    )
+    def test_any_other_name_is_not(self, name: str) -> None:
+        assert not lu.is_agent_output(Path(name))
 
 
 class TestTheReceiver:
@@ -280,6 +339,31 @@ class TestTheUpload:
         assert report.ignored == ["decision.json", "last_reprobe.json"]
         assert report.as_dict()["ignored"] == ["decision.json", "last_reprobe.json"]
         assert "`decision.json`" in report.as_markdown()
+
+    def test_an_analysis_directory_sends_each_dimension_agents_output(self, tmp_path: Path) -> None:
+        """An evaluation's analysis keeps one file per dimension agent, the JSON array that
+        ``claude -p --output-format json --verbose`` prints, and a retry beside the first attempt.
+        The verdicts and the run's other records are not transcripts."""
+        for name in (
+            "analysis_harness_infra.json",
+            "analysis_harness_infra.2.json",
+            "analysis_four_bucket.json",
+        ):
+            (tmp_path / name).write_text(json.dumps(CLEAN_EVENTS), encoding="utf-8")
+        (tmp_path / "decision.json").write_text('{"fix_targets": []}', encoding="utf-8")
+        (tmp_path / "verdict.harness_infra.json").write_text(
+            '{"verdict": "CLEAN"}', encoding="utf-8"
+        )
+        report = upload(tmp_path, run_id="automation/eval-orchestrate/1/1")
+        assert report.ok and report.refused == []
+        assert [(e["file"], e["transcript_id"]) for e in report.sent] == [
+            ("analysis_four_bucket.json", "analysis/four_bucket"),
+            ("analysis_harness_infra.2.json", "analysis/harness_infra/2"),
+            ("analysis_harness_infra.json", "analysis/harness_infra"),
+        ]
+        assert len({e["trace_id"] for e in report.sent}) == 3
+        assert {e["spans"] for e in report.sent} == {3}
+        assert report.ignored == ["decision.json", "verdict.harness_infra.json"]
 
     def test_a_file_named_on_the_command_line_is_read_whatever_its_name(
         self, tmp_path: Path
