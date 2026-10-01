@@ -19,7 +19,7 @@ customization (``disable_knowledge_search`` + ``custom_system_prompt`` +
 ``include_agent_system_prompt`` + ``judge_snippet_chars``) and a ``kind_config``
 handle downstream kinds read from. The engine passes every one of these by
 keyword, so a downstream kind's ``evaluate`` must accept each of them;
-``judge_snippet_chars`` (ADR-0052) is the one added since the Protocol shipped.
+``judge_snippet_chars`` (ADR-0053) is the one added since the Protocol shipped.
 """
 
 from __future__ import annotations

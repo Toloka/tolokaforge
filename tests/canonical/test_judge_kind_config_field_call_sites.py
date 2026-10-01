@@ -146,7 +146,7 @@ def _llm_judge_config(*, with_kind_config: bool) -> LLMJudgeConfig:
 
 
 def _assert_snippet_length_forwarded() -> None:
-    """The site read ``customization.judge_snippet_chars`` and passed it on (ADR-0052)."""
+    """The site read ``customization.judge_snippet_chars`` and passed it on (ADR-0053)."""
     assert _CallSiteProbeJudgeKind.calls[0]["judge_snippet_chars"] is None
 
 

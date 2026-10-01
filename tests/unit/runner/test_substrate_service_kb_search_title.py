@@ -1,4 +1,4 @@
-"""Locks :meth:`SubstrateServicer.KBSearch`'s ``title`` round trip (ADR-0052 change 2).
+"""Locks :meth:`SubstrateServicer.KBSearch`'s ``title`` round trip (ADR-0053 change 2).
 
 The remote grader's judge reads the runner's knowledge search through
 ``KBSearch``. A backend whose documents have titles (``bm25``) hands them across
