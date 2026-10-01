@@ -60,7 +60,7 @@ class SearchBackendDefects:
     """One switch per obligation, each defaulting to "honoured"."""
 
     needs_a_trial_to_build: bool = False
-    """Refuse a trial-less context: the adapter could no longer read the tool's schema."""
+    """Refuse a trial-less context: the adapter cannot read the tool's schema."""
 
     parameters_without_query: bool = False
     """Declare a ``parameters`` object with no ``query``: the runner hands that argument over."""

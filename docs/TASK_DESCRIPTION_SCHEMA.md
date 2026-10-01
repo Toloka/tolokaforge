@@ -418,7 +418,7 @@ class TaskDescription(BaseModel):
   is registered under it; an older image, whose `plane` is a closed enum, refuses a
   name it predates at parse time.
 - **`enabled`** means "this task needs rag-service". It predates `plane`, and an
-  older runner image reads only it, so the native adapter still emits it — `true`
+  older runner image reads only it, so the native adapter emits it — `true`
   exactly when the backend `plane` names declares the rag-service stack service.
   A task that carries `enabled: true` and no `plane` is served by `rag_service`.
 - **`backend_config`** is the task's `initial_state.rag.backend_config`, handed to
@@ -429,7 +429,8 @@ class TaskDescription(BaseModel):
 
 `backend_config` and `tool_name` are left off the serialised description while they
 hold their default (an empty mapping, `search_kb`), so a task that declares neither
-serialises exactly as it did before they existed and an older image still accepts it.
+serialises without them, and an older image, which forbids a key it does not declare,
+accepts it.
 
 ---
 

@@ -459,7 +459,7 @@ def test_native_adapter_composes_task_yaml_and_tool_declared_output_max_chars(
 def test_search_kb_task_yaml_override_composes_with_the_canonical_schema(tmp_path: Path):
     """``search_kb`` takes a different construction path (the declared search
     backend's schema, ``search_tool_schema``, bypasses ``_builtin_tool_schemas``),
-    but the task-yaml override still composes with the schema's own
+    but the task-yaml override composes with the schema's own
     ``output_max_chars`` under the same tighter-wins rule the generic
     branch applies. Locks the third-axis contract for the special-cased
     tool so a future refactor cannot silently drop the override there.

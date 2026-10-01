@@ -98,7 +98,7 @@ def test_a_rag_block_that_searches_nothing_does_not_trigger_full_stack():
 
 
 class TestABackendWithoutAStackService:
-    """``search_kb`` alone no longer selects the stack: the backend's declaration does."""
+    """The backend's declaration selects the stack; a tool named ``search_kb`` does not."""
 
     @pytest.fixture(autouse=True)
     def _in_memory(self, monkeypatch: pytest.MonkeyPatch) -> None:

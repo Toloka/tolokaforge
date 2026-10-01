@@ -1,10 +1,10 @@
 """``SearchConfig`` on the wire: the backend's name in ``plane``, and two keys that stay off
 the wire at their default (ADR-0053).
 
-Every existing task must serialise exactly as before, because the runner and the
+A task that declares neither key serialises without them, because the runner and the
 grader parse ``TaskDescription`` with ``extra="forbid"`` models: a key an older image
-does not declare fails the whole trial at ``RegisterTrial``. The control is the
-pre-seam model itself, reproduced here, so "an older image accepts it" is measured
+does not declare fails the whole trial at ``RegisterTrial``. The control is the model
+an older image parses, reproduced here, so "an older image accepts it" is measured
 rather than asserted.
 """
 
