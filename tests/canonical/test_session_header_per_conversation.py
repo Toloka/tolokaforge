@@ -10,7 +10,8 @@ Each trial here runs through :meth:`InProcessConductor._run_agent_loop` with a r
 :class:`LLMClient` agent and the built-in LLM user simulator (its own real client)
 against a loopback gateway. Requests are attributed to a role by the ``model`` their
 body names and to a trial by running trials one after another, never by the header
-under test.
+under test. The single-client cases pin the header on the wire for both gateway
+catalog outcomes and beside the gateway's own per-request id.
 """
 
 from __future__ import annotations
@@ -38,11 +39,14 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     ActorSpec,
     EvaluationConfig,
+    Message,
+    MessageRole,
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
     TaskConfig,
 )
+from tolokaforge.core.run_display_events import _NULL_EVENTS, LLMCallObservation
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.observability.observer import TrialIdentity
 from tolokaforge.runner.models import TaskDescription
@@ -222,3 +226,50 @@ def test_each_trial_conversation_sends_one_id_per_role(
     assert (first.identity.attempt_id, retried.identity.attempt_id) == (0, 1)
     values = [_Trial.sent(t.agent) | _Trial.sent(t.user) for t in (first, second, retried)]
     assert len(set().union(*values)) == 6, "every trial, attempt and role has its own id"
+
+
+def _observation(session_id: str) -> LLMCallObservation:
+    return LLMCallObservation(
+        events=_NULL_EVENTS, trial_id="refund:0", role="agent", session_id=session_id
+    )
+
+
+def _say_ok(client: LLMClient, observation: LLMCallObservation) -> None:
+    client.generate(
+        system="Be terse.",
+        messages=[Message(role=MessageRole.USER, content="ping")],
+        observation=observation,
+    )
+
+
+@pytest.mark.parametrize("catalog", [[AGENT_MODEL], None], ids=["resolved-route", "unreadable"])
+def test_the_session_header_reaches_the_gateway_on_both_catalog_outcomes(
+    gateway: RecordingGateway, catalog: list[str] | None
+) -> None:
+    gateway.catalog = catalog
+    client = LLMClient(ModelConfig(provider="openai", name=AGENT_MODEL, session=_SESSION))
+    assert (client._gateway_route is not None) == (catalog is not None)
+
+    _say_ok(client, _observation("conversation-1"))
+
+    assert [(r.model, r.headers.get(SESSION_HEADER)) for r in gateway.requests] == [
+        (AGENT_MODEL, "conversation-1")
+    ]
+
+
+def test_the_request_id_is_per_call_and_the_session_id_per_conversation(
+    gateway: RecordingGateway, installed_fake_secrets: dict[str, str]
+) -> None:
+    """The request id is minted per outer attempt, so it is compared across
+    ``generate()`` calls, never across one call's SDK re-sends."""
+    with secret_manager_installed(
+        {**installed_fake_secrets, "LLM_PROXY_REQUEST_ID_HEADER": "X-Request-Id"}
+    ):
+        client = LLMClient(ModelConfig(provider="openai", name=AGENT_MODEL, session=_SESSION))
+        _say_ok(client, _observation("conversation-1"))
+        _say_ok(client, _observation("conversation-1"))
+
+    sessions = [r.headers.get(SESSION_HEADER) for r in gateway.requests]
+    request_ids = [r.headers.get("x-request-id") for r in gateway.requests]
+    assert sessions == ["conversation-1", "conversation-1"]
+    assert all(request_ids) and request_ids[0] != request_ids[1]
