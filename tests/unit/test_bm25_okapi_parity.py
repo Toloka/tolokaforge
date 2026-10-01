@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from tolokaforge.core.search.bm25 import OkapiBm25
+from tolokaforge.core.search.bm25 import Bm25CorpusError, OkapiBm25
 
 pytestmark = pytest.mark.unit
 
@@ -121,7 +121,37 @@ class TestAgainstTheInstalledLibrary:
             query = [rng.choice(vocabulary + ["unseen"]) for _ in range(rng.randint(0, 8))]
             assert port.get_scores(query) == reference.get_scores(query).tolist()
 
+    @pytest.mark.parametrize("seed", range(3))
+    def test_a_corpus_with_empty_documents_scores_identically(
+        self, rank_bm25: Any, seed: int
+    ) -> None:
+        """Empty documents beside non-empty ones are scored, not refused, as upstream does."""
+        rng = random.Random(100 + seed)
+        vocabulary = [f"w{i}" for i in range(20)]
+        corpus = [
+            (
+                []
+                if rng.random() < 0.3
+                else [rng.choice(vocabulary) for _ in range(rng.randint(1, 12))]
+            )
+            for _ in range(60)
+        ]
+        corpus[0] = ["w0"]
+        reference = rank_bm25.BM25Okapi(corpus)
+        port = OkapiBm25(corpus)
+        assert port.idf == reference.idf
+        assert port.average_idf == reference.average_idf
+        for _ in range(10):
+            query = [rng.choice(vocabulary) for _ in range(rng.randint(1, 5))]
+            assert port.get_scores(query) == reference.get_scores(query).tolist()
+
+    def test_the_library_divides_by_zero_where_the_port_refuses(self, rank_bm25: Any) -> None:
+        with pytest.raises(ZeroDivisionError):
+            rank_bm25.BM25Okapi([[], []])
+        with pytest.raises(Bm25CorpusError, match="tokenizes to a term"):
+            OkapiBm25([[], []])
+
 
 def test_an_empty_corpus_is_refused() -> None:
-    with pytest.raises(ValueError, match="at least one document"):
+    with pytest.raises(Bm25CorpusError, match="at least one document"):
         OkapiBm25([])

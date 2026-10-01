@@ -402,6 +402,11 @@ The backend landed as the table says, with these refinements, documented in
   only `filename`: the one order the corpus has.
 - **`ranking.min_score`** is inclusive (`score >= min_score`), as Elasticsearch
   reads it; `0.0` keeps zero scores.
+- **A corpus BM25 cannot score is a refusal**, not an exception from the scorer: a
+  document whose indexed fields are blank (a blank `title` under `fields: [title]`)
+  names its file, and indexed text that tokenizes to no term at all is refused by
+  `OkapiBm25`. On both, `rank_bm25` divides by zero; every other corpus scores bit
+  for bit as the library does, including one where some documents are empty.
 - **`SearchHit.source`** is the document's file name; the title has no field on
   `SearchHit` until change 2b adds it, and is read from the rendering.
 - **The cache** is in the runner process, keyed by a digest of the corpus files'
