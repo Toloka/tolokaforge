@@ -23,7 +23,7 @@ from tolokaforge.core.grading.comparison_view import (
     ComparisonViewError,
     apply_comparison_view,
 )
-from tolokaforge.core.hash import compute_stable_hash
+from tolokaforge.core.hash import compute_stable_hash, filter_unstable_fields
 
 pytestmark = pytest.mark.unit
 
@@ -253,6 +253,56 @@ def test_a_trial_differing_only_in_generated_ids_gets_the_goldens_digest(
     trial = _renamed_trial(case, fresh)
     golden_digest = compute_stable_hash(_viewed(case.state, case, view))
     assert compute_stable_hash(_viewed(trial, case, view)) == golden_digest
+
+
+def _masked_digest(state: dict[str, Any], case: _Case, view: ComparisonViewConfig) -> str:
+    """view → the unstable filter without the re-keyed id fields → the hash."""
+    result = apply_comparison_view(state, initial=case.initial, view=view, id_fields={})
+    rekeyed = {field.dotted for field in result.rekeyed_fields}
+    unstable = [name for name in ("journal.id", "journal.posted_at") if name not in rekeyed]
+    return compute_stable_hash(filter_unstable_fields(result.state, unstable))
+
+
+@_BOTH_FORMS
+@given(case=_cases(), data=st.data())
+@_PROPERTY
+def test_with_the_id_declared_unstable_a_renamed_trial_still_gets_the_goldens_digest(
+    view: ComparisonViewConfig, case: _Case, data: st.DataObject
+) -> None:
+    fresh = _fresh_ids(case, data.draw(st.permutations(range(len(case.new_ids)))))
+    trial = _renamed_trial(case, fresh)
+    assert _masked_digest(trial, case, view) == (_masked_digest(case.state, case, view))
+
+
+@given(case=_cases(min_new=2), data=st.data())
+@_PROPERTY
+def test_with_the_id_declared_unstable_a_reference_to_the_wrong_record_still_fails(
+    case: _Case, data: st.DataObject
+) -> None:
+    """Two records of one group swap ranks and references: only the re-keyed id tells them apart.
+
+    The rank field is masked too, so after the view nothing but the re-keyed id
+    links a record's content to the key its references carry.
+    """
+    first, second = data.draw(
+        st.lists(
+            st.sampled_from(range(case.kept, len(case.journal))),
+            min_size=2,
+            max_size=2,
+            unique=True,
+        )
+    )
+    golden = copy.deepcopy(case.state)
+    golden["journal"][second]["account_id"] = golden["journal"][first]["account_id"]
+    golden["notices"].append(
+        {"id": "N-wrong", "entry": golden["journal"][first]["id"], "entries": [], "lines": []}
+    )
+    trial = copy.deepcopy(golden)
+    one, other = trial["journal"][first], trial["journal"][second]
+    one["posted_at"], other["posted_at"] = other["posted_at"], one["posted_at"]
+    swapped = {one["id"]: other["id"], other["id"]: one["id"]}
+    trial["notices"] = [_followed(notice, swapped) for notice in trial["notices"]]
+    assert _masked_digest(trial, case, _ORDINAL_VIEW) != _masked_digest(golden, case, _ORDINAL_VIEW)
 
 
 def _changed_elsewhere(trial: dict[str, Any], change: str, index: int, ids: list[str]) -> None:

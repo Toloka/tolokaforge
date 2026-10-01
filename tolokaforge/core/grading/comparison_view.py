@@ -32,7 +32,10 @@ pre-hash steps and the versioning policy of the record. The semantics:
     the int it equals. The re-keying is bijective or raises: a key two records
     share, a key a kept record already holds, a rank tie and a reference that
     already holds a new key are refused. A reference to no re-keyed record stays
-    as it is.
+    as it is. A re-keyed id is a function of its record's content, not a
+    generated value, so it must reach the hash: the unstable filter and the
+    clock mask after the view must not drop the fields the record lists in
+    ``rekeyed_fields``, even when ``unstable_fields`` names them.
 
 A path (``path``, ``unless_referenced_by.field``) is field names joined by ``.``.
 A list met on the way is walked item by item, a missing or null field ends the
@@ -95,6 +98,7 @@ __all__ = [
     "ComparisonViewResult",
     "ComparisonViewRule",
     "ComparisonViewRuleConfig",
+    "RekeyedField",
     "RuleApplication",
     "RuleOutcome",
     "apply_comparison_view",
@@ -448,12 +452,34 @@ class RuleApplication(BaseModel):
     references_rewritten: int = Field(default=0, ge=0)
 
 
+class RekeyedField(BaseModel):
+    """An id field ``normalize_ids`` re-keyed: its values are now a function of content.
+
+    A masked id is unstable because it is generated; a re-keyed one is not, so it
+    must reach the hash. The masks applied after the view (the unstable filter and
+    the clock mask) must not drop it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    table: str
+    field: str
+
+    @property
+    def dotted(self) -> str:
+        """The ``table.field`` form ``unstable_fields`` names it in."""
+        return f"{self.table}.{self.field}"
+
+
 class ComparisonViewRecord(BaseModel):
     """Which transform produced a view, recorded with the grade it is compared for.
 
     ``version`` is the block's schema version, ``function_version`` the engine's
     :data:`COMPARISON_VIEW_FUNCTION_VERSION`, and ``config_sha256`` the digest of
     what the rules do (:meth:`ComparisonViewConfig.config_sha256`).
+    ``rekeyed_fields`` are the id fields ``normalize_ids`` re-keyed; they follow
+    from the declaration and ``id_fields``, not from which records were in scope,
+    so both sides of a comparison name the same ones.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -462,14 +488,17 @@ class ComparisonViewRecord(BaseModel):
     function_version: int
     config_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     applied: tuple[RuleApplication, ...]
+    rekeyed_fields: tuple[RekeyedField, ...] = ()
 
 
 @dataclass(frozen=True)
 class RuleOutcome:
-    """What a rule returns: the state after it, and what it did to each table."""
+    """What a rule returns: the state after it, what it did to each table, and the
+    id fields it re-keyed."""
 
     state: dict[str, Any]
     applied: tuple[RuleApplication, ...]
+    rekeyed: tuple[RekeyedField, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -478,6 +507,11 @@ class ComparisonViewResult:
 
     state: dict[str, list[dict[str, Any]]]
     record: ComparisonViewRecord
+
+    @property
+    def rekeyed_fields(self) -> tuple[RekeyedField, ...]:
+        """The id fields the masks after the view must not drop (see :class:`RekeyedField`)."""
+        return self.record.rekeyed_fields
 
 
 # ---------------------------------------------------------------------------
@@ -640,9 +674,10 @@ class NormalizeIds:
         _refuse_id_in_the_key(config, id_field)
         _refuse_own_id_references(config.table, config.references, id_field, option="references")
         kept_ids = _ids_that_keep_their_key(config, initial, id_field)
+        rekeyed_fields = (RekeyedField(table=config.table, field=id_field),)
         if config.table not in state:
             application = RuleApplication(kind=self.NAME, table=config.table)
-            return RuleOutcome(state=state, applied=(application,))
+            return RuleOutcome(state=state, applied=(application,), rekeyed=rekeyed_fields)
         rows = _records(state[config.table], f"{_NORMALIZE}: table {config.table!r}")
         new_keys = _new_keys(config, rows, id_field, kept_ids)
         rekeyed = [_rekeyed(row, id_field, new_keys) for row in rows]
@@ -655,7 +690,7 @@ class NormalizeIds:
             ids_rewritten=sum(new is not old for new, old in zip(rekeyed, rows)),
             references_rewritten=references_rewritten,
         )
-        return RuleOutcome(state=next_state, applied=(application,))
+        return RuleOutcome(state=next_state, applied=(application,), rekeyed=rekeyed_fields)
 
 
 def _registry() -> ModuleType:
@@ -1384,6 +1419,7 @@ def apply_comparison_view(
     initial_copy = None if initial is None else copy.deepcopy(dict(initial))
     id_fields_copy = MappingProxyType(copy.deepcopy(dict(id_fields)))
     applied: list[RuleApplication] = []
+    rekeyed: list[RekeyedField] = []
     for config in view.rules:
         rule = resolve_comparison_view_rule(config.kind)
         outcome = rule().apply(
@@ -1391,10 +1427,12 @@ def apply_comparison_view(
         )
         working = _checked_outcome(rule, outcome).state
         applied.extend(outcome.applied)
+        rekeyed.extend(outcome.rekeyed)
     record = ComparisonViewRecord(
         version=view.version,
         function_version=COMPARISON_VIEW_FUNCTION_VERSION,
         config_sha256=view.config_sha256(),
         applied=tuple(applied),
+        rekeyed_fields=tuple(rekeyed),
     )
     return ComparisonViewResult(state=working, record=record)

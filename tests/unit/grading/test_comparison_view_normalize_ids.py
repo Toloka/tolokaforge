@@ -18,9 +18,12 @@ from tolokaforge.core.grading.comparison_view import (
     ComparisonViewConfig,
     ComparisonViewError,
     ComparisonViewResult,
+    RekeyedField,
     RuleApplication,
     apply_comparison_view,
 )
+from tolokaforge.core.grading.state_checks import state_digest
+from tolokaforge.core.hash import compute_stable_hash, filter_unstable_fields
 
 pytestmark = pytest.mark.unit
 
@@ -179,6 +182,70 @@ def test_a_second_application_changes_nothing() -> None:
     assert twice.state == once.state
     assert twice.record.applied[0].ids_rewritten == 0
     assert twice.record.applied[0].references_rewritten == 0
+
+
+# ---------------------------------------------------------------------------
+# A re-keyed id reaches the hash
+# ---------------------------------------------------------------------------
+
+_HOLDS_VIEW = {
+    "kind": "normalize_ids",
+    "table": "holds",
+    "rank_by": ["created_at"],
+    "references": [{"table": "disputes", "field": "hold_id"}],
+}
+_GOLDEN_HOLDS = {
+    "holds": [
+        {"id": "H1", "card": "A", "created_at": "10:00:01"},
+        {"id": "H2", "card": "B", "created_at": "10:00:02"},
+    ],
+    "disputes": [{"id": "D1", "hold_id": "H1"}],
+}
+#: The dispute names the hold of card B, which ranks first because it was created first.
+_TRIAL_HOLDS = {
+    "holds": [
+        {"id": "H7", "card": "A", "created_at": "10:05:09"},
+        {"id": "H6", "card": "B", "created_at": "10:05:08"},
+    ],
+    "disputes": [{"id": "D1", "hold_id": "H6"}],
+}
+
+
+def test_a_re_keyed_id_reaches_the_digest_even_when_unstable_fields_names_it() -> None:
+    initial = {"holds": [], "disputes": []}
+    golden = _apply(_GOLDEN_HOLDS, _HOLDS_VIEW, initial=initial)
+    trial = _apply(_TRIAL_HOLDS, _HOLDS_VIEW, initial=initial)
+    assert (
+        golden.rekeyed_fields == trial.rekeyed_fields == (RekeyedField(table="holds", field="id"),)
+    )
+    unstable = ["holds.id", "holds.created_at"]
+    after_the_view = [
+        name for name in unstable if name not in {f.dotted for f in golden.rekeyed_fields}
+    ]
+    assert after_the_view == ["holds.created_at"]
+    assert compute_stable_hash(filter_unstable_fields(golden.state, after_the_view)) != (
+        compute_stable_hash(filter_unstable_fields(trial.state, after_the_view))
+    )
+    assert state_digest(golden.state, unstable_fields=after_the_view) != state_digest(
+        trial.state, unstable_fields=after_the_view
+    )
+    # Why the masks must not drop it: with the id masked the wrong dispute passes.
+    assert state_digest(golden.state, unstable_fields=unstable) == state_digest(
+        trial.state, unstable_fields=unstable
+    )
+
+
+def test_the_re_keyed_fields_follow_the_declaration_not_the_records_in_scope() -> None:
+    absent = _apply({"notices": []}, _normalize(), id_fields={"journal": "entry_ref"})
+    assert absent.rekeyed_fields == (RekeyedField(table="journal", field="entry_ref"),)
+    nothing_new = _apply(
+        {"journal": [_entry("J0")]}, _normalize(), initial={"journal": [_entry("J0")]}
+    )
+    assert nothing_new.rekeyed_fields == (RekeyedField(table="journal", field="id"),)
+    exclude_only = _apply(
+        {"journal": []}, {"kind": "exclude_tables", "tables": ["journal"], "reason": "r"}
+    )
+    assert exclude_only.rekeyed_fields == ()
 
 
 # ---------------------------------------------------------------------------
