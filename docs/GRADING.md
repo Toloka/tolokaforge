@@ -1371,6 +1371,15 @@ state_checks:
 | `exclude_tables` | Drops the named tables whole, key included. Every table a rule names must be seeded, so a table the agent's tools create (a log of its lookups) is seeded empty to be named; the drop then takes the rows the trial wrote and the key itself, so a trial that wrote the table and a golden whose replay never touched it compare alike. Refused for a table another rule names. |
 | `normalize_ids` | Re-keys the records of `table` in `scope` (`new_records`: ids the initial state's table lacks; `all`) to `<table>:<canonical JSON of the key fields>` — or of the `ordinal_by` group plus `#<n>`, ranked by `rank_by` — and rewrites every exact reference to them in `references` (a top-level field or a dotted path). The re-keying is bijective or raises `ComparisonViewCollision`: two records under one id, two records sharing a key, a key a kept record holds, a rank tie, a reference that already holds a new key. A reference to no re-keyed record stays as it is. |
 
+**Registered rules.** `kind` resolves through the `tolokaforge.comparison_view_rules`
+entry-point group, where the three kinds above register like any rule a distribution
+ships; an unknown kind is refused at load, naming the registered ones. A registered rule
+decides which states hash equal, so installing one is a grading decision:
+[GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-plug-in-groups)
+states the rule contract and what the engine holds a rule to. On the runner a rule from
+another distribution grades where that distribution is installed in the runner image;
+an image without it refuses the trial at `RegisterTrial`.
+
 **The order.** Both substrates put both sides through five steps:
 
 ```
@@ -1387,7 +1396,8 @@ both substrates call; steps 4–5 are each substrate's own, so the two digests k
 different algebras while the states they hash are the same. Step 2 resolves each
 `unstable_fields` table name the way the db-service does (exact, singular / plural,
 suffix — `tolokaforge.core.hash.resolve_unstable_table_name`; the db-service image ships
-without `tolokaforge.core` and runs a vendored copy a parity test holds to it), against
+without `tolokaforge.core` and runs vendored copies of it and of `compute_stable_hash`,
+which parity tests hold to the shared functions), against
 the tables of both full states before the view drops any, and leaves in every id field the view
 re-keyed: once re-keyed, an id is a function of its record's content, and dropping it
 as `unstable(auto_id)` would let a reference to the wrong record pass.
@@ -1396,8 +1406,8 @@ as `unstable(auto_id)` would let a reference to the wrong record pass.
   both sides over `DBServiceClient.get_state` — the trial's before the reset, the
   golden's after the replay — restores the trial's database, and only then runs the
   five steps on the client. A view that cannot be computed therefore never leaves the
-  golden state in the trial's database. A pack without a view keeps the server-side
-  `get_stable_hash` / `get_stable_state` path unchanged.
+  golden state in the trial's database. A pack without a view takes the server-side
+  `get_stable_hash` / `get_stable_state` path.
 - **Core.** `StateChecker.check_hash` and `check_hash_against_golden_replay` run the
   same composition with an initial state of their own: the golden replay mutates the
   initial state it loads, so the view reads a separate load taken before the replay.
