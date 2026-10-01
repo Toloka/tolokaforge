@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeUsage
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.models.trajectory import Message, MessageRole
 from tolokaforge.runner.models import Criterion, Rubric
 
@@ -138,6 +139,7 @@ class AutoAnchoredRubricJudgeKind:
         disable_knowledge_search: bool,
         custom_system_prompt: str | None,
         include_agent_system_prompt: bool,
+        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -163,6 +165,7 @@ class AutoAnchoredRubricJudgeKind:
                 disable_knowledge_search=disable_knowledge_search,
                 custom_system_prompt=custom_system_prompt,
                 include_agent_system_prompt=include_agent_system_prompt,
+                judge_snippet_chars=judge_snippet_chars,
                 logger=logger,
                 warmup_usage=JudgeUsage(),
                 anchor_map={},
@@ -192,6 +195,7 @@ class AutoAnchoredRubricJudgeKind:
             disable_knowledge_search=disable_knowledge_search,
             custom_system_prompt=custom_system_prompt,
             include_agent_system_prompt=include_agent_system_prompt,
+            judge_snippet_chars=judge_snippet_chars,
             logger=logger,
             warmup_usage=warmup_usage,
             anchor_map=anchor_map,
@@ -401,6 +405,7 @@ def _dispatch_wrapped(
     disable_knowledge_search: bool,
     custom_system_prompt: str | None,
     include_agent_system_prompt: bool,
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
     logger: StructuredLogger,
     warmup_usage: JudgeUsage,
     anchor_map: _AnchorMap,
@@ -426,6 +431,7 @@ def _dispatch_wrapped(
         disable_knowledge_search=disable_knowledge_search,
         custom_system_prompt=custom_system_prompt,
         include_agent_system_prompt=include_agent_system_prompt,
+        judge_snippet_chars=judge_snippet_chars,
         kind_config=None,
         logger=logger,
     )

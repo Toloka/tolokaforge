@@ -156,6 +156,7 @@ from tolokaforge.runner.models import (
     TraceChecksResult,
     TranscriptEvaluationResult,
     TranscriptRulesConfig,
+    judge_snippet_chars_of,
     provisions_database,
 )
 from tolokaforge.runner.protocol import (
@@ -2504,6 +2505,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if customization and customization.include_agent_system_prompt is not None
             else True
         )
+        judge_snippet_chars = judge_snippet_chars_of(customization)
         judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
         from tolokaforge.core import logging as _tolokaforge_logging
 
@@ -2527,6 +2529,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 disable_knowledge_search=disable_knowledge_search,
                 custom_system_prompt=custom_system_prompt,
                 include_agent_system_prompt=include_agent_system_prompt,
+                judge_snippet_chars=judge_snippet_chars,
                 kind_config=llm_judge_config.kind_config,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,

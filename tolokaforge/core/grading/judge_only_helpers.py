@@ -106,6 +106,7 @@ def run_judge_only_for_trajectory(
     :func:`build_replay_grade` into a persistable :class:`Grade`.
     """
     from tolokaforge.core.trial_grader import GradingFailedError
+    from tolokaforge.runner.models import judge_snippet_chars_of
 
     wire = encode_transcript_wire(trajectory, agent_system_prompt)
     if wire is None:
@@ -155,6 +156,7 @@ def run_judge_only_for_trajectory(
         include_agent_system_prompt=(
             include_agent_resolved if include_agent_resolved is not None else True
         ),
+        judge_snippet_chars=judge_snippet_chars_of(customization),
         kind_config=llm_judge_config.kind_config,
         logger=logger,
     )

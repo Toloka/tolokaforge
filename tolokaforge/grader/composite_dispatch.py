@@ -86,6 +86,7 @@ from tolokaforge.runner.grading_ledger import (
 from tolokaforge.runner.models import (
     RunnerGradingConfig,
     TaskDescription,
+    judge_snippet_chars_of,
 )
 from tolokaforge.runner.protocol import parse_termination_reason
 
@@ -515,6 +516,7 @@ class GraderCompositeDispatch:
             if customization and customization.include_agent_system_prompt is not None
             else True
         )
+        judge_snippet_chars = judge_snippet_chars_of(customization)
         state_diff_text = composite.build_judge_state_diff(
             trial_id=trial_id,
             substrate=substrate,
@@ -532,6 +534,7 @@ class GraderCompositeDispatch:
             disable_knowledge_search=disable_knowledge_search,
             custom_system_prompt=custom_system_prompt,
             include_agent_system_prompt=include_agent_system_prompt,
+            judge_snippet_chars=judge_snippet_chars,
             kind_config=llm_judge_config.kind_config,
             llm_messages=llm_messages,
             judge_model_config=judge_model_config,
