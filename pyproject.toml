@@ -393,6 +393,7 @@ contains_binding = "tolokaforge.core.grading.trace_check_operator:contains_bindi
 [project.entry-points."tolokaforge.comparison_view_rules"]
 exclude_records = "tolokaforge.core.grading.comparison_view:ExcludeRecords"
 exclude_tables = "tolokaforge.core.grading.comparison_view:ExcludeTables"
+normalize_ids = "tolokaforge.core.grading.comparison_view:NormalizeIds"
 
 # Bundle-store Protocol (``tolokaforge/core/grading/bundle_store.py``). Two
 # built-ins ship: ``local_disk`` writes the bundle directory under
