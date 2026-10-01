@@ -316,10 +316,13 @@ class ComparisonViewRuleConfig(BaseModel):
     ``extra="forbid"``, so an entry key the rule does not declare is refused.
     ``kind`` is the name the rule is registered under; everything else belongs to
     the rule. A field named ``reason`` is prose: :meth:`ComparisonViewConfig.config_sha256`
-    leaves it out.
+    leaves it out. ``order_free_fields`` are the list fields whose order has no
+    effect on what the rule does; the config sha sorts them.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    order_free_fields: ClassVar[frozenset[str]] = frozenset()
 
     kind: str
 
@@ -404,6 +407,8 @@ class NormalizeIdsConfig(ComparisonViewRuleConfig):
     (its ordinal within its ``ordinal_by`` group, ranked by those fields), never
     both.
     """
+
+    order_free_fields: ClassVar[frozenset[str]] = frozenset({"key", "ordinal_by", "references"})
 
     kind: Literal["normalize_ids"] = "normalize_ids"
     table: NonBlankStr
@@ -1390,21 +1395,27 @@ class ComparisonViewConfig(BaseModel):
         so a new optional field whose default keeps a rule's behaviour keeps every
         existing sha; a change to what a rule computes bumps the rule's ``VERSION``,
         which changes the sha of every view naming it; ``reason`` is prose, not
-        behaviour, and is not hashed. The JSON is canonical as ``ModelsFingerprint``
-        hashes model data (sorted keys, ASCII, no whitespace), so the key order of
-        the declaration does not change it either.
+        behaviour, and is not hashed; a list whose order has no effect
+        (``order_free_fields``) is hashed sorted. The JSON is canonical as
+        ``ModelsFingerprint`` hashes model data (sorted keys, ASCII, no whitespace),
+        so the key order of the declaration does not change it either.
         """
         payload = [_hashed_rule(rule) for rule in self.rules]
-        canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _hashed_rule(rule: ComparisonViewRuleConfig) -> dict[str, Any]:
     settings = rule.model_dump(
         mode="json", by_alias=True, exclude_defaults=True, exclude={"kind", "reason"}
     )
+    for name in rule.order_free_fields & settings.keys():
+        settings[name] = sorted(settings[name], key=_canonical_json)
     version = resolve_comparison_view_rule(rule.kind).VERSION
     return {"kind": rule.kind, "version": version, "settings": settings}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
 
 def _resolve_entry(index: int, entry: Any) -> ComparisonViewRuleConfig:
