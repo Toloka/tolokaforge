@@ -69,6 +69,7 @@ from tolokaforge.core.grading.combine_method import CombineMethod, validate_comb
 from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -574,6 +575,7 @@ class RunnerStateChecksConfig(BaseModel):
     db_probes: list[DbProbe] = Field(default_factory=list)
 
     @model_serializer(mode="wrap")
+    @schema_from_the_fields
     def _omit_an_absent_comparison_view(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, Any]:
@@ -583,11 +585,7 @@ class RunnerStateChecksConfig(BaseModel):
         ``extra="forbid"``; leaving it out keeps every spec without a view
         byte-identical to the one an older engine emitted.
         """
-        dumped: dict[str, Any] = handler(self)
-        for name in self.omitted_when_absent:
-            if getattr(self, name) is None:
-                dumped.pop(name, None)
-        return dumped
+        return leave_out_absent_fields(self, handler)
 
     @model_validator(mode="before")
     @classmethod
