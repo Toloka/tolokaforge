@@ -35,6 +35,7 @@ from tolokaforge.core.search.bm25 import (
     Bm25SearchBackend,
     Bm25SearchIndex,
     Bm25TextRender,
+    OkapiBm25,
     clear_index_cache,
     load_bm25_corpus,
 )
@@ -300,6 +301,60 @@ class TestCorpusLoading:
             _index(_backend(), directory)
         assert str(excinfo.value).startswith(f"Trial {TRIAL_ID}: search backend 'bm25'")
         assert "blank.md" in str(excinfo.value)
+
+
+class TestAnUnscorableCorpus:
+    """A corpus BM25 cannot score is refused through ``build_index``, never a crash."""
+
+    def test_a_blank_indexed_field_refuses_the_trial_naming_the_file(self, tmp_path: Path) -> None:
+        directory = _write(
+            tmp_path / "kb",
+            {"a.json": _json_doc("a", "Alpha", "first"), "b.json": _json_doc("b", "  ", "second")},
+        )
+        with pytest.raises(SearchIndexBuildError) as excinfo:
+            _index(_backend({"documents": {"fields": ["title"]}}), directory)
+
+        message = str(excinfo.value)
+        assert message.startswith(f"Trial {TRIAL_ID}: search backend 'bm25' cannot index ")
+        assert message.endswith("b.json: document 'b' has no text in its indexed fields ['title']")
+
+    def test_a_corpus_whose_titles_are_all_blank_is_refused_under_fields_title(
+        self, tmp_path: Path
+    ) -> None:
+        """The case that divided by zero: content validates, the indexed titles are empty."""
+        directory = _write(
+            tmp_path / "kb",
+            {"a.json": _json_doc("a", "", "first"), "b.json": _json_doc("b", " ", "second")},
+        )
+        with pytest.raises(SearchIndexBuildError, match="a.json: document 'a' has no text"):
+            _index(_backend({"documents": {"fields": ["title"]}}), directory)
+
+    def test_the_title_field_indexes_when_every_title_is_present(self, corpus: Path) -> None:
+        outcome = _search(_index(_backend({"documents": {"fields": ["title"]}}), corpus), "returns")
+        assert outcome.hits[0].doc_id == "ret-1"
+        assert outcome.hits[0].score > 0
+
+    def test_a_corpus_that_tokenizes_to_no_term_is_refused(
+        self, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-blank text a tokenizer drops entirely leaves BM25 nothing to average."""
+        monkeypatch.setitem(TOKENIZERS, "no_terms", lambda text: [])
+        with pytest.raises(SearchIndexBuildError) as excinfo:
+            _index(_backend({"tokenizer": "no_terms"}), corpus)
+
+        message = str(excinfo.value)
+        assert message.startswith(f"Trial {TRIAL_ID}: search backend 'bm25' cannot index ")
+        assert "none of the 4 documents' indexed text tokenizes to a term" in message
+
+    def test_the_scorer_refuses_an_empty_vocabulary_and_scores_a_partly_empty_corpus(
+        self,
+    ) -> None:
+        with pytest.raises(Bm25CorpusError, match="tokenizes to a term"):
+            OkapiBm25([[], []])
+        with pytest.raises(Bm25CorpusError, match="at least one document"):
+            OkapiBm25([])
+        scores = OkapiBm25([[], ["halden", "code"], ["other"]]).get_scores(["halden"])
+        assert scores[1] > 0 and scores[0] == 0.0
 
 
 # =============================================================================
