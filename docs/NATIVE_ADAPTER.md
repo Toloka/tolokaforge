@@ -232,7 +232,9 @@ never resolved.
 The task's search tool (`initial_state.rag.tool.name`, default `search_kb`) is
 resolved from its declaration in both modes: the declared name and description
 over the declared backend's `tool_parameters()` (`rag_service`: `query`, `top_k`,
-`alpha`). The runner binds that source-less schema to the trial's search index by
+`alpha`; `bm25`: `query`, plus `top_k` when its `agent_parameters` exposes it). The
+corpus's `.md` / `.txt` / `.json` files travel in `tool_artifacts` under the declared
+`corpus_dir`. The runner binds that source-less schema to the trial's search index by
 name, so the backend's schema — not a fixture entry or a registry lookup — is
 what the agent is handed. The same declaration sets the task's `search` block:
 `plane` is `rag.backend`, `enabled` is whether that backend needs rag-service, and

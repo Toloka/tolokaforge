@@ -386,6 +386,32 @@ model:
 | `render` | `{kind: json}` | or `{kind: text, template: ..., score_format: ".4f", timing_suffix: off}` |
 | `agent_parameters` | `[query]` | which of `query`, `top_k` the schema exposes |
 
+#### As built (change 2a)
+
+The backend landed as the table says, with these refinements, documented in
+[CONFIG.md § `backend: bm25`](../CONFIG.md#backend-bm25--backend_config):
+
+- **`render: {kind: text}`** has `item_template` (one hit over `{index}`, `{id}`,
+  `{title}`, `{score}`, `{content}`, `{source}`), `separator`, `score_format`,
+  `timing_suffix: off | measured` and `timing_template` (over `{retrieval_ms}`,
+  `{reranking_ms}` — always `0`, there is no reranking stage — and `{total_ms}`),
+  rather than one `template`; both renderers carry `empty_text` and `error_text`,
+  the texts `empty_query` chooses between. Templates are validated at load:
+  an unknown field is a refusal.
+- **`documents.fields`** takes `title` and `content` only, and `documents.order`
+  only `filename`: the one order the corpus has.
+- **`ranking.min_score`** is inclusive (`score >= min_score`), as Elasticsearch
+  reads it; `0.0` keeps zero scores.
+- **`SearchHit.source`** is the document's file name; the title has no field on
+  `SearchHit` until change 2b adds it, and is read from the rendering.
+- **The cache** is in the runner process, keyed by a digest of the corpus files'
+  names and bytes and a digest of the config, sixteen most recently used.
+- **`budget_s`** bounds nothing: the search is in process.
+- **The judge** gets whole documents as `SearchHit.text`; the 200-character cut in
+  `SearchKbTool` (`judge_snippet_chars`) is change 2b.
+- `_bundle_corpus_artifacts` accepts `.json` next to `.md` / `.txt`. No shipped pack
+  had a `.json` file under its corpus directory, so no `tool_artifacts` moved.
+
 ### Snapshots
 
 We checked the claim that the default does not move with a prototype on
