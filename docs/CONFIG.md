@@ -686,7 +686,7 @@ the task.
 | `documents.format` | `auto` | `json`: each `.json` file is one `{id, title, content}` document (strings; `id` and `content` non-empty; other keys ignored). `text`: each `.md` / `.txt` file is one document, `id` and `title` its file stem. `auto`: both, by extension. Files of other extensions are skipped. |
 | `documents.order` | `filename` | Documents load in sorted file-name order — the corpus order ties are broken by. |
 | `documents.skip_prefix` | `"_"` | Files whose name starts with it are not documents (a `_README.md` beside the corpus). `""` skips nothing. |
-| `documents.fields` | `[content]` | Which fields are indexed, joined by a space: `[content]` or `[title, content]`. The agent and the judge always read the whole `content`. |
+| `documents.fields` | `[content]` | Which fields are indexed, joined by a space: `[content]`, `[title]` or `[title, content]`. A document whose indexed fields are blank (a blank `title` under `[title]`) refuses the trial, naming the file. The agent and the judge always read the whole `content`. |
 | `tokenizer` | `whitespace_lower` | `text.lower().split()`, applied to documents and queries. The only registered tokenizer. |
 | `bm25` | `{k1: 1.5, b: 0.75, epsilon: 0.25}` | `rank_bm25`'s constants: saturation, length normalisation (`0..1`), and the floor for a negative IDF as a fraction of the average IDF. |
 | `ranking.top_k` | `5` | Hits per search, `min(top_k, N)`. A zero score is a hit: a query touching nothing returns the first `top_k` documents in corpus order. |
@@ -701,6 +701,11 @@ the task.
 | `render.timing_suffix` (text) | `off` | `measured` appends `timing_template` after the hits (or the no-hits text; never the error text). |
 | `render.timing_template` (text) | `"\n\n[Timing: retrieval={retrieval_ms}ms, total={total_ms}ms]"` | Formatted with measured integer milliseconds: `{retrieval_ms}` (scoring and ranking), `{total_ms}` (the whole call), and `{reranking_ms}`, always `0` — this backend reranks nothing; the field lets a template carry that segment. |
 | `agent_parameters` | `[query]` | Which of `query` and `top_k` the agent's tool schema exposes; `query` is mandatory. An exposed `top_k` overrides `ranking.top_k` per call; an argument the schema does not expose is ignored. |
+
+A corpus that cannot be loaded or scored refuses the trial at `RegisterTrial`,
+naming the trial and, where one file is at fault, the file: a duplicate `id`, a
+blank document or blank indexed fields, a malformed JSON document, an empty corpus,
+or indexed text that tokenizes to no term at all.
 
 The judge's `search_kb` reads the same index with the same ranking and gets whole
 documents as `SearchHit.text`. A built corpus is cached in the runner process by the

@@ -82,6 +82,10 @@ __all__ = [
 # =============================================================================
 
 
+class Bm25CorpusError(ValueError):
+    """The corpus directory does not hold a loadable, scorable corpus; the trial is refused."""
+
+
 class OkapiBm25:
     """Okapi BM25 with ``rank_bm25`` 0.2.2's ``BM25Okapi`` arithmetic, bit for bit.
 
@@ -99,6 +103,11 @@ class OkapiBm25:
       ``idf * (tf * (k1 + 1) / (tf + k1 * (1 - b + b * doc_len / avgdl)))``,
       accumulated term by term. Reordering it changes the last bits and can
       reorder ties.
+
+    A corpus with no document, or whose documents tokenize to no term at all, is
+    refused with :class:`Bm25CorpusError`: it has no vocabulary to average an IDF
+    over and an average document length of zero, on which ``rank_bm25`` divides by
+    zero. A corpus where only some documents are empty is scored as upstream does.
     """
 
     def __init__(
@@ -110,7 +119,7 @@ class OkapiBm25:
         epsilon: float = 0.25,
     ) -> None:
         if len(corpus) == 0:
-            raise ValueError("OkapiBm25 needs at least one document")
+            raise Bm25CorpusError("OkapiBm25 needs at least one document")
         self.k1 = k1
         self.b = b
         self.epsilon = epsilon
@@ -120,7 +129,13 @@ class OkapiBm25:
         self.idf: dict[str, float] = {}
         self.doc_len: list[int] = []
         self.average_idf = 0.0
-        self._calc_idf(self._initialize(corpus))
+        nd = self._initialize(corpus)
+        if not nd:
+            raise Bm25CorpusError(
+                f"none of the {self.corpus_size} documents' indexed text tokenizes to a term, "
+                "so BM25 has no vocabulary to score and an average document length of 0"
+            )
+        self._calc_idf(nd)
 
     def _initialize(self, corpus: Sequence[Sequence[str]]) -> dict[str, int]:
         nd: dict[str, int] = {}  # term -> number of documents holding it
@@ -245,12 +260,14 @@ class Bm25DocumentsConfig(BaseModel):
       default, so ``_README.md`` beside the documents is not indexed); the empty
       string skips nothing.
     * ``fields`` — which document fields are indexed, joined by a space in this
-      order before tokenizing: ``[content]`` (the default) or ``[title, content]``.
+      order before tokenizing: ``[content]`` (the default), ``[title]`` or
+      ``[title, content]``.
       The agent and the judge always read the whole ``content``.
 
-    A duplicate ``id``, a document whose ``content`` is blank, a JSON document
-    missing a key or holding a non-string, and a corpus loading no document each
-    refuse the trial.
+    A duplicate ``id``, a document whose ``content`` is blank, a document whose
+    indexed ``fields`` are blank (a blank ``title`` under ``fields: [title]``), a
+    JSON document missing a key or holding a non-string, and a corpus loading no
+    document each refuse the trial, naming the file.
     """
 
     model_config = {"extra": "forbid"}
@@ -442,10 +459,6 @@ class Bm25BackendConfig(BaseModel):
 # =============================================================================
 
 
-class Bm25CorpusError(ValueError):
-    """The corpus directory does not hold a loadable corpus; the trial is refused."""
-
-
 @dataclass(frozen=True)
 class Bm25Document:
     """One document: its id and title, the whole text, and the file it came from."""
@@ -551,8 +564,9 @@ def documents_from_files(
     """The documents among ``files`` in corpus order, per :class:`Bm25DocumentsConfig`.
 
     Raises:
-        Bm25CorpusError: a document is malformed or blank, two documents share an
-            id, or nothing loads. ``corpus_dir`` names the directory in the refusal.
+        Bm25CorpusError: a document is malformed, blank or blank in its indexed
+            fields, two documents share an id, or nothing loads. ``corpus_dir`` names
+            the directory in the refusal.
     """
     documents: list[Bm25Document] = []
     seen: dict[str, str] = {}
@@ -565,6 +579,11 @@ def documents_from_files(
         document = reader(file)
         if not document.content.strip():
             raise Bm25CorpusError(f"{file.name}: document {document.id!r} has no content")
+        if not document.indexed_text(config.fields).strip():
+            raise Bm25CorpusError(
+                f"{file.name}: document {document.id!r} has no text in its indexed fields "
+                f"{list(config.fields)}"
+            )
         if document.id in seen:
             raise Bm25CorpusError(
                 f"{file.name}: document id {document.id!r} is already used by {seen[document.id]}"
@@ -887,8 +906,8 @@ class Bm25SearchBackend:
 
         Raises:
             RuntimeError: the context is trial-less; only the runner builds an index.
-            SearchIndexBuildError: no corpus is declared, or it does not load — the
-                refusal ``RegisterTrial`` returns.
+            SearchIndexBuildError: no corpus is declared, or it does not load or
+                cannot be scored — the refusal ``RegisterTrial`` returns.
         """
         trial_id = self._context.trial_id
         if trial_id is None:
