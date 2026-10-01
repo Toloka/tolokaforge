@@ -197,6 +197,15 @@ def test_bm25_serves_the_agent_and_the_judge_from_one_in_process_index(tmp_path:
         judged = SearchKbTool(judge_search).execute(query=query)
         assert judged.success is True
         assert "failover-halden" in judged.output
+        assert "    Title: Halden substation emergency failover\n" in judged.output
+
+        # customization.judge_snippet_chars: a figure cuts each hit there, null shows
+        # whole documents, so the code at the document's end is visible only then.
+        cut = SearchKbTool(judge_search, snippet_chars=40).execute(query=query).output
+        assert _PLANTED_CODE not in cut
+        assert "..." in cut
+        whole = SearchKbTool(judge_search, snippet_chars=None).execute(query=query).output
+        assert f"{_PLANTED_CODE} entered at the control console." in whole
         top, *_rest = judge_search.search(query, top_k=1)
         assert top.doc_id == "failover-halden"
         assert top.text == _DOCUMENTS["002_failover.json"]["content"], "whole documents"

@@ -16,8 +16,10 @@ per-trial evidence surface (``rubric`` + ``agent_system_prompt`` +
 must have to build its own judge instance
 (``judge_model_config`` + ``judge_model_provider``), plus per-trial
 customization (``disable_knowledge_search`` + ``custom_system_prompt`` +
-``include_agent_system_prompt``) and a ``kind_config`` handle downstream
-kinds read from.
+``include_agent_system_prompt`` + ``judge_snippet_chars``) and a ``kind_config``
+handle downstream kinds read from. The engine passes every one of these by
+keyword, so a downstream kind's ``evaluate`` must accept each of them;
+``judge_snippet_chars`` (ADR-0052) is the one added since the Protocol shipped.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
@@ -73,6 +77,7 @@ class JudgeKind(Protocol):
         disable_knowledge_search: bool,
         custom_system_prompt: str | None,
         include_agent_system_prompt: bool,
+        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult: ...

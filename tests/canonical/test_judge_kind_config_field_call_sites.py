@@ -46,6 +46,7 @@ from tolokaforge.core.plugin_registry import JUDGE_KINDS_GROUP, _clear_discovery
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
 from tolokaforge.runner.models import (
     Criterion,
+    JudgeCustomization,
     LLMJudgeConfig,
     Rubric,
     RunnerGradingConfig,
@@ -134,11 +135,19 @@ def _rubric() -> Rubric:
 
 
 def _llm_judge_config(*, with_kind_config: bool) -> LLMJudgeConfig:
+    # ``judge_snippet_chars: null`` (whole documents) rather than the default 200, so
+    # a site that forgets to forward the customization shows up as 200 at the probe.
     return LLMJudgeConfig(
         rubric=_rubric(),
         judge_kind=_PROBE_NAME,
         kind_config=dict(_KIND_CONFIG_PAYLOAD) if with_kind_config else None,
+        customization=JudgeCustomization(judge_snippet_chars=None),
     )
+
+
+def _assert_snippet_length_forwarded() -> None:
+    """The site read ``customization.judge_snippet_chars`` and passed it on (ADR-0052)."""
+    assert _CallSiteProbeJudgeKind.calls[0]["judge_snippet_chars"] is None
 
 
 def _empty_substrate() -> InProcessGradingSubstrate:
@@ -208,6 +217,7 @@ def test_runner_side_composite_reads_judge_kind_and_forwards_kind_config_verbati
     # Pydantic coerces dict[str, Any] into a fresh dict on model construction,
     # so this is content-equality, not object-identity.
     assert passed_kind_config == _KIND_CONFIG_PAYLOAD
+    _assert_snippet_length_forwarded()
 
 
 def test_grader_service_composite_dispatch_reads_judge_kind(
@@ -246,6 +256,7 @@ def test_grader_service_composite_dispatch_reads_judge_kind(
 
     assert len(_CallSiteProbeJudgeKind.calls) == 1
     assert _CallSiteProbeJudgeKind.calls[0]["kind_config"] is None
+    _assert_snippet_length_forwarded()
 
 
 def test_offline_composite_grader_kind_reads_judge_kind(
@@ -334,6 +345,7 @@ def test_offline_composite_grader_kind_reads_judge_kind(
 
     assert len(_CallSiteProbeJudgeKind.calls) == 1
     assert _CallSiteProbeJudgeKind.calls[0]["kind_config"] is None
+    _assert_snippet_length_forwarded()
 
 
 def test_judge_only_helper_reads_judge_kind(probe_judge_kind_registered) -> None:
@@ -367,3 +379,4 @@ def test_judge_only_helper_reads_judge_kind(probe_judge_kind_registered) -> None
     assert grade is not None
     assert len(_CallSiteProbeJudgeKind.calls) == 1
     assert _CallSiteProbeJudgeKind.calls[0]["kind_config"] is None
+    _assert_snippet_length_forwarded()

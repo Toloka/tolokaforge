@@ -697,9 +697,15 @@ def _indexed_corpus(corpus_dir: Path, config: Bm25BackendConfig) -> tuple[Indexe
 
 
 def _hit(document: Bm25Document, score: float) -> SearchHit:
-    # ``source`` is the file name. SearchHit has no title field; the title is carried
-    # only in the rendering.
-    return SearchHit(doc_id=document.id, source=document.source, score=score, text=document.content)
+    # ``source`` is the file name and ``title`` the document's own: the judge's
+    # search_kb shows it, and the remote grader's KBSearch carries it.
+    return SearchHit(
+        doc_id=document.id,
+        source=document.source,
+        score=score,
+        text=document.content,
+        title=document.title,
+    )
 
 
 def _milliseconds(seconds: float) -> int:

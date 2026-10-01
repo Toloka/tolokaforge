@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading.judge_result import JudgeResult
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.transcript_wire import split_leading_system_message
@@ -38,6 +39,7 @@ def grade_llm_judge(
     include_agent_system_prompt: bool,
     kind_config: Mapping[str, Any] | None,
     llm_messages: list[dict[str, Any]],
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
     judge_model_config: ModelConfig,
     extra_read_tools: list[DelegatingReadTool],
     state_diff: str | None,
@@ -98,6 +100,7 @@ def grade_llm_judge(
         disable_knowledge_search=disable_knowledge_search,
         custom_system_prompt=custom_system_prompt,
         include_agent_system_prompt=include_agent_system_prompt,
+        judge_snippet_chars=judge_snippet_chars,
         kind_config=kind_config,
         logger=logger,
     )

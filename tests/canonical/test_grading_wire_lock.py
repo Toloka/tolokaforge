@@ -796,6 +796,17 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         wire_shape="bool | None",
     ),
     _WireKey(
+        path="grading.llm_judge.customization.judge_snippet_chars",
+        emitted_for="grading.llm_judge.customization.judge_snippet_chars",
+        wire_shape="int | None [ge=1, strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.judge_snippet_chars",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.judge_snippet_chars` other than 200",
+        ),
+    ),
+    _WireKey(
         path="grading.custom_checks",
         emitted_for="",
         wire_shape="dict[str, Any] | None",

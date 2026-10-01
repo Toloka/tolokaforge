@@ -69,6 +69,7 @@ from tolokaforge.core.grading.combine_method import CombineMethod, validate_comb
 from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
@@ -2132,13 +2133,39 @@ class JudgeCustomization(BaseModel):
     rubric grades without the agent's framing. Evidence gating, distinct from
     ``system_prompt`` (which is the judge's own wording). A task sets ``true`` or
     ``null`` to re-include over a project ``false``.
+
+    ``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:
+    the first that many characters (``200`` by default, the cut every judge read
+    before the field existed), or ``null`` for whole documents — what a ``bm25``
+    task whose rubric reads a document's exact wording needs. Not tri-state:
+    ``null`` is a value, so a task resets a project's figure by writing ``200``.
+    Left off the dump at its default (:attr:`OMITTED_AT_DEFAULT`), so a task that
+    declares nothing serialises as before and an older image still accepts it.
     """
+
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"judge_snippet_chars"})
+    """Fields the dump leaves out while they hold their default value."""
 
     disable_knowledge_search: bool | None = None
     system_prompt: str | None = None
     include_agent_system_prompt: bool | None = None
+    judge_snippet_chars: int | None = Field(default=DEFAULT_JUDGE_SNIPPET_CHARS, ge=1, strict=True)
 
     model_config = {"extra": "forbid"}
+
+    @model_serializer(mode="wrap")
+    def _omit_fields_at_their_default(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        if not isinstance(self, JudgeCustomization):
+            return handler(self)
+        data = handler(self)
+        for name in self.OMITTED_AT_DEFAULT:
+            if getattr(self, name) == type(self).model_fields[name].get_default(
+                call_default_factory=True
+            ):
+                data.pop(name, None)
+        return data
 
     @field_validator("system_prompt")
     @classmethod
@@ -2150,6 +2177,17 @@ class JudgeCustomization(BaseModel):
                 "judge prompt."
             )
         return value
+
+
+def judge_snippet_chars_of(customization: JudgeCustomization | None) -> int | None:
+    """The snippet length the judge's ``search_kb`` shows under this customization.
+
+    A task with no ``customization`` block reads the default, as does a block that
+    leaves the key unset; ``null`` means whole documents.
+    """
+    if customization is None:
+        return DEFAULT_JUDGE_SNIPPET_CHARS
+    return customization.judge_snippet_chars
 
 
 class LLMJudgeConfig(BaseModel):

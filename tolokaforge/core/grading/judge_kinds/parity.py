@@ -48,6 +48,7 @@ from tolokaforge.core.grading.agreement import (
     build_report,
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
@@ -152,6 +153,7 @@ class ParityCorpusEntry:
     custom_system_prompt: str | None
     include_agent_system_prompt: bool
     judge_scripts: Mapping[str, list[Any]]
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
 
 
 def measure_cross_kind_agreement(
@@ -469,6 +471,7 @@ def _evaluate_kwargs(
         "disable_knowledge_search": entry.disable_knowledge_search,
         "custom_system_prompt": entry.custom_system_prompt,
         "include_agent_system_prompt": entry.include_agent_system_prompt,
+        "judge_snippet_chars": entry.judge_snippet_chars,
         "kind_config": kind_config,
         "logger": logger,
     }

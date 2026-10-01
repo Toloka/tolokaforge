@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge import LLMJudge
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
@@ -57,6 +58,7 @@ class SingleShotRubricJudgeKind:
         disable_knowledge_search: bool,
         custom_system_prompt: str | None,
         include_agent_system_prompt: bool,
+        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -67,6 +69,7 @@ class SingleShotRubricJudgeKind:
             disable_knowledge_search=disable_knowledge_search,
             custom_system_prompt=custom_system_prompt,
             include_agent_system_prompt=include_agent_system_prompt,
+            judge_snippet_chars=judge_snippet_chars,
             llm_client=judge_model,
             logger=logger,
         ).run(

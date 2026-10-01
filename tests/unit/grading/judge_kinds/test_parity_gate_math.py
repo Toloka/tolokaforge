@@ -336,6 +336,7 @@ class _ScriptedFixtureKind:
         disable_knowledge_search: bool,  # noqa: ARG002
         custom_system_prompt: str | None,  # noqa: ARG002
         include_agent_system_prompt: bool,  # noqa: ARG002
+        judge_snippet_chars: int | None = 200,  # noqa: ARG002
         kind_config: Mapping[str, Any] | None,  # noqa: ARG002
         logger: StructuredLogger,  # noqa: ARG002
     ) -> JudgeResult:
