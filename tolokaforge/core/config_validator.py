@@ -15,7 +15,6 @@ Usage::
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -43,6 +42,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED
 from tolokaforge.core.plugin_registry import available_agent_loops, available_runtime_backends
+from tolokaforge.secrets import get_default as default_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +112,8 @@ _REASONING_SUPPORTED_PREFIXES: set[str] = {
     "moonshotai/kimi-k2",
 }
 
-# Provider keys expected in the environment per provider name.
-_PROVIDER_ENV_KEYS: dict[str, list[str]] = {
+# Credential names each provider resolves through the SecretManager.
+_PROVIDER_KEY_NAMES: dict[str, list[str]] = {
     "openrouter": ["OPENROUTER_API_KEY", "OPENROUTER_API_KEYS"],
     "openai": ["OPENAI_API_KEY"],
     "anthropic": ["ANTHROPIC_API_KEY"],
@@ -410,7 +410,8 @@ def _validate_model(
 
 
 def _validate_api_keys(raw: dict[str, Any]) -> list[ValidationIssue]:
-    """Check that expected API keys are present in the environment."""
+    """Check that each provider's API key resolves through the default SecretManager."""
+    secrets = default_secrets()
     issues: list[ValidationIssue] = []
     models = raw.get("models", {})
     seen_providers: set[str] = set()
@@ -419,17 +420,17 @@ def _validate_api_keys(raw: dict[str, Any]) -> list[ValidationIssue]:
         provider = (model_cfg.get("provider") or "").lower()
         if provider and provider not in seen_providers:
             seen_providers.add(provider)
-            env_keys = _PROVIDER_ENV_KEYS.get(provider, [])
-            if env_keys and not any(os.environ.get(k) for k in env_keys):
+            key_names = _PROVIDER_KEY_NAMES.get(provider, [])
+            if key_names and not any(secrets.get_secret(k) for k in key_names):
                 issues.append(
                     ValidationIssue(
                         severity=Severity.WARNING,
                         path=f"models.{role}.provider",
                         message=(
                             f"Provider {provider!r} expects API key in "
-                            f"{' or '.join(env_keys)}, but none is set"
+                            f"{' or '.join(key_names)}, but none is set"
                         ),
-                        hint="Set the required environment variable or use scripts/with_env.sh",
+                        hint="Set it in the environment or .env, or use scripts/with_env.sh",
                     )
                 )
 

@@ -6,7 +6,9 @@ import logging
 import pickle
 import uuid
 from pathlib import Path
+from typing import TypeVar
 
+import click
 import litellm
 import pytest
 import yaml
@@ -79,6 +81,35 @@ def _write_run_config(tmp_path: Path, raw: dict) -> Path:
     path = tmp_path / "run.yaml"
     path.write_text(yaml.safe_dump(raw))
     return path
+
+
+#: Every command that builds the run's model clients, with the arguments that
+#: reach its refusals without starting a run.
+RUN_COMMANDS = [
+    pytest.param(["run", "--dry-run"], id="run"),
+    pytest.param(["prepare", "--run-dir", "{run_dir}"], id="prepare"),
+    pytest.param(["worker", "--run-dir", "{run_dir}"], id="worker"),
+]
+
+
+def _invoke(command: list[str], config: Path, tmp_path: Path):
+    args = [arg.format(run_dir=tmp_path / "run-dir") for arg in command]
+    return CliRunner().invoke(cli, [args[0], "--config", str(config), *args[1:]])
+
+
+E = TypeVar("E", bound=Exception)
+
+
+def _refusal(result, error_type: type[E]) -> E:
+    """The typed error behind a command's one-line `Error:` refusal."""
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output, result.output
+    refusal = result.exception.__context__
+    assert isinstance(refusal, click.ClickException), repr(result.exception)
+    cause = refusal.__cause__
+    assert isinstance(cause, error_type), repr(cause)
+    assert f"Error: {cause}" in result.output, result.output
+    return cause
 
 
 @pytest.mark.parametrize("provider, name", CONFIGS)
@@ -185,7 +216,7 @@ RAW_NAME_PLACEMENTS = [
 
 
 @pytest.mark.parametrize("models, path, provider, name", RAW_NAME_PLACEMENTS)
-def test_an_entry_under_the_raw_name_is_refused_by_validate_and_run_alike(
+def test_an_entry_under_the_raw_name_is_refused_by_lookup_client_and_validate(
     models, path, provider, name, tmp_path
 ):
     raw_key = name
@@ -211,10 +242,17 @@ def test_an_entry_under_the_raw_name_is_refused_by_validate_and_run_alike(
     assert f"{path}.name:" in errors[0]
     assert repr(raw_key) in errors[0] and repr(expected_key) in errors[0]
 
-    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert run.exit_code != 0
-    assert isinstance(run.exception, OverlayKeyMismatchError), run.output
-    assert repr(raw_key) in str(run.exception) and repr(expected_key) in str(run.exception)
+
+@pytest.mark.parametrize("command", RUN_COMMANDS)
+@pytest.mark.parametrize("models, path, provider, name", RAW_NAME_PLACEMENTS)
+def test_every_run_command_refuses_a_raw_name_entry_without_a_traceback(
+    command, models, path, provider, name, tmp_path
+):
+    overlay = _write_overlay(tmp_path, [name])
+    config = _write_run_config(tmp_path, _run_config_for(models, overlay))
+
+    refused = _refusal(_invoke(command, config, tmp_path), OverlayKeyMismatchError)
+    assert (refused.declared_key, refused.expected_key) == (name, f"{provider}/{name}")
 
 
 def test_an_entry_under_the_raw_name_is_inert_beside_the_canonical_one(tmp_path):
@@ -228,7 +266,8 @@ def test_an_entry_under_the_raw_name_is_inert_beside_the_canonical_one(tmp_path)
     validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
     assert "[ERROR]" not in validated.output, validated.output
     run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert not isinstance(run.exception, OverlayKeyMismatchError), run.exception
+    assert not isinstance(run.exception, OverlayKeyMismatchError), repr(run.exception)
+    assert "Rename the entry" not in run.output, run.output
 
 
 #: A first segment that names a provider in both sets the refusal consults, in
@@ -348,10 +387,10 @@ def _install_gateway_env(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -
     monkeypatch.setattr(secrets_manager, "_default_manager", SecretManager([DictProvider(env)]))
 
 
-def test_a_session_header_conflict_on_a_fallback_is_refused_by_validate_and_run_alike(
-    tmp_path, monkeypatch
-):
-    """No presets overlay is declared, so the run's refusal cannot come from the
+def _fallback_session_conflict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fallback whose session header the gateway's request-id header also sets.
+
+    No presets overlay is declared, so a run's refusal cannot come from the
     overlay's own check."""
     _install_gateway_env(
         monkeypatch,
@@ -365,7 +404,11 @@ def test_a_session_header_conflict_on_a_fallback_is_refused_by_validate_and_run_
         {"agent": {**NATIVE_AGENT, "fallbacks": [fallback]}, "user": NATIVE_AGENT}
     )
     assert "engine" not in raw
-    config = _write_run_config(tmp_path, raw)
+    return _write_run_config(tmp_path, raw)
+
+
+def test_validate_reports_a_session_header_conflict_on_a_fallback(tmp_path, monkeypatch):
+    config = _fallback_session_conflict(tmp_path, monkeypatch)
 
     validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
     assert validated.exit_code != 0, validated.output
@@ -374,24 +417,38 @@ def test_a_session_header_conflict_on_a_fallback_is_refused_by_validate_and_run_
     assert "models.agent.fallbacks[0].session.header:" in errors[0]
     assert "LLM_PROXY_REQUEST_ID_HEADER" in errors[0]
 
-    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert isinstance(run.exception, SessionHeaderConflictError), run.output
-    assert run.exception.path == "models.agent.fallbacks[0].session.header"
 
-
-@pytest.mark.parametrize(
-    "agent_extra, environment_errors, run_refused",
-    [({"session": {"header": "x-session-id"}}, 1, True), ({}, 0, False)],
-    ids=["declares-session", "no-session"],
-)
-def test_a_malformed_gateway_environment_concerns_only_configs_that_declare_session(
-    tmp_path, monkeypatch, agent_extra, environment_errors, run_refused
+@pytest.mark.parametrize("command", RUN_COMMANDS)
+def test_every_run_command_refuses_a_session_header_conflict_on_a_fallback(
+    command, tmp_path, monkeypatch
 ):
-    """Gateway headers without a gateway base URL are malformed; a config that never
-    declares ``session`` does not read them, in validate or at run start."""
+    config = _fallback_session_conflict(tmp_path, monkeypatch)
+
+    refused = _refusal(_invoke(command, config, tmp_path), SessionHeaderConflictError)
+    assert refused.path == "models.agent.fallbacks[0].session.header"
+
+
+#: Gateway headers without a gateway base URL are malformed; a config that never
+#: declares ``session`` does not read them.
+SESSION_DECLARATIONS = [
+    pytest.param({"session": {"header": "x-session-id"}}, True, id="declares-session"),
+    pytest.param({}, False, id="no-session"),
+]
+
+
+def _malformed_gateway_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_extra: dict
+) -> Path:
     _install_gateway_env(monkeypatch, {"LLM_PROXY_HEADERS": '{"x-team-id": "research"}'})
     raw = _run_config_for({"agent": _as_config(*GATEWAY, **agent_extra), "user": NATIVE_AGENT})
-    config = _write_run_config(tmp_path, raw)
+    return _write_run_config(tmp_path, raw)
+
+
+@pytest.mark.parametrize("agent_extra, reads_gateway", SESSION_DECLARATIONS)
+def test_validate_reports_a_malformed_gateway_environment_only_for_session_configs(
+    agent_extra, reads_gateway, tmp_path, monkeypatch
+):
+    config = _malformed_gateway_environment(tmp_path, monkeypatch, agent_extra)
 
     validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
     environment = [
@@ -399,11 +456,23 @@ def test_a_malformed_gateway_environment_concerns_only_configs_that_declare_sess
         for line in validated.output.splitlines()
         if "[ERROR]" in line and "(environment)" in line
     ]
-    assert len(environment) == environment_errors, validated.output
+    assert len(environment) == int(reads_gateway), validated.output
     assert all("LLM_PROXY_HEADERS" in line for line in environment), validated.output
 
-    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert isinstance(run.exception, ProxyConfigError) is run_refused, repr(run.exception)
+
+@pytest.mark.parametrize("command", RUN_COMMANDS)
+@pytest.mark.parametrize("agent_extra, reads_gateway", SESSION_DECLARATIONS)
+def test_every_run_command_refuses_a_malformed_gateway_environment_only_for_session_configs(
+    agent_extra, reads_gateway, command, tmp_path, monkeypatch
+):
+    config = _malformed_gateway_environment(tmp_path, monkeypatch, agent_extra)
+
+    run = _invoke(command, config, tmp_path)
+    if reads_gateway:
+        assert "LLM_PROXY_HEADERS" in str(_refusal(run, ProxyConfigError))
+    else:
+        assert not isinstance(run.exception, ProxyConfigError), repr(run.exception)
+        assert "LLM_PROXY_HEADERS" not in run.output, run.output
 
 
 def test_the_walk_reaches_every_fallback_depth_first():

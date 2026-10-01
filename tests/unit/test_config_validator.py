@@ -11,6 +11,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from tests.utils.secret_state import secret_manager_installed
 from tolokaforge.core.config_validator import (
     Severity,
     ValidationResult,
@@ -177,6 +178,16 @@ class TestSchemaValidation:
             pytest.param({"header": "x session"}, "'x session'", id="space"),
             pytest.param({"header": "x:y"}, "'x:y'", id="colon"),
             pytest.param({"header": "Authorization"}, "'Authorization'", id="reserved"),
+            pytest.param({"header": "X-Api-Key"}, "'X-Api-Key'", id="reserved-x-api-key"),
+            pytest.param({"header": "api-key"}, "'api-key'", id="reserved-api-key"),
+            pytest.param(
+                {"header": "Anthropic-Version"},
+                "'Anthropic-Version'",
+                id="reserved-anthropic-version",
+            ),
+            pytest.param(
+                {"header": "anthropic-beta"}, "'anthropic-beta'", id="reserved-anthropic-beta"
+            ),
             pytest.param({"header": "x-session-id", "ttl": 30}, "ttl", id="unknown-key"),
         ],
     )
@@ -436,6 +447,37 @@ class TestOrchestratorValidation:
         result = validate_run_config(cfg)
         turn_warns = [i for i in result.issues if "max_turns" in i.path]
         assert len(turn_warns) == 1
+
+
+class TestApiKeyProbe:
+    """The provider-key warning asks the SecretManager, so a key from `.env` or an
+    installed secrets payload counts, and the process environment only through it."""
+
+    @pytest.mark.parametrize(
+        "payload, process_env, warned",
+        [
+            pytest.param({"ANTHROPIC_API_KEY": "sk-fake"}, {}, False, id="secret-manager-only"),
+            pytest.param({}, {"ANTHROPIC_API_KEY": "sk-fake"}, True, id="process-env-only"),
+        ],
+    )
+    def test_the_key_is_read_through_the_secret_manager(
+        self, payload, process_env, warned, monkeypatch
+    ):
+        cfg = _make_config(
+            agent_provider="anthropic",
+            agent_name="claude-sonnet-4-6",
+            user_provider="anthropic",
+            user_name="claude-sonnet-4-6",
+        )
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        for name, value in process_env.items():
+            monkeypatch.setenv(name, value)
+        with secret_manager_installed(payload):
+            result = validate_run_config(cfg)
+        key_warnings = [
+            (i.severity, i.path) for i in result.issues if "expects API key" in i.message
+        ]
+        assert key_warnings == ([(Severity.WARNING, "models.agent.provider")] if warned else [])
 
 
 # ---------------------------------------------------------------------------

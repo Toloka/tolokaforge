@@ -60,6 +60,7 @@ from tolokaforge.core.llm.presets import (
     set_overlay_path,
     validate_overlay_file,
 )
+from tolokaforge.core.llm.proxy import ProxyConfigError
 from tolokaforge.core.llm.session_header import session_header_conflicts
 from tolokaforge.core.logging import (
     LogFormat,
@@ -459,20 +460,26 @@ def _activate_presets_overlay(
         validate_overlay_file(resolved)
         mismatches = overlay_key_mismatches(run_config.models)
         if mismatches:
-            raise mismatches[0][1]
+            mismatch = mismatches[0][1]
+            raise click.ClickException(str(mismatch)) from mismatch
     return resolved
 
 
 def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
-    """Raise the first session header, over every model and fallback, that
-    another header source also sets.
+    """Refuse the first session header, over every model and fallback, that
+    another header source also sets, or a malformed gateway environment when some
+    config declares ``session``.
 
     A fallback's client is built only on failover, so its construction-time
     check alone would fail mid-run.
     """
-    conflicts = session_header_conflicts(run_config.models)
+    try:
+        conflicts = session_header_conflicts(run_config.models)
+    except ProxyConfigError as err:
+        raise click.ClickException(str(err)) from err
     if conflicts:
-        raise conflicts[0][1]
+        conflict = conflicts[0][1]
+        raise click.ClickException(str(conflict)) from conflict
 
 
 def _refuse_unbuildable_capabilities(run_config: RunConfig) -> None:
