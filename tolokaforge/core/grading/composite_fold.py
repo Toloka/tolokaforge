@@ -289,8 +289,9 @@ def build_grade_reasons(
             than on the component's score, so a suite that failed to run says why
             even though it scored nothing.
         comparison_view_reason: What the comparison view says beside a hash verdict
-            reached through it — the view diff's summary, or the trial's collision —
-            rendered by :func:`~tolokaforge.core.grading.pre_hash.comparison_view_reason`.
+            reached through it — the view diff's summary, or the error that kept the
+            trial's state from being viewed — rendered by
+            :func:`~tolokaforge.core.grading.pre_hash.comparison_view_reason`.
 
     Returns:
         The scored components' segments, joined — and empty where the trial scored

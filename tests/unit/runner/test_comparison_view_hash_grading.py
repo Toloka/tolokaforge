@@ -100,7 +100,7 @@ def test_a_trial_that_differs_only_in_a_generated_id_passes(runner_service, mock
     )
     assert verdict_of(response) is Verdict.PASS, response.error or response.grade.reasons
     record = _record(response)
-    assert record.view_diff is None and record.trial_collision is None
+    assert record.view_diff is None and record.trial_error is None
     assert record.trial is not None and record.trial.config_sha256 == record.golden.config_sha256
     assert [field.dotted for field in record.golden.rekeyed_fields] == ["documents.id"]
 
@@ -142,7 +142,7 @@ def test_a_difference_the_view_keeps_fails_with_the_view_diff(runner_service, mo
     assert raw["tables"], "the raw diff of the stable states rides beside the view diff"
 
 
-def test_a_trial_collision_fails_the_trial_naming_the_ids(runner_service, mock_grpc_context):
+def test_a_trial_error_fails_the_trial_naming_the_ids(runner_service, mock_grpc_context):
     trial = _filed("D3", created_at="t9")
     trial["documents"].append({"id": "D4", "source_id": "S2", "created_at": "t10"})
     response = grade_through_the_runner(
@@ -155,9 +155,41 @@ def test_a_trial_collision_fails_the_trial_naming_the_ids(runner_service, mock_g
     )
     assert verdict_of(response) is Verdict.FAIL, response.error
     record = _record(response)
-    assert record.trial is None and record.trial_collision is not None
-    assert set(record.trial_collision.ids) == {"D3", "D4"}
-    assert "Comparison view: the trial's state cannot be re-keyed" in response.grade.reasons
+    assert record.trial is None and record.trial_error is not None
+    assert set(record.trial_error.ids) == {"D3", "D4"}
+    assert "Comparison view: the trial's state cannot be viewed" in response.grade.reasons
+
+
+@pytest.mark.parametrize(
+    ("name", "mutate"),
+    [
+        pytest.param("no_key_field", lambda doc: doc.pop("source_id"), id="no-key-field"),
+        pytest.param(
+            "dict_in_key_field",
+            lambda doc: doc.update(source_id={"code": "S2"}),
+            id="a-dict-in-the-key-field",
+        ),
+    ],
+)
+def test_a_trial_record_the_view_cannot_read_fails_the_trial(
+    name, mutate, runner_service, mock_grpc_context
+):
+    """The golden's view succeeded, so what the trial side cannot view is the trial's."""
+    trial = _filed("D3", created_at="t9")
+    mutate(trial["documents"][1])
+    response = grade_through_the_runner(
+        runner_service,
+        mock_grpc_context,
+        description=_description(f"view_trial_error_{name}"),
+        trial_id=f"view_trial_error_{name}:0",
+        trial=trial,
+        golden=_filed("D2", created_at="t5"),
+    )
+    assert verdict_of(response) is Verdict.FAIL, response.error
+    record = _record(response)
+    assert record.trial is None and record.trial_error is not None
+    assert (record.trial_error.error, record.trial_error.ids) == ("ComparisonViewError", [])
+    assert "the trial's state cannot be viewed — ComparisonViewError: " in response.grade.reasons
 
 
 def test_a_golden_view_error_is_a_grading_error_that_leaves_the_trials_database_as_it_was(

@@ -319,6 +319,29 @@ _VIEW_CASES: tuple[_ViewCase, ...] = (
         verdict=Verdict.FAIL,
     ),
     _ViewCase(
+        # Once the golden's view succeeded, a record the view cannot read is the trial's.
+        "a_trial_document_without_its_key_field_fails",
+        initial=_docs(("D1", "S1")),
+        trial={
+            **_docs(("D1", "S1"), refs=("D3",)),
+            "documents": [{"id": "D1", "source_id": "S1"}, {"id": "D3"}],
+        },
+        golden=_docs(("D1", "S1"), ("D2", "S2"), refs=("D2",)),
+        rules=(_BY_SOURCE,),
+        verdict=Verdict.FAIL,
+    ),
+    _ViewCase(
+        "a_golden_document_without_its_key_field_is_a_grading_error",
+        initial=_docs(("D1", "S1")),
+        trial=_docs(("D1", "S1"), ("D3", "S2"), refs=("D3",)),
+        golden={
+            **_docs(("D1", "S1"), refs=("D2",)),
+            "documents": [{"id": "D1", "source_id": "S1"}, {"id": "D2"}],
+        },
+        rules=(_BY_SOURCE,),
+        verdict=Verdict.GRADING_ERROR,
+    ),
+    _ViewCase(
         "a_golden_whose_documents_share_a_key_is_a_grading_error",
         initial=_docs(("D1", "S1")),
         trial=_docs(("D1", "S1"), ("D3", "S2"), refs=("D3",)),

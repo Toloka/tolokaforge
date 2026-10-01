@@ -16,13 +16,12 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.comparison_view import (
-    ComparisonViewCollision,
     ComparisonViewConfig,
     ComparisonViewError,
 )
 from tolokaforge.core.grading.pre_hash import (
     PreHashDeclaration,
-    TrialCollision,
+    TrialViewError,
     ViewedPair,
     comparison_view_grade_record,
     comparison_view_reason,
@@ -180,49 +179,131 @@ def test_a_trial_collision_after_the_goldens_view_is_returned_for_the_caller_to_
         initial=_INITIAL,
         declaration=declaration,
     )
-    assert isinstance(outcome, TrialCollision)
-    assert set(outcome.collision.ids) == {"D2", "D3"}
+    assert isinstance(outcome, TrialViewError)
+    assert set(outcome.ids) == {"D2", "D3"}
     record = comparison_view_grade_record(outcome, matched=False)
     assert record.trial is None and record.view_diff is None
-    assert record.trial_collision is not None
-    assert set(record.trial_collision.ids) == {"D2", "D3"}
+    assert record.trial_error is not None
+    assert record.trial_error.error == "ComparisonViewCollision"
+    assert set(record.trial_error.ids) == {"D2", "D3"}
     reason = comparison_view_reason(record)
-    assert reason is not None and reason.startswith("Comparison view: the trial's state cannot")
+    assert reason is not None
+    assert reason.startswith("Comparison view: the trial's state cannot be viewed — ")
+    assert "ComparisonViewCollision" in reason and "ids: [" in reason
 
 
-def test_a_golden_collision_is_raised_whatever_the_trial_holds() -> None:
-    with pytest.raises(ComparisonViewCollision):
+_RELEASED_UNLESS_CITED = {
+    "kind": "exclude_records",
+    "table": "holds",
+    "where": {"status": "released"},
+    "unless_referenced_by": [{"table": "corrections", "field": "hold_ref"}],
+}
+_ZERO_ALLOCATIONS = {
+    "kind": "exclude_records",
+    "table": "decisions",
+    "path": "allocations",
+    "where": {"all_zero": ["amount"]},
+}
+_ERROR_INITIAL: dict[str, Any] = {
+    "documents": [{"id": "D1", "source_id": "S1"}],
+    "corrections": [],
+    "holds": [],
+    "decisions": [],
+}
+
+
+def _error_golden() -> dict[str, Any]:
+    return {
+        "documents": [{"id": "D1", "source_id": "S1"}, {"id": "D2", "source_id": "S2"}],
+        "corrections": [{"id": "C1", "document_ref": "D2", "hold_ref": None}],
+        "holds": [],
+        "decisions": [{"id": "RD1", "allocations": [{"amount": "5"}]}],
+    }
+
+
+def _error_trial(mutate) -> dict[str, Any]:
+    trial = copy.deepcopy(_error_golden())
+    trial["documents"][1]["id"] = "D3"
+    trial["corrections"][0]["document_ref"] = "D3"
+    mutate(trial)
+    return trial
+
+
+#: States an agent's tools can write that no rule of the view can read. Each is
+#: refused by a different rule's guard; viewed on the trial side, after the golden's
+#: view succeeded, each is the trial's own state that cannot be viewed, so it fails.
+_UNVIEWABLE: tuple[Any, ...] = (
+    pytest.param(
+        lambda t: t["documents"][1].pop("source_id"),
+        "ComparisonViewError",
+        id="a-new-record-without-its-key-field",
+    ),
+    pytest.param(
+        lambda t: t["documents"].append({"id": "D3", "source_id": "S7"}),
+        "ComparisonViewCollision",
+        id="two-new-records-under-one-id",
+    ),
+    pytest.param(
+        lambda t: t["documents"][1].update(source_id=["S2"]),
+        "ComparisonViewError",
+        id="a-list-in-a-key-field",
+    ),
+    pytest.param(
+        lambda t: t["documents"][1].update(source_id={"code": "S2"}),
+        "ComparisonViewError",
+        id="a-dict-in-a-key-field",
+    ),
+    pytest.param(
+        lambda t: t["corrections"][0].update(document_ref={"id": "D3"}),
+        "ComparisonViewError",
+        id="a-dict-in-a-reference",
+    ),
+    pytest.param(
+        lambda t: t["holds"].append({"id": None, "status": "released"}),
+        "ComparisonViewError",
+        id="a-null-id-unless-referenced-by-reads",
+    ),
+    pytest.param(
+        lambda t: t["decisions"][0].update(allocations={"amount": "0"}),
+        "ComparisonViewError",
+        id="a-dict-at-a-nested-path",
+    ),
+)
+
+
+def _error_declaration() -> PreHashDeclaration:
+    return _declaration(_DOCUMENTS_BY_SOURCE, _RELEASED_UNLESS_CITED, _ZERO_ALLOCATIONS)
+
+
+@pytest.mark.parametrize(("mutate", "error"), _UNVIEWABLE)
+def test_a_trial_state_no_rule_can_read_fails_once_the_goldens_view_succeeded(
+    mutate, error: str
+) -> None:
+    outcome = view_the_pair(
+        _error_trial(mutate),
+        _error_golden(),
+        initial=_ERROR_INITIAL,
+        declaration=_error_declaration(),
+    )
+    assert isinstance(outcome, TrialViewError), "the trial's own state is the trial's fail"
+    record = comparison_view_grade_record(outcome, matched=False)
+    assert record.trial_error is not None and record.trial_error.error == error
+    assert record.trial_error.message == str(outcome.error)
+    assert (record.trial_error.ids == []) is (error != "ComparisonViewCollision")
+    assert f"{error}: {record.trial_error.message}" in str(comparison_view_reason(record))
+
+
+@pytest.mark.parametrize(("mutate", "error"), _UNVIEWABLE)
+def test_the_same_state_on_the_golden_side_is_a_grading_error(mutate, error: str) -> None:
+    """The golden is viewed first: a view its own golden path breaks is the author's."""
+    with pytest.raises(ComparisonViewError) as raised:
         view_the_pair(
-            _state("D2", created_at="t5"),
-            _two_documents_one_source(),
-            initial=_INITIAL,
-            declaration=_declaration(_DOCUMENTS_BY_SOURCE),
+            _error_golden(),
+            _error_trial(mutate),
+            initial=_ERROR_INITIAL,
+            declaration=_error_declaration(),
         )
-
-
-def test_a_golden_view_error_is_raised_before_the_trial_is_viewed() -> None:
-    golden = _state("D2", created_at="t5")
-    del golden["documents"][1]["source_id"]
-    with pytest.raises(ComparisonViewError, match="lacks the key field"):
-        view_the_pair(
-            _two_documents_one_source(),
-            golden,
-            initial=_INITIAL,
-            declaration=_declaration(_DOCUMENTS_BY_SOURCE),
-        )
-
-
-def test_a_trial_view_error_that_is_not_a_collision_is_raised() -> None:
-    trial = _state("D3", created_at="t9")
-    del trial["documents"][1]["source_id"]
-    with pytest.raises(ComparisonViewError, match="lacks the key field") as raised:
-        view_the_pair(
-            trial,
-            _state("D2", created_at="t5"),
-            initial=_INITIAL,
-            declaration=_declaration(_DOCUMENTS_BY_SOURCE),
-        )
-    assert not isinstance(raised.value, ComparisonViewCollision)
+    assert type(raised.value).__name__ == error
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +316,7 @@ def test_a_match_records_both_views_and_no_diff() -> None:
     pair = _viewed(_state("D3", created_at="t9"), _state("D2", created_at="t5"), declaration)
     record = comparison_view_grade_record(pair, matched=True)
     assert record.golden == pair.golden_record and record.trial == pair.trial_record
-    assert record.view_diff is None and record.trial_collision is None
+    assert record.view_diff is None and record.trial_error is None
     assert comparison_view_reason(record) is None
 
 
@@ -272,7 +353,7 @@ def test_a_record_carries_a_trial_view_or_a_collision_never_both() -> None:
         ComparisonViewGradeRecord(
             golden=pair.golden_record,
             trial=pair.trial_record,
-            trial_collision={"message": "m", "ids": [1, 2]},
+            trial_error={"error": "ComparisonViewCollision", "message": "m", "ids": [1, 2]},
         )
 
 

@@ -103,8 +103,8 @@ def _the_correction_cites_the_draft(record: ComparisonViewGradeRecord) -> None:
 
 
 def _the_documents_collide(record: ComparisonViewGradeRecord) -> None:
-    assert record.trial is None and record.trial_collision is not None
-    assert set(record.trial_collision.ids) == {"DOC-002", "DOC-003"}
+    assert record.trial is None and record.trial_error is not None
+    assert set(record.trial_error.ids) == {"DOC-002", "DOC-003"}
 
 
 def _the_cited_hold_is_kept(record: ComparisonViewGradeRecord) -> None:

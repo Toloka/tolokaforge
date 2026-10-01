@@ -65,7 +65,7 @@ from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowle
 from tolokaforge.core.grading.kinds import GraderKindRefusedError
 from tolokaforge.core.grading.pre_hash import (
     PreHashDeclaration,
-    TrialCollision,
+    TrialViewError,
     comparison_view_grade_record,
     comparison_view_reason,
     resolve_unstable_fields,
@@ -3001,15 +3001,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Steps 1–3 are :func:`~tolokaforge.core.grading.pre_hash.view_the_pair`, the
         composition core runs too; steps 4–5 are this substrate's own
-        :func:`~tolokaforge.core.hash.compute_stable_hash`. A trial whose view collides
-        mismatches: its state cannot be told apart, and the record says why. On any
+        :func:`~tolokaforge.core.hash.compute_stable_hash`. A trial whose own state cannot
+        be viewed once the golden's was mismatches, and the record says why. On any
         mismatch the raw ``state_diff`` is computed as the server-side path computes
         it — over the stable states, every resolved unstable field dropped — and the
         record carries the view diff the verdict agrees with.
 
         Raises:
-            ComparisonViewError: the golden's view cannot be computed, or the trial's
-                cannot for a reason other than a collision — a grading error.
+            ComparisonViewError: the golden's view cannot be computed — a grading error.
         """
         assert state_checks.comparison_view is not None
         task = trial_context.task_description
@@ -3031,8 +3030,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             initial=copy.deepcopy(initial_state.tables) if initial_state else {},
             declaration=declaration,
         )
-        if isinstance(outcome, TrialCollision):
-            logger.info(f"GradeTrial: the trial's comparison view collides: {outcome.collision}")
+        if isinstance(outcome, TrialViewError):
+            logger.info(f"GradeTrial: the trial's state cannot be viewed: {outcome.error}")
             hash_match = False
         else:
             digests = [

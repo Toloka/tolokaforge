@@ -20,7 +20,7 @@ from tolokaforge.core.grading.golden_replay import (
 )
 from tolokaforge.core.grading.pre_hash import (
     PreHashDeclaration,
-    TrialCollision,
+    TrialViewError,
     comparison_view_grade_record,
     comparison_view_reason,
     view_the_pair,
@@ -501,11 +501,10 @@ class StateChecker:
             view)
 
         Raises:
-            ComparisonViewError: the expected side's view cannot be computed, or the
-                trial's cannot for a reason other than a collision. Not folded into a
-                ``0.0``: the trial is left with a grading error, as on the runner. A
-                trial whose view collides scores ``0.0`` with the collision as the
-                reason.
+            ComparisonViewError: the expected side's view cannot be computed. Not folded
+                into a ``0.0``: the trial is left with a grading error, as on the runner.
+                Once the expected side's view succeeded, a trial whose own state cannot be
+                viewed scores ``0.0`` with the error as the reason.
         """
         if expected_hash is None and expected_state is None:
             raise ValueError("check_hash: pass exactly one of expected_hash or expected_state.")
@@ -547,9 +546,9 @@ class StateChecker:
                         auto_normalize_nullables=auto_normalize_nullables,
                     ),
                 )
-                if isinstance(outcome, TrialCollision):
-                    collided = comparison_view_grade_record(outcome, matched=False)
-                    return 0.0, str(comparison_view_reason(collided)), collided
+                if isinstance(outcome, TrialViewError):
+                    unviewed = comparison_view_grade_record(outcome, matched=False)
+                    return 0.0, str(comparison_view_reason(unviewed)), unviewed
                 viewed_actual, viewed_expected = (
                     state_digest(
                         side,
@@ -807,8 +806,8 @@ class StateChecker:
                 expected state to compare against and therefore no verdict. An action
                 whose name resolves to no tool raises the ``UnresolvableGoldenAction``
                 subclass, which names every offending action.
-            ComparisonViewError: the replayed state's view cannot be computed, or the
-                trial's cannot for a reason other than a collision — a grading error.
+            ComparisonViewError: the replayed state's view cannot be computed — a grading
+                error. A trial whose own state cannot be viewed after it scores ``0.0``.
         """
         try:
             view_initial = (
@@ -841,7 +840,7 @@ class StateChecker:
                     auto_normalize_nullables=auto_normalize_nullables,
                 ),
             )
-            matched = not isinstance(outcome, TrialCollision) and state_digest(
+            matched = not isinstance(outcome, TrialViewError) and state_digest(
                 outcome.trial,
                 numeric_string_fields=numeric_string_fields,
                 auto_mask_clock_columns=auto_mask_clock_columns,
