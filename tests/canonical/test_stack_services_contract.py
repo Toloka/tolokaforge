@@ -1,4 +1,4 @@
-"""Pin the runner's stack-service surface to its version (ADR-0052 § Stack services).
+"""Pin the runner's stack-service surface to its version (ADR-0053 § Stack services).
 
 ``tolokaforge.core.search.stack_services`` is the declared boundary between the
 runner and the stack services a search backend uses. Its evolution rule: every change
@@ -85,7 +85,7 @@ def _surface() -> dict[str, Any]:
 def test_the_surface_is_the_one_pinned_for_its_version() -> None:
     assert _surface() == _PINNED, (
         "the stack-service surface changed: bump STACK_SERVICES_API_VERSION, record the "
-        "change in ADR-0052 § Stack services, and pin the new surface here"
+        "change in ADR-0053 § Stack services, and pin the new surface here"
     )
 
 

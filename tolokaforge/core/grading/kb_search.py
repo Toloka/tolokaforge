@@ -13,7 +13,7 @@ Layering (AGENTS.md #6 / #7 — clean boundaries, interface-first):
   not Pydantic. The judge (:mod:`tolokaforge.core.grading.judge`) imports only
   this contract — never ``runner`` internals or mcp_core.
 * A search backend's per-trial index hands the judge its implementation
-  (:meth:`~tolokaforge.core.search.backend.SearchIndex.knowledge_search`, ADR-0052);
+  (:meth:`~tolokaforge.core.search.backend.SearchIndex.knowledge_search`, ADR-0053);
   the runner binds it when an agent tool searched that same index. Two more
   implementations serve other readers: the remote grader's gRPC ``KBSearch``
   transport (``substrate_live``) and offline replay's recorded answers (``replay``).

@@ -410,7 +410,7 @@ class TaskDescription(BaseModel):
 ### `search`: the plane, the backend's config, the tool name
 
 - **`plane`** names what serves the corpus: a search backend registered under the
-  `tolokaforge.search_backends` entry-point group (ADR-0052) — `rag_service` is the
+  `tolokaforge.search_backends` entry-point group (ADR-0053) — `rag_service` is the
   engine's own — or `typesense`, the plane the runner serves itself for an adapter
   that indexed the corpus host-side. `typesense` is reserved: no backend registers
   under it. The native adapter writes the task's `initial_state.rag.backend` here.

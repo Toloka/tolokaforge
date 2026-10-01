@@ -60,7 +60,7 @@ SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
 # the runner reaches through ``load_*`` at boot, at ``RegisterTrial`` or
 # during a Grade RPC — the six sub-component seams reachable from
 # ``RunnerServiceImpl`` (ADR-0040), and the search backend a task names in
-# ``search.plane`` (ADR-0052) — is loaded via
+# ``search.plane`` (ADR-0053) — is loaded via
 # ``importlib.metadata.entry_points``, so the group's rows must appear in
 # the subset wheel's ``entry_points.txt`` even though their target modules
 # are already inside the subset partition. Groups NOT listed here — ``runtime_backends``,

@@ -1,4 +1,4 @@
-"""Search-backend Protocols and the context a backend factory receives (ADR-0052).
+"""Search-backend Protocols and the context a backend factory receives (ADR-0053).
 
 A task names its retrieval in ``initial_state.rag.backend``; the wire carries the
 name as ``search.plane`` and the runner resolves it through the

@@ -9,7 +9,7 @@ which adds the two extra services on top. Detection mirrors
 ``_tasks_need_playwright``: scan ``task.tools.agent.enabled``, look for
 ``initial_state.mock_web``, and ask the task's declared search backend — for a
 task that declares a corpus or enables its search tool — which stack service it
-needs (ADR-0052). A backend that runs in the runner alone keeps the core stack
+needs (ADR-0053). A backend that runs in the runner alone keeps the core stack
 whatever its tool is called.
 
 Adapters whose search signal is not visible in task tool names (e.g. a

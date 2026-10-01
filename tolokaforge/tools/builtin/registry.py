@@ -43,7 +43,7 @@ class Dispatch(StrEnum):
 
     The knowledge-base search tool is not a builtin: the task declares it
     (``initial_state.rag.tool``) and the runner binds it to the trial's search
-    index by that declaration, before this registry is consulted (ADR-0052).
+    index by that declaration, before this registry is consulted (ADR-0053).
     """
 
     GENERIC = "generic"

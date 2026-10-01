@@ -242,7 +242,7 @@ engine-loop = "tolokaforge.core.loop:_engine_loop_factory"
 [project.entry-points."tolokaforge.user_simulators"]
 builtin = "tolokaforge.core.llm.client:_builtin_user_simulator_factory"
 
-# Per-task retrieval seam (``tolokaforge/core/search/backend.py``, ADR-0052).
+# Per-task retrieval seam (``tolokaforge/core/search/backend.py``, ADR-0053).
 # Every entry resolves to a ``Callable[[SearchBackendContext], SearchBackend]``.
 # A task names its backend in ``initial_state.rag.backend``, carried on the wire
 # as ``search.plane``; the runner resolves it at ``RegisterTrial``, so the group
