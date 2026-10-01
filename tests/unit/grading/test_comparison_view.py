@@ -35,6 +35,7 @@ from tolokaforge.core.grading.comparison_view import (
     ExcludeRecordsConfig,
     ExcludeTables,
     ExcludeTablesConfig,
+    NormalizeIds,
     RuleApplication,
     apply_comparison_view,
     resolve_comparison_view_rule,
@@ -118,7 +119,12 @@ _INITIAL: dict[str, Any] = {
 
 
 @pytest.mark.parametrize(
-    ("kind", "rule"), [("exclude_records", ExcludeRecords), ("exclude_tables", ExcludeTables)]
+    ("kind", "rule"),
+    [
+        ("exclude_records", ExcludeRecords),
+        ("exclude_tables", ExcludeTables),
+        ("normalize_ids", NormalizeIds),
+    ],
 )
 def test_each_built_in_rule_resolves_through_the_entry_point_group(
     kind: str, rule: type[ComparisonViewRule]

@@ -56,12 +56,21 @@ def drop_field(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 def test_the_built_in_rules_are_the_registered_ones() -> None:
-    assert available_comparison_view_rules() == ["exclude_records", "exclude_tables"]
+    assert available_comparison_view_rules() == [
+        "exclude_records",
+        "exclude_tables",
+        "normalize_ids",
+    ]
 
 
 @pytest.mark.usefixtures("drop_field")
 def test_a_rule_registered_out_of_tree_resolves_by_its_kind() -> None:
-    assert available_comparison_view_rules() == ["drop_field", "exclude_records", "exclude_tables"]
+    assert available_comparison_view_rules() == [
+        "drop_field",
+        "exclude_records",
+        "exclude_tables",
+        "normalize_ids",
+    ]
     rule = resolve_comparison_view_rule("drop_field")
     assert rule is DropField
     assert isinstance(rule(), ComparisonViewRule)
@@ -119,7 +128,10 @@ def test_an_unknown_kind_is_refused_at_load_naming_every_registered_kind() -> No
         _view({"kind": "drop_column", "table": "orders", "field": "note"})
     message = str(caught.value)
     assert "rules[0]: unknown comparison_view rule kind 'drop_column'" in message
-    assert "registered kinds: ['drop_field', 'exclude_records', 'exclude_tables']" in message
+    assert (
+        "registered kinds: ['drop_field', 'exclude_records', 'exclude_tables', 'normalize_ids']"
+        in message
+    )
 
 
 def test_a_distribution_registering_a_built_in_name_fails_every_lookup(
