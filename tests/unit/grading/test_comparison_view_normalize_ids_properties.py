@@ -1,10 +1,11 @@
 """Property tests of ``normalize_ids`` (ADR-0053 § Tests), for both key forms.
 
-A journal of records with generated ids, some of them in the initial state, and
-notices that reference them at the top level, in a list and at a dotted path, or
-reference nothing (a dangling id). Generated ids, dangling references and the
-ids a renamed trial uses come from disjoint alphabets, so every property is
-exact.
+A journal of records with generated ids (strings and ints), some of them in the
+initial state and some initial records deleted from it, and two tables that
+reference them: notices at the top level, in a list and at a dotted path, and
+payments through a mapping and a list of mappings. A reference may also name a
+deleted record or nothing at all. Generated ids, dangling references and the
+ids a renamed trial uses come from disjoint sets, so every property is exact.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ pytestmark = pytest.mark.unit
 
 _PROPERTY = settings(max_examples=200, deadline=None)
 
-_GENERATED_ID = st.text(alphabet="FCJ-0123456789", min_size=1, max_size=5)
+_GENERATED_ID = st.text(alphabet="FCJ-0123456789", min_size=1, max_size=5) | st.integers(0, 10**6)
 _DANGLING_ID = st.text(alphabet="XYZ", min_size=1, max_size=3)
 _CONTENT = st.tuples(
     st.sampled_from(["A1", "A2", "A3"]), st.sampled_from(["F1", "F2"]), st.integers(-2, 2)
@@ -39,6 +40,8 @@ _REFERENCES = [
     {"table": "notices", "field": "entry"},
     {"table": "notices", "field": "entries"},
     {"table": "notices", "field": "lines.entry"},
+    {"table": "payments", "field": "journal.entry"},
+    {"table": "payments", "field": "items.journal_id"},
 ]
 
 
@@ -65,7 +68,7 @@ class _Case:
         return self.state["journal"]
 
     @property
-    def new_ids(self) -> list[str]:
+    def new_ids(self) -> list[Any]:
         return [row["id"] for row in self.journal[self.kept :]]
 
 
@@ -73,14 +76,18 @@ class _Case:
 def _cases(draw: st.DrawFn, *, min_records: int = 0, min_new: int = 0) -> _Case:
     contents = draw(st.lists(_CONTENT, unique=True, min_size=max(min_records, min_new), max_size=8))
     size = len(contents)
-    ids = draw(st.lists(_GENERATED_ID, unique=True, min_size=size, max_size=size))
+    deleted = draw(st.integers(0, 2))
+    drawn = draw(
+        st.lists(_GENERATED_ID, unique=True, min_size=size + deleted, max_size=size + deleted)
+    )
+    ids, deleted_ids = drawn[:size], drawn[size:]
     ranks = draw(st.permutations(range(size)))
     journal = [
         {"id": i, "account_id": a, "fee_id": f, "delta": d, "posted_at": r, "memo": f"m{n}"}
         for n, (i, (a, f, d), r) in enumerate(zip(ids, contents, ranks))
     ]
     kept = draw(st.integers(0, size - min_new))
-    target = st.sampled_from(ids) | _DANGLING_ID if ids else _DANGLING_ID
+    target = st.sampled_from(drawn) | _DANGLING_ID if drawn else _DANGLING_ID
     notice = st.fixed_dictionaries(
         {
             "entry": target | st.none(),
@@ -88,37 +95,78 @@ def _cases(draw: st.DrawFn, *, min_records: int = 0, min_new: int = 0) -> _Case:
             "lines": st.lists(st.fixed_dictionaries({"entry": target}), max_size=2),
         }
     )
+    payment = st.fixed_dictionaries(
+        {
+            "journal": st.fixed_dictionaries({"entry": target}),
+            "items": st.lists(st.fixed_dictionaries({"journal_id": target}), max_size=2),
+        }
+    )
     notices = [{"id": f"N{n}", **body} for n, body in enumerate(draw(st.lists(notice, max_size=4)))]
-    initial = {"journal": copy.deepcopy(journal[:kept])}
-    return _Case(state={"journal": journal, "notices": notices}, initial=initial, kept=kept)
+    payments = [
+        {"id": f"P{n}", **body} for n, body in enumerate(draw(st.lists(payment, max_size=3)))
+    ]
+    gone = [
+        {"id": i, "account_id": "A9", "fee_id": "F9", "delta": 9, "posted_at": -1, "memo": "gone"}
+        for i in deleted_ids
+    ]
+    initial = {"journal": copy.deepcopy(journal[:kept]) + gone}
+    state = {"journal": journal, "notices": notices, "payments": payments}
+    return _Case(state=state, initial=initial, kept=kept)
 
 
 def _viewed(state: dict[str, Any], case: _Case, view: ComparisonViewConfig) -> dict[str, Any]:
     return apply_comparison_view(state, initial=case.initial, view=view, id_fields={}).state
 
 
-def _followed(notice: dict[str, Any], renamed: dict[Any, Any]) -> dict[str, Any]:
-    """``notice`` with every reference value renamed through ``renamed``, the rest as is."""
+def _followed(state: dict[str, Any], renamed: dict[Any, Any]) -> dict[str, Any]:
+    """``state`` with every reference value renamed through ``renamed``, the rest as is."""
 
     def follow(value: Any) -> Any:
         return value if value is None else renamed.get(value, value)
 
-    return {
-        **notice,
-        "entry": follow(notice["entry"]),
-        "entries": [follow(value) for value in notice["entries"]],
-        "lines": [{**line, "entry": follow(line["entry"])} for line in notice["lines"]],
-    }
+    notices = [
+        {
+            **notice,
+            "entry": follow(notice["entry"]),
+            "entries": [follow(value) for value in notice["entries"]],
+            "lines": [{**line, "entry": follow(line["entry"])} for line in notice["lines"]],
+        }
+        for notice in state["notices"]
+    ]
+    payments = [
+        {
+            **payment,
+            "journal": {**payment["journal"], "entry": follow(payment["journal"]["entry"])},
+            "items": [
+                {**item, "journal_id": follow(item["journal_id"])} for item in payment["items"]
+            ],
+        }
+        for payment in state["payments"]
+    ]
+    return {**state, "notices": notices, "payments": payments}
 
 
-def _renamed_trial(case: _Case, fresh: dict[str, str]) -> dict[str, Any]:
+def _reference_values(state: dict[str, Any]) -> list[Any]:
+    """Every reference value of ``state``, in one fixed order."""
+    values: list[Any] = []
+    for notice in state["notices"]:
+        values += [
+            notice["entry"],
+            *notice["entries"],
+            *(line["entry"] for line in notice["lines"]),
+        ]
+    for payment in state["payments"]:
+        values += [payment["journal"]["entry"], *(item["journal_id"] for item in payment["items"])]
+    return values
+
+
+def _renamed_trial(case: _Case, fresh: dict[Any, str]) -> dict[str, Any]:
     """The golden with its generated ids, and every reference to them, renamed."""
     journal = [{**row, "id": fresh.get(row["id"], row["id"])} for row in case.journal]
-    notices = [_followed(notice, fresh) for notice in case.state["notices"]]
-    return {"journal": journal, "notices": notices}
+    return _followed({**case.state, "journal": journal}, fresh)
 
 
-def _fresh_ids(case: _Case, order: list[int]) -> dict[str, str]:
+def _fresh_ids(case: _Case, order: list[int]) -> dict[Any, str]:
     return {old: f"T{position}" for old, position in zip(case.new_ids, order)}
 
 
@@ -141,7 +189,7 @@ def test_distinct_records_stay_distinct(view: ComparisonViewConfig, case: _Case)
 def test_every_listed_reference_follows_its_record(view: ComparisonViewConfig, case: _Case) -> None:
     viewed = _viewed(case.state, case, view)
     renamed = {old["id"]: new["id"] for old, new in zip(case.journal, viewed["journal"])}
-    assert viewed["notices"] == [_followed(notice, renamed) for notice in case.state["notices"]]
+    assert viewed == _followed({**case.state, "journal": viewed["journal"]}, renamed)
 
 
 @_BOTH_FORMS
@@ -149,12 +197,8 @@ def test_every_listed_reference_follows_its_record(view: ComparisonViewConfig, c
 @_PROPERTY
 def test_a_dangling_reference_stays_as_it_is(view: ComparisonViewConfig, case: _Case) -> None:
     ids = {row["id"] for row in case.journal}
-    viewed = _viewed(case.state, case, view)
-    for before, after in zip(case.state["notices"], viewed["notices"]):
-        if before["entry"] not in ids:
-            assert after["entry"] == before["entry"]
-        pairs = zip(before["entries"], after["entries"])
-        assert all(new == old for old, new in pairs if old not in ids)
+    pairs = zip(_reference_values(case.state), _reference_values(_viewed(case.state, case, view)))
+    assert all(after == before for before, after in pairs if before not in ids)
 
 
 @given(case=_cases(min_new=2), data=st.data())
@@ -220,9 +264,11 @@ def test_the_view_does_not_depend_on_row_order(
 ) -> None:
     journal_order = data.draw(st.permutations(range(len(case.journal))))
     notice_order = data.draw(st.permutations(range(len(case.state["notices"]))))
+    payment_order = data.draw(st.permutations(range(len(case.state["payments"]))))
     permuted = {
         "journal": [case.journal[i] for i in journal_order],
         "notices": [case.state["notices"][i] for i in notice_order],
+        "payments": [case.state["payments"][i] for i in payment_order],
     }
     assert _rows(_viewed(permuted, case, view)) == _rows(_viewed(case.state, case, view))
 
@@ -301,14 +347,15 @@ def test_with_the_id_declared_unstable_a_reference_to_the_wrong_record_still_fai
     one, other = trial["journal"][first], trial["journal"][second]
     one["posted_at"], other["posted_at"] = other["posted_at"], one["posted_at"]
     swapped = {one["id"]: other["id"], other["id"]: one["id"]}
-    trial["notices"] = [_followed(notice, swapped) for notice in trial["notices"]]
+    trial = _followed(trial, swapped)
     assert _masked_digest(trial, case, _ORDINAL_VIEW) != _masked_digest(golden, case, _ORDINAL_VIEW)
 
 
-def _changed_elsewhere(trial: dict[str, Any], change: str, index: int, ids: list[str]) -> None:
+def _changed_elsewhere(trial: dict[str, Any], change: str, index: int, ids: list[Any]) -> None:
     """Change ``trial`` in one place that is not a generated id or a reference to one."""
     journal, notices = trial["journal"], trial["notices"]
     row = journal[index % len(journal)]
+    pointing = [notice for notice in notices if notice["entry"] in ids]
     if change == "memo":
         row["memo"] = "changed"
     elif change == "delta":
@@ -318,6 +365,9 @@ def _changed_elsewhere(trial: dict[str, Any], change: str, index: int, ids: list
     elif change == "other-record" and notices and len(ids) > 1:
         notice = notices[index % len(notices)]
         notice["entries"] = [*notice["entries"], ids[index % len(ids)]]
+    elif change == "re-point" and pointing and len(ids) > 1:
+        notice = pointing[index % len(pointing)]
+        notice["entry"] = next(other for other in ids if other != notice["entry"])
     else:
         row["memo"] = "changed"
 
@@ -326,7 +376,7 @@ def _changed_elsewhere(trial: dict[str, Any], change: str, index: int, ids: list
 @given(
     case=_cases(min_records=1),
     data=st.data(),
-    change=st.sampled_from(["memo", "delta", "dangling-reference", "other-record"]),
+    change=st.sampled_from(["memo", "delta", "dangling-reference", "other-record", "re-point"]),
     index=st.integers(0, 100),
 )
 @_PROPERTY
