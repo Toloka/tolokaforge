@@ -182,16 +182,15 @@ class SearchBackend(Protocol):
 - **The context** is a frozen dataclass: the `backend_config` mapping, the
   tool's declared name and description, a logger, and what the runner knows at
   `RegisterTrial` — the trial id, the knowledge base's `domain_name`, and
-  `stack_service_clients`, the runner's handle on each stack service keyed by the
-  `stack_service` name a backend declares (rag-service's is the runner's one
-  long-lived client, shared with the judge's search). The values are typed
-  `object`, so the Protocol module names no service; a backend narrows the value
-  it reads.
+  `stack_services`, the runner's handles on the declared stack services it
+  reaches (see § Stack services; rag-service's is the runner's one long-lived
+  client, shared with the judge's search).
 - **A trial-less context.** The orchestrator side (the native adapter building
   the agent's schema, the stack rule) builds a context with no trial id and no
-  clients, and reads `tool_parameters()` and `stack_service` off the constructed
-  backend: both may depend on `backend_config`. A factory is therefore cheap and
-  free of side effects, and `build_index` refuses a trial-less context.
+  stack-service handles, and reads `tool_parameters()` and `stack_service` off
+  the constructed backend: both may depend on `backend_config`. A factory is
+  therefore cheap and free of side effects, and `build_index` refuses a
+  trial-less context.
 - **Registration.** Backends register under **`tolokaforge.search_backends`** as
   `Callable[[SearchBackendContext], SearchBackend]`.
 - **Loading.** `load_search_backend(name)` and `available_search_backends()` use
@@ -203,6 +202,46 @@ class SearchBackend(Protocol):
   so `test_runner_subset_partition` locks it into the subset wheel, and
   `core/search` joins the subset partition (`typesense_server.py`, which only the
   orchestrator uses, stays out).
+
+### Stack services
+
+A backend that runs over a service of the run's stack reaches it through the
+runner, and that boundary is a declared, versioned surface in
+`tolokaforge/core/search/stack_services.py`, as the proto surfaces are for the
+wire. It imports only the standard library, so the runner subset ships it with
+the seam.
+
+- **The declared services.** `DECLARED_STACK_SERVICES` maps each name a backend
+  may put in `stack_service` to a `StackService`: the name, the
+  runtime-checkable Protocol its handle satisfies, and how a runner reaches it.
+  A name outside it is refused at `load_tasks`, naming the task, the backend and
+  the declared names, and again at `RegisterTrial`.
+- **The handle Protocols.** Each carries exactly the members a backend may use.
+  `RagServiceHandle` is `base_url`, `timeout`, `index_documents` and `search`;
+  the runner's `RAGServiceClient` satisfies it, and its other members
+  (`delete_index`, `health_check`, `close`) are the runner's own.
+- **The container.** `StackServices` is frozen, with one field per declared
+  service, holding the runner's handle or `None`. It refuses at construction a
+  handle that does not satisfy its Protocol. `stack_services.get(RAG_SERVICE)`
+  returns the handle typed by its Protocol, and refuses a service the surface
+  does not declare and one this runner does not reach.
+- **The runner enforces the declaration.** `RegisterTrial` builds a trial's
+  index only when the runner reaches the stack service the backend declares; it
+  refuses the trial otherwise, naming the service and how a runner reaches it
+  (for rag-service, `RAG_SERVICE_URL`, which the full stack sets).
+- **Versioning.** `STACK_SERVICES_API_VERSION` numbers the surface: the declared
+  names and every member of every handle Protocol. Every change to it — a service
+  declared or withdrawn, a member added, changed or removed — increments the
+  version and adds a row below. `tests/canonical/test_stack_services_contract.py`
+  pins the surface to the version and checks the runner's client against each
+  handle by signature, so a change without the bump fails CI. Adding a service or
+  a member is compatible: a backend that needs it compares the version. Changing
+  or removing a member breaks the backends that use it, so its row names what
+  replaces it.
+
+| Version | Surface |
+|---|---|
+| 1 | `rag_service`: `RagServiceHandle` — `base_url`, `timeout`, `index_documents(trial_id, domain_name, documents)`, `search(trial_id, query, limit=5, alpha=0.5, timeout=None)` |
 
 ### `search.plane` is the backend's name
 
@@ -428,6 +467,7 @@ We checked the claim that the default does not move with a prototype on
     `JudgeCustomization`), `tolokaforge/runner/search_plane.py`;
   - `tolokaforge/adapters/native.py`, `tolokaforge/adapters/_task_loader.py`;
   - `tolokaforge/core/orchestrator.py`, `tolokaforge/core/plugin_registry.py`;
+  - `tolokaforge/core/search/stack_services.py` (the declared stack-service surface);
   - `scripts/hatch/hatch_runner_subset_builder.py`.
 - Docs:
   - `docs/RUNTIME_BACKENDS.md` § Plug-in extension points;
