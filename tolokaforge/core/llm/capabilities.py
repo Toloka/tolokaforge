@@ -142,6 +142,26 @@ class ModelCapabilities:
     and a model that never stalls never pays it.
     """
 
+    reasoning_stall_turn_limit: int = 0
+    """Consecutive stalling turns before the trial is ended, or 0 to not end it.
+
+    Counts only turns the typed reasoning-stall predicate fired on, which is
+    what separates it from the bare "N tool-call-free turns" heuristic ADR-0035
+    measured and rejected: a turn of ordinary closing prose does not count.
+
+    The default is 0 because the threshold is the part that needs evidence, and
+    the first evidence says no threshold is safe yet. Ten trials of
+    ``openai/gpt-oss-120b`` on terminal-bench, 2026-10-01: trials that went on
+    to be measured reached runs of 1 (x10), 2 (x4), 3 (x2), 4 (x2) and 5 (x1)
+    consecutive stalling turns. A limit of 3 — the figure
+    ``docs/GEMINI_QUIRKS.md`` 3.1 uses for the Gemini runaway — would have
+    ended five healthy trials there.
+
+    ADR-0035's defect was a threshold nobody checked against real trajectories.
+    The counter and its logging ship so the distribution can be gathered at
+    scale; the number waits for data that separates a stall from a slow turn.
+    """
+
     output_length_retry_count: int = 0
     """Resample budget for a content-carrying max-tokens truncation.
 

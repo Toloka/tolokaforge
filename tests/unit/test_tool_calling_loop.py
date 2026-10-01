@@ -21,6 +21,7 @@ from litellm.exceptions import RateLimitError
 
 from tolokaforge.core.actors.tool_turns import agent_view
 from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError, ParserError
+from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.loop import (
@@ -2209,3 +2210,127 @@ def test_summarize_call_is_billed_through_metrics():
     assert len(billing.generations) == 1
     assert billing.generations[0].usage.prompt_tokens == 100_000
     assert billing.generations[0].cost_usd == 0.42
+
+
+def _reasoning(text: str) -> StructuredReasoning:
+    return StructuredReasoning(blocks=(ReasoningBlock(type="thinking", text=text),))
+
+
+def _stall(tokens: int = 400) -> GenerationResult:
+    return GenerationResult(
+        text="",
+        tool_calls=[],
+        usage=Usage(prompt_tokens=1, completion_tokens=tokens, reasoning_tokens=tokens),
+        finish_reason="stop",
+    )
+
+
+def test_the_stall_resample_does_not_replay_the_reasoning():
+    """The resample sends the history with prior deliberation stripped.
+
+    Replaying the reasoning that just produced an actionless turn re-rolls the
+    same dice. Measured on openai/gpt-oss-120b: enabling replay took actionless
+    turns from 6 to 32 across ten trials and cost four of them.
+    """
+    client = _ScriptedClient(
+        [_stall(), GenerationResult(text="acted", usage=Usage(prompt_tokens=1))]
+    )
+    messages: list[Message] = [
+        Message(role=MessageRole.ASSISTANT, content="earlier", reasoning=_reasoning("deliberation"))
+    ]
+    _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    first_sent, resample_sent = client.messages_history[0], client.messages_history[1]
+    assert any(m.reasoning is not None for m in first_sent), "the first call replays normally"
+    assert all(m.reasoning is None for m in resample_sent), "the resample strips it"
+    # Only the wire copy is stripped; the grader still reads the reasoning.
+    assert messages[0].reasoning is not None
+
+
+def test_a_turn_that_does_not_stall_still_replays():
+    client = _ScriptedClient([GenerationResult(text="acted", usage=Usage(prompt_tokens=1))])
+    messages: list[Message] = [
+        Message(role=MessageRole.ASSISTANT, content="earlier", reasoning=_reasoning("deliberation"))
+    ]
+    _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+    ).run("sys", messages, time.time())
+
+    assert any(m.reasoning is not None for m in client.messages_history[0])
+
+
+def test_consecutive_stalling_turns_end_the_trial_at_the_limit():
+    """Counts only turns the typed stall predicate fired on.
+
+    That gate is what separates this from the bare "N tool-call-free turns"
+    rule ADR-0035 measured and rejected, which would have killed 23 of 34 real
+    trajectories at a threshold of 2.
+    """
+    client = _ScriptedClient(
+        [
+            _stall(),
+            GenerationResult(text="a", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="b", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_turn_limit=2),
+    ).run("sys", messages, time.time())
+
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
+    assert "2 consecutive" in messages[-1].content
+
+
+def test_a_productive_turn_resets_the_consecutive_count():
+    """The run has to be unbroken — one clean turn clears it."""
+    client = _ScriptedClient(
+        [
+            _stall(),
+            GenerationResult(text="a", usage=Usage(prompt_tokens=1)),
+            GenerationResult(text="clean", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="b", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=3, episode_timeout_s=10_000, reasoning_stall_turn_limit=2),
+    ).run("sys", [], time.time())
+
+    assert outcome.termination_reason != TerminationReason.REASONING_WITHOUT_ACTION
+
+
+def test_the_turn_limit_is_off_by_default():
+    """Shipping it off is what keeps ADR-0035's defect from recurring: the
+    threshold is the part that needs evidence, and none has been taken yet."""
+    assert LoopConfig(max_turns=1, episode_timeout_s=1).reasoning_stall_turn_limit == 0
+
+    client = _ScriptedClient(
+        [
+            _stall(),
+            GenerationResult(text="a", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="b", usage=Usage(prompt_tokens=1)),
+            _stall(),
+            GenerationResult(text="c", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=3, episode_timeout_s=10_000),
+    ).run("sys", [], time.time())
+
+    assert outcome.termination_reason != TerminationReason.REASONING_WITHOUT_ACTION

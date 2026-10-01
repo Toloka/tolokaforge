@@ -191,6 +191,7 @@ class LoopConfig:
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
     reasoning_stall_retry_count: int = 1
+    reasoning_stall_turn_limit: int = 0
     output_length_retry_count: int = 0
     parser_error_retry_count: int = 0
     tool_output_max_chars: int | None = None
@@ -1016,6 +1017,17 @@ class ToolCallingLoop:
     # two paths that can reach such a reason — the classifier's decision and the
     # empty-completion observation — and read once, into ``LoopOutcome``.
     _excluding_reason_evidence: str | None = field(default=None, init=False)
+    _consecutive_stall_turns: int = field(default=0, init=False)
+    """Unbroken run of turns that each stalled on reasoning and then recovered.
+
+    Cross-turn because the resample budgets are not: they are per-turn locals
+    re-zeroed every turn, so a model that stalls once per turn, every turn,
+    exhausts nothing and the shape is invisible from inside a single turn.
+
+    Counts recoveries, not deaths — a turn whose stall outlives its resample
+    ends the trial before reaching here. So this is the "limping along" signal:
+    a model paying for deliberation every turn and still moving.
+    """
     # Wire message list sent to the provider. Distinct from the caller-owned
     # ``messages`` (which becomes ``Trajectory.messages``) so a summarize event
     # can rewrite the wire view while the recorded history keeps the full
@@ -1047,6 +1059,7 @@ class ToolCallingLoop:
         termination_reason: TerminationReason | None = None
         self._wire_messages = self._read_as_agent(messages)
         self._excluding_reason_evidence = None
+        self._consecutive_stall_turns = 0
 
         for turn in range(self.config.max_turns):
             outcome = self._attempt_turn(turn, system_prompt, messages, start_time)
@@ -1187,9 +1200,15 @@ class ToolCallingLoop:
         output_length_attempts = 0
         reasoning_stall_attempts = 0
         parser_error_attempts = 0
+        # Set by the reasoning-stall branch for the one resample that follows
+        # it, and cleared as soon as that call is made: the suppression is a
+        # way out of a stall, not a standing change to what the model sees.
+        suppress_replay = False
+        stalled_this_turn = False
         while True:
             try:
-                result = self._generate(turn, system_prompt)
+                result = self._generate(turn, system_prompt, replay_reasoning=not suppress_replay)
+                suppress_replay = False
             except litellm.exceptions.ContextWindowExceededError:
                 reactive_decision = self._maybe_reactive_summarize(turn, system_prompt, messages)
                 if reactive_decision is not None:
@@ -1275,8 +1294,10 @@ class ToolCallingLoop:
                 # through to ``break`` above and the trial carries on. Arriving
                 # without one is the worse case, so it gets the same resample
                 # the content-carrying path has rather than ending the trial.
+                stalled_this_turn = True
                 if reasoning_stall_attempts < self.config.reasoning_stall_retry_count:
                     reasoning_stall_attempts += 1
+                    suppress_replay = True
                     self._append_both(
                         messages,
                         Message(
@@ -1297,6 +1318,7 @@ class ToolCallingLoop:
                             result.usage.reasoning_tokens if result.usage is not None else 0
                         ),
                         finish_reason=result.finish_reason,
+                        replaying_reasoning=False,
                     )
                     continue
 
@@ -1332,6 +1354,38 @@ class ToolCallingLoop:
                 attempt=empty_attempts,
                 max_attempts=self.config.empty_retry_count + 1,
             )
+
+        # The turn produced an action. Fold it into the cross-turn count before
+        # anything else reads it: a run of stalling turns is only interesting
+        # while it is unbroken, and a productive turn breaks it.
+        if stalled_this_turn:
+            self._consecutive_stall_turns += 1
+            self.logger.info(
+                "Turn recovered from a reasoning-only stall",
+                turn=turn,
+                consecutive_stall_turns=self._consecutive_stall_turns,
+            )
+            limit = self.config.reasoning_stall_turn_limit
+            if limit and self._consecutive_stall_turns >= limit:
+                self._append_both(
+                    messages,
+                    self._system_message(
+                        f"Model stalled on reasoning in {self._consecutive_stall_turns} "
+                        "consecutive turns; trial terminated."
+                    ),
+                )
+                self._excluding_reason_evidence = (
+                    f"{self._consecutive_stall_turns} consecutive turns each contained a "
+                    f"generation with no text and no tool calls that billed reasoning "
+                    f"tokens, against a limit of {limit}"
+                )
+                return (
+                    TrialStatus.FAILED,
+                    TerminationReason.REASONING_WITHOUT_ACTION,
+                    True,
+                )
+        else:
+            self._consecutive_stall_turns = 0
 
         self._append_both(messages, self._assistant_message(result))
         if self.observer is not None:
@@ -1454,13 +1508,33 @@ class ToolCallingLoop:
         messages.append(marker)
         return None
 
-    def _generate(self, turn: int, system_prompt: str) -> GenerationResult:
+    def _generate(
+        self, turn: int, system_prompt: str, *, replay_reasoning: bool = True
+    ) -> GenerationResult:
+        """One agent call. ``replay_reasoning=False`` sends the history with the
+        model's own prior deliberation stripped off the wire.
+
+        A resample that replays the reasoning which just produced an actionless
+        turn is close to re-rolling the same dice, and measurably behaves like
+        it. Only the wire copy is stripped — the recorded messages the grader
+        reads keep their reasoning, so nothing leaves the trajectory.
+        """
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
             self.request_limiter.acquire()
+        wire = self._wire_messages
+        if not replay_reasoning:
+            wire = [
+                (
+                    m.model_copy(update={"reasoning": None})
+                    if m.role == MessageRole.ASSISTANT and m.reasoning is not None
+                    else m
+                )
+                for m in wire
+            ]
         return self.llm_client.generate(
             system=system_prompt,
-            messages=self._wire_messages,
+            messages=wire,
             tools=self.tool_schemas,
             tool_choice="auto",
             observation=self.call_observation,

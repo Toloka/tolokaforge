@@ -522,6 +522,7 @@ class TrialRunner:
                             episode_timeout_s=self.episode_timeout_s,
                             empty_retry_count=capabilities.empty_retry_count,
                             reasoning_stall_retry_count=capabilities.reasoning_stall_retry_count,
+                            reasoning_stall_turn_limit=capabilities.reasoning_stall_turn_limit,
                             output_length_retry_count=capabilities.output_length_retry_count,
                             parser_error_retry_count=capabilities.parser_error_retry_count,
                             tool_output_max_chars=capabilities.tool_output_max_chars,

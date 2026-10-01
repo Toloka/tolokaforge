@@ -1052,6 +1052,7 @@ def build_capabilities(
     api_call_wall_timeout_s = cfg.get("api_call_wall_timeout_s")
     empty_retry_count = cfg.get("empty_retry_count")
     reasoning_stall_retry_count = cfg.get("reasoning_stall_retry_count")
+    reasoning_stall_turn_limit = cfg.get("reasoning_stall_turn_limit")
     output_length_retry_count = cfg.get("output_length_retry_count")
     parser_error_retry_count = cfg.get("parser_error_retry_count")
     tool_output_max_chars = cfg.get("tool_output_max_chars")
@@ -1079,6 +1080,9 @@ def build_capabilities(
         empty_retry_count=int(empty_retry_count) if empty_retry_count is not None else 0,
         reasoning_stall_retry_count=(
             int(reasoning_stall_retry_count) if reasoning_stall_retry_count is not None else 1
+        ),
+        reasoning_stall_turn_limit=(
+            int(reasoning_stall_turn_limit) if reasoning_stall_turn_limit is not None else 0
         ),
         output_length_retry_count=(
             int(output_length_retry_count) if output_length_retry_count is not None else 0
