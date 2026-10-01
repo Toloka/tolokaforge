@@ -192,8 +192,10 @@ full state (unstable fields present)
 - **Runner.** When a view is declared, the runner fetches the full state of both
   sides (`DBServiceClient.get_state`) and runs steps 1–5 on the client, with the
   db-service's own table-name resolution for `unstable_fields` moved into a
-  shared function (`core.hash.resolve_unstable_table_name`) that the db-service
-  keeps calling. On the view path both substrates resolve against the tables of
+  shared function (`core.hash.resolve_unstable_table_name`). The db-service image
+  ships `tolokaforge/env/json_db_service/` alone, so in production it runs the
+  vendored copy its standalone fallback defines; a parity test holds the copy to
+  the shared function. On the view path both substrates resolve against the tables of
   both full states, before the view drops any, so an `exclude_tables` rule cannot
   make a declared name resolve to another table; core's path without a view keeps
   its exact names, so no existing digest moves. A pack without a view keeps the
@@ -255,14 +257,31 @@ state_checks:
 - **Tables a rule names must exist** in `initial_state`; fields are checked only
   against a declared schema. Seeded records are not a schema: agents write
   fields no seeded row carries. Under `relaxed_validation` a missing table is a
-  warning, as for `id_fields`.
+  warning, as for `id_fields`. A table the agent's tools create is therefore
+  seeded empty to be named. Only a `TaskDescription` carrying
+  `initial_state.schemas` declares a schema, so the field check runs at
+  `RegisterTrial` for such a description; the native adapter declares none.
+- **Tables a rule names are seeded as lists of records.** A table seeded as a
+  mapping (records keyed by id, the tau-bench shape) reaches the runner's
+  db-service as the list of its values while core's hash reads the declared JSON
+  as written, so one view would grade a trial two ways. Such a rule is refused at
+  every load, whatever `relaxed_validation` says; the wire's tables are lists by
+  type, so `RegisterTrial` cannot be handed one.
+- **The load resolves names against the seeded tables, the grade against both
+  full states.** A table the agent creates can thus make a declared
+  `unstable_fields` name resolve at grade time to a column the load never held a
+  key or a reference to. A known limitation, and a one-sided one: it can only fail
+  a trial wrongly, never pass one, since the re-keyed id stays in the hash.
 - **An unknown `version` is refused at load.** So is an unknown `kind`, and so
   is an empty `rules` list: a view without rules is no view.
 - **With `hash` disabled** the block gets a `config validate` warning (a hint in
   `tolokaforge validate`, a logged warning at load), not a refusal.
 - **Where the checks run.** One function checks a view against its task wherever
   the task loads: the native adapter's `to_task_description` and
-  `get_grading_config`, the runner's `RegisterTrial`, and the authoring gate.
+  `get_grading_config`, the runner's `RegisterTrial` (before anything is
+  provisioned), and the authoring gate. An adapter whose seeded-tables layer does
+  not report the task's unstable fields gets the masked-field checks reported
+  unchecked by the gate, not run against an empty mask.
 - **No profiles in v1.** The first draft's shared `profiles` files are left out
   until a second pack needs one.
 
@@ -271,8 +290,8 @@ state_checks:
 | kind | Effect | Guarantees |
 |---|---|---|
 | `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them in another row. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
-| `exclude_tables` | Drops the named tables whole, key included, so a table present on one side only stops counting too; `reason` is required. | Refused for a table another rule names. |
-| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. A re-keyed id is a function of its record's content, not a generated value: the unstable filter after the view leaves it in, and one the clock mask would drop is refused at load, so it reaches the hash. |
+| `exclude_tables` | Drops the named tables whole, key included; `reason` is required. A table the agent's tools create is seeded empty to be named, and the drop then takes the rows the trial wrote and the key, so a trial that wrote the table and a golden that never touched it compare alike. | Refused for a table another rule names. |
+| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. Two records under one id, a key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise `ComparisonViewCollision`. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. A re-keyed id is a function of its record's content, not a generated value: the unstable filter after the view leaves it in, and one the clock mask would drop is refused at load, so it reaches the hash. |
 
 **The rendered key** of `normalize_ids` is `<table>:<canonical JSON of its key
 fields>`, for example `line_items:{"order_id":"O1","quantity":2,"sku":"S2"}`;
@@ -472,13 +491,19 @@ a follow-up. This is what a `checks.py` hook cannot provide.
     image (new engine → old image).
   - A `ComparisonViewError` reaches `GradeTrialResponse(success=False)` →
     `grading_error`.
-  - The golden side is viewed first. A `ComparisonViewCollision` (a
-    `ComparisonViewError` for a re-keying that is not bijective: a shared key, a
-    key a kept record holds, a rank tie, a reference already holding a new key)
-    on the golden side is a `grading_error` like any other view error. On the
-    trial side, once the golden's view succeeded, it is the agent's state that
-    cannot be told apart: the trial fails, with the collision and its ids as the
-    reason.
+  - The golden side is viewed first. Any `ComparisonViewError` on the golden
+    side, a `ComparisonViewCollision` included, is a `grading_error`: the
+    declaration does not fit the state the task's own golden path builds, which
+    is the author's to fix. **Any `ComparisonViewError` on the trial side, once
+    the golden's view succeeded, fails the trial**: the golden's view succeeding
+    shows the declaration is sound, so what the trial side cannot view — a
+    re-keying that is not bijective, a new record without its key field, a list
+    or dict in a key field, a dict in a reference, a null id
+    `unless_referenced_by` reads, a dict at a nested `path` — is the trial's own
+    state, which a hash without a view would score `0.0` too, not a grader
+    defect for `tolokaforge run` to report. The record carries `trial_error`
+    (the error's type, its message and the ids it names) and the reason names
+    it.
 - **Core.**
   - `StateChecksConfig.comparison_view`.
   - `check_hash` and `check_hash_against_golden_replay` apply the view first,
@@ -486,7 +511,7 @@ a follow-up. This is what a `checks.py` hook cannot provide.
     initial state in place, so the view needs its own copy.
   - `check_hash` stops folding a `ComparisonViewError` into
     `0.0, "Error computing hash"` and lets it propagate; every other error is still
-    folded. The collision rule is the runner's.
+    folded. The rule for trial-side errors is the runner's.
   - Both checks return the record as a further tuple element, which
     `GradingEngine` puts on `Grade.comparison_view`: the same JSON the runner puts
     on the wire.
@@ -497,7 +522,10 @@ a follow-up. This is what a `checks.py` hook cannot provide.
   - The `_WireKey` row and its doc lock, a version-lock row in `GRADING.md`, and
     the native adapter's translation of the key.
 - **The hash / diff parity invariant (#1444)** holds on the view pair: the digest
-  is of the view, so the diff that must agree with it is the view diff.
+  is of the view, so the diff that must agree with it is the view diff. The view
+  diff (`compute_view_diff`) names a table only one side holds, which
+  `compute_state_diff` reads as empty while the hash does not; the raw diff is
+  unchanged.
 
 ### Tests
 
@@ -566,6 +594,8 @@ a follow-up. This is what a `checks.py` hook cannot provide.
   in its own PR.
 - The consolidation steps 2–4.
 - Golden variants (#612).
+- Refusing an unknown major `function_version` when a recorded grade is read
+  back, once a bundle reader consumes the record.
 
 ## Links
 
