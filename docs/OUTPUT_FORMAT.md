@@ -348,6 +348,10 @@ dataclass whose constructor kwargs already serialise alongside the
 fingerprint via `agent.capabilities`, not a single-named policy.
 Callers needing the full parameter block read that block directly.
 
+`resolved` is the record, not a model-config field: a reader that rebuilds a
+`ModelConfig` from a role block (offline judge replay does, for `judge`) drops
+it first.
+
 The `judge` role (the run-level read-only rubric judge, `models.judge`) is
 recorded symmetrically with `agent` / `user` — its own role block plus a
 `resolved.*` fingerprint — so every grade bundle records which judge produced

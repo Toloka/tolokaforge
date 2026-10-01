@@ -25,6 +25,8 @@ import re
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -34,6 +36,7 @@ from pydantic import ValidationError
 from tests.unit.grading.test_judge import ScriptedClient
 from tests.utils.five_shape_run import write_five_shape_run
 from tests.utils.provision_failure import write_provision_failure_bundle
+from tolokaforge.core.conductor import InProcessConductor
 from tolokaforge.core.failure_attribution import TrialOutcomeClass
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
@@ -60,7 +63,10 @@ from tolokaforge.core.grading.transcript_wire import (
     encode_transcript_wire,
     split_leading_system_message,
 )
+from tolokaforge.core.llm.reasoning import ReasoningConfig
 from tolokaforge.core.models import (
+    RESOLVED_RECORD_KEY,
+    EvaluationConfig,
     Grade,
     GradeComponents,
     JudgeInputs,
@@ -68,6 +74,11 @@ from tolokaforge.core.models import (
     JudgeStatus,
     Message,
     MessageRole,
+    ModelConfig,
+    ModelSessionConfig,
+    OpenRouterConfig,
+    OrchestratorConfig,
+    RunConfig,
     TerminationReason,
     ToolCall,
     Trajectory,
@@ -84,7 +95,7 @@ _RUBRIC = {
         {"id": "refund_amount", "description": "Refund quotes $328.50", "kind": "binary"},
     ],
 }
-_JUDGE_MODEL = {"provider": "openrouter", "name": "openai/gpt-4.1-mini", "temperature": 0.0}
+_JUDGE_MODEL = ModelConfig(provider="openrouter", name="openai/gpt-4.1-mini", temperature=0.0)
 _GRADING_REFUSAL = "judge returned no verdict after 3 attempts"
 
 
@@ -116,10 +127,32 @@ def _trajectory(
     )
 
 
+def _conductor_written_model_config(judge: ModelConfig, output_dir: Path) -> dict[str, Any]:
+    """The ``task.yaml`` ``model_config`` block the conductor writes for a run judged by *judge*."""
+    agent = ModelConfig(provider="openai", name="gpt-4o-mini")
+    config = RunConfig(
+        models={"agent": agent, "judge": judge},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir=str(output_dir)),
+    )
+    conductor = InProcessConductor(
+        adapter=MagicMock(),
+        artifact_writer=MagicMock(),
+        config=config,
+        logger=MagicMock(),
+        agent_client=MagicMock(),
+        runtime_backend=MagicMock(),
+        trial_grader=MagicMock(),
+        output_dir=output_dir,
+    )
+    return conductor._serialize_model_config(agent_config=agent, judge_config=judge)
+
+
 def _write_recorded_inputs(
     trial_dir: Path,
     trajectory: Trajectory,
     *,
+    judge: ModelConfig = _JUDGE_MODEL,
     with_rubric: bool = True,
     recorded_system_prompt: str | None = None,
     recorded_include_agent_system_prompt: bool | None = None,
@@ -147,7 +180,7 @@ def _write_recorded_inputs(
             "task_id": "refund_task",
             "trial_index": 0,
             "grading_config": grading_config,
-            "model_config": {"judge": _JUDGE_MODEL},
+            "model_config": _conductor_written_model_config(judge, trial_dir),
         },
     )
 
@@ -157,6 +190,7 @@ def _write_bundle(
     *,
     judge_status: JudgeStatus,
     judge_inputs: JudgeInputs | None,
+    judge: ModelConfig = _JUDGE_MODEL,
     with_rubric: bool = True,
     kb_gating: JudgeKbGating | None = None,
     recorded_system_prompt: str | None = None,
@@ -167,6 +201,7 @@ def _write_bundle(
     _write_recorded_inputs(
         trial_dir,
         trajectory,
+        judge=judge,
         with_rubric=with_rubric,
         recorded_system_prompt=recorded_system_prompt,
         recorded_include_agent_system_prompt=recorded_include_agent_system_prompt,
@@ -232,6 +267,29 @@ def test_reconstructed_transcript_is_byte_identical_to_live_path(tmp_path: Path)
     assert inputs.provenance.judge_model_source is ProvenanceSource.RECORDED
     assert isinstance(inputs.db_reader, OfflineDBReader)
     assert [t.name for t in inputs.extra_read_tools] == ["read_file"]
+
+
+def test_a_judge_block_the_conductor_wrote_replays_as_the_model_config_it_recorded(
+    tmp_path: Path,
+) -> None:
+    judge = ModelConfig(
+        provider="openrouter",
+        name="anthropic/claude-sonnet-4.6",
+        temperature=0.0,
+        reasoning=ReasoningConfig(mode="budget", budget_tokens=2048),
+        openrouter=OpenRouterConfig(provider_order=["Together"], allow_fallbacks=False),
+        session=ModelSessionConfig(header="x-session-id"),
+        fallbacks=[ModelConfig(provider="openai", name="gpt-4o-mini")],
+    )
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(trial_dir, judge_status=JudgeStatus.COMPLETED, judge_inputs=None, judge=judge)
+    recorded = yaml.safe_load((trial_dir / "task.yaml").read_text())["model_config"]["judge"]
+    assert RESOLVED_RECORD_KEY in recorded
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.judge_model_config == judge
+    assert inputs.provenance.judge_model_source is ProvenanceSource.RECORDED
 
 
 def test_eligible_bundle_without_rubric_raises_named_missing_input(tmp_path: Path) -> None:

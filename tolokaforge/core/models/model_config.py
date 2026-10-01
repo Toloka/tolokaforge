@@ -15,7 +15,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
-__all__ = ["ModelConfig", "ModelSessionConfig", "OpenRouterConfig"]
+__all__ = ["RESOLVED_RECORD_KEY", "ModelConfig", "ModelSessionConfig", "OpenRouterConfig"]
+
+#: The key the conductor adds to each ``task.yaml`` ``model_config.<role>`` block for the
+#: preset fingerprint. It is the record, not a field: a reader rebuilding a
+#: :class:`ModelConfig` from that block drops it.
+RESOLVED_RECORD_KEY = "resolved"
 
 #: RFC 9110 ``field-name`` (a ``token``).
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")

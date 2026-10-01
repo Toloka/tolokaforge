@@ -44,6 +44,7 @@ from tolokaforge.core.models.grade import (
 )
 from tolokaforge.core.models.grade_components import GradeComponents
 from tolokaforge.core.models.model_config import (
+    RESOLVED_RECORD_KEY,
     ModelConfig,
     ModelSessionConfig,
     OpenRouterConfig,
@@ -226,6 +227,7 @@ __all__ = [
     "UserReplyGuardEvent",
     "UserReplyOutcome",
     # Model config
+    "RESOLVED_RECORD_KEY",
     "ModelConfig",
     "ModelSessionConfig",
     "OpenRouterConfig",
