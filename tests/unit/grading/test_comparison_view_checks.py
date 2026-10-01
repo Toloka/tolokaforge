@@ -33,6 +33,7 @@ from tolokaforge.core.grading.config_validation import (
 )
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner import models as runner_models
+from tolokaforge.runner.db_client import TrialNotFoundError
 
 pytestmark = pytest.mark.unit
 
@@ -582,3 +583,48 @@ def test_the_gate_reports_a_view_its_model_refuses_as_a_finding() -> None:
     (error,) = [f for f in report.errors if f.where == "state_checks.comparison_view"]
     assert "is not a view this engine reads" in error.message
     assert "comparison_view.version 9 is not a version this engine reads" in error.message
+
+
+def test_register_trial_refuses_a_view_before_provisioning_anything(
+    runner_service, mock_grpc_context
+) -> None:
+    """The refusal reads the description alone: no db-service trial, no artifacts."""
+    description = runner_models.TaskDescription.model_validate(
+        {
+            "task_id": "view_task",
+            "name": "A view keyed by a masked column",
+            "category": "test",
+            "description": "RegisterTrial refuses it before provisioning.",
+            "adapter_type": "native",
+            "system_prompt": "You are a test assistant.",
+            "initial_state": {
+                "tables": _TABLES,
+                "unstable_fields": [{"table_name": "documents", "field_name": "filed_at"}],
+            },
+            "agent_tools": [],
+            "user_tools": [],
+            "tool_artifacts": {"mcp_server.py": "cHJpbnQoMSkK"},
+            "grading": {
+                "combine_method": "weighted",
+                "weights": {"state_checks": 1.0},
+                "pass_threshold": 0.5,
+                "state_checks": {
+                    "hash_enabled": True,
+                    "expect_initial_state": True,
+                    "comparison_view": _MASKED_KEY_VIEW,
+                },
+            },
+        }
+    )
+    trial_id = "view_refused_early:0"
+    response = runner_service.RegisterTrial(
+        register_request(
+            trial_spec_json(description.model_dump(mode="json"), trial_id=trial_id),
+            trial_id=trial_id,
+        ),
+        mock_grpc_context,
+    )
+    assert response.success is False and "unstable_fields masks" in response.error
+    assert trial_id not in runner_service.trials
+    with pytest.raises(TrialNotFoundError):
+        runner_service._run_async(runner_service.db_client.get_state(trial_id))
