@@ -50,7 +50,11 @@ logger = logging.getLogger(__name__)
 # Import hash functions from core module
 # Note: In Docker container, this import path works because tolokaforge is installed
 try:
-    from tolokaforge.core.hash import compute_stable_hash, filter_unstable_fields
+    from tolokaforge.core.hash import (
+        compute_stable_hash,
+        filter_unstable_fields,
+        resolve_unstable_table_name,
+    )
 except ImportError:
     # Fallback for standalone testing - implement locally
     logger.warning(
@@ -200,6 +204,31 @@ except ImportError:
             serializable_state, sort_keys=True, separators=(",", ":"), default=str
         )
         return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
+
+    def resolve_unstable_table_name(table: str, data_tables: Iterable[str]) -> str | None:
+        """Standalone fallback — mirrors tolokaforge.core.hash.resolve_unstable_table_name.
+
+        Keep the two in sync.
+        """
+        tables = set(data_tables)
+        if table in tables:
+            return table
+        if table + "s" in tables:
+            return table + "s"
+        if table.endswith("s") and table[:-1] in tables:
+            return table[:-1]
+        for data_table in sorted(tables):
+            if data_table.endswith(table):
+                return data_table
+            if table.endswith("s") and data_table.endswith(table[:-1]):
+                return data_table
+            if table.endswith(data_table):
+                return data_table
+            if table.endswith("s") and table[:-1].endswith(data_table):
+                return data_table
+            if table.endswith(data_table + "s"):
+                return data_table
+        return None
 
 
 app = FastAPI(title="JSON DB Service", version="1.0.0")
@@ -437,18 +466,17 @@ class TrialState(BaseModel):
     def get_unstable_field_list(self) -> list[str]:
         """Get unstable fields as list of 'table.field' strings for hash computation.
 
-        Handles singular/plural table name mismatches by trying to match unstable field
-        table names against actual data table names using various strategies:
-        - Exact match
-        - Adding 's' suffix (singular -> plural)
-        - Removing 's' suffix (plural -> singular)
-        - Suffix matching (for prefixed table names)
+        Each registered table name resolves against the actual data table names through
+        :func:`tolokaforge.core.hash.resolve_unstable_table_name` — exact, singular /
+        plural, then suffix matching — the one resolution every reader of a task's
+        unstable fields shares, so a client masking a full state masks the same columns
+        this service does. A name that matches no data table keeps its declared spelling.
         """
         result = []
         data_tables = set(self.data.keys())
 
         for table, field in self.unstable_fields:
-            matched_table = self._resolve_table_name(table, data_tables)
+            matched_table = resolve_unstable_table_name(table, data_tables)
             if matched_table:
                 result.append(f"{matched_table}.{field}")
                 if matched_table != table:
@@ -463,55 +491,6 @@ class TrialState(BaseModel):
                 )
 
         return result
-
-    def _resolve_table_name(self, table: str, data_tables: set) -> str | None:
-        """Resolve unstable field table name to actual data table name.
-
-        Tries multiple matching strategies to handle singular/plural mismatches.
-
-        Args:
-            table: The table name from unstable fields registration
-            data_tables: Set of actual table names in self.data
-
-        Returns:
-            Matched data table name, or None if no match found
-        """
-        # Strategy 1: Exact match
-        if table in data_tables:
-            return table
-
-        # Strategy 2: Try adding 's' (singular -> plural)
-        plural_form = table + "s"
-        if plural_form in data_tables:
-            return plural_form
-
-        # Strategy 3: Try removing 's' (plural -> singular)
-        if table.endswith("s"):
-            singular_form = table[:-1]
-            if singular_form in data_tables:
-                return singular_form
-
-        # Strategy 4: Suffix matching - find data table that ends with the unstable table name
-        # This handles cases like "servicenow_csm_sn_customerservice_cases" matching
-        # against "sn_customerservice_case" or vice versa
-        for data_table in data_tables:
-            # Check if data_table ends with the unstable table name
-            if data_table.endswith(table):
-                return data_table
-            # Check if data_table ends with singular form of unstable table
-            if table.endswith("s") and data_table.endswith(table[:-1]):
-                return data_table
-            # Check if unstable table ends with data_table name
-            if table.endswith(data_table):
-                return data_table
-            # Check if unstable table (minus 's') ends with data_table
-            if table.endswith("s") and table[:-1].endswith(data_table):
-                return data_table
-            # Check if data_table (plus 's') matches unstable table suffix
-            if table.endswith(data_table + "s"):
-                return data_table
-
-        return None
 
     def get_stable_state(self) -> dict[str, list[dict[str, Any]]]:
         """Get state with unstable fields filtered out."""
