@@ -1122,9 +1122,14 @@ conversation on one replica so its prefix cache stays warm. It is a property of 
 model config, not of the gateway: the header is sent on every route that model takes,
 gateway on or off.
 
-- **Value.** `LLMClient.generate` reads `LLMCallObservation.session_id`. A call whose
-  observation carries one sends it; a call without (no observation, or
-  `session_id=None`) gets one fresh UUID4 for that `generate()` call. Either value is
+- **Value.** `LLMClient.generate` reads `LLMCallObservation.session_id`. A trial's
+  `TrialRunner` sets it on its two observations from the trial attempt's trace id,
+  `conversation_session_id(trace_id, role)` = `<trace_id>-agent` / `<trace_id>-user`.
+  That is the trace id live tracing uses ([OBSERVABILITY.md](OBSERVABILITY.md)), so
+  gateway logs join to traces; it covers the attempt, so an orchestrator retry of a
+  trial is a new conversation. A call without one (no observation, or
+  `session_id=None`: the summarizer, the rubric judge, warm-up, certification) gets
+  one fresh UUID4 for that `generate()` call. Either value is
   fixed before the outer retry starts, so every outer attempt, timeout retry and the
   OpenAI SDK's own re-sends of one call send the same value, and so does a fallback
   hop, which forwards the same observation to the next client.

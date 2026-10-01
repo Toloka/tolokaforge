@@ -47,12 +47,16 @@ from tolokaforge.core.plugin_registry import (
     available_user_simulators,
     load_user_simulator,
 )
+from tolokaforge.observability.observer import TrialIdentity
 from tolokaforge.testing.user_simulators import (
     InMemoryUserSimulator,
     in_memory_user_simulator_factory,
 )
 
 pytestmark = pytest.mark.canonical
+
+#: The trial identity ``Conductor.run`` derives and hands to ``_run_agent_loop``.
+_IDENTITY = TrialIdentity(run_id="run", task_id="t1", trial_index=0, attempt_id=0)
 
 
 class _StubAdapter(BaseAdapter):
@@ -287,7 +291,7 @@ def test_the_conductor_hands_the_simulator_its_task_directory(
         patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
         patch("tolokaforge.core.conductor.TrialRunner"),
     ):
-        conductor._run_agent_loop(spec, task, setup)
+        conductor._run_agent_loop(spec, task, setup, _IDENTITY)
 
     assert len(built) == 1
     assert built[0].task_dir == tmp_path / "TASK-DIR"

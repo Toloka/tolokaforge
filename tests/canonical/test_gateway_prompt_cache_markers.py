@@ -20,14 +20,12 @@ sends: raise the litellm floor past the regression, or pin below it.
 
 from __future__ import annotations
 
-import json
-import threading
 from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
 
+from tests.utils.recording_gateway import RecordingGateway, serving_recording_gateway
 from tests.utils.secret_state import secret_manager_installed
 from tolokaforge.core.llm import gateway_route
 from tolokaforge.core.llm.client import LLMClient
@@ -38,75 +36,17 @@ pytestmark = pytest.mark.canonical
 _EPHEMERAL = {"type": "ephemeral"}
 
 
-class _RecordingGateway(ThreadingHTTPServer):
-    """Serves ``GET /v1/models`` from :attr:`catalog` (500 when ``None``) and
-    records every ``POST /v1/chat/completions`` body."""
-
-    catalog: list[str] | None
-    bodies: list[dict[str, Any]]
-
-
-class _GatewayHandler(BaseHTTPRequestHandler):
-    server: _RecordingGateway
-
-    def log_message(self, format: str, *args: Any) -> None:
-        pass
-
-    def do_GET(self) -> None:
-        if self.path != "/v1/models" or self.server.catalog is None:
-            self._reply(500, {"error": "catalog unavailable"})
-            return
-        self._reply(200, {"data": [{"id": route} for route in self.server.catalog]})
-
-    def do_POST(self) -> None:
-        if self.path != "/v1/chat/completions":
-            self._reply(404, {"error": f"unexpected path {self.path}"})
-            return
-        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
-        self.server.bodies.append(body)
-        self._reply(
-            200,
-            {
-                "id": "chatcmpl-loopback",
-                "object": "chat.completion",
-                "created": 0,
-                "model": body["model"],
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "done"},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13},
-            },
-        )
-
-    def _reply(self, status: int, payload: dict[str, Any]) -> None:
-        data = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-
 @pytest.fixture(scope="module")
-def _serving_gateway() -> Iterator[_RecordingGateway]:
-    server = _RecordingGateway(("127.0.0.1", 0), _GatewayHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield server
-    server.shutdown()
-    server.server_close()
-    thread.join()
+def _serving_gateway() -> Iterator[RecordingGateway]:
+    with serving_recording_gateway() as server:
+        yield server
 
 
 @pytest.fixture
-def installed_fake_secrets(_serving_gateway: _RecordingGateway) -> Iterator[dict[str, str]]:
+def installed_fake_secrets(_serving_gateway: RecordingGateway) -> Iterator[dict[str, str]]:
     """Point the process SecretManager at the loopback gateway."""
     payload = {
-        "LLM_PROXY_BASE_URL": f"http://127.0.0.1:{_serving_gateway.server_port}/v1",
+        "LLM_PROXY_BASE_URL": _serving_gateway.base_url,
         "LLM_PROXY_API_KEY": "sk-loopback-gateway",
         "OPENROUTER_API_KEY": "sk-or-loopback",
     }
@@ -115,9 +55,8 @@ def installed_fake_secrets(_serving_gateway: _RecordingGateway) -> Iterator[dict
 
 
 @pytest.fixture
-def gateway(_serving_gateway: _RecordingGateway) -> Iterator[_RecordingGateway]:
-    _serving_gateway.catalog = None
-    _serving_gateway.bodies = []
+def gateway(_serving_gateway: RecordingGateway) -> Iterator[RecordingGateway]:
+    _serving_gateway.reset()
     gateway_route.clear_catalog_cache()
     yield _serving_gateway
     gateway_route.clear_catalog_cache()
@@ -164,9 +103,9 @@ def _marker_sites(node: Any, path: tuple[str | int, ...] = ()) -> dict[tuple[str
     return sites
 
 
-def _only_body(gateway: _RecordingGateway) -> dict[str, Any]:
-    assert len(gateway.bodies) == 1, f"expected one chat completion, got {len(gateway.bodies)}"
-    return gateway.bodies[0]
+def _only_body(gateway: RecordingGateway) -> dict[str, Any]:
+    assert len(gateway.requests) == 1, f"expected one chat completion, got {len(gateway.requests)}"
+    return gateway.requests[0].body
 
 
 # The AnthropicEphemeralCache sites for the trajectory _generate sends: the last
@@ -180,7 +119,7 @@ _ANTHROPIC_MARKER_SITES = {
 }
 
 
-def test_resolved_route_carries_the_anthropic_markers(gateway: _RecordingGateway) -> None:
+def test_resolved_route_carries_the_anthropic_markers(gateway: RecordingGateway) -> None:
     gateway.catalog = ["openrouter/anthropic/claude-sonnet-4.6", "openrouter/openai/gpt-5.2"]
 
     _generate(ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"))
@@ -191,7 +130,7 @@ def test_resolved_route_carries_the_anthropic_markers(gateway: _RecordingGateway
     assert _marker_sites(body) == _ANTHROPIC_MARKER_SITES
 
 
-def test_unreadable_catalog_carries_the_anthropic_markers(gateway: _RecordingGateway) -> None:
+def test_unreadable_catalog_carries_the_anthropic_markers(gateway: RecordingGateway) -> None:
     _generate(ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"))
 
     body = _only_body(gateway)
@@ -200,7 +139,7 @@ def test_unreadable_catalog_carries_the_anthropic_markers(gateway: _RecordingGat
     assert _marker_sites(body) == _ANTHROPIC_MARKER_SITES
 
 
-def test_no_cache_preset_sends_no_markers(gateway: _RecordingGateway) -> None:
+def test_no_cache_preset_sends_no_markers(gateway: RecordingGateway) -> None:
     gateway.catalog = ["openrouter/anthropic/claude-sonnet-4.6", "openrouter/openai/gpt-5.2"]
 
     # litellm's OpenAI transport refuses gpt-5 the config's default

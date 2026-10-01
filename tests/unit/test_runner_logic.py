@@ -386,6 +386,24 @@ class TestTrialRunnerRun:
         assert traj.metrics.usage.prompt_tokens == 100
         assert traj.metrics.usage.completion_tokens == 50
 
+    @pytest.mark.parametrize(
+        "trace_id, agent_session, user_session",
+        [("0f" * 16, "0f" * 16 + "-agent", "0f" * 16 + "-user"), (None, None, None)],
+        ids=["trace-id", "no-trace-id"],
+    )
+    def test_each_role_observes_its_conversation_id(
+        self, trace_id: str | None, agent_session: str | None, user_session: str | None
+    ) -> None:
+        agent = _make_agent_client()
+        simulator = _make_user_simulator()
+        runner = _make_runner(agent_client=agent, user_simulator=simulator, trace_id=trace_id)
+        runner.run("You are an agent.", "Please do the task")
+
+        agent_observation = agent.generate.call_args.kwargs["observation"]
+        user_observation = simulator.reply.call_args.kwargs["observation"]
+        assert (agent_observation.role, agent_observation.session_id) == ("agent", agent_session)
+        assert (user_observation.role, user_observation.session_id) == ("user", user_session)
+
     def test_user_stop_signal(self) -> None:
         """Agent responds normally, then user sends a bare ###STOP###."""
         agent = _make_agent_client(

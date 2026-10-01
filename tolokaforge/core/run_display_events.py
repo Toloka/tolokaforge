@@ -718,6 +718,11 @@ class LLMCallObservation:
             )
 
 
+def conversation_session_id(trace_id: str, role: LLMCallRole) -> str:
+    """The session id every call one trial's ``role`` makes carries."""
+    return f"{trace_id}-{role}"
+
+
 class _NullRunDisplayEvents:
     """No-op :class:`RunDisplayEvents`.
 
@@ -763,4 +768,5 @@ __all__ = [
     "_NULL_EVENTS",
     "_NullRunDisplayEvents",
     "build_component_id",
+    "conversation_session_id",
 ]

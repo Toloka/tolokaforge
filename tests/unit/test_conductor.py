@@ -46,9 +46,13 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
+from tolokaforge.observability.observer import TrialIdentity
 from tolokaforge.runner.models import TaskDescription, provisions_database
 
 pytestmark = pytest.mark.unit
+
+#: The trial identity ``Conductor.run`` derives and hands to ``_run_agent_loop``.
+_IDENTITY = TrialIdentity(run_id="run", task_id="t1", trial_index=0, attempt_id=0)
 
 
 def _make_spec(
@@ -526,7 +530,7 @@ class TestTrialToolSurfacePartition:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, _IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs
@@ -556,7 +560,7 @@ class TestTrialToolSurfacePartition:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, _IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs
@@ -634,7 +638,7 @@ def _trial_runner_kwargs(
         patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
         patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
     ):
-        conductor._run_agent_loop(spec, task, setup)
+        conductor._run_agent_loop(spec, task, setup, _IDENTITY)
     return runner_cls.call_args.kwargs
 
 
@@ -660,7 +664,7 @@ class TestUserStopRuleReachesTheRunner:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_make_spec(), task, setup)
+            conductor._run_agent_loop(_make_spec(), task, setup, _IDENTITY)
         return runner_cls.call_args.kwargs
 
     def test_a_declared_rule_is_the_one_the_runner_reads(self, tmp_path: Path) -> None:
@@ -803,7 +807,7 @@ class TestTrialSetupToolOutputMaxCharsWiring:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, _IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs
@@ -835,7 +839,7 @@ class TestTrialSetupToolOutputMaxCharsWiring:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, _IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs
