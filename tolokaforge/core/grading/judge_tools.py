@@ -12,8 +12,7 @@ supplies, which bridges to its async DB client off the judge's worker thread (se
 ``judge.py`` module docstring). ``search_kb`` is :class:`SearchKbTool`, a
 harness-owned read-only tool that delegates to the per-trial
 :class:`~tolokaforge.core.grading.kb_search.KnowledgeSearch` resolved for the
-trial — the SAME index the agent searched. It does NOT reuse the builtin
-``SearchKBTool`` (that one re-derives a global rag URL — the bug this fixes).
+trial — the SAME index the agent searched.
 """
 
 from __future__ import annotations

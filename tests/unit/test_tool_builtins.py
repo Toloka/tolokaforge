@@ -1,4 +1,4 @@
-"""Unit tests for tool builtins: db_json, http_request, rag_search.
+"""Unit tests for tool builtins: db_json, http_request.
 
 Covers: schema structure, constructor configuration, parameter validation,
 request construction, and result parsing. All HTTP calls are mocked. The
@@ -15,7 +15,6 @@ import pytest
 
 from tolokaforge.tools.builtin.db_json import DBQueryTool, DBUpdateTool
 from tolokaforge.tools.builtin.http_request import HTTPRequestTool
-from tolokaforge.tools.builtin.rag_search import SearchKBTool
 from tolokaforge.tools.registry import ToolCategory
 
 pytestmark = pytest.mark.unit
@@ -269,160 +268,6 @@ class TestHTTPRequestTool:
 
 
 # ===================================================================
-# SearchKBTool
-# ===================================================================
-
-
-@pytest.mark.unit
-class TestSearchKBTool:
-    """Tests for SearchKBTool (RAG search)."""
-
-    def test_constructor_defaults(self) -> None:
-        tool = SearchKBTool()
-        assert tool.name == "search_kb"
-        assert tool.rag_url == "http://rag-service:8001"
-        assert tool.policy.timeout_s == 15.0
-        assert tool.policy.category == ToolCategory.READ
-
-    def test_constructor_custom_url(self) -> None:
-        tool = SearchKBTool(rag_url="http://custom-rag:9000")
-        assert tool.rag_url == "http://custom-rag:9000"
-
-    def test_schema_structure(self) -> None:
-        tool = SearchKBTool()
-        schema = tool.get_schema()
-        func = schema["function"]
-        assert func["name"] == "search_kb"
-        params = func["parameters"]
-        assert "query" in params["properties"]
-        assert "top_k" in params["properties"]
-        assert "alpha" in params["properties"]
-        assert params["required"] == ["query"]
-
-    def test_schema_alpha_bounds(self) -> None:
-        tool = SearchKBTool()
-        schema = tool.get_schema()
-        alpha_prop = schema["function"]["parameters"]["properties"]["alpha"]
-        assert alpha_prop["minimum"] == 0.0
-        assert alpha_prop["maximum"] == 1.0
-
-    @patch("tolokaforge.tools.builtin.rag_search.httpx.post")
-    def test_execute_success(self, mock_post: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = [
-            {
-                "doc_id": "doc-1",
-                "source": "policy.md",
-                "score": 0.95,
-                "text": "This is the relevant policy text about returns...",
-                "retrieval_method": "hybrid",
-            },
-            {
-                "doc_id": "doc-2",
-                "source": "faq.md",
-                "score": 0.82,
-                "text": "FAQ about return procedures...",
-                "retrieval_method": "hybrid",
-            },
-        ]
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = SearchKBTool(rag_url="http://test:8001")
-        result = tool.execute(query="return policy", top_k=5, alpha=0.5)
-
-        assert result.success is True
-        assert "2 relevant documents" in result.output
-        assert "doc-1" in result.output
-        assert "policy.md" in result.output
-        assert result.metadata["count"] == 2
-        assert result.metadata["top_score"] == 0.95
-        assert result.metadata["method"] == "hybrid"
-
-    @patch("tolokaforge.tools.builtin.rag_search.httpx.post")
-    def test_execute_no_results(self, mock_post: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = []
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = SearchKBTool()
-        result = tool.execute(query="nonexistent topic")
-
-        assert result.success is True
-        assert "No relevant documents" in result.output
-        assert result.metadata["count"] == 0
-
-    @patch("tolokaforge.tools.builtin.rag_search.httpx.post")
-    def test_execute_http_error(self, mock_post: MagicMock) -> None:
-        mock_post.side_effect = httpx.HTTPError("Service down")
-
-        tool = SearchKBTool()
-        result = tool.execute(query="test query")
-
-        assert result.success is False
-        assert "Search failed" in result.error
-
-    @patch("tolokaforge.tools.builtin.rag_search.httpx.post")
-    def test_execute_default_params(self, mock_post: MagicMock) -> None:
-        """Verify default top_k and alpha are passed to the service."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = []
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = SearchKBTool(rag_url="http://test:8001")
-        tool.execute(query="test")
-
-        mock_post.assert_called_once_with(
-            "http://test:8001/search",
-            json={"query": "test", "top_k": 5, "alpha": 0.5},
-            timeout=15.0,
-        )
-
-    @patch("tolokaforge.tools.builtin.rag_search.httpx.post")
-    def test_execute_custom_params(self, mock_post: MagicMock) -> None:
-        """Verify custom top_k and alpha are passed."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = []
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = SearchKBTool(rag_url="http://test:8001")
-        tool.execute(query="test", top_k=10, alpha=0.8)
-
-        mock_post.assert_called_once_with(
-            "http://test:8001/search",
-            json={"query": "test", "top_k": 10, "alpha": 0.8},
-            timeout=15.0,
-        )
-
-    @patch("tolokaforge.tools.builtin.rag_search.httpx.post")
-    def test_execute_text_truncation(self, mock_post: MagicMock) -> None:
-        """Result text is truncated in output."""
-        long_text = "x" * 1000
-        mock_response = MagicMock()
-        mock_response.json.return_value = [
-            {
-                "doc_id": "doc-1",
-                "source": "long.md",
-                "score": 0.9,
-                "text": long_text,
-                "retrieval_method": "semantic",
-            },
-        ]
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = SearchKBTool()
-        result = tool.execute(query="test")
-
-        assert result.success is True
-        # Text should be truncated to 200 chars + "..."
-        assert "..." in result.output
-
-
-# ===================================================================
 # Cross-tool: schema format
 # ===================================================================
 
@@ -436,7 +281,6 @@ class TestSchemaFormat:
             DBQueryTool(),
             DBUpdateTool(),
             HTTPRequestTool(),
-            SearchKBTool(),
         ]
         for tool in tools:
             schema = tool.get_schema()
@@ -452,7 +296,6 @@ class TestSchemaFormat:
             DBQueryTool(),
             DBUpdateTool(),
             HTTPRequestTool(),
-            SearchKBTool(),
         ]
         for tool in tools:
             schema = tool.get_schema()
