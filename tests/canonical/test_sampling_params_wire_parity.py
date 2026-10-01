@@ -2,12 +2,13 @@
 directly and through a gateway route.
 
 ``openai_gpt5``, ``openai_gpt6`` and ``openai_o_series`` declare
-``supports_sampling_params: false``: OpenRouter lists no ``temperature`` / ``top_p``
-for these models and serves none of them when asked to honour one. On a resolved
-gateway route the request goes out through litellm's ``openai`` transport, which
-refuses ``temperature`` for these names in-process; directly, the ``openrouter``
-transport forwards it. With the declaration neither path sends a sampling key, so
-both succeed and agree.
+``supports_sampling_params: false``: no OpenRouter endpoint applies a ``temperature``
+/ ``top_p`` for these models except gpt-5-image*. On a resolved gateway route the
+request goes out through litellm's ``openai`` transport, which refuses
+``temperature`` in-process for the gpt-5 and o-series names; directly, the
+``openrouter`` transport forwards it. gpt-6 is declared on OpenRouter's support list
+alone: litellm's transport accepts ``temperature`` for it on either path. With the
+declaration neither path sends a sampling key, so both succeed and agree.
 
 Each case drives the real :meth:`LLMClient.generate` on the default ``ModelConfig``
 (``temperature`` left at ``0.0``) against a loopback server. "Direct" points

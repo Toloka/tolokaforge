@@ -24,6 +24,7 @@ from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.client import BuiltinUserSimulator, LLMClient
 from tolokaforge.core.llm.presets import (
     IGNORED_SAMPLING_PARAM,
+    build_capabilities,
     ignored_sampling_params,
     set_overlay_path,
 )
@@ -243,24 +244,17 @@ class TestAPresetThatTakesNoSampling:
     ) -> None:
         assert _sampling_sent(_model()) == {"temperature": 0.0}
 
+    def test_it_declines_only_the_sampling_keys(self, no_sampling_preset: None) -> None:
+        policy = build_capabilities(_NO_SAMPLING, "openrouter").params_policy
+        declined = {
+            key: policy.declines_sampling_param(key)
+            for key in ("temperature", "top_p", "top_k", "seed")
+        }
+        assert declined == {"temperature": True, "top_p": True, "top_k": True, "seed": False}
 
-class TestTheBundledGpt5EscapeHatch:
-    """``capabilities: {supports_sampling_params: true}`` is scoped to its own config."""
 
-    def test_a_provider_openai_config_that_takes_it_sends_its_temperature(self) -> None:
-        model = ModelConfig(
-            provider="openai",
-            name="gpt-5.2",
-            temperature=0.7,
-            capabilities={"supports_sampling_params": True},
-        )
-        assert _sampling_sent(model) == {"temperature": 0.7}
-
-    @pytest.mark.parametrize(
-        ("provider", "name"), [("openai", "gpt-5.2"), ("openrouter", "openai/gpt-5.2")]
-    )
-    def test_a_config_without_it_sends_none(self, provider: str, name: str) -> None:
-        assert _sampling_sent(ModelConfig(provider=provider, name=name, temperature=0.7)) == {}
+def test_a_bundled_provider_openai_gpt5_config_sends_no_temperature() -> None:
+    assert _sampling_sent(ModelConfig(provider="openai", name="gpt-5.2", temperature=0.7)) == {}
 
 
 def test_thinking_drops_the_config_top_p_too() -> None:
@@ -349,12 +343,38 @@ class TestAnIgnoredSamplingValueIsReported:
         assert validated == [(path, Severity.WARNING) for path in expected]
         assert logged == expected
 
-    def test_config_validate_reports_capabilities_that_do_not_build(self) -> None:
+    def test_a_capabilities_typo_does_not_hide_another_configs_warning(
+        self, no_sampling_preset: None
+    ) -> None:
         agent = {"provider": "openrouter", "name": _NO_SAMPLING, "temperature": 0.7}
         raw = {
             **TestTheIgnoredUserKeyIsReported._RUN,
-            "models": {"agent": {**agent, "capabilities": {"supports_sampling": False}}},
+            "models": {
+                "agent": {
+                    **agent,
+                    "capabilities": {"supports_sampling": False},
+                    "fallbacks": [{"provider": "openrouter", "name": _NO_SAMPLING, "top_p": 0.9}],
+                }
+            },
         }
-        [issue] = [i for i in validate_run_config(raw).issues if i.severity is Severity.ERROR]
-        assert issue.path == "models.agent.capabilities"
-        assert "supports_sampling" in issue.message
+        found = [(i.severity, i.path) for i in validate_run_config(raw).issues]
+        assert (Severity.ERROR, "models.agent.capabilities") in found
+        assert (Severity.WARNING, "models.agent.fallbacks[0].top_p") in found
+        assert (Severity.WARNING, "models.agent.temperature") not in found
+
+    def test_a_preset_conflict_is_not_blamed_on_the_configs_capabilities(
+        self, write_overlay: Callable[[dict], str]
+    ) -> None:
+        """The bundled ``anthropic_claude_4_7`` preset ships ``params:``; an overlay
+        ``default.params_policy`` lands beside it, and the two do not build."""
+        conflict = {"params_policy": {"name": "generation_params", "params": {}}}
+        set_overlay_path(write_overlay({"default": conflict}))
+        agent = {"provider": "openrouter", "name": "anthropic/claude-opus-4.7", "temperature": 0.7}
+        raw = {**TestTheIgnoredUserKeyIsReported._RUN, "models": {"agent": agent}}
+        errors = [
+            (i.path, i.message)
+            for i in validate_run_config(raw).issues
+            if i.severity is Severity.ERROR
+        ]
+        assert [path for path, _ in errors] == ["(presets)"]
+        assert "'anthropic/claude-opus-4.7'" in errors[0][1]

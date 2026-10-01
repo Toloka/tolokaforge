@@ -748,14 +748,15 @@ Sampling parameters split the same way. The OpenRouter transport forwards
 `temperature` / `top_p` for GPT-5, GPT-6 and the o-series unchanged; a gateway's
 resolved route (`openrouter/openai/gpt-5.2`) goes out through the `openai`
 transport, whose `OpenAIGPT5Config` / `OpenAIOSeriesConfig` refuse any
-`temperature` but `1` in-process (`UnsupportedParamsError`). OpenRouter lists no
-sampling parameter for these models and no endpoint serves one when asked to
-honour it, so `openai_gpt5`, `openai_gpt6` and `openai_o_series` declare
-`supports_sampling_params: false`: both routes send the same request, with no
-sampling key. The escape hatch, `capabilities: {supports_sampling_params: true}`,
-belongs on a `provider: openai` config, whose bare names (`gpt-5.2`) litellm
-admits a `temperature` for; on a `provider: openrouter` config it breaks the
-gateway route again.
+`temperature` but `1` in-process (`UnsupportedParamsError`) for the GPT-5 and
+o-series names. No OpenRouter endpoint applies a sampling parameter for these
+models (except gpt-5-image*), so `openai_gpt5`, `openai_gpt6` and
+`openai_o_series` declare `supports_sampling_params: false`: both routes send the
+same request, with no sampling key. GPT-6 is declared on OpenRouter's support list
+alone; litellm's `openai` transport accepts its `temperature`. The escape hatch,
+`capabilities: {supports_sampling_params: true}`, belongs on a `provider: openai`
+config, whose bare names (`gpt-5.2`) litellm admits a `temperature` for; on a
+`provider: openrouter` config it breaks the gateway route.
 
 ## When litellm has never heard of the model
 
@@ -1768,14 +1769,15 @@ class ParamsPolicy(ABC):
         reasoning: ReasoningConfig | None,
     ) -> dict: ...
 
-    def declines_sampling_param(self, param: str) -> bool:
+    def declines_sampling_param(self, param: SamplingParam) -> bool:
         return False
 ```
 
 `kwargs` arrives carrying the request's `top_p` (config or caller), so a
 policy that drops sampling parameters drops it with the rest.
 `declines_sampling_param` answers whether a config's `temperature` / `top_p`
-is never sent; `config validate` and the run-start sweep read it to warn on an
+is never sent (`SamplingParam` is `Literal["temperature", "top_p", "top_k"]`; any
+other name answers `False`); `config validate` and the run-start sweep read it to warn on an
 explicit value the policy drops.
 
 `GenerationParams` declares its `KNOWN_KEYS` — the preset-driven flags below:
@@ -2438,7 +2440,7 @@ false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 | `anthropic`             | `anthropic/*`, `*claude*`, `*/anthropic/*`                       | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `openai_gpt6`           | `openai/gpt-6*`, `*gpt-6*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `openai_o_series`       | `openai/o{1,3,4}*`, `o{1,3,4}*` and their `*/` siblings          | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `openai_o_series`       | `openai/o{1,3,4}*`, bare `o1` / `o3` and their known tiers (`o3-mini*`, `o4-mini*`, dated `o3-20*`, …), and their `*/` siblings | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
 | `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`     | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `qwen`                  | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                       | `passthrough`      | `json_coerce`       | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
@@ -2542,6 +2544,26 @@ fallbacks included. `config validate` reports each as a WARNING at
 `<path>.name` with the remedy as its hint; the run logs each once after its
 tasks load as the `UNCLAIMED_ROUTE_FAMILY` event, with the finding's fields
 and `path` as context. Unit guard: [`tests/unit/llm/test_route_family_warning.py`](../tests/unit/llm/test_route_family_warning.py).
+
+`ignored_sampling_params(models)` returns `(path, IgnoredSamplingParam)` for
+every explicit, non-null `temperature` / `top_p` across a run's model configs,
+fallbacks included and `models.user.temperature` excluded, that the config's
+capabilities (its own `capabilities` overrides applied) do not send. The frozen
+`IgnoredSamplingParam` carries `field`, `model_name`, `provider` and `preset`,
+plus the `remedy` text; `path` is `<config path>.<field>`. `config validate`
+reports each as a WARNING at that path with the remedy as its hint; the run logs
+each once after its tasks load as the `IGNORED_SAMPLING_PARAM` event, with the
+finding's fields and `path` as context. A preset or overlay conflict that stops a
+config's capabilities from building is a `config validate` ERROR at `(presets)`
+carrying `build_capabilities`'s own message. `capability_override_errors(models)`
+returns `(path, CapabilityOverrideError)` for every model config, fallbacks
+included, whose `capabilities` block carries a key outside the recognised
+overrides; the keyword-only error carries `path` (`<config path>.capabilities`)
+and `reason`, and pickles. `config validate` reports each as an ERROR at
+`err.path`, `run` / `prepare` / `worker` refuse to start naming all of them, and
+`ignored_sampling_params` passes such a config over. Unit guards:
+[`tests/unit/test_sampling_temperature.py`](../tests/unit/test_sampling_temperature.py),
+[`tests/unit/llm/test_preset_overrides.py`](../tests/unit/llm/test_preset_overrides.py).
 
 ### Startup validation
 

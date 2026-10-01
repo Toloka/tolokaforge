@@ -1,4 +1,5 @@
-"""Canonization infrastructure: --update-canon flag and canon_snapshot fixture."""
+"""Canonical-test infrastructure: the --update-canon flag and canon_snapshot fixture, the
+pinned fake SecretManager, and the loopback LLM gateway (serving_gateway, gateway)."""
 
 import json
 import shutil

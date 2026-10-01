@@ -119,6 +119,28 @@ class TestShouldRetryException:
             exc.__cause__ = terminal
         assert _should_retry_exception(exc) is False
 
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            litellm.BadRequestError(message="provider 400", model="m", llm_provider="openrouter"),
+            litellm.PermissionDeniedError(
+                message="provider 403",
+                model="m",
+                llm_provider="openrouter",
+                response=httpx.Response(403, request=httpx.Request("POST", "http://x")),
+            ),
+        ],
+        ids=lambda exc: type(exc).__name__,
+    )
+    def test_a_wrapped_provider_400_or_403_is_still_retried(self, refusal: BaseException) -> None:
+        """``UnsupportedParamsError`` subclasses ``BadRequestError``; only the subclass
+        is terminal. A provider's own 400 / 403 can be transient (a gateway's quota)."""
+        from tolokaforge.core.llm.client import _should_retry_exception
+
+        exc = RuntimeError(f"LLM API call failed: {refusal}")
+        exc.__cause__ = refusal
+        assert _should_retry_exception(exc) is True
+
     def test_a_self_referencing_cause_chain_terminates(self) -> None:
         from tolokaforge.core.llm.client import _should_retry_exception
 

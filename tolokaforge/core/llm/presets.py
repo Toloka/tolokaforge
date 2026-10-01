@@ -14,7 +14,7 @@ import difflib
 import fnmatch
 import inspect
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -43,7 +43,7 @@ from tolokaforge.core.llm.message_assembly_policy import (
     MessageAssemblyPolicy,
     NullMessageAssembly,
 )
-from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
+from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy, SamplingParam
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
@@ -83,6 +83,7 @@ __all__ = [
     "IgnoredSamplingParam",
     "UnclaimedRouteFamily",
     "build_capabilities",
+    "capability_override_errors",
     "get_overlay_path",
     "get_resolved_presets",
     "ignored_sampling_params",
@@ -883,6 +884,18 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _unrecognised_override_keys(overrides: Mapping[str, Any]) -> str | None:
+    """Why *overrides* carry a key outside :data:`_RECOGNISED_OVERRIDE_KEYS`, or ``None``."""
+    unknown = set(overrides) - _RECOGNISED_OVERRIDE_KEYS
+    if not unknown:
+        return None
+    return (
+        f"Unknown capability override keys: {sorted(unknown)}. "
+        f"Recognised keys: {sorted(_RECOGNISED_OVERRIDE_KEYS)}. "
+        f"See docs/CONFIG.md § ModelConfig.capabilities for the contract."
+    )
+
+
 def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> None:
     """Translate run-config override keys into preset-format fields.
 
@@ -897,13 +910,9 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         ("Surface failures explicitly"). See ``docs/CONFIG.md`` §
         ``ModelConfig.capabilities`` for the current contract.
     """
-    unknown = set(overrides) - _RECOGNISED_OVERRIDE_KEYS
-    if unknown:
-        raise ValueError(
-            f"Unknown capability override keys: {sorted(unknown)}. "
-            f"Recognised keys: {sorted(_RECOGNISED_OVERRIDE_KEYS)}. "
-            f"See docs/CONFIG.md § ModelConfig.capabilities for the contract."
-        )
+    refusal = _unrecognised_override_keys(overrides)
+    if refusal is not None:
+        raise ValueError(refusal)
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):
@@ -1287,19 +1296,45 @@ _USER_TEMPERATURE_PATH: Final = "models.user.temperature"
 
 
 class CapabilityOverrideError(ValueError):
-    """A model config's ``capabilities`` overrides do not build; ``path`` names the block."""
+    """A model config's ``capabilities`` block carries a key no override recognises."""
 
-    def __init__(self, path: str, reason: str) -> None:
-        super().__init__(f"{path}: {reason}")
+    def __init__(self, *, path: str, reason: str) -> None:
         self.path = path
         self.reason = reason
+        super().__init__(f"{path}: {reason}")
+
+    def __reduce__(self) -> tuple[Callable[..., CapabilityOverrideError], tuple[str, str]]:
+        return _rebuild_capability_override_error, (self.path, self.reason)
+
+
+def _rebuild_capability_override_error(path: str, reason: str) -> CapabilityOverrideError:
+    return CapabilityOverrideError(path=path, reason=reason)
+
+
+def capability_override_errors(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, CapabilityOverrideError]]:
+    """Every model config, fallbacks included, whose ``capabilities`` block carries an
+    unrecognised key, whether or not the run ever builds that role.
+
+    ``config validate`` reports each as an ERROR at ``<path>.capabilities``, and
+    ``run`` / ``prepare`` / ``worker`` refuse to start naming all of them.
+    """
+    errors: list[tuple[str, CapabilityOverrideError]] = []
+    for path, cfg in iter_model_configs(models):
+        reason = _unrecognised_override_keys(cfg.capabilities or {})
+        if reason is not None:
+            errors.append(
+                (path, CapabilityOverrideError(path=f"{path}.capabilities", reason=reason))
+            )
+    return errors
 
 
 @dataclass(frozen=True)
 class IgnoredSamplingParam:
     """An explicit ``temperature`` / ``top_p`` the capabilities built for its config drop."""
 
-    field: str
+    field: SamplingParam
     model_name: str
     provider: str
     preset: str
@@ -1313,29 +1348,33 @@ class IgnoredSamplingParam:
         )
 
 
+_REPORTED_SAMPLING_FIELDS: Final[tuple[SamplingParam, ...]] = ("temperature", "top_p")
+
+
 def ignored_sampling_params(
     models: Mapping[str, ModelConfig],
 ) -> list[tuple[str, IgnoredSamplingParam]]:
     """``("<path>.<field>", finding)`` for every explicit, non-null ``temperature`` or
     ``top_p``, fallbacks included, that the config's capabilities, its own
     ``capabilities`` overrides applied, would not send. ``config validate`` and the
-    run both give these. Raises :class:`CapabilityOverrideError` for a config whose
-    ``capabilities`` do not build."""
+    run both give these.
+
+    A config whose ``capabilities`` carry an unrecognised key is
+    :func:`capability_override_errors`'s finding and is passed over here. Any other
+    reason its capabilities do not build (a preset or overlay conflict) raises the
+    ``ValueError`` :func:`build_capabilities` gives."""
     findings: list[tuple[str, IgnoredSamplingParam]] = []
     for path, cfg in iter_model_configs(models):
         explicit = [
             field
-            for field in ("temperature", "top_p")
+            for field in _REPORTED_SAMPLING_FIELDS
             if field in cfg.model_fields_set
             and getattr(cfg, field) is not None
             and f"{path}.{field}" != _USER_TEMPERATURE_PATH
         ]
-        if not explicit:
+        if not explicit or _unrecognised_override_keys(cfg.capabilities or {}) is not None:
             continue
-        try:
-            capabilities = build_capabilities(cfg.name, cfg.provider, overrides=cfg.capabilities)
-        except ValueError as err:
-            raise CapabilityOverrideError(f"{path}.capabilities", str(err)) from err
+        capabilities = build_capabilities(cfg.name, cfg.provider, overrides=cfg.capabilities)
         preset = resolve_effective_preset(cfg.name, cfg.provider)
         findings.extend(
             (f"{path}.{field}", IgnoredSamplingParam(field, cfg.name, cfg.provider, preset))

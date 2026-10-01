@@ -59,7 +59,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, Literal, TypeAlias, get_args
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
@@ -72,11 +72,14 @@ __all__ = [
     "RULABLE_PARAMS",
     "RuleAction",
     "VALID_RULE_ACTIONS",
+    "SamplingParam",
 ]
 
 logger = logging.getLogger(__name__)
 
-_SAMPLING_KEYS: tuple[str, ...] = ("temperature", "top_p", "top_k")
+SamplingParam: TypeAlias = Literal["temperature", "top_p", "top_k"]
+
+_SAMPLING_KEYS: tuple[SamplingParam, ...] = get_args(SamplingParam)
 
 
 class ParamsPolicy(ABC):
@@ -131,7 +134,7 @@ class ParamsPolicy(ABC):
         """Replacement value for an ``override`` rule; ``None`` otherwise."""
         return None
 
-    def declines_sampling_param(self, param: str) -> bool:
+    def declines_sampling_param(self, param: SamplingParam) -> bool:
         """Whether a config's or caller's value for sampling *param* is never sent."""
         return False
 
@@ -470,8 +473,8 @@ class GenerationParams(ParamsPolicy):
             )
         return budget
 
-    def declines_sampling_param(self, param: str) -> bool:
-        if self._supports_sampling_params:
+    def declines_sampling_param(self, param: SamplingParam) -> bool:
+        if self._supports_sampling_params or param not in _SAMPLING_KEYS:
             return False
         return not (param == "temperature" and self._fixed_temperature is not None)
 

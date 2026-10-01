@@ -29,7 +29,7 @@ from tolokaforge.core.llm.litellm_params import (
 from tolokaforge.core.llm.openrouter_headers import is_openrouter_provider
 from tolokaforge.core.llm.presets import (
     IGNORED_SAMPLING_PARAM,
-    CapabilityOverrideError,
+    capability_override_errors,
     ignored_sampling_params,
     unclaimed_route_families,
 )
@@ -270,13 +270,22 @@ def _route_family_issues(run_config: RunConfig) -> list[ValidationIssue]:
     ]
 
 
+def _capability_override_issues(run_config: RunConfig) -> list[ValidationIssue]:
+    """An ERROR per model config, fallbacks included, whose ``capabilities`` block
+    carries an unrecognised key."""
+    return [
+        ValidationIssue(severity=Severity.ERROR, path=err.path, message=err.reason)
+        for _, err in capability_override_errors(run_config.models)
+    ]
+
+
 def _ignored_sampling_issues(run_config: RunConfig) -> list[ValidationIssue]:
     """A WARNING per explicit sampling value, fallbacks included, that the model's
-    capabilities would not send, or the ERROR that a config's capabilities do not build."""
+    capabilities would not send, or the ERROR a preset or overlay conflict gives."""
     try:
         findings = ignored_sampling_params(run_config.models)
-    except CapabilityOverrideError as err:
-        return [ValidationIssue(severity=Severity.ERROR, path=err.path, message=err.reason)]
+    except ValueError as err:
+        return [ValidationIssue(severity=Severity.ERROR, path="(presets)", message=str(err))]
     return [
         ValidationIssue(
             severity=Severity.WARNING,
@@ -522,6 +531,7 @@ def validate_run_config(raw: dict[str, Any]) -> ValidationResult:
     #    miss their last segment's preset, for every model and fallback
     result.issues.extend(_overlay_key_issues(run_config))
     result.issues.extend(_route_family_issues(run_config))
+    result.issues.extend(_capability_override_issues(run_config))
     result.issues.extend(_ignored_sampling_issues(run_config))
     result.issues.extend(_session_header_issues(run_config))
 
