@@ -1,8 +1,8 @@
 # DB Service API Specification
 
-The DB Service provides schema-aware JSON state storage with unstable field filtering
-for hash-based grading. It extends the existing json-db service from PR #22 to support
-the Docker architecture's trial isolation and grading requirements.
+The DB Service provides schema-aware JSON state storage, isolated per trial, with
+unstable field filtering for hash-based grading. Every store belongs to one trial; the
+service keeps no state that trials share.
 
 ## Architecture Context
 
@@ -47,7 +47,11 @@ the Docker architecture's trial isolation and grading requirements.
 http://db-service:8000
 ```
 
-All endpoints accept and return JSON. Trial isolation is achieved via `trial_id` path parameter.
+All endpoints accept and return JSON. Every data endpoint is addressed by a
+`trial_id` path parameter under `/trials/{trial_id}`; only `/health` is global. A path
+outside `/trials/{trial_id}` is not served (FastAPI's `404 {"detail": "Not Found"}`),
+and a trial must be initialized ([Initialize Trial](#1-initialize-trial)) before any
+other endpoint on it answers: until then each one returns `404 TrialNotFound`.
 
 ---
 
@@ -545,7 +549,7 @@ A 400's message names the zero-based op index and the reason; an
 
 **`POST /trials/{trial_id}/sql`**
 
-Execute SQL queries on the state. Preserved from original json-db.
+Execute SQL queries on the state.
 
 #### Request Body
 
@@ -763,39 +767,6 @@ DELETE /trials/airline_task_001:0
 
 ---
 
-## Changes from Current json-db
-
-### Preserved Endpoints (with trial_id prefix)
-
-| Original | New | Notes |
-|----------|-----|-------|
-| `POST /reset` | `POST /trials/{trial_id}/init` | Extended with schemas + unstable_fields |
-| `GET /dump` | `GET /trials/{trial_id}/state` | Same functionality |
-| `POST /query` | `POST /trials/{trial_id}/query` | Same JSONPath support |
-| `POST /update` | `POST /trials/{trial_id}/update` | Same ops; atomic, keeps the table shape |
-| `POST /sql` | `POST /trials/{trial_id}/sql` | Same SQL support |
-| `GET /schema` | `GET /trials/{trial_id}/schema` | Extended with unstable_fields |
-| `GET /health` | `GET /health` | Unchanged (global) |
-
-### New Endpoints
-
-| Endpoint | Purpose |
-|----------|---------|
-| `PATCH /trials/{trial_id}/state/{table}` | Per-table structured mutations |
-| `GET /trials/{trial_id}/state/stable` | Stable state (unstable fields filtered) |
-| `GET /trials/{trial_id}/state/hash` | Stable hash for grading |
-| `POST /trials/{trial_id}/snapshots/{name}` | Create snapshot |
-| `POST /trials/{trial_id}/snapshots/{name}/restore` | Restore snapshot |
-| `POST /trials/{trial_id}/reset` | Reset to initial state |
-| `DELETE /trials/{trial_id}` | Cleanup trial |
-
-### Removed Functionality
-
-- Global state (all state is now per-trial)
-- ETag on dump (replaced by version counter)
-
----
-
 ## Grading Flow Integration
 
 The DB Service supports the grading algorithm from [`GRPC_PROTOCOL.md`](docs/GRPC_PROTOCOL.md):
@@ -882,45 +853,19 @@ jsonpath-ng>=1.6.0
 pydantic>=2.0.0
 ```
 
-### Dockerfile Changes
+### Container
 
-The existing [`tolokaforge/docker/dockerfiles/db_service.Dockerfile`](../tolokaforge/docker/dockerfiles/db_service.Dockerfile) requires no changes.
-The service code in [`tolokaforge/env/json_db_service/app.py`](../tolokaforge/env/json_db_service/app.py) will be extended.
+The service ships as the image built from [`tolokaforge/docker/dockerfiles/db_service.Dockerfile`](../tolokaforge/docker/dockerfiles/db_service.Dockerfile);
+its code is [`tolokaforge/env/json_db_service/app.py`](../tolokaforge/env/json_db_service/app.py).
 
 ### Thread Safety
 
-For concurrent trial access, use thread-safe data structures:
-
-```python
-from threading import Lock
-
-class DBService:
-    def __init__(self):
-        self.trials: Dict[str, TrialState] = {}
-        self._lock = Lock()
-    
-    def get_or_create_trial(self, trial_id: str) -> TrialState:
-        with self._lock:
-            if trial_id not in self.trials:
-                self.trials[trial_id] = TrialState(trial_id)
-            return self.trials[trial_id]
-```
-
----
-
-## Migration Path
-
-### Step 1: Add New Endpoints
-- Add trial-scoped endpoints alongside existing global endpoints
-- Existing `/reset`, `/dump`, `/query` continue to work (default trial)
-
-### Step 2: Update Runner
-- Runner uses new `/trials/{trial_id}/init` endpoint
-- Tools use `/trials/{trial_id}/state/{table}` for mutations
-
-### Step 3: Deprecate Global Endpoints
-- Remove global `/reset`, `/dump`, `/update`
-- All access via trial-scoped endpoints
+`DBService` guards its trial map with one lock. It never creates a trial implicitly:
+`create_trial` (behind `POST /trials/{trial_id}/init`) refuses an id that exists
+(`409 TrialAlreadyExists`), and `get_trial` (behind every other trial endpoint) raises
+`TrialNotFound` for an id nobody initialized. Each trial carries its own lock, held for
+the whole of a request on it, so concurrent requests on different trials do not
+serialize on each other.
 
 ---
 

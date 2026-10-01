@@ -4,12 +4,7 @@ from tolokaforge.tools.builtin.bash import BashTool
 from tolokaforge.tools.builtin.browser import BrowserTool
 from tolokaforge.tools.builtin.build_check import BuildCheckTool
 from tolokaforge.tools.builtin.calculator import CalculatorTool
-from tolokaforge.tools.builtin.db_json import (
-    DBQueryTool,
-    DBUpdateTool,
-    SQLQueryTool,
-    SQLSchemaToolDB,
-)
+from tolokaforge.tools.builtin.db_json import DBQueryTool, DBUpdateTool
 from tolokaforge.tools.builtin.files import (
     AppendFileTool,
     CopyFileTool,
@@ -43,8 +38,6 @@ __all__ = [
     "MoveFileTool",
     "ReadFileTool",
     "ReplaceLinesTool",
-    "SQLQueryTool",
-    "SQLSchemaToolDB",
     "SearchKBTool",
     "SubmitTool",
     "WriteFileTool",

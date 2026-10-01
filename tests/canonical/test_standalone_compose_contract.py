@@ -9,7 +9,8 @@ service DNS names, the runner's env (including ``RUNNER_EXPOSE_SUBSTRATE=true``
 that opens the substrate surface the grader dials), the ``json-db`` alias, and
 the ``service_healthy`` startup ordering — so any unintended field change trips
 CI. It also asserts the absence cases that carry contract meaning: no
-``MOCK_WEB_URL`` (the runner reads no such var), no host port beyond the
+``MOCK_WEB_URL`` (the runner reads no such var), no db-service wiring on
+mock-web (it calls no other service), no host port beyond the
 runner's ``50051`` and the grader's ``50052``, and no re-declared
 ``healthcheck`` (each image self-reports its own). A parsed structure golden,
 not a byte golden: it locks the contract, not incidental YAML or comment
@@ -122,7 +123,12 @@ def test_only_runner_and_grader_publish_a_host_port() -> None:
 def test_mock_web_and_rag_wiring() -> None:
     services = _load_compose()["services"]
     mock_web = services["mock-web"]
-    assert mock_web["environment"]["JSON_DB_URL"] == "http://db-service:8000"
+    assert (
+        "JSON_DB_URL" not in mock_web["environment"]
+    ), "mock-web makes no db-service call; its environment carries no db-service URL"
+    assert (
+        "depends_on" not in mock_web
+    ), "mock-web uses no other service, so it starts standalone, ungated on db-service"
     assert mock_web["environment"]["PYTHONUNBUFFERED"] == "1", (
         "mock-web's image bakes no PYTHONUNBUFFERED; the recipe sets it so its "
         "logs stream unbuffered like the other three services'"
@@ -146,11 +152,10 @@ def test_db_service_json_db_alias() -> None:
 
 def test_startup_ordering_on_service_healthy() -> None:
     services = _load_compose()["services"]
-    for dependent in ("runner", "mock-web"):
-        dep = services[dependent]["depends_on"]["db-service"]
-        assert (
-            dep["condition"] == "service_healthy"
-        ), f"{dependent} must wait for db-service to report healthy before it starts"
+    dep = services["runner"]["depends_on"]["db-service"]
+    assert (
+        dep["condition"] == "service_healthy"
+    ), "runner must wait for db-service to report healthy before it starts"
     assert "depends_on" not in services["db-service"]
     assert "depends_on" not in services["rag-service"], (
         "rag-service has no dependents and no dependencies; nothing in the recipe "

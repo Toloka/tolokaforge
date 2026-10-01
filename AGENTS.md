@@ -570,7 +570,7 @@ The grader is a plug-in seam with three independent axes — substrate topology,
 5. **Benchmark runs** and e2e flows require API keys in `.env`. Unit and canonical tests do not.
 6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`, plus the committed-corpus sweep in [`tests/unit/test_scratchpad_detector.py`](tests/unit/test_scratchpad_detector.py) (skips gracefully without LFS). Not required for normal development.
 7. **JSON DB update API** (`db_update` → `POST /trials/{trial_id}/update`) uses JSON Patch-style operations whose paths are JSONPath, not JSON Pointer: `{"ops": [{"op": "replace", "path": "$.tickets[0].status", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`; the batch applies all or nothing.
-8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Mock Web requires `JSON_DB_URL=http://localhost:8000`.
+8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Each starts standalone; Mock Web calls no other service.
 9. **`tolokaforge run`** requires at least one LLM API key in `.env` (Anthropic, OpenAI, etc.).
 10. **`tasks/` is external** — Task packs live outside the engine. Point `task_packs` in your config at any directory containing tasks, or place them in `tasks/`. See the bundled examples in `examples/` for the expected layout.
 11. **GPT-5.4 / Qwen drop dict-map parameters** — `Dict[str, T]` schemas cause these models to silently omit or stringify the parameter. The `openai_gpt5` / `qwen` / `xai_grok` presets wire `StrictSchema` + `ArrayDictMapResponse` + `DictMapHints` to fix this. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `schema_sanitizer`.

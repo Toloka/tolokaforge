@@ -23,8 +23,6 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   `initial_state.json_db`; an intentionally empty store is declared as
   `json_db: {"<table>": []}`. A trial that seeds no table is refused at
   registration. Neither tool takes a per-tool config.
-- `sql_query`: SQL query against JSON DB service.
-- `get_db_schema`: SQL schema inspection for JSON DB tables.
 - `search_kb`: RAG search over a per-trial corpus index. Functional for native
   tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
   corpus into the rag-service per trial (see `docs/TASKS.md`). Each search is

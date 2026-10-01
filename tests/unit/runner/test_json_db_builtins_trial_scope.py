@@ -60,9 +60,8 @@ async def _require_seeded(client: DBServiceClient, trial: _SeededTrial) -> None:
 
 
 async def test_json_db_builtins_read_and_write_only_their_own_trials_store(
-    db_service_loopback_url, monkeypatch
+    db_service_loopback_url,
 ):
-    monkeypatch.setenv("DB_SERVICE_URL", db_service_loopback_url)
     client = DBServiceClient(base_url=db_service_loopback_url)
     adapter = NativeAdapter({"tasks_glob": "**/task.yaml", "task_packs": [str(_TOOL_USE_DATASET)]})
     tickets = await _seed_trial(client, adapter, _TICKETS_TASK)

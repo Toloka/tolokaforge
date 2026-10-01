@@ -62,10 +62,6 @@ services:
       # mock-web's image, alone of the four, bakes no PYTHONUNBUFFERED; set it
       # here so its logs stream unbuffered like the other three services'.
       PYTHONUNBUFFERED: "1"
-      JSON_DB_URL: http://db-service:8000
-    depends_on:
-      db-service:
-        condition: service_healthy
     networks:
       - runner-net
 

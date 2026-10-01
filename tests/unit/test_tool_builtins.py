@@ -8,18 +8,12 @@ wrapper, locked in ``tests/unit/runner/test_json_db_builtins_trial_scope.py``.
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
-from tolokaforge.tools.builtin.db_json import (
-    DBQueryTool,
-    DBUpdateTool,
-    SQLQueryTool,
-    SQLSchemaToolDB,
-)
+from tolokaforge.tools.builtin.db_json import DBQueryTool, DBUpdateTool
 from tolokaforge.tools.builtin.http_request import HTTPRequestTool
 from tolokaforge.tools.builtin.rag_search import SearchKBTool
 from tolokaforge.tools.registry import ToolCategory
@@ -81,113 +75,6 @@ class TestDBUpdateTool:
         item_schema = ops_schema["items"]
         assert "op" in item_schema["properties"]
         assert "path" in item_schema["properties"]
-
-
-# ===================================================================
-# SQLQueryTool
-# ===================================================================
-
-
-@pytest.mark.unit
-class TestSQLQueryTool:
-    """Tests for SQLQueryTool."""
-
-    def test_constructor_defaults(self) -> None:
-        tool = SQLQueryTool()
-        assert tool.name == "sql_query"
-        assert tool.db_url == "http://json-db:8000"
-        assert tool.policy.timeout_s == 30.0
-        assert tool.policy.category == ToolCategory.READ
-
-    def test_schema_structure(self) -> None:
-        tool = SQLQueryTool()
-        schema = tool.get_schema()
-        func = schema["function"]
-        assert func["name"] == "sql_query"
-        assert "query" in func["parameters"]["properties"]
-        assert "query" in func["parameters"]["required"]
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.post")
-    def test_execute_success(self, mock_post: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "results": [{"name": "Alice", "age": 30}],
-            "count": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = SQLQueryTool(db_url="http://test:8000")
-        result = tool.execute(query="SELECT * FROM users WHERE age > 25")
-
-        assert result.success is True
-        parsed = json.loads(result.output)
-        assert parsed[0]["name"] == "Alice"
-        assert result.metadata["count"] == 1
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.post")
-    def test_execute_http_error(self, mock_post: MagicMock) -> None:
-        mock_post.side_effect = httpx.HTTPError("Bad request")
-
-        tool = SQLQueryTool()
-        result = tool.execute(query="INVALID SQL")
-
-        assert result.success is False
-        assert "SQL query failed" in result.error
-
-
-# ===================================================================
-# SQLSchemaToolDB
-# ===================================================================
-
-
-@pytest.mark.unit
-class TestSQLSchemaToolDB:
-    """Tests for SQLSchemaToolDB."""
-
-    def test_constructor_defaults(self) -> None:
-        tool = SQLSchemaToolDB()
-        assert tool.name == "get_db_schema"
-        assert tool.db_url == "http://json-db:8000"
-        assert tool.policy.category == ToolCategory.READ
-
-    def test_schema_has_no_required_params(self) -> None:
-        tool = SQLSchemaToolDB()
-        schema = tool.get_schema()
-        func = schema["function"]
-        assert func["name"] == "get_db_schema"
-        params = func["parameters"]
-        assert params["properties"] == {}
-        # No required params
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.get")
-    def test_execute_success(self, mock_get: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "tables": {
-                "users": {"columns": ["id", "name", "email"]},
-                "orders": {"columns": ["id", "user_id", "total"]},
-            }
-        }
-        mock_response.raise_for_status = MagicMock()
-        mock_get.return_value = mock_response
-
-        tool = SQLSchemaToolDB(db_url="http://test:8000")
-        result = tool.execute()
-
-        assert result.success is True
-        assert "Database Schema" in result.output
-        assert "users" in result.output
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.get")
-    def test_execute_http_error(self, mock_get: MagicMock) -> None:
-        mock_get.side_effect = httpx.HTTPError("Service unavailable")
-
-        tool = SQLSchemaToolDB()
-        result = tool.execute()
-
-        assert result.success is False
-        assert "Failed to get schema" in result.error
 
 
 # ===================================================================
@@ -537,8 +424,6 @@ class TestSchemaFormat:
         tools = [
             DBQueryTool(),
             DBUpdateTool(),
-            SQLQueryTool(),
-            SQLSchemaToolDB(),
             HTTPRequestTool(),
             SearchKBTool(),
         ]
@@ -555,8 +440,6 @@ class TestSchemaFormat:
         tools = [
             DBQueryTool(),
             DBUpdateTool(),
-            SQLQueryTool(),
-            SQLSchemaToolDB(),
             HTTPRequestTool(),
             SearchKBTool(),
         ]
