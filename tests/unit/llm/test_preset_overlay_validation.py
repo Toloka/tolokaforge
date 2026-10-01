@@ -32,7 +32,9 @@ from tolokaforge.core.llm.presets import (
     _load_overlay_file,
     _load_presets,
     _params_slot_known_keys,
+    build_capabilities,
     set_overlay_path,
+    validate_overlay_file,
 )
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
@@ -194,6 +196,51 @@ class TestOverlayParamsValidation:
         )
         with pytest.raises(ValueError, match=r"unknown keys.*not_a_real_kwarg"):
             _load_overlay_file(str(path))
+
+
+class TestOverlayOpenRouterDefaultsValidation:
+    _PRESET = "presets:\n  pinned:\n    match: ['fake-vendor-xyz/*']\n    openrouter_defaults: "
+
+    @pytest.mark.parametrize(
+        "block, clause",
+        [
+            pytest.param(
+                "{provider_ordr: [Together], allow_fallbacks: false}",
+                "unknown key 'provider_ordr' — did you mean 'provider_order'?",
+                id="typo",
+            ),
+            pytest.param(
+                "{on: x}",
+                "unknown key True, which YAML read as bool — config keys must be strings.",
+                id="non-string-key",
+            ),
+        ],
+    )
+    def test_an_undeclared_openrouter_defaults_key_is_refused_at_load(
+        self, tmp_path: Path, block: str, clause: str
+    ) -> None:
+        path = tmp_path / "undeclared.yaml"
+        path.write_text(self._PRESET + block + "\n")
+        with pytest.raises(ValueError) as refused:
+            validate_overlay_file(str(path))
+        message = str(refused.value)
+        assert (
+            "at presets.pinned.openrouter_defaults was given a key it does not declare" in message
+        )
+        assert clause in message
+        assert message.endswith("openrouter_defaults accepts: provider_order, allow_fallbacks.")
+
+    def test_a_declared_openrouter_defaults_block_pins_the_provider(self, tmp_path: Path) -> None:
+        path = tmp_path / "pin.yaml"
+        path.write_text(self._PRESET + "{provider_order: [Together], allow_fallbacks: false}\n")
+        validate_overlay_file(str(path))
+        set_overlay_path(str(path))
+        try:
+            defaults = build_capabilities("fake-vendor-xyz/model", "openrouter").openrouter_defaults
+        finally:
+            set_overlay_path(None)
+        assert defaults is not None
+        assert (defaults.provider_order, defaults.allow_fallbacks) == (["Together"], False)
 
 
 class TestParamsPolicyKnownKeysContract:

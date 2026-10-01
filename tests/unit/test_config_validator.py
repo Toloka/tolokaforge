@@ -4,7 +4,11 @@ Tests exercise ``tolokaforge.core.config_validator`` without network or
 API keys.
 """
 
+import json
+from types import MappingProxyType
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from tolokaforge.core.config_validator import (
@@ -13,9 +17,21 @@ from tolokaforge.core.config_validator import (
     _model_supports_reasoning,
     validate_run_config,
 )
-from tolokaforge.core.models import RunConfig
+from tolokaforge.core.models import ModelConfig, RunConfig
 
 pytestmark = pytest.mark.unit
+
+_REGISTERABLE_TASK = {
+    "task_id": "wire_task",
+    "name": "wire_task",
+    "category": "test",
+    "description": "A task the trial spec can carry.",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {"tables": {}, "schemas": []},
+    "agent_tools": [],
+    "user_tools": [],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +196,118 @@ class TestSchemaValidation:
         agent = RunConfig(**cfg).models["agent"]
         assert agent.session is not None and agent.session.header == "x-session-id"
         assert agent.fallbacks[0].session is None
+
+
+_BOOL_KEY_CLAUSE = (
+    "unknown key True, which YAML read as bool — config keys must be strings. "
+    "Quote it to write it as one."
+)
+
+
+class TestModelConfigRefusesUndeclaredKeys:
+    """Every block under ``models.<role>`` refuses a key its type does not declare."""
+
+    @pytest.mark.parametrize(
+        "mutate, location, clause",
+        [
+            pytest.param(
+                lambda agent: agent.update(
+                    fallbacks=[{"provider": "openrouter", "name": "openai/gpt-4o", "sesion": {}}]
+                ),
+                "models.agent.fallbacks.0",
+                "unknown key 'sesion' — did you mean 'session'?",
+                id="fallback",
+            ),
+            pytest.param(
+                lambda agent: agent.update(session={"hedaer": "x-session-id"}),
+                "models.agent.session",
+                "unknown key 'hedaer' — did you mean 'header'?",
+                id="session",
+            ),
+            pytest.param(
+                lambda agent: agent.update({True: "x"}),
+                "models.agent",
+                _BOOL_KEY_CLAUSE,
+                id="non-string-key",
+            ),
+            pytest.param(
+                lambda agent: agent.update(reasoning={True: 1}),
+                "models.agent.reasoning",
+                _BOOL_KEY_CLAUSE,
+                id="reasoning-non-string-key",
+            ),
+        ],
+    )
+    def test_an_undeclared_key_is_refused_at_its_path_with_its_fix(self, mutate, location, clause):
+        cfg = _make_config()
+        mutate(cfg["models"]["agent"])
+
+        with pytest.raises(ValidationError) as refused:
+            RunConfig(**cfg)
+
+        [error] = refused.value.errors()
+        assert ".".join(str(part) for part in error["loc"]) == location
+        assert clause in error["msg"]
+
+    def test_a_mapping_that_is_not_a_dict_gets_the_named_refusal(self):
+        block = MappingProxyType({"provider": "openrouter", "name": "a/b", "tempreature": 0.1})
+
+        with pytest.raises(ValidationError) as refused:
+            ModelConfig.model_validate(block)
+
+        assert "did you mean 'temperature'?" in refused.value.errors()[0]["msg"]
+
+        reasoning = MappingProxyType({"mdoe": "budget"})
+        with pytest.raises(ValidationError) as refused:
+            ModelConfig.model_validate(
+                {"provider": "openrouter", "name": "a/b", "reasoning": reasoning}
+            )
+
+        [error] = refused.value.errors()
+        assert error["loc"] == ("reasoning",)
+        assert "did you mean 'mode'?" in error["msg"]
+
+    def test_every_undeclared_key_in_one_block_is_named_in_one_refusal(self):
+        cfg = _make_config()
+        cfg["models"]["agent"].update(sesion={}, gateway_route="toloka_litellm")
+
+        with pytest.raises(ValidationError) as refused:
+            RunConfig(**cfg)
+
+        [error] = refused.value.errors()
+        assert "unknown key 'sesion'" in error["msg"]
+        assert "unknown key 'gateway_route'" in error["msg"]
+
+    def test_the_trial_spec_wire_refuses_an_undeclared_model_config_key(self):
+        from tests.utils.runner_requests import trial_spec_json
+        from tolokaforge.core.trial import TrialSpec
+
+        spec = json.loads(trial_spec_json(_REGISTERABLE_TASK))
+        spec["agent_model_config"]["sesion"] = {"header": "x-session-id"}
+
+        with pytest.raises(ValidationError) as refused:
+            TrialSpec.model_validate_json(json.dumps(spec))
+
+        [error] = refused.value.errors()
+        assert error["loc"] == ("agent_model_config",)
+        assert "did you mean 'session'?" in error["msg"]
+
+    def test_config_validate_reports_the_refusal_as_an_error(self, tmp_path):
+        from click.testing import CliRunner
+
+        from tolokaforge.dx.cli.main import cli
+
+        cfg = _make_config()
+        cfg["models"]["agent"]["sesion"] = {"header": "x-session-id"}
+        config = tmp_path / "run.yaml"
+        config.write_text(yaml.safe_dump(cfg))
+
+        result = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+
+        assert result.exit_code != 0
+        assert "[ERROR]" in result.output
+        assert "\nmodels.agent\n" in result.output
+        assert "did you mean 'session'" in result.output
 
 
 # ---------------------------------------------------------------------------

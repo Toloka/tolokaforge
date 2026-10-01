@@ -45,6 +45,7 @@ from tolokaforge.core.llm.presets import (
     resolve_policy_names,
 )
 from tolokaforge.core.models import (
+    RESOLVED_RECORD_KEY,
     Grade,
     GradeComponents,
     Metrics,
@@ -1478,11 +1479,11 @@ class InProcessConductor:
 
         # Resolved fingerprint per role.
         if resolved_agent_config is not None:
-            result["agent"]["resolved"] = _build_resolved_block(resolved_agent_config)
+            result["agent"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_agent_config)
         if resolved_user_config is not None and result.get("user"):
-            result["user"]["resolved"] = _build_resolved_block(resolved_user_config)
+            result["user"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_user_config)
         if resolved_judge_config is not None and result.get("judge"):
-            result["judge"]["resolved"] = _build_resolved_block(resolved_judge_config)
+            result["judge"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_judge_config)
 
         return result
 

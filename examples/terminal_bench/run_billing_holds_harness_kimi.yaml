@@ -1,11 +1,18 @@
-# fix-billing-holds under kimi-code via the ``toloka_litellm`` gateway route.
+# fix-billing-holds under kimi-code, on the shipped entry's default path.
+#
+# The host needs ``OPENROUTER_API_KEY``, and the CLI sends its requests to
+# OpenRouter's v1 endpoint. The entry's request middleware pins every
+# ``/chat/completions`` call to first-party ``moonshotai`` serving, so the
+# trial does not drift onto a quantized third-party provider. The shipped
+# entry declares a ``credential_gateway``, but no runtime in this repo starts
+# that sidecar yet: the key sits in the trial container's environment and is
+# not shielded (#1711).
 
 models:
   agent:
     provider: "openrouter"
     name: "moonshotai/kimi-k3"
     harness: "kimi-code"
-    gateway_route: "toloka_litellm"
     temperature: 0.0
     max_tokens: 4096
 

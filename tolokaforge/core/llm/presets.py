@@ -75,6 +75,7 @@ from tolokaforge.core.model_data import (
 )
 from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
 from tolokaforge.core.models.run_config import iter_model_configs
+from tolokaforge.core.unknown_keys import refuse_undeclared_keys
 
 __all__ = [
     "IGNORED_SAMPLING_PARAM",
@@ -611,6 +612,20 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                     f"expected a mapping, got {type(params).__name__}."
                 )
             _reject_unknown_params(params, _params_slot_known_keys(), f"{where}.params")
+        openrouter_defaults = block.get("openrouter_defaults")
+        if openrouter_defaults is not None:
+            if not isinstance(openrouter_defaults, dict):
+                raise ValueError(
+                    f"Preset overlay {path!r} at {where}.openrouter_defaults: "
+                    f"expected a mapping, got {type(openrouter_defaults).__name__}."
+                )
+            refuse_undeclared_keys(
+                openrouter_defaults,
+                tuple(OpenRouterConfig.model_fields),
+                owner=OpenRouterConfig.__name__,
+                subject=f"Preset overlay {path!r} at {where}.openrouter_defaults",
+                accepted_by="openrouter_defaults",
+            )
 
     def _reject_unknown_params(
         params: dict[str, Any],

@@ -304,12 +304,15 @@ for Toloka's setup), point `harness_presets_file` at the shipped operator
 overlay:
 
 ```yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "google/gemini-3.6-flash"
+    harness: "gemini-cli"
 evaluation:
   harness_adapter:
     type: "terminal_bench"
     params:
-      agent_harness: "gemini-cli"
-      agent_model: "openrouter/google/gemini-3.6-flash"
       harness_presets_file: "examples/terminal_bench/gemini_litellm_overlay.yaml"
 ```
 

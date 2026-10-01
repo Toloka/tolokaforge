@@ -97,6 +97,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     "tolokaforge/core/trial.py",
+    "tolokaforge/core/unknown_keys.py",
 )
 """Individual files shipped in the subset that live outside a whole-package
 entry — the top-level ``tolokaforge/__init__.py`` and the shared-spine

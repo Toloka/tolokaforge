@@ -244,8 +244,16 @@ parsed by `extra="forbid"` Pydantic models, so a field the older image does not
 declare is a validation error rather than a dropped byte. Several grading keys are
 emitted on **every** pack, so a newer engine against an older image is rejected at
 `RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden` error naming
-the field. Which keys bite, from which release, and in which direction is one table:
+the field. Which grading keys bite, from which release, and in which direction is one table:
 [`GRADING.md`](GRADING.md#runner-engine-version-lock) § Runner-engine version lock.
+The model configs inside the trial spec are held to the same `extra="forbid"` rule,
+and every model-config field is emitted on every trial: the spec carries each model
+config's full dump, defaults included. A new model-config field therefore locks every
+pack's trials to an image that declares it, and the refusal reads `Value error,
+ModelConfig was given a key it does not declare` rather than `extra_forbidden`; those
+keys are not on the GRADING.md table (see its § Runner-engine version lock). Images
+released before this engine version drop a model-config key they do not declare
+instead of refusing it.
 
 **So the order matters: rebuild the image before rolling the engine.** Upgrading
 the engine first leaves you inside the one window this gate cannot close, and — for
@@ -345,10 +353,9 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
   reads them.
 - `tolokaforge/core/__init__.py`, `tolokaforge/core/_runner_subset.py` —
   the subset's own audit artifact and the `core/` package init.
-- `tolokaforge/core/deprecations.py`, `hash.py`, `logging.py`, `loop.py`,
-  `netpolicy_constants.py`, `pricing.py`, `run_display_events.py`, `trial.py`
-  — the shared-spine files at the root of `core/` the runner closure reaches
-  directly.
+- The shared-spine files at the root of `core/` the runner closure reaches
+  directly — `RUNNER_SUBSET_LOOSE_FILES` in `tolokaforge/core/_runner_subset.py`
+  is the list.
 
 **Data files in the subset:**
 
