@@ -92,6 +92,17 @@ pins what the model is shown, this one pins that a real model shown it neither
 re-sends the opening nor re-introduces the customer. Costs one Sonnet call per
 integration run.
 
+### Live JSON-DB trial isolation
+
+`tests/integration/test_json_db_trial_isolation_e2e.py::test_live_run_with_three_workers_shows_each_trial_only_its_own_db`
+runs `tolokaforge run` with `workers: 3` and Claude Haiku via OpenRouter
+(key-gated on `OPENROUTER_API_KEY`) over the `tool_use` and `custom_checks`
+example packs, then reads each trial's `tool_log.yaml`: no successful `db_query`
+output carries another task's tables or seed rows. It asserts on traces only,
+never on `binary_pass`. Costs about $0.05 per integration run. Its no-LLM sibling
+in the same file registers the three tasks on one Docker runner and locks the
+same isolation over concurrent `ExecuteTool` calls.
+
 ## Directory Structure
 
 ```
