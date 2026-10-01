@@ -28,7 +28,11 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.plugin_registry import SEARCH_BACKENDS_GROUP
-from tolokaforge.testing.search_backends import in_memory_search_backend_factory
+from tolokaforge.testing.search_backends import (
+    InMemorySearchBackend,
+    SearchBackendDefects,
+    in_memory_search_backend_factory,
+)
 
 pytestmark = pytest.mark.canonical
 
@@ -214,6 +218,34 @@ def test_a_backend_refusing_its_config_is_refused_at_load_naming_the_task() -> N
     assert message.startswith("task 'TASK-CFG': initial_state.rag.backend: ")
     assert "search backend 'rag_service' refused the task's declaration" in message
     assert "takes no backend_config" in message
+
+
+def test_a_backend_declaring_an_undeclared_stack_service_is_refused_at_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runner reaches only the declared stack services, so no trial could build."""
+
+    def factory(context: Any) -> InMemorySearchBackend:
+        return InMemorySearchBackend(
+            context, defects=SearchBackendDefects(declares_an_undeclared_stack_service=True)
+        )
+
+    register_search_backends(monkeypatch, elsewhere=factory)
+    orch = _orchestrator_with(
+        _task("TASK-OK", tools=["search_kb"], rag={"corpus_dir": "kb"}),
+        _task(
+            "TASK-ELSEWHERE", tools=["search_kb"], rag={"corpus_dir": "kb", "backend": "elsewhere"}
+        ),
+    )
+
+    message = _refusal(orch)
+
+    assert message.startswith("task 'TASK-ELSEWHERE': initial_state.rag.backend: ")
+    assert (
+        "search backend 'elsewhere' needs a stack service this engine does not declare" in message
+    )
+    assert "'undeclared_service'" in message
+    assert "['rag_service']" in message, "the refusal names the declared stack services"
 
 
 def test_a_task_without_a_rag_block_is_refused_naming_the_default_backend(

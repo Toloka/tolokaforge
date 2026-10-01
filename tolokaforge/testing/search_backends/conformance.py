@@ -25,8 +25,9 @@ search fails::
         def make_searches_fail(self):
             return lambda index: my_service.go_down()
 
-A backend that needs a stack service overrides ``trial_context`` too, handing it a
-client under the name its ``stack_service`` declares. ``corpus_dir`` and ``query``
+A backend that needs a stack service overrides ``trial_context`` too, handing it the
+handle its ``stack_service`` declares in a
+:class:`~tolokaforge.core.search.stack_services.StackServices`. ``corpus_dir`` and ``query``
 are overridable for a backend that reads other document shapes; the suite's
 defaults are three Markdown documents and a query that one of them answers.
 
@@ -62,6 +63,7 @@ from tolokaforge.core.search.backend import (
     SearchIndexBuildError,
     SearchOutcome,
 )
+from tolokaforge.core.search.stack_services import DECLARED_STACK_SERVICES
 
 __all__ = [
     "CONFORMANCE_QUERY",
@@ -108,7 +110,7 @@ def declaration_context(**overrides: Any) -> SearchBackendContext:
 
 
 def trial_context(**overrides: Any) -> SearchBackendContext:
-    """The context the runner builds at ``RegisterTrial``, holding no stack-service client."""
+    """The context the runner builds at ``RegisterTrial``, holding no stack-service handle."""
     fields: dict[str, Any] = {"trial_id": _TRIAL_ID, "domain_name": "conformance", **overrides}
     return declaration_context(**fields)
 
@@ -188,7 +190,7 @@ class SearchBackendConformanceSuite:
 
     @pytest.fixture(name="trial_context")
     def trial_context_fixture(self) -> SearchBackendContext:
-        """The runner's context; override to hand the backend its stack-service client."""
+        """The runner's context; override to hand the backend its stack-service handle."""
         return trial_context()
 
     @pytest.fixture
@@ -219,6 +221,20 @@ class SearchBackendConformanceSuite:
             "compares it to the stack-service names it knows, so it is a name or None"
         )
 
+    def test_stack_service_is_a_declared_stack_service(
+        self, backend_factory: SearchBackendFactory
+    ) -> None:
+        """The orchestrator and the runner refuse a backend naming any other service."""
+        stack_service = backend_factory(declaration_context()).stack_service
+        if stack_service is None:
+            return
+        assert stack_service in DECLARED_STACK_SERVICES, (
+            f"stack_service {stack_service!r} is not a declared stack service "
+            f"{sorted(DECLARED_STACK_SERVICES)}; the runner reaches only the services "
+            "tolokaforge.core.search.stack_services declares, so a task selecting this "
+            "backend is refused at load"
+        )
+
     def test_the_factory_builds_from_a_trial_less_context(
         self, backend_factory: SearchBackendFactory
     ) -> None:
@@ -228,7 +244,7 @@ class SearchBackendConformanceSuite:
         except Exception as exc:  # noqa: BLE001 — surfaced as a conformance failure
             raise AssertionError(
                 "the factory refused a trial-less context; the native adapter builds the "
-                "backend with no trial and no stack-service client to read the agent's "
+                "backend with no trial and no stack-service handle to read the agent's "
                 f"tool schema, and the stack rule to read stack_service: {exc}"
             ) from exc
         assert isinstance(backend, SearchBackend)

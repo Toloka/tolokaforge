@@ -28,23 +28,29 @@ import pytest
 
 from tests.utils.fake_rag_service import FakeRagService
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
+from tests.utils.search_backends import register_search_backends
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch
 from tolokaforge.core.search.backend import SearchIndexBuildError
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import SearchConfig, TaskDescription
+from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.rag_service_backend import RagServiceSearchIndex
 from tolokaforge.runner.service import RunnerServiceImpl
+from tolokaforge.testing.search_backends import InMemorySearchBackend, SearchBackendDefects
 
 pytestmark = pytest.mark.unit
 
 
-class _RecordingRagClient:
-    """Captures the documents handed to the rag-service without any network."""
+class _RecordingRagClient(RAGServiceClient):
+    """The runner's client, capturing the documents it indexes without any network."""
 
     def __init__(self) -> None:
+        super().__init__(base_url="http://rag-service:8001")
         self.calls: list[tuple[str, str, list]] = []
 
-    async def index_documents(self, *, trial_id: str, domain_name: str, documents: list) -> None:
+    async def index_documents(  # type: ignore[override]
+        self, *, trial_id: str, domain_name: str, documents: list
+    ) -> None:
         self.calls.append((trial_id, domain_name, documents))
 
 
@@ -240,3 +246,61 @@ def test_a_build_the_loop_never_ran_is_closed_not_leaked(
         _index(service, config, artifacts_dir=tmp_path)
     (build,) = scheduled
     assert inspect.getcoroutinestate(build) == inspect.CORO_CLOSED
+
+
+# ---------------------------------------------------------------------------
+# The declared stack-service surface (``tolokaforge.core.search.stack_services``).
+# ---------------------------------------------------------------------------
+
+
+def test_a_rag_service_task_on_a_runner_that_does_not_reach_it_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The operator reads which service is missing and how a runner reaches it."""
+    runner = RunnerServiceImpl(db_client=MagicMock())
+    _write_corpus(tmp_path / "rag" / "corpus")
+    config = SearchConfig(
+        enabled=True, plane="rag_service", domain_name="rag_search", documents_path="rag/corpus"
+    )
+    try:
+        with pytest.raises(SearchIndexBuildError) as excinfo:
+            _index(runner, config, artifacts_dir=tmp_path)
+    finally:
+        runner.shutdown()
+
+    message = str(excinfo.value)
+    assert message.startswith(
+        "Trial t:0: search backend 'rag_service' cannot build the trial's index: "
+        "stack service 'rag_service' is not reachable from this runner: "
+    )
+    assert "RAG_SERVICE_URL" in message
+    assert "--profile full" in message
+
+
+def test_a_backend_declaring_an_undeclared_stack_service_is_refused_before_it_builds(
+    service: RunnerServiceImpl, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No runner reaches a service the surface does not declare, so nothing is built."""
+    built: list[InMemorySearchBackend] = []
+
+    def factory(context: Any) -> InMemorySearchBackend:
+        backend = InMemorySearchBackend(
+            context, defects=SearchBackendDefects(declares_an_undeclared_stack_service=True)
+        )
+        built.append(backend)
+        return backend
+
+    register_search_backends(monkeypatch, elsewhere=factory)
+    _write_corpus(tmp_path / "rag" / "corpus")
+    config = SearchConfig(plane="elsewhere", domain_name="rag_search", documents_path="rag/corpus")
+
+    with pytest.raises(SearchIndexBuildError) as excinfo:
+        _index(service, config, artifacts_dir=tmp_path)
+
+    message = str(excinfo.value)
+    assert message.startswith(
+        "Trial t:0: search backend 'elsewhere' cannot build the trial's index: "
+        "stack service 'undeclared_service' is not declared by this engine; "
+        "the declared stack services are ['rag_service']"
+    )
+    assert [backend.call_log.builds for backend in built] == [[]], "build_index never ran"
