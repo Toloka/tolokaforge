@@ -14,7 +14,9 @@ Two tests lock per-trial JSON-DB isolation:
 - **One cheap live run** (`test_live_run_*`, `requires_api`): `tolokaforge run`
   with `workers: 3` over both packs, asserting on recorded traces only — no
   successful `db_query` output a trial saw carries another task's tables or
-  seed rows, and every trial that read a row object saw its own seed's row id.
+  seed rows, at least one trial made a successful `db_query`, and every trial
+  with one saw its own seed's row id, as a quoted string, in some `db_query`
+  output.
   Agent correctness (`binary_pass`) is out of scope.
 """
 
@@ -205,13 +207,31 @@ def _top_level_keys(parsed: Any) -> set[str]:
     return {key for row in rows if isinstance(row, dict) for key in row}
 
 
-def _holds_a_row_object(parsed: Any) -> bool:
-    """Whether ``parsed`` holds, at any depth, an object carrying an ``id`` key."""
-    if isinstance(parsed, dict):
-        return "id" in parsed or any(_holds_a_row_object(value) for value in parsed.values())
-    if isinstance(parsed, list):
-        return any(_holds_a_row_object(item) for item in parsed)
-    return False
+def _assert_each_trial_saw_only_its_own_db(outputs_by_trial: dict[Path, list[str]]) -> None:
+    """Some trial queried, none saw another task's data, and each that queried saw its seed id."""
+    assert any(outputs_by_trial.values()), (
+        "no trial made a successful db_query, so the run exercised nothing: "
+        f"{sorted(str(trial_dir) for trial_dir in outputs_by_trial)}"
+    )
+    for trial_dir, outputs in outputs_by_trial.items():
+        foreign_tables, foreign_row_ids = _foreign_markers(trial_dir.parent.name)
+        for output in outputs:
+            leaked_tables = _top_level_keys(json.loads(output)) & foreign_tables
+            leaked_rows = {row_id for row_id in foreign_row_ids if row_id in output}
+            assert not leaked_tables and not leaked_rows, (
+                f"{trial_dir}: db_query returned another task's data: "
+                f"tables {sorted(leaked_tables)}, rows {sorted(leaked_rows)}\n{output}"
+            )
+    missed = {
+        trial_dir: outputs
+        for trial_dir, outputs in outputs_by_trial.items()
+        if outputs
+        and not any(f'"{_OWN_SEED_ID[trial_dir.parent.name]}"' in output for output in outputs)
+    }
+    assert not missed, "trials whose db_query outputs never held their own seed id:\n" + "\n".join(
+        f'{trial_dir} (expected "{_OWN_SEED_ID[trial_dir.parent.name]}"):\n' + "\n".join(outputs)
+        for trial_dir, outputs in missed.items()
+    )
 
 
 @pytest.mark.requires_api
@@ -243,20 +263,6 @@ def test_live_run_with_three_workers_shows_each_trial_only_its_own_db(tmp_path: 
     assert len(trial_dirs) == 3, trial_dirs
     assert {d.parent.name for d in trial_dirs} == set(_DATASET_BY_TASK), trial_dirs
 
-    for trial_dir in trial_dirs:
-        task_id = trial_dir.parent.name
-        foreign_tables, foreign_row_ids = _foreign_markers(task_id)
-        outputs = _successful_db_query_outputs(trial_dir)
-        for output in outputs:
-            leaked_tables = _top_level_keys(json.loads(output)) & foreign_tables
-            leaked_rows = {row_id for row_id in foreign_row_ids if row_id in output}
-            assert not leaked_tables and not leaked_rows, (
-                f"{trial_dir}: db_query returned another task's data: "
-                f"tables {sorted(leaked_tables)}, rows {sorted(leaked_rows)}\n{output}"
-            )
-        if any(_holds_a_row_object(json.loads(output)) for output in outputs):
-            own_id = f'"{_OWN_SEED_ID[task_id]}"'
-            assert any(own_id in output for output in outputs), (
-                f"{trial_dir}: db_query read row objects but never its own seed's {own_id}:\n"
-                + "\n".join(outputs)
-            )
+    _assert_each_trial_saw_only_its_own_db(
+        {trial_dir: _successful_db_query_outputs(trial_dir) for trial_dir in trial_dirs}
+    )

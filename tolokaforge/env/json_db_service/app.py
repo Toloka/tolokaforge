@@ -828,7 +828,6 @@ def _refuse_op(op_index: int, op: JSONPathOp, reason: str) -> NoReturn:
 _ADD_APPEND_SUFFIX = ".-"
 _ADD_APPEND_KEY = "-"
 _ADD_APPEND_EXAMPLE = f"$.tickets{_ADD_APPEND_SUFFIX}"
-_TRAILING_KEY = re.compile(r"""\.(?:[^.'"\[\]]+|'[^']*'|"[^"]*")$""")
 
 
 def _matches_below_root(data: dict[str, Any], op: JSONPathOp, op_index: int) -> list[Any]:
@@ -880,10 +879,26 @@ def _add_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
     if not parents:
         _refuse_op(op_index, op, f"add path '{op.path}' has a parent that matches nothing")
     for parent in parents:
-        _add_to_parent(parent.value, key, op, op_index)
+        _add_to_parent(parent.value, key, parent_expr, op, op_index)
 
 
-def _add_to_parent(parent: Any, key: str, op: JSONPathOp, op_index: int) -> None:
+def _parent_as_spelled(path: str, parent_expr: JSONPath) -> str:
+    """The prefix of ``path`` that parses to ``parent_expr``, in the author's own spelling."""
+    for cut in range(len(path) - 1, 0, -1):
+        if path[cut] not in ".[":
+            continue
+        try:
+            candidate = parse(path[:cut])
+        except JSONPathError:
+            continue
+        if str(candidate) == str(parent_expr):
+            return path[:cut]
+    raise ValueError(f"no prefix of add path {path!r} parses to its parent {parent_expr}")
+
+
+def _add_to_parent(
+    parent: Any, key: str, parent_expr: JSONPath, op: JSONPathOp, op_index: int
+) -> None:
     """Set ``key`` on an object parent, or append for the ``-`` key on a list parent."""
     appends = key == _ADD_APPEND_KEY
     if isinstance(parent, dict) and not appends:
@@ -898,7 +913,7 @@ def _add_to_parent(parent: Any, key: str, op: JSONPathOp, op_index: int) -> None
             "set a key on an object with a path ending in that key",
         )
     elif isinstance(parent, list):
-        append_path = _TRAILING_KEY.sub(_ADD_APPEND_SUFFIX, op.path)
+        append_path = _parent_as_spelled(op.path, parent_expr) + _ADD_APPEND_SUFFIX
         _refuse_op(
             op_index,
             op,
@@ -1415,7 +1430,6 @@ def _commit_mirrored(trial: TrialState, working: dict[str, Any]) -> None:
             ),
         ) from e
     except Exception:
-        # Restores the previous state, then re-raises: never swallows.
         _restore_mirrored(trial, previous)
         raise
 

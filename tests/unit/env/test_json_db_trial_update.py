@@ -8,6 +8,7 @@ version and the SQL mirror untouched, and an update never reaches another trial.
 from __future__ import annotations
 
 import json
+import re
 from uuid import uuid4
 
 import pytest
@@ -244,12 +245,6 @@ def test_remove_of_a_path_matching_nothing_changes_no_row_and_still_bumps_the_ve
             id="add-on-the-root",
         ),
         pytest.param(
-            {"op": "add", "path": "$.tickets.extra", "value": {"id": "T-300"}},
-            "add path '$.tickets.extra' names key 'extra' on a list; "
-            "append to a list with '$.tickets.-'",
-            id="add-a-named-key-onto-a-list",
-        ),
-        pytest.param(
             {"op": "add", "path": "$.tickets[0].-", "value": 1},
             "add path '$.tickets[0].-' appends, but its parent holds an object; "
             "set a key on an object with a path ending in that key",
@@ -280,6 +275,31 @@ def test_an_op_that_would_write_nothing_it_names_is_refused(db_test_client, op, 
     assert detail["details"] == {"op_index": 0, "op": op["op"], "path": op["path"]}
     if "does not end in a key name" in message_part:
         assert "e.g. '$.tickets.-'" in detail["message"]
+    assert _state(db_test_client, trial_id) == before
+
+
+@pytest.mark.parametrize(
+    ("path", "append_path"),
+    [
+        pytest.param("$.tickets.extra", "$.tickets.-", id="dot-key"),
+        pytest.param("$.tickets['extra']", "$.tickets.-", id="single-quoted-bracket-key"),
+        pytest.param('$.tickets["extra"]', "$.tickets.-", id="double-quoted-bracket-key"),
+        pytest.param("$['audit_log']['x.y']", "$['audit_log'].-", id="bracket-parent"),
+    ],
+)
+def test_add_of_a_named_key_onto_a_list_suggests_the_append_form(db_test_client, path, append_path):
+    trial_id = _new_trial(db_test_client, TICKETS)
+    before = _state(db_test_client, trial_id)
+
+    resp = _update(db_test_client, trial_id, [{"op": "add", "path": path, "value": {}}])
+
+    assert resp.status_code == 400, resp.text
+    message = resp.json()["detail"]["message"]
+    suggested = re.search(r"append to a list with '(.*)'$", message)
+    assert suggested is not None, message
+    assert f"add path '{path}' names key '" in message
+    assert suggested.group(1) == append_path
+    assert suggested.group(1).endswith(".-") and suggested.group(1) != path
     assert _state(db_test_client, trial_id) == before
 
 

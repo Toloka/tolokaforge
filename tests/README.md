@@ -98,10 +98,9 @@ integration run.
 runs `tolokaforge run` with `workers: 3` and Claude Haiku via OpenRouter
 (key-gated on `OPENROUTER_API_KEY`) over the `tool_use` and `custom_checks`
 example packs, then reads each trial's `tool_log.yaml`: no successful `db_query`
-output carries another task's tables or seed rows, and every trial that read a
-row object (one carrying an `id` key) saw its own seed's row id in some
-`db_query` output. It asserts on traces only,
-never on `binary_pass`. Costs about $0.05 per integration run. Its no-LLM sibling
+output carries another task's tables or seed rows, at least one trial made a
+successful `db_query`, and every trial with one saw its own seed's row id, as a
+quoted string, in some `db_query` output. It asserts on traces only, never on `binary_pass`. Costs about $0.05 per integration run. Its no-LLM sibling
 in the same file registers the three tasks on one Docker runner and locks the
 same isolation over concurrent `ExecuteTool` calls.
 
