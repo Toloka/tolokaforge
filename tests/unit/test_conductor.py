@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from tests.utils.conductor_phases import AGENT_LOOP_IDENTITY
 from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
 from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.conductor import (
@@ -526,7 +527,7 @@ class TestTrialToolSurfacePartition:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, AGENT_LOOP_IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs
@@ -556,7 +557,7 @@ class TestTrialToolSurfacePartition:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, AGENT_LOOP_IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs
@@ -634,7 +635,7 @@ def _trial_runner_kwargs(
         patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
         patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
     ):
-        conductor._run_agent_loop(spec, task, setup)
+        conductor._run_agent_loop(spec, task, setup, AGENT_LOOP_IDENTITY)
     return runner_cls.call_args.kwargs
 
 
@@ -660,7 +661,7 @@ class TestUserStopRuleReachesTheRunner:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_make_spec(), task, setup)
+            conductor._run_agent_loop(_make_spec(), task, setup, AGENT_LOOP_IDENTITY)
         return runner_cls.call_args.kwargs
 
     def test_a_declared_rule_is_the_one_the_runner_reads(self, tmp_path: Path) -> None:
@@ -803,7 +804,7 @@ class TestTrialSetupToolOutputMaxCharsWiring:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, AGENT_LOOP_IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs
@@ -835,7 +836,7 @@ class TestTrialSetupToolOutputMaxCharsWiring:
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
             conductor._run_agent_loop(
-                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup, AGENT_LOOP_IDENTITY
             )
 
         kwargs = runner_cls.call_args.kwargs

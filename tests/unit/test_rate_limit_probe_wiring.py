@@ -34,6 +34,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.utils.conductor_phases import AGENT_LOOP_IDENTITY
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
 from tolokaforge.core.conductor import (
     InMemoryConductor,
@@ -67,7 +68,6 @@ from tolokaforge.core.runner import TrialRunner
 from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.unit
-
 
 _AGENT = ModelConfig(provider="openrouter", name="anthropic/claude-3-haiku")
 _PROBE = RateLimitProbeConfig(
@@ -334,7 +334,7 @@ class TestTheOvershootIsPartOfTheInvariant:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             pytest.raises(ValueError, match="task clamped-overshoot"),
         ):
-            conductor._run_agent_loop(_spec(), task, setup)
+            conductor._run_agent_loop(_spec(), task, setup, AGENT_LOOP_IDENTITY)
 
 
 class TestBudgetInvariantAgainstTheEffectiveTimeout:
@@ -377,7 +377,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             pytest.raises(ValueError, match="task clamped"),
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
     def test_task_without_declared_timeouts_uses_the_unclamped_run_budget(
         self, tmp_path: Path
@@ -390,7 +390,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         kwargs = runner_cls.call_args.kwargs
         assert kwargs["episode_timeout_s"] == 14400
@@ -408,7 +408,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         stats = runner_cls.call_args.kwargs["probe_stats"]
         assert (stats.bucket_width_s, stats.max_buckets) == (60, 7)
@@ -430,7 +430,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         simulator = runner_cls.call_args.kwargs["user_simulator"]
         assert simulator.llm_client is not None
@@ -446,7 +446,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path), AGENT_LOOP_IDENTITY)
 
         assert runner_cls.call_args.kwargs["probe_stats"] is None
 
