@@ -6,6 +6,91 @@ its release cadence is orthogonal to the `tolokaforge` engine wheel's own
 `vX.Y.Z` tag axis. See
 [`docs/RELEASING.md`](https://github.com/Toloka/tolokaforge/blob/main/docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated).
 
+## models-v1.6.0 (2026-10-01)
+
+### BREAKING CHANGE
+
+- db-service no longer serves the flat routes
+`POST /reset`, `POST /query`, `POST /update`, `GET /dump`, `POST /sql`
+and `GET /schema`; requests to them get 404. There is no implicit
+`__default__` trial. `SQLQueryTool` and `SQLSchemaToolDB` are removed
+from `tolokaforge.tools.builtin` and its `__all__`. Migration: init a
+trial with `POST /trials/{trial_id}/init` and address it by its
+`/trials/{trial_id}/...` equivalent (`/reset` -> `/init`, `/query`,
+`/update`, `/dump` -> `/state`, `/sql`, `/schema`); for SQL access use
+`DBServiceClient.sql_query` / `get_schema` against a trial id. The
+standalone compose recipe's mock-web no longer sets `JSON_DB_URL` or
+waits on db-service.
+- `DBQueryTool` and `DBUpdateTool`, still exported from
+`tolokaforge.tools.builtin`, take no `db_url` and carry only the
+LLM-facing schema and `ToolPolicy`; their `execute()` raises, because the
+runner's ToolFactory serves them per trial through `Dispatch.JSON_DB`.
+Migration: call `DBServiceClient.query(trial_id, jsonpath)` /
+`DBServiceClient.update(trial_id, ops)` against an inited trial.
+`tools.<actor>.db_query` / `db_update` accept no `tool_config`; validate
+and RegisterTrial refuse one. `POST /trials/{trial_id}/update` now
+answers 400 where it used to answer "ok" with no change: for an `add`
+whose parent matches nothing or is a scalar, an `add` path not ending in
+a key name, and a `replace` of `$`. A `remove $` that was a 500, and a
+state the SQL mirror cannot store that was a 500 with the write
+committed, are now 400 with nothing applied.
+- A task enabling `db_query`/`db_update` as builtins must seed
+at least one table: `initial_state.json_db`, or `json_db: {"<table>": []}` for
+an intentionally empty store. `tolokaforge validate`, the run pre-flight and
+`RegisterTrial` refuse it otherwise. `add` on a table (list parent) now
+requires the `.-` append form (`$.tickets.-`); any other key is refused.
+- an unknown key under `models.<role>` (including `fallbacks`,
+`openrouter`, `session`, `reasoning`) now fails the run config's load, naming
+the key and suggesting the closest field; delete or rename it. `gateway_route`
+was never read and must be deleted. Worker and grader images from this release
+refuse a model-config key they do not declare: roll images before the engine.
+A `tolokaforge` reading a bundle refuses one written by a later engine with a
+newer model-config field.
+
+### Feat
+
+- **core**: M51 — Gateway & self-hosted model parity (#1714)
+- **core**: hand a user-simulator factory the task directory (#1669)
+- **core**: nullable model temperature, and a warning on the ignored models.user.temperature [TECHDEL-621] (#1641)
+- **core**: open a dialogue with a line of the agent's [TECHDEL-621] (#1663)
+- **core**: isolated user tool turns [TECHDEL-621] (#1662)
+- **core**: configurable user stop tokens and an immediate-stop mode [TECHDEL-621] (#1630)
+- **core**: UserSimulator Protocol + entry-point registry seam (ADR-0051) (#1660)
+- **grading**: M50 — judge-kind variance reduction + rubric-authoring lint (#1621)
+- **coding-harness**: meter every shipped harness, refuse a dead provider, and stop a wrong price passing as a number (#1618)
+- **langfuse**: read the deployment's block from the run configuration (#1626)
+- **grading**: state-hash mask parity + parallel_tool_calls request knob (#1619)
+- **observability**: a TrialObserver seam, the tolokaforge-langfuse wheel, and write-once tracing on a v4 receiver (#1597)
+- **grading**: M49 — agentic LLM-as-judge + pluggable JudgeKind registry (#1562) (#1588)
+- **coding-harness**: harness trial cost, image freshness, pricing-row surfacing, and a seventh harness (#1593)
+- **automation**: page the Slack requester alone for model integrations (#1532)
+- **models**: integrate Cohere Command A+ (azure_ai/cohere-command-a-plus-05-2026) (#1599)
+- **grading**: arena v3 batch 2 — comparator equivalence + order + auto-clock-mask + termination/judge routing (#1594)
+- **coding-harness**: AgentDriver Strategy + credential-shielded LLM gateway (#1280)
+- **adapter**: bridge Tool.policy.timeout_s to ToolSchema.timeout_s (#1556) (#1573)
+- **adapter**: task-yaml override for per-tool output_max_chars (#1563)
+- arena v3 engine residuals — tool-name hint, state-hash compare_columns (both substrates), trace_checks gate advisory (#1560)
+- **engine**: M48 — post-M44 follow-ups (adapter sentinel deletion, per-tool cap, truncation + parser-error metrics, replay-snapshot fix) (#1559)
+- **automation**: cost summary for the integration run (agents, wire probes, key deltas) (#1542)
+- **engine-loop**: scaffold improvements for reasoning-heavy models (#1519)
+
+### Fix
+
+- **models**: models wheel requires engine >=0.28 — the bundled presets set supports_sampling_params (#1737)
+- **runtime**: db_query/db_update read and write only the trial's own seeded JSON DB (#1734)
+- **docker**: exclude nested build artifacts from Docker contexts (#1705)
+- **observability**: role-generic actor LLM-spend accounting — record user-simulator spend in metrics, aggregate, and budget (#1656)
+- **grading**: core drops unstable_fields before the compare_columns pipeline, as the runner does (#1671)
+- **core**: keep a string-declared tool argument as the JSON text it is [TECHDEL-621] (#1664)
+- **judge-kind-ab**: update dry-run assertion to match tuple return type (#1659)
+- **integration**: green the integration lane + move terminal-bench e2e to the adapter (#1628)
+- **release**: green the release gate (checkout depth + missing grading key) (#1627)
+- **observability**: enforce single-attempt OTLP exports and reject redirects (#1622)
+- **automation**: integrate a model only the gateway serves (rebase of #1064 + fixes) (#1598)
+- **packaging**: bundle coding-harnesses into tolokaforge wheel (0.25.1) (#1589)
+- **examples**: declare on_missing: fail on the notes gate constraint (#1576)
+- **docker**: make image builds work on default macOS Docker Desktop (#1574)
+
 ## models-v1.5.0 (2026-09-07)
 
 ### Feat
