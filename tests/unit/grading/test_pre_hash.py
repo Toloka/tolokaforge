@@ -11,6 +11,8 @@ import copy
 from typing import Any
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.comparison_view import (
@@ -27,6 +29,7 @@ from tolokaforge.core.grading.pre_hash import (
     resolve_unstable_fields,
     view_the_pair,
 )
+from tolokaforge.core.grading.state_checks import state_digest
 from tolokaforge.core.hash import ColumnCompareRule, compute_stable_hash
 from tolokaforge.runner.models import ComparisonViewGradeRecord
 
@@ -271,3 +274,59 @@ def test_a_record_carries_a_trial_view_or_a_collision_never_both() -> None:
             trial=pair.trial_record,
             trial_collision={"message": "m", "ids": [1, 2]},
         )
+
+
+# ---------------------------------------------------------------------------
+# #1444 on the view pair: a mismatched digest of the views has a non-identical diff
+# ---------------------------------------------------------------------------
+
+_SOURCES = st.sampled_from(["S1", "S2", "S3"])
+_REASONS = st.sampled_from(["typo", "wrong client"])
+
+
+@st.composite
+def _filed_state(draw) -> dict[str, Any]:
+    """The seeded document, new documents under drawn ids, corrections citing any of them."""
+    sources = draw(st.lists(_SOURCES, max_size=3, unique=True))
+    ids = draw(
+        st.lists(
+            st.integers(min_value=2, max_value=9),
+            min_size=len(sources),
+            max_size=len(sources),
+            unique=True,
+        )
+    )
+    documents = [{"id": "D1", "source_id": "S0"}] + [
+        {"id": f"D{number}", "source_id": source} for number, source in zip(ids, sources)
+    ]
+    cited = st.sampled_from([document["id"] for document in documents] + ["D99"])
+    corrections = [
+        {"id": f"C{index}", "document_ref": draw(cited), "reason": draw(_REASONS)}
+        for index in range(draw(st.integers(min_value=0, max_value=2)))
+    ]
+    return {"documents": documents, "corrections": corrections, "lookup_log": []}
+
+
+@given(_filed_state(), _filed_state())
+@settings(max_examples=200, deadline=None)
+def test_a_mismatched_digest_of_the_views_comes_with_a_non_identical_view_diff(
+    trial: dict[str, Any], golden: dict[str, Any]
+) -> None:
+    """On either substrate's algebra: the digest is of the views, so is the diff."""
+    outcome = view_the_pair(
+        trial,
+        golden,
+        initial={"documents": [{"id": "D1", "source_id": "S0"}], "corrections": []},
+        declaration=_declaration(
+            _DOCUMENTS_BY_SOURCE, unstable_fields=("documents.id", "corrections.id")
+        ),
+    )
+    assert isinstance(outcome, ViewedPair)
+    runner_mismatch = compute_stable_hash(outcome.trial) != compute_stable_hash(outcome.golden)
+    core_mismatch = state_digest(outcome.trial) != state_digest(outcome.golden)
+    assert runner_mismatch is core_mismatch, "the two algebras disagree on equality"
+    if not runner_mismatch:
+        return
+    record = comparison_view_grade_record(outcome, matched=False)
+    assert record.view_diff is not None and not record.view_diff.identical
+    assert record.view_diff.summary != "States match"
