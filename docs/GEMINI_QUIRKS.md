@@ -450,6 +450,5 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
 - Capability registry: [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py)
   (`TOOL_NAME_DISCIPLINE`, `LEXICAL_TOOL_INVENTION` declared
   `known_unsupported` for Pro).
-- Codec fix commits: `c394409a0` (extras round-trip), `8b1511d67`
-  (effort-level guard).
+- Codec fix commit: `c394409a0` (extras round-trip).
 - Eval data: `output/collected/` (post-fix), 2026-05-21 / 2026-05-22.

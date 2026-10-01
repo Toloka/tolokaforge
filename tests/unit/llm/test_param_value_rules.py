@@ -242,6 +242,18 @@ class TestLayering:
         )
         assert policy.rule_evidence("reasoning_effort", "medium") == "operator says so"
 
+    def test_a_provider_rule_stays_on_its_own_route(self, tmp_path: Path) -> None:
+        overlay = {
+            "providers": {
+                "mock": {
+                    "params": {"param_value_rules": _rules("reasoning_effort", "medium", "reject")}
+                }
+            }
+        }
+        with _overlay(tmp_path, overlay):
+            policy = build_capabilities("mock-model", provider="openrouter").params_policy
+        assert policy.rule_for("reasoning_effort", "medium") is None
+
 
 class TestOverride:
     """`override` sends something other than what was asked.
