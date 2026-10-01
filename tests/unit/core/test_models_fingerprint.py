@@ -64,16 +64,17 @@ def test_field_shape_reflects_installed_models_wheel() -> None:
 def test_minimum_engine_version_parses_as_pep440_specifier() -> None:
     spec = SpecifierSet(tolokaforge_models.minimum_engine_version)
 
-    # The range accepts any engine >= 0.17 up to (but not including) 1.0.0 —
-    # the widening intent from Milestone 29's release-bookkeeping review is
-    # that a future engine minor bump shouldn't automatically become a
-    # coordinated two-wheel release.
-    assert "0.17.0" in spec
-    assert "0.17.5" in spec
-    assert "0.18.0" in spec
+    # The range accepts any engine >= 0.28 up to (but not including) 1.0.0.
+    # The upper bound stays wide so a future engine minor bump does not
+    # automatically become a coordinated two-wheel release. The floor is the
+    # first engine that constructs the ``supports_sampling_params`` params key
+    # the bundled presets set; 0.27.5 boots with this data and then raises
+    # TypeError at the first capability build.
+    assert "0.28.0" in spec
+    assert "0.28.5" in spec
     assert "0.99.0" in spec
     assert "1.0.0" not in spec
-    assert "0.16.9" not in spec
+    assert "0.27.5" not in spec
 
 
 def test_determinism_same_state_same_digest() -> None:

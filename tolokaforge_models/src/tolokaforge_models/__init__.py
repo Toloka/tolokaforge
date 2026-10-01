@@ -29,7 +29,11 @@ __api_version__: Final[int] = 1
 engine. Bumped whenever the engine-side loader must change to keep
 reading this wheel's registrations."""
 
-minimum_engine_version: Final[str] = ">=0.17,<1.0"
+minimum_engine_version: Final[str] = ">=0.28,<1.0"
 """PEP 440 specifier naming the engine range this wheel targets. The
 engine consults this string at import time to refuse to boot against
-an incompatible pair (see :mod:`tolokaforge.core.model_data`)."""
+an incompatible pair (see :mod:`tolokaforge.core.model_data`).
+
+The floor is 0.28 because the bundled presets set the
+``supports_sampling_params`` params key, which engines up to 0.27.5 cannot
+construct."""
