@@ -126,8 +126,8 @@ def comparison_view_findings(
         table_shapes: The seeded tables written as something other than a list of
             records, and as what — what a reader that normalises them to lists (the
             native one, :func:`~tolokaforge.adapters._task_loader.seeded_table_shapes`)
-            knows and ``tables`` no longer shows. A value of ``tables`` that is not a
-            list counts too.
+            knows and the normalised ``tables`` do not show. A value of ``tables`` that
+            is not a list counts too.
     """
     found = _Findings()
     masked = _masked_columns(view, tables, id_fields, unstable_fields or ())

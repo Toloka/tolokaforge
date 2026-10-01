@@ -2740,7 +2740,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         auto_normalize_nullables = state_checks.auto_normalize_nullables
         # A declared comparison view reads each side's FULL state (unstable fields
         # present) and runs every pre-hash step on the client, after the restore in
-        # step 7. A pack without one keeps the two paths below exactly as they were.
+        # step 7. A pack without one takes one of the two paths below.
         comparison_view = state_checks.comparison_view
         # Client-side hashing is required whenever the state comparator
         # needs both raw states in hand — the pack declared any per-column

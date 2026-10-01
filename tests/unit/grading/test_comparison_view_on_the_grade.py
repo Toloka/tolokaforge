@@ -2,7 +2,7 @@
 
 ``Grade.comparison_view_json`` is presence-tracked on both wires, and the host's
 ``Grade.comparison_view`` is left out of every dump while it is ``None``: a grade without
-a view encodes, prints and writes exactly as it did before the field existed.
+a view encodes, prints and writes byte-identically to a grade without the field.
 """
 
 from __future__ import annotations
