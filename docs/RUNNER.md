@@ -353,10 +353,9 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
   reads them.
 - `tolokaforge/core/__init__.py`, `tolokaforge/core/_runner_subset.py` —
   the subset's own audit artifact and the `core/` package init.
-- `tolokaforge/core/deprecations.py`, `hash.py`, `logging.py`, `loop.py`,
-  `netpolicy_constants.py`, `pricing.py`, `run_display_events.py`, `trial.py`,
-  `unknown_keys.py` — the shared-spine files at the root of `core/` the runner
-  closure reaches directly.
+- The shared-spine files at the root of `core/` the runner closure reaches
+  directly — `RUNNER_SUBSET_LOOSE_FILES` in `tolokaforge/core/_runner_subset.py`
+  is the list.
 
 **Data files in the subset:**
 

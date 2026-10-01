@@ -257,6 +257,16 @@ class TestModelConfigRefusesUndeclaredKeys:
 
         assert "did you mean 'temperature'?" in refused.value.errors()[0]["msg"]
 
+        reasoning = MappingProxyType({"mdoe": "budget"})
+        with pytest.raises(ValidationError) as refused:
+            ModelConfig.model_validate(
+                {"provider": "openrouter", "name": "a/b", "reasoning": reasoning}
+            )
+
+        [error] = refused.value.errors()
+        assert error["loc"] == ("reasoning",)
+        assert "did you mean 'mode'?" in error["msg"]
+
     def test_every_undeclared_key_in_one_block_is_named_in_one_refusal(self):
         cfg = _make_config()
         cfg["models"]["agent"].update(sesion={}, gateway_route="toloka_litellm")

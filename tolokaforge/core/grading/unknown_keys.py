@@ -1,11 +1,9 @@
 """What a typed ``grading.yaml`` block does with a key it does not declare.
 
-The refusal is the authoring gate's, and it is the message an author reads:
-:func:`tolokaforge.core.unknown_keys.refuse_undeclared_keys`, shared with every block under
-``models.<role>``, names the offending key, the
-closest declared field and the block's whole accepted set, and this module adds the file
-and the block's address, where the model's own ``extra="forbid"`` refuses in one line
-carrying no address.
+The refusal an author reads is :func:`tolokaforge.core.unknown_keys.refuse_undeclared_keys`,
+shared with every block under ``models.<role>``: it names the offending key, the closest
+declared field and the block's whole accepted set. This module adds the file and the block's
+address, which the model's own one-line ``extra="forbid"`` refusal does not carry.
 """
 
 from __future__ import annotations
@@ -46,7 +44,11 @@ def refuse_unknown_grading_keys(
             *answered_elsewhere* does not hold, or a key that is not a string.
     """
     refuse_undeclared_keys(
-        {key: value for key, value in block.items() if key not in answered_elsewhere},
+        {
+            key: value
+            for key, value in block.items()
+            if not isinstance(key, str) or key not in answered_elsewhere
+        },
         model.model_fields,
         owner=model.__name__,
         subject=f"Grading file {grading_path}: the task's own {block_name} block",

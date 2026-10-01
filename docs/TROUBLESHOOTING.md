@@ -50,7 +50,7 @@ for a nested block) at `agent_model_config`, `user_model_config` or `judge_model
 naming the key and every key the image accepts; an older image drops it without a word.
 Same cause, same fix.
 The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
-models, so an unknown key there is an error rather than a dropped field — unlike a
+models, so an unknown grading key there is an error rather than a dropped field — unlike a
 proto message field, which an older runner ignores.
 
 Which keys bite, from which release, and in which direction is one table:
