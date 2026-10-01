@@ -222,7 +222,10 @@ def test_a_re_keyed_id_field_the_clock_mask_drops_is_refused() -> None:
     error = _only_error(
         _NORMALIZE, id_fields={"documents": "modified_at"}, auto_mask_clock_columns=True
     )
-    assert "re-keys documents.modified_at, a column auto_mask_clock_columns drops" in error
+    assert error.startswith(
+        "state_checks.comparison_view.rules[0] (normalize_ids) re-keys documents.modified_at, "
+        "a column auto_mask_clock_columns drops"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -530,3 +533,52 @@ def test_fields_no_seeded_row_carries_load_on_every_path(
     assert not [f for f in report.errors if f.where == "state_checks.comparison_view"]
     result = _validate(tmp_path, "--strict-authoring")
     assert result.exit_code == 0, result.output
+
+
+# ---------------------------------------------------------------------------
+# What the gate is not told, it does not assume
+# ---------------------------------------------------------------------------
+
+
+def test_unreported_unstable_fields_leave_the_masked_field_checks_unchecked() -> None:
+    findings = _findings(_RANKED, unstable_fields=None, numeric_string_fields=["filed_at"])
+    assert findings.unchecked and "reports no unstable fields" in findings.unchecked[0]
+    (error,) = findings.errors
+    assert "numeric_string_fields folds" in error, "the checks not reading them still run"
+    assert _findings(_LOOKUPS, unstable_fields=None).unchecked == (), "no key, nothing to mask"
+
+
+def test_a_layer_reporting_only_tables_reports_the_masked_field_checks_unchecked() -> None:
+    """A plugin adapter's layer naming no unstable fields cannot pass a masked key."""
+    report = inspect_grading_authoring(
+        {"state_checks": _STATE_CHECKS},
+        ToolInventory.unresolvable(),
+        seeded_tables=SeededTablesLayer(tables=_TABLES),
+    )
+    assert not [f for f in report.errors if f.where == "state_checks.comparison_view"]
+    (skip,) = [s for s in report.unchecked if s.where == "state_checks.comparison_view"]
+    assert skip.kind is SkipKind.ADAPTER_DECLARED
+    assert "reports no unstable fields" in skip.reason
+
+    told = SeededTablesLayer(tables=_TABLES, unstable_fields=lambda: ("document.filed_at",))
+    report = inspect_grading_authoring(
+        {"state_checks": _STATE_CHECKS}, ToolInventory.unresolvable(), seeded_tables=told
+    )
+    assert not [s for s in report.unchecked if s.where == "state_checks.comparison_view"]
+
+
+def test_the_gate_reports_a_view_its_model_refuses_as_a_finding() -> None:
+    """The gate is called on raw blocks too (replay, migration); it reports, never raises."""
+    report = inspect_grading_authoring(
+        {
+            "state_checks": {
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": {"version": 9, "rules": [_LOOKUPS]},
+            }
+        },
+        ToolInventory.unresolvable(),
+        seeded_tables=SeededTablesLayer(tables=_TABLES, unstable_fields=tuple),
+    )
+    (error,) = [f for f in report.errors if f.where == "state_checks.comparison_view"]
+    assert "is not a view this engine reads" in error.message
+    assert "comparison_view.version 9 is not a version this engine reads" in error.message
