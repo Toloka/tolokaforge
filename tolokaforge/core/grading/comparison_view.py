@@ -887,6 +887,11 @@ def _record_id(row: Record, table: str, id_field: str, *, needed_by: str) -> Any
             f"a record of table {table!r} holds a {type(value).__name__} in its id field "
             f"{id_field!r}; an id is a string, a number or a bool"
         )
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ComparisonViewError(
+            f"a record of table {table!r} holds {value!r} in its id field {id_field!r}; a "
+            f"non-finite number is not a JSON value and never equals a reference to it"
+        )
     return value
 
 

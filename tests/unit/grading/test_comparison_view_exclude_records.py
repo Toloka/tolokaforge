@@ -599,6 +599,16 @@ def test_only_matching_rows_need_an_id() -> None:
             "its id field 'id' is missing or null",
         ),
         (
+            {"holds": [{"id": float("nan"), "status": "released"}]},
+            {},
+            "holds nan in its id field 'id'; a non-finite number is not a JSON value",
+        ),
+        (
+            {"holds": [{"id": float("inf"), "status": "released"}]},
+            {},
+            "holds inf in its id field 'id'",
+        ),
+        (
             {"holds": [{"id": date(2026, 1, 1), "status": "released"}]},
             {},
             "holds a date in its id field 'id'; an id is a string, a number or a bool",
@@ -625,6 +635,8 @@ def test_only_matching_rows_need_an_id() -> None:
         "composite-key",
         "mapping-reference",
         "null-id",
+        "nan-id",
+        "inf-id",
         "date-id",
         "set-reference",
         "date-reference",
