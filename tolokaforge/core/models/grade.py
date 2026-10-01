@@ -9,9 +9,9 @@ come in via :class:`CriterionResult`, whose canonical home is
 """
 
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 from tolokaforge.core.models.grade_components import GradeComponents
 from tolokaforge.core.models.trial_status import TerminationReason
@@ -197,3 +197,28 @@ class Grade(BaseModel):
     # ``state_checks: 0.0`` verdict. Serialized inline in ``grade.yaml``. See
     # docs/OUTPUT_FORMAT.md.
     synthesized_by_termination_reason: TerminationReason | None = None
+    # What the comparison view did, when the pack declares
+    # ``state_checks.comparison_view``: the golden's and the trial's view records (or the
+    # trial's collision) and, on a mismatch, the diff of the two views — the JSON
+    # ``runner.models.ComparisonViewGradeRecord`` dumps, the same on both substrates.
+    # Absent from ``grade.yaml`` when no view is declared, so a grade without one keeps
+    # its bytes. See docs/GRADING.md § Comparison view.
+    comparison_view: dict[str, Any] | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a grade that has none.
+
+        Every recorded ``grade.yaml`` and grade snapshot predates the field, so a grade
+        without a view dumps exactly as they do.
+        """
+        dumped: dict[str, Any] = handler(self)
+        for name in self.omitted_when_absent:
+            if getattr(self, name) is None:
+                dumped.pop(name, None)
+        return dumped

@@ -83,6 +83,7 @@ def grade_to_runner_wire(grade: Grade) -> pb2.Grade:
     the scored value or ``-1.0`` when explicitly set to "not evaluated".
 
     ``state_diff`` is JSON-encoded into ``state_diff_json`` — empty string
+    when absent — and ``comparison_view`` into ``comparison_view_json``, left unset
     when absent. ``custom_checks_details`` maps to the wire's ``custom_checks``
     repeated field; each entry's ``details`` dict is JSON-encoded into
     ``details_json`` — empty when the detail carried no dict.
@@ -123,7 +124,7 @@ def grade_to_runner_wire(grade: Grade) -> pb2.Grade:
     reasons_wire = grade.reasons if isinstance(grade.reasons, str) else json.dumps(grade.reasons)
     state_diff_json = json.dumps(grade.state_diff) if grade.state_diff else ""
 
-    return pb2.Grade(
+    wire = pb2.Grade(
         binary_pass=grade.binary_pass,
         score=grade.score,
         components=pb2.GradeComponents(**components_kwargs),
@@ -131,3 +132,6 @@ def grade_to_runner_wire(grade: Grade) -> pb2.Grade:
         state_diff_json=state_diff_json,
         custom_checks=custom_check_wire,
     )
+    if grade.comparison_view is not None:
+        wire.comparison_view_json = json.dumps(grade.comparison_view)
+    return wire

@@ -614,6 +614,9 @@ class GrpcRunnerClient:
                     "score": grade.score,
                     "reasons": grade.reasons,
                     "state_diff_json": grade.state_diff_json if grade.state_diff_json else None,
+                    "comparison_view_json": (
+                        grade.comparison_view_json if grade.comparison_view_json else None
+                    ),
                     "components": _wire_components_to_scores(grade),
                     "custom_checks": [
                         {

@@ -117,6 +117,7 @@ def _grade_from_wire(grade: grader_pb2.Grade) -> dict:
         "score": grade.score,
         "reasons": grade.reasons,
         "state_diff_json": grade.state_diff_json if grade.state_diff_json else None,
+        "comparison_view_json": grade.comparison_view_json if grade.comparison_view_json else None,
         "components": (
             _components_from_wire(grade.components) if grade.HasField("components") else {}
         ),
