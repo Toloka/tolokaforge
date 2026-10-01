@@ -6,7 +6,7 @@ import importlib.util
 import json
 from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from jsonpath_ng.ext import parse
 
@@ -17,13 +17,6 @@ from tolokaforge.core.grading.golden_replay import (
     GoldenReplayRecord,
     declared_failure,
     resolve_golden_action_names,
-)
-from tolokaforge.core.grading.pre_hash import (
-    PreHashDeclaration,
-    TrialViewError,
-    comparison_view_grade_record,
-    comparison_view_reason,
-    view_the_pair,
 )
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import (
@@ -36,7 +29,13 @@ from tolokaforge.core.hash import (
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
-from tolokaforge.runner.models import ComparisonViewGradeRecord
+
+if TYPE_CHECKING:
+    # The view's composition reaches the runner models, whose package pulls the gRPC
+    # stack core grading otherwise never touches: it is imported where a view is
+    # declared, so a task without one imports nothing more than before.
+    from tolokaforge.core.grading.pre_hash import PreHashDeclaration
+    from tolokaforge.runner.models import ComparisonViewGradeRecord
 
 # Tau-bench compatible hash types
 ToHashable = Union[str, int, float, dict[str, "ToHashable"], list["ToHashable"], set["ToHashable"]]
@@ -195,8 +194,10 @@ def _pre_hash_declaration(
     compare_columns: dict[str, dict[str, ColumnCompareRule]] | None,
     numeric_string_fields: list[str] | None,
     auto_normalize_nullables: bool,
-) -> PreHashDeclaration:
+) -> "PreHashDeclaration":
     """What steps 1–3 read, out of the keyword arguments core's hash checks take."""
+    from tolokaforge.core.grading.pre_hash import PreHashDeclaration
+
     return PreHashDeclaration(
         view=view,
         id_fields=dict(id_fields or {}),
@@ -438,7 +439,7 @@ class StateChecker:
         comparison_view: ComparisonViewConfig | None = None,
         initial_state: dict[str, Any] | None = None,
         id_fields: Mapping[str, str | list[str]] | None = None,
-    ) -> tuple[float, str, ComparisonViewGradeRecord | None]:
+    ) -> tuple[float, str, "ComparisonViewGradeRecord | None"]:
         """
         Check state hash against expected using tau-bench algorithm.
 
@@ -532,6 +533,13 @@ class StateChecker:
             )
         try:
             if comparison_view is not None:
+                from tolokaforge.core.grading.pre_hash import (
+                    TrialViewError,
+                    comparison_view_grade_record,
+                    comparison_view_reason,
+                    view_the_pair,
+                )
+
                 assert expected_state is not None
                 outcome = view_the_pair(
                     state,
@@ -762,7 +770,7 @@ class StateChecker:
         comparison_view: ComparisonViewConfig | None = None,
         id_fields: Mapping[str, str | list[str]] | None = None,
     ) -> tuple[
-        float, str, dict[str, Any] | None, GoldenReplayRecord, ComparisonViewGradeRecord | None
+        float, str, dict[str, Any] | None, GoldenReplayRecord, "ComparisonViewGradeRecord | None"
     ]:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
@@ -827,6 +835,13 @@ class StateChecker:
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
 
         if comparison_view is not None:
+            from tolokaforge.core.grading.pre_hash import (
+                TrialViewError,
+                comparison_view_grade_record,
+                comparison_view_reason,
+                view_the_pair,
+            )
+
             outcome = view_the_pair(
                 db_state,
                 expected_state,
