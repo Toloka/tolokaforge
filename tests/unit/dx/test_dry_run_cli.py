@@ -127,6 +127,34 @@ def _count_panels(stderr: str) -> int:
     return len(re.findall(r"Task fixture_\d+ · Trial 0", stderr))
 
 
+def test_invalid_run_config_is_a_click_error_without_traceback(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "invalid.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "models": {
+                    "agent": {
+                        "provider": "openrouter",
+                        "name": "openai/gpt-4o-mini",
+                        "reasoning": "medium",
+                    }
+                },
+                "evaluation": {"output_dir": str(tmp_path / "out")},
+            }
+        )
+    )
+
+    result = runner.invoke(cli, ["run", "--config", str(config_path), "--dry-run"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stderr
+    assert f"Invalid run config {config_path}" in result.stderr
+    assert "models.agent.reasoning" in result.stderr
+    assert "must be a struct" in result.stderr
+
+
 class TestDryRunExitAndStreams:
     def test_dry_run_exits_zero_stdout_empty(self, runner: CliRunner, tmp_path: Path) -> None:
         dataset = _write_task_pack(tmp_path, ["fixture_01", "fixture_02", "fixture_03"])

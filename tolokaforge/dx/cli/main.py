@@ -13,6 +13,7 @@ from typing import get_args as _get_type_args
 
 import click
 import yaml
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 
@@ -177,6 +178,19 @@ def _resolve_display_mode(
         return select_display_mode(explicit=explicit, env=env)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
+
+
+def _construct_run_config(config_data: dict[str, Any], *, source: Path) -> RunConfig:
+    """Construct a run config with a user-facing validation error."""
+    try:
+        return construct_config(RunConfig, config_data, source=source)
+    except ValidationError as exc:
+        details = []
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"]) or "<root>"
+            details.append(f"  {location}: {error['msg']}")
+        detail_text = "\n".join(details)
+        raise click.ClickException(f"Invalid run config {source}:\n{detail_text}") from exc
 
 
 class _GroupedCommandsGroup(click.Group):
@@ -831,7 +845,7 @@ def run(
             config_data["docker"] = {}
         config_data["docker"]["image_source"] = image_source_override
 
-    run_config = construct_config(RunConfig, config_data, source=Path(config))
+    run_config = _construct_run_config(config_data, source=Path(config))
 
     # ``observability.pricing_overlay_path`` overlays the shipped pricing
     # table BEFORE the orchestrator is constructed so every downstream
@@ -1578,7 +1592,7 @@ def prepare(
 
     console.print(f"[bold blue]Preparing run from config {config}...[/bold blue]")
     config_data, project = load_effective_run_config(Path(config))
-    run_config = construct_config(RunConfig, config_data, source=Path(config))
+    run_config = _construct_run_config(config_data, source=Path(config))
 
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
@@ -1670,7 +1684,7 @@ def worker(
 
     console.print(f"[bold blue]Loading worker config from {config}...[/bold blue]")
     config_data, project = load_effective_run_config(Path(config))
-    run_config = construct_config(RunConfig, config_data, source=Path(config))
+    run_config = _construct_run_config(config_data, source=Path(config))
 
     # Worker overlay precedence: --presets-file > ``prepare``-persisted queue
     # state > engine.presets_file.
@@ -2042,7 +2056,7 @@ def status(run_dir: str, config: str | None):
         queue = create_run_queue("sqlite", sqlite_path=queue_db, max_retries=0)
     elif config:
         config_data, _project = load_effective_run_config(Path(config))
-        run_config = construct_config(RunConfig, config_data, source=Path(config))
+        run_config = _construct_run_config(config_data, source=Path(config))
         if run_config.effective_queue_backend == "postgres":
             queue = create_run_queue(
                 "postgres",
