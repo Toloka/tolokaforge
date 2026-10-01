@@ -43,7 +43,12 @@ and no tokens are spent.
 engine emits several grading keys whether or not the pack declares them, so any pack at
 all reproduces this against an image older than the engine. A field's declared *value*
 shape locks the same way: the error is then a `string_type` or a value error naming the
-key rather than an `extra_forbidden`.
+key rather than an `extra_forbidden`. A model-config field reads differently again: an
+image of this engine version or newer refuses it as `Value error, ModelConfig was given a
+key it does not declare` (or `OpenRouterConfig`, `ModelSessionConfig`, `ReasoningConfig`
+for a nested block) at `agent_model_config`, `user_model_config` or `judge_model_config`,
+naming the key and every key the image accepts; an older image drops it without a word.
+Same cause, same fix.
 The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
 models, so an unknown key there is an error rather than a dropped field — unlike a
 proto message field, which an older runner ignores.

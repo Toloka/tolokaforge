@@ -10,12 +10,13 @@ hard failure.
 
 import dataclasses
 import re
+from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from tolokaforge.core.deprecations import refuse_undeclared_keys
 from tolokaforge.core.llm.reasoning import ReasoningConfig
+from tolokaforge.core.unknown_keys import refuse_undeclared_keys
 
 __all__ = ["RESOLVED_RECORD_KEY", "ModelConfig", "ModelSessionConfig", "OpenRouterConfig"]
 
@@ -36,10 +37,12 @@ _RESERVED_SESSION_HEADERS = frozenset({"authorization", "content-type", "content
 class _RefusesUndeclaredKeys(BaseModel):
     """Answers an undeclared key with :func:`refuse_undeclared_keys` before ``extra="forbid"`` can."""
 
+    model_config = ConfigDict(extra="forbid")
+
     @model_validator(mode="before")
     @classmethod
     def _refuse_undeclared_keys(cls, data: Any) -> Any:
-        if isinstance(data, dict):
+        if isinstance(data, Mapping):
             refuse_undeclared_keys(data, tuple(cls.model_fields), owner=cls.__name__)
         return data
 
@@ -47,7 +50,7 @@ class _RefusesUndeclaredKeys(BaseModel):
 class ModelSessionConfig(_RefusesUndeclaredKeys):
     """The request header that carries this model's conversation id (docs/CONFIG.md)."""
 
-    model_config = {"frozen": True, "extra": "forbid"}
+    model_config = ConfigDict(frozen=True)
 
     header: str
 
@@ -76,16 +79,12 @@ class OpenRouterConfig(_RefusesUndeclaredKeys):
     is how a model pins around a rate-limited default provider.
     """
 
-    model_config = {"extra": "forbid"}
-
     provider_order: list[str] | None = None
     allow_fallbacks: bool = True
 
 
 class ModelConfig(_RefusesUndeclaredKeys):
     """LLM model configuration"""
-
-    model_config = {"extra": "forbid"}
 
     provider: str
     name: str
@@ -155,7 +154,7 @@ class ModelConfig(_RefusesUndeclaredKeys):
                 f"`reasoning:` must be a struct ({{mode: ..., budget_tokens: ...}}), "
                 f"not the bare string {value!r}. See docs/CONFIG.md."
             )
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
             refuse_undeclared_keys(value, _REASONING_FIELDS, owner=ReasoningConfig.__name__)
             return ReasoningConfig(**value)
         raise TypeError(

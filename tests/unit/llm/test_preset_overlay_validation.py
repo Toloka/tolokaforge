@@ -201,15 +201,34 @@ class TestOverlayParamsValidation:
 class TestOverlayOpenRouterDefaultsValidation:
     _PRESET = "presets:\n  pinned:\n    match: ['fake-vendor-xyz/*']\n    openrouter_defaults: "
 
-    def test_an_undeclared_openrouter_defaults_key_is_refused_at_load(self, tmp_path: Path) -> None:
-        path = tmp_path / "typo.yaml"
-        path.write_text(self._PRESET + "{provider_ordr: [Together], allow_fallbacks: false}\n")
-        with pytest.raises(
-            ValueError,
-            match=r"presets\.pinned\.openrouter_defaults: unknown keys \['provider_ordr'\]"
-            r".*did you mean: \['provider_order'\]",
-        ):
+    @pytest.mark.parametrize(
+        "block, clause",
+        [
+            pytest.param(
+                "{provider_ordr: [Together], allow_fallbacks: false}",
+                "unknown key 'provider_ordr' — did you mean 'provider_order'?",
+                id="typo",
+            ),
+            pytest.param(
+                "{on: x}",
+                "unknown key True, which YAML read as bool — config keys must be strings.",
+                id="non-string-key",
+            ),
+        ],
+    )
+    def test_an_undeclared_openrouter_defaults_key_is_refused_at_load(
+        self, tmp_path: Path, block: str, clause: str
+    ) -> None:
+        path = tmp_path / "undeclared.yaml"
+        path.write_text(self._PRESET + block + "\n")
+        with pytest.raises(ValueError) as refused:
             validate_overlay_file(str(path))
+        message = str(refused.value)
+        assert (
+            "at presets.pinned.openrouter_defaults was given a key it does not declare" in message
+        )
+        assert clause in message
+        assert message.endswith("openrouter_defaults accepts: provider_order, allow_fallbacks.")
 
     def test_a_declared_openrouter_defaults_block_pins_the_provider(self, tmp_path: Path) -> None:
         path = tmp_path / "pin.yaml"

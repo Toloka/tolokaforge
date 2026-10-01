@@ -26,9 +26,8 @@ see :func:`drop_retired_max_idle_turns`.)
 
 from __future__ import annotations
 
-import difflib
 import warnings
-from collections.abc import Collection, Iterable, Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -117,61 +116,6 @@ def warn_deprecated(
     if follow_up_issue:
         message = f"{message} (tracked in #{follow_up_issue})"
     warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
-
-
-def suggest_closest_field(fields: Iterable[str], key: str, *, owner: str) -> str:
-    """The did-you-mean clause for *key* against the field names a schema declares.
-
-    Read by every surface that answers an author's misspelled config key — this
-    module's warn-and-drop through :func:`tolokaforge.core.project_loader.construct_config`,
-    the grading gate's refusal in
-    :func:`tolokaforge.core.grading.unknown_keys.refuse_unknown_grading_keys` and
-    :func:`refuse_undeclared_keys` — so the same typo does not send two authors
-    reading two different sentences. They differ in severity and in what they
-    append, not in the suggestion. *owner* names the schema in the no-match
-    sentence.
-
-    Returned with a leading and a trailing space so a caller composes it into its
-    own sentence: the clause carries the suggestion, not the severity.
-    """
-    suggestion = difflib.get_close_matches(key, list(fields), n=1)
-    if not suggestion:
-        return (
-            f" — no close match on {owner}. Remove the key or "
-            f"check the schema for the correct name. "
-        )
-    return (
-        f" — did you mean '{suggestion[0]}'? "
-        f"Rename `{key}` to `{suggestion[0]}` (or remove it if unused). "
-    )
-
-
-def refuse_undeclared_keys(
-    block: Mapping[Any, Any], fields: Collection[str], *, owner: str
-) -> None:
-    """Raise one ``ValueError`` naming every key of *block* outside *fields*.
-
-    Each key gets the :func:`suggest_closest_field` clause; a non-string key (YAML
-    reads a bare ``on:`` as ``True``) is told to quote itself instead, since no
-    rename fixes it. The message ends with every key *owner* accepts.
-    """
-    undeclared = [key for key in block if not isinstance(key, str) or key not in fields]
-    if not undeclared:
-        return
-    clauses = "\n".join(f"  - {_undeclared_key_clause(key, fields, owner)}" for key in undeclared)
-    raise ValueError(
-        f"{owner} was given a key it does not declare:\n{clauses}\n"
-        f"{owner} accepts: {', '.join(fields)}."
-    )
-
-
-def _undeclared_key_clause(key: Any, fields: Collection[str], owner: str) -> str:
-    if not isinstance(key, str):
-        return (
-            f"unknown key {key!r}, which YAML read as {type(key).__name__} — config "
-            f"keys must be strings. Quote it to write it as one."
-        )
-    return f"unknown key '{key}'{suggest_closest_field(fields, key, owner=owner)}".rstrip()
 
 
 def coerce_task_packs_alias(values: Any) -> Any:

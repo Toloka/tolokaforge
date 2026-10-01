@@ -1445,6 +1445,15 @@ dropped byte. The signature of the skew is a Pydantic `extra_forbidden` error na
 `hash_weight` or `min_assistant_turns` in the `RegisterTrialResponse.error` —
 whichever block the pack carries.
 
+**Model-config keys cross the same wire and are not on this table** (their census is
+tracked in [#1710](https://github.com/Toloka/tolokaforge/issues/1710)). The trial spec
+carries each model config's full dump, so a model-config field locks every pack's
+trials. Its signature is not `extra_forbidden`: an image of this engine version or newer
+refuses it as `Value error, ModelConfig was given a key it does not declare` (or
+`OpenRouterConfig`, `ModelSessionConfig`, `ReasoningConfig` for a nested block) at
+`agent_model_config`, `user_model_config` or `judge_model_config`, and an older image
+drops it.
+
 An old engine against a new runner image carries a second, narrower defect behind
 the version gate: such an engine drops `hash.weight` on the way to the wire, so a
 pack configuring a hash source *and* non-empty `jsonpaths` would reach the runner

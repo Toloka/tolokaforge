@@ -512,6 +512,7 @@ only-include = [
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
     "tolokaforge/core/trial.py",
+    "tolokaforge/core/unknown_keys.py",
 ]
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an

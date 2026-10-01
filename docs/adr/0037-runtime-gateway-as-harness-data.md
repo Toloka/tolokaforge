@@ -1,7 +1,7 @@
 # 0037. A runtime gateway is harness data, and its token dialect belongs to the runtime that provisions it
 
 - **Status:** Accepted ([#1239](https://github.com/Toloka/tolokaforge/issues/1239))
-- **Date:** 2026-08-19
+- **Date:** 2026-08-19, last amended 2026-10-01
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
@@ -165,7 +165,7 @@ different owners and are not expected to converge.
 
 ### Every rule is checked at load, because there is no later
 
-Nothing in this repo reads `gateway_route`: no run-config key selects it, and a
+Nothing in this repo consumes `gateway_route`: no run-config key selects it, and a
 trial here composes its container from the registry entry and any
 `harness_presets_file` overlay. The consumer is a runtime outside this repo that
 attaches to a container it did not build. That runtime resolves the four

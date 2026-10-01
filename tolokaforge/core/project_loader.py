@@ -44,7 +44,6 @@ from tolokaforge.core.deprecations import (
     POST_M9_STRICT_FLIP_ISSUE,
     canonicalize_actor_config,
     source_context,
-    suggest_closest_field,
     warn_deprecated,
     warn_legacy_run_config_dir,
 )
@@ -57,6 +56,7 @@ from tolokaforge.core.models import (
     ServiceSpec,
     TaskDefaults,
 )
+from tolokaforge.core.unknown_keys import suggest_closest_field
 
 # ── Config construction ─────────────────────────────────────────────────
 

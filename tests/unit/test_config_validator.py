@@ -5,6 +5,7 @@ API keys.
 """
 
 import json
+from types import MappingProxyType
 
 import pytest
 import yaml
@@ -16,7 +17,7 @@ from tolokaforge.core.config_validator import (
     _model_supports_reasoning,
     validate_run_config,
 )
-from tolokaforge.core.models import RunConfig
+from tolokaforge.core.models import ModelConfig, RunConfig
 
 pytestmark = pytest.mark.unit
 
@@ -197,54 +198,47 @@ class TestSchemaValidation:
         assert agent.fallbacks[0].session is None
 
 
+_BOOL_KEY_CLAUSE = (
+    "unknown key True, which YAML read as bool — config keys must be strings. "
+    "Quote it to write it as one."
+)
+
+
 class TestModelConfigRefusesUndeclaredKeys:
     """Every block under ``models.<role>`` refuses a key its type does not declare."""
 
     @pytest.mark.parametrize(
-        "mutate, location, typo, suggestion",
+        "mutate, location, clause",
         [
-            pytest.param(
-                lambda agent: agent.update(sesion={"header": "x-session-id"}),
-                "models.agent",
-                "sesion",
-                "session",
-                id="model-config",
-            ),
-            pytest.param(
-                lambda agent: agent.update(openrouter={"provider_ordr": ["Together"]}),
-                "models.agent.openrouter",
-                "provider_ordr",
-                "provider_order",
-                id="openrouter",
-            ),
             pytest.param(
                 lambda agent: agent.update(
                     fallbacks=[{"provider": "openrouter", "name": "openai/gpt-4o", "sesion": {}}]
                 ),
                 "models.agent.fallbacks.0",
-                "sesion",
-                "session",
+                "unknown key 'sesion' — did you mean 'session'?",
                 id="fallback",
-            ),
-            pytest.param(
-                lambda agent: agent.update(reasoning={"mdoe": "budget"}),
-                "models.agent.reasoning",
-                "mdoe",
-                "mode",
-                id="reasoning",
             ),
             pytest.param(
                 lambda agent: agent.update(session={"hedaer": "x-session-id"}),
                 "models.agent.session",
-                "hedaer",
-                "header",
+                "unknown key 'hedaer' — did you mean 'header'?",
                 id="session",
+            ),
+            pytest.param(
+                lambda agent: agent.update({True: "x"}),
+                "models.agent",
+                _BOOL_KEY_CLAUSE,
+                id="non-string-key",
+            ),
+            pytest.param(
+                lambda agent: agent.update(reasoning={True: 1}),
+                "models.agent.reasoning",
+                _BOOL_KEY_CLAUSE,
+                id="reasoning-non-string-key",
             ),
         ],
     )
-    def test_an_undeclared_key_is_refused_at_its_path_with_a_suggestion(
-        self, mutate, location, typo, suggestion
-    ):
+    def test_an_undeclared_key_is_refused_at_its_path_with_its_fix(self, mutate, location, clause):
         cfg = _make_config()
         mutate(cfg["models"]["agent"])
 
@@ -253,7 +247,15 @@ class TestModelConfigRefusesUndeclaredKeys:
 
         [error] = refused.value.errors()
         assert ".".join(str(part) for part in error["loc"]) == location
-        assert f"unknown key '{typo}' — did you mean '{suggestion}'?" in error["msg"]
+        assert clause in error["msg"]
+
+    def test_a_mapping_that_is_not_a_dict_gets_the_named_refusal(self):
+        block = MappingProxyType({"provider": "openrouter", "name": "a/b", "tempreature": 0.1})
+
+        with pytest.raises(ValidationError) as refused:
+            ModelConfig.model_validate(block)
+
+        assert "did you mean 'temperature'?" in refused.value.errors()[0]["msg"]
 
     def test_every_undeclared_key_in_one_block_is_named_in_one_refusal(self):
         cfg = _make_config()
