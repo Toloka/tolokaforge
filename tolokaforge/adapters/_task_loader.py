@@ -774,16 +774,19 @@ def declared_search_backend(declaration: SearchDeclaration) -> SearchBackend:
     What the adapter and the stack rule read — ``tool_parameters()`` and
     ``stack_service`` — may depend on ``backend_config``, so they come off a backend
     the registry built, never a class attribute. No trial and no stack-service
-    client: the runner builds the trial's own backend at ``RegisterTrial``.
+    handle: the runner builds the trial's own backend at ``RegisterTrial``.
 
     Raises:
         UnknownImplementationError: no backend is registered under the name.
         ReservedNameError: the name is reserved (``typesense``).
+        UndeclaredStackServiceError: the backend's ``stack_service`` is not a
+            declared stack service.
     """
     from tolokaforge.core.plugin_registry import SearchBackendContext, load_search_backend
+    from tolokaforge.core.search.stack_services import declared_stack_service
 
     factory = load_search_backend(declaration.backend)
-    return factory(
+    backend = factory(
         SearchBackendContext(
             backend_config=declaration.backend_config,
             tool_name=declaration.tool_name,
@@ -791,6 +794,9 @@ def declared_search_backend(declaration: SearchDeclaration) -> SearchBackend:
             logger=logging.getLogger(f"tolokaforge.search_backends.{declaration.backend}"),
         )
     )
+    if backend.stack_service is not None:
+        declared_stack_service(backend.stack_service)
+    return backend
 
 
 SEARCH_TOOL_TIMEOUT_S = 15.0

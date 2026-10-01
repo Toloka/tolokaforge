@@ -33,7 +33,9 @@ from tolokaforge.core.plugin_registry import (
 )
 from tolokaforge.core.search import backend as backend_module
 from tolokaforge.core.search.backend import SearchBackendContext
+from tolokaforge.core.search.stack_services import RAG_SERVICE, StackServices
 from tolokaforge.runner.models import SearchPlane
+from tolokaforge.runner.rag_client import RAGServiceClient
 
 pytestmark = pytest.mark.unit
 
@@ -157,17 +159,29 @@ def test_plugin_registry_re_exports_the_seam_types() -> None:
 def test_a_backend_reads_a_read_only_copy_of_its_config() -> None:
     """What the task declared is graded and bundled; a backend cannot change it."""
     declared = {"ranking": {"top_k": 3}}
-    client = object()
+    client = RAGServiceClient("http://rag-service:8001")
     context = SearchBackendContext(
         backend_config=declared,
         tool_name="search_kb",
         tool_description=None,
         logger=logging.getLogger("test"),
-        stack_service_clients={"rag_service": client},
+        stack_services=StackServices(rag_service=client),
     )
 
     with pytest.raises(TypeError):
         context.backend_config["ranking"] = {}  # type: ignore[index]
     context.backend_config["ranking"]["top_k"] = 99
     assert declared == {"ranking": {"top_k": 3}}
-    assert context.stack_service_clients["rag_service"] is client, "clients are never copied"
+    assert context.stack_services.get(RAG_SERVICE) is client, "handles are never copied"
+
+
+def test_a_context_refuses_stack_services_that_are_not_the_declared_surface() -> None:
+    """An ad-hoc mapping of clients is not the runner's stack-service surface."""
+    with pytest.raises(TypeError, match="StackServices"):
+        SearchBackendContext(
+            backend_config={},
+            tool_name="search_kb",
+            tool_description=None,
+            logger=logging.getLogger("test"),
+            stack_services={"rag_service": object()},  # type: ignore[arg-type]
+        )

@@ -83,6 +83,9 @@ class SearchBackendDefects:
     renders_failed_searches_as_empty: bool = False
     """Answer a failed search with "no document matched": the agent is graded for an outage."""
 
+    declares_an_undeclared_stack_service: bool = False
+    """Declare a stack service the engine does not declare: no runner reaches it."""
+
 
 @dataclass
 class InMemorySearchCallLog:
@@ -179,6 +182,8 @@ class InMemorySearchBackend:
         self._defects = defects or SearchBackendDefects()
         if self._defects.needs_a_trial_to_build and context.trial_id is None:
             raise ValueError("InMemorySearchBackend refuses a trial-less context (defect switch)")
+        if self._defects.declares_an_undeclared_stack_service:
+            self.stack_service = "undeclared_service"
         self.context = context
         self.backend_config = dict(context.backend_config)
         self.call_log = InMemorySearchCallLog()

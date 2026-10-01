@@ -29,6 +29,7 @@ from tolokaforge.core.search.backend import (
     SearchIndexBuildError,
     SearchOutcome,
 )
+from tolokaforge.core.search.stack_services import StackServices
 from tolokaforge.runner.rag_client import (
     RAGServiceClient,
     RAGServiceError,
@@ -88,7 +89,7 @@ def _context(
         logger=logging.getLogger("test.rag_service"),
         trial_id=trial_id,
         domain_name=domain_name,
-        stack_service_clients={} if client is None else {"rag_service": client},
+        stack_services=StackServices(rag_service=client),
     )
 
 
@@ -188,11 +189,13 @@ class TestBuildIndex:
         asyncio.run(backend.build_index(_corpus(tmp_path / "corpus")))
         assert client.indexed[0][1] == "default"
 
-    def test_a_runner_without_a_rag_client_refuses_the_trial(self, tmp_path: Path) -> None:
+    def test_a_context_without_a_rag_service_handle_refuses_the_trial(self, tmp_path: Path) -> None:
         backend = RagServiceBackend(_context(None))
         with pytest.raises(SearchIndexBuildError) as excinfo:
             asyncio.run(backend.build_index(_corpus(tmp_path / "corpus")))
-        assert str(excinfo.value) == "Search enabled but RAG service not configured"
+        message = str(excinfo.value)
+        assert message.startswith(f"Trial {TRIAL_ID}: stack service 'rag_service' is not reachable")
+        assert "RAG_SERVICE_URL" in message, "the refusal says how a runner reaches rag-service"
 
     def test_an_unset_corpus_is_refused(self) -> None:
         backend = RagServiceBackend(_context(_RecordingRagClient()))
