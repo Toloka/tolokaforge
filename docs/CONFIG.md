@@ -554,8 +554,8 @@ initial_state:
     base_url: "http://mock-web:8080"
   rag:
     corpus_dir: "rag/corpus"
-    # backend: "rag_service"     # which registered search backend serves the corpus
-    # backend_config: {}         # opaque config for that backend
+    # backend: "rag_service"     # which registered search backend serves the corpus: rag_service | bm25 | a registered name
+    # backend_config: {}         # opaque config for that backend (bm25: see below)
     # tool:
     #   name: "search_kb"        # the agent's search tool
     #   description: "..."       # default: the rag-service tool's description
@@ -688,11 +688,11 @@ there and validates them itself; the built-in ignores it. See
 
 | key | default | meaning |
 |---|---|---|
-| `corpus_dir` | none | Directory of the corpus, relative to the task dir. Its `.md` / `.txt` files travel with the task and the runner builds the trial's index from them. Declaring it requires an actor to enable the search tool. |
-| `backend` | `rag_service` | The search backend that serves the corpus, resolved against the `tolokaforge.search_backends` entry-point group. `rag_service` is the engine's hybrid rag-service (BM25 + dense, one index per trial; its tasks run on `full_stack`). `typesense` is reserved: that plane is declared by an adapter that indexes host-side, not by a native task. |
-| `backend_config` | `{}` | An opaque mapping handed to the backend's factory verbatim; the engine never reads its keys. `rag_service` takes none and refuses a non-empty one. |
+| `corpus_dir` | none | Directory of the corpus, relative to the task dir. Its `.md` / `.txt` / `.json` files travel with the task and the runner builds the trial's index from them (`rag_service` indexes the `.md` / `.txt` ones; `bm25` reads all three, `.json` as `{id, title, content}` documents). Declaring it requires an actor to enable the search tool. |
+| `backend` | `rag_service` | The search backend that serves the corpus, resolved against the `tolokaforge.search_backends` entry-point group. `rag_service` is the engine's hybrid rag-service (BM25 + dense, one index per trial; its tasks run on `full_stack`). `bm25` is Okapi BM25 in the runner process — deterministic, no stack service, so its tasks run on the core stack. `typesense` is reserved: that plane is declared by an adapter that indexes host-side, not by a native task. |
+| `backend_config` | `{}` | An opaque mapping handed to the backend's factory verbatim; the engine never reads its keys. `rag_service` takes none and refuses a non-empty one; `bm25` validates it into the table below. |
 | `tool.name` | `search_kb` | The agent's search tool. It goes to whichever actor's `tools.<actor>.enabled` names it, and the runner binds it to the trial's index by this name. |
-| `tool.description` | the rag-service tool's description | What the agent reads about the tool. Its parameters come from the backend (`rag_service`: `query`, `top_k`, `alpha`). |
+| `tool.description` | the rag-service tool's description | What the agent reads about the tool. Its parameters come from the backend (`rag_service`: `query`, `top_k`, `alpha`; `bm25`: `query`, and `top_k` when `agent_parameters` exposes it). |
 
 A task that writes no `rag` block and enables `search_kb` gets the defaults. Unknown
 keys in the block (a misspelt `backend`, `tool: {nme: …}`) are refused, and a
@@ -703,6 +703,53 @@ so `TaskConfig` dumps of a task declaring `corpus_dir` alone are unchanged.
 `task_defaults` has no `initial_state`, so the backend is chosen per task. See
 [ADR-0054](adr/0054-search-backend-protocol-and-registry.md) and
 [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
+
+#### `backend: bm25` — `backend_config`
+
+Okapi BM25 over the corpus, in the runner process (`tolokaforge/core/search/bm25.py`).
+The scores are bit-identical to `rank_bm25` 0.2.2's `BM25Okapi` without numpy. Every
+key is optional; unknown keys and out-of-range values are refused at run start, naming
+the task.
+
+| key | default | meaning |
+|---|---|---|
+| `documents.format` | `auto` | `json`: each `.json` file is one `{id, title, content}` document (strings; `id` and `content` non-empty; other keys ignored). `text`: each `.md` / `.txt` file is one document, `id` and `title` its file stem. `auto`: both, by extension. Files of other extensions are skipped. |
+| `documents.order` | `filename` | Documents load in sorted file-name order — the corpus order ties are broken by. |
+| `documents.skip_prefix` | `"_"` | Files whose name starts with it are not documents (a `_README.md` beside the corpus). `""` skips nothing. |
+| `documents.fields` | `[content]` | Which fields are indexed, joined by a space: `[content]` or `[title, content]`. The agent and the judge always read the whole `content`. |
+| `tokenizer` | `whitespace_lower` | `text.lower().split()`, applied to documents and queries. The only registered tokenizer. |
+| `bm25` | `{k1: 1.5, b: 0.75, epsilon: 0.25}` | `rank_bm25`'s constants: saturation, length normalisation (`0..1`), and the floor for a negative IDF as a fraction of the average IDF. |
+| `ranking.top_k` | `5` | Hits per search, `min(top_k, N)`. A zero score is a hit: a query touching nothing returns the first `top_k` documents in corpus order. |
+| `ranking.min_score` | `null` | Keep only hits scoring at least this much. `0.0` still keeps zero scores; a positive threshold drops the untouched documents. |
+| `ranking.tie_break` | `corpus_order` | Equal scores rank in corpus order (sort key `(-score, corpus_index)`). The only rule. |
+| `empty_query` | `no_results` | A blank query (empty or whitespace) renders the no-hits text; `error` renders the error text instead. Either way the agent reads text and nothing raises. |
+| `render.kind` | `json` | `json`: `{"results": [{doc_id, title, source, score, text}], "total", "query"}`, `text` being the whole document; no hits: `{"message": <empty_text>, "results": [], "query"}`; an error: `{"error": <error_text>, "results": []}`. `text`: the keys below. |
+| `render.empty_text`, `render.error_text` | `No relevant documents found.` / `Query is required` (json); `No results found.` / `Error: the query must not be empty.` (text) | The texts a no-hits search and an `empty_query: error` render. |
+| `render.item_template` (text) | `"{index}. {title}\n   ID: {id}\n   Score: {score}\n   Content: {content}\n"` | One hit, as a `str.format` template over `{index}` (1-based), `{id}`, `{title}`, `{score}` (already formatted with `score_format`), `{content}` and `{source}` (the file name). A format spec may follow a name: `{content:.300}` cuts the document to 300 characters. |
+| `render.separator` (text) | `"\n"` | Joins the hits. |
+| `render.score_format` (text) | `".4f"` | How `{score}` is formatted. |
+| `render.timing_suffix` (text) | `off` | `measured` appends `timing_template` after the hits (or the no-hits text; never the error text). |
+| `render.timing_template` (text) | `"\n\n[Timing: retrieval={retrieval_ms}ms, total={total_ms}ms]"` | Formatted with measured integer milliseconds: `{retrieval_ms}` (scoring and ranking), `{total_ms}` (the whole call), and `{reranking_ms}`, always `0` — this backend reranks nothing; the field lets a template carry that segment. |
+| `agent_parameters` | `[query]` | Which of `query` and `top_k` the agent's tool schema exposes; `query` is mandatory. An exposed `top_k` overrides `ranking.top_k` per call; an argument the schema does not expose is ignored. |
+
+The judge's `search_kb` reads the same index with the same ranking and gets whole
+documents as `SearchHit.text`. A built corpus is cached in the runner process by the
+corpus files' content and the config, so the trials of one task share one index.
+
+```yaml
+initial_state:
+  rag:
+    corpus_dir: "kb"               # {id, title, content} JSON files, or .md / .txt
+    backend: "bm25"
+    backend_config:
+      ranking: {top_k: 5}
+      render:
+        kind: text                 # "1. <title>\n   ID: <id>\n   Score: 0.1234\n   Content: <content>\n" per hit
+        timing_suffix: measured    # + "\n\n[Timing: retrieval=Xms, total=Zms]"
+    tool:
+      name: "search_kb"
+      description: "Search the knowledge base."
+```
 
 ## Grading Specification (`grading.yaml`)
 
