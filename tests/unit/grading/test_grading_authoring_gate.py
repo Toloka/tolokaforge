@@ -1788,6 +1788,14 @@ def _json_db_inventory(**overrides: Any) -> ToolInventory:
         ),
         pytest.param(
             _json_db_inventory(json_db_builtins=frozenset({"db_query"})),
+            _THE_TASK_SEEDS_THESE_TABLES,
+            "does not say what the tool blocks of ['db_query'] carry",
+            id="tool_blocks_unresolved",
+        ),
+        pytest.param(
+            _json_db_inventory(
+                json_db_builtins=frozenset({"db_query"}), json_db_tool_config_keys={}
+            ),
             _NO_CALLER_READ_WHAT_THE_TASK_SEEDS,
             "no caller resolved the tables this task seeds",
             id="seeded_tables_unresolved",
@@ -1800,14 +1808,14 @@ def _json_db_inventory(**overrides: Any) -> ToolInventory:
         ),
     ],
 )
-def test_a_json_db_tool_whose_store_cannot_be_read_is_unchecked_not_refused(
+def test_a_json_db_tool_whose_facts_cannot_be_read_is_unchecked_not_refused(
     inventory: ToolInventory, seeded_tables: SeededTablesLayer, reason: str
 ) -> None:
-    """Either fact unknown, and the rule reports what it could not check and fails nothing.
+    """Any fact unknown, and the rule reports what it could not check and fails nothing.
 
-    ``None`` is what an adapter building :class:`ToolInventory` without the field
+    ``None`` is what an adapter building :class:`ToolInventory` without the fields
     reports, and what a recorded wire tool list reports, since neither can say which
-    of its tools are builtins.
+    of its tools are builtins nor what their tool blocks carry.
     """
     report = inspect_grading_authoring(
         _trace_block(_tool_call("db_query")), inventory, seeded_tables=seeded_tables
@@ -1817,8 +1825,8 @@ def test_a_json_db_tool_whose_store_cannot_be_read_is_unchecked_not_refused(
     assert any(reason in skip.reason for skip in report.unchecked), report.unchecked
 
 
-def test_an_inventory_without_the_field_and_no_json_db_name_asks_nothing() -> None:
-    """A tool set naming no ``Dispatch.JSON_DB`` builtin has no store to ask about."""
+def test_an_inventory_without_the_fields_and_no_json_db_name_asks_nothing() -> None:
+    """A tool set naming no ``Dispatch.JSON_DB`` builtin has no store or tool block to ask about."""
     report = inspect_grading_authoring(
         _trace_block(_tool_call("http_request")),
         _json_db_inventory(
@@ -3079,8 +3087,20 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
             json_db_builtins=frozenset(),
         )
 
+    with pytest.raises(ValueError, match="what its JSON-DB builtins' tool blocks carry"):
+        ToolInventory(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+            json_db_tool_config_keys={},
+        )
+
     assert ToolInventory.unresolvable().known is False
     assert ToolInventory.unresolvable().json_db_builtins is None
+    assert ToolInventory.unresolvable().json_db_tool_config_keys is None
 
 
 def test_the_json_db_builtins_are_declared_tools() -> None:

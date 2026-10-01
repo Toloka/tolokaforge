@@ -24,6 +24,7 @@ import logging
 import re
 import reprlib
 import sqlite3
+from collections.abc import Iterable
 from threading import Lock
 from typing import Any, NoReturn
 
@@ -41,6 +42,7 @@ except ImportError as exc:  # noqa: BLE001 -- explicit re-raise below
 from jsonpath_ng.exceptions import JSONPathError
 from jsonpath_ng.ext import parse  # .ext: supports filter exprs, superset of base grammar
 from jsonpath_ng.ext.string import DefintionInvalid
+from jsonpath_ng.jsonpath import Child, Fields, JSONPath
 from pydantic import BaseModel, Field, PrivateAttr
 
 logger = logging.getLogger(__name__)
@@ -346,12 +348,8 @@ class TrialState(BaseModel):
         for (existing,) in cursor.fetchall():
             cursor.execute(f"DROP TABLE IF EXISTS {_sql_identifier(existing)}")
 
-        try:
-            for table_name, table_data in self.data.items():
-                self._mirror_table(cursor, table_name, table_data)
-        except SQLMirrorError:
-            self._sql_conn.rollback()
-            raise
+        for table_name, table_data in self.data.items():
+            self._mirror_table(cursor, table_name, table_data)
         self._sql_conn.commit()
 
     def _mirror_table(self, cursor: sqlite3.Cursor, table_name: str, rows: Any) -> None:
@@ -365,8 +363,8 @@ class TrialState(BaseModel):
         columns = ", ".join(f"{_sql_identifier(key)} {kind}" for key, kind in all_columns.items())
         try:
             cursor.execute(f"CREATE TABLE {table} ({columns})")
-        except sqlite3.Error as e:
-            raise SQLMirrorError(table_name, f"cannot be created in SQL ({e})") from e
+        except (sqlite3.Error, UnicodeEncodeError) as e:
+            raise SQLMirrorError(table_name, _uncreatable_table_reason(all_columns, e)) from e
         column_names = list(all_columns)
         keys = ", ".join(_sql_identifier(key) for key in column_names)
         placeholders = ", ".join("?" for _ in column_names)
@@ -375,7 +373,7 @@ class TrialState(BaseModel):
             values = [self._serialize_for_sql(record.get(col)) for col in column_names]
             try:
                 cursor.execute(insert_sql, values)
-            except (sqlite3.Error, OverflowError) as e:
+            except (sqlite3.Error, OverflowError, UnicodeEncodeError) as e:
                 raise SQLMirrorError(
                     table_name, _unstorable_row_reason(cursor, row_index, column_names, values, e)
                 ) from e
@@ -600,6 +598,16 @@ def _sql_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _uncreatable_table_reason(columns: Iterable[str], error: Exception) -> str:
+    """Name the first row key SQLite cannot take as a column name, else the table itself."""
+    for column in columns:
+        try:
+            column.encode("utf-8")
+        except UnicodeEncodeError:
+            return f"key {reprlib.repr(column)} cannot name a SQL column ({error})"
+    return f"cannot be created in SQL ({error})"
+
+
 def _unstorable_row_reason(
     cursor: sqlite3.Cursor,
     row_index: int,
@@ -611,7 +619,7 @@ def _unstorable_row_reason(
     for column, value in zip(columns, values, strict=True):
         try:
             cursor.execute("SELECT ?", (value,))
-        except (sqlite3.Error, OverflowError):
+        except (sqlite3.Error, OverflowError, UnicodeEncodeError):
             return (
                 f"row {row_index} field '{column}' holds {reprlib.repr(value)}, "
                 f"which SQLite cannot store ({error})"
@@ -761,21 +769,25 @@ def validate_upsert_operations(
 _JSONPATH_EXAMPLE = "$.tickets[0].status"
 
 
-def _find_jsonpath(
-    path: str, data: Any, op_index: int | None = None, *, reported_path: str | None = None
-) -> list[Any]:
-    """Match ``path`` against ``data``, refusing a parse or evaluation fault with 400.
+def _find_jsonpath(path: str, data: Any, op_index: int | None = None) -> list[Any]:
+    """Match ``path`` against ``data``, refusing a parse or evaluation fault with 400."""
+    return _match_jsonpath(_parse_jsonpath(path, path, op_index), data, path, op_index)
 
-    A filter's regex and an ``.ext`` string function are compiled lazily, so a
-    bad one surfaces at match time rather than at parse time. A refusal names
-    ``reported_path`` when given: the path the client sent, of which ``path``
-    is a part.
-    """
-    shown = path if reported_path is None else reported_path
+
+def _parse_jsonpath(path: str, shown: str, op_index: int | None) -> JSONPath:
+    """Parse ``path``, refusing with 400 a path that does not parse; a refusal names ``shown``."""
     try:
-        expr = parse(path)
+        return parse(path)
     except JSONPathError as e:
         _refuse_jsonpath(shown, f"is not a valid JSONPath ({e})", op_index)
+
+
+def _match_jsonpath(expr: JSONPath, data: Any, shown: str, op_index: int | None) -> list[Any]:
+    """Match ``expr`` against ``data``, refusing with 400 a fault ``shown`` causes at match time.
+
+    A filter's regex and an ``.ext`` string function are compiled lazily, so a
+    bad one surfaces here rather than at parse time.
+    """
     try:
         return expr.find(data)
     except (re.error, DefintionInvalid) as e:
@@ -808,8 +820,8 @@ def _refuse_op(op_index: int, op: JSONPathOp, reason: str) -> NoReturn:
     )
 
 
-_ADD_APPEND_EXAMPLE = "$.tickets.-"
-_KEY_SYNTAX = frozenset("$[]()@*")
+_ADD_APPEND_SUFFIX = ".-"
+_ADD_APPEND_EXAMPLE = f"$.tickets{_ADD_APPEND_SUFFIX}"
 
 
 def _matches_below_root(data: dict[str, Any], op: JSONPathOp, op_index: int) -> list[Any]:
@@ -833,17 +845,31 @@ def _replace_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
         match.full_path.update(data, op.value)
 
 
+def _add_target(op: JSONPathOp, op_index: int) -> tuple[JSONPath, str]:
+    """The parent expression of an add path and the one key it ends in, as JSONPath parses it.
+
+    A path ending in ``.-`` is the append form, which JSONPath has no syntax for.
+    """
+    if op.path.endswith(_ADD_APPEND_SUFFIX):
+        parent_path = op.path.removesuffix(_ADD_APPEND_SUFFIX)
+        return _parse_jsonpath(parent_path, op.path, op_index), "-"
+    expr = _parse_jsonpath(op.path, op.path, op_index)
+    if isinstance(expr, Child) and isinstance(expr.right, Fields):
+        fields = expr.right.fields
+        if len(fields) == 1 and fields[0] != "*":
+            return expr.left, fields[0]
+    _refuse_op(
+        op_index,
+        op,
+        f"add path '{op.path}' does not end in a key name: add sets a named key on "
+        f"the object its parent path matches, or appends to a list parent, "
+        f"e.g. '{_ADD_APPEND_EXAMPLE}'",
+    )
+
+
 def _add_at(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
-    parent_path, _, key = op.path.rpartition(".")
-    if not key or _KEY_SYNTAX & set(key):
-        _refuse_op(
-            op_index,
-            op,
-            f"add path '{op.path}' does not end in a key name: add sets a named key on "
-            f"the object its parent path matches, or appends to a list parent, "
-            f"e.g. '{_ADD_APPEND_EXAMPLE}'",
-        )
-    parents = _find_jsonpath(parent_path, data, op_index, reported_path=op.path)
+    parent_expr, key = _add_target(op, op_index)
+    parents = _match_jsonpath(parent_expr, data, op.path, op_index)
     if not parents:
         _refuse_op(op_index, op, f"add path '{op.path}' has a parent that matches nothing")
     for parent in parents:
@@ -875,12 +901,12 @@ _JSONPATH_OPS = {"replace": _replace_at, "add": _add_at, "remove": _remove_at}
 def _apply_jsonpath_op(data: dict[str, Any], op: JSONPathOp, op_index: int) -> None:
     """Apply one op to ``data`` in place, refusing a client-caused fault with 400.
 
-    ``replace`` refuses a path that matches nothing. ``add`` splits the path at
-    its last ``.``: the trailing segment must be a plain key name, and every
-    match of the parent must be a dict, which gains that key, or a list, which
-    has the value appended; a parent matching nothing is refused. ``replace``
-    and ``remove`` refuse the root ``$``. ``remove`` of a path that matches
-    nothing is a no-op.
+    ``replace`` refuses a path that matches nothing. ``add`` takes the key its
+    path ends in as JSONPath parses it, which must be a single key name, or a
+    trailing ``.-``; every match of the parent must be a dict, which gains that
+    key, or a list, which has the value appended; a parent matching nothing is
+    refused. ``replace`` and ``remove`` refuse the root ``$``. ``remove`` of a
+    path that matches nothing is a no-op.
     """
     apply = _JSONPATH_OPS.get(op.op)
     if apply is None:
@@ -1341,16 +1367,18 @@ async def query_trial(trial_id: str, req: QueryRequest) -> dict[str, Any]:
 def _commit_mirrored(trial: TrialState, working: dict[str, Any]) -> None:
     """Make ``working`` the trial's state, or refuse with 400 if the SQL mirror cannot store it.
 
-    On a refusal the previous state is restored and re-mirrored, so the trial is
-    left exactly as it was.
+    Whatever stops the mirror, the previous state is restored and re-mirrored before
+    the error propagates, so the trial is left exactly as it was.
     """
     previous = trial.data
     trial.data = working
     try:
         trial.sync_json_to_sql()
-    except SQLMirrorError as e:
+    except Exception as e:
         trial.data = previous
         trial.sync_json_to_sql()
+        if not isinstance(e, SQLMirrorError):
+            raise
         raise HTTPException(
             status_code=400,
             detail=error_response(

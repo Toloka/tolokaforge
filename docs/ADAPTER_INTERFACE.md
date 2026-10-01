@@ -119,7 +119,10 @@ Each adapter must subclass `BaseAdapter` and implement:
       say, and the rule is reported unchecked for a task declaring either name.
       Its `json_db_tool_config_keys` maps each of those builtins whose tool
       block carries init kwargs to those keys, which the gate refuses as
-      `RegisterTrial` does; it names only tools in `json_db_builtins`.
+      `RegisterTrial` does; it names only tools in `json_db_builtins`, and
+      `{}` says none carries any.  Leave it `None` when you cannot say what
+      those blocks carry, and that rule too is reported unchecked for a task
+      declaring either name.
 
 15. `grading_replay_world(task: TaskConfig, task_dir: Path) -> ReplayWorld`
     — a **classmethod**

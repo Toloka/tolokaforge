@@ -39,7 +39,7 @@ import logging
 import re
 import types
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -176,9 +176,14 @@ class ToolInventory:
     it then reports unchecked; ``frozenset()`` is the answer that none are.
     """
 
-    json_db_tool_config_keys: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    json_db_tool_config_keys: Mapping[str, frozenset[str]] | None = None
     """Each of :attr:`json_db_builtins` whose ``tools.<actor>.<name>`` block carries init
-    kwargs, to those keys — the ``tool_config`` ``RegisterTrial`` refuses on that tool."""
+    kwargs, to those keys — the ``tool_config`` ``RegisterTrial`` refuses on that tool.
+
+    ``None`` where the producer cannot say what those blocks carry — a recorded wire tool
+    list carries no tool block — and the rule reading it then reports unchecked; ``{}``
+    is the answer that none carries any.
+    """
 
     def __post_init__(self) -> None:
         carried = sorted(self.declared | self.agent_declared | self.user_declared)
@@ -199,7 +204,12 @@ class ToolInventory:
                 f"the JSON-DB builtins {sorted(self.json_db_builtins - self.declared)} are not "
                 f"declared by the task, which declares {sorted(self.declared)}"
             )
-        configured = set(self.json_db_tool_config_keys)
+        if not self.known and self.json_db_tool_config_keys is not None:
+            raise ValueError(
+                "an unresolvable inventory claims to know what its JSON-DB builtins' tool "
+                "blocks carry. It reports no tools, so it can say nothing of theirs"
+            )
+        configured = set(self.json_db_tool_config_keys or {})
         if configured and not configured <= (self.json_db_builtins or frozenset()):
             raise ValueError(
                 f"the tools {sorted(configured)} carry JSON-DB builtin tool_config keys, but "
@@ -951,6 +961,11 @@ _UNRESOLVED_JSON_DB_BUILTINS = (
     "this task's tool set does not say whether {tools} are served as the source-less "
     "JSON-DB builtins or by an MCP server, so whether they have a seeded store to read is "
     "not checkable here"
+)
+
+_UNRESOLVED_JSON_DB_TOOL_CONFIG = (
+    "this task's tool set does not say what the tool blocks of {tools} carry, so whether "
+    "they name a tool_config RegisterTrial refuses is not checkable here"
 )
 
 _UNRESOLVED_SEEDED_TABLES_FOR_A_JSON_DB_TOOL = (
@@ -1892,6 +1907,18 @@ def _check_state_reads_a_database_the_task_seeds(
     )
 
 
+def _skip_over_declared_json_db_names(inventory: ToolInventory, reason: str) -> AuthoringReport:
+    """Unchecked over the declared names the registry dispatches as ``JSON_DB``; empty if none."""
+    from tolokaforge.tools.builtin import registry
+
+    undecided = sorted(inventory.declared & registry.list_for_dispatch(registry.Dispatch.JSON_DB))
+    if not undecided:
+        return AuthoringReport()
+    return AuthoringReport(
+        unchecked=(Skip(_TOOLS_ADDRESS, reason.format(tools=undecided), kind=inventory.skip_kind),)
+    )
+
+
 def _check_json_db_builtins_have_a_seeded_store(
     inventory: ToolInventory, seeded_tables: SeededTablesLayer
 ) -> AuthoringReport:
@@ -1912,23 +1939,8 @@ def _check_json_db_builtins_have_a_seeded_store(
 
     ``relaxed_validation`` does not downgrade this: a refused pack does not run.
     """
-    from tolokaforge.tools.builtin import registry
-
     if inventory.json_db_builtins is None:
-        undecided = sorted(
-            inventory.declared & registry.list_for_dispatch(registry.Dispatch.JSON_DB)
-        )
-        if not undecided:
-            return AuthoringReport()
-        return AuthoringReport(
-            unchecked=(
-                Skip(
-                    _TOOLS_ADDRESS,
-                    _UNRESOLVED_JSON_DB_BUILTINS.format(tools=undecided),
-                    kind=inventory.skip_kind,
-                ),
-            )
-        )
+        return _skip_over_declared_json_db_names(inventory, _UNRESOLVED_JSON_DB_BUILTINS)
     tools = sorted(inventory.json_db_builtins)
     if not tools:
         return AuthoringReport()
@@ -1958,10 +1970,15 @@ def _check_json_db_builtins_take_no_tool_config(inventory: ToolInventory) -> Aut
     arguments, so ``RegisterTrial`` refuses a ``tool_config`` on either; this rule
     refuses the same block at validate, with the message the runner gives.
 
+    An inventory that cannot say what those blocks carry skips, but only over a name
+    the registry dispatches as ``JSON_DB``: a tool set holding none has nothing to ask.
+
     ``relaxed_validation`` does not downgrade this: a refused pack does not run.
     """
     from tolokaforge.tools.builtin.registry import json_db_tool_config_refusal
 
+    if inventory.json_db_tool_config_keys is None:
+        return _skip_over_declared_json_db_names(inventory, _UNRESOLVED_JSON_DB_TOOL_CONFIG)
     return AuthoringReport(
         errors=tuple(
             Finding(_TOOLS_ADDRESS, json_db_tool_config_refusal(name, keys))

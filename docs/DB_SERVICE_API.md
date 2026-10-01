@@ -498,7 +498,7 @@ are refused with 422.
 | Op | Effect |
 |----|--------|
 | `replace` | Sets every match of `path` to `value`. A path that matches nothing, or that matches the root `$`, refuses the batch. |
-| `add` | Splits `path` at its last `.` and resolves only the parent. The trailing segment must be a key name: one that is empty or holds any of `$ [ ] ( ) @ *` (`$`, `$.tickets[0]`, a trailing filter or wildcard) refuses the batch. Every parent match must be a dict, which gains the trailing key set to `value`, or a list, which has `value` appended whatever the trailing key (`$.tickets.-`). A parent that matches nothing, or matches a scalar, refuses the batch. |
+| `add` | Parses `path` as JSONPath and resolves only its parent. The path must end in one key name, which is the key as JSONPath reads it, so `$.tickets[0]."note"` and `$.tickets[0].note` both set `note`, and a query on the same path finds it. A path ending in anything else refuses the batch: the root `$`, an index (`$.tickets[0]`), a filter, a wildcard, a union (`a|b`) or more than one key (`a,b`). The one form JSONPath does not parse is a trailing `.-`, which appends (`$.tickets.-`). Every parent match must be a dict, which gains the key set to `value`, or a list, which has `value` appended whatever the key. A parent that matches nothing, or matches a scalar, refuses the batch. |
 | `remove` | Deletes every match of `path` from its parent dict or list. A path that matches the root `$` refuses the batch. A path that matches nothing deletes nothing and still commits: `version` increments and `stable_hash` is unchanged. |
 
 #### Atomicity
@@ -511,7 +511,8 @@ nothing: rows, `version` and the SQL mirror are as they were. A committed batch
 re-syncs the SQL mirror and increments `version` once.
 
 The SQL mirror refuses a state whose values or keys SQLite cannot hold: an
-integer outside the signed 64-bit range, or two keys of one table (or two
+integer outside the signed 64-bit range, a string or key holding a lone UTF-16
+surrogate (which has no UTF-8 encoding), or two keys of one table (or two
 table names) that differ only in letter case, since SQLite identifiers are
 case-insensitive.
 

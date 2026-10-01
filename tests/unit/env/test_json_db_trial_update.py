@@ -7,6 +7,7 @@ version and the SQL mirror untouched, and an update never reaches another trial.
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -34,7 +35,12 @@ def _new_trial(client, tables: dict) -> str:
 
 
 def _update(client, trial_id: str, ops: list[dict]):
-    return client.post(f"/trials/{trial_id}/update", json={"ops": ops})
+    # ASCII-escaped JSON, so an op holding a lone surrogate still reaches the service.
+    return client.post(
+        f"/trials/{trial_id}/update",
+        content=json.dumps({"ops": ops}),
+        headers={"content-type": "application/json"},
+    )
 
 
 def _state(client, trial_id: str) -> dict:
@@ -188,6 +194,16 @@ def test_remove_of_a_path_matching_nothing_changes_no_row_and_still_bumps_the_ve
             id="add-ending-in-a-wildcard",
         ),
         pytest.param(
+            {"op": "add", "path": "$.tickets[0].a,b", "value": 1},
+            "add path '$.tickets[0].a,b' does not end in a key name",
+            id="add-ending-in-two-keys",
+        ),
+        pytest.param(
+            {"op": "add", "path": "$.tickets[0].a|b", "value": 1},
+            "add path '$.tickets[0].a|b' does not end in a key name",
+            id="add-ending-in-a-union",
+        ),
+        pytest.param(
             {"op": "add", "path": "$", "value": []},
             "add path '$' does not end in a key name",
             id="add-on-the-root",
@@ -233,6 +249,16 @@ def test_an_op_that_would_write_nothing_it_names_is_refused(db_test_client, op, 
             "duplicate column name: Status",
             id="a-key-colliding-with-another-in-sql",
         ),
+        pytest.param(
+            {"op": "replace", "path": "$.tickets[0].status", "value": "\ud800"},
+            "row 0 field 'status' holds '\\ud800'",
+            id="a-value-holding-a-lone-surrogate",
+        ),
+        pytest.param(
+            {"op": "replace", "path": "$.tickets[0]", "value": {"id": "T-100", "\ud800": 1}},
+            "key '\\ud800' cannot name a SQL column",
+            id="a-key-holding-a-lone-surrogate",
+        ),
     ],
 )
 def test_a_batch_the_sql_mirror_cannot_store_is_refused_and_leaves_the_trial_intact(
@@ -261,11 +287,32 @@ def test_a_key_holding_a_double_quote_is_mirrored_to_sql(db_test_client):
     trial_id = _new_trial(db_test_client, TICKETS)
 
     resp = _update(
-        db_test_client, trial_id, [{"op": "add", "path": '$.tickets[0].a"b', "value": 1}]
+        db_test_client, trial_id, [{"op": "add", "path": "$.tickets[0].'a\"b'", "value": 1}]
     )
 
     assert resp.status_code == 200, resp.text
     assert _sql(db_test_client, trial_id, 'SELECT "a""b" AS quoted FROM tickets') == [{"quoted": 1}]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        pytest.param('$.tickets[0]."note"', id="double-quoted"),
+        pytest.param("$.tickets[0].'note'", id="single-quoted"),
+    ],
+)
+def test_add_sets_the_key_its_path_names_so_a_query_on_that_path_finds_it(db_test_client, path):
+    trial_id = _new_trial(db_test_client, TICKETS)
+
+    resp = _update(db_test_client, trial_id, [{"op": "add", "path": path, "value": "vip"}])
+
+    assert resp.status_code == 200, resp.text
+    assert _state(db_test_client, trial_id)["data"]["tickets"] == [
+        {"id": "T-100", "status": "open", "note": "vip"}
+    ]
+    query = db_test_client.post(f"/trials/{trial_id}/query", json={"jsonpath": path})
+    assert query.status_code == 200, query.text
+    assert query.json() == {"results": ["vip"], "count": 1}
 
 
 @pytest.mark.parametrize(
@@ -314,6 +361,12 @@ def test_batch_leaving_a_non_table_shape_is_refused(db_test_client, op, reason):
             "InvalidJSONPath",
             "path '$.tickets[.note' is not a valid JSONPath",
             id="add-names-the-path-it-was-sent",
+        ),
+        pytest.param(
+            {"op": "add", "path": "$.tickets[0].`note`", "value": 1},
+            "InvalidJSONPath",
+            "path '$.tickets[0].`note`' is not a valid JSONPath",
+            id="add-ending-in-a-backtick-operator",
         ),
         pytest.param(
             {"op": "move", "path": "$.tickets[0]"},
