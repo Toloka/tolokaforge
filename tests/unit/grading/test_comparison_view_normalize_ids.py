@@ -107,16 +107,33 @@ def test_new_records_get_their_content_key_and_references_follow() -> None:
     ("delta", "rendered"),
     [
         (-5.0, 'journal:{"account_id":"A1","delta":-5,"fee_id":"F1"}'),
+        (1e23, 'journal:{"account_id":"A1","delta":100000000000000000000000,"fee_id":"F1"}'),
+        (10**23, 'journal:{"account_id":"A1","delta":100000000000000000000000,"fee_id":"F1"}'),
         (2.5, 'journal:{"account_id":"A1","delta":2.5,"fee_id":"F1"}'),
         (True, 'journal:{"account_id":"A1","delta":true,"fee_id":"F1"}'),
         (None, 'journal:{"account_id":"A1","delta":null,"fee_id":"F1"}'),
         ("−5 €", 'journal:{"account_id":"A1","delta":"−5 €","fee_id":"F1"}'),
     ],
-    ids=["integral-float", "float", "bool", "null", "non-ascii"],
+    ids=[
+        "integral-float",
+        "large-integral-float",
+        "large-int",
+        "float",
+        "bool",
+        "null",
+        "non-ascii",
+    ],
 )
 def test_the_key_renders_as_canonical_json_of_the_key_fields(delta: Any, rendered: str) -> None:
     result = _apply({"journal": [_entry("FCJ-1", delta=delta)]}, _normalize())
     assert result.state["journal"][0]["id"] == rendered
+
+
+def test_a_key_value_the_hash_folds_together_keeps_one_key() -> None:
+    """1e23 and 10**23 hash alike, so their records must get one key on both sides."""
+    golden = _apply({"journal": [_entry("FCJ-1", delta=10**23)]}, _normalize())
+    trial = _apply({"journal": [_entry("FCJ-9", delta=1e23)]}, _normalize())
+    assert compute_stable_hash(trial.state) == compute_stable_hash(golden.state)
 
 
 def test_the_initial_states_records_keep_their_ids_and_references_to_them() -> None:

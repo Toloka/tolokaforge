@@ -1159,7 +1159,8 @@ def _key_fields(
 
 
 def _key_value(value: Any, table: str, old_id: Any, field: str) -> Any:
-    """A key component as JSON renders it, with an integral float rendered as the int it equals."""
+    """A key component as JSON renders it; an integral float renders as the int the hash folds
+    it to, so ``5.0`` and ``5``, and ``1e23`` and ``10**23``, keep one key."""
     if value is not None and not isinstance(value, _ID_TYPES):
         raise ComparisonViewError(
             f"{_NORMALIZE}: record {old_id!r} of table {table!r} holds a "
@@ -1172,7 +1173,8 @@ def _key_value(value: Any, table: str, old_id: Any, field: str) -> Any:
                 f"field {field!r}, which JSON cannot render"
             )
         if value.is_integer():
-            return int(value)
+            # Through the shortest decimal, as the hash folds it: int(1e23) is 99999999999999991611392.
+            return int(Decimal(repr(value)))
     return value
 
 
