@@ -708,7 +708,9 @@ blank document or blank indexed fields, a malformed JSON document, an empty corp
 or indexed text that tokenizes to no term at all.
 
 The judge's `search_kb` reads the same index with the same ranking and gets whole
-documents as `SearchHit.text`. A built corpus is cached in the runner process by the
+documents as `SearchHit.text`, with their titles; how much of each it shows is
+`grading.llm_judge.customization.judge_snippet_chars` (200 characters by default,
+`null` for whole documents). A built corpus is cached in the runner process by the
 corpus files' content and the config, so the trials of one task share one index.
 
 ```yaml
@@ -792,6 +794,9 @@ llm_judge:                                 # the judge MODEL is set once per run
                                            # false omits the agent's policy from the
                                            # judge's opening-message evidence
                                            # (evidence gating; agent untouched)
+    judge_snippet_chars: null              # int >= 1 | null (default 200): how
+                                           # much of each hit the judge's search_kb
+                                           # shows; null = whole documents
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -845,7 +850,10 @@ custom prompt can never break `submit_report` validation.
 `include_agent_system_prompt` (`bool | None`) controls whether the agent's policy is
 embedded in the judge's opening-message evidence: unset/`true` include it (the
 default), `false` omits it (evidence gating, distinct from `system_prompt`'s
-wording). Omitting the block leaves the judge at the faithful default. All fields
+wording). `judge_snippet_chars` (`int >= 1 | None`, default `200`) is how much of
+each hit's content the judge's `search_kb` shows: the first that many characters,
+or the whole document for `null`; it is not tri-state, so a task writes `200` to
+undo a project figure. Omitting the block leaves the judge at the faithful default. All fields
 layer project→task (a project default under
 `grading_defaults.llm_judge.customization`, task wins; `system_prompt: null`
 resets a project prompt; `include_agent_system_prompt: true` (explicit

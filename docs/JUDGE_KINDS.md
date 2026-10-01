@@ -56,6 +56,7 @@ class JudgeKind(Protocol):
         disable_knowledge_search: bool,
         custom_system_prompt: str | None,
         include_agent_system_prompt: bool,
+        judge_snippet_chars: int | None = 200,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult: ...
@@ -71,8 +72,11 @@ inputs verbatim, so a kind that just wraps `LLMJudge` (`single_shot_rubric`)
 needs no translation layer. `judge_model_config` + `judge_model_provider`
 are construction inputs — the kind builds its own judge client(s) from
 them, once or many times per `evaluate` call. `disable_knowledge_search`,
-`custom_system_prompt`, and `include_agent_system_prompt` are per-trial
-customization every kind must honor identically to `LLMJudge`.
+`custom_system_prompt`, `include_agent_system_prompt` and `judge_snippet_chars`
+are per-trial customization every kind must honor identically to `LLMJudge`.
+The engine passes each of them by keyword, so a downstream kind's `evaluate`
+must accept every one; `judge_snippet_chars` (ADR-0052) was added after the
+Protocol shipped, and a kind written before it must add the parameter.
 
 **`kind_config: Mapping[str, Any] | None`** is an opaque bag the Protocol
 itself does not interpret — each kind owns its own schema and validation.
@@ -466,7 +470,8 @@ verdicts to keep its per-criterion pool label-variant.
 Every fixture is one `entry.yaml` file in `ParityCorpusEntry` shape:
 `{entry_id, rubric, agent_system_prompt, transcript, state_diff,
 disable_knowledge_search, custom_system_prompt,
-include_agent_system_prompt, judge_scripts}`. The
+include_agent_system_prompt, judge_scripts}`, plus an optional
+`judge_snippet_chars` (default `200`). The
 `judge_scripts.<kind_name>` value is a list of turns; each turn is
 either a string (assistant text) or a list of tool-call dicts
 (`{name, arguments}`). The `single_shot_rubric` cassette is one turn
