@@ -464,7 +464,8 @@ def test_the_id_field_comes_from_id_fields(declared: str | list[str]) -> None:
     ids=["absent", "blank", "empty-list", "one-field", "one-element-list", "whitespace"],
 )
 def test_the_id_field_resolves_as_the_runner_resolves_a_key(id_fields: dict[str, Any]) -> None:
-    assert (_record_id_field("holds", id_fields),) == table_key("holds", id_fields).fields
+    resolved = _record_id_field("holds", id_fields, needed_by="unless_referenced_by")
+    assert (resolved,) == table_key("holds", id_fields).fields
 
 
 @pytest.mark.parametrize(
@@ -474,7 +475,7 @@ def test_a_key_that_names_no_field_is_refused_as_the_runner_refuses_it(declared:
     with pytest.raises(IdFieldResolutionError):
         table_key("holds", {"holds": declared})
     with pytest.raises(ComparisonViewError, match="which names no key field"):
-        _record_id_field("holds", {"holds": declared})
+        _record_id_field("holds", {"holds": declared}, needed_by="unless_referenced_by")
 
 
 def test_references_are_read_before_the_rule_removes_anything() -> None:
