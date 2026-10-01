@@ -388,7 +388,13 @@ class TestReceiverFromTheEnvironment:
 class TestTheReceiverFamily:
     """By capability, once per run, never by the version the receiver reports."""
 
-    def _build(self, monkeypatch, family_answer, options=None):
+    def _build(
+        self,
+        monkeypatch,
+        family_answer,
+        options=None,
+        endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+    ):
         from tolokaforge_langfuse import media
 
         calls: list[str] = []
@@ -408,7 +414,7 @@ class TestTheReceiverFamily:
         config = ObservabilityConfig(
             tracing=TracingConfig(
                 exporter="otlp",
-                endpoint="http://127.0.0.1:9/api/public/otel/v1/traces",
+                endpoint=endpoint,
                 options={"langfuse": {"attach": "none", **(options or {})}},
             )
         )
@@ -440,21 +446,30 @@ class TestTheReceiverFamily:
         """The direct ingestion path and the single-post exporter are v4 answers: a v3 receiver
         gets neither, so its wire traffic is the one this observer has always written."""
         pytest.importorskip("opentelemetry.sdk")
+        from otlp_receiver import Receiver
         from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
-        observer, _ = self._build(monkeypatch, (404, b""))
-        exporter = observer._queue._exporter
-        assert type(exporter).__name__ == "OTLPSpanExporter"
-        assert INGESTION_VERSION_HEADER not in exporter._session.headers
+        with Receiver() as receiver:
+            observer, _ = self._build(monkeypatch, (404, b""), endpoint=receiver.url())
+            exporter = observer._queue._exporter
+            assert type(exporter).__name__ == "OTLPSpanExporter"
+            exporter.export([])
+        [post] = receiver.posts
+        assert INGESTION_VERSION_HEADER not in post.headers
 
     def test_the_v4_family_asks_for_the_direct_path_and_posts_once(self, monkeypatch) -> None:
         pytest.importorskip("opentelemetry.sdk")
+        from otlp_receiver import Receiver
         from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
 
-        observer, _ = self._build(monkeypatch, (200, b'{"data": []}'))
-        exporter = observer._queue._exporter
-        assert type(exporter).__name__ == "SingleAttemptSpanExporter"
-        assert exporter._session.headers[INGESTION_VERSION_HEADER] == "4"
+        with Receiver() as receiver:
+            observer, _ = self._build(monkeypatch, (200, b'{"data": []}'), endpoint=receiver.url())
+            exporter = observer._queue._exporter
+            assert type(exporter).__name__ == "SingleAttemptSpanExporter"
+            receiver.answer = 503
+            exporter.export([])
+        [post] = receiver.posts
+        assert post.headers[INGESTION_VERSION_HEADER] == "4"
 
     def test_a_page_that_is_not_this_api_is_not_a_v4_receiver(self, monkeypatch) -> None:
         """An authenticating proxy answers 200 with an HTML login page on any path; taking that

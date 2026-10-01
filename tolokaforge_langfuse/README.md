@@ -115,6 +115,7 @@ profile".
 | `projection.py` | the default projection of a persisted trial bundle (the connector's `mapping.py` is the reference) |
 | `gradings.py` | the grading observation, its judge transcript and scores |
 | `otlp_spans.py` | the projection's ingestion bodies as OTLP spans (the write-once layout of a v4 receiver); engine-free, imported by the offline connector too |
+| `otlp_transport.py` | the OTLP/HTTP span exporter: the SDK's own for a v3 receiver, and for the write-once layout one that posts each batch once through a `requests` session, on OpenTelemetry 1.27 to 1.44 and from 1.45 (an SDK it does not recognise refuses the run); engine-free, imported by the offline connector too |
 | `media.py` | the ingestion and media REST calls, the receiver-family probe, the budget and the breaker |
 | `attachments.py` | attachment manifest v2 and the data-safety scan |
 | `vocabulary.py` | the default trace vocabulary: prefixes, derived tags, the environment rule (shared with the offline uploader) |

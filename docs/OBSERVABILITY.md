@@ -244,10 +244,12 @@ refused at run start.
 that failed with a connection error or a retryable status. The v4 producer makes one POST attempt
 per batch to avoid unnecessary requests and unintended overwrites. This does not guarantee
 delivery or prevent an undeletable duplicate. It takes more than disabling the exporter's retry
-loop: the SDK's own `_export` posts a second time on a lost connection, `requests` follows a 307 or 308
-by re-sending the body, and a session's adapter can retry by itself. The exporter makes the
-request itself with redirects refused and no adapter retries. Only 2xx responses are successful;
-3xx responses, including 307 and 308, are failed exports. An OpenTelemetry SDK whose exporter cannot
+loop: the SDK posts a second time on a lost connection (`_export` up to OpenTelemetry 1.44, its
+OTLP client from 1.45), `requests` follows a 307 or 308 by re-sending the body, and a session's
+adapter can retry by itself. The exporter makes the request itself with redirects refused and no
+adapter retries, through a `requests` session on every supported SDK: from 1.45, whose default
+transport is urllib3, it hands the SDK that session. Only 2xx responses are successful; 3xx
+responses, including 307 and 308, are failed exports. An OpenTelemetry SDK whose exporter cannot
 enforce this policy fails the run at start rather than silently enabling retries. A v3 run keeps
 the stock retrying exporter. The consequences are visible in the receipt:
 

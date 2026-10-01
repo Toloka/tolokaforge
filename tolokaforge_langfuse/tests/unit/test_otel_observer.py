@@ -713,7 +713,8 @@ class TestHowManyTimesABatchIsPosted:
 
     The count is taken at the HTTP layer, not at the SDK's ``_export``: that method re-posts the
     same bytes in an ``except ConnectionError`` branch of its own, so a test that stubs it cannot
-    see the repeat it is there to rule out.
+    see the repeat it is there to rule out. ``test_otlp_transport.py`` counts the same cases on
+    the wire, against a local receiver.
     """
 
     def _count_posts(self, exporter, answer=None, raises=None):
@@ -741,16 +742,6 @@ class TestHowManyTimesABatchIsPosted:
         return make_otlp_exporter(
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
         )
-
-    def test_the_default_exporter_keeps_the_sdk_retries(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
-
-        exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"})
-        posts = self._count_posts(exporter, answer=self._answer())
-        exporter._shutdown_in_progress.set()  # do not wait out the backoff in a unit test
-        exporter.export([])
-        assert type(exporter).__name__ == "OTLPSpanExporter"
-        assert len(posts) >= 1
 
     def test_a_lost_connection_is_not_a_second_post(self) -> None:
         """The case the guarantee exists for: the receiver took the body and the answer never
@@ -848,20 +839,3 @@ class TestHowManyTimesABatchIsPosted:
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}
         )
         assert type(exporter).__name__ == "OTLPSpanExporter"
-
-
-class TestTheIngestionHeader:
-    def test_the_exporter_asks_for_the_direct_ingestion_path(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
-
-        exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"})
-        assert exporter._session.headers[INGESTION_VERSION_HEADER] == "4"
-
-    def test_a_caller_may_turn_it_off_and_keeps_its_own_headers(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
-
-        exporter = make_otlp_exporter(
-            "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, ingestion_version=None
-        )
-        assert INGESTION_VERSION_HEADER not in exporter._session.headers
-        assert exporter._session.headers["Authorization"] == "Basic x"

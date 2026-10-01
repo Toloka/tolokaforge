@@ -33,6 +33,9 @@ dependencies = [
     "pydantic>=2.0.0",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
+    # the single-attempt exporter posts through a requests session; the OTLP HTTP exporter stopped
+    # requiring requests in 1.45 (its default transport became urllib3)
+    "requests>=2.7",
     "pyyaml>=6.0.1",
     "tomli>=2.0; python_version < '3.11'",
 ]

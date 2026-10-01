@@ -5204,6 +5204,7 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
@@ -5213,6 +5214,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.1" },
+    { name = "requests", specifier = ">=2.7" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
 ]
 
