@@ -1,6 +1,6 @@
 # 0052. The `SearchBackend` Protocol and entry-point registry
 
-- **Status:** Proposed
+- **Status:** Accepted (change 1 of 3 implemented)
 - **Date:** 2026-09-30
 - **Deciders:** @CiroGamboa, @rsmtnn
 - **Supersedes:** none
