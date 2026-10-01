@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_kinds.auto_anchored import (
     _ANCHOR_SYSTEM_PROMPT,
     AutoAnchoredRubricJudgeKind,
@@ -158,9 +159,7 @@ def _evaluate_kwargs(rubric: Rubric, provider: _FakeProvider, kind_config: dict 
         "state_diff": None,
         "judge_model_config": _model_config(),
         "judge_model_provider": provider,
-        "disable_knowledge_search": False,
-        "custom_system_prompt": None,
-        "include_agent_system_prompt": True,
+        "options": JudgeTrialOptions(),
         "kind_config": {"wrapped_kind": _CaptureWrappedKind.NAME, **(kind_config or {})},
         "logger": None,
     }

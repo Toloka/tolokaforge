@@ -2,8 +2,8 @@
 
 ``judge_snippet_chars`` (``grading.llm_judge.customization``) is how much of each
 hit's text the judge reads. The default, 200 characters with an ellipsis when cut,
-is what every judge read before the field existed, so its output is pinned byte for
-byte; ``None`` shows whole documents; a hit with a title gets a title line. The
+is the output a task with no setting gets, pinned byte for byte; ``None`` shows
+whole documents; a hit with a title gets a title line. The
 customization model leaves the field off the wire at its default, so no
 ``TaskDescription`` moves, and reads ``null`` as a value.
 """
@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import pytest
 
+from tolokaforge.core.grading.judge_kinds import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_tools import SearchKbTool
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS, SearchHit
-from tolokaforge.runner.models import JudgeCustomization, judge_snippet_chars_of
+from tolokaforge.runner.models import JudgeCustomization
 
 pytestmark = pytest.mark.unit
 
@@ -108,8 +109,11 @@ class TestJudgeCustomizationSnippet:
         with pytest.raises(ValueError):
             JudgeCustomization.model_validate({"judge_snippet_chars": value})
 
-    def test_the_resolver_reads_the_default_for_no_block(self) -> None:
-        assert judge_snippet_chars_of(None) == 200
-        assert judge_snippet_chars_of(JudgeCustomization()) == 200
-        assert judge_snippet_chars_of(JudgeCustomization(judge_snippet_chars=None)) is None
-        assert judge_snippet_chars_of(JudgeCustomization(judge_snippet_chars=7)) == 7
+    def test_the_trial_options_read_the_default_for_no_block(self) -> None:
+        def snippet(customization: JudgeCustomization | None) -> int | None:
+            return resolve_judge_trial_options(customization).judge_snippet_chars
+
+        assert snippet(None) == 200
+        assert snippet(JudgeCustomization()) == 200
+        assert snippet(JudgeCustomization(judge_snippet_chars=None)) is None
+        assert snippet(JudgeCustomization(judge_snippet_chars=7)) == 7

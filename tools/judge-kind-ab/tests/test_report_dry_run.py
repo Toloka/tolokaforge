@@ -79,9 +79,6 @@ def _entry(entry_id: str, *, met_a: bool, met_b: bool) -> ParityCorpusEntry:
         agent_system_prompt=f"You are a task agent. ({entry_id})",
         transcript=[{"role": "user", "content": f"Do the task. ({entry_id})"}],
         state_diff=None,
-        disable_knowledge_search=False,
-        custom_system_prompt=None,
-        include_agent_system_prompt=True,
         judge_scripts={"single_shot_rubric": script},
     )
 

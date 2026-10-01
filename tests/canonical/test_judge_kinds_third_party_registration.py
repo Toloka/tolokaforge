@@ -18,6 +18,7 @@ from typing import Any, ClassVar
 
 import pytest
 
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.plugin_registry import (
     JUDGE_KINDS_GROUP,
@@ -107,9 +108,7 @@ def test_third_party_judge_kind_registration_dispatches(
             state_diff=None,
             judge_model_config=None,
             judge_model_provider=None,
-            disable_knowledge_search=False,
-            custom_system_prompt=None,
-            include_agent_system_prompt=True,
+            options=JudgeTrialOptions(),
             kind_config=None,
             logger=None,
         )
