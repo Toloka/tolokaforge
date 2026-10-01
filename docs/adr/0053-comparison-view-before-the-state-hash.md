@@ -147,10 +147,11 @@ parity test. The wire carries the view's diff and record in one field,
 
 `tolokaforge/core/grading/comparison_view.py`. It depends on stdlib and
 pydantic, and reaches `tolokaforge.core.plugin_registry` only where a kind
-resolves. The wiring makes it runner-reachable, so it must not import
-`state_checks.py` or `combine.py`, which the subset wheel excludes. Until the
-wiring lands, `RUNNER_SUBSET_EXCLUDED_FILES` lists it: the partition lock refuses
-a subset file the runner never reaches.
+resolves. The wiring makes it runner-reachable — it ships in the runner subset
+wheel — so it must not import `state_checks.py` or `combine.py`, which the subset
+wheel excludes. The composition of steps 1–3 below is `core/grading/pre_hash.py`
+and the load-time checks are `core/grading/comparison_view_checks.py`, both
+runner-reachable for the same reason.
 
 ```python
 class ComparisonViewError(ValueError): ...
@@ -189,10 +190,16 @@ full state (unstable fields present)
 ```
 
 - **Runner.** When a view is declared, the runner fetches the full state of both
-  sides (`DBServiceClient.get_state`) and runs steps 2–4 on the client, with the
+  sides (`DBServiceClient.get_state`) and runs steps 1–5 on the client, with the
   db-service's own table-name resolution for `unstable_fields` moved into a
-  shared function. A pack without a view keeps the server-side `get_stable_hash`
-  / `get_stable_state` path.
+  shared function (`core.hash.resolve_unstable_table_name`) that the db-service
+  keeps calling. On the view path both substrates resolve against the tables of
+  both full states, before the view drops any, so an `exclude_tables` rule cannot
+  make a declared name resolve to another table; core's path without a view keeps
+  its exact names, so no existing digest moves. A pack without a view keeps the
+  server-side `get_stable_hash` / `get_stable_state` path.
+- **One composition.** Steps 1–3 are one function, `pre_hash.view_the_pair`, which
+  both substrates call; each then runs its own steps 4–5.
 - **Where the view runs in the runner.** After the trial's database is restored
   (`restore_snapshot`), when both raw states are already in memory. A failing
   view then cannot leave the golden state in the trial's database.
@@ -205,8 +212,13 @@ full state (unstable fields present)
   record's content, and a reference to the wrong record could pass
   (records ranked by a masked timestamp, a dispute naming the hold of the other
   card). The record lists the re-keyed `(table, id field)` pairs in
-  `rekeyed_fields`, and the wiring removes them from the unstable filter and the
-  clock mask it applies after the view.
+  `rekeyed_fields`, and the wiring removes them from the unstable filter it
+  applies after the view. The clock mask of step 4 is left as it is: instead, a
+  re-keyed id field the clock mask would drop is refused when the task loads, so
+  neither substrate's digest takes an exemption. The load also refuses a key built
+  from a masked column (below), so the example above needs a declaration that
+  bypassed the load; the hash does not rest on that refusal, and the parity test
+  holds both substrates to failing it below the gate.
 
 ### The declaration
 
@@ -246,8 +258,11 @@ state_checks:
   warning, as for `id_fields`.
 - **An unknown `version` is refused at load.** So is an unknown `kind`, and so
   is an empty `rules` list: a view without rules is no view.
-- **With `hash` disabled** the block gets a `config validate` warning, not a
-  refusal.
+- **With `hash` disabled** the block gets a `config validate` warning (a hint in
+  `tolokaforge validate`, a logged warning at load), not a refusal.
+- **Where the checks run.** One function checks a view against its task wherever
+  the task loads: the native adapter's `to_task_description` and
+  `get_grading_config`, the runner's `RegisterTrial`, and the authoring gate.
 - **No profiles in v1.** The first draft's shared `profiles` files are left out
   until a second pack needs one.
 
@@ -257,7 +272,7 @@ state_checks:
 |---|---|---|
 | `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them in another row. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
 | `exclude_tables` | Drops the named tables whole, key included, so a table present on one side only stops counting too; `reason` is required. | Refused for a table another rule names. |
-| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. A re-keyed id is a function of its record's content, not a generated value: the masks after the view leave it in, so it reaches the hash. |
+| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. A re-keyed id is a function of its record's content, not a generated value: the unstable filter after the view leaves it in, and one the clock mask would drop is refused at load, so it reaches the hash. |
 
 **The rendered key** of `normalize_ids` is `<table>:<canonical JSON of its key
 fields>`, for example `line_items:{"order_id":"O1","quantity":2,"sku":"S2"}`;
@@ -432,9 +447,11 @@ itself the same way, so the record of a view built with it names the
 implementation that built it.
 
 A grade then says which transform produced the digest it compares. A later
-engine can tell whether it would compute the same view. An unknown major
-`function_version` in a bundle is refused, as bundle versions are. This is what
-a `checks.py` hook cannot provide.
+engine can tell whether it would compute the same view. The host refuses a
+record it cannot read when the grade arrives. Refusing an unknown major
+`function_version` when a recorded grade is read back, as bundle versions are,
+waits for a reader that consumes the record: no bundle reader does yet, so it is
+a follow-up. This is what a `checks.py` hook cannot provide.
 
 ### Wiring
 
@@ -445,7 +462,14 @@ a `checks.py` hook cannot provide.
   - After `restore_snapshot` it applies the view to each side, then steps 2–5.
   - On a mismatch it computes the raw `state_diff` and a `view_diff`.
   - `HashGradingResult` carries `view_diff` and the record. The wire gains
-    `Grade.comparison_view_json`, which carries both, and the bundle records it.
+    `Grade.comparison_view_json` (field 12, proto3 `optional`, mirrored on the
+    grader's `Grade`), which carries both, and the host writes it into
+    `Grade.comparison_view` in `grade.yaml`. Without a view the field is unset and
+    the key is absent, so a grade without one encodes and prints as before.
+  - On the wire `comparison_view` is left out of the dump while it is absent, so
+    every existing `TaskDescription` serialises byte-identically and an image
+    predating the key accepts it; a spec declaring a view is refused by such an
+    image (new engine → old image).
   - A `ComparisonViewError` reaches `GradeTrialResponse(success=False)` →
     `grading_error`.
   - The golden side is viewed first. A `ComparisonViewCollision` (a
@@ -461,7 +485,11 @@ a `checks.py` hook cannot provide.
     with a fresh copy of the initial state. The golden replay mutates the loaded
     initial state in place, so the view needs its own copy.
   - `check_hash` stops folding a `ComparisonViewError` into
-    `0.0, "Error computing hash"` and lets it propagate.
+    `0.0, "Error computing hash"` and lets it propagate; every other error is still
+    folded. The collision rule is the runner's.
+  - Both checks return the record as a further tuple element, which
+    `GradingEngine` puts on `Grade.comparison_view`: the same JSON the runner puts
+    on the wire.
 - **Accounting.**
   - `key_manifest`: `state_checks.comparison_view`, `CONFIG_INPUT`,
     `BOTH_SCORE_PARITY`, `DIFFERENTIAL_CANONICAL`, listed in the differentials
@@ -479,8 +507,10 @@ a `checks.py` hook cannot provide.
     `state_digest` gives the same verdict for the pair, while the two digests keep
     their different algebras.
   - The runner side runs as lock 19 of `test_grading_substrate_parity.py` does,
-    with the in-process db-service, or through the composition pulled out into a
-    pure function.
+    with the in-process db-service: `RegisterTrial`, the trial's database written,
+    a golden action writing the golden state, `GradeTrial`. The one case the load
+    refuses is held to its verdict below the gate, through the runner's own steps
+    1–5 over the same two states.
 - **`normalize_ids` property tests** (hypothesis is a dev dependency;
   `tests/unit/grading/test_hash_verdict_parity.py` is the precedent):
   - distinct records stay distinct;
