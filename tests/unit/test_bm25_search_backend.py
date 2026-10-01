@@ -697,6 +697,26 @@ class TestInProcessCache:
         assert len(corpus_digest) == len(config_digest) == 64
         assert config_digest == Bm25BackendConfig().fingerprint()
 
+    def test_a_build_reads_each_corpus_file_once(
+        self, corpus: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fingerprint and the documents come from one read of each file's bytes."""
+        reads: list[str] = []
+        real_read_bytes = Path.read_bytes
+
+        def counting_read_bytes(self: Path) -> bytes:
+            reads.append(self.name)
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+        monkeypatch.setattr(Path, "read_text", lambda self, **kw: pytest.fail("read_text used"))
+        files = sorted(path.name for path in corpus.iterdir())
+        _index(_backend(), corpus)
+        assert sorted(reads) == files, "a cold build"
+        reads.clear()
+        _index(_backend(), corpus)
+        assert sorted(reads) == files, "a cache hit still reads the bytes it is keyed by, once"
+
     def test_clearing_the_cache_rebuilds(self, corpus: Path) -> None:
         first = _index(_backend(), corpus)
         clear_index_cache()
