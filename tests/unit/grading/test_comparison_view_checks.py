@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from click.testing import CliRunner
+from pydantic import ValidationError
 
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
@@ -28,6 +31,7 @@ from tolokaforge.core.grading.config_validation import (
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner import models as runner_models
 
 pytestmark = pytest.mark.unit
@@ -256,13 +260,20 @@ def test_the_gate_names_the_task_and_logs_its_warnings(caplog: pytest.LogCapture
 _MASKED_KEY_VIEW = {"version": 1, "rules": [_RANKED]}
 
 
-def _write_pack(root: Path, state_checks: dict[str, Any]) -> NativeAdapter:
+_FILED_AT_UNSTABLE = [{"table_name": "document", "field_name": "filed_at", "reason": "timestamp"}]
+
+
+def _write_pack(
+    root: Path,
+    state_checks: dict[str, Any],
+    *,
+    tables: dict[str, Any] = _TABLES,
+    unstable: list[dict[str, Any]] = _FILED_AT_UNSTABLE,
+) -> NativeAdapter:
     task_dir = root / "tasks" / "view_task"
     (task_dir / "fixtures").mkdir(parents=True)
-    (task_dir / "fixtures" / "unstable_fields.json").write_text(
-        json.dumps([{"table_name": "document", "field_name": "filed_at", "reason": "timestamp"}])
-    )
-    (task_dir / "initial_state.json").write_text(json.dumps(_TABLES))
+    (task_dir / "fixtures" / "unstable_fields.json").write_text(json.dumps(unstable))
+    (task_dir / "initial_state.json").write_text(json.dumps(tables))
     (task_dir / "task.yaml").write_text(
         yaml.safe_dump(
             {
@@ -290,6 +301,12 @@ def _write_pack(root: Path, state_checks: dict[str, Any]) -> NativeAdapter:
         )
     )
     return NativeAdapter({"base_dir": str(root), "tasks_glob": "**/task.yaml"})
+
+
+def _validate(root: Path, *flags: str):
+    return CliRunner().invoke(
+        cli, ["validate", "--tasks", str(root / "tasks" / "**" / "task.yaml"), *flags]
+    )
 
 
 _STATE_CHECKS = {
@@ -380,3 +397,77 @@ def test_the_native_layer_reports_the_unstable_fields_the_run_path_reads(tmp_pat
     layer = NativeAdapter.grading_seeded_tables(task, adapter.get_task_dir("view_task"))
     assert layer.unstable_fields() == ("document.filed_at",)
     assert set(layer.tables) == set(_TABLES)
+
+
+# ---------------------------------------------------------------------------
+# A table seeded as a mapping is refused on every load path
+# ---------------------------------------------------------------------------
+
+_KEYED_DOCUMENTS = {
+    **_TABLES,
+    "documents": {"D1": {"id": "D1", "client_id": "C1", "source_id": "S1"}},
+}
+_VIEW_OF_THE_DOCUMENTS = {
+    "hash": {"enabled": True, "expect_initial_state": True},
+    "comparison_view": {"version": 1, "rules": [_NORMALIZE]},
+}
+_MAPPING_REFUSAL = (
+    "rules[0] (normalize_ids) names table 'documents', which the initial state seeds as a "
+    "mapping of records keyed by id, not a list of records"
+)
+
+
+def test_a_view_naming_a_table_seeded_as_a_mapping_is_refused_by_the_native_loads(
+    tmp_path: Path,
+) -> None:
+    adapter = _write_pack(tmp_path, _VIEW_OF_THE_DOCUMENTS, tables=_KEYED_DOCUMENTS, unstable=[])
+    with pytest.raises(
+        ValueError, match=re.escape(f"[view_task] state_checks.comparison_view.{_MAPPING_REFUSAL}")
+    ):
+        adapter.to_task_description("view_task")
+    with pytest.raises(ValueError, match=re.escape(_MAPPING_REFUSAL)):
+        adapter.get_grading_config("view_task")
+
+
+def test_a_view_naming_a_table_seeded_as_a_mapping_is_refused_by_the_authoring_gate(
+    tmp_path: Path,
+) -> None:
+    adapter = _write_pack(tmp_path, _VIEW_OF_THE_DOCUMENTS, tables=_KEYED_DOCUMENTS, unstable=[])
+    layer = NativeAdapter.grading_seeded_tables(
+        adapter.get_task("view_task"), adapter.get_task_dir("view_task")
+    )
+    assert layer.table_shapes == {"documents": "a mapping of records keyed by id"}
+    report = inspect_grading_authoring(
+        {"state_checks": _VIEW_OF_THE_DOCUMENTS}, ToolInventory.unresolvable(), seeded_tables=layer
+    )
+    assert [f.message for f in report.errors if f.where == "state_checks.comparison_view"] == [
+        f"state_checks.comparison_view.{_MAPPING_REFUSAL}. The runner reads the table as the "
+        "list of its records and core's hash as written, so the view would grade one trial "
+        "two ways: seed 'documents' as a list of records"
+    ]
+    result = _validate(tmp_path)
+    assert result.exit_code != 0 and _MAPPING_REFUSAL in result.output
+
+
+def test_register_trial_cannot_be_handed_a_table_seeded_as_a_mapping() -> None:
+    """The wire's tables are lists by type, so a description carrying one never registers."""
+    with pytest.raises(ValidationError, match="tables.documents\\n  Input should be a valid list"):
+        runner_models.RunnerInitialStateConfig(tables=_KEYED_DOCUMENTS)
+
+
+def test_a_mapping_table_no_rule_names_is_no_concern_of_the_view(tmp_path: Path) -> None:
+    tables = {**_TABLES, "settings": {"currency": "EUR"}}
+    adapter = _write_pack(
+        tmp_path,
+        {**_VIEW_OF_THE_DOCUMENTS, "comparison_view": {"version": 1, "rules": [_NORMALIZE]}},
+        tables=tables,
+        unstable=[],
+    )
+    adapter.to_task_description("view_task")
+    adapter.get_grading_config("view_task")
+
+
+def test_a_table_value_that_is_not_a_list_is_refused_whoever_reads_it() -> None:
+    """A plugin adapter handing its tables as declared is held to the same rule."""
+    error = _only_error(_NORMALIZE, tables={**_TABLES, "documents": {"D1": {"id": "D1"}}})
+    assert "names table 'documents', which the initial state seeds as a dict" in error

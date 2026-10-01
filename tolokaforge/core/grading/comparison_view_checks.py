@@ -8,7 +8,11 @@ function, :func:`comparison_view_findings`, so a view is refused by the same rul
 everywhere:
 
 - **Every table a rule names is seeded** by the initial state. Under
-  ``relaxed_validation`` a missing table is a warning, as for ``id_fields``. A rule's
+  ``relaxed_validation`` a missing table is a warning, as for ``id_fields``.
+- **Every table a rule names is seeded as a list of records.** A table seeded as a
+  mapping — records keyed by id, the tau-bench shape — reaches the runner as the list
+  of its values but core's hash as written, so the same view would grade it two ways:
+  refused, whatever ``relaxed_validation`` says. A rule's
   fields are checked only against a declared schema, when the task has one: agents
   write fields no seeded record carries, so seeded records are no schema.
 - **The id-field checks** ``apply_comparison_view`` makes when it runs — the id field
@@ -90,6 +94,7 @@ def comparison_view_findings(
     schemas: Mapping[str, Collection[str]] | None = None,
     relaxed_validation: bool = False,
     hash_enabled: bool = True,
+    table_shapes: Mapping[str, str] | None = None,
 ) -> ComparisonViewFindings:
     """Check ``view`` against the task it is declared on.
 
@@ -106,6 +111,11 @@ def comparison_view_findings(
         relaxed_validation: ``state_checks.relaxed_validation``: a missing table is
             then a warning.
         hash_enabled: ``state_checks.hash.enabled``.
+        table_shapes: The seeded tables written as something other than a list of
+            records, and as what — what a reader that normalises them to lists (the
+            native one, :func:`~tolokaforge.adapters._task_loader.seeded_table_shapes`)
+            knows and ``tables`` no longer shows. A value of ``tables`` that is not a
+            list counts too.
     """
     found = _Findings()
     masked = _masked_columns(view, tables, id_fields, unstable_fields)
@@ -113,6 +123,7 @@ def comparison_view_findings(
     for index, rule in enumerate(view.rules):
         where = f"{_BLOCK}.rules[{index}] ({rule.kind})"
         _check_tables(found, where, rule, tables, relaxed_validation)
+        _check_table_shapes(found, where, rule, tables, table_shapes or {})
         _check_schema_fields(found, where, rule, schemas or {})
         found.errors.extend(f"{where}: {error}" for error in rule.id_field_errors(id_fields))
         if isinstance(rule, NormalizeIdsConfig):
@@ -153,13 +164,16 @@ def check_wire_comparison_view(
     initial_state: RunnerInitialStateConfig,
     *,
     context: str,
+    table_shapes: Mapping[str, str] | None = None,
 ) -> str | None:
     """:func:`check_comparison_view` over a ``TaskDescription``'s own blocks.
 
     Every fact the check reads is on the wire — the seeded tables, their declared
     schemas, the unstable fields and the state-check flags — so the native adapter and
-    ``RegisterTrial`` check one description by one call. ``None`` when the block
-    declares no view.
+    ``RegisterTrial`` check one description by one call; the one fact the wire cannot
+    carry is how a table was seeded, since its tables are lists by type, so the adapter
+    that read the seeded JSON passes ``table_shapes``. ``None`` when the block declares
+    no view.
     """
     if state_checks.comparison_view is None:
         return None
@@ -176,6 +190,7 @@ def check_wire_comparison_view(
         auto_mask_clock_columns=state_checks.auto_mask_clock_columns,
         relaxed_validation=state_checks.relaxed_validation,
         hash_enabled=state_checks.hash_enabled,
+        table_shapes=table_shapes,
     )
 
 
@@ -185,12 +200,14 @@ def check_authored_comparison_view(
     tables: Mapping[str, Any],
     unstable_fields: Iterable[str],
     context: str,
+    table_shapes: Mapping[str, str] | None = None,
 ) -> str | None:
     """:func:`check_comparison_view` over the authored block core grades by.
 
     ``tables`` and ``unstable_fields`` are the task's seeded tables and its unstable
-    fields as dotted paths; an authored task declares no schema. ``None`` when the
-    block declares no view.
+    fields as dotted paths, and ``table_shapes`` the tables seeded as something other
+    than a list; an authored task declares no schema. ``None`` when the block declares
+    no view.
     """
     if state_checks.comparison_view is None:
         return None
@@ -204,6 +221,7 @@ def check_authored_comparison_view(
         auto_mask_clock_columns=state_checks.auto_mask_clock_columns,
         relaxed_validation=state_checks.relaxed_validation,
         hash_enabled=state_checks.hash is not None and state_checks.hash.enabled,
+        table_shapes=table_shapes,
     )
 
 
@@ -254,6 +272,33 @@ def _check_tables(
                 f"{message}. Fix the table name, seed the table, or set "
                 f"state_checks.relaxed_validation: true"
             )
+
+
+def _check_table_shapes(
+    found: _Findings,
+    where: str,
+    rule: ComparisonViewRuleConfig,
+    tables: Mapping[str, Any],
+    table_shapes: Mapping[str, str],
+) -> None:
+    """A view reads the tables it names row by row, so each must be seeded as rows.
+
+    A table seeded as a mapping of records reaches the runner's db-service as the list
+    of its values, while core's hash reads the declared JSON as written: one view would
+    grade the same trial two ways.
+    """
+    for table in rule.names():
+        shape = table_shapes.get(table)
+        if shape is None and table in tables and not isinstance(tables[table], list):
+            shape = f"a {type(tables[table]).__name__}"
+        if shape is None:
+            continue
+        found.errors.append(
+            f"{where} names table {table!r}, which the initial state seeds as {shape}, not "
+            f"a list of records. The runner reads the table as the list of its records and "
+            f"core's hash as written, so the view would grade one trial two ways: seed "
+            f"{table!r} as a list of records"
+        )
 
 
 def _rule_fields(rule: ComparisonViewRuleConfig) -> dict[str, set[str]]:

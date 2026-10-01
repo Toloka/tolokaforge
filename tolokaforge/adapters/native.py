@@ -21,6 +21,7 @@ from tolokaforge.adapters._task_loader import (
     load_task_yaml,
     refuse_malformed_grading_shapes,
     resolve_tool_schemas,
+    seeded_table_shapes,
     seeded_tables_from_task,
     tool_configs,
     tool_output_max_chars_overrides,
@@ -609,6 +610,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     tables=seeded_tables_from_task(task, task_dir),
                     unstable_fields=_declared_unstable_paths(task_dir),
                     context=task_id,
+                    table_shapes=seeded_table_shapes(task, task_dir),
                 )
                 if err:
                     raise ValueError(err)
@@ -662,11 +664,13 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         starting state — so a key naming a table the task does not seed is caught
         before the trial is paid for rather than raising during grading. The unstable
         fields ``fixtures/unstable_fields.json`` declares ride along, read the way the
-        run path reads them, for the rule holding a comparison view to the masks.
+        run path reads them, for the rule holding a comparison view to the masks, and so
+        does the shape of every table not seeded as a list of records.
         """
         return SeededTablesLayer(
             tables=seeded_tables_from_task(task, task_dir),
             unstable_fields=partial(_declared_unstable_paths, task_dir),
+            table_shapes=seeded_table_shapes(task, task_dir),
         )
 
     @classmethod
@@ -1072,7 +1076,12 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             filesystem=initial_filesystem,
         )
         if state_checks is not None:
-            err = check_wire_comparison_view(state_checks, initial_state, context=task_id)
+            err = check_wire_comparison_view(
+                state_checks,
+                initial_state,
+                context=task_id,
+                table_shapes=seeded_table_shapes(task, task_dir),
+            )
             if err:
                 raise ValueError(err)
 

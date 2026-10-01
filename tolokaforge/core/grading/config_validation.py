@@ -486,6 +486,11 @@ class SeededTablesLayer:
     as declared. Called only by the comparison-view rule, for a pack declaring a view,
     which refuses a key or a reference the unstable filter would drop — so a pack
     without one has nothing read on its behalf. The default reports none."""
+    table_shapes: Mapping[str, str] = dataclass_field(default_factory=dict)
+    """The seeded tables written as something other than a list of records, and as what
+    (the native reading: :func:`~tolokaforge.adapters._task_loader.seeded_table_shapes`).
+    ``tables`` holds them normalised to lists, so this is the only place the shape
+    survives; a comparison view naming one is refused."""
     skip_kind: SkipKind = SkipKind.STRUCTURAL
     """The kind of skip a rule reading this layer reports where it cannot check.
 
@@ -502,7 +507,9 @@ class SeededTablesLayer:
                 "where it seeds none — or report unresolvable()"
             )
         if not self.known and (
-            self.tables is not None or self.unstable_fields is not _no_unstable_fields
+            self.tables is not None
+            or self.unstable_fields is not _no_unstable_fields
+            or self.table_shapes
         ):
             raise ValueError(
                 "an unresolvable seeded-tables layer carries facts: the rules that read "
@@ -1886,6 +1893,7 @@ def _check_comparison_view_against_the_task(
         ComparisonViewConfig.model_validate(state_checks["comparison_view"]),
         tables=seeded_tables.tables,
         unstable_fields=seeded_tables.unstable_fields(),
+        table_shapes=seeded_tables.table_shapes,
         id_fields=state_checks.get("id_fields") or {},
         numeric_string_fields=state_checks.get("numeric_string_fields") or (),
         auto_mask_clock_columns=bool(state_checks.get("auto_mask_clock_columns")),
