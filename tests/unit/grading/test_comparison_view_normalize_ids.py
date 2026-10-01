@@ -629,6 +629,12 @@ def test_new_records_scope_needs_the_initial_state() -> None:
         apply_comparison_view({"journal": [_entry("FCJ-1")]}, initial=None, view=view, id_fields={})
 
 
+@pytest.mark.parametrize("row", [{"account_id": "A0"}, {"id": None, "account_id": "A0"}])
+def test_an_initial_record_without_an_id_is_refused(row: dict[str, Any]) -> None:
+    with _raises("its id field 'id' is missing or null"):
+        _apply({"journal": [_entry("FCJ-1")]}, _normalize(), initial={"journal": [row]})
+
+
 def test_an_initial_table_that_is_not_a_list_is_refused() -> None:
     with _raises("normalize_ids: initial table 'journal' holds a dict"):
         _apply({"journal": [_entry("FCJ-1")]}, _normalize(), initial={"journal": {}})
