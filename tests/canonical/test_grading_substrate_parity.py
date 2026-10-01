@@ -1,11 +1,12 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Twenty locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
+Twenty-one locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
 what each grading key is, which substrate scores it, and whether the two agree.
-Locks 16-20 are over what a grade *does* and *says*, which the manifest does not
+Locks 16-21 are over what a grade *does* and *says*, which the manifest does not
 describe — the proposition a hash source compares against, what the hash reads a
 record's numeric-looking strings as, what ``Grade.reasons`` carries for a component
-that took a verdict, and whose mistake a comparison no trajectory could make is:
+that took a verdict, whose mistake a comparison no trajectory could make is, and
+what a declared comparison view lets the hash count:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves; a position below a claimed
@@ -35,9 +36,9 @@ that took a verdict, and whose mistake a comparison no trajectory could make is:
    values that path yields rather than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
    enumerated here, and the tables those claims rest on — lock 6's weight sweep,
-   lock 9's method answers, lock 19's folding matrix — stay substantive; lock 19's
-   own nodeid is resolved besides, so that one differential cannot be deleted or
-   renamed with the set unchanged;
+   lock 9's method answers, lock 19's folding matrix, lock 21's view matrix — stay
+   substantive; the nodeids of locks 19 and 21 are resolved besides, so neither
+   differential can be deleted or renamed with the set unchanged;
 9. both substrates aggregate one split pair of deterministic components by the
    author's ``combine.method``, each method pinned to a score written out here;
 10. both substrates score one ``trace_checks`` pack to the same component through
@@ -91,13 +92,18 @@ that took a verdict, and whose mistake a comparison no trajectory could make is:
     where one candidate made the comparison beside one that could not, and ``0.0``
     where none could — with the sentence naming the reference on the verdict that
     crosses the wire, since a diagnostic the author never reads leaves an authoring
-    mistake looking like the agent's.
+    mistake looking like the agent's;
+21. a declared ``state_checks.comparison_view`` turns a verdict on both substrates
+    exactly where the trial differs only in what the view does not count: a matrix
+    grading one pack's seeded state, a state that differs in a re-filed id, a released
+    hold and a logged lookup, and the same state with a changed record, with and
+    without the view — and both grades carry the same record of it.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18, 19 and 20 drive a real trial, and each reads
+Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18, 19, 20 and 21 drive a real trial, and each reads
 it through one fixture loader, so what a ``grading_parity`` pack can express bounds what
 they can prove — for locks 15 and 18 that bound covers the keys their driver tables
 send to a parity pack, the hash family, the probes and the judge being driven from
@@ -113,6 +119,7 @@ carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
+import copy
 import importlib
 import json
 import re
@@ -133,6 +140,7 @@ from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
+from tests.utils.comparison_view_runner import grade_through_the_runner
 from tests.utils.grading_parity_packs import (
     FIXTURE_TIMESTAMP,
     TrialCase,
@@ -328,6 +336,7 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
         "state_checks.numeric_string_fields",
+        "state_checks.comparison_view",
         "combine.method",
         "combine.weights",
         "trace_checks",
@@ -358,7 +367,6 @@ _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
         "state_checks.auto_mask_clock_columns",
         "state_checks.auto_normalize_nullables",
         "state_checks.compare_columns",
-        "state_checks.comparison_view",
         "state_checks.hash.description",
         "state_checks.id_fields",
         "state_checks.relaxed_validation",
@@ -1810,21 +1818,14 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
 # --------------------------------------------------------------------------
 
 
-def _assert_the_folding_matrix_discriminates() -> None:
-    """The property lock 19's differential rests on, read off its matrix.
+def _assert_the_differential_drives_the_whole_matrix(nodeid: str, matrix_name: str) -> None:
+    """The differential ``nodeid`` names is parametrised over ``matrix_name``, and all of it.
 
-    Folding is per-field, so the rows have to differ in the places that make that
-    question askable: a representation difference a fold may collapse beside a genuine
-    difference it must refuse, and two field lists of one name each — the field that
-    differs, and another the record declares.
-
-    The differential is then bound to *this* matrix, because the clauses below and the
-    rows lock 19 actually drives are otherwise two lists nothing holds together: slicing
-    the parametrisation would drop the control rows while every clause here still read
-    the whole constant. What that binding reaches is the decorator naming the constant
-    whole; a helper filtering rows at call time would still escape it.
+    The clauses asserting a matrix's discrimination and the rows its differential drives
+    are otherwise two lists nothing holds together: slicing the parametrisation would
+    drop the control rows while every clause still read the whole constant.
     """
-    module_path, _, function_name = _FOLDING_DIFFERENTIAL_NODEID.partition("::")
+    module_path, _, function_name = nodeid.partition("::")
     differential = next(
         (
             node
@@ -1841,17 +1842,65 @@ def _assert_the_folding_matrix_discriminates() -> None:
     parametrisation = [
         node for decorator in differential.decorator_list for node in ast.walk(decorator)
     ]
-    assert any(
-        isinstance(node, ast.Name) and node.id == _FOLDING_MATRIX_NAME for node in parametrisation
-    ), (
-        f"{function_name} is not parametrised over {_FOLDING_MATRIX_NAME}, so the rows this "
-        "test asserts the discrimination of and the rows that differential drives are two "
+    assert any(isinstance(node, ast.Name) and node.id == matrix_name for node in parametrisation), (
+        f"{function_name} is not parametrised over {matrix_name}, so the rows this test "
+        "asserts the discrimination of and the rows that differential drives are two "
         "separate lists"
     )
     assert not any(isinstance(node, ast.Subscript) for node in parametrisation), (
         f"{function_name}'s parametrisation subscripts its source, so it can drive a subset "
-        f"of {_FOLDING_MATRIX_NAME} while every clause here still reads the whole constant. "
-        "Dropping the control rows that way reopens the per-field question in silence"
+        f"of {matrix_name} while every clause here still reads the whole constant"
+    )
+
+
+def _assert_the_comparison_view_matrix_discriminates() -> None:
+    """The property lock 21's differential rests on, read off its matrix.
+
+    A view's claim is that it changes a verdict exactly where the state differs only in
+    what it does not count. So the matrix needs a row where declaring it turns a fail
+    into a pass, a row it still fails, and the control that passes either way — under
+    both values of the declaration, or the declaration is never what the rows vary.
+    """
+    _assert_the_differential_drives_the_whole_matrix(
+        _COMPARISON_VIEW_DIFFERENTIAL_NODEID, _COMPARISON_VIEW_MATRIX_NAME
+    )
+    verdicts = {
+        (cell.view_declared, cell.trial_state): cell.state_checks
+        for cell in _COMPARISON_VIEW_MATRIX
+    }
+    states = {state for _, state in verdicts}
+    graded = all((declared, state) in verdicts for declared in (True, False) for state in states)
+    assert graded, f"the matrix does not grade every state with and without the view: {verdicts}"
+    moved = {state for state in states if verdicts[(True, state)] != verdicts[(False, state)]}
+    assert moved and all(verdicts[(True, state)] == 1.0 for state in moved), (
+        "no trial state passes because the view is declared, so the matrix never shows the "
+        f"view reaching a verdict: {verdicts}"
+    )
+    assert any(verdicts[(True, state)] == 0.0 for state in states), (
+        "every trial state passes through the view, so a view that counts nothing satisfies "
+        "the matrix"
+    )
+    controls = [state for state in states if verdicts[(True, state)] == verdicts[(False, state)]]
+    passing = [state for state in controls if verdicts[(True, state)] == 1.0]
+    assert passing, "no control row passes with and without the view"
+
+
+def _assert_the_folding_matrix_discriminates() -> None:
+    """The property lock 19's differential rests on, read off its matrix.
+
+    Folding is per-field, so the rows have to differ in the places that make that
+    question askable: a representation difference a fold may collapse beside a genuine
+    difference it must refuse, and two field lists of one name each — the field that
+    differs, and another the record declares.
+
+    The differential is then bound to *this* matrix, because the clauses below and the
+    rows lock 19 actually drives are otherwise two lists nothing holds together: slicing
+    the parametrisation would drop the control rows while every clause here still read
+    the whole constant. What that binding reaches is the decorator naming the constant
+    whole; a helper filtering rows at call time would still escape it.
+    """
+    _assert_the_differential_drives_the_whole_matrix(
+        _FOLDING_DIFFERENTIAL_NODEID, _FOLDING_MATRIX_NAME
     )
 
     record = _FOLDING_INITIAL_ORDERS["orders"][0]
@@ -1900,13 +1949,15 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     distinguishable at all, that lock 9's answer table still spans the declared
     combine methods with one distinct score each, that lock 14's weight maps still
     span the pair a membership rule is distinguishable over while its zero-share table
-    still answers ``all``/``any`` differently from ``weighted``, and that lock 19's
+    still answers ``all``/``any`` differently from ``weighted``, that lock 19's
     folding matrix still pairs a representation difference against a genuine one under
-    field lists that differ by name rather than by length. Membership alone enforces
-    nothing: a differential deleted wholesale leaves the escaped set unchanged.
+    field lists that differ by name rather than by length, and that lock 21's view
+    matrix still has a row the view turns, a row it fails and a control. Membership
+    alone enforces nothing: a differential deleted wholesale leaves the escaped set
+    unchanged.
 
-    Lock 19 is the one entry here that does not rest on membership: its nodeid is
-    resolved through the same parse the ``enforcing_test`` claims use, and its
+    Locks 19 and 21 are the entries here that do not rest on membership: each nodeid is
+    resolved through the same parse the ``enforcing_test`` claims use, and each
     parametrisation is read out of the same AST, so deleting the function, renaming it,
     or pointing it at a *subset* of the matrix asserted here all fail this test. The
     other entries keep the weaker guarantee.
@@ -1976,6 +2027,11 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         f"{_NUMERIC_STRING_FIELDS_KEY}: its differential", _FOLDING_DIFFERENTIAL_NODEID
     )
     _assert_the_folding_matrix_discriminates()
+
+    _assert_nodeid_is_collectable(
+        f"{_COMPARISON_VIEW_KEY}: its differential", _COMPARISON_VIEW_DIFFERENTIAL_NODEID
+    )
+    _assert_the_comparison_view_matrix_discriminates()
 
 
 # --------------------------------------------------------------------------
@@ -4502,6 +4558,127 @@ def test_an_unmakeable_comparison_fails_its_own_call_on_both_substrates(
         "the trial whose sibling call made the comparison is reported as an authoring "
         f"mistake anyway: {silent.message!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# 21. Both substrates read a declared comparison view alike
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ViewCell:
+    """One row: whether the pack's view is declared, what the trial left, what both owe."""
+
+    view_declared: bool
+    trial_state: str
+    state_checks: float
+
+
+#: ``unchanged`` leaves the seeded state; ``satisfying`` and ``violating`` are the pack's
+#: own cases — a document re-filed under a new id with the correction following it, a
+#: released hold and a logged lookup, and the same with the correction's reason
+#: rewritten. Only the view tells the first two apart from a changed state, and nothing
+#: tells the third apart from one.
+_COMPARISON_VIEW_MATRIX: tuple[_ViewCell, ...] = (
+    _ViewCell(False, "unchanged", 1.0),
+    _ViewCell(False, "satisfying", 0.0),
+    _ViewCell(False, "violating", 0.0),
+    _ViewCell(True, "unchanged", 1.0),
+    _ViewCell(True, "satisfying", 1.0),
+    _ViewCell(True, "violating", 0.0),
+)
+
+_COMPARISON_VIEW_MATRIX_NAME = "_COMPARISON_VIEW_MATRIX"
+"""The matrix constant's own name, so lock 8 can read it out of the differential's AST."""
+
+_COMPARISON_VIEW_DIFFERENTIAL_NODEID = (
+    "tests/canonical/test_grading_substrate_parity.py"
+    "::test_both_substrates_read_a_declared_comparison_view_alike"
+)
+"""The differential the matrix above exists for, named so lock 8 can resolve it."""
+
+
+def _view_label(cell: _ViewCell) -> str:
+    """One row's inputs as a name — never the verdict it is asserted against."""
+    return f"{'view' if cell.view_declared else 'no_view'}_{cell.trial_state}"
+
+
+def _comparison_view_trial_state(test_data_dir: Path, name: str) -> dict[str, Any]:
+    """The row's final database: the seeded state, or one of the pack's own cases."""
+    if name == "unchanged":
+        adapter = _parity_adapter(test_data_dir)
+        return copy.deepcopy(
+            adapter.to_task_description(_COMPARISON_VIEW_PACK).initial_state.tables
+        )
+    case = load_case(test_data_dir / "grading_parity" / _COMPARISON_VIEW_PACK, name)
+    return extract_db_state(case.state)
+
+
+def _runner_comparison_view_grade(
+    test_data_dir: Path, servicer: RunnerServiceImpl, context: Any, cell: _ViewCell
+) -> pb2.GradeTrialResponse:
+    """The pack through the native adapter onto the runner's real ``GradeTrial``.
+
+    A row without the view grades the same description with the key taken off it, which
+    the wire then omits — the spec an engine sends for a pack that never declared one.
+    """
+    description = _parity_adapter(test_data_dir).to_task_description(_COMPARISON_VIEW_PACK)
+    if not cell.view_declared:
+        description.grading.state_checks.comparison_view = None
+    return grade_through_the_runner(
+        servicer,
+        context,
+        description=description.model_dump(mode="json"),
+        trial_id=_ledger_trial_id(_view_label(cell), _COMPARISON_VIEW_KEY),
+        trial=_comparison_view_trial_state(test_data_dir, cell.trial_state),
+    )
+
+
+def _core_comparison_view_grade(test_data_dir: Path, cell: _ViewCell) -> core_models.Grade:
+    """Core's grade of the same row, through ``GradingEngine`` over the same pack."""
+    adapter = _parity_adapter(test_data_dir)
+    config = adapter.get_grading_config(_COMPARISON_VIEW_PACK)
+    if not cell.view_declared:
+        config.state_checks.comparison_view = None
+    return GradingEngine(
+        config, task_initial_state=adapter.get_task(_COMPARISON_VIEW_PACK).initial_state
+    ).grade_trajectory(
+        _messageless_trajectory(_COMPARISON_VIEW_PACK),
+        {"db": _comparison_view_trial_state(test_data_dir, cell.trial_state)},
+    )
+
+
+@pytest.mark.parametrize(
+    "cell",
+    tuple(pytest.param(cell, id=_view_label(cell)) for cell in _COMPARISON_VIEW_MATRIX),
+)
+def test_both_substrates_read_a_declared_comparison_view_alike(
+    cell, test_data_dir, runner_service, mock_grpc_context
+):
+    """``state_checks.comparison_view``'s ``BOTH_SCORE_PARITY`` claim.
+
+    The hash source is ``expect_initial_state``, the one both substrates drive in
+    process, so the golden side is the seeded state on both. The runner reads the
+    trial's full state back off its own db-service and runs the view after the restore;
+    core runs the view in ``check_hash``. Neither reads what the other computed, and
+    both grades carry the same record of the view: the configuration's sha, which
+    tables each rule touched on each side, and the view diff of a mismatch.
+    """
+    response = _runner_comparison_view_grade(test_data_dir, runner_service, mock_grpc_context, cell)
+    assert response.success is True, response.error
+    assert response.grade.components.state_checks == pytest.approx(cell.state_checks)
+
+    grade = _core_comparison_view_grade(test_data_dir, cell)
+    assert grade.components.state_checks == pytest.approx(cell.state_checks)
+
+    if not cell.view_declared:
+        assert not response.grade.HasField("comparison_view_json")
+        assert grade.comparison_view is None
+        return
+    runner_record = json.loads(response.grade.comparison_view_json)
+    same = runner_record == grade.comparison_view
+    assert same, "the two substrates recorded different views of one row"
+    assert (runner_record["view_diff"] is None) is (cell.state_checks == 1.0)
 
 
 # --------------------------------------------------------------------------
