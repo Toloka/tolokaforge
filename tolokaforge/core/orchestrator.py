@@ -2393,9 +2393,7 @@ class Orchestrator:
                     raise RuntimeError(
                         f"Failed to load task {task_id!r}: {e} (a malformed "
                         "initial_state.rag refuses the run whatever "
-                        "orchestrator.strict_task_load says: the block was untyped "
-                        "until ADR-0052, and a task that loaded then must not drop out "
-                        "of the run in silence now)"
+                        "orchestrator.strict_task_load says)"
                     ) from e
                 self.logger.error("Failed to load task", task_id=task_id, error=str(e))
         self.tasks.extend(loaded)
