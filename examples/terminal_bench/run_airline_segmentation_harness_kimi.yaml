@@ -5,7 +5,8 @@
 # ``/chat/completions`` call to first-party ``moonshotai`` serving, so the
 # trial does not drift onto a quantized third-party provider. The shipped
 # entry declares a ``credential_gateway``, but no runtime in this repo starts
-# that sidecar, so the real key sits in the trial container's environment.
+# that sidecar yet: the key sits in the trial container's environment and is
+# not shielded (#1711).
 
 models:
   agent:

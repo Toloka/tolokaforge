@@ -3,8 +3,8 @@
 # The host needs a real ``GEMINI_API_KEY`` (Google AI Studio or a Vertex SA),
 # and the CLI sends its requests to Google's Generative Language API. The
 # shipped entry declares a ``credential_gateway``, but no runtime in this repo
-# starts that sidecar, so the real key sits in the trial container's
-# environment.
+# starts that sidecar yet: the key sits in the trial container's environment
+# and is not shielded (#1711).
 #
 # A LiteLLM gateway is reached through a ``harness_presets_file`` overlay that
 # whole-replaces the entry; keep ``models.agent.harness: gemini-cli`` and add:
