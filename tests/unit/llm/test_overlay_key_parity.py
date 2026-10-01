@@ -412,13 +412,14 @@ def test_a_session_header_conflict_on_a_fallback_is_refused_by_validate_and_run_
     assert refused.path == "models.agent.fallbacks[0].session.header"
 
 
+@pytest.mark.parametrize("command", RUN_COMMANDS)
 @pytest.mark.parametrize(
     "agent_extra, environment_errors, run_refused",
     [({"session": {"header": "x-session-id"}}, 1, True), ({}, 0, False)],
     ids=["declares-session", "no-session"],
 )
 def test_a_malformed_gateway_environment_concerns_only_configs_that_declare_session(
-    tmp_path, monkeypatch, agent_extra, environment_errors, run_refused
+    tmp_path, monkeypatch, agent_extra, environment_errors, run_refused, command
 ):
     """Gateway headers without a gateway base URL are malformed; a config that never
     declares ``session`` does not read them, in validate or at run start."""
@@ -435,8 +436,11 @@ def test_a_malformed_gateway_environment_concerns_only_configs_that_declare_sess
     assert len(environment) == environment_errors, validated.output
     assert all("LLM_PROXY_HEADERS" in line for line in environment), validated.output
 
-    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert isinstance(run.exception, ProxyConfigError) is run_refused, repr(run.exception)
+    run = _invoke(command, config, tmp_path)
+    if run_refused:
+        assert "LLM_PROXY_HEADERS" in str(_refusal(run, ProxyConfigError))
+    else:
+        assert "LLM_PROXY_HEADERS" not in run.output, run.output
 
 
 def test_the_walk_reaches_every_fallback_depth_first():
