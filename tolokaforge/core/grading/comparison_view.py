@@ -418,11 +418,29 @@ class NormalizeIdsConfig(ComparisonViewRuleConfig):
                 f"ordinal_by and rank_by both list {shared}; a field that is constant within "
                 f"a group cannot rank it"
             )
+        rewritten = sorted(self.key_fields() & self.rewritten_fields(self.table))
+        if rewritten:
+            raise ValueError(
+                f"the new key reads {rewritten}, which references rewrite in table "
+                f"{self.table!r}; the key would be built from values the rule then changes"
+            )
         return self
 
     def names(self) -> tuple[str, ...]:
         references = (reference.table for reference in self.references)
         return tuple(dict.fromkeys((self.table, *references)))
+
+    def key_fields(self) -> frozenset[str]:
+        """The fields of the table's records the new key is built from."""
+        return frozenset((*self.key, *self.ordinal_by, *self.rank_by))
+
+    def rewritten_fields(self, table: str) -> frozenset[str]:
+        """The top-level fields of ``table`` its ``references`` rewrite."""
+        return frozenset(
+            reference.field
+            for reference in self.references
+            if reference.table == table and "." not in reference.field
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1308,6 +1326,14 @@ class ComparisonViewConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _keys_are_built_from_rewritten_values(self) -> ComparisonViewConfig:
+        rules = list(enumerate(self.rules))
+        for index, rule in rules:
+            if isinstance(rule, NormalizeIdsConfig):
+                _refuse_a_later_rewrite_of_the_key(index, rule, rules[index + 1 :])
+        return self
+
+    @model_validator(mode="after")
     def _a_table_is_normalized_once(self) -> ComparisonViewConfig:
         normalized: dict[str, int] = {}
         for index, rule in enumerate(self.rules):
@@ -1377,6 +1403,23 @@ def _resolve_entry(index: int, entry: Any) -> ComparisonViewRuleConfig:
         return rule.config_model.model_validate(entry)
     except ValidationError as exc:
         raise ValueError(f"rules[{index}] ({rule.NAME}): {_error_summary(exc)}") from None
+
+
+def _refuse_a_later_rewrite_of_the_key(
+    index: int,
+    rule: NormalizeIdsConfig,
+    later: Sequence[tuple[int, ComparisonViewRuleConfig]],
+) -> None:
+    for later_index, other in later:
+        if not isinstance(other, NormalizeIdsConfig):
+            continue
+        rewritten = sorted(rule.key_fields() & other.rewritten_fields(rule.table))
+        if rewritten:
+            raise ValueError(
+                f"rules[{index}] (normalize_ids) builds keys of table {rule.table!r} from "
+                f"{rewritten}, which rules[{later_index}] rewrites as references afterwards; "
+                f"put rules[{later_index}] first, so the key is built from rewritten values"
+            )
 
 
 def _refuse_shared_tables(

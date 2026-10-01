@@ -392,6 +392,59 @@ def test_a_malformed_entry_is_refused(entry: dict[str, Any], fragment: str) -> N
     assert fragment in _refusal(entry)
 
 
+@pytest.mark.parametrize("option", ["key", "ordinal_by", "rank_by"])
+def test_a_key_field_its_own_references_rewrite_is_refused(option: str) -> None:
+    form = {"key": ["parent_id"]} if option == "key" else {"rank_by": ["posted_at"]}
+    form[option] = ["parent_id"]
+    entry = {
+        "kind": "normalize_ids",
+        "table": "journal",
+        **form,
+        "references": [{"table": "journal", "field": "parent_id"}],
+    }
+    assert "the new key reads ['parent_id'], which references rewrite in table 'journal'" in (
+        _refusal(entry)
+    )
+
+
+def test_a_reference_of_its_own_table_the_key_does_not_read_is_accepted() -> None:
+    entry = _normalize(references=[{"table": "journal", "field": "reverses"}])
+    ComparisonViewConfig.model_validate({"version": 1, "rules": [entry]})
+
+
+_DOCUMENTS = {
+    "kind": "normalize_ids",
+    "table": "documents",
+    "key": ["source_id"],
+    "references": [{"table": "requests", "field": "evidence_ref"}],
+}
+_REQUESTS = {"kind": "normalize_ids", "table": "requests", "key": ["evidence_ref", "kind"]}
+
+
+def test_a_key_built_from_a_reference_a_later_rule_rewrites_is_refused() -> None:
+    message = _refusal(_REQUESTS, _DOCUMENTS)
+    assert (
+        "rules[0] (normalize_ids) builds keys of table 'requests' from ['evidence_ref'], "
+        "which rules[1] rewrites as references afterwards; put rules[1] first"
+    ) in message
+
+
+def test_a_key_built_from_a_reference_an_earlier_rule_rewrote_is_accepted() -> None:
+    view = ComparisonViewConfig.model_validate({"version": 1, "rules": [_DOCUMENTS, _REQUESTS]})
+    state = {
+        "documents": [{"id": "DOC-9", "source_id": "S1"}],
+        "requests": [{"id": "R-3", "evidence_ref": "DOC-9", "kind": "fix"}],
+    }
+    viewed = apply_comparison_view(state, initial={}, view=view, id_fields={}).state
+    assert viewed["requests"] == [
+        {
+            "id": 'requests:{"evidence_ref":"documents:{\\"source_id\\":\\"S1\\"}","kind":"fix"}',
+            "evidence_ref": 'documents:{"source_id":"S1"}',
+            "kind": "fix",
+        }
+    ]
+
+
 def test_a_table_is_normalized_by_one_rule() -> None:
     message = _refusal(_normalize(), _normalize(key=["fee_id"]))
     assert "rules[0] and rules[1] both normalize the ids of table 'journal'" in message
