@@ -89,19 +89,31 @@ def test_a_trial_collision_scores_zero_with_the_collision_as_the_reason() -> Non
     trial["documents"].append({"id": "D4", "source_id": "S2"})
     score, reason, record = _check(trial, _filed("D2"))
     assert score == 0.0
-    assert reason.startswith("Comparison view: the trial's state cannot be re-keyed")
-    assert record is not None and set(record.trial_collision.ids) == {"D3", "D4"}
+    assert reason.startswith("Comparison view: the trial's state cannot be viewed")
+    assert record is not None and set(record.trial_error.ids) == {"D3", "D4"}
 
 
-def test_a_view_error_propagates_instead_of_scoring_zero() -> None:
+def test_a_trial_record_no_rule_can_read_scores_zero_with_the_error_as_the_reason() -> None:
+    """Once the golden's view succeeded, what the trial side cannot view is the trial's."""
+    trial = _filed("D3")
+    del trial["documents"][1]["source_id"]
+    score, reason, record = _check(trial, _filed("D2"))
+    assert score == 0.0
+    assert reason.startswith("Comparison view: the trial's state cannot be viewed — ")
+    assert "ComparisonViewError: " in reason and "lacks the key field" in reason
+    assert record is not None and record.trial_error is not None
+    assert record.trial_error.error == "ComparisonViewError" and record.trial_error.ids == []
+
+
+def test_a_golden_view_error_propagates_instead_of_scoring_zero() -> None:
     golden = _filed("D2")
     golden["documents"].append({"id": "D5", "source_id": "S2"})
     with pytest.raises(ComparisonViewCollision):
         _check(_filed("D3"), golden)
-    trial = _filed("D3")
-    del trial["documents"][1]["source_id"]
+    golden = _filed("D2")
+    del golden["documents"][1]["source_id"]
     with pytest.raises(ComparisonViewError, match="lacks the key field"):
-        _check(trial, _filed("D2"))
+        _check(_filed("D3"), golden)
 
 
 def test_every_other_hashing_error_still_scores_zero() -> None:
@@ -237,7 +249,28 @@ def test_the_engine_records_the_view_on_the_grade() -> None:
     assert grade.comparison_view["golden"]["config_sha256"] == _ALL_DOCUMENTS.config_sha256()
 
 
-def test_the_engine_leaves_a_trial_whose_view_cannot_be_computed_ungraded() -> None:
+def test_the_engine_fails_a_trial_whose_own_state_cannot_be_viewed() -> None:
     broken = {"documents": [{"id": "D9"}], "corrections": []}
+    grade = _engine(_ALL_DOCUMENTS).grade_trajectory(_trajectory(), {"db": broken})
+    assert grade.components.state_checks == 0.0
+    assert "Comparison view: the trial's state cannot be viewed" in grade.reasons
+    assert grade.comparison_view is not None
+    assert grade.comparison_view["trial_error"]["error"] == "ComparisonViewError"
+
+
+def test_the_engine_leaves_a_trial_ungraded_when_the_expected_side_cannot_be_viewed() -> None:
+    """``expect_initial_state``: the expected side is the seeded state, viewed first."""
+    engine = GradingEngine(
+        GradingConfig(
+            combine={"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 0.5},
+            state_checks={
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": _ALL_DOCUMENTS.model_dump(mode="json"),
+            },
+        ),
+        task_initial_state=InitialStateConfig(
+            json_db={"documents": [{"id": "D1"}], "corrections": []}
+        ),
+    )
     with pytest.raises(ComparisonViewError, match="lacks the key field"):
-        _engine(_ALL_DOCUMENTS).grade_trajectory(_trajectory(), {"db": broken})
+        engine.grade_trajectory(_trajectory(), {"db": copy.deepcopy(_INITIAL)})

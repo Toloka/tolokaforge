@@ -138,9 +138,9 @@ class GradingEngine:
                 declared share between them. Re-resolved here rather than trusted from
                 load, because the config is mutable after validation.
             ComparisonViewError: the declared ``comparison_view`` cannot be computed for
-                the expected state, or for the trial's for a reason other than a
-                collision — no verdict, so the trial is left with a grading error, as the
-                runner leaves it.
+                the expected state — no verdict, so the trial is left with a grading
+                error, as the runner leaves it. A trial whose own state cannot be viewed
+                fails instead.
         """
         components = GradeComponents()
         reasons_parts = []
@@ -393,8 +393,7 @@ class GradingEngine:
                 declares no world to replay them against, so there is no expected state
                 and the trial is left unscored.
             ComparisonViewError: the declared view cannot be computed for the expected
-                state, or for the trial's for a reason other than a collision, so there
-                is no verdict and the trial is left with a grading error.
+                state, so there is no verdict and the trial is left with a grading error.
         """
         checks = self.config.state_checks
         hash_config = checks.hash

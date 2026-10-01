@@ -3891,9 +3891,15 @@ class TraceChecksResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class ComparisonViewCollisionRecord(BaseModel):
-    """A trial whose state ``normalize_ids`` cannot re-key bijectively, and the ids involved."""
+class ComparisonViewTrialError(BaseModel):
+    """What kept the trial's state from being viewed, once the golden's view succeeded.
 
+    ``error`` names the error's type (``ComparisonViewCollision`` for a re-keying that is
+    not bijective, ``ComparisonViewError`` for a record the rules cannot read), and
+    ``ids`` the ids it involves — empty where it names none.
+    """
+
+    error: str
     message: str
     ids: list[Any] = Field(default_factory=list)
 
@@ -3905,10 +3911,10 @@ class ComparisonViewGradeRecord(BaseModel):
 
     ``golden`` and ``trial`` are the records of the two views: the same ``version``,
     ``function_version`` and ``config_sha256``, with each side's own ``applied``. A
-    trial whose view collided has no record of its own and carries
-    ``trial_collision`` instead. ``view_diff`` is the diff of the two views on a
+    trial whose state could not be viewed has no record of its own and carries
+    ``trial_error`` instead; it failed. ``view_diff`` is the diff of the two views on a
     mismatch, the diff the hash verdict agrees with (#1444); ``None`` on a match or a
-    collision. Both substrates build it with
+    trial error. Both substrates build it with
     :func:`tolokaforge.core.grading.pre_hash.comparison_view_grade_record`, so the
     runner's ``Grade.comparison_view_json`` and core's ``Grade.comparison_view`` carry
     the same JSON.
@@ -3917,19 +3923,19 @@ class ComparisonViewGradeRecord(BaseModel):
     golden: ComparisonViewRecord
     trial: ComparisonViewRecord | None = None
     view_diff: StateDiff | None = None
-    trial_collision: ComparisonViewCollisionRecord | None = None
+    trial_error: ComparisonViewTrialError | None = None
 
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
-    def _a_trial_has_a_view_or_a_collision(self) -> ComparisonViewGradeRecord:
-        if (self.trial is None) == (self.trial_collision is None):
+    def _a_trial_has_a_view_or_an_error(self) -> ComparisonViewGradeRecord:
+        if (self.trial is None) == (self.trial_error is None):
             raise ValueError(
-                "a comparison-view record carries the trial's view record or its collision, "
-                "exactly one of the two"
+                "a comparison-view record carries the trial's view record or the error that "
+                "kept it from one, exactly one of the two"
             )
-        if self.trial_collision is not None and self.view_diff is not None:
-            raise ValueError("a trial whose view collided has no view to diff")
+        if self.trial_error is not None and self.view_diff is not None:
+            raise ValueError("a trial whose state could not be viewed has no view to diff")
         return self
 
 

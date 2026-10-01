@@ -28,11 +28,12 @@ re-keyed id field it would drop is refused when the task loads
 
 The golden side is viewed first. A view that cannot be computed for it raises
 :class:`~tolokaforge.core.grading.comparison_view.ComparisonViewError`, which each
-substrate reports as a grading error. On the trial side, once the golden's view
-succeeded, a :class:`~tolokaforge.core.grading.comparison_view.ComparisonViewCollision`
-is the trial's own state failing to tell its records apart: :func:`view_the_pair`
-returns it as a :class:`TrialCollision`, which fails the trial. Any other error on the
-trial side raises like a golden one.
+substrate reports as a grading error: the declaration does not fit the state the task's
+own golden path builds. Once the golden's view succeeded, the declaration is shown
+sound, so any :class:`~tolokaforge.core.grading.comparison_view.ComparisonViewError` on
+the trial side — a re-keying that is not bijective, a record without its key field, a
+value no rule can read — is the trial's own state that cannot be viewed:
+:func:`view_the_pair` returns it as a :class:`TrialViewError`, which fails the trial.
 
 A task without a ``comparison_view`` never reaches this module: each substrate keeps
 its own path, so no existing digest moves.
@@ -45,8 +46,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tolokaforge.core.grading.comparison_view import (
-    ComparisonViewCollision,
     ComparisonViewConfig,
+    ComparisonViewError,
     ComparisonViewRecord,
     RekeyedField,
     apply_comparison_view,
@@ -59,13 +60,13 @@ from tolokaforge.core.hash import (
     resolve_unstable_field_paths,
 )
 from tolokaforge.runner.models import (
-    ComparisonViewCollisionRecord,
     ComparisonViewGradeRecord,
+    ComparisonViewTrialError,
 )
 
 __all__ = [
     "PreHashDeclaration",
-    "TrialCollision",
+    "TrialViewError",
     "ViewedPair",
     "comparison_view_grade_record",
     "comparison_view_reason",
@@ -108,11 +109,16 @@ class ViewedPair:
 
 
 @dataclass(frozen=True)
-class TrialCollision:
-    """The trial's state cannot be re-keyed bijectively, after the golden's view succeeded."""
+class TrialViewError:
+    """The trial's state cannot be viewed, after the golden's view succeeded: it fails."""
 
     golden_record: ComparisonViewRecord
-    collision: ComparisonViewCollision
+    error: ComparisonViewError
+
+    @property
+    def ids(self) -> tuple[Any, ...]:
+        """The ids the error involves; a collision names them, other errors none."""
+        return tuple(getattr(self.error, "ids", ()))
 
 
 def resolve_unstable_fields(
@@ -149,15 +155,15 @@ def view_the_pair(
     *,
     initial: Mapping[str, Any] | None,
     declaration: PreHashDeclaration,
-) -> ViewedPair | TrialCollision:
+) -> ViewedPair | TrialViewError:
     """Steps 1–3 for both sides of one comparison, golden first.
 
     ``trial`` and ``golden`` are full states, unstable fields present; ``initial`` is
     the state both started from. None of the three is mutated.
 
     Raises:
-        ComparisonViewError: the golden's view cannot be computed, or the trial's
-            cannot for a reason other than a collision. Either is a grading error.
+        ComparisonViewError: the golden's view cannot be computed — a grading error.
+            Any error viewing the trial's state is returned as a :class:`TrialViewError`.
     """
     golden_result = apply_comparison_view(
         golden, initial=initial, view=declaration.view, id_fields=declaration.id_fields
@@ -166,8 +172,8 @@ def view_the_pair(
         trial_result = apply_comparison_view(
             trial, initial=initial, view=declaration.view, id_fields=declaration.id_fields
         )
-    except ComparisonViewCollision as collision:
-        return TrialCollision(golden_record=golden_result.record, collision=collision)
+    except ComparisonViewError as error:
+        return TrialViewError(golden_record=golden_result.record, error=error)
 
     masked = _masked_after_the_view(
         declaration.unstable_fields,
@@ -199,21 +205,24 @@ def view_the_pair(
 
 
 def comparison_view_grade_record(
-    outcome: ViewedPair | TrialCollision, *, matched: bool
+    outcome: ViewedPair | TrialViewError, *, matched: bool
 ) -> ComparisonViewGradeRecord:
     """What a grade records about the view: both records, and the view diff on a mismatch.
 
     The view diff is :func:`~tolokaforge.core.grading.trial_golden_diff.compute_state_diff`
     over the two views after step 2, the one diff function both substrates' grades
     carry, so a mismatched digest of the view always comes with a non-identical diff of
-    it (#1444). A collision records the golden's record, the collision and its ids, and
-    no trial record: the trial has no view.
+    it (#1444). A trial whose state could not be viewed records the golden's record and
+    the error — its type, its message and the ids it names — and no trial record: the
+    trial has no view.
     """
-    if isinstance(outcome, TrialCollision):
+    if isinstance(outcome, TrialViewError):
         return ComparisonViewGradeRecord(
             golden=outcome.golden_record,
-            trial_collision=ComparisonViewCollisionRecord(
-                message=str(outcome.collision), ids=list(outcome.collision.ids)
+            trial_error=ComparisonViewTrialError(
+                error=type(outcome.error).__name__,
+                message=str(outcome.error),
+                ids=list(outcome.ids),
             ),
         )
     return ComparisonViewGradeRecord(
@@ -229,10 +238,12 @@ def comparison_view_reason(record: ComparisonViewGradeRecord) -> str | None:
     ``None`` on a match: the hash sentence already says so. Both substrates render it
     from the record, so the two grades say the same thing.
     """
-    if record.trial_collision is not None:
+    if record.trial_error is not None:
+        error = record.trial_error
+        ids = f" (ids: {error.ids})" if error.ids else ""
         return (
-            "Comparison view: the trial's state cannot be re-keyed — "
-            f"{record.trial_collision.message} (ids: {record.trial_collision.ids})"
+            f"Comparison view: the trial's state cannot be viewed — {error.error}: "
+            f"{error.message}{ids}"
         )
     if record.view_diff is not None:
         return f"Comparison view: {record.view_diff.summary}"

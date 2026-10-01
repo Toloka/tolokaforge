@@ -407,17 +407,17 @@ def test_a_bijectivity_refusal_is_a_collision_naming_the_ids(
     assert str(pickle.loads(pickle.dumps(caught.value))) == str(caught.value)
 
 
-@pytest.mark.parametrize(
-    "journal",
-    [[_entry("FCJ-1"), _entry("FCJ-1", fee="F2")], [{"id": "FCJ-1", "account_id": "A1"}]],
-    ids=["shared-id", "missing-key-field"],
-)
-def test_a_state_that_does_not_fit_the_declaration_is_not_a_collision(
-    journal: list[dict[str, Any]],
-) -> None:
+def test_a_state_that_does_not_fit_the_declaration_is_not_a_collision() -> None:
     with pytest.raises(ComparisonViewError) as caught:
-        _apply({"journal": journal}, _normalize())
+        _apply({"journal": [{"id": "FCJ-1", "account_id": "A1"}]}, _normalize())
     assert not isinstance(caught.value, ComparisonViewCollision)
+
+
+def test_two_records_sharing_an_id_are_a_collision_naming_the_id() -> None:
+    """Two records under one id key two records by one value: not bijective."""
+    with pytest.raises(ComparisonViewCollision) as caught:
+        _apply({"journal": [_entry("FCJ-1"), _entry("FCJ-1", fee="F2")]}, _normalize())
+    assert caught.value.ids == ("FCJ-1",)
 
 
 def test_two_records_sharing_an_id_are_refused() -> None:

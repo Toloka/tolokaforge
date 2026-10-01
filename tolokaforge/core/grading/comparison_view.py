@@ -135,20 +135,21 @@ _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d
 class ComparisonViewError(ValueError):
     """A rule cannot compute the view of this state.
 
-    It is an evaluation error, never a pass or a fail: the grade reports it as a
-    grading error.
+    Which side it is raised for decides what it means. On the golden side — viewed
+    first — the declaration does not fit the state the task's own golden path builds,
+    which is the author's to fix: the grade reports a grading error. On the trial side,
+    once the golden's view succeeded, the declaration is shown sound and what cannot be
+    viewed is the trial's own state: the caller fails the trial with this as the reason.
     """
 
 
 class ComparisonViewCollision(ComparisonViewError):
     """``normalize_ids`` cannot re-key this state bijectively.
 
-    Two records would share a key, a new key is the id of a kept record, two
-    records tie on ``rank_by``, or a reference already holds a new key. On the
-    golden side it is an evaluation error like any :class:`ComparisonViewError`.
-    On the trial side, once the golden's view succeeded, it is the trial's own
-    state that cannot be told apart, and the caller fails the trial with it as
-    the reason. ``ids`` are the ids involved.
+    Two records share an id, two records would share a key, a new key is the id of a
+    kept record, two records tie on ``rank_by``, or a reference already holds a new
+    key. It is read by side like any :class:`ComparisonViewError`; ``ids`` are the ids
+    involved, for the reason a failed trial carries.
     """
 
     def __init__(self, message: str, ids: tuple[Any, ...]) -> None:
@@ -1209,13 +1210,15 @@ def _new_keys(
 
 
 def _refuse_duplicate_ids(table: str, ids: list[Any]) -> None:
+    """Two records under one id key two records by one value: the keying is not bijective."""
     seen: set[IdKey] = set()
     for value in ids:
         key = _reference_key(value)
         if key in seen:
-            raise ComparisonViewError(
+            raise ComparisonViewCollision(
                 f"{_NORMALIZE}: two records of table {table!r} share the id {value!r}, so a "
-                f"reference to it cannot follow one of them"
+                f"reference to it cannot follow one of them",
+                (value,),
             )
         seen.add(key)
 
