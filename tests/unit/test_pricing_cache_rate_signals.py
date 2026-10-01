@@ -38,7 +38,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.pricing import reload_pricing, resolve_pricing
-from tolokaforge.core.runner import _AgentMetricsSink
+from tolokaforge.core.runner import _TrialMetricsSink
 
 pytestmark = pytest.mark.unit
 
@@ -231,7 +231,7 @@ class TestPerTrialFlag:
         assert result.cost_cache_rate_fallback is True
 
         metrics = Metrics()
-        _AgentMetricsSink(metrics).record_generation(result)
+        _TrialMetricsSink(metrics).record_generation(result)
         assert metrics.cost_cache_rate_fallback is True
         # The flag marks the number, it does not correct it: this is the
         # overstated figure the dashed row produces.
@@ -250,7 +250,7 @@ class TestPerTrialFlag:
     def test_the_flag_is_sticky_across_calls(self) -> None:
         """One mispriced call makes the trial's summed cost an overestimate."""
         metrics = Metrics()
-        sink = _AgentMetricsSink(metrics)
+        sink = _TrialMetricsSink(metrics)
         sink.record_generation(_generate(_INCOMPLETE_ROW_MODEL, _response_with_cache_reads()))
         sink.record_generation(_generate(_INCOMPLETE_ROW_MODEL, _response_without_cache_reads()))
         assert metrics.cost_cache_rate_fallback is True

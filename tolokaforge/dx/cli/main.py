@@ -628,9 +628,10 @@ def _run_dry_run(
     type=float,
     default=None,
     help=(
-        "Hard cap on cumulative agent cost in USD. Stops enqueuing new "
-        "trials on hit; in-flight trials finish. Writes LIMIT_HIT.json "
-        "under the run directory. Overrides compute.max_budget_usd."
+        "Hard cap in USD on cumulative spend across all actor roles (agent + "
+        "user simulator + rubric judge). Stops enqueuing new trials on hit; "
+        "in-flight trials finish. Writes LIMIT_HIT.json under the run "
+        "directory. Overrides compute.max_budget_usd."
     ),
 )
 @click.option(

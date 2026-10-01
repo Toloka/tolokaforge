@@ -1488,7 +1488,7 @@ class _ScriptedSummarizer:
 class _WatermarkSink(MetricsSink):
     """Metrics sink that returns a scripted ``last_prompt_tokens``.
 
-    Real ``_AgentMetricsSink`` derives the value from ``result.usage``; this
+    Real ``_TrialMetricsSink`` derives the value from ``result.usage``; this
     fake lets a test set the exact watermark trigger without threading a
     ``GenerationResult`` through it.
     """

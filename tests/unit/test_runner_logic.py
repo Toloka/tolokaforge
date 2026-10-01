@@ -79,6 +79,11 @@ def _make_agent_client(responses: list[GenerationResult] | None = None) -> Magic
     never fires; only the typed and default branches decide.
     """
     client = MagicMock()
+    # Production ``LLMClient.model_name`` is always a ``str``; the residual
+    # cost rollup attributes leftover spend to ``(agent, model_name)``, which
+    # would otherwise receive an auto-generated MagicMock and fail
+    # ``CostByRoleModelMetrics.model`` validation.
+    client.model_name = "test-model"
     if responses:
         client.generate.side_effect = responses
     else:

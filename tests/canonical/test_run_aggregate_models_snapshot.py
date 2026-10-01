@@ -41,8 +41,10 @@ from tolokaforge.core.metrics import (
     calculate_task_metrics,
 )
 from tolokaforge.core.models import (
+    CostByRoleMetrics,
     Grade,
     GradeComponents,
+    JudgeUsage,
     Metrics,
     RecordedToolCall,
     TerminationReason,
@@ -83,6 +85,8 @@ def _make_trajectory(
     termination_reason: TerminationReason | None = None,
     tool_log: list[RecordedToolCall] | None = None,
     grading_error: str | None = None,
+    cost_by_role: list[CostByRoleMetrics] | None = None,
+    judge_usage: JudgeUsage | None = None,
 ) -> Trajectory:
     """Build a Trajectory populated on every field the aggregate path reads.
 
@@ -94,8 +98,40 @@ def _make_trajectory(
     carrying a ``tool`` key — the source of the ``by_tool`` counter in
     :func:`summarize_failure_attributions`. ``grading_error`` drives the
     ungradeable path and carries no ``Grade``, the two being mutually exclusive.
+
+    ``cost_by_role`` defaults to the harness-style reconciliation the runner
+    produces for a trial with no per-call records (empty ``usage.calls``,
+    non-zero ``cost_usd``): the whole cost lands on the ``agent`` row with the
+    trial's flat token totals. A caller passes explicit rows to exercise a
+    multi-role (agent + user) trial. ``judge_usage`` attaches the rubric judge's
+    own spend, the source of the synthesized ``judge`` row at the run level.
     """
     now = datetime.now(tz=UTC)
+    usage = Usage(
+        prompt_tokens=1200,
+        completion_tokens=340,
+        reasoning_tokens=80,
+        cached_tokens=200,
+        cache_creation_input_tokens=150,
+        cache_read_input_tokens=90,
+    )
+    if cost_by_role is None:
+        cost_by_role = (
+            []
+            if cost_usd is None
+            else [
+                CostByRoleMetrics(
+                    role="agent",
+                    cost_usd=cost_usd,
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    reasoning_tokens=usage.reasoning_tokens,
+                    cached_tokens=usage.cached_tokens,
+                    cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                    cache_read_input_tokens=usage.cache_read_input_tokens,
+                )
+            ]
+        )
     return Trajectory(
         task_id=task_id,
         trial_index=trial_index,
@@ -111,14 +147,8 @@ def _make_trajectory(
             tool_calls=tool_calls,
             stuck_detected=stuck_detected,
             cost_usd=cost_usd,
-            usage=Usage(
-                prompt_tokens=1200,
-                completion_tokens=340,
-                reasoning_tokens=80,
-                cached_tokens=200,
-                cache_creation_input_tokens=150,
-                cache_read_input_tokens=90,
-            ),
+            usage=usage,
+            cost_by_role=cost_by_role,
         ),
         grade=(
             None
@@ -127,6 +157,7 @@ def _make_trajectory(
                 binary_pass=binary_pass,
                 score=score,
                 components=GradeComponents(state_checks=score),
+                judge_usage=judge_usage,
             )
         ),
         grading_error=grading_error,
@@ -340,6 +371,121 @@ def test_run_aggregate_round_trip_with_schema_version() -> None:
     payload["schema_version"] = AGGREGATE_SCHEMA_VERSION
 
     _round_trip(RunAggregate, payload)
+
+
+def _role_priced_trajectories() -> list[Trajectory]:
+    """One task's trials spanning every per-role spend shape the plane must sum.
+
+    Trial 0 is harness-style — the runner issues no per-call records but reconciles
+    the whole ``cost_usd`` onto the ``agent`` row (empty ``usage.calls``). Trial 1
+    is a conversational trial whose reconciled ``cost_by_role`` splits between the
+    ``agent`` and ``user`` roles, and whose grade carries the rubric judge's own
+    spend. Together they exercise the agent/user/judge rows and lock the harness
+    reconciliation into the run-level total.
+    """
+    harness = _make_trajectory(trial_index=0, cost_usd=0.02)
+    conversational = _make_trajectory(
+        trial_index=1,
+        cost_usd=0.04,
+        cost_by_role=[
+            CostByRoleMetrics(
+                role="agent", cost_usd=0.03, prompt_tokens=900, completion_tokens=210
+            ),
+            CostByRoleMetrics(role="user", cost_usd=0.01, prompt_tokens=300, completion_tokens=80),
+        ],
+        judge_usage=JudgeUsage(
+            cost_usd=0.005, prompt_tokens=500, completion_tokens=120, reasoning_tokens=30
+        ),
+    )
+    return [harness, conversational]
+
+
+def test_aggregate_total_cost_by_role_sums_all_roles_with_harness_reconciliation() -> None:
+    """The run-level plane carries agent/user/judge rows, its grand total is their
+    sum, and the harness trial's cost rides the ``agent`` row.
+
+    Without the harness reconciliation the harness trial (empty ``usage.calls``)
+    would drop its cost from the plane, pulling ``total_cost_incl_all_usd`` below
+    the legacy ``total_cost_usd``. The agent-row and ``>= total_cost_usd`` checks
+    lock that the whole cross-role total is reported.
+    """
+    task = calculate_task_metrics(_role_priced_trajectories())
+    _augment_task_metrics(task, task_id="task-roles")
+    agg = calculate_aggregate_metrics([task], weighted=True)
+
+    for payload in (task, agg):
+        by_role = {row["role"]: row for row in payload["total_cost_by_role"]}
+        assert set(by_role) == {"agent", "user", "judge"}
+        # Harness (0.02) + conversational agent (0.03) both land on the agent row.
+        assert by_role["agent"]["cost_usd"] == pytest.approx(0.05)
+        assert by_role["user"]["cost_usd"] == pytest.approx(0.01)
+        assert by_role["judge"]["cost_usd"] == pytest.approx(0.005)
+
+        grand = sum(row["cost_usd"] for row in payload["total_cost_by_role"])
+        assert payload["total_cost_incl_all_usd"] == pytest.approx(grand)
+        # Only agent + user + judge exist today, so the new grand total equals the
+        # legacy combined total, and never falls below the agent-only total.
+        assert payload["total_cost_incl_all_usd"] == pytest.approx(
+            payload["total_cost_incl_judge_usd"]
+        )
+        assert payload["total_cost_incl_all_usd"] >= payload["total_cost_usd"]
+
+        # Legacy fields keep their prior semantics.
+        assert payload["total_cost_usd"] == pytest.approx(0.06)
+        assert payload["judge_cost_usd"] == pytest.approx(0.005)
+
+    _round_trip(PerTaskMetrics, task)
+    _round_trip(AggregateMetrics, agg)
+
+
+def test_unpriced_agent_leaves_grand_total_none_not_coerced_zero() -> None:
+    """An unpriced run reports ``total_cost_incl_all_usd`` as ``None``, not ``0.0``.
+
+    When the agent model has no pricing row every call is costed ``None``, so
+    ``Metrics.cost_usd`` is ``None`` — yet the per-call reconciliation still emits
+    an ``agent`` row carrying ``cost_usd=0.0`` (calls present, none priced). Reading
+    the role plane's grand total directly would coerce that ``0.0`` into a definite
+    ``$0.00`` for a run whose cost is genuinely unknown, falsifying the invariant
+    ``total_cost_incl_all_usd == total_cost_incl_judge_usd`` (both ``None`` here).
+    The empty-``usage.calls`` fixture masks this — it produces no ``agent`` row at
+    all, so the grand total is ``None`` regardless of the coercion bug.
+    """
+    trajectories = [
+        _make_trajectory(
+            trial_index=0,
+            cost_usd=None,
+            cost_by_role=[
+                CostByRoleMetrics(
+                    role="agent", cost_usd=0.0, prompt_tokens=1200, completion_tokens=340
+                )
+            ],
+        ),
+        _make_trajectory(
+            trial_index=1,
+            cost_usd=None,
+            cost_by_role=[
+                CostByRoleMetrics(
+                    role="agent", cost_usd=0.0, prompt_tokens=800, completion_tokens=150
+                )
+            ],
+        ),
+    ]
+    task = calculate_task_metrics(trajectories)
+    _augment_task_metrics(task, task_id="task-unpriced")
+    agg = calculate_aggregate_metrics([task], weighted=True)
+
+    for payload in (task, agg):
+        assert payload["total_cost_usd"] is None
+        assert payload["total_cost_incl_judge_usd"] is None
+        assert payload["total_cost_incl_all_usd"] is None
+        assert payload["total_cost_incl_all_usd"] == payload["total_cost_incl_judge_usd"]
+        # The ``agent`` row itself is still present at ``$0.00`` — the bug was
+        # summing it into the grand total, not the row's own value.
+        by_role = {row["role"]: row for row in payload["total_cost_by_role"]}
+        assert by_role["agent"]["cost_usd"] == pytest.approx(0.0)
+
+    _round_trip(PerTaskMetrics, task)
+    _round_trip(AggregateMetrics, agg)
 
 
 # ---------------------------------------------------------------------------

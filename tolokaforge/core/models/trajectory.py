@@ -30,6 +30,8 @@ from tolokaforge.runner.models import RecordedToolCall
 
 __all__ = [
     "REPLY_DEFECT_EXCERPT_MAX_CHARS",
+    "CostByRoleMetrics",
+    "CostByRoleModelMetrics",
     "FirstUserMessageSource",
     "Message",
     "MessageRole",
@@ -257,9 +259,9 @@ class RateLimitProbeRoleMetrics(BaseModel):
     down rather than rejecting them, which only goodput and latency catch. See
     ``docs/OUTPUT_FORMAT.md`` § Field observations for the measurements.
 
-    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` holds
-    agent calls only and carries no role field, so per-model goodput and latency
-    are not computable from it. These rows are the role-attributed record.
+    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` records
+    only served responses, so the 429 / retry / wait census is absent from it.
+    These rows are the rate-limit record.
 
     ``model`` is the raw provider-qualified slug the client called
     (``openrouter/anthropic/claude-sonnet-4.6``). The engine deliberately does
@@ -346,6 +348,58 @@ class RateLimitProbeBucketMetrics(BaseModel):
     completion_tokens: int = 0
     retries: int = 0
     wait_s: float = 0.0
+
+
+class CostByRoleModelMetrics(BaseModel):
+    """One ``(role, model)`` row of a trial's cost / token spend.
+
+    The finest grain of the per-role rollup: a trial that runs the agent and the
+    user simulator on different models contributes one row per pair. ``model`` is
+    the client slug the calls were served by, ``None`` only for calls built
+    without a serving client (the reconciled residual always carries the agent
+    model, so ``None`` here means genuinely unattributed).
+
+    A dict keyed by the ``(role, model)`` tuple would not round-trip through
+    YAML/JSON, so the key is spread onto explicit fields, mirroring
+    :class:`RateLimitProbeRoleMetrics`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    # Typed ``str`` (not the ``LLMCallRole`` Literal) so a bundle written by a
+    # future run with a new role member round-trips on read rather than raising.
+    role: str
+    model: str | None = None
+    cost_usd: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+class CostByRoleMetrics(BaseModel):
+    """One ``role`` row of a trial's cost / token spend, summed across models.
+
+    The per-role view of :class:`CostByRoleModelMetrics`. ``sum(cost_usd)`` over
+    these rows equals :attr:`Metrics.cost_usd` on every trial — LLM-loop,
+    conversational, and coding-harness — because the harness residual (whole
+    ``cost_usd``, empty ``usage.calls``) is reconciled onto the ``agent`` row.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    # Typed ``str`` (not the ``LLMCallRole`` Literal) so a bundle written by a
+    # future run with a new role member round-trips on read rather than raising.
+    role: str
+    cost_usd: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 _VALID_COST_SOURCES: frozenset[str] = frozenset(get_args(CostSource))
@@ -633,6 +687,20 @@ class Metrics(BaseModel):
     probe_buckets: list[RateLimitProbeBucketMetrics] = Field(default_factory=list)
     """Per-``(role, model, absolute window)`` throughput, sorted by window then
     role then model. See :class:`RateLimitProbeBucketMetrics`."""
+
+    cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
+    """This trial's ``cost_usd`` / tokens attributed per actor role.
+
+    Derived from ``usage.calls`` and reconciled against ``cost_usd``, so
+    ``sum(row.cost_usd for row in cost_by_role) == cost_usd`` on every trial: a
+    coding-harness trial (``cost_usd > 0``, empty ``usage.calls``) lands its
+    whole cost on the ``agent`` row. Covers the in-trial actor roles only (agent
+    + user); judge cost lives in ``grade.judge_usage`` and appears only in
+    ``aggregate.json``. Rows are sorted by role."""
+
+    cost_by_role_model: list[CostByRoleModelMetrics] = Field(default_factory=list)
+    """The same spend resolved to ``(role, model)`` rows, sorted by role then
+    model. The per-model breakdown of :attr:`cost_by_role`."""
 
     @field_validator("usage", mode="before")
     @classmethod

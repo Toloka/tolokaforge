@@ -111,6 +111,8 @@ from tolokaforge.core.models.task_config import (
 )
 from tolokaforge.core.models.trajectory import (
     REPLY_DEFECT_EXCERPT_MAX_CHARS,
+    CostByRoleMetrics,
+    CostByRoleModelMetrics,
     FirstUserMessageSource,
     Message,
     MessageRole,
@@ -204,6 +206,8 @@ __all__ = [
     "JudgeUsage",
     # Trajectory concern
     "REPLY_DEFECT_EXCERPT_MAX_CHARS",
+    "CostByRoleMetrics",
+    "CostByRoleModelMetrics",
     "FirstUserMessageSource",
     "Message",
     "MessageRole",

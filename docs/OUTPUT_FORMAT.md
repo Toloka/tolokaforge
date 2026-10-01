@@ -650,12 +650,26 @@ the block is safe to share and stable across hosts.
 dataclass. Anthropic cache counters + reasoning-budget spend are
 first-class fields; a `provider_raw` dump of the litellm usage block is
 included for forensics. Each LLM API call is also recorded in
-`usage.calls[]` as a `ProviderRawCall` carrying its per-call tokens,
-`cost_usd`, `cost_source` (`"litellm"` / `"local"` / `"unknown"`),
-`latency_s`, `gateway_route` + `gateway_route_kind` (`"exact"` / `"wildcard"`,
-the serving-path provenance when the call went through an LLM gateway, else
-null), and `openrouter_generation_id` — the trial-level `cost_usd` is the
-sum of those entries.
+`usage.calls[]` as a `ProviderRawCall` carrying its `role` (the actor whose
+loop issued the call — `"agent"` for the agent loop and the summarizer,
+`"user"` / `"judge"` / `"grader"` for the other actors), the `model` slug it
+was served by (null only on records built without a serving client), its
+per-call tokens, `cost_usd`, `cost_source` (`"litellm"` / `"local"` /
+`"unknown"`), `latency_s`, `gateway_route` + `gateway_route_kind`
+(`"exact"` / `"wildcard"`, the serving-path provenance when the call went
+through an LLM gateway, else null), and `openrouter_generation_id` — the
+trial-level `cost_usd` is the sum of those entries.
+
+The trial-level `cost_usd`, `usage`, `openrouter_generation_ids`, and
+`api_calls` sum across **every in-trial actor role**, not the agent alone: an
+LLM-mode user simulator's replies are folded into the same counters, so a
+conversational trial's `cost_usd` includes the user's spend and its
+`usage.calls[]` carries the `role: "user"` rows. A scripted or mock simulator
+issues no LLM call (its reply carries an empty `calls`), so it adds nothing —
+scripted and `agent_only` trials record zero user spend. The user simulator's
+`openrouter_generation_id` is recoverable only here, via
+`openrouter_generation_ids` and the matching `usage.calls[role == "user"]` row;
+the USER transcript `Message` carries no generation id.
 
 `harness_stdout_dialect` names the coding-harness stdout dialect `turns` and
 `usage` were read from, and is `null` whenever they are the engine's own
@@ -761,8 +775,27 @@ emits per configured role. Supplying the real rates through
 both. The field is optional and absent-by-default, so it carries no bundle
 stamp bump: a bundle written before it reads `false`.
 
+`cost_by_role` and `cost_by_role_model` break the trial's `cost_usd` and tokens
+down by actor role. `cost_by_role` carries one row per role (sorted by role);
+`cost_by_role_model` resolves the same spend to `(role, model)` rows (sorted by
+role then model). Both are **derived** from `usage.calls` and then reconciled
+against `cost_usd`, so `sum(row.cost_usd for row in cost_by_role) == cost_usd` on
+every trial: a coding-harness trial issues no per-call records yet carries a
+`cost_usd` (the engine's price for the CLI-reported tokens), and that residual —
+`cost_usd` minus the summed call costs, with the matching flat-token residual —
+lands on the `agent` row at the agent model. On an engine-loop trial the residual
+is float noise and no synthetic row is added; a `null` `cost_usd` leaves both
+lists purely call-derived. These cover the **in-trial** actor roles only — the
+`agent` loop (summarizer included) and the LLM-mode `user` simulator. The judge
+is not an in-trial actor: its cost lives in [`grade.yaml`](#trialstask_idtrial_indexgradeyaml)
+`judge_usage`, not in `usage.calls`, so no `judge` row appears here — it is
+synthesised only at the run level in `aggregate.json`'s `total_cost_by_role` (see
+[`docs/ANALYTICS.md`](ANALYTICS.md:1) § `aggregate.json`). Each row's `model` is
+the client slug the calls were served by, `null` only for a call built without a
+serving client.
+
 To help analytics consumers detect schema evolution, a trial-level metrics file
-written by `write_metrics` includes a root-level `schema_version: 5` marker. The
+written by `write_metrics` includes a root-level `schema_version: 6` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
@@ -812,6 +845,42 @@ usage:
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
+cost_by_role:                # per-role breakdown; sum of cost_usd == cost_usd above
+  - role: agent
+    cost_usd: 0.107055
+    prompt_tokens: 1806
+    completion_tokens: 260
+    reasoning_tokens: 250
+    cached_tokens: 1920
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 1920
+  - role: user
+    cost_usd: 0.02
+    prompt_tokens: 200
+    completion_tokens: 40
+    reasoning_tokens: 0
+    cached_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+cost_by_role_model:          # the same spend resolved to (role, model) rows
+  - role: agent
+    model: openrouter/anthropic/claude-sonnet-4.6
+    cost_usd: 0.107055
+    prompt_tokens: 1806
+    completion_tokens: 260
+    reasoning_tokens: 250
+    cached_tokens: 1920
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 1920
+  - role: user
+    model: openrouter/openai/gpt-4.1-mini
+    cost_usd: 0.02
+    prompt_tokens: 200
+    completion_tokens: 40
+    reasoning_tokens: 0
+    cached_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
 harness_stdout_dialect: null       # non-null only when a coding-harness CLI reported its own totals
 harness_usage_source: null         # non-null only when the tokens were measured on the wire, not printed by the CLI
 harness_reported_cost_usd: null    # what that CLI said it billed, where it said anything
@@ -1013,9 +1082,12 @@ probe_buckets:
 The `(role, model)` breakdown exists because the roles are different models: in
 an arena config the agent is the model under test and the user simulator is a
 fixed, unrelated one, so a single flat counter blends a measured model's numbers
-with an unmeasured one's. `Metrics.usage` cannot substitute — `usage.calls` holds
-agent calls only and carries **no role field**, so per-model goodput and latency
-are not computable from it at all. Rows are sorted by `(role, model)`.
+with an unmeasured one's. `Metrics.usage` cannot substitute — `usage.calls`
+records only **served** responses, so the 429 / retry / wait census this
+breakdown carries is absent from it. Successful-call goodput per model is
+derivable from `usage.calls` (each record now carries its actor `role`), but the
+retries and wait time that mark a rate-limited run are not. Rows are sorted by
+`(role, model)`.
 
 `model` is the raw provider-qualified slug the client called. Grouping slugs into
 an upstream-provider taxonomy is the consumer's job. Attributing a 429 to the
@@ -1182,7 +1254,7 @@ contains — on this path it is stamped and most of them are absent.
   `provision_stage` set to the lifecycle step that raised (see below),
   `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 5`, empty `tool_usage`) plus three top-level failure-signal
+  `schema_version: 6`, empty `tool_usage`) plus three top-level failure-signal
   keys:
 
   ```yaml
@@ -1880,8 +1952,8 @@ evidence about us, and our own defects stay counted. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
-| `metrics.yaml` | `schema_version` | `5` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
+| `metrics.yaml` | `schema_version` | `6` | The per-trial bundle's file set or field semantics change |
+| `aggregate.json` | `schema_version` | `4` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |

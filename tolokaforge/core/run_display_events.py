@@ -480,8 +480,8 @@ class RateLimitProbeStats:
     the user simulator is a fixed, unrelated one — so a single flat counter
     would blend a measured model's numbers with an unmeasured one's. The flat
     fields are kept as the sum across buckets for consumers that only want the
-    trial total. ``Metrics.usage.calls`` cannot substitute: it holds agent calls
-    only and carries no role, so per-model goodput is not derivable from it.
+    trial total. ``Metrics.usage.calls`` cannot substitute: it records only served
+    responses, so the 429 / retry / wait census is absent from it.
 
     **Two censuses, one recorder.** ``retries`` / ``wait_s`` are the FAILURE
     side; ``successes`` / ``success_duration_s`` / the token counts are the

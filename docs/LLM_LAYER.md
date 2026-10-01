@@ -325,8 +325,11 @@ accumulates via `self.metrics.usage = self.metrics.usage + result.usage`;
 (`avg_prompt_tokens`, `avg_reasoning_tokens`, `avg_cache_read_input_tokens`,
 etc.).
 
-Each `ProviderRawCall` in `usage.calls` also carries the
-`openrouter_generation_id` of the call it records — see
+Each `ProviderRawCall` in `usage.calls` also carries the `role` of the actor
+whose loop issued the call (`"agent"` when the caller supplies no observation)
+and the `model` slug it was served by, so per-role cost/token attribution reads
+off the per-call record. It further carries the `openrouter_generation_id` of
+the call it records — see
 § [OpenRouter generation ids](#openrouter-generation-ids).
 
 ## `schema_sanitizer`
@@ -2733,8 +2736,9 @@ contribute to a measurement it is not part of.
 
 The agent and the user simulator are different models in an arena config, so
 their counters never merge; and `Metrics.usage` cannot answer the same questions —
-`usage.calls` holds agent calls only and carries no role field. See
-[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
+`usage.calls` records only served responses (no 429s, no retries). At the trial
+level it holds the agent's and any in-trial user-simulator calls, each stamped
+with its actor `role`. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
 
 `duration_s` is the *outer* per-attempt wall time (`generate` brackets
 `_generate_once`), i.e. how long the client actually held the call in flight —

@@ -63,7 +63,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass
-from tolokaforge.core.models import TerminationReason
+from tolokaforge.core.models import CostByRoleMetrics, TerminationReason
 
 __all__ = [
     "AGGREGATE_SCHEMA_VERSION",
@@ -80,17 +80,22 @@ __all__ = [
     "ServiceLogCaptureSource",
 ]
 
-AGGREGATE_SCHEMA_VERSION = 3
+AGGREGATE_SCHEMA_VERSION = 4
 """The ``aggregate.json`` wire generation.
 
-Version 3 rates are over ``measured_trials`` — the trials that measured the
-agent, including the ones whose grading refused. Such a trial reaches
-``total_trials`` and ``measured_trials``, carries its own ``ungradeable`` count
-and its own ``ungradeable_<reason>`` row, and counts as a non-pass, so a
-consumer reading a file can tell which denominator produced
-``success_rate_micro``, ``avg_score_micro`` and ``pass@k_macro`` without
-inspecting the run that wrote it. The ``class`` vocabulary a consumer branches
-on has four members.
+Rates are over ``measured_trials`` — the trials that measured the agent,
+including the ones whose grading refused. Such a trial reaches ``total_trials``
+and ``measured_trials``, carries its own ``ungradeable`` count and its own
+``ungradeable_<reason>`` row, and counts as a non-pass, so a consumer reading a
+file can tell which denominator produced ``success_rate_micro``,
+``avg_score_micro`` and ``pass@k_macro`` without inspecting the run that wrote
+it. The ``class`` vocabulary a consumer branches on has four members.
+
+Version 4 adds the per-role spend plane: ``total_cost_by_role`` (agent + user
+summed from the trials' ``cost_by_role``, plus a synthesized ``judge`` row from
+``grade.judge_usage``) and the grand total ``total_cost_incl_all_usd``. Only
+agent, user and judge roles exist today, so ``total_cost_incl_all_usd`` equals
+the legacy ``total_cost_incl_judge_usd``.
 """
 
 
@@ -206,6 +211,15 @@ class PerTaskMetrics(BaseModel):
     reporting the known half alone as if it were the run's total. It now
     carries whichever half is known and says so here."""
 
+    # Per-role spend plane. ``total_cost_by_role`` sums the trials'
+    # ``cost_by_role`` (agent + user) and carries a synthesized ``judge`` row
+    # from ``grade.judge_usage``; ``total_cost_incl_all_usd`` is the grand total
+    # across those rows, inheriting ``total_cost_incl_judge_usd``'s None semantics
+    # so an unpriced run (agent row present at ``0.0``, cost unknown) reports
+    # ``None`` rather than a false ``0.0``.
+    total_cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
+    total_cost_incl_all_usd: int | float | None = None
+
     # Per-trial wall-time percentiles.
     latency_p50_s: int | float = 0
     latency_p90_s: int | float = 0
@@ -309,6 +323,14 @@ class AggregateMetrics(BaseModel):
     ``total_cost_incl_judge_usd`` used to coerce an unknown half to ``0.0``,
     reporting the known half alone as if it were the run's total. It now
     carries whichever half is known and says so here."""
+
+    # Run-level per-role spend plane, merged from the per-task
+    # ``total_cost_by_role`` rows (one row per role, summed across tasks) with
+    # ``total_cost_incl_all_usd`` the grand total across every role, ``None`` on
+    # the same terms as ``total_cost_incl_judge_usd`` so an unpriced run is not
+    # reported as a definite ``0.0``.
+    total_cost_by_role: list[CostByRoleMetrics] = Field(default_factory=list)
+    total_cost_incl_all_usd: int | float | None = None
 
     latency_p50_s_macro: int | float = 0
     latency_p90_s_macro: int | float = 0

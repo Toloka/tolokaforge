@@ -48,6 +48,8 @@ from tolokaforge.core.loop import (
     episode_timeout_decision,
 )
 from tolokaforge.core.models import (
+    CostByRoleMetrics,
+    CostByRoleModelMetrics,
     FirstUserMessageSource,
     Message,
     MessageRole,
@@ -184,6 +186,14 @@ CLI folded away, a list rate against a negotiated one — and the failure worth
 catching is a *multiple*: the live drifts that motivated this were 1.4x, 2.5x
 and 4.6x.
 """
+
+_COST_ROLLUP_RESIDUAL_TOLERANCE_USD = 1e-9
+"""Below this, ``cost_usd − Σ(usage.calls[*].cost_usd)`` is float noise, not
+unattributed spend, so no phantom ``agent`` residual row is emitted.
+
+An LLM-loop trial's ``cost_usd`` is the running sum of the very call costs the
+rollup re-sums, so the residual is exact zero up to summation order; a real
+harness residual is the whole trial cost, orders of magnitude above this."""
 
 
 def _enabled_completion_tools(
@@ -486,7 +496,7 @@ class TrialRunner:
                 )
                 self._seed_first_user_message(task_config, policy, initial_user_message)
 
-                agent_metrics_sink = _AgentMetricsSink(
+                agent_metrics_sink = _TrialMetricsSink(
                     self.metrics,
                     events=self._events,
                     trial_id=trial_id,
@@ -933,6 +943,7 @@ class TrialRunner:
         self.metrics.turns = self._agent_generations(self.messages)
         self._apply_probe_stats()
         self._apply_harness_telemetry()
+        self._apply_cost_rollup()
 
         recorded_calls = self.tool_call_recorder.recorded
         # Both describe the agent's tool use — the scoping stuck detection
@@ -1349,6 +1360,92 @@ class TrialRunner:
                 },
             )
 
+    def _apply_cost_rollup(self) -> None:
+        """Derive the per-role cost / token breakdown onto :class:`Metrics`.
+
+        Groups ``usage.calls`` by ``(role, model)`` — summing each call's cost
+        and tokens — then rolls the pairs up per role. Derived, never
+        independently accumulated, so it cannot double-count.
+
+        A coding-harness trial issues no per-call records yet carries
+        ``cost_usd > 0`` (the engine's price for the CLI-reported tokens), so a
+        call-derived rollup alone would under-count it. The reconciliation step
+        attributes the residual ``cost_usd − Σ(call costs)`` — and the matching
+        flat-token residual — to the agent role at the agent model, which makes
+        ``sum(cost_by_role[*].cost_usd) == cost_usd`` hold on every trial. On an
+        LLM-loop trial that residual is float noise and no row is emitted; a
+        ``None`` ``cost_usd`` leaves the rollup purely call-derived.
+        """
+        token_fields = (
+            "prompt_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "cached_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+        cost_by_pair: dict[tuple[str, str | None], float] = {}
+        tokens_by_pair: dict[tuple[str, str | None], dict[str, int]] = {}
+
+        def _ensure(key: tuple[str, str | None]) -> None:
+            cost_by_pair.setdefault(key, 0.0)
+            tokens_by_pair.setdefault(key, dict.fromkeys(token_fields, 0))
+
+        calls_cost = 0.0
+        calls_tokens = dict.fromkeys(token_fields, 0)
+        for call in self.metrics.usage.calls:
+            key = (call.role, call.model)
+            _ensure(key)
+            if call.cost_usd is not None:
+                cost_by_pair[key] += call.cost_usd
+                calls_cost += call.cost_usd
+            for field in token_fields:
+                value = getattr(call, field)
+                tokens_by_pair[key][field] += value
+                calls_tokens[field] += value
+
+        cost_usd = self.metrics.cost_usd
+        residual = None if cost_usd is None else cost_usd - calls_cost
+        if residual is not None and abs(residual) > _COST_ROLLUP_RESIDUAL_TOLERANCE_USD:
+            # The residual is agent spend the per-call records did not carry (a
+            # coding-harness trial prices CLI-reported tokens with no per-call
+            # records). Name it at the agent model where the client exposes one;
+            # an Actor whose contract omits ``model_name`` (post ADR-0051 the
+            # agent is a Protocol) attributes the residual to the agent role with
+            # an unknown model rather than raising.
+            agent_model = getattr(self.agent_client, "model_name", None)
+            if not isinstance(agent_model, str):
+                agent_model = None
+            key = ("agent", agent_model)
+            _ensure(key)
+            cost_by_pair[key] += residual
+            for field in token_fields:
+                residual_tokens = getattr(self.metrics.usage, field) - calls_tokens[field]
+                tokens_by_pair[key][field] += residual_tokens
+
+        self.metrics.cost_by_role_model = [
+            CostByRoleModelMetrics(
+                role=role,
+                model=model,
+                cost_usd=cost_by_pair[(role, model)],
+                **tokens_by_pair[(role, model)],
+            )
+            for role, model in sorted(cost_by_pair, key=lambda pair: (pair[0], pair[1] or ""))
+        ]
+
+        role_cost: dict[str, float] = {}
+        role_tokens: dict[str, dict[str, int]] = {}
+        for (role, _model), cost in cost_by_pair.items():
+            role_cost[role] = role_cost.get(role, 0.0) + cost
+            bucket = role_tokens.setdefault(role, dict.fromkeys(token_fields, 0))
+            for field in token_fields:
+                bucket[field] += tokens_by_pair[(role, _model)][field]
+
+        self.metrics.cost_by_role = [
+            CostByRoleMetrics(role=role, cost_usd=role_cost[role], **role_tokens[role])
+            for role in sorted(role_cost)
+        ]
+
     def _seed_first_user_message(
         self,
         task_config: TaskConfig,
@@ -1434,6 +1531,25 @@ class TrialRunner:
             )
         )
 
+    def _record_actor_spend(self, result: GenerationResult) -> None:
+        """Fold a non-agent actor's usage/cost/generation-ids into the trial
+        :class:`Metrics` via a :class:`_TrialMetricsSink`.
+
+        Guarded on non-empty ``usage.calls``: scripted / mock replies carry an
+        empty ``calls`` tuple, so the guard makes the fold a no-op for them and
+        only real LLM-backed actor spend reaches ``api_calls`` / ``cost_usd`` /
+        ``usage`` / ``openrouter_generation_ids``. Reusing the trial sink also
+        fires ``trial_progress`` so the live cost total tracks the final
+        ``metrics.yaml``.
+        """
+        if not result.usage.calls:
+            return
+        _TrialMetricsSink(
+            self.metrics,
+            events=self._events,
+            trial_id=f"{self.task_id}:{self.trial_index}",
+        ).record_generation(result)
+
     def _bootstrap_via_simulator(self) -> tuple[str, list[ToolCall]]:
         """Synthesise turn 0 by dispatching the user simulator against the agent's
         opening line, or a canned agent greeting when the task declared none.
@@ -1496,6 +1612,7 @@ class TrialRunner:
                         "a blank opening cannot seed the conversation."
                     )
                 self.logger.debug("User simulator generated first message")
+                self._record_actor_spend(first_user_result)
                 return self._run_user_tool_calls(
                     first_user_result.text, first_user_result.tool_calls
                 )
@@ -1845,6 +1962,7 @@ class TrialRunner:
             outcome=UserReplyOutcome.DELIVERED,
             rejected=user_result.guard_rejections,
         )
+        self._record_actor_spend(user_result)
         return user_result
 
     def _run_user_tool_steps(
@@ -2055,9 +2173,9 @@ class TrialRunner:
         return f"{reply_text}\n\n" + "\n".join(results_text), executed
 
 
-class _AgentMetricsSink(MetricsSink):
-    """Accumulates the agent's per-call usage/cost and tool counts into the
-    trial :class:`Metrics`, preserving the original field-wise semantics.
+class _TrialMetricsSink(MetricsSink):
+    """Accumulates an in-trial actor's per-call usage/cost and tool counts into
+    the trial :class:`Metrics`, preserving the original field-wise semantics.
 
     ``Usage.__add__`` is field-wise; ``calls`` concatenate (preserving per-call
     cost_source / latency_s); ``provider_raw`` is "latest wins" per the Usage

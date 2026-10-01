@@ -965,8 +965,27 @@ class Orchestrator:
         )
 
     @staticmethod
+    def _trial_total_spend_usd(trajectory: Trajectory) -> float:
+        """Total LLM spend for a trial across every actor role.
+
+        ``metrics.cost_usd`` already sums the in-trial actors (agent + user
+        simulator); the rubric judge runs its own LLM outside the trial loop,
+        so its cost lives on ``grade.judge_usage`` and is added here.
+        """
+        total = trajectory.metrics.cost_usd or 0.0
+        grade = trajectory.grade
+        if grade is not None and grade.judge_usage is not None:
+            total += grade.judge_usage.cost_usd
+        return total
+
+    @staticmethod
     def _collect_existing_cost(output_dir: Path) -> float:
-        """Aggregate already-recorded trial cost from output artifacts."""
+        """Aggregate already-recorded cross-role trial cost from output artifacts.
+
+        Sums each trial's ``metrics.yaml`` ``cost_usd`` (agent + user simulator)
+        and its ``grade.yaml`` ``judge_usage.cost_usd``, so a resumed run seeds
+        its budget with the full cross-role spend already on disk.
+        """
         total_cost = 0.0
         trials_root = output_dir / "trials"
         if not trials_root.exists():
@@ -974,12 +993,26 @@ class Orchestrator:
 
         import yaml
 
+        from tolokaforge.core.output_writer import GRADE_FILENAME
+
+        logger = get_logger("orchestrator")
         for metrics_path in trials_root.glob("*/*/metrics.yaml"):
             try:
                 with open(metrics_path) as f:
                     metrics = yaml.safe_load(f) or {}
                 total_cost += float(metrics.get("cost_usd", 0.0) or 0.0)
-            except Exception:
+                grade_path = metrics_path.parent / GRADE_FILENAME
+                if grade_path.exists():
+                    with open(grade_path) as f:
+                        grade = yaml.safe_load(f) or {}
+                    judge_usage = grade.get("judge_usage") or {}
+                    total_cost += float(judge_usage.get("cost_usd", 0.0) or 0.0)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping unreadable trial bundle during resume cost seed",
+                    metrics_path=str(metrics_path),
+                    error=str(exc),
+                )
                 continue
         return total_cost
 
@@ -2433,11 +2466,12 @@ class Orchestrator:
         """Refuse a spend cap the run has no way to enforce.
 
         A cost limit stops the run when accumulated spend crosses it, and the
-        accumulator adds ``trajectory.metrics.cost_usd or 0.0`` — so a trial
-        the table cannot price contributes **nothing**. A run whose model has
-        no pricing row therefore charges zero against its cap for every trial,
-        and the cap can never fire however much the run actually spends. The
-        operator asked for a bound and silently does not have one.
+        accumulator adds each trial's cross-role spend (:meth:`_trial_total_spend_usd`)
+        — so a trial the table cannot price contributes **nothing** for that
+        actor. A run whose agent model has no pricing row therefore charges zero
+        against its cap for every trial, and the cap can never fire however much
+        the run actually spends. The operator asked for a bound and silently
+        does not have one.
 
         Only refused when a cap is actually set. Without one an unpriced model
         is a reporting gap, which ``_warn_on_unreliable_pricing`` already
@@ -3309,7 +3343,7 @@ class Orchestrator:
                             trial_result = future.result()
                             trajectory = trial_result.trajectory
                             self.results.append(trajectory)
-                            trial_cost = trajectory.metrics.cost_usd or 0.0
+                            trial_cost = self._trial_total_spend_usd(trajectory)
                             total_cost_usd += trial_cost
                             if budget is not None:
                                 budget.record_generation_cost(trial_cost)
@@ -3734,7 +3768,7 @@ class Orchestrator:
                     trial_result = trial_executor.execute(spec, task)
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
-                    trial_cost = trajectory.metrics.cost_usd or 0.0
+                    trial_cost = self._trial_total_spend_usd(trajectory)
                     total_cost_usd += trial_cost
 
                     if self._is_retryable_trajectory(trajectory):

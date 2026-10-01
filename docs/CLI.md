@@ -673,11 +673,11 @@ _TOLOKAFORGE_COMPLETE=fish_source tolokaforge > ~/.config/fish/completions/tolok
 
 ## Cost and time limits
 
-Two flags on `tolokaforge run` cap what the run may spend. Any single cap crossing triggers a graceful shutdown: `Orchestrator.run()` stops enqueuing new trials, in-flight trials complete, `LIMIT_HIT.json` lands under the run directory, and the [end banner](#end-banner) switches to the `⏸ Run stopped (<reason>)` variant.
+Two flags on `tolokaforge run` cap what the run may spend. The cost cap bounds the run's total spend across all actor roles — agent, user simulator, and rubric judge — not the agent's alone. Any single cap crossing triggers a graceful shutdown: `Orchestrator.run()` stops enqueuing new trials, in-flight trials complete, `LIMIT_HIT.json` lands under the run directory, and the [end banner](#end-banner) switches to the `⏸ Run stopped (<reason>)` variant.
 
 | Flag | Argument | Effect |
 |------|----------|--------|
-| `--cost-limit` | float (USD) | Caps cumulative agent cost. Overrides `compute.max_budget_usd` in the run config (mirrors `--workers`). When set, the `--display=rich` bottom-bar `$cost` segment renders in `warn` (yellow) at ≥ 80 % of the budget and `error` (bold red) at ≥ 100 % — see [§ THEME](#theme--semantic-token-palette). |
+| `--cost-limit` | float (USD) | Caps cumulative spend across all actor roles — agent, user simulator, and rubric judge. Overrides `compute.max_budget_usd` in the run config (mirrors `--workers`). When set, the `--display=rich` bottom-bar `$cost` segment renders in `warn` (yellow) at ≥ 80 % of the budget and `error` (bold red) at ≥ 100 % — see [§ THEME](#theme--semantic-token-palette). |
 | `--time-limit` | duration string | Caps wall-clock execution time. Accepted units: `s`, `m`, `h`, `d`. Compound and fractional forms are accepted — `30m`, `2h`, `1h30m`, `90s`, `1d12h`, `1.5h`. Bare numbers (no unit), empty strings, negatives, and unknown units fail with `click.BadParameter` naming the offending token. The clock starts on the first `record_*` call inside the wait loop — task-loading time (which may be tens of seconds on large projects) does not count against the budget. |
 
 Composing the two flags is expected — `--cost-limit 5 --time-limit 30m` builds a composite budget and the first hit wins:
@@ -686,7 +686,7 @@ Composing the two flags is expected — `--cost-limit 5 --time-limit 30m` builds
 tolokaforge run --config run.yaml --cost-limit 5 --time-limit 30m
 ```
 
-Resume semantics: on `tolokaforge run --resume` the cost budget seeds from prior-invocation spend (dollars already burned still count), while the time counter restarts for each invocation.
+Resume semantics: on `tolokaforge run --resume` the cost budget seeds from prior-invocation spend across every actor role — each trial's recorded agent + user cost (`metrics.yaml`) plus its rubric-judge cost (`grade.yaml`) — so all dollars already burned still count, while the time counter restarts for each invocation.
 
 ### `LIMIT_HIT.json` marker
 

@@ -72,7 +72,11 @@ class BudgetTracker(Protocol):
 
 
 class CostBudget:
-    """Fires when cumulative agent cost crosses ``limit_usd``.
+    """Fires when cumulative spend across all actor roles crosses ``limit_usd``.
+
+    The tracked total sums every actor's cost — agent, user simulator, and
+    rubric judge — so the cap bounds the whole run's spend, not the agent's
+    alone.
 
     ``initial_cost_usd`` seeds the tracker for resumed runs so cost
     already spent on prior invocations counts against the cap.
