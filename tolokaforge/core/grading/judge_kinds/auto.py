@@ -28,10 +28,10 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.judge_kinds.multi_turn import MultiTurnRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds.single_shot import SingleShotRubricJudgeKind
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
+    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
     from tolokaforge.core.grading.judge_result import JudgeResult
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
@@ -63,10 +63,7 @@ class AutoRubricJudgeKind:
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
-        disable_knowledge_search: bool,
-        custom_system_prompt: str | None,
-        include_agent_system_prompt: bool,
-        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
+        options: JudgeTrialOptions,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -104,10 +101,7 @@ class AutoRubricJudgeKind:
             state_diff=state_diff,
             judge_model_config=judge_model_config,
             judge_model_provider=judge_model_provider,
-            disable_knowledge_search=disable_knowledge_search,
-            custom_system_prompt=custom_system_prompt,
-            include_agent_system_prompt=include_agent_system_prompt,
-            judge_snippet_chars=judge_snippet_chars,
+            options=options,
             kind_config=None,
             logger=logger,
         )

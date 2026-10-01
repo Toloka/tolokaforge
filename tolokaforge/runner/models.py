@@ -2135,12 +2135,18 @@ class JudgeCustomization(BaseModel):
     ``null`` to re-include over a project ``false``.
 
     ``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:
-    the first that many characters (``200`` by default, the cut every judge read
-    before the field existed), or ``null`` for whole documents — what a ``bm25``
-    task whose rubric reads a document's exact wording needs. Not tri-state:
-    ``null`` is a value, so a task resets a project's figure by writing ``200``.
-    Left off the dump at its default (:attr:`OMITTED_AT_DEFAULT`), so a task that
-    declares nothing serialises as before and an older image still accepts it.
+    the first that many characters (``200`` by default), or ``null`` for whole
+    documents — what a ``bm25`` task whose rubric reads a document's exact wording
+    needs. Not tri-state: ``null`` is a value, so a task resets a project's figure
+    by writing ``200``. Left off the dump at its default
+    (:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises
+    without it and an older image, which forbids a key it does not declare,
+    accepts it.
+
+    :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
+    a customization into the
+    :class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind
+    receives.
     """
 
     OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"judge_snippet_chars"})
@@ -2177,17 +2183,6 @@ class JudgeCustomization(BaseModel):
                 "judge prompt."
             )
         return value
-
-
-def judge_snippet_chars_of(customization: JudgeCustomization | None) -> int | None:
-    """The snippet length the judge's ``search_kb`` shows under this customization.
-
-    A task with no ``customization`` block reads the default, as does a block that
-    leaves the key unset; ``null`` means whole documents.
-    """
-    if customization is None:
-        return DEFAULT_JUDGE_SNIPPET_CHARS
-    return customization.judge_snippet_chars
 
 
 class LLMJudgeConfig(BaseModel):

@@ -11,8 +11,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from tolokaforge.core.grading.judge_kinds.options import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_result import JudgeResult
-from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.transcript_wire import split_leading_system_message
@@ -34,12 +34,8 @@ def grade_llm_judge(
     substrate: GradingSubstrate,
     judge_kind: JudgeKind,
     judge_model_provider: JudgeModelProvider,
-    disable_knowledge_search: bool,
-    custom_system_prompt: str | None,
-    include_agent_system_prompt: bool,
     kind_config: Mapping[str, Any] | None,
     llm_messages: list[dict[str, Any]],
-    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
     judge_model_config: ModelConfig,
     extra_read_tools: list[DelegatingReadTool],
     state_diff: str | None,
@@ -64,10 +60,10 @@ def grade_llm_judge(
     ``judge_kind`` is the resolved :class:`JudgeKind` seam the runner
     supplies — a plug-in impl (``single_shot_rubric`` in the shipping
     config, a downstream chunked / agentic / jury kind alongside) that
-    owns the actual grade dispatch. Per-trial customization (KB gate,
-    custom system-prompt, include-agent-system-prompt) rides alongside
-    on the ``evaluate`` kwargs — the composite forwards them so the kind
-    constructs the judge instance itself.
+    owns the actual grade dispatch. The trial's per-trial customization
+    reaches the kind as one :class:`JudgeTrialOptions`, resolved here from
+    ``config.customization`` (:func:`resolve_judge_trial_options`), so every
+    caller of this function grades a task under the same options.
 
     Fail-loud contract: any judge malfunction — malformed
     ``submit_report`` past retries, budget/turn exhaustion, or a
@@ -97,10 +93,7 @@ def grade_llm_judge(
         state_diff=state_diff,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        disable_knowledge_search=disable_knowledge_search,
-        custom_system_prompt=custom_system_prompt,
-        include_agent_system_prompt=include_agent_system_prompt,
-        judge_snippet_chars=judge_snippet_chars,
+        options=resolve_judge_trial_options(config.customization),
         kind_config=kind_config,
         logger=logger,
     )
