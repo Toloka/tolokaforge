@@ -882,7 +882,11 @@ default), `false` omits it (evidence gating, distinct from `system_prompt`'s
 wording). `judge_snippet_chars` (`int >= 1 | None`, default `200`) is how much of
 each hit's content the judge's `search_kb` shows: the first that many characters,
 or the whole document for `null`; it is not tri-state, so a task writes `200` to
-undo a project figure. Omitting the block leaves the judge at the faithful default. All fields
+undo a project figure. It does not apply to a TypeSense task's `search_policy`
+passthrough (`DelegatingReadTool`), which renders the agent's own tool output
+verbatim. Omitting the block leaves the judge at the faithful default. Every judge
+kind receives these settings resolved as one `JudgeTrialOptions` (see
+[JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields
 layer project→task (a project default under
 `grading_defaults.llm_judge.customization`, task wins; `system_prompt: null`
 resets a project prompt; `include_agent_system_prompt: true` (explicit
