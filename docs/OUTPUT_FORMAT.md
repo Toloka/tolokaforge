@@ -1777,6 +1777,8 @@ custom_prompt_source: null          # "recorded" | "override" | null (default pr
 judge_prompt_source: bundle         # "bundle" | null — bundle-recorded composed prompt path
 include_agent_system_prompt: true   # whether the agent policy was embedded in the judge's evidence
 agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
+judge_snippet_chars: 200            # characters of each hit the judge's search_kb showed; null = whole documents
+judge_snippet_chars_source: null    # "recorded" | "override" | null (defaulted to 200)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
 
@@ -1803,6 +1805,11 @@ when it carries its own `llm_judge.customization.include_agent_system_prompt`, a
 `agent_prompt_source` is `null` exactly when the gating defaulted to include (no
 recorded value, no override). See
 [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#agent-policy-evidence-gating).
+
+`judge_snippet_chars` / `judge_snippet_chars_source` resolve the same way: a
+`--grading` override sets the length only when it carries its own
+`llm_judge.customization.judge_snippet_chars` (`null` included), and
+`judge_snippet_chars_source` is `null` exactly when the length defaulted to `200`.
 
 ### `replay_report.yaml`
 
