@@ -26,6 +26,7 @@ from tolokaforge.core.llm.litellm_params import (
     overlay_key_mismatches,
     overlay_stray_entries,
 )
+from tolokaforge.core.llm.openrouter_headers import is_openrouter_provider
 from tolokaforge.core.llm.presets import unclaimed_route_families
 from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.llm.proxy import ProxyConfigError
@@ -181,7 +182,7 @@ def _function_calling_issues(base: str, provider: str, name: str) -> list[Valida
         # `None` would quietly stop consulting the declaration.
         fc_support = True
     if fc_support is False:
-        severity = Severity.WARNING if provider.lower().startswith("openrouter") else Severity.ERROR
+        severity = Severity.WARNING if is_openrouter_provider(provider) else Severity.ERROR
         return [
             ValidationIssue(
                 severity=severity,

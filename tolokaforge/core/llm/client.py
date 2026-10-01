@@ -58,8 +58,8 @@ from tolokaforge.core.llm.gateway_route import (
 )
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
 from tolokaforge.core.llm.openrouter_headers import (
+    configure_openrouter_default_headers,
     is_openrouter_provider,
-    openrouter_default_headers,
 )
 from tolokaforge.core.llm.params_policy import RuleAction
 from tolokaforge.core.llm.presets import build_capabilities
@@ -750,7 +750,7 @@ class LLMClient:
                     self._proxy = None
 
         self._openrouter_headers = (
-            openrouter_default_headers() if is_openrouter_provider(self.provider) else {}
+            configure_openrouter_default_headers() if is_openrouter_provider(self.provider) else {}
         )
         if self._proxy is not None:
             self.logger.info(

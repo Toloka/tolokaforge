@@ -7,7 +7,11 @@ from enum import Enum
 
 import litellm
 
-__all__ = ["OpenRouterDefaultHeader", "is_openrouter_provider", "openrouter_default_headers"]
+__all__ = [
+    "OpenRouterDefaultHeader",
+    "is_openrouter_provider",
+    "configure_openrouter_default_headers",
+]
 
 
 class OpenRouterDefaultHeader(str, Enum):
@@ -18,10 +22,10 @@ class OpenRouterDefaultHeader(str, Enum):
 
 def is_openrouter_provider(provider: str) -> bool:
     """Whether a model config's ``provider`` sends the engine's OpenRouter defaults."""
-    return provider.startswith("openrouter")
+    return provider.lower().startswith("openrouter")
 
 
-def openrouter_default_headers() -> dict[str, str]:
+def configure_openrouter_default_headers() -> dict[str, str]:
     """``litellm.openai_headers`` plus every default it does not already set; the
     global is set to the result."""
     existing_headers = dict(getattr(litellm, "openai_headers", {}) or {})

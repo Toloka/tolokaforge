@@ -815,7 +815,7 @@ class TestSessionHeader:
     ) -> None:
         """The OpenRouter defaults are seeded from ``litellm.openai_headers``, whose
         keys no construction-time refusal sees."""
-        monkeypatch.setattr(litellm, "openai_headers", {SESSION_HEADER: "stale"})
+        monkeypatch.setattr(litellm, "openai_headers", {SESSION_HEADER: "stale"}, raising=False)
         client = self._client(
             install_secrets,
             monkeypatch,
@@ -901,6 +901,13 @@ class TestSessionHeaderConflicts:
                 {},
                 "the engine's OpenRouter default headers",
                 id="openrouter-default",
+            ),
+            pytest.param(
+                "OpenRouter",
+                "x-title",
+                {},
+                "the engine's OpenRouter default headers",
+                id="openrouter-default-mixed-case-provider",
             ),
         ],
     )

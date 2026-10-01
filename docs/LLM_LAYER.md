@@ -1441,9 +1441,12 @@ where the mechanism is genuinely per-provider:
   (`OPENROUTER_BASE_URL` and `OPENROUTER_API_BASE`) into one pinned value. The
   single-field `api_base_env` schema cannot express dual-env coordination; a
   schema addition just for one provider is over-engineering.
-- **`_openrouter_headers`** (`HTTP-Referer` / `X-Title`) and
-  **`provider_order`** (upstream pinning) consume config off
-  `ModelConfig.openrouter`, not transport bindings. They stay engine code.
+- **`configure_openrouter_default_headers()`**
+  ([`openrouter_headers.py`](../tolokaforge/core/llm/openrouter_headers.py))
+  sets `HTTP-Referer`, `X-Title` and `X-Data-Collection-Opt-Out` from the
+  `TOLOKAFORGE_OPENROUTER_REFERER` / `_TITLE` / `_OPT_OUT` env vars, and
+  **`provider_order`** (upstream pinning) consumes `ModelConfig.openrouter`.
+  Neither is a transport binding; both stay engine code.
 - **Mock's `if self.provider == "mock": return self._mock_generate(...)`
   early-return** — mock's binding declares `unroutable: true` (captures the
   proxy behaviour), but the branch that never constructs kwargs stays
@@ -2689,11 +2692,11 @@ consumers, not just the runner.
 
 ### Session header
 
-A model config's `session: {header: <name>}` ([CONFIG.md](CONFIG.md)) makes every
-request that model sends carry `<name>` with a conversation id, for backends that
-keep one conversation on one replica so its prefix cache stays warm. It is a property
-of the model config, not of the gateway: the engine adds the header to every
-request's `extra_headers`, gateway on or off. Wire delivery is pinned for litellm's
+A model config's `session: {header: <name>}` ([CONFIG.md](CONFIG.md)) makes the
+engine add `<name>` with a conversation id to every request that model sends, for
+backends that keep one conversation on one replica so its prefix cache stays warm.
+It is a property of the model config, not of the gateway: the engine adds the header
+to every request's `extra_headers`, gateway on or off. Wire delivery is pinned for litellm's
 `openai` and `openrouter` transports by
 [`tests/canonical/test_litellm_extra_headers_contract.py`](../tests/canonical/test_litellm_extra_headers_contract.py).
 
