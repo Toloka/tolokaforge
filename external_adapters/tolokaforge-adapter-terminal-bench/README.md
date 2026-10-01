@@ -149,6 +149,45 @@ CLI does not go through litellm; it reaches OpenRouter through the
 direct-vendor handler, read the blank vendor key, and 401. The engine loop
 keeps the prefix, which is what litellm needs to route.
 
+### Turn-loop shape, under the engine loop
+
+`interaction_mode` picks whether a trial dispatches a user simulator.
+`conversational` (the default) builds one and it speaks; `agent_only` builds
+none, and the trial ends when the agent takes a turn with no tool call, or at
+`max_turns` / the episode timeout. A Terminal-Bench task has no user to consult
+— its whole instruction is delivered as turn 0 — so `agent_only` is the shape
+the benchmark actually describes, and it removes the simulator's model cost.
+
+Two things go with it. The task's instruction becomes the only opener, and a
+task whose instruction is empty fails at run start rather than degrading into a
+blank first turn. And the agent needs to know that a message with no tool call
+ends the trial, which is what the shipped `reasoning_agent` contract says —
+pair `agent_only` with `agent_prompt_contract` (or a preset that defaults one)
+unless you want trials that only ever end at their turn budget.
+
+`agent_only` is refused under a coding-harness CLI: the CLI drives its own
+trial and the engine runs no turn loop there.
+
+### The agent's prompt, under the engine loop
+
+Two params author the prompt a Terminal-Bench task gives the engine loop, and
+they are mutually exclusive — supplying both is refused.
+
+`agent_system_prompt_file` names a file whose contents become the whole prompt,
+reproduced byte for byte. It is the replay surface: use it to reproduce a run
+whose prompt is already fixed.
+
+`agent_prompt_contract` names a reply contract instead — how the agent should
+answer each turn, composed ahead of the task's own instruction rather than
+replacing it. A bare name selects one the engine ships (`reasoning_agent`); any
+other value is a path. See
+[`docs/CONFIG.md`](../../docs/CONFIG.md) § `agent_prompt_contract:` and
+[ADR-0052](../../docs/adr/0052-agent-reply-contract.md).
+
+With neither param, the adapter leaves `policies.agent_system_prompt` unset, so
+the task falls through to the engine's own prompt chain and a model preset's
+`default_agent_prompt_contract` can reach the trial.
+
 ### Image layering
 
 The task's image and the CLI install are separate layers, so a task rebuild

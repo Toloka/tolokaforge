@@ -63,6 +63,7 @@ from tolokaforge.core.llm.presets import (
 #: Each maps to a two-letter column code in the compact table.
 KNOBS: dict[str, str] = {
     "default_max_turns": "MT",
+    "default_agent_prompt_contract": "PC",
     "empty_retry_count": "ER",
     "max_context_tokens": "CT",
     "context_watermark": "CW",
@@ -77,6 +78,10 @@ KNOB_IMPACT: dict[str, str] = {
     "default_max_turns": (
         "turn budget falls back to the engine-wide DEFAULT_MAX_TURNS for tasks "
         "that declare none, so a granular-edit model runs out of turns mid-task"
+    ),
+    "default_agent_prompt_contract": (
+        "a solo agent gets no reply contract, so a model that does not narrate "
+        "unprompted loses its running picture of the task between turns"
     ),
     "empty_retry_count": (
         "a provider-side empty completion terminates the trial on the first "

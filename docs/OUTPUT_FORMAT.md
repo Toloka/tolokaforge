@@ -337,7 +337,7 @@ Computed by the orchestrator at trial-start via
 | `prompt_policy` | `none` \| `dict_map_hints` | policy registry |
 | `content_policy` | `openai` \| `anthropic` | policy registry |
 | `response_policy` | `standard` \| `unwrap_input` \| `array_dict_map` | policy registry |
-| `reasoning_codec` | `none` \| `anthropic` \| `openai` | policy registry |
+| `reasoning_codec` | `none` \| `anthropic` \| `openai` \| `openai_summary_replay` \| `gemini` | policy registry |
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |
 | `message_assembly_policy` | `null` \| `nova` (only `aws_nova` / `aws_nova_openrouter` carry `nova`; every other preset resolves to `null`) | policy registry |
 | `assistant_text_policy` | `passthrough` (every shipped preset today; out-of-tree subclasses land via the `--presets-file` overlay) | policy registry |
@@ -757,6 +757,17 @@ too. Consumers that need per-call attribution read `usage.calls`; consumers that
 need "did this trial reach OpenRouter at all" read the flat list. See
 [LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter generation ids.
 
+`reasoning_billed_not_captured` counts the calls where the provider charged
+reasoning tokens and the preset's `reasoning_codec` surfaced no reasoning at
+all — the model deliberated somewhere the codec does not read.
+`reasoning_replay_dropped` is `true` when reasoning *was* captured and then not
+sent back on the next request, so the model saw a history in which it had never
+reasoned. Neither is automatically a defect: OpenAI and Grok bill for an opaque
+`reasoning.encrypted` blob nothing can surface, and OpenAI refuses echoed
+reasoning. Both are how that case is told apart from the one that cost
+`moonshotai/kimi-k2.7-code` roughly half its Terminal-Bench score. See
+[LLM_LAYER.md](LLM_LAYER.md:1) § Reasoning that never reaches the model back.
+
 `cost_cache_rate_fallback` is `true` when at least one of this trial's calls
 was priced off the bundled table (`cost_source: local`), reported non-zero
 `cache_read_input_tokens` / `cache_creation_input_tokens`, and resolved to a
@@ -885,6 +896,8 @@ harness_stdout_dialect: null       # non-null only when a coding-harness CLI rep
 harness_usage_source: null         # non-null only when the tokens were measured on the wire, not printed by the CLI
 harness_reported_cost_usd: null    # what that CLI said it billed, where it said anything
 cost_cache_rate_fallback: false
+reasoning_billed_not_captured: 0   # calls billed for reasoning the codec surfaced none of
+reasoning_replay_dropped: false    # reasoning was extracted and then never sent back
 tool_calls: 7
 tool_success_rate: 1.0
 stuck_detected: false

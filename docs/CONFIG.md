@@ -519,6 +519,8 @@ initial_state:
 
 system_prompt: null
 
+agent_prompt_contract: null           # optional — a shipped contract name or a file beside the task
+
 interaction_mode: "conversational"   # or "agent_only" — see below
 
 tools:
@@ -556,6 +558,33 @@ metadata:
 
 grading: "grading.yaml"
 ```
+
+### `agent_prompt_contract:` — how the agent is asked to reply
+
+Names the *reply contract* placed ahead of the task's own prompt: how to answer
+each turn, as opposed to what the work is. A bare name selects a contract the
+engine ships (`reasoning_agent` today); anything else is read as a path relative
+to the task directory, the same rule `system_prompt` follows, so a pack may ship
+its own. An unknown name is refused at run start rather than ignored. `null`
+(the default) leaves the prompt exactly as it was.
+
+The contract is composed, not substituted — it opens the prompt and the task's
+own document follows it. An inline `policies.agent_system_prompt` still wins
+outright and is reproduced byte for byte, so byte-exact replay is unaffected.
+
+The shipped `reasoning_agent` contract asks the agent to write, in the same turn
+as its tool call, what the last output showed, what remains, and what it expects
+the next command to produce, and to finish by replying with no tool call once it
+has verified the work. It is written for a task the agent works alone, where the
+grader reads the container and never the transcript, and for models that stop
+narrating when nothing rewards it. A model preset can supply it by default for
+`agent_only` tasks — see [LLM_LAYER.md](LLM_LAYER.md) § Preset-level reply
+contract. Background and the measurements behind the text:
+[ADR-0052](adr/0052-agent-reply-contract.md).
+
+Selecting a contract changes what the model is told, so it changes what a score
+means: runs with and without one are not comparable. The field is written into
+each trial's `task_config.json` for that reason.
 
 ### `interaction_mode:` — turn-loop shape
 

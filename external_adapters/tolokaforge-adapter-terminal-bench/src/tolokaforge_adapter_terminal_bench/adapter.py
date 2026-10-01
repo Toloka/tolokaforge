@@ -88,6 +88,13 @@ AGENT_TOOL_BASH_SESSION = "bash_session"
 AGENT_TOOLS: tuple[str, ...] = (AGENT_TOOL_BASH, AGENT_TOOL_BASH_SESSION)
 """Values ``adapter_params.agent_tool`` accepts, default first."""
 
+_INTERACTION_MODES: frozenset[str] = frozenset({"conversational", "agent_only"})
+"""Values ``adapter_params.interaction_mode`` accepts.
+
+Mirrors ``TaskConfig.interaction_mode`` rather than re-deriving it: a mode the
+engine grows reaches a run here by being added to this set.
+"""
+
 _REMOVED_PARAMS: dict[str, str] = {
     "runner_task_dir": (
         "task files are staged under `staging_root` (default: a "
@@ -229,6 +236,17 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     f"terminal-bench adapter: agent_system_prompt_file "
                     f"{prompt_file!r} is empty — omit the key to use the default"
                 )
+        # Names a reply contract the engine resolves, rather than a prompt this
+        # adapter writes. Left unset the adapter supplies no prompt at all, so a
+        # model preset's default can reach the task; an explicit
+        # ``agent_system_prompt_file`` still wins, for byte-exact replay.
+        self._agent_prompt_contract: str | None = params.get("agent_prompt_contract")
+        if self._agent_prompt_contract and self._agent_system_prompt is not None:
+            raise ValueError(
+                "terminal-bench adapter: set agent_system_prompt_file or "
+                "agent_prompt_contract, not both — the first supplies the whole "
+                "prompt verbatim and the second asks the engine to compose one"
+            )
         self.task_id_filter: list[str] | None = params.get("task_ids")
         self.network_policy = NetworkPolicy(
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
@@ -271,6 +289,32 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 f"{ENGINE_LOOP!r} — a coding-harness CLI ends its own trial when the "
                 "process exits, so there is no turn loop for a completion signal to end."
             )
+        self.interaction_mode: str = str(params.get("interaction_mode", "conversational"))
+        if self.interaction_mode not in _INTERACTION_MODES:
+            raise ValueError(
+                f"terminal-bench adapter: interaction_mode "
+                f"{self.interaction_mode!r} is not one of "
+                f"{', '.join(sorted(_INTERACTION_MODES))}."
+            )
+        if self.interaction_mode == "agent_only" and not (
+            self._agent_prompt_contract or self._agent_system_prompt
+        ):
+            raise ValueError(
+                "terminal-bench adapter: interaction_mode 'agent_only' needs a prompt "
+                "that tells the agent how the episode ends — set agent_prompt_contract "
+                "(or agent_system_prompt_file). Under this mode a turn carrying no tool "
+                "call ends the trial at whatever index it happens on, turn 1 included, "
+                "graded against an untouched container; the adapter's own default prompt "
+                "says nothing about that, so a model that opens with a plan scores zero "
+                "and the bundle looks like a completed trial."
+            )
+        if self.interaction_mode == "agent_only" and self.agent_harness != ENGINE_LOOP:
+            raise ValueError(
+                f"terminal-bench adapter: interaction_mode 'agent_only' requires "
+                f"agent_harness {ENGINE_LOOP!r} — under a coding-harness CLI the "
+                "engine runs no turn loop, so there is no user turn to suppress."
+            )
+
         self.agent_provider_env: dict[str, str] = _resolve_provider_env(
             self.harness_spec.provider_env if self.harness_spec else {},
             params.get("agent_provider_env") or {},
@@ -393,7 +437,9 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 user={"enabled": []},
             ),
             grading="__adapter__",
-            policies={"agent_system_prompt": self.get_system_prompt(task_id)},
+            policies=self._agent_policies(task_id),
+            agent_prompt_contract=self._agent_prompt_contract,
+            interaction_mode=self.interaction_mode,  # type: ignore[arg-type]
             environment_manifest=self._environment_patch(task_id),
             adapter_settings={
                 "difficulty": meta.difficulty,
@@ -588,6 +634,21 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             f"Use the {self.agent_tool} tool to execute commands. "
             "Fix the issues described in the user message."
         )
+
+    def _agent_policies(self, task_id: str) -> dict[str, Any]:
+        """The task's ``policies`` block, carrying a prompt only when one was asked for.
+
+        ``build_system_prompt`` returns ``policies["agent_system_prompt"]``
+        before it considers anything else, so the key is written only when the
+        run supplied a prompt file — the one case where a verbatim prompt is
+        the point. Absent, every lower-priority source stays reachable,
+        including a model preset's default contract.
+        """
+        if self._agent_system_prompt is not None:
+            return {"agent_system_prompt": self._agent_system_prompt}
+        if self._agent_prompt_contract is not None:
+            return {}
+        return {"agent_system_prompt": self.get_system_prompt(task_id)}
 
     # -- grading config -------------------------------------------------------
 

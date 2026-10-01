@@ -21,6 +21,7 @@
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "test",
   "description": "Open a simple HTML page and extract information from it.\n\nThis is a minimal test task for browser functionality testing.\n",
   "environment_manifest": null,

@@ -21,6 +21,7 @@
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "test",
   "description": "Calculate 17 * 23 and save the result to a file called result.txt.\n\nThis is a minimal test task designed for fast test execution.\n",
   "environment_manifest": null,

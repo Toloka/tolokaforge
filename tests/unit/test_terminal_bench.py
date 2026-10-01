@@ -3244,3 +3244,168 @@ class TestTerminalBenchAgentCompletionTool:
                 agent_harness="claude-code",
                 agent_model="m",
             )
+
+
+class TestTerminalBenchAgentPromptContract:
+    """``adapter_params.agent_prompt_contract`` names a contract the engine composes.
+
+    The adapter's own prompt is written into ``policies["agent_system_prompt"]``,
+    which ``build_system_prompt`` returns before it considers anything else. So
+    the adapter has to stand aside for any engine-side default to be reachable
+    at all — that, rather than the new param, is the behavioural change here.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    TASK_ID = "echo-hello"
+
+    def test_default_emission_is_unchanged(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.agent_prompt_contract is None
+        assert "agent_system_prompt" in task.policies
+
+    def test_selecting_a_contract_stops_the_adapter_writing_a_prompt(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="reasoning_agent")
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.agent_prompt_contract == "reasoning_agent"
+        assert (
+            "agent_system_prompt" not in task.policies
+        ), "the highest-priority key must be absent, or no contract can be reached"
+
+    def test_the_contract_reaches_the_built_prompt(self, fixture_dir, tmp_path):
+        from tolokaforge.core.agent_prompt_contract import CONTRACTS
+        from tolokaforge.core.system_prompt import build_system_prompt
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="reasoning_agent")
+        task_id = self.TASK_ID
+        task = adapter.get_task(task_id)
+
+        built = build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)
+
+        assert built.startswith(CONTRACTS["reasoning_agent"])
+
+    def test_a_verbatim_prompt_file_still_wins(self, fixture_dir, tmp_path):
+        prompt = tmp_path / "verbatim.md"
+        prompt.write_text("EXACTLY THIS")
+        adapter = self._adapter(fixture_dir, tmp_path, agent_system_prompt_file=str(prompt))
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.policies["agent_system_prompt"] == "EXACTLY THIS"
+
+    def test_asking_for_both_is_refused_at_construction(self, fixture_dir, tmp_path):
+        prompt = tmp_path / "verbatim.md"
+        prompt.write_text("EXACTLY THIS")
+
+        with pytest.raises(ValueError, match="not both"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                agent_system_prompt_file=str(prompt),
+                agent_prompt_contract="reasoning_agent",
+            )
+
+    def test_an_unknown_contract_name_fails_when_the_prompt_is_built(self, fixture_dir, tmp_path):
+        from tolokaforge.core.agent_prompt_contract import UnknownAgentPromptContractError
+        from tolokaforge.core.system_prompt import build_system_prompt
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="no_such_thing")
+        task_id = self.TASK_ID
+        task = adapter.get_task(task_id)
+
+        with pytest.raises(UnknownAgentPromptContractError):
+            build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)
+
+
+class TestTerminalBenchInteractionMode:
+    """``adapter_params.interaction_mode`` picks the turn-loop shape.
+
+    Default ``conversational``: a Terminal-Bench trial has always built a user
+    simulator, and the mode a run grades under must move because a config says
+    so, not because an adapter changed underneath it.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    TASK_ID = "echo-hello"
+
+    def test_the_default_is_conversational(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+
+        assert adapter.get_task(self.TASK_ID).interaction_mode == "conversational"
+
+    def test_a_run_may_ask_for_the_solo_shape(self, fixture_dir, tmp_path):
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            interaction_mode="agent_only",
+            agent_prompt_contract="reasoning_agent",
+        )
+
+        assert adapter.get_task(self.TASK_ID).interaction_mode == "agent_only"
+
+    def test_the_solo_shape_needs_a_prompt_that_names_the_exit(self, fixture_dir, tmp_path):
+        """Under this mode a tool-call-free turn ends the trial at any index.
+
+        The adapter's default prompt never says so, so a model that opens with
+        a plan ends at turn 1 against an untouched container and the bundle
+        reads as a completed trial.
+        """
+        with pytest.raises(ValueError, match=r"needs a prompt that tells the agent"):
+            self._adapter(fixture_dir, tmp_path, interaction_mode="agent_only")
+
+    def test_the_solo_shape_carries_the_opener_it_requires(self, fixture_dir, tmp_path):
+        """``AgentOnlyTurnPolicy`` has no simulator to synthesise turn 0 from."""
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            interaction_mode="agent_only",
+            agent_prompt_contract="reasoning_agent",
+        )
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.initial_user_message, "a solo task without an opener fails at run start"
+
+    def test_an_unknown_mode_is_refused(self, fixture_dir, tmp_path):
+        with pytest.raises(ValueError, match=r"interaction_mode"):
+            self._adapter(fixture_dir, tmp_path, interaction_mode="monologue")
+
+    def test_the_solo_shape_is_refused_under_a_cli_harness(self, fixture_dir, tmp_path):
+        """A CLI drives its own trial; there is no engine turn loop to reshape."""
+        with pytest.raises(ValueError, match=r"interaction_mode 'agent_only' requires"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                interaction_mode="agent_only",
+                agent_prompt_contract="reasoning_agent",
+                agent_harness="claude-code",
+                agent_model="m",
+            )

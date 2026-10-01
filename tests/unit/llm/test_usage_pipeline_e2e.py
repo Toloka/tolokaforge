@@ -154,3 +154,183 @@ class TestUsagePipelineEndToEnd:
         assert restored.usage.reasoning_tokens == 250
         assert restored.usage.cache_read_input_tokens == 800
         assert restored.usage.cache_creation_input_tokens == 1500
+
+
+class TestUpstreamProviderIsRecorded:
+    """Which machine served a call is part of the call record, not a re-run away.
+
+    A model slug on OpenRouter resolves to one of many upstreams of differing
+    quantisation, chosen per request. Without the name on the record, a
+    suspect result can only be re-sampled — and re-sampling draws afresh.
+    """
+
+    def test_the_serving_upstream_lands_on_the_call(self) -> None:
+        from tolokaforge.core.llm.usage import extract_upstream_provider
+
+        class _Response:
+            model_extra = {"provider": "CoreWeave"}
+
+        assert extract_upstream_provider(_Response()) == "CoreWeave"
+
+    def test_a_direct_route_names_no_upstream(self) -> None:
+        from tolokaforge.core.llm.usage import extract_upstream_provider
+
+        class _Response:
+            model_extra: dict[str, object] = {}
+
+        assert extract_upstream_provider(_Response()) is None
+
+    def test_a_response_without_the_attribute_is_not_an_error(self) -> None:
+        """Telemetry, not control flow — an unreadable shape reads as absent."""
+        from tolokaforge.core.llm.usage import extract_upstream_provider
+
+        assert extract_upstream_provider(object()) is None
+
+
+class TestReasoningLossIsObservable:
+    """Reasoning that never reaches the model back leaves a mark on the trial.
+
+    ``moonshotai/kimi-k2.7-code`` reasoned on turn 1 and never again, because
+    its codec replayed nothing and the model copied the reasoning-free history
+    it was shown. Every artifact of those runs looked healthy. These two
+    observations are what makes that visible without a live probe.
+    """
+
+    def _client(self, codec):
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.llm.client import LLMClient
+        from tolokaforge.core.models import ModelConfig
+
+        client = LLMClient.__new__(LLMClient)
+        client.config = ModelConfig(provider="openrouter", name="openrouter/acme/widget")
+        client.provider = "openrouter"
+        client.model_name = "openrouter/acme/widget"
+        client.capabilities = MagicMock()
+        client.capabilities.reasoning_codec = codec
+        client.capabilities.cache_policy.apply_messages.side_effect = lambda m: m
+        client.logger = MagicMock()
+        return client
+
+    def test_a_codec_that_replays_nothing_marks_the_request(self) -> None:
+        from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
+        from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
+        from tolokaforge.core.models import Message, MessageRole
+
+        client = self._client(OpenAIReasoningCodec())
+        history = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                reasoning=StructuredReasoning(
+                    blocks=(ReasoningBlock(type="summary_text", text="I checked the logs."),)
+                ),
+            )
+        ]
+
+        assert client._reasoning_replay_dropped_for(history) is True
+
+    def test_a_codec_that_replays_leaves_no_mark(self) -> None:
+        from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCodec
+
+        from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
+        from tolokaforge.core.models import Message, MessageRole
+
+        client = self._client(OpenAISummaryReplayReasoningCodec())
+        history = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                reasoning=StructuredReasoning(
+                    blocks=(ReasoningBlock(type="summary_text", text="I checked the logs."),)
+                ),
+            )
+        ]
+
+        converted = client._convert_messages(None, history)
+
+        assert client._reasoning_replay_dropped_for(history) is False
+        assert converted[0]["reasoning_details"][0]["text"] == "I checked the logs."
+
+    def test_a_turn_with_no_reasoning_at_all_is_not_a_drop(self) -> None:
+        """Most turns of most models; the flag must not fire on them."""
+        from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
+        from tolokaforge.core.models import Message, MessageRole
+
+        client = self._client(OpenAIReasoningCodec())
+
+        turn = [Message(role=MessageRole.ASSISTANT, content="done")]
+
+        assert client._reasoning_replay_dropped_for(turn) is False
+
+    def test_billed_reasoning_the_codec_did_not_surface_is_recorded(self) -> None:
+        """The predicate, stated directly: charged for thinking, captured none."""
+        from tolokaforge.core.llm.client import GenerationResult
+        from tolokaforge.core.llm.usage import Usage
+
+        billed = GenerationResult(
+            text=" ",
+            usage=Usage(reasoning_tokens=42),
+            reasoning=None,
+            reasoning_billed_not_captured=True,
+        )
+        clean = GenerationResult(text="ok", usage=Usage(reasoning_tokens=0))
+
+        assert billed.reasoning_billed_not_captured is True
+        assert clean.reasoning_billed_not_captured is False
+
+
+class TestTheReplayObservationRidesTheCallNotTheClient:
+    """One ``LLMClient`` serves every concurrent trial in a run.
+
+    ``orchestrator.py`` builds the agent client once and hands the same object
+    to every worker in the trial pool, which ``runner.py`` states outright:
+    "The ``LLMClient`` is shared across concurrent trials — the identity must
+    ride the call, not the client." Per-request state kept on ``self`` is read
+    by whichever trial reaches ``_assemble_result`` next, so a trial that
+    dropped reasoning can have the fact recorded against a different trial —
+    and ``Metrics.reasoning_replay_dropped`` is sticky, so a false positive
+    never clears.
+    """
+
+    def test_the_client_holds_no_per_request_replay_state(self) -> None:
+        from tolokaforge.core.llm.client import LLMClient
+
+        leaked = [n for n in vars(LLMClient).get("__annotations__", {}) if "replay_dropped" in n]
+
+        assert not leaked, f"{leaked} is per-request state on a shared client"
+
+    def test_two_interleaved_histories_each_get_their_own_answer(self) -> None:
+        """The interleaving that the old instance flag got wrong."""
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.llm.client import LLMClient
+        from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
+        from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
+        from tolokaforge.core.models import Message, MessageRole, ModelConfig
+
+        client = LLMClient.__new__(LLMClient)
+        client.config = ModelConfig(provider="openrouter", name="openrouter/acme/widget")
+        client.provider = "openrouter"
+        client.model_name = "openrouter/acme/widget"
+        client.capabilities = MagicMock()
+        client.capabilities.reasoning_codec = OpenAIReasoningCodec()
+        client.logger = MagicMock()
+
+        with_reasoning = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                reasoning=StructuredReasoning(
+                    blocks=(ReasoningBlock(type="summary_text", text="I read the log."),)
+                ),
+            )
+        ]
+        without = [Message(role=MessageRole.ASSISTANT, content="done")]
+
+        # trial A asks, trial B asks before A reads its answer
+        a = client._reasoning_replay_dropped_for(with_reasoning)
+        b = client._reasoning_replay_dropped_for(without)
+
+        assert a is True, "the history that dropped reasoning must say so"
+        assert b is False, "the history that dropped none must not inherit A's answer"

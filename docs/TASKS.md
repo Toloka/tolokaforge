@@ -465,6 +465,15 @@ conversational pack whose exit condition never fires now runs to `max_turns` eve
 time — check the termination-reason distribution on a pack's first calibration
 run.
 
+An `agent_only` task can say so in the prompt without inventing a token, because
+the rule it describes is one the engine already enforces. That is part of what
+the shipped `reasoning_agent` reply contract does: it tells the agent that a
+message with no tool call ends the task — so a turn spent only thinking ends a
+trial before any work is done — and asks it to verify before making that reply.
+Select one with `agent_prompt_contract:`; see
+[CONFIG.md](CONFIG.md) § `agent_prompt_contract:` and
+[ADR-0052](adr/0052-agent-reply-contract.md).
+
 ## Browser vs Mobile Tool
 
 Use `browser` for full web browsing tasks (URL navigation, search). Use `mobile` for phone app tasks (no URL bar, mobile viewport).

@@ -16,6 +16,7 @@
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "tool_use",
   "description": "Canonical fixture exercising the shared-domain layout.",
   "environment_manifest": null,

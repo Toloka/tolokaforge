@@ -8,6 +8,7 @@
     ]
   },
   "adapter_type": "terminal_bench",
+  "agent_prompt_contract": null,
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
   "environment_manifest": {

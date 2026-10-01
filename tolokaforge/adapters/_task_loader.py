@@ -59,6 +59,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
+from tolokaforge.core.agent_prompt_contract import resolve_agent_prompt_contract
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
     source_context,
@@ -623,6 +624,14 @@ def load_task_yaml(
 
     task = construct_config(TaskConfig, task_data, source=task_path)
     task._source_dir = task_root
+
+    # A contract that names nothing is refused here rather than at the first
+    # trial's prompt build: by then the run has provisioned images, and the
+    # whole pack would have run on the wrong prompt had the selector been
+    # ignored instead.
+    if task.agent_prompt_contract:
+        resolve_agent_prompt_contract(task.agent_prompt_contract, task_dir=task_root)
+
     return task, task_root
 
 

@@ -127,7 +127,8 @@ the client never branches on provider. See
 |---|---|---|---|
 | `NoReasoningCodec` | default | — (always `None`) | `{}` |
 | `AnthropicReasoningCodec` | `anthropic` preset | `message.thinking_blocks` + `message.reasoning_content` | `{"thinking_blocks": [...]}` |
-| `OpenAIReasoningCodec` | `openai_gpt5` / `xai_grok` / `qwen` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAIReasoningCodec` | `openai_gpt5` / `openai_gpt6` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAISummaryReplayReasoningCodec` | every other route carrying readable reasoning — `moonshot_kimi_k2` / `k3`, `qwen`, `xai_grok`, `openrouter_dict_stringify_recovery`, `thinkingmachines_inkling`, `gpt_oss`, `z_ai_glm_5_3`, `cohere_command_a_plus_05_2026`, `deepseek_v4_flash_0731_resolve` | inherited from `OpenAIReasoningCodec` | `{"reasoning_details": [{"type": "reasoning.text", ...}]}` |
 
 ### `AnthropicReasoningCodec` contract (Stage 3, fixes P4a + P4c)
 
@@ -865,6 +866,22 @@ it. Persisting the id is therefore what makes that question answerable after the
 fact — without it, a suspect result can only be re-run, never checked, and a
 re-run samples routing afresh.
 
+The same body also names the upstream directly: OpenRouter returns a top-level
+`provider` field, which litellm keeps on `response.model_extra`.
+`extract_upstream_provider` ([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py))
+reads it onto `ProviderRawCall.upstream_provider`, so a finished run's
+`metrics.yaml` names the machine per call without an API round-trip. The
+generation id remains the richer handle — it also reports native token counts
+and finish reason — but the name is the one an audit reads first. Observed
+values are vendor display names: `"Moonshot AI"`, `"CoreWeave"`, `"Novita"`,
+`"Amazon Bedrock"`, `"Google"`.
+
+How much this matters is measurable: `moonshotai/kimi-k2.7-code` resolved to
+three different upstreams across four runs on one day, and the runs split into
+behavioural profiles that tracked the upstream rather than the task — one
+returning `content: ""` and repeating an identical shell command on 30% of
+calls, another returning `content: " "` and repeating on 4%.
+
 **The header is `x-generation-id`, not `x-openrouter-generation-id`** — the
 plausible-looking longer name is not the one OpenRouter actually returns.
 litellm re-keys raw upstream headers as `llm_provider-<name>` into
@@ -1227,6 +1244,50 @@ upstream through the OpenRouter generation id rather than trusting the request
 shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
+
+### Reasoning that never reaches the model back
+
+A `ReasoningCodec` has two halves and they fail differently. `extract` reads the
+provider's reasoning off the response; `encode_for_replay` says what to send back
+on the next request. A codec that extracts and replays nothing leaves the model
+reading a history in which it never reasoned — and models copy that. Measured on
+`moonshotai/kimi-k2.7-code` in two datasets that disagree on magnitude and agree on
+direction: the ten-task sweep behind the published report (50 trials) carried
+reasoning on **every turn-1 call and 15–34% of later ones** — 28.5% of 2,241 calls
+overall — while a three-task run served by two fan-out mirrors fell to **2.7%** of
+411 calls, against **98.2%** of 277 once the note was replayed. Score on those three
+tasks moved 0.380 → 0.688. How far the collapse goes evidently depends on the
+upstream; that it happens does not.
+
+An empty replay is *correct* for OpenAI, which does not accept echoed reasoning.
+It is a silent defect for a route that would have honoured it, and from inside
+the engine the two are indistinguishable. Three things make the difference
+visible:
+
+* **Runtime.** `Metrics.reasoning_billed_not_captured` counts calls the provider
+  charged reasoning tokens for while the codec surfaced none;
+  `Metrics.reasoning_replay_dropped` marks a trial in which reasoning was
+  extracted and then not sent back. Both land in `metrics.yaml`. The second also
+  warns once per run per model — a client is built per trial per role, so the
+  guard is keyed module-side rather than held on the client.
+* **Pull-request time.**
+  [`tests/canonical/test_reasoning_codec_preset_routing.py`](../tests/canonical/test_reasoning_codec_preset_routing.py)
+  holds the allow-list of presets permitted to replay nothing, each with its
+  reason;
+  [`tests/canonical/test_capability_registry.py`](../tests/canonical/test_capability_registry.py)
+  refuses a certificate that declares all three reasoning capabilities
+  `known_unsupported` while its preset installs a codec to extract them, unless
+  it says why.
+* **On demand.**
+  [`scripts/analysis/probe_reasoning_transport.py`](../scripts/analysis/probe_reasoning_transport.py)
+  answers, for about a cent per model, where the reasoning arrives, whether the
+  codec keeps it, and whether the upstream answers differently when it is echoed
+  back. That last question matters: one route accepts the field and ignores it.
+
+`OpenAISummaryReplayReasoningCodec` (`reasoning_codec: openai_summary_replay`) is
+the OpenAI extract plus a replay that rebuilds the `reasoning.text` envelope —
+the shape OpenRouter routes emit, and what a non-OpenAI route carrying readable
+reasoning should use.
 
 ### Preset-level `openrouter_defaults`
 
@@ -2155,6 +2216,36 @@ the loop-layer behaviour and the helper contract are pinned by
 and
 [`tests/unit/test_tool_output_truncation.py`](../tests/unit/test_tool_output_truncation.py).
 
+### Preset-level reply contract
+
+`ModelCapabilities.default_agent_prompt_contract: str | None` names the reply
+contract a model gets when it works a task on its own. It is preset data of the
+same shape as `default_max_turns`: a value the run can still override, resolved
+to text by
+[`resolve_agent_prompt_contract`](../tolokaforge/core/agent_prompt_contract.py)
+and composed ahead of the task's own document by `build_system_prompt`.
+
+Not every model needs one. Some narrate their reasoning unprompted and some stop
+when nothing rewards it, and on a benchmark whose grader reads the container
+rather than the transcript, nothing does. The measured spread is wide — one
+model wrote text on 5 of 2,239 assistant turns here against 100% under a harness
+whose prompt asks for it, scoring 0.321 against 0.826 on the same tasks. The knob
+is per-preset because the behaviour is per-model. See
+[ADR-0052](adr/0052-agent-reply-contract.md).
+
+Precedence, lowest to highest:
+
+1. `ModelCapabilities.default_agent_prompt_contract` — this model's preset.
+   Applies **only** when `TaskConfig.interaction_mode` is `agent_only`: the
+   shipped text tells an agent that a message carrying no tool call ends the
+   task, which is what `AgentOnlyTurnPolicy` does and what a conversational turn
+   policy does not.
+2. `TaskConfig.agent_prompt_contract` — this task names one, in either mode.
+3. `task.policies["agent_system_prompt"]` — an inline prompt, reproduced byte
+   for byte; no contract is composed onto it.
+
+`None` (the default) leaves a solo task on the prompt-authoring chain alone.
+
 ### Per-model turn-budget default
 
 `ModelCapabilities.default_max_turns: int | None` is the preset-level value
@@ -2349,10 +2440,10 @@ the same three policies. Keep this table in sync with
 | `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `xai_grok`              | `x-ai/*`, `xai/*`, `*/x-ai/*`, `*/xai/*`, `grok*`                | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
+| `qwen`                  | `qwen/*`, `*/qwen/*`, `qwen3*`                                   | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
 | `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
-| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
+| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `openai_summary_replay` | `nova` (filler `" "`) | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
