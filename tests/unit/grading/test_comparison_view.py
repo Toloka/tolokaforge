@@ -685,11 +685,11 @@ def test_a_trial_that_differs_only_in_optional_records_gets_the_goldens_digest(
 # ---------------------------------------------------------------------------
 
 
-def test_the_module_depends_on_the_standard_library_pydantic_and_the_registry_only() -> None:
+def test_the_module_imports_the_standard_library_pydantic_and_two_engine_modules_only() -> None:
     """The runner applies the view too, so the module must not reach an orchestrator-only file.
 
-    The one engine module it imports is the registry its kinds resolve through, which
-    ships in the runner subset.
+    The engine modules it imports are the registry its kinds resolve through and the
+    serializer helper the wire models share, and both ship in the runner subset.
     """
     tree = ast.parse(Path(comparison_view.__file__).read_text(encoding="utf-8"))
     imported: set[str] = set()
@@ -704,7 +704,10 @@ def test_the_module_depends_on_the_standard_library_pydantic_and_the_registry_on
             )
     roots = {name.partition(".")[0] for name in imported}
     assert roots - set(sys.stdlib_module_names) - {"pydantic", "tolokaforge"} == set()
-    assert {name for name in imported if name.startswith("tolokaforge")} == {
-        "tolokaforge.core.plugin_registry"
+    engine_modules = {name for name in imported if name.startswith("tolokaforge")}
+    assert engine_modules == {
+        "tolokaforge.core.plugin_registry",
+        "tolokaforge.core.grading.omitted_fields",
     }
-    assert is_in_runner_subset("tolokaforge/core/plugin_registry.py")
+    for module in engine_modules:
+        assert is_in_runner_subset(module.replace(".", "/") + ".py"), module
