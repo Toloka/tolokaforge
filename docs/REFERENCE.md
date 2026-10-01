@@ -485,12 +485,14 @@ from the task it grades — see
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `db_query` | Query JSON DB with JSONPath | `jsonpath` (e.g., `$.users[?(@.id=='123')]`) |
-| `db_update` | Update JSON DB | `ops` array with `{op, path, value}` |
+| `db_query` | Query the trial's own JSON DB with JSONPath | `jsonpath` (e.g., `$.users[?(@.id=='123')]`) |
+| `db_update` | Update the trial's own JSON DB, all or nothing | `ops` array with `{op, path, value}`; `path` is JSONPath (e.g., `$.users[0].name`), not JSON Pointer |
 
 **JSONPath syntax**: `$.field`, `$.array[0]`, `$.array[-1]`, `$[?(@.field=='value')]`
 
 **Update operations**: `replace`, `add`, `remove`
+
+A task enabling either tool must seed at least one table under `initial_state.json_db` (an intentionally empty store is `json_db: {"<table>": []}`); a trial that seeds none is refused at registration.
 
 ### Web
 

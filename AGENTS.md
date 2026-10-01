@@ -569,7 +569,7 @@ The grader is a plug-in seam with three independent axes — substrate topology,
 4. **`black --check` is clean tree-wide**, so a `black` failure is drift in the code you just wrote, not the known `ruff format` backlog. Both formatters must pass on a file you touch, and they disagree often enough that satisfying one is not satisfying the other.
 5. **Benchmark runs** and e2e flows require API keys in `.env`. Unit and canonical tests do not.
 6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`, plus the committed-corpus sweep in [`tests/unit/test_scratchpad_detector.py`](tests/unit/test_scratchpad_detector.py) (skips gracefully without LFS). Not required for normal development.
-7. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
+7. **JSON DB update API** (`db_update` → `POST /trials/{trial_id}/update`) uses JSON Patch-style operations whose paths are JSONPath, not JSON Pointer: `{"ops": [{"op": "replace", "path": "$.tickets[0].status", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`; the batch applies all or nothing.
 8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Mock Web requires `JSON_DB_URL=http://localhost:8000`.
 9. **`tolokaforge run`** requires at least one LLM API key in `.env` (Anthropic, OpenAI, etc.).
 10. **`tasks/` is external** — Task packs live outside the engine. Point `task_packs` in your config at any directory containing tasks, or place them in `tasks/`. See the bundled examples in `examples/` for the expected layout.

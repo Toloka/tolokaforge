@@ -49,13 +49,15 @@ def test_dispatch_groups_are_disjoint_and_exhaustive():
     rag = registry.list_for_dispatch(registry.Dispatch.RAG)
     shell = registry.list_for_dispatch(registry.Dispatch.PERSISTENT_SHELL)
     editor = registry.list_for_dispatch(registry.Dispatch.EDITOR)
-    groups = [generic, files, rag, shell, editor]
+    json_db = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+    groups = [generic, files, rag, shell, editor, json_db]
     # Disjoint
     for i, a in enumerate(groups):
         for b in groups[i + 1 :]:
             assert a.isdisjoint(b)
     # Exhaustive
-    assert generic | files | rag | shell | editor == registry.list_builtins()
+    assert generic | files | rag | shell | editor | json_db == registry.list_builtins()
+    assert json_db == {"db_query", "db_update"}
 
 
 def test_bash_session_routes_to_persistent_shell_dispatch():

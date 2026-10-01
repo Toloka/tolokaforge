@@ -1,7 +1,9 @@
 """Unit tests for tool builtins: db_json, http_request, rag_search.
 
 Covers: schema structure, constructor configuration, parameter validation,
-request construction, and result parsing. All HTTP calls are mocked.
+request construction, and result parsing. All HTTP calls are mocked. The
+``db_query`` / ``db_update`` execution path is the runner's trial-bound
+wrapper, locked in ``tests/unit/runner/test_json_db_builtins_trial_scope.py``.
 """
 
 from __future__ import annotations
@@ -36,13 +38,8 @@ class TestDBQueryTool:
     def test_constructor_defaults(self) -> None:
         tool = DBQueryTool()
         assert tool.name == "db_query"
-        assert tool.db_url == "http://json-db:8000"
         assert tool.policy.timeout_s == 10.0
         assert tool.policy.category == ToolCategory.READ
-
-    def test_constructor_custom_url(self) -> None:
-        tool = DBQueryTool(db_url="http://localhost:9000")
-        assert tool.db_url == "http://localhost:9000"
 
     def test_schema_structure(self) -> None:
         tool = DBQueryTool()
@@ -52,48 +49,6 @@ class TestDBQueryTool:
         assert func["name"] == "db_query"
         assert "jsonpath" in func["parameters"]["properties"]
         assert "jsonpath" in func["parameters"]["required"]
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.post")
-    def test_execute_success(self, mock_post: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"results": [{"id": 1}], "count": 1}
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = DBQueryTool(db_url="http://test:8000")
-        result = tool.execute(jsonpath="$.users[0]")
-
-        assert result.success is True
-        assert '"id": 1' in result.output
-        assert result.metadata["count"] == 1
-        mock_post.assert_called_once_with(
-            "http://test:8000/query",
-            json={"jsonpath": "$.users[0]"},
-            timeout=10.0,
-        )
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.post")
-    def test_execute_http_error(self, mock_post: MagicMock) -> None:
-        mock_post.side_effect = httpx.HTTPError("Connection refused")
-
-        tool = DBQueryTool()
-        result = tool.execute(jsonpath="$.data")
-
-        assert result.success is False
-        assert "Query failed" in result.error
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.post")
-    def test_execute_empty_results(self, mock_post: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"results": [], "count": 0}
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = DBQueryTool()
-        result = tool.execute(jsonpath="$.nonexistent")
-
-        assert result.success is True
-        assert result.metadata["count"] == 0
 
 
 # ===================================================================
@@ -108,13 +63,8 @@ class TestDBUpdateTool:
     def test_constructor_defaults(self) -> None:
         tool = DBUpdateTool()
         assert tool.name == "db_update"
-        assert tool.db_url == "http://json-db:8000"
         assert tool.policy.timeout_s == 10.0
         assert tool.policy.category == ToolCategory.WRITE
-
-    def test_constructor_custom_url(self) -> None:
-        tool = DBUpdateTool(db_url="http://custom:5000")
-        assert tool.db_url == "http://custom:5000"
 
     def test_schema_structure(self) -> None:
         tool = DBUpdateTool()
@@ -131,37 +81,6 @@ class TestDBUpdateTool:
         item_schema = ops_schema["items"]
         assert "op" in item_schema["properties"]
         assert "path" in item_schema["properties"]
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.post")
-    def test_execute_success(self, mock_post: MagicMock) -> None:
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"etag": "abc123", "version": 5}
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
-
-        tool = DBUpdateTool(db_url="http://test:8000")
-        ops = [{"op": "replace", "path": "$.user.name", "value": "Alice"}]
-        result = tool.execute(ops=ops)
-
-        assert result.success is True
-        assert "Version: 5" in result.output
-        assert result.metadata["etag"] == "abc123"
-        assert result.metadata["version"] == 5
-        mock_post.assert_called_once_with(
-            "http://test:8000/update",
-            json={"ops": ops},
-            timeout=10.0,
-        )
-
-    @patch("tolokaforge.tools.builtin.db_json.httpx.post")
-    def test_execute_http_error(self, mock_post: MagicMock) -> None:
-        mock_post.side_effect = httpx.HTTPError("Server error")
-
-        tool = DBUpdateTool()
-        result = tool.execute(ops=[{"op": "add", "path": "$.x", "value": 1}])
-
-        assert result.success is False
-        assert "Update failed" in result.error
 
 
 # ===================================================================

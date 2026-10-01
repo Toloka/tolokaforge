@@ -12,7 +12,6 @@ from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResul
 # tolokaforge-rag-service network alias on ``runner-net``. Without this
 # env-var fallback the tool defaulted to ``http://rag-service:8001`` —
 # a hostname that has not existed since the docker-compose retirement.
-# See companion fix in ``db_json.py`` (#123).
 _DEFAULT_RAG_URL_ENV = "RAG_SERVICE_URL"
 _DEFAULT_RAG_URL_FALLBACK = "http://rag-service:8001"
 

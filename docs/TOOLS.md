@@ -12,8 +12,17 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `read_file`: Read from `/env/fs/agent-visible`.
 - `write_file`: Write to `/env/fs/agent-visible`.
 - `list_dir`: List files in `/env/fs/agent-visible`.
-- `db_query`: JSONPath query against JSON DB service.
-- `db_update`: JSONPath updates against JSON DB service.
+- `db_query`: JSONPath query against the trial's own JSON DB, seeded from
+  `initial_state.json_db`.
+- `db_update`: `add` / `replace` / `remove` ops against the trial's own JSON DB,
+  applied all or nothing. Paths are JSONPath (`$.tickets[0].status`); a JSON
+  Pointer path (`/tickets/0/status`) is refused with an error the agent can
+  correct from. Its writes are the state that grading reads.
+
+  A task enabling `db_query` or `db_update` must seed at least one table under
+  `initial_state.json_db`; an intentionally empty store is declared as
+  `json_db: {"<table>": []}`. A trial that seeds no table is refused at
+  registration. Neither tool takes a per-tool config.
 - `sql_query`: SQL query against JSON DB service.
 - `get_db_schema`: SQL schema inspection for JSON DB tables.
 - `search_kb`: RAG search over a per-trial corpus index. Functional for native

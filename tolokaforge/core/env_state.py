@@ -68,18 +68,8 @@ class EnvironmentState:
 
     def hydrate(self) -> None:
         """Load initial state from configuration"""
-        # Load JSON database
-        if self.config.json_db:
-            db_path = self.task_dir / self.config.json_db
-            if db_path.exists():
-                with open(db_path) as f:
-                    self.initial_db_state = json.load(f)
-                    # Create a deep copy for working state
-                    self.db_state = deepcopy(self.initial_db_state)
-            else:
-                self.logger.warning("JSON DB file not found", path=str(db_path))
-                self.initial_db_state = {}
-                self.db_state = {}
+        self.initial_db_state = self._read_json_db_seed()
+        self.db_state = deepcopy(self.initial_db_state)
 
         # Ensure db_state has consistent structure (device + surroundings mirrors user_db)
         self._normalize_db_state()
@@ -121,6 +111,26 @@ class EnvironmentState:
                 self.rag_corpus_dir = corpus_dir
             else:
                 self.logger.warning("RAG corpus directory not found", path=str(corpus_dir))
+
+    def _read_json_db_seed(self) -> dict[str, Any]:
+        """The declared ``json_db`` seed: an inline mapping, or a JSON file under the task dir.
+
+        Raises:
+            FileNotFoundError: ``json_db`` names a file that does not exist.
+        """
+        json_db = self.config.json_db
+        if json_db is None:
+            return {}
+        if isinstance(json_db, dict):
+            return deepcopy(json_db)
+        db_path = self.task_dir / json_db
+        if not db_path.is_file():
+            raise FileNotFoundError(
+                f"initial_state.json_db file not found: {db_path} "
+                f"(ref: {json_db!r} relative to {self.task_dir})"
+            )
+        with open(db_path) as f:
+            return json.load(f)
 
     def get_db(self) -> dict[str, Any]:
         """Get current database state (mutable reference)"""

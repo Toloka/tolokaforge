@@ -37,7 +37,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tolokaforge.runner.compose_naming import compose_container_name
-from tolokaforge.runner.db_client import DBServiceClient
+from tolokaforge.runner.db_client import (
+    DBServiceClient,
+    InvalidOperationError,
+)
+from tolokaforge.runner.db_client import (
+    ValidationError as DBRequestValidationError,
+)
 from tolokaforge.runner.db_proxy import DBServiceProxy, SyncDBServiceProxy
 from tolokaforge.runner.id_resolution import TableKey, compute_diff_ops, table_key
 from tolokaforge.runner.models import (
@@ -897,6 +903,65 @@ class BuiltinGenericToolWrapper(ToolWrapper):
 
 
 # =============================================================================
+# JSON DB Tool Wrapper
+# =============================================================================
+
+
+_JSON_DB_ARGUMENT = {"db_query": "jsonpath", "db_update": "ops"}
+
+
+class JsonDBToolWrapper(ToolWrapper):
+    """Serves ``db_query`` / ``db_update`` against the trial's own store on db-service.
+
+    A db-service 400 or 422 is a fault in the agent's arguments and becomes a
+    :class:`ToolExecutionError` carrying the service's own message, which names no
+    service URL. Every other ``DBServiceError`` (unknown trial, connection, 5xx)
+    propagates.
+    """
+
+    def __init__(self, tool_schema: ToolSchemaModel, db_client: DBServiceClient, trial_id: str):
+        super().__init__(tool_schema)
+        if tool_schema.name not in _JSON_DB_ARGUMENT:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                f"JsonDBToolWrapper serves {sorted(_JSON_DB_ARGUMENT)}, not '{tool_schema.name}'",
+            )
+        if tool_schema.tool_config:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                f"'{tool_schema.name}' reads the trial's own JSON DB and takes no tool_config; "
+                f"got keys {sorted(tool_schema.tool_config)}",
+            )
+        self.db_client = db_client
+        self.trial_id = trial_id
+        self._argument = _JSON_DB_ARGUMENT[tool_schema.name]
+
+    @property
+    def own_budget_s(self) -> float:
+        """The declared budget, which this wrapper hands to the db-service request."""
+        return self.timeout_s
+
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        if set(arguments) != {self._argument}:
+            raise ToolExecutionError(
+                self.name,
+                f"{self.name} takes exactly one argument, '{self._argument}'; "
+                f"got {sorted(arguments)}",
+            )
+        value = arguments[self._argument]
+        try:
+            if self.name == "db_query":
+                queried = await self.db_client.query(
+                    self.trial_id, value, timeout=self.own_budget_s
+                )
+                return json.dumps(queried.results, indent=2)
+            updated = await self.db_client.update(self.trial_id, value, timeout=self.own_budget_s)
+            return f"Database updated successfully. Version: {updated.version}"
+        except (InvalidOperationError, DBRequestValidationError) as exc:
+            raise ToolExecutionError(self.name, exc.message) from exc
+
+
+# =============================================================================
 # RAG Search Tool Wrapper
 # =============================================================================
 
@@ -1567,6 +1632,7 @@ class ToolFactory:
     - mcp_async: MCPAsyncToolWrapper
     - mcp_server: MCPServerToolWrapper
     - rag_search: RAGSearchToolWrapper (for search_kb tool)
+    - db_query / db_update: JsonDBToolWrapper, bound to the trial's own JSON DB
 
     FAIL FAST: If any tool cannot be reconstructed, raises ToolReconstructionError.
     """
@@ -1673,9 +1739,7 @@ class ToolFactory:
             ToolConfigurationError: If tool has no source and is not a built-in
             ToolImportError: If tool module/class cannot be imported
         """
-        # Handle built-in tools (no source) — dispatch by name through
-        # the unified registry. Eliminates the previous drift between
-        # hardcoded name tuples and a separate factory dict.
+        # Built-in tools (no source) dispatch by name through the unified registry.
         if schema.source is None:
             from tolokaforge.tools.builtin import registry as builtin_registry
 
@@ -1692,6 +1756,8 @@ class ToolFactory:
                 return PersistentShellToolWrapper(schema)
             if dispatch is builtin_registry.Dispatch.EDITOR:
                 return StrReplaceEditorToolWrapper(schema, trial_id=self.trial_id)
+            if dispatch is builtin_registry.Dispatch.JSON_DB:
+                return JsonDBToolWrapper(schema, self.db_client, self.trial_id)
             return BuiltinGenericToolWrapper(schema)
 
         source = schema.source

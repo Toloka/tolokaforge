@@ -4,7 +4,8 @@ Two ``tool_use`` example trials are seeded on one real db-service (served over
 loopback HTTP) and each gets its agent tools from the production
 ``ToolFactory``. Each trial's ``db_query("$")`` must answer its own seed, and a
 ``db_update`` in one trial must land in that trial's graded state and nowhere
-else.
+else. A refused ``db_update`` reaches the agent as a tool error it can correct
+from, carrying the service's own reason and never the service's address.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import pytest
 from tests.utils.example_packs import EXAMPLES_ROOT
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.runner.db_client import DBServiceClient
-from tolokaforge.runner.tool_factory import ReconstructedTools, ToolFactory
+from tolokaforge.runner.tool_factory import ReconstructedTools, ToolExecutionError, ToolFactory
 
 pytestmark = pytest.mark.unit
 
@@ -58,14 +59,6 @@ async def _require_seeded(client: DBServiceClient, trial: _SeededTrial) -> None:
         pytest.fail(f"fixture did not seed {trial.trial_id}: {state!r} != {trial.seed!r}")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "db_query/db_update post to the flat /query and /update routes, which resolve the "
-        "unseeded shared __default__ store: db_query('$') answers [{}], not the trial's seed"
-    ),
-)
 async def test_json_db_builtins_read_and_write_only_their_own_trials_store(
     db_service_loopback_url, monkeypatch
 ):
@@ -91,3 +84,31 @@ async def test_json_db_builtins_read_and_write_only_their_own_trials_store(
     finally:
         for trial in (tickets, accounts):
             await client.delete_trial(trial.trial_id)
+
+
+@pytest.mark.parametrize(
+    ("ops", "names"),
+    [
+        pytest.param(
+            [{"op": "replace", "path": "/accounts/0/state", "value": "suspended"}],
+            "JSONPath",
+            id="json-pointer-path",
+        ),
+        pytest.param([{"path": "$.accounts"}], "ops.0.op", id="op-missing"),
+    ],
+)
+async def test_a_refused_db_update_is_an_agent_correctable_error_without_the_service_url(
+    db_service_loopback_url, ops, names
+):
+    client = DBServiceClient(base_url=db_service_loopback_url)
+    adapter = NativeAdapter({"tasks_glob": "**/task.yaml", "task_packs": [str(_TOOL_USE_DATASET)]})
+    accounts = await _seed_trial(client, adapter, _ACCOUNTS_TASK)
+    try:
+        with pytest.raises(ToolExecutionError) as refused:
+            await accounts.tools.agent_tools["db_update"]({"ops": ops})
+
+        assert names in str(refused.value)
+        assert "http://" not in str(refused.value)
+        assert (await client.get_state(accounts.trial_id)).data == accounts.seed
+    finally:
+        await client.delete_trial(accounts.trial_id)

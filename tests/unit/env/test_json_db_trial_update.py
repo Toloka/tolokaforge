@@ -213,8 +213,9 @@ async def test_client_update_raises_typed_errors(db_client):
 
     with pytest.raises(TrialNotFoundError):
         await db_client.update("client:never-inited", [{"op": "remove", "path": "$.tickets"}])
-    with pytest.raises(InvalidOperationError, match="op 0"):
+    with pytest.raises(InvalidOperationError, match="op 0") as refused_op:
         await db_client.update(trial_id, [{"op": "replace", "path": "$.nope", "value": 1}])
+    assert refused_op.value.details == {"op_index": 0, "op": "replace", "path": "$.nope"}
     with pytest.raises(ValidationError, match="JSONPath"):
         await db_client.update(trial_id, [{"op": "replace", "path": "/tickets/0", "value": 1}])
     with pytest.raises(ValidationError, match=r"ops\.0\.op: Field required"):
