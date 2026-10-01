@@ -174,7 +174,11 @@ def test_a_reference_within_the_table_follows_its_record() -> None:
     result = _apply(
         {"journal": journal}, _normalize(references=[{"table": "journal", "field": "reverses"}])
     )
-    assert result.state["journal"][1]["reverses"] == _A1_KEY
+    f2_key = 'journal:{"account_id":"A1","delta":-5,"fee_id":"F2"}'
+    assert result.state["journal"] == [
+        {**_entry(_A1_KEY)},
+        {**_entry(f2_key, fee="F2"), "reverses": _A1_KEY},
+    ]
 
 
 def test_the_id_field_comes_from_id_fields() -> None:
