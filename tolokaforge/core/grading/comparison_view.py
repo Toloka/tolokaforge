@@ -35,7 +35,10 @@ pre-hash steps and the versioning policy of the record. The semantics:
     as it is. A re-keyed id is a function of its record's content, not a
     generated value, so it must reach the hash: the unstable filter and the
     clock mask after the view must not drop the fields the record lists in
-    ``rekeyed_fields``, even when ``unstable_fields`` names them.
+    ``rekeyed_fields``, even when ``unstable_fields`` names them. Key fields are
+    read as they are, before ``numeric_string_fields`` or
+    ``auto_normalize_nullables`` fold anything (``""`` and null give different
+    keys), and a missing key field raises.
 
 A path (``path``, ``unless_referenced_by.field``) is field names joined by ``.``.
 A list met on the way is walked item by item, a missing or null field ends the

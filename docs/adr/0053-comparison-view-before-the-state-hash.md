@@ -199,6 +199,14 @@ full state (unstable fields present)
 - **Both substrates run steps 2 and 3 in this order** (#1671), so `order:
   unordered` never sorts by a generated id the unstable filter drops (#1670); a
   both-substrate test locks it. The parity test below covers steps 2–5 as well.
+- **A re-keyed id reaches step 5.** After `normalize_ids` an id is a function of
+  its record's content, not a generated value. If step 2 or step 4 dropped it
+  (it is typically declared `unstable(auto_id)`), nothing would link a key to its
+  record's content any more, and a reference to the wrong record could pass
+  (records ranked by a masked timestamp, a dispute naming the hold of the other
+  card). The record lists the re-keyed `(table, id field)` pairs in
+  `rekeyed_fields`, and the wiring removes them from the unstable filter and the
+  clock mask it applies after the view.
 
 ### The declaration
 
@@ -249,7 +257,7 @@ state_checks:
 |---|---|---|
 | `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them in another row. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
 | `exclude_tables` | Drops the named tables whole, key included, so a table present on one side only stops counting too; `reason` is required. | Refused for a table another rule names. |
-| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. |
+| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. A re-keyed id is no longer unstable: the masks after the view leave it in, so it reaches the hash. |
 
 **The rendered key** of `normalize_ids` is `<table>:<canonical JSON of its key
 fields>`, for example `fee_credit_journal:{"account_id":"A1","delta":-5,"fee_id":"F2"}`;
@@ -259,7 +267,32 @@ and readable in a diff, and an integral float renders as the int it equals so `5
 and `5.0` keep one key. No prefix is impossible for a real id, so the collision
 checks above, not the form, keep it apart from the ids it does not replace. A table
 is re-keyed by one rule, and `key`, `ordinal_by` and `rank_by` may not name the id
-field itself.
+field itself, nor a field the rule's own `references` rewrite, nor a field a later
+`normalize_ids` rewrites as a reference (the rewriting rule must come first).
+
+What the key reads, and what follows from it:
+
+- **Key fields are read as they are**, before any fold of steps 3–4. The wiring
+  therefore refuses at load a `normalize_ids` whose `key`, `ordinal_by` or
+  `rank_by` field is masked (an unstable field or an auto-masked clock column) or
+  listed in `numeric_string_fields`: the key would carry a value the hash is told
+  to ignore or to fold. One limitation remains: under `auto_normalize_nullables`,
+  `""` and `null` in a key field still give different keys.
+- **A missing key field raises**, unlike `where`, where a missing field reads as
+  null: a key the record does not carry identifies nothing.
+- **A new record that reuses the id of a deleted initial record counts as kept**
+  under `scope: new_records`: scope reads ids, not row identity.
+- **Matching is exact.** A polymorphic reference field that holds ids of several
+  tables can name an int id of another table that equals one of this table's
+  ids; it is then rewritten too. Such a field needs ids that cannot overlap.
+- **Order against `exclude_records`.** `exclude_records` first leaves a reference
+  to an excluded record as it was, which then counts as dangling;
+  `normalize_ids` first can give a draft and its final version one content key
+  and collide; an `exclude_records` on the id field after `normalize_ids` sees
+  the new keys, not the generated ids.
+- **The id-field checks move to load time.** `apply_comparison_view` checks the id
+  field against `key`, `ordinal_by`, `rank_by` and `references` because only it
+  receives `id_fields`; the wiring repeats those checks when the task loads.
 
 Left out of v1, and where the need goes instead:
 
@@ -380,14 +413,18 @@ loader translates into it.
   `VERSION` and its settings that differ from their defaults, `reason` left
   out, as canonical JSON the way `ModelsFingerprint` hashes model data;
 - `applied` — per rule and table touched (`exclude_tables` gives one entry per listed table): kind, table, path, rows removed, ids rewritten and references rewritten.
+- `rekeyed_fields` — the `(table, id field)` pairs `normalize_ids` re-keyed, from
+  the declaration and `id_fields` alone, so both sides name the same ones.
 
 The sha changes when a declaration asks for something else, or when a rule it
 names changes what it computes. A new optional field whose default keeps a
 rule's behaviour keeps every recorded sha; a change to what a rule computes
 bumps the rule's `VERSION`, and a change to the composition bumps
-`function_version`; `reason` is prose, not behaviour, and is not hashed. A
-registered rule versions itself the same way, so the record of a view built
-with it names the implementation that built it.
+`function_version`; `reason` is prose, not behaviour, and is not hashed; a list
+whose order has no effect (`key`, `ordinal_by` and `references` of
+`normalize_ids`, not `rank_by`) is hashed sorted. A registered rule versions
+itself the same way, so the record of a view built with it names the
+implementation that built it.
 
 A grade then says which transform produced the digest it compares. A later
 engine can tell whether it would compute the same view. An unknown major
@@ -406,6 +443,13 @@ a `checks.py` hook cannot provide.
     `Grade.comparison_view_json`, which carries both, and the bundle records it.
   - A `ComparisonViewError` reaches `GradeTrialResponse(success=False)` →
     `grading_error`.
+  - The golden side is viewed first. A `ComparisonViewCollision` (a
+    `ComparisonViewError` for a re-keying that is not bijective: a shared key, a
+    key a kept record holds, a rank tie, a reference already holding a new key)
+    on the golden side is a `grading_error` like any other view error. On the
+    trial side, once the golden's view succeeded, it is the agent's state that
+    cannot be told apart: the trial fails, with the collision and its ids as the
+    reason.
 - **Core.**
   - `StateChecksConfig.comparison_view`.
   - `check_hash` and `check_hash_against_golden_replay` apply the view first,
