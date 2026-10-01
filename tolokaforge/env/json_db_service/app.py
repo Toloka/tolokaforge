@@ -47,8 +47,13 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 logger = logging.getLogger(__name__)
 
-# Import hash functions from core module
-# Note: In Docker container, this import path works because tolokaforge is installed
+# The shared hash functions, where the engine is installed beside the service (an
+# in-process db-service). The db-service image installs this directory alone, so there
+# the import fails and the vendored copies below are what runs: the production path of
+# every stable hash, ETag and snapshot digest the service serves. The parity tests
+# tests/unit/grading/test_db_service_vendored_hash.py and
+# tests/unit/grading/test_unstable_table_resolution.py hold the copies to the shared
+# functions; #1717 replaces them with a shared dependency-free package.
 try:
     from tolokaforge.core.hash import (
         compute_stable_hash,
@@ -56,10 +61,9 @@ try:
         resolve_unstable_table_name,
     )
 except ImportError:
-    # Fallback for standalone testing - implement locally
     logger.warning(
-        "Could not import tolokaforge.core.hash, using local fallback implementation. "
-        "This is expected in standalone testing but should not occur in production."
+        "tolokaforge.core.hash is not installed beside the db-service, as in its image: "
+        "using the vendored copies the parity tests hold to it."
     )
 
     def _convert_datetime_to_str(data: Any) -> Any:
@@ -140,10 +144,11 @@ except ImportError:
     ) -> str:
         """Compute a stable SHA-256 hash of the state dictionary.
 
-        Standalone fallback — mirrors tolokaforge.core.hash.compute_stable_hash,
-        including the two-tier numeric canonicalization: numeric TYPES always
-        fold; numeric-looking STRINGS fold only under a record key listed in
-        ``numeric_string_fields``. Keep the two in sync.
+        Vendored copy of tolokaforge.core.hash.compute_stable_hash, including the
+        two-tier numeric canonicalization: numeric TYPES always fold;
+        numeric-looking STRINGS fold only under a record key listed in
+        ``numeric_string_fields``. ``test_db_service_vendored_hash.py`` holds the
+        two to one digest.
         """
         from decimal import Decimal, InvalidOperation
 
@@ -206,9 +211,9 @@ except ImportError:
         return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
     def resolve_unstable_table_name(table: str, data_tables: Iterable[str]) -> str | None:
-        """Standalone fallback — mirrors tolokaforge.core.hash.resolve_unstable_table_name.
+        """Vendored copy of tolokaforge.core.hash.resolve_unstable_table_name.
 
-        Keep the two in sync.
+        ``test_unstable_table_resolution.py`` holds the two to one answer.
         """
         tables = set(data_tables)
         if table in tables:
