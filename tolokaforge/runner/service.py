@@ -993,6 +993,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.error(f"RegisterTrial: {trial_id} - {json_db_error}")
             return pb2.RegisterTrialResponse(success=False, error=json_db_error)
 
+        # A declared comparison view is checked against the description's own initial
+        # state — the belt-and-suspenders for an adapter other than the native one, which
+        # checks at description build. It reads the description alone, so it runs before
+        # anything lands on disk or in the db-service: a refusal has nothing to undo.
+        view_state_checks = task_description.grading.state_checks
+        if view_state_checks is not None:
+            view_error = check_wire_comparison_view(
+                view_state_checks,
+                task_description.initial_state,
+                context=f"RegisterTrial: {trial_id}",
+            )
+            if view_error:
+                logger.error(view_error)
+                return pb2.RegisterTrialResponse(success=False, error=view_error)
+
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None
         if task_description.tool_artifacts:
@@ -1160,15 +1175,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if err:
             logger.error(err)
             return pb2.RegisterTrialResponse(success=False, error=err)
-        # The same belt-and-suspenders for a declared comparison view: refused here, before
-        # the trial is paid for, rather than at GradeTrial.
-        if state_checks is not None:
-            err = check_wire_comparison_view(
-                state_checks, initial_state, context=f"RegisterTrial: {trial_id}"
-            )
-            if err:
-                logger.error(err)
-                return pb2.RegisterTrialResponse(success=False, error=err)
         try:
             tool_factory = ToolFactory(
                 self.db_client,
