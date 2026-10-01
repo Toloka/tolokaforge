@@ -102,6 +102,7 @@ ALL_ZERO: Final[str] = "all_zero"
 It is reserved, so a field named ``all_zero`` cannot take a condition."""
 
 _DEFAULT_ID_FIELD: Final[str] = "id"
+_UNLESS: Final[str] = "unless_referenced_by"
 _ID_TYPES: Final[tuple[type, ...]] = (str, int, float, bool)
 _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", re.ASCII)
 
@@ -704,8 +705,8 @@ def _rows_to_keep(
 ) -> list[Record]:
     if not config.unless_referenced_by:
         return [row for row in rows if not matches(row)]
-    id_field = _record_id_field(config.table, id_fields)
-    _refuse_own_id_references(config, id_field)
+    id_field = _record_id_field(config.table, id_fields, needed_by=_UNLESS)
+    _refuse_own_id_references(config.table, config.unless_referenced_by, id_field, option=_UNLESS)
     counts = _reference_counts(state, config.unless_referenced_by)
     return [
         row
@@ -714,12 +715,14 @@ def _rows_to_keep(
     ]
 
 
-def _refuse_own_id_references(config: ExcludeRecordsConfig, id_field: str) -> None:
-    for reference in config.unless_referenced_by:
-        if reference.table == config.table and reference.field == id_field:
+def _refuse_own_id_references(
+    table: str, references: Sequence[RecordReference], id_field: str, *, option: str
+) -> None:
+    for reference in references:
+        if reference.table == table and reference.field == id_field:
             raise ComparisonViewError(
-                f"unless_referenced_by names {config.table}.{id_field}, the id field of the "
-                f"rule's own table: every row would reference only itself"
+                f"{option} names {table}.{id_field}, the id field of the rule's own table: "
+                f"a record's own id is not a reference to it"
             )
 
 
@@ -727,18 +730,20 @@ def _referenced_by_another_row(
     row: Record, config: ExcludeRecordsConfig, id_field: str, counts: Counter[tuple[bool, Any]]
 ) -> bool:
     """Whether a reference other than the row's own references to itself holds its id."""
-    key = _reference_key(_record_id(row, config.table, id_field))
+    key = _reference_key(_record_id(row, config.table, id_field, needed_by=_UNLESS))
     own = sum(
         1
         for reference in config.unless_referenced_by
         if reference.table == config.table
-        for value in _ids_at(row, _segments(reference.field), _reference_label(reference))
+        for value in _ids_at(row, _segments(reference.field), _reference_label(reference, _UNLESS))
         if _reference_key(value) == key
     )
     return counts[key] > own
 
 
-def _record_id_field(table: str, id_fields: Mapping[str, str | list[str]]) -> str:
+def _record_id_field(
+    table: str, id_fields: Mapping[str, str | list[str]], *, needed_by: str
+) -> str:
     """The one field holding ``table``'s record ids: its ``id_fields`` entry, else ``"id"``.
 
     Resolves as ``tolokaforge.runner.id_resolution.table_key`` does (a blank or
@@ -758,19 +763,19 @@ def _record_id_field(table: str, id_fields: Mapping[str, str | list[str]]) -> st
     if len(fields) > 1:
         raise ComparisonViewError(
             f"state_checks.id_fields[{table!r}] is the composite key {declared!r}; "
-            f"unless_referenced_by needs one id field for table {table!r}, and a composite "
-            f"key has no single field a reference could hold"
+            f"{needed_by} needs one id field for table {table!r}, and a composite key has "
+            f"no single field a reference could hold"
         )
     return fields[0]
 
 
-def _record_id(row: Record, table: str, id_field: str) -> Any:
+def _record_id(row: Record, table: str, id_field: str, *, needed_by: str) -> Any:
+    """A record's id, which ``needed_by`` reads: a JSON scalar, never missing or null."""
     value = row.get(id_field)
     if value is None:
         raise ComparisonViewError(
-            f"a record of table {table!r} matches exclude_records but its id field "
-            f"{id_field!r} is missing or null, so unless_referenced_by cannot tell whether "
-            f"it is referenced; declare state_checks.id_fields[{table!r}]"
+            f"{needed_by} reads the id of a record of table {table!r}, but its id field "
+            f"{id_field!r} is missing or null; declare state_checks.id_fields[{table!r}]"
         )
     if not isinstance(value, _ID_TYPES):
         raise ComparisonViewError(
@@ -797,14 +802,14 @@ def _reference_counts(
     for reference in references:
         if reference.table not in state:
             continue
-        rows = _records(state[reference.table], f"unless_referenced_by: table {reference.table!r}")
-        found = _ids_at(rows, _segments(reference.field), _reference_label(reference))
+        rows = _records(state[reference.table], f"{_UNLESS}: table {reference.table!r}")
+        found = _ids_at(rows, _segments(reference.field), _reference_label(reference, _UNLESS))
         counts.update(map(_reference_key, found))
     return counts
 
 
-def _reference_label(reference: RecordReference) -> str:
-    return f"unless_referenced_by: '{reference.table}.{reference.field}'"
+def _reference_label(reference: RecordReference, option: str) -> str:
+    return f"{option}: '{reference.table}.{reference.field}'"
 
 
 def _ids_at(value: Any, segments: Sequence[str], where: str) -> list[Any]:
