@@ -1,0 +1,16 @@
+services:
+  main:
+    environment:
+      DATABASE_URL: postgresql://greeter@db:5432/greeter
+    volumes:
+      - app_src:/app
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: greeter
+      POSTGRES_DB: greeter
+      POSTGRES_HOST_AUTH_METHOD: trust
+
+volumes:
+  app_src:

@@ -304,6 +304,7 @@ _ARCHITECTURAL_EXEMPTIONS = frozenset(
         "state_checks.hash.description",
         "llm_judge",
         "grading_method",
+        "grading_method_config",
     }
 )
 
@@ -362,6 +363,7 @@ _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
         "state_checks.id_fields",
         "state_checks.relaxed_validation",
         "grading_method",
+        "grading_method_config",
     }
 )
 
