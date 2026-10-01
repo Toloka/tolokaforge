@@ -92,6 +92,18 @@ pins what the model is shown, this one pins that a real model shown it neither
 re-sends the opening nor re-introduces the customer. Costs one Sonnet call per
 integration run.
 
+### Live JSON-DB trial isolation
+
+`tests/integration/test_json_db_trial_isolation_e2e.py::test_live_run_with_three_workers_shows_each_trial_only_its_own_db`
+runs `tolokaforge run` with `workers: 3` and Claude Haiku via OpenRouter
+(key-gated on `OPENROUTER_API_KEY`) over the `tool_use` and `custom_checks`
+example packs, then reads each trial's `tool_log.yaml`: no successful `db_query`
+output carries another task's tables or seed rows, at least one trial made a
+successful `db_query`, and every trial with one saw its own seed's row id, as a
+quoted string, in some `db_query` output. It asserts on traces only, never on `binary_pass`. Costs about $0.05 per integration run. Its no-LLM sibling
+in the same file registers the three tasks on one Docker runner and locks the
+same isolation over concurrent `ExecuteTool` calls.
+
 ## Directory Structure
 
 ```
@@ -130,6 +142,7 @@ tests/
     ├── doc_anchors.py        # GitHub-style anchor + section extraction for the canonical doc locks
     ├── wheel_builds.py       # Subset / models wheels built from the tree under test, into a caller-supplied dir
     ├── mock_clients.py       # MockAsyncClient — canonical source
+    ├── loopback_asgi.py      # A real ASGI app under uvicorn on an ephemeral loopback port, for requests that must cross a real httpx transport
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
     ├── docker_helpers.py     # Compose/daemon helpers for the Docker tiers
@@ -586,6 +599,7 @@ All markers are enforced via `--strict-markers`.
 | `mock_env_state` | `utils/fixtures.py` | Unit tests for user tools |
 | `test_task_path` | `utils/fixtures.py` | Integration Docker service tests |
 | `temp_output_dir` | `utils/fixtures.py` | Integration Docker service tests |
+| `db_service_loopback_url` | `utils/fixtures.py` | Unit tests driving the real db-service over a real HTTP transport, which honours the per-request `timeout=` `MockAsyncClient` drops |
 | `canon_snapshot` | `canonical/conftest.py` | All canonical tests |
 | `serving_gateway` / `gateway` | `canonical/conftest.py` | Canonical tests against the loopback LLM gateway (`utils/recording_gateway.py`): `serving_gateway` is one server per module, `gateway` resets it per test with a cold catalog cache. A module overrides `installed_fake_secrets` to point the SecretManager at `serving_gateway.base_url` |
 | `json_db_container` | `utils/containers.py` | Integration security tests |

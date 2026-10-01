@@ -14,6 +14,7 @@ contexts across services (#123).
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterable
 from enum import StrEnum
 from functools import cache
 from typing import NamedTuple
@@ -37,7 +38,9 @@ class Dispatch(StrEnum):
     compose backend from ``tool_config`` without a second dispatch branch.
     ``EDITOR`` tools are stateless file editors matching Anthropic's
     ``str_replace_based_edit_tool``, selecting a local or compose backend from
-    ``tool_config``.
+    ``tool_config``. ``JSON_DB`` tools read and write the trial's own store on
+    db-service through the runner factory's ``db_client`` + ``trial_id``, and
+    take no ``tool_config``.
     """
 
     GENERIC = "generic"
@@ -45,6 +48,7 @@ class Dispatch(StrEnum):
     RAG = "rag"
     PERSISTENT_SHELL = "persistent_shell"
     EDITOR = "editor"
+    JSON_DB = "json_db"
 
 
 _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
@@ -74,11 +78,11 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
     ),
     "db_query": (
         BuiltinToolEntry("tolokaforge.tools.builtin.db_json", "DBQueryTool"),
-        Dispatch.GENERIC,
+        Dispatch.JSON_DB,
     ),
     "db_update": (
         BuiltinToolEntry("tolokaforge.tools.builtin.db_json", "DBUpdateTool"),
-        Dispatch.GENERIC,
+        Dispatch.JSON_DB,
     ),
     "read_file": (
         BuiltinToolEntry("tolokaforge.tools.builtin.files", "ReadFileTool"),
@@ -167,3 +171,11 @@ def list_builtins() -> frozenset[str]:
 def list_for_dispatch(dispatch: Dispatch) -> frozenset[str]:
     """Return the set of names that route to *dispatch*."""
     return frozenset(name for name, (_, d) in _REGISTRY.items() if d is dispatch)
+
+
+def json_db_tool_config_refusal(name: str, keys: Iterable[str]) -> str:
+    """Why the ``JSON_DB`` builtin *name* refuses a ``tool_config`` carrying *keys*."""
+    return (
+        f"'{name}' reads the trial's own JSON DB and takes no tool_config; "
+        f"got keys {sorted(keys)}"
+    )

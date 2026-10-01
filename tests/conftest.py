@@ -191,6 +191,7 @@ from tests.utils.fixtures import (  # noqa: E402
     canonical_project_dir,
     canonical_task_dir,
     db_client,
+    db_service_loopback_url,
     db_test_client,
     mock_env_state,
     mock_grpc_context,
@@ -249,6 +250,7 @@ __all__ = [
     "mock_grpc_context",
     "db_test_client",
     "db_client",
+    "db_service_loopback_url",
     "runner_service",
     # Docker helper fixtures
     "skip_if_no_docker_runner",

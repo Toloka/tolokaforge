@@ -113,6 +113,16 @@ Each adapter must subclass `BaseAdapter` and implement:
       whichever JSON-schema parameters the pack's own fixture or registry
       resolves for each.  See `NativeAdapter.grading_tool_inventory` for the
       native reading — the shape any adapter's return here must satisfy.
+      Its `json_db_builtins` names the declared tools your runtime serves as
+      the source-less JSON-DB builtins (`db_query` / `db_update`), which the
+      gate refuses on a task seeding no table; leave it `None` when you cannot
+      say, and the rule is reported unchecked for a task declaring either name.
+      Its `json_db_tool_config_keys` maps each of those builtins whose tool
+      block carries init kwargs to those keys, which the gate refuses as
+      `RegisterTrial` does; it names only tools in `json_db_builtins`, and
+      `{}` says none carries any.  Leave it `None` when you cannot say what
+      those blocks carry, and that rule too is reported unchecked for a task
+      declaring either name.
 
 15. `grading_replay_world(task: TaskConfig, task_dir: Path) -> ReplayWorld`
     — a **classmethod**

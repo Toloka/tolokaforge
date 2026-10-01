@@ -16,6 +16,7 @@ from tolokaforge.adapters._task_loader import (
     actor_tool_block,
     build_tool_inventory,
     declared_tool_names,
+    effective_mcp_server,
     load_task_yaml,
     refuse_malformed_grading_shapes,
     resolve_tool_schemas,
@@ -182,20 +183,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
     from tolokaforge.tools.builtin import registry as builtin_registry
 
     block = actor_tool_block(task, actor)
-    mcp_server_ref: str | None = block.get("mcp_server")
-    if mcp_server_ref is None and actor is ToolActor.USER:
-        # A ``tools.user.enabled`` block that names an mcp-served tool but
-        # declares no ``mcp_server`` of its own falls back to the agent's
-        # server (``task_config.py`` permits the shape). Without this fallback
-        # the ``ToolSource`` is built as ``None`` and the runner's
-        # source-less-dispatch arm routes to the ``builtin`` registry — an 8-
-        # tool name (bash / calculator / browser / http_request / db_query /
-        # db_update / read_file / write_file) can shadow the pack's MCP tool
-        # of the same name, silently substituting the wrong implementation.
-        # A name with no builtin instead raises ``ToolConfigurationError``
-        # at RegisterTrial. Reading the agent block as the fallback matches
-        # the ``core/actors`` convention documented at ``task_config.py:450``.
-        mcp_server_ref = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
+    mcp_server_ref = effective_mcp_server(task, actor)
     if mcp_server_ref and not (task_dir / mcp_server_ref).exists():
         raise RuntimeError(f"MCP server script not found: {task_dir / mcp_server_ref}")
 

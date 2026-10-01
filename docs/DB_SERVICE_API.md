@@ -1,8 +1,8 @@
 # DB Service API Specification
 
-The DB Service provides schema-aware JSON state storage with unstable field filtering
-for hash-based grading. It extends the existing json-db service from PR #22 to support
-the Docker architecture's trial isolation and grading requirements.
+The DB Service provides schema-aware JSON state storage, isolated per trial, with
+unstable field filtering for hash-based grading. Every store belongs to one trial; the
+service keeps no state that trials share.
 
 ## Architecture Context
 
@@ -47,7 +47,11 @@ the Docker architecture's trial isolation and grading requirements.
 http://db-service:8000
 ```
 
-All endpoints accept and return JSON. Trial isolation is achieved via `trial_id` path parameter.
+All endpoints accept and return JSON. Every data endpoint is addressed by a
+`trial_id` path parameter under `/trials/{trial_id}`; only `/health` is global. A path
+outside `/trials/{trial_id}` is not served (FastAPI's `404 {"detail": "Not Found"}`),
+and a trial must be initialized ([Initialize Trial](#1-initialize-trial)) before any
+other endpoint on it answers: until then each one returns `404 TrialNotFound`.
 
 ---
 
@@ -436,7 +440,7 @@ Clean up all data for a trial (state, schemas, snapshots).
 
 **`POST /trials/{trial_id}/query`**
 
-Query state using JSONPath expressions. Preserved from original json-db.
+Query state using JSONPath expressions.
 
 #### Request Body
 
@@ -457,13 +461,104 @@ Query state using JSONPath expressions. Preserved from original json-db.
 }
 ```
 
+#### Status Codes
+
+| Code | Meaning |
+|------|---------|
+| 200 | Success (an expression that matches nothing returns `"results": []`) |
+| 400 | `InvalidJSONPath`: the expression does not parse, or a filter regex / string function in it cannot be evaluated |
+| 404 | Trial not found |
+| 422 | Request body validation failed (e.g. `jsonpath` missing) |
+
+Any other failure is a 500.
+
 ---
 
-### 11. SQL Query
+### 11. Update State (JSONPath)
+
+**`POST /trials/{trial_id}/update`**
+
+Apply a batch of JSONPath ops to the trial state. The builtin `db_update` tool
+writes through this endpoint.
+
+#### Request Body
+
+```json
+{
+  "ops": [
+    {"op": "replace", "path": "$.tickets[0].status", "value": "closed"},
+    {"op": "add", "path": "$.audit_log.-", "value": {"ticket_id": "T-100", "action": "close"}}
+  ]
+}
+```
+
+`path` is a JSONPath starting with `$`. Unknown keys on the body or on an op
+are refused with 422.
+
+| Op | Effect |
+|----|--------|
+| `replace` | Sets every match of `path` to its own copy of `value`. A path that matches nothing, or that matches the root `$`, refuses the batch. |
+| `add` | Parses `path` as JSONPath and resolves only its parent. The path must end in one key name, which is the key as JSONPath reads it, so `$.tickets[0]."note"` and `$.tickets[0].note` both set `note`, and a query on the same path finds it. A path ending in anything else refuses the batch: the root `$`, an index (`$.tickets[0]`), a filter, a wildcard, a union (`a|b`) or more than one key (`a,b`). The one form JSONPath does not parse is a trailing `.-`, which appends (`$.tickets.-`). Every parent match must be a dict, which gains the key set to its own copy of `value`, or, for the `.-` form only, a list, which has a copy of `value` appended. A key other than `.-` on a list parent refuses the batch and names the append form (`$.tickets.extra` → `$.tickets.-`); `.-` on a dict parent refuses it too. A parent that matches nothing, or matches a scalar, refuses the batch. |
+| `remove` | Deletes every match of `path` from its parent dict or list. A path that matches the root `$` refuses the batch. A path that matches nothing deletes nothing and still commits: `version` increments and `stable_hash` is unchanged. |
+
+#### Atomicity
+
+The ops run in order on a copy of the state. The batch commits only when every
+op succeeds, every top-level key still holds a list of row objects
+(`{"<table>": [{...}, ...]}`), the shape every state reader and grader
+requires, **and** the SQL mirror can store the result. A refused batch changes
+nothing: rows, `version` and the SQL mirror are as they were. A committed batch
+re-syncs the SQL mirror and increments `version` once.
+
+The SQL mirror refuses a state whose values or keys SQLite cannot hold: an
+integer outside the signed 64-bit range, a string or key holding a lone UTF-16
+surrogate (which has no UTF-8 encoding), or two keys of one table (or two
+table names) that differ only in letter case, since SQLite identifiers are
+case-insensitive.
+
+#### Response
+
+```json
+{
+  "status": "ok",
+  "version": 5,
+  "stable_hash": "abc123..."
+}
+```
+
+#### Status Codes
+
+| Code | Meaning |
+|------|---------|
+| 200 | Success |
+| 400 | `InvalidJSONPath`: a path does not start with `$`, does not parse, or cannot be evaluated. `InvalidOperation`: an unknown op, a `replace` / `add` / `remove` the op table above refuses, an op that would leave a top-level key that is not a list or a row that is not an object, or a result the SQL mirror cannot store |
+| 404 | Trial not found |
+| 422 | Request body validation failed (e.g. `ops` not a list, or an op missing `op` / `path`) |
+
+Any other failure is a 500.
+
+A 400's message names the zero-based op index and the reason, and the path as
+the client sent it; an `InvalidJSONPath` message also gives an example path.
+`details` carries `op_index` and `path` (plus `op` for `InvalidOperation`). A
+refusal by the SQL mirror concerns the whole batch: its message names the
+table, and the row, field and value where one is to blame, and `details`
+carries `table`:
+
+```json
+{
+  "error": "InvalidJSONPath",
+  "message": "op 0: path '/tickets/0/status' is not a JSONPath; paths are JSONPath, e.g. '$.tickets[0].status'",
+  "details": {"path": "/tickets/0/status", "op_index": 0}
+}
+```
+
+---
+
+### 12. SQL Query
 
 **`POST /trials/{trial_id}/sql`**
 
-Execute SQL queries on the state. Preserved from original json-db.
+Execute SQL queries on the state.
 
 #### Request Body
 
@@ -487,7 +582,7 @@ Execute SQL queries on the state. Preserved from original json-db.
 
 ---
 
-### 12. Get Schema
+### 13. Get Schema
 
 **`GET /trials/{trial_id}/schema`**
 
@@ -512,7 +607,7 @@ Get registered schemas and unstable field specifications.
 
 ---
 
-### 13. Health Check
+### 14. Health Check
 
 **`GET /health`**
 
@@ -681,43 +776,6 @@ DELETE /trials/airline_task_001:0
 
 ---
 
-## Changes from Current json-db
-
-### Preserved Endpoints (with trial_id prefix)
-
-| Original | New | Notes |
-|----------|-----|-------|
-| `POST /reset` | `POST /trials/{trial_id}/init` | Extended with schemas + unstable_fields |
-| `GET /dump` | `GET /trials/{trial_id}/state` | Same functionality |
-| `POST /query` | `POST /trials/{trial_id}/query` | Same JSONPath support |
-| `POST /sql` | `POST /trials/{trial_id}/sql` | Same SQL support |
-| `GET /schema` | `GET /trials/{trial_id}/schema` | Extended with unstable_fields |
-| `GET /health` | `GET /health` | Unchanged (global) |
-
-### Modified Endpoints
-
-| Original | New | Changes |
-|----------|-----|---------|
-| `POST /update` | `PATCH /trials/{trial_id}/state/{table}` | Per-table mutations, structured operations |
-
-### New Endpoints
-
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /trials/{trial_id}/state/stable` | Stable state (unstable fields filtered) |
-| `GET /trials/{trial_id}/state/hash` | Stable hash for grading |
-| `POST /trials/{trial_id}/snapshots/{name}` | Create snapshot |
-| `POST /trials/{trial_id}/snapshots/{name}/restore` | Restore snapshot |
-| `POST /trials/{trial_id}/reset` | Reset to initial state |
-| `DELETE /trials/{trial_id}` | Cleanup trial |
-
-### Removed Functionality
-
-- Global state (all state is now per-trial)
-- ETag on dump (replaced by version counter)
-
----
-
 ## Grading Flow Integration
 
 The DB Service supports the grading algorithm from [`GRPC_PROTOCOL.md`](docs/GRPC_PROTOCOL.md):
@@ -784,9 +842,12 @@ All error responses follow this format:
 | `TableNotFound` | 404 | Table name not in state |
 | `SnapshotNotFound` | 404 | Snapshot name not found |
 | `SnapshotAlreadyExists` | 409 | Snapshot name already used |
-| `InvalidOperation` | 400 | Invalid mutation operation |
+| `InvalidOperation` | 400 | Invalid mutation or update operation |
+| `InvalidJSONPath` | 400 | A path is not a JSONPath, does not parse, or cannot be evaluated |
 | `ETagMismatch` | 409 | Optimistic locking conflict |
-| `ValidationError` | 400 | Request body validation failed |
+
+A request body that fails validation is refused with FastAPI's 422 shape
+instead: `{"detail": [{"loc": ["body", "ops", 0, "op"], "msg": "Field required", ...}]}`.
 
 ---
 
@@ -801,45 +862,20 @@ jsonpath-ng>=1.6.0
 pydantic>=2.0.0
 ```
 
-### Dockerfile Changes
+### Container
 
-The existing [`tolokaforge/docker/dockerfiles/db_service.Dockerfile`](../tolokaforge/docker/dockerfiles/db_service.Dockerfile) requires no changes.
-The service code in [`tolokaforge/env/json_db_service/app.py`](../tolokaforge/env/json_db_service/app.py) will be extended.
+The service ships as the image built from [`tolokaforge/docker/dockerfiles/db_service.Dockerfile`](../tolokaforge/docker/dockerfiles/db_service.Dockerfile);
+its code is [`tolokaforge/env/json_db_service/app.py`](../tolokaforge/env/json_db_service/app.py).
 
 ### Thread Safety
 
-For concurrent trial access, use thread-safe data structures:
-
-```python
-from threading import Lock
-
-class DBService:
-    def __init__(self):
-        self.trials: Dict[str, TrialState] = {}
-        self._lock = Lock()
-    
-    def get_or_create_trial(self, trial_id: str) -> TrialState:
-        with self._lock:
-            if trial_id not in self.trials:
-                self.trials[trial_id] = TrialState(trial_id)
-            return self.trials[trial_id]
-```
-
----
-
-## Migration Path
-
-### Step 1: Add New Endpoints
-- Add trial-scoped endpoints alongside existing global endpoints
-- Existing `/reset`, `/dump`, `/query` continue to work (default trial)
-
-### Step 2: Update Runner
-- Runner uses new `/trials/{trial_id}/init` endpoint
-- Tools use `/trials/{trial_id}/state/{table}` for mutations
-
-### Step 3: Deprecate Global Endpoints
-- Remove global `/reset`, `/dump`, `/update`
-- All access via trial-scoped endpoints
+`DBService` guards its trial map with one lock. It never creates a trial implicitly:
+`create_trial` (behind `POST /trials/{trial_id}/init`) refuses an id that exists
+(`409 TrialAlreadyExists`), and `get_trial` (behind every other trial endpoint) raises
+`TrialNotFound` for an id nobody initialized. Each trial carries its own lock, held for
+the whole of a request on it, so no request sees another's half-applied write. Every
+handler does its work synchronously on the event loop of the one uvicorn worker the
+image runs, so requests are processed one at a time, across all trials.
 
 ---
 

@@ -126,7 +126,13 @@ declares exactly six methods, mapped to the numbered list in
 
 - `grading_tool_inventory(task, task_dir) -> ToolInventory` (item 14) — the
   tool set this adapter presents at runtime. Default:
-  `ToolInventory.unresolvable()`.
+  `ToolInventory.unresolvable()`. A concrete inventory may report
+  `json_db_builtins`, the declared tools its runtime serves as source-less
+  JSON-DB builtins, or leave it `None` when it cannot say; `None` skips the
+  rule refusing those tools on a task that seeds no table. It may likewise
+  report `json_db_tool_config_keys`, each of those builtins whose tool block
+  carries init kwargs mapped to the keys, which the gate refuses, with `{}`
+  for none; `None` says it cannot tell, and skips that rule.
 - `grading_replay_world(task, task_dir) -> ReplayWorld` (item 15) — the
   initial-state + `mcp_server` a golden-action replay executes against.
   Default: `ReplayWorld.unresolvable()`.

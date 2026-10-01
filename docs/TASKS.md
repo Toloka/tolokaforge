@@ -97,7 +97,13 @@ which is the source the `grading` row above describes.
 
 ## Initial State
 
-- `json_db`: JSON file loaded into the JSON DB service. Use this for any task state that needs to be verified by grading.
+- `json_db`: the trial's JSON DB seed, either a JSON file path relative to the task
+  directory or an inline mapping of table name to a list of rows. A named file that
+  does not exist fails the trial. Use this for any task state that needs to be
+  verified by grading. A task enabling `db_query` or `db_update` as builtins — in a
+  `tools` block no `mcp_server` serves — must seed at least one table here; declare
+  an intentionally empty store as `json_db: {"<table>": []}`. `tolokaforge validate`
+  refuses a task that does not, at `tools`, and `RegisterTrial` refuses its trial.
 - `filesystem.copy`: files copied into `/env/fs/agent-visible`.
 - `mock_web.base_url`: base URL for mock web service (`http://mock-web:8080`).
 - `rag.corpus_dir`: directory of knowledge-base documents for per-trial RAG

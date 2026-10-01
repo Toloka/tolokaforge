@@ -988,8 +988,8 @@ def resolve_env_endpoints(
     file omits ``db-service``, ``db_url`` stays ``None`` — the runner
     container reads ``DB_SERVICE_URL`` from its own environment (task
     compose files set it via the ``runner`` service's ``environment``
-    block), and ``db_json.py`` tools fall back to the same env var when
-    constructed without a URL, so a missing ``db_url`` is not a failure.
+    block), and the JSON-DB builtins reach db-service through that
+    client, so a missing ``db_url`` is not a failure.
     """
     db_host, db_host_port = resolve_host_port(compose, db_service, db_port)
     db_url: str | None

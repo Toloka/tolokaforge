@@ -8,7 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -20,9 +19,6 @@ logger = logging.getLogger(__name__)
 state = {}
 
 templates = Jinja2Templates(directory="templates")
-
-# JSON DB URL
-JSON_DB_URL = os.getenv("JSON_DB_URL", "http://json-db:8000")
 
 
 # Default tasks root (category directories directly under this path).
@@ -364,26 +360,6 @@ async def booking_confirm(request: Request):
     }
 
     state["last_booking"] = booking
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{JSON_DB_URL}/query",
-                json={"jsonpath": "$.bookings"},
-                timeout=5.0,
-            )
-            if response.status_code == 200:
-                current_bookings = response.json().get("result", [])
-                current_bookings.append(booking)
-                await client.post(
-                    f"{JSON_DB_URL}/update",
-                    json={
-                        "ops": [{"op": "replace", "path": "$.bookings", "value": current_bookings}]
-                    },
-                    timeout=5.0,
-                )
-    except Exception as e:
-        print(f"Warning: Failed to store booking in JSON DB: {e}")
 
     hotel_names = {
         "grand_plaza": "Grand Plaza",
