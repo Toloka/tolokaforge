@@ -1876,34 +1876,55 @@ as a compatibility surface — user overlay syntax and the
 `resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
-### Provider-side empty completion
+### Actionless completions: reasoning without action, and empty
 
 A generation that comes back with both `text == ""` and `tool_calls == []`
-is a *provider-side empty completion*: the request round-tripped and the
-provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
-that shape immediately after `_generate` — before the assistant message
-would be appended — and resamples up to `capabilities.empty_retry_count`
-times without appending the empty message and without advancing the outer
-turn counter; on the `(N + 1)`-th empty result it terminates the trial with
-`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The metrics
-sink records every generation, resampled ones included, because the trial
-paid for each call. The default `empty_retry_count = 0` keeps the preset
-one-shot terminal for models that do not opt in. Presets that observably
-recover on a resample opt in through `empty_retry_count: <N>` on the model
-preset overlay; a `LoopConfig(empty_retry_count=N)` flows from
-`capabilities.empty_retry_count` at `runner.py` construction time.
+is *actionless*, and two different things produce that shape. The loop
+separates them on evidence the result already carries, because reporting
+one as the other names the wrong party:
+
+- **Reasoning without action** — reasoning tokens were billed, or
+  `finish_reason == "length"`. The provider did not return nothing; it
+  returned deliberation and no action. Two sub-shapes occur in practice: a
+  model cut off at its output ceiling mid-thought (`finish_reason: length`,
+  reasoning filling the completion), and a model that deliberated briefly
+  and then stopped of its own accord (`finish_reason: stop`, a few hundred
+  reasoning tokens). Resampled under `capabilities.reasoning_stall_retry_count`
+  with a `role=user` feedback turn, terminating on exhaustion with
+  `TerminationReason.REASONING_WITHOUT_ACTION`, whose evidence string carries
+  the `finish_reason` and the completion/reasoning token split it was read
+  from. The budget defaults to **1** rather than 0: the billed output tokens
+  are positive evidence that another sample is worth drawing, and a model
+  that never stalls never pays for it.
+- **Provider-side empty completion** — neither signal. The request
+  round-tripped and the provider returned nothing, where a resample has no
+  evidence behind it. Resampled up to `capabilities.empty_retry_count` times,
+  terminating on the `(N + 1)`-th with `TerminationReason.EMPTY_COMPLETION`.
+  The default `empty_retry_count = 0` keeps this one-shot terminal for models
+  that do not opt in.
+
+Both are recognised immediately after `_generate` — before the assistant
+message would be appended — and neither advances the outer turn counter.
+Both terminate with `TrialStatus.FAILED` and both sit in
+`EXCLUDED_TYPED_REASONS`, so a trial lost to either leaves the measured
+denominator rather than scoring zero against the agent.
+
+The metrics sink records every generation, resampled ones included, because
+the trial paid for each call. Presets that observably recover on a resample
+raise `empty_retry_count: <N>` on the model preset overlay; both budgets flow
+from `capabilities` at `runner.py` construction time.
 
 The distinction from `empty_assistant_filler` above is where the empty
 content lives. `empty_assistant_filler` handles empty **content the loop
 is about to send back to the provider on a tool-call turn** — Bedrock/Nova
 and Moonshot direct reject a request whose assistant turn has empty
 `content` alongside `tool_calls`, so those provider families opt in to a
-non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
+non-empty filler string. Both actionless branches handle empty **content the
 provider produced**: appending it would send a request whose tail is a
 `role=model` turn with empty `content` and no `tool_calls` on the next
 iteration, and Gemini rejects that as an API error. The Gemini-legal-tail
-invariant holds across resamples because the empty assistant message is
-still not appended on any of them; only the recovered non-empty result
+invariant holds across resamples on either branch because the empty
+assistant message is still not appended on any of them; only the recovered non-empty result
 lands on `messages`. The engine consumes this one wire-shape observation
 directly rather than routing it through `classify_loop_error` so post-run
 analysis can tell "the model produced nothing" apart from the API-error
@@ -2669,7 +2690,7 @@ ever compares registered `JudgeKind`s against this one provider. A
 signature or behaviour change to `LLMClient` construction — or to the
 `empty_retry_count` / `output_length_retry_count` / `parser_error_retry_count`
 capabilities-based retry opt-in this client exposes to `ToolCallingLoop`
-(see § *Provider-side empty completion* above) — must account for both
+(see § *Actionless completions* above) — must account for both
 consumers, not just the runner.
 
 ### Outer retry controllers
@@ -2766,16 +2787,20 @@ outer controllers above, transport-timeout retry in
 protocol. Retrying them at the loop level would double-count the exclusion and
 confuse the denominator.
 
-The empty-completion retry, the output-length retry and the parser-error
-retry are three separate classes that live in `_run_turn`, each under its
-own budget on `LoopConfig.empty_retry_count`,
+The empty-completion retry, the reasoning-stall retry, the output-length
+retry and the parser-error retry are four separate classes that live in
+`_run_turn`, each under its own budget on `LoopConfig.empty_retry_count`,
+`LoopConfig.reasoning_stall_retry_count`,
 `LoopConfig.output_length_retry_count` and
-`LoopConfig.parser_error_retry_count`. The four retry classes are
+`LoopConfig.parser_error_retry_count`. The five retry classes are
 orthogonal — each fires on a distinct trigger: the API-error retry
 replays a *raised exception*, the empty-completion retry resamples a
-*returned empty-shape result* (see § *Provider-side empty completion*
-above for the resample mechanics and the Gemini-legal-tail invariant),
-the output-length retry appends a `role=user` feedback turn and
+*returned actionless result with no reasoning billed*, the
+reasoning-stall retry appends a `role=user` feedback turn and resamples a
+*returned actionless result that did carry reasoning* (see § *Actionless
+completions* above for both, the resample mechanics and the
+Gemini-legal-tail invariant), the output-length retry appends a `role=user`
+feedback turn and
 resamples a *returned content-carrying truncation* under its own budget
 before falling through to accept-and-continue (see § *Output-length
 retry* above), and the parser-error retry appends a `role=user` feedback
