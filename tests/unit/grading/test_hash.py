@@ -856,7 +856,7 @@ class TestPipelineExpectInitialState:
         expected_hash = state_digest(
             _fold_via_pipeline(db_state, initial_state, rules)[1],
         )
-        score, _reason = StateChecker().check_hash(
+        score, _reason, _ = StateChecker().check_hash(
             db_state,
             expected_hash,
             compare_columns=rules,
@@ -870,7 +870,7 @@ class TestPipelineExpectInitialState:
         db_state = {"t": [{"id": "a", "note": ""}]}
         initial_state = {"t": [{"id": "a", "note": None}]}
         expected_hash = state_digest(initial_state)
-        score, _reason = StateChecker().check_hash(db_state, expected_hash)
+        score, _reason, _ = StateChecker().check_hash(db_state, expected_hash)
         assert score == 0.0
 
 
@@ -1255,10 +1255,10 @@ class TestAutoNormalizeGuards:
         state = {"t": [{"id": "1", "note": "ok"}]}
         expected_hash_local = state_digest(state)
         # Empty top-level dict: no active rule.
-        score, _ = checker.check_hash(state, expected_hash_local, compare_columns={})
+        score, _, _ = checker.check_hash(state, expected_hash_local, compare_columns={})
         assert score == 1.0
         # Table entry with no per-column rules: still no active rule.
-        score, _ = checker.check_hash(state, expected_hash_local, compare_columns={"t": {}})
+        score, _, _ = checker.check_hash(state, expected_hash_local, compare_columns={"t": {}})
         assert score == 1.0
 
     def test_check_hash_accepts_auto_normalize_without_expected(self):
@@ -1271,7 +1271,7 @@ class TestAutoNormalizeGuards:
         checker = StateChecker()
         state = {"t": [{"id": "1", "tags": None}]}
         expected_hash = state_digest(state, auto_normalize_nullables=True)
-        score, _ = checker.check_hash(
+        score, _, _ = checker.check_hash(
             state,
             expected_hash,
             auto_normalize_nullables=True,

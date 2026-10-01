@@ -243,8 +243,8 @@ def test_routing_the_declared_literal_to_the_runner_would_score_zero(
     )
 
     checker = StateChecker()
-    matched, _ = checker.check_hash(state, literal)
-    crossed, _ = checker.check_hash(state, runner_digest)
+    matched, _, _ = checker.check_hash(state, literal)
+    crossed, _, _ = checker.check_hash(state, runner_digest)
 
     assert matched == 1.0, f"{trial_dir}: core no longer scores 1.0 against the declared literal"
     assert crossed == 0.0, (
