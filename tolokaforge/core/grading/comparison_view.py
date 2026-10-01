@@ -1115,7 +1115,6 @@ def _ids_that_keep_their_key(
     return frozenset(
         _reference_key(_record_id(row, config.table, id_field, needed_by=_NORMALIZE))
         for row in rows
-        if row.get(id_field) is not None
     )
 
 
