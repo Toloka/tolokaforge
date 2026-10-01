@@ -17,7 +17,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -319,22 +319,54 @@ def _is_dict_map_array_shape(schema: dict[str, Any]) -> bool:
     return _STRICT_SCHEMA_KEY_FIELD in item_props
 
 
+_EXCEPTION_CAUSE_DEPTH = 4
+"""How far :func:`_cause_chain` walks ``__cause__``.
+
+``_call_with_key_rotation`` re-raises every non-timeout provider error as
+``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed error the
+provider raised is one link down the chain by the time the outer controller
+sees it. Four links cover that wrap plus any future one.
+"""
+
+
+def _cause_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield *exc*, then its ``__cause__`` links, at most :data:`_EXCEPTION_CAUSE_DEPTH`."""
+    candidate: BaseException | None = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH):
+        if candidate is None:
+            return
+        yield candidate
+        cause = candidate.__cause__
+        candidate = cause if cause is not candidate else None
+
+
+_NON_RETRIED_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    LLMApiTimeoutError,
+    openai.AuthenticationError,
+    litellm.UnsupportedParamsError,
+)
+
+
 def _should_retry_exception(exc: BaseException) -> bool:
     """Predicate for the outer :class:`tenacity.Retrying` controller in ``generate``.
 
-    Returns ``True`` for all transient errors, with two exclusions:
+    Returns ``True`` for all transient errors. It returns ``False`` when *exc*
+    or any link of its :func:`_cause_chain` is one of:
 
     - :class:`LLMApiTimeoutError` — already the result of an exhausted
       per-call retry budget inside
       :meth:`LLMClient._call_completion_with_timeout_retry`; must not
       cascade into another ``stop_after_attempt(5)`` multiplier.
-    - :class:`openai.AuthenticationError` — deterministic 401/403 that
-      does not become truthy by retrying. Litellm wraps provider auth
-      failures in this class regardless of the underlying vendor, so a
-      single ``isinstance`` check covers OpenAI, OpenRouter, Anthropic,
-      Google, and every other supported provider. Retrying wastes ~32s
-      of exponential-backoff wall time per trial and hides the actual
-      failure signal from the operator.
+    - :class:`openai.AuthenticationError` — a deterministic 401 that does not
+      become truthy by retrying. litellm's ``AuthenticationError`` subclasses
+      it for every provider it routes.
+    - :class:`litellm.UnsupportedParamsError` — litellm refuses the parameter
+      set in-process, before any request is sent, so every attempt is refused
+      identically.
+
+    The chain is walked because ``_call_with_key_rotation`` wraps every
+    provider error in a ``RuntimeError``, so the outer controller never sees
+    the provider's exception directly.
 
     Rate limits (429) ride the same outer exponential backoff as other
     transient errors — the long waits (up to 60s between attempts) give
@@ -342,22 +374,7 @@ def _should_retry_exception(exc: BaseException) -> bool:
     both controllers; rate-limit probe mode differentiates 429s in ``stop``
     and ``wait`` (see :meth:`LLMClient._build_probe_retrying`), not here.
     """
-    if isinstance(exc, LLMApiTimeoutError):
-        return False
-    if isinstance(exc, openai.AuthenticationError):
-        return False
-    return True
-
-
-_EXCEPTION_CAUSE_DEPTH = 4
-"""How far :meth:`LLMClient._is_rate_limit_exception` walks ``__cause__``.
-
-``_call_with_key_rotation`` re-raises every non-timeout provider error as
-``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed 429 the
-provider raised is one link down the chain by the time the outer controller
-sees it. Four links cover that wrap plus any future one without risking an
-unbounded walk on a self-referencing chain.
-"""
+    return not any(isinstance(link, _NON_RETRIED_EXCEPTIONS) for link in _cause_chain(exc))
 
 
 def matches_rate_limit_text(text: str, patterns: Iterable[re.Pattern[str]]) -> bool:
@@ -393,8 +410,8 @@ class _RateLimitTypeEvidence(str, Enum):
 def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
     """Walk *exc* and its causes for 429 evidence carried by type or status.
 
-    The walk is bounded by :data:`_EXCEPTION_CAUSE_DEPTH` because the outer
-    controller never sees the provider's exception directly.
+    It walks :func:`_cause_chain` because the outer controller never sees the
+    provider's exception directly.
     ``litellm.exceptions.RateLimitError`` subclasses ``openai.RateLimitError``,
     so one ``isinstance`` covers every provider litellm routes, and
     ``status_code == 429`` catches a bare ``APIStatusError``.
@@ -404,11 +421,8 @@ def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
     :meth:`LLMClient._rotate_key` only ever advances its index, so the condition
     never clears.
     """
-    candidate: BaseException | None = exc
     saw_http_status = False
-    for _ in range(_EXCEPTION_CAUSE_DEPTH):
-        if candidate is None:
-            break
+    for candidate in _cause_chain(exc):
         if isinstance(candidate, openai.RateLimitError):
             return _RateLimitTypeEvidence.TYPED_429
         status = getattr(candidate, "status_code", None)
@@ -418,8 +432,6 @@ def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
             saw_http_status = True
         if isinstance(candidate, AllApiKeysExhaustedError):
             return _RateLimitTypeEvidence.TERMINAL_EXHAUSTION
-        cause = candidate.__cause__
-        candidate = cause if cause is not candidate else None
 
     if saw_http_status:
         return _RateLimitTypeEvidence.OTHER_HTTP_STATUS
@@ -1876,7 +1888,8 @@ class LLMClient:
         """Build the complete kwargs dict for the downstream litellm call.
 
         Composes four independent parameter sources: ``params_policy.adapt``
-        (temperature / seed / reasoning routing), explicit per-call overrides
+        (temperature / seed / reasoning routing, and dropping sampling keys,
+        ``top_p`` included), explicit per-call overrides
         (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
@@ -1894,6 +1907,11 @@ class LLMClient:
             # still refused, so the declaration stays the boundary.
             kwargs["allowed_openai_params"] = list(self.allowed_openai_params)
 
+        # Attached before ``adapt`` so a policy that drops sampling sees it.
+        top_p_value = top_p if top_p is not None else self.config.top_p
+        if top_p_value is not None:
+            kwargs["top_p"] = top_p_value
+
         # Adapt model-specific parameters (temperature, seed, reasoning)
         kwargs = self.capabilities.params_policy.adapt(
             kwargs=kwargs,
@@ -1904,10 +1922,6 @@ class LLMClient:
             seed=seed,
             reasoning=reasoning,
         )
-
-        top_p_value = top_p if top_p is not None else self.config.top_p
-        if top_p_value is not None:
-            kwargs["top_p"] = top_p_value
 
         max_tokens_value = max_tokens if max_tokens is not None else self.config.max_tokens
         if max_tokens_value is not None:

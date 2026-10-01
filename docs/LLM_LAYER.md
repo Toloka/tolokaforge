@@ -744,6 +744,22 @@ Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
 
+Sampling parameters split the same way. The OpenRouter transport forwards
+`temperature` / `top_p` for GPT-5, GPT-6 and the o-series unchanged; a gateway's
+resolved route (`openrouter/openai/gpt-5.2`) goes out through the `openai`
+transport, whose `OpenAIGPT5Config` / `OpenAIOSeriesConfig` refuse any
+`temperature` but `1` in-process (`UnsupportedParamsError`) for the GPT-5 and
+o-series names. No OpenRouter endpoint applies a sampling parameter for these
+models (except gpt-5-image*), so `openai_gpt5`, `openai_gpt6` and
+`openai_o_series` declare `supports_sampling_params: false`: both routes send the
+same request, with no sampling key. GPT-6 is declared on OpenRouter's support list
+alone; litellm's `openai` transport accepts its `temperature`. The escape hatch,
+`capabilities: {supports_sampling_params: true}`, belongs on a `provider: openai`
+config, whose bare names (`gpt-5.2`) litellm admits a `temperature` for; on a
+`provider: openrouter` config it breaks the gateway route. gpt-5-image* is still
+claimed by `openai_gpt5` and loses its `temperature` too; that `provider: openai`
+hatch is its only way back, as none is gateway-safe on `provider: openrouter`.
+
 ## When litellm has never heard of the model
 
 litellm decides which OpenAI parameters a provider may be sent by looking the
@@ -760,7 +776,8 @@ litellm.UnsupportedParamsError: meta does not support parameters:
 Measured with an identical request on litellm 1.93.0 and 1.96.0: both refuse
 the tools. Whether a model is in the map depends on the installed litellm
 release, and the error names the provider rather than the missing data, so it
-reads as "this vendor does not do tool calls".
+reads as "this vendor does not do tool calls". The outer retry does not
+re-attempt it (§ Outer retry controllers).
 
 It says nothing about the model. The identical request driven through litellm's
 `openai` transport against the same `api_base` returns a correct tool call —
@@ -1753,17 +1770,28 @@ class ParamsPolicy(ABC):
         seed: int | None,
         reasoning: ReasoningConfig | None,
     ) -> dict: ...
+
+    def declines_sampling_param(self, param: SamplingParam) -> bool:
+        return False
 ```
+
+`kwargs` arrives carrying the request's `top_p` (config or caller), so a
+policy that drops sampling parameters drops it with the rest.
+`declines_sampling_param` answers whether a config's `temperature` / `top_p`
+is never sent (`SamplingParam` is `Literal["temperature", "top_p", "top_k"]`; any
+other name answers `False`); `config validate` and the run-start sweep read it to warn on an
+explicit value the policy drops.
 
 `GenerationParams` declares its `KNOWN_KEYS` — the preset-driven flags below:
 
 | Flag | Default | Effect |
 |---|---|---|
-| `fixed_temperature` | `None` | Override caller-supplied temperature (legacy compat knob). |
+| `fixed_temperature` | `None` | Send this `temperature` in place of the config's or caller's. Sent even when `supports_sampling_params` is `false`. |
 | `supports_seed` | `true` | Forward `seed` kwarg when caller or config supplies one. |
+| `supports_sampling_params` | `true` | `false` sends no `temperature` / `top_p` / `top_k` from the config or the caller (a `fixed_temperature` is still sent). For model families whose endpoints take no sampling parameters. An explicit `temperature` / `top_p` on such a config earns a warning from `config validate` and at run start. |
 | `reasoning_via_extra_body` | `false` | Adaptive reasoning → `extra_body.reasoning={effort, enabled:true}` (OpenRouter non-Anthropic path). |
 | `reasoning_via_thinking_kwarg` | `false` | Budget reasoning → top-level `thinking={"type":"enabled","budget_tokens":N}` (Anthropic-native). |
-| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k` whenever the `thinking` kwarg was emitted (P3b — OpenRouter silently strips them today; Anthropic raw 400s). |
+| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k`, from the config or the caller, whenever the `thinking` kwarg was emitted (OpenRouter silently strips them; Anthropic raw 400s). |
 | `reasoning_budget_default` | `None` | Default `budget_tokens` when `ReasoningConfig(mode="budget")` omits its own budget. |
 
 ### Reasoning routing matrix
@@ -1796,12 +1824,13 @@ Rules made explicit:
 
 ### Preset → routing table
 
-| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` |
-|---|---|---|---|---|
-| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** |
-| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — |
-| `openai_gpt5` / `xai_grok` / `qwen` | `true`* | `false` | `false` | — |
-| `default` / `aws_nova` | `false` | `false` | `false` | — |
+| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` | `supports_sampling_params` |
+|---|---|---|---|---|---|
+| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** | `true` |
+| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — | `true` |
+| `openai_gpt5` / `openai_gpt6` / `openai_o_series` | `true`* | `false` | `false` | — | **`false`** |
+| `xai_grok` / `qwen` | `true`* | `false` | `false` | — | `true` |
+| `default` / `aws_nova` | `false` | `false` | `false` | — | `true` |
 
 \* `reasoning_via_extra_body` comes from the `openrouter` provider overlay, not
 the preset itself. Anthropic direct (non-OpenRouter) would have `false`.
@@ -2401,20 +2430,23 @@ fresh `ModelCapabilities`. Presets live in
 
 Per-preset policy wiring as shipped today. The `StrictSchema` presets
 (`openai_gpt5`, `xai_grok`) cover `Decimal` look-ahead regex and typed
-`Dict[str, T]` parameters with `strict` + `array_dict_map`. Keep this table
-in sync with
+`Dict[str, T]` parameters with `strict` + `array_dict_map`. `openai_gpt5`,
+`openai_gpt6` and `openai_o_series` also declare `supports_sampling_params:
+false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
-| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
-|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
-| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
-| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `anthropic`             | `anthropic/*`, `*claude*`, `*/anthropic/*`                       | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`     | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `qwen`                  | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                       | `passthrough`      | `json_coerce`       | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
-| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
+| Preset                 | Match globs                                                                                                               | `schema_sanitizer` | `response_policy` | `prompt_policy`  | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
+|------------------------|---------------------------------------------------------------------------------------------------------------------------|--------------------|-------------------|------------------|------------------|-------------------|---------------------------|-------------------------|
+| `default`              | *(fallthrough)*                                                                                                           | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `anthropic_claude_4_7` | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*`                                                       | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`            | `anthropic/*`, `*claude*`, `*/anthropic/*`                                                                                | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `openai_gpt5`          | `openai/gpt-5*`, `*gpt-5*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_gpt6`          | `openai/gpt-6*`, `*gpt-6*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_o_series`      | `openai/o{1,3,4}*`, bare `o1` / `o3`, their tiers (`o3-mini*`, dated `o3-20*`, …) and `o4-mini*`, and their `*/` siblings | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `xai_grok`             | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`                                                              | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `qwen`                 | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                                                                                | `passthrough`      | `json_coerce`     | `dict_map_hints` | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `aws_nova`             | `nova*` (+ provider `nova`)                                                                                               | `passthrough`      | `unwrap_input`    | `none`           | `nova`           | `none`            | `nova`                    | `passthrough`           |
+| `moonshot_kimi_k3`     | `moonshotai/kimi-k3*`, `*kimi-k3*`                                                                                        | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
@@ -2514,6 +2546,31 @@ fallbacks included. `config validate` reports each as a WARNING at
 `<path>.name` with the remedy as its hint; the run logs each once after its
 tasks load as the `UNCLAIMED_ROUTE_FAMILY` event, with the finding's fields
 and `path` as context. Unit guard: [`tests/unit/llm/test_route_family_warning.py`](../tests/unit/llm/test_route_family_warning.py).
+
+`ignored_sampling_params(models)` returns `(path, IgnoredSamplingParam)` for
+every explicit, non-null `temperature` / `top_p` across a run's model configs,
+fallbacks included and `models.user.temperature` excluded, that the config's
+capabilities (its own `capabilities` overrides applied) do not send. The frozen
+`IgnoredSamplingParam` carries `field`, `model_name`, `provider` and `preset`,
+plus the `remedy` text; `path` is `<config path>.<field>`. `config validate`
+reports each as a WARNING at that path with the remedy as its hint; the run logs
+each once after its tasks load as the `IGNORED_SAMPLING_PARAM` event, with the
+finding's fields and `path` as context. `capability_override_errors(models)`
+returns `(path, CapabilityOverrideError)` for every model config, fallbacks
+included, whose capabilities do not build, whether or not it sets a sampling
+value or the run builds that role. The keyword-only error carries `path` and
+`reason`, and pickles. `path` is `<config path>.capabilities` when the config's
+own `capabilities` block is the cause: a key outside the recognised overrides, or
+a recognised one the matched preset's policies cannot take (`OpenAIReasoningCodec()
+takes no arguments`). It is `(presets)` when the same name and provider do not
+build without that block either (a preset or overlay conflict), and such a
+conflict several configs share is named once with `build_capabilities`'s own
+message. `config validate` reports each as an ERROR at `err.path`, `run` /
+`prepare` / `worker` refuse to start naming all of them, and
+`ignored_sampling_params` passes every such config over while still reporting the
+others. Unit guards:
+[`tests/unit/test_sampling_temperature.py`](../tests/unit/test_sampling_temperature.py),
+[`tests/unit/llm/test_preset_overrides.py`](../tests/unit/llm/test_preset_overrides.py).
 
 ### Startup validation
 
@@ -2742,7 +2799,18 @@ to every request's `extra_headers`, gateway on or off. Wire delivery is pinned f
 
 Both install the same `before_sleep` hook (`_make_before_sleep`), so
 `llm_retry_scheduled` events are identical on either path. `retry` is
-`_should_retry_exception` on both.
+`_should_retry_exception` on both. It re-attempts every error except three,
+which end the call after one outer attempt:
+
+- `LLMApiTimeoutError` — the per-call timeout budget is already spent;
+- `openai.AuthenticationError` (which litellm's `AuthenticationError`
+  subclasses for every provider) — a 401 does not clear on retry;
+- `litellm.UnsupportedParamsError` — litellm refuses the parameter set
+  in-process, before any request is sent, so every attempt is refused the same.
+
+`_call_with_key_rotation` re-raises provider errors as `RuntimeError(...) from
+e`, so the predicate finds these types anywhere in the `__cause__` chain
+(bounded by `_EXCEPTION_CAUSE_DEPTH`), not only on the outer exception.
 
 The probe's split accounting is load-bearing: a 5xx must not inherit the
 multi-hour 429 budget, so the non-429 attempt cap counts only non-429
@@ -2766,8 +2834,9 @@ because `_call_with_key_rotation` re-raises provider errors as
    a spent credential set as transient and hand it the multi-hour budget —
    permanently, since `_rotate_key` only ever advances its index. The type stops
    the walk and returns `False`, so the condition takes the ordinary
-   five-attempt exponential branch instead. `_should_retry_exception` is
-   deliberately unchanged, so a probe-off run retries it exactly as before.
+   five-attempt exponential branch instead. `_should_retry_exception` does
+   not treat it as terminal, so a probe-off run gives it the same five
+   attempts.
 3. **Anchored text** (`binding.rate_limit_patterns` — see § Provider bindings),
    last resort: a 429 must sit in a status position (`Error code: 429`,
    `status_code=429`, `HTTP/1.1 429`), or the message must carry the HTTP reason

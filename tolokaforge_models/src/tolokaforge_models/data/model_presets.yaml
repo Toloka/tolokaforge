@@ -340,6 +340,25 @@ presets:
     params:
       supports_seed: false
 
+  # ``supports_sampling_params: false``: no OpenRouter endpoint applies a
+  # sampling parameter for these models except gpt-5-image*, which this preset
+  # still claims, so it loses its ``temperature`` too. Direct OpenAI applies
+  # ``temperature`` to bare gpt-5.1+ without reasoning, which is what the
+  # per-config ``supports_sampling_params: true`` escape hatch on a
+  # ``provider: openai`` config is for; it is gpt-5-image*'s only way back, as
+  # none is gateway-safe on ``provider: openrouter``. litellm
+  # 1.93.0's ``openai`` transport refuses ``temperature`` in-process for the
+  # gpt-5 and o-series names on a gateway route (``openrouter/openai/gpt-5.2``);
+  # sending none keeps the gateway and direct routes identical. 2026-10-01:
+  # OpenRouter's /api/v1/models lists neither ``temperature`` nor ``top_p`` in
+  # ``supported_parameters`` for any openai/gpt-5*, openai/gpt-6* or
+  # openai/o1|o3|o4* model except gpt-5-image / -image-mini, and a request
+  # carrying ``temperature: 0`` with ``provider.require_parameters: true``
+  # returns 404 "No endpoints found that can handle the requested parameters"
+  # for openai/gpt-5.2 and openai/o3 (200 without it). ``openai_gpt6`` declares
+  # the knob on that support list alone (litellm's transport accepts
+  # ``temperature`` for the gpt-6 names); ``openai_o_series`` shares this
+  # evidence.
   openai_gpt5:
     match:
       - "openai/gpt-5*"
@@ -347,6 +366,8 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+    params:
+      supports_sampling_params: false
 
   # openai/gpt-6-astra (and its -pro tier): the gpt-5 axes for the GPT-6 line,
   # landed by hand after the auto-integration run on PR #1511 stopped at the
@@ -369,6 +390,8 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+    params:
+      supports_sampling_params: false
 
   # x-ai/grok-4.6 — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #1161). Declared BEFORE the generic
@@ -1123,6 +1146,52 @@ presets:
       - "*minimax-m3*"
     reasoning_codec: openai
     response_policy: minimax_m3_tags
+
+  # OpenAI o-series (o1 / o3 / o4 and their -mini / -preview / -pro /
+  # -deep-research / -high tiers and dated snapshots): the ``default`` axes plus
+  # the sampling rule ``openai_gpt5`` records the evidence for. Declared last, so
+  # it claims only names no earlier preset matches. The ``openai/`` globs claim
+  # every vendor-named o1|o3|o4 model: over the bundled pricing.json they match
+  # exactly the 14 openai/o1|o3|o4* slugs, and with the vendor-dropped globs
+  # every one of litellm.model_cost's 62 o-series keys (``o3``, ``azure/o3``,
+  # ``azure/eu/o3-2025-04-16``). The vendor-dropped globs name the bare model
+  # and its known tiers rather than ``o3*`` / ``o3-*``: a glob's ``*`` also
+  # spans ``/``, and the broad forms claim foreign models whose name merely
+  # starts ``o1`` / ``o3`` (``O1-OPEN/OpenO1-LLaMA-8B``, ``self-hosted/o3-qwen``),
+  # which would then silently stop sending ``temperature``. A tier not listed
+  # here is claimed under ``openai/`` only.
+  openai_o_series:
+    match:
+      - "openai/o1*"
+      - "openai/o3*"
+      - "openai/o4*"
+      - "*/openai/o1*"
+      - "*/openai/o3*"
+      - "*/openai/o4*"
+      - "o1"
+      - "o1-20*"
+      - "o1-mini*"
+      - "o1-preview*"
+      - "o1-pro*"
+      - "o3"
+      - "o3-20*"
+      - "o3-mini*"
+      - "o3-pro*"
+      - "o3-deep-research*"
+      - "o4-mini*"
+      - "*/o1"
+      - "*/o1-20*"
+      - "*/o1-mini*"
+      - "*/o1-preview*"
+      - "*/o1-pro*"
+      - "*/o3"
+      - "*/o3-20*"
+      - "*/o3-mini*"
+      - "*/o3-pro*"
+      - "*/o3-deep-research*"
+      - "*/o4-mini*"
+    params:
+      supports_sampling_params: false
 
 providers:
   openrouter:

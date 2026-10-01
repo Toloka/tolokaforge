@@ -55,6 +55,7 @@ from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.llm.litellm_params import overlay_key_mismatches
 from tolokaforge.core.llm.presets import (
+    capability_override_errors,
     resolve_overlay_path,
     set_overlay_path,
     validate_overlay_file,
@@ -474,6 +475,18 @@ def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
         raise conflicts[0][1]
 
 
+def _refuse_unbuildable_capabilities(run_config: RunConfig) -> None:
+    """Refuse a run naming every model config, fallbacks included, whose
+    capabilities do not build.
+
+    Every configured role is checked, including one this run never builds (a judge
+    on a deterministic-only task set), so the refusal does not depend on the tasks.
+    """
+    errors = capability_override_errors(run_config.models)
+    if errors:
+        raise click.ClickException("\n".join(str(err) for _, err in errors))
+
+
 _UNGRADEABLE_TRIALS_NAMED = 5
 """How many ungradeable trial ids the error line names before it stops counting
 and states the total. A lossy run can lose hundreds; the ids are all in
@@ -794,16 +807,15 @@ def run(
         console.print(f"[cyan]User model override: {user_model_override}[/cyan]")
 
     # Apply judge model: CLI flag > env var > YAML config (models.judge).
-    # Temperature is pinned to 0 for grading determinism (the judge does not
-    # honour a non-zero temperature yet). The YAML path is primary and parses
-    # with no loader change; this flag is the ergonomic override mirroring
-    # --user-model.
+    # The YAML path is primary; this flag is the ergonomic override mirroring
+    # --user-model. No temperature: ModelConfig's default 0.0 applies, and an
+    # explicit one would earn the ignored-value warning on a model whose
+    # preset sends no sampling parameters.
     judge_model_override = judge_model or os.environ.get("JUDGE_MODEL")
     if judge_model_override:
         config_data.setdefault("models", {})["judge"] = {
             "provider": DEFAULT_USER_MODEL_PROVIDER,
             "name": judge_model_override,
-            "temperature": 0.0,
         }
         console.print(f"[cyan]Judge model: {judge_model_override}[/cyan]")
 
@@ -879,6 +891,7 @@ def run(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
     _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     # Fallback-model chain lives on ``models.agent.fallbacks`` in the run
     # config (list of ModelConfig entries, in order). Empty list → no
@@ -1604,6 +1617,7 @@ def prepare(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
     _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,
@@ -1699,6 +1713,7 @@ def worker(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
     _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,

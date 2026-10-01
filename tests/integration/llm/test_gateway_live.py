@@ -16,7 +16,7 @@ installs a SecretManager that overrides that name for the test's duration, so a
 CI budget for integration tests stays separate from a deployment's production
 gateway budget, and a local ``.env`` cannot accidentally charge the wrong key.
 
-Four calls reach the network (the pinned-upstream check is opt-in), each capped at a few dozen output tokens.
+Six calls reach the network (the pinned-upstream check is opt-in), each capped at a few hundred output tokens.
 
 Environment contract
 --------------------
@@ -393,3 +393,37 @@ def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
         f"the pin did not hold through the gateway: pinned {pinned_provider!r}, "
         f"served by {served_by!r} - the proxy dropped extra_body.provider"
     )
+
+
+def test_a_gpt5_default_config_succeeds_routed_and_direct(gateway_key: str) -> None:
+    """``openai/gpt-5.2`` on the default config (``temperature`` left at 0.0) succeeds
+    through the gateway's resolved route and directly on OpenRouter. That neither
+    request carries a sampling parameter is pinned by
+    tests/canonical/test_sampling_params_wire_parity.py."""
+    openrouter_key = _secret("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        pytest.skip("OPENROUTER_API_KEY not set - skipping the direct half.")
+    base_url = _secret(ENV_TEST_BASE_URL) or _secret(ENV_BASE_URL)
+    if not base_url:
+        pytest.fail(f"{ENV_TEST_API_KEY} is set but no gateway base URL is.")
+    config = ModelConfig(provider="openrouter", name="openai/gpt-5.2", max_tokens=256)
+    paths = {
+        "routed": _gateway_secrets(base_url, gateway_key),
+        "direct": SecretManager([DictProvider({"OPENROUTER_API_KEY": openrouter_key})]),
+    }
+
+    original = secrets_manager._default_manager
+    try:
+        for path, secrets in paths.items():
+            secrets_manager._default_manager = secrets
+            client = LLMClient(config)
+            if path == "routed" and client._gateway_route is None:
+                pytest.skip("the gateway's catalog serves no route for openai/gpt-5.2")
+            assert (client._proxy is None) == (path == "direct")
+            result = client.generate(
+                system="Answer with a single word.",
+                messages=[Message(role=MessageRole.USER, content="Say OK")],
+            )
+            assert result.text.strip(), f"empty completion on the {path} path"
+    finally:
+        secrets_manager._default_manager = original
