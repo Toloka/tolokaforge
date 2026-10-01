@@ -131,7 +131,7 @@ def _dotted_path(value: str) -> str:
     if any(not segment.strip() for segment in value.split(".")):
         raise ValueError(
             f"path {value!r} has an empty segment; join field names with '.', "
-            f"e.g. 'expense_payments.purchase_allocations'"
+            f"e.g. 'orders.line_items'"
         )
     return value
 
