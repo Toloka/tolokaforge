@@ -1,22 +1,15 @@
 """``param_value_rules`` — the general form of "this route will not take that value".
 
-Two shipped cases motivate it and they sit at different layers, which is the
-point of the mechanism: the same declaration works wherever a ``params:`` block
-is legal.
-
-* **Provider layer** — the direct ``gemini`` transport refuses
-  ``reasoning_effort='medium'`` because of a litellm defect. Route-specific and
-  temporary; the OpenRouter route is unaffected.
-* **Model layer** — Cohere's Chat API has no ``AUTO`` for ``tool_choice`` at
-  all. Vendor contract, permanent, true on every route.
-
-Before this, each such gap cost a bespoke constructor kwarg plus a use site,
-i.e. an engine release per gap. These lock the general form so the next one is
-a YAML line.
+The same declaration works wherever a ``params:`` block is legal — ``default:``,
+a preset, or a ``providers:`` entry — so a value a route cannot take is a YAML
+line rather than an engine change. The shipped rules sit on presets (Cohere's
+Chat API has no ``AUTO`` for ``tool_choice`` on any route); the other layers
+are exercised through overlay fixtures.
 """
 
 from __future__ import annotations
 
+import copy
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -163,76 +156,103 @@ class TestRejectPath:
         assert kwargs["reasoning_effort"] == "high"
 
 
-class TestShippedData:
-    """The migrated Gemini declaration must behave exactly as before the move."""
+class TestDirectGeminiRoute:
+    """The direct ``gemini`` transport carries no ``reasoning_effort`` rule:
+    every level reaches the request alongside tools."""
 
-    def test_direct_gemini_route_still_refuses_medium(self) -> None:
-        policy = build_capabilities("google/gemini-3.1-pro", provider="gemini").params_policy
-        assert policy.rule_for("reasoning_effort", "medium") == "reject"
-
-    def test_openrouter_route_is_untouched(self) -> None:
-        # The comment on the declaration has always said the OpenRouter route
-        # is unaffected; this is that claim as a test rather than prose.
-        policy = build_capabilities("google/gemini-3.1-pro", provider="openrouter").params_policy
-        assert policy.rule_for("reasoning_effort", "medium") is None
-
-    def test_other_effort_levels_survive_on_the_direct_route(self) -> None:
-        policy = build_capabilities("google/gemini-3.1-pro", provider="gemini").params_policy
-        assert policy.rule_for("reasoning_effort", "high") is None
-        assert policy.rule_for("reasoning_effort", "low") is None
+    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    def test_the_requested_effort_is_sent(self, effort: str) -> None:
+        client = LLMClient(
+            ModelConfig(
+                provider="gemini",
+                name="gemini/gemini-3.1-pro-preview",
+                reasoning=ReasoningConfig(mode="adaptive", effort_hint=effort),
+            )
+        )
+        kwargs = client._build_kwargs(
+            system=None,
+            messages=[],
+            tools=[{"type": "function", "function": {"name": "n", "parameters": {}}}],
+            tool_choice="auto",
+            temperature=None,
+            seed=None,
+            reasoning=None,
+            top_p=None,
+            max_tokens=None,
+        )
+        assert kwargs["reasoning_effort"] == effort
 
 
 class TestLayering:
     """Rules merge per parameter and per value across layers.
 
     A shallow merge here silently disarms a guard nobody touched: declaring a
-    `tool_choice` rule in an overlay would drop the bundled `reasoning_effort`
-    rule with it, and the eval would then run with the quirk unguarded.
+    `tool_choice` rule in an overlay would drop an outer `reasoning_effort`
+    rule with it, and the eval would then run with the quirk unguarded. Two
+    seams merge rules: the overlay file onto the bundled table, and a
+    `providers:` entry onto `default:` when capabilities are built.
     """
 
     @staticmethod
-    def _with_overlay(overlay: dict, tmp_path: Path):
+    def _policy(
+        outer: str,
+        outer_rules: dict,
+        inner_rules: dict,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        overlay: dict[str, Any] = {
+            "providers": {"mock": {"params": {"param_value_rules": inner_rules}}}
+        }
+        if outer == "bundled provider":
+            bundled = copy.deepcopy(presets._load_bundled_presets())
+            bundled["providers"]["mock"] = {"params": {"param_value_rules": outer_rules}}
+            monkeypatch.setattr(presets, "_load_bundled_presets", lambda: bundled)
+        else:
+            overlay["default"] = {"params": {"param_value_rules": outer_rules}}
         with _overlay(tmp_path, overlay):
-            return build_capabilities("google/gemini-3.1-pro", provider="gemini").params_policy
+            return build_capabilities("mock-model", provider="mock").params_policy
 
-    def test_an_overlay_rule_does_not_delete_the_bundled_one(self, tmp_path: Path) -> None:
-        policy = self._with_overlay(
+    @pytest.mark.parametrize("outer", ["bundled provider", "overlay default"])
+    def test_an_inner_rule_does_not_delete_an_outer_one(
+        self, outer: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = self._policy(
+            outer,
+            outer_rules=_rules("reasoning_effort", "medium", "reject"),
+            inner_rules=_rules("tool_choice", "auto", "drop"),
             tmp_path=tmp_path,
-            overlay={
-                "providers": {
-                    "gemini": {
-                        "params": {
-                            "param_value_rules": {
-                                "tool_choice": {"auto": {"action": "drop", "evidence": "overlay"}}
-                            }
-                        }
-                    }
-                }
-            },
+            monkeypatch=monkeypatch,
         )
-        assert policy.rule_for("tool_choice", "auto") == "drop", "the overlay rule must apply"
+        assert policy.rule_for("tool_choice", "auto") == "drop", "the inner rule must apply"
         assert (
             policy.rule_for("reasoning_effort", "medium") == "reject"
-        ), "the bundled gemini guard must survive an unrelated overlay rule"
+        ), "the outer guard must survive an unrelated inner rule"
 
-    def test_an_overlay_can_still_override_the_same_declaration(self, tmp_path: Path) -> None:
-        policy = self._with_overlay(
+    @pytest.mark.parametrize("outer", ["bundled provider", "overlay default"])
+    def test_an_inner_rule_can_still_override_the_same_declaration(
+        self, outer: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = self._policy(
+            outer,
+            outer_rules=_rules("reasoning_effort", "medium", "reject", "outer says so"),
+            inner_rules=_rules("reasoning_effort", "medium", "reject", "operator says so"),
             tmp_path=tmp_path,
-            overlay={
-                "providers": {
-                    "gemini": {
-                        "params": {
-                            "param_value_rules": {
-                                "reasoning_effort": {
-                                    "medium": {"action": "reject", "evidence": "operator says so"}
-                                }
-                            }
-                        }
-                    }
-                }
-            },
+            monkeypatch=monkeypatch,
         )
         assert policy.rule_evidence("reasoning_effort", "medium") == "operator says so"
+
+    def test_a_provider_rule_stays_on_its_own_route(self, tmp_path: Path) -> None:
+        overlay = {
+            "providers": {
+                "mock": {
+                    "params": {"param_value_rules": _rules("reasoning_effort", "medium", "reject")}
+                }
+            }
+        }
+        with _overlay(tmp_path, overlay):
+            policy = build_capabilities("mock-model", provider="openrouter").params_policy
+        assert policy.rule_for("reasoning_effort", "medium") is None
 
 
 class TestOverride:

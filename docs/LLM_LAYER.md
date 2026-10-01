@@ -1669,7 +1669,7 @@ params:
     reasoning_effort:
       medium:
         action: reject
-        evidence: "2026-05-21, litellm 1.83.14: empty response with tool calls, BerriAI/litellm#19403"
+        evidence: "<date>, <transport and version>: <what the route does with this value>"
       # or, when an answer matters more than a like-for-like comparison:
       #   action: override
       #   with: low
@@ -1710,9 +1710,9 @@ one rule delete every other rule, disarming a guard nobody touched.
 One pre-existing exception, inherited from how overlays work generally: an
 overlay `presets:` entry with the **same name** as a bundled preset replaces
 that preset wholesale, rules included. Shadowing by name is a replacement, not
-a merge. Only `providers.gemini` carries rules today, so nothing is affected in
-practice, but declare rules on a differently-named preset if you mean to add
-rather than replace.
+a merge. A bundled preset that carries rules loses them to a same-named overlay
+entry, so declare rules on a differently-named preset if you mean to add rather
+than replace.
 
 `tool_choice` rules are inert on a call that sends no tools, because the
 parameter is only ever attached alongside `tools`.
