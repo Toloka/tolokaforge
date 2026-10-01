@@ -989,7 +989,10 @@ and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
 any companion variable while `LLM_PROXY_BASE_URL` is empty also raises, so a typo in
-the base-URL name cannot silently fall back to direct provider access.
+the base-URL name cannot silently fall back to direct provider access. When some
+model config declares `session`, `run` / `prepare` / `worker` resolve these variables
+at start and refuse a malformed value there as a one-line `Error:`, before any client
+is built ([Session header](#session-header)).
 
 ### Values may reference secrets
 

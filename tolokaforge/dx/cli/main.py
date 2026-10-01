@@ -460,8 +460,8 @@ def _activate_presets_overlay(
         validate_overlay_file(resolved)
         mismatches = overlay_key_mismatches(run_config.models)
         if mismatches:
-            err = mismatches[0][1]
-            raise click.ClickException(str(err)) from err
+            mismatch = mismatches[0][1]
+            raise click.ClickException(str(mismatch)) from mismatch
     return resolved
 
 
@@ -478,8 +478,8 @@ def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
     except ProxyConfigError as err:
         raise click.ClickException(str(err)) from err
     if conflicts:
-        err = conflicts[0][1]
-        raise click.ClickException(str(err)) from err
+        conflict = conflicts[0][1]
+        raise click.ClickException(str(conflict)) from conflict
 
 
 def _refuse_unbuildable_capabilities(run_config: RunConfig) -> None:
