@@ -278,6 +278,11 @@ What the key reads, and what follows from it:
   listed in `numeric_string_fields`: the key would carry a value the hash is told
   to ignore or to fold. One limitation remains: under `auto_normalize_nullables`,
   `""` and `null` in a key field still give different keys.
+- **A masked reference is refused too.** A `references` field the masks would
+  drop links nothing after its rewrite, and leaving it in instead is no fix: a
+  dangling reference keeps its generated value. The wiring therefore refuses at
+  load a `references` field that is an unstable field or an auto-masked clock
+  column, where the re-keyed id field itself is kept in (above).
 - **A missing key field raises**, unlike `where`, where a missing field reads as
   null: a key the record does not carry identifies nothing.
 - **A new record that reuses the id of a deleted initial record counts as kept**
