@@ -1888,7 +1888,8 @@ class LLMClient:
         """Build the complete kwargs dict for the downstream litellm call.
 
         Composes four independent parameter sources: ``params_policy.adapt``
-        (temperature / seed / reasoning routing), explicit per-call overrides
+        (temperature / seed / reasoning routing, and dropping sampling keys,
+        ``top_p`` included), explicit per-call overrides
         (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
@@ -1906,6 +1907,11 @@ class LLMClient:
             # still refused, so the declaration stays the boundary.
             kwargs["allowed_openai_params"] = list(self.allowed_openai_params)
 
+        # Attached before ``adapt`` so a policy that drops sampling sees it.
+        top_p_value = top_p if top_p is not None else self.config.top_p
+        if top_p_value is not None:
+            kwargs["top_p"] = top_p_value
+
         # Adapt model-specific parameters (temperature, seed, reasoning)
         kwargs = self.capabilities.params_policy.adapt(
             kwargs=kwargs,
@@ -1916,10 +1922,6 @@ class LLMClient:
             seed=seed,
             reasoning=reasoning,
         )
-
-        top_p_value = top_p if top_p is not None else self.config.top_p
-        if top_p_value is not None:
-            kwargs["top_p"] = top_p_value
 
         max_tokens_value = max_tokens if max_tokens is not None else self.config.max_tokens
         if max_tokens_value is not None:

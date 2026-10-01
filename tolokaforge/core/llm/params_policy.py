@@ -131,6 +131,10 @@ class ParamsPolicy(ABC):
         """Replacement value for an ``override`` rule; ``None`` otherwise."""
         return None
 
+    def declines_sampling_param(self, param: str) -> bool:
+        """Whether a config's or caller's value for sampling *param* is never sent."""
+        return False
+
 
 #: Deprecated alias for :class:`ParamsPolicy`. Kept as a class-identity
 #: alias (``ParamPolicy is ParamsPolicy`` remains true) so
@@ -331,6 +335,7 @@ class GenerationParams(ParamsPolicy):
         {
             "fixed_temperature",
             "supports_seed",
+            "supports_sampling_params",
             "reasoning_via_extra_body",
             "reasoning_via_thinking_kwarg",
             "drop_sampling_when_thinking",
@@ -343,6 +348,7 @@ class GenerationParams(ParamsPolicy):
         self,
         fixed_temperature: float | None = None,
         supports_seed: bool = True,
+        supports_sampling_params: bool = True,
         reasoning_via_extra_body: bool = False,
         reasoning_via_thinking_kwarg: bool = False,
         drop_sampling_when_thinking: bool = False,
@@ -351,6 +357,7 @@ class GenerationParams(ParamsPolicy):
     ):
         self._fixed_temperature = fixed_temperature
         self._supports_seed = supports_seed
+        self._supports_sampling_params = supports_sampling_params
         self._reasoning_via_extra_body = reasoning_via_extra_body
         self._reasoning_via_thinking_kwarg = reasoning_via_thinking_kwarg
         self._drop_sampling_when_thinking = drop_sampling_when_thinking
@@ -373,10 +380,14 @@ class GenerationParams(ParamsPolicy):
         seed: int | None,
         reasoning: ReasoningConfig | None,
     ) -> dict[str, Any]:
-        # Temperature — caller override > fixed > config
-        temp = temperature if temperature is not None else config_temperature
-        if temp is not None:
-            kwargs["temperature"] = temp
+        # Temperature — fixed > caller override > config
+        if self._supports_sampling_params:
+            temp = temperature if temperature is not None else config_temperature
+            if temp is not None:
+                kwargs["temperature"] = temp
+        else:
+            for key in _SAMPLING_KEYS:
+                kwargs.pop(key, None)
         if self._fixed_temperature is not None:
             kwargs["temperature"] = self._fixed_temperature
 
@@ -458,6 +469,11 @@ class GenerationParams(ParamsPolicy):
                 "ReasoningConfig(mode='budget', budget_tokens=N) explicitly."
             )
         return budget
+
+    def declines_sampling_param(self, param: str) -> bool:
+        if self._supports_sampling_params:
+            return False
+        return not (param == "temperature" and self._fixed_temperature is not None)
 
     def rule_for(self, param: str, value: str | None) -> RuleAction | None:
         """The declared action for ``value`` of ``param``, or ``None``.

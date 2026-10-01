@@ -794,16 +794,15 @@ def run(
         console.print(f"[cyan]User model override: {user_model_override}[/cyan]")
 
     # Apply judge model: CLI flag > env var > YAML config (models.judge).
-    # Temperature is pinned to 0 for grading determinism (the judge does not
-    # honour a non-zero temperature yet). The YAML path is primary and parses
-    # with no loader change; this flag is the ergonomic override mirroring
-    # --user-model.
+    # The YAML path is primary; this flag is the ergonomic override mirroring
+    # --user-model. No temperature: ModelConfig's default 0.0 applies, and an
+    # explicit one would earn the ignored-value warning on a model whose
+    # preset sends no sampling parameters.
     judge_model_override = judge_model or os.environ.get("JUDGE_MODEL")
     if judge_model_override:
         config_data.setdefault("models", {})["judge"] = {
             "provider": DEFAULT_USER_MODEL_PROVIDER,
             "name": judge_model_override,
-            "temperature": 0.0,
         }
         console.print(f"[cyan]Judge model: {judge_model_override}[/cyan]")
 

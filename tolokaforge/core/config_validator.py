@@ -27,7 +27,12 @@ from tolokaforge.core.llm.litellm_params import (
     overlay_stray_entries,
 )
 from tolokaforge.core.llm.openrouter_headers import is_openrouter_provider
-from tolokaforge.core.llm.presets import unclaimed_route_families
+from tolokaforge.core.llm.presets import (
+    IGNORED_SAMPLING_PARAM,
+    CapabilityOverrideError,
+    ignored_sampling_params,
+    unclaimed_route_families,
+)
 from tolokaforge.core.llm.providers import litellm_model_id
 from tolokaforge.core.llm.proxy import ProxyConfigError
 from tolokaforge.core.llm.session_header import session_header_conflicts
@@ -265,6 +270,27 @@ def _route_family_issues(run_config: RunConfig) -> list[ValidationIssue]:
     ]
 
 
+def _ignored_sampling_issues(run_config: RunConfig) -> list[ValidationIssue]:
+    """A WARNING per explicit sampling value, fallbacks included, that the model's
+    capabilities would not send, or the ERROR that a config's capabilities do not build."""
+    try:
+        findings = ignored_sampling_params(run_config.models)
+    except CapabilityOverrideError as err:
+        return [ValidationIssue(severity=Severity.ERROR, path=err.path, message=err.reason)]
+    return [
+        ValidationIssue(
+            severity=Severity.WARNING,
+            path=path,
+            message=(
+                f"{IGNORED_SAMPLING_PARAM}: {finding.field} on {finding.model_name!r} "
+                f"(provider {finding.provider!r})"
+            ),
+            hint=finding.remedy,
+        )
+        for path, finding in findings
+    ]
+
+
 def _validate_schema(raw: dict[str, Any]) -> RunConfig | ValidationIssue:
     """Parse *raw* into a ``RunConfig``, or the ERROR saying why it does not parse."""
     try:
@@ -360,23 +386,6 @@ def _validate_model(
                 "actors.user.simulator_config",
             )
         )
-
-    # --- temperature with reasoning ---
-    temperature = cfg.get("temperature")
-    if reasoning_enabled and temperature is not None and temperature > 0:
-        # Some reasoning models ignore or reject non-zero temperature
-        lower_name = name.lower()
-        if any(lower_name.startswith(p) for p in ("openai/o1", "openai/o3")):
-            issues.append(
-                ValidationIssue(
-                    severity=Severity.WARNING,
-                    path=f"{base}.temperature",
-                    message=(
-                        f"temperature={temperature} with reasoning model {name!r}; "
-                        "OpenAI o-series models may ignore or reject non-zero temperature"
-                    ),
-                )
-            )
 
     # --- max_tokens sanity ---
     max_tokens = cfg.get("max_tokens")
@@ -513,6 +522,7 @@ def validate_run_config(raw: dict[str, Any]) -> ValidationResult:
     #    miss their last segment's preset, for every model and fallback
     result.issues.extend(_overlay_key_issues(run_config))
     result.issues.extend(_route_family_issues(run_config))
+    result.issues.extend(_ignored_sampling_issues(run_config))
     result.issues.extend(_session_header_issues(run_config))
 
     # 3. Per-model checks

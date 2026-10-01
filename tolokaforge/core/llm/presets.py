@@ -77,11 +77,15 @@ from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
 from tolokaforge.core.models.run_config import iter_model_configs
 
 __all__ = [
+    "IGNORED_SAMPLING_PARAM",
     "UNCLAIMED_ROUTE_FAMILY",
+    "CapabilityOverrideError",
+    "IgnoredSamplingParam",
     "UnclaimedRouteFamily",
     "build_capabilities",
     "get_overlay_path",
     "get_resolved_presets",
+    "ignored_sampling_params",
     "litellm_model_entries",
     "resolve_effective_preset",
     "resolve_overlay_path",
@@ -870,6 +874,7 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         # Params policy
         "fixed_temperature",
         "supports_seed",
+        "supports_sampling_params",
         "reasoning_via_extra_body",
         "reasoning_via_thinking_kwarg",
         "drop_sampling_when_thinking",
@@ -953,6 +958,8 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         params["fixed_temperature"] = overrides["fixed_temperature"]
     if "supports_seed" in overrides:
         params["supports_seed"] = overrides["supports_seed"]
+    if "supports_sampling_params" in overrides:
+        params["supports_sampling_params"] = overrides["supports_sampling_params"]
     if "reasoning_via_extra_body" in overrides:
         params["reasoning_via_extra_body"] = overrides["reasoning_via_extra_body"]
     if "reasoning_via_thinking_kwarg" in overrides:
@@ -1267,6 +1274,74 @@ def unclaimed_route_families(
         finding = unclaimed_route_family(cfg.name, cfg.provider)
         if finding is not None:
             findings.append((path, finding))
+    return findings
+
+
+IGNORED_SAMPLING_PARAM: Final = (
+    "A model config sets a sampling parameter its preset declares the model does not take; "
+    "the value is not sent"
+)
+
+#: Already reported as ``USER_TEMPERATURE_IGNORED``.
+_USER_TEMPERATURE_PATH: Final = "models.user.temperature"
+
+
+class CapabilityOverrideError(ValueError):
+    """A model config's ``capabilities`` overrides do not build; ``path`` names the block."""
+
+    def __init__(self, path: str, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class IgnoredSamplingParam:
+    """An explicit ``temperature`` / ``top_p`` the capabilities built for its config drop."""
+
+    field: str
+    model_name: str
+    provider: str
+    preset: str
+
+    @property
+    def remedy(self) -> str:
+        return (
+            f"Remove the key, or, for a transport that accepts it, set "
+            f"capabilities: {{supports_sampling_params: true}} on this model config "
+            f"(preset {self.preset!r} declares supports_sampling_params: false)"
+        )
+
+
+def ignored_sampling_params(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, IgnoredSamplingParam]]:
+    """``("<path>.<field>", finding)`` for every explicit, non-null ``temperature`` or
+    ``top_p``, fallbacks included, that the config's capabilities, its own
+    ``capabilities`` overrides applied, would not send. ``config validate`` and the
+    run both give these. Raises :class:`CapabilityOverrideError` for a config whose
+    ``capabilities`` do not build."""
+    findings: list[tuple[str, IgnoredSamplingParam]] = []
+    for path, cfg in iter_model_configs(models):
+        explicit = [
+            field
+            for field in ("temperature", "top_p")
+            if field in cfg.model_fields_set
+            and getattr(cfg, field) is not None
+            and f"{path}.{field}" != _USER_TEMPERATURE_PATH
+        ]
+        if not explicit:
+            continue
+        try:
+            capabilities = build_capabilities(cfg.name, cfg.provider, overrides=cfg.capabilities)
+        except ValueError as err:
+            raise CapabilityOverrideError(f"{path}.capabilities", str(err)) from err
+        preset = resolve_effective_preset(cfg.name, cfg.provider)
+        findings.extend(
+            (f"{path}.{field}", IgnoredSamplingParam(field, cfg.name, cfg.provider, preset))
+            for field in explicit
+            if capabilities.params_policy.declines_sampling_param(field)
+        )
     return findings
 
 

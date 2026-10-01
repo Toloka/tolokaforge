@@ -1754,17 +1754,27 @@ class ParamsPolicy(ABC):
         seed: int | None,
         reasoning: ReasoningConfig | None,
     ) -> dict: ...
+
+    def declines_sampling_param(self, param: str) -> bool:
+        return False
 ```
+
+`kwargs` arrives carrying the request's `top_p` (config or caller), so a
+policy that drops sampling parameters drops it with the rest.
+`declines_sampling_param` answers whether a config's `temperature` / `top_p`
+is never sent; `config validate` and the run-start sweep read it to warn on an
+explicit value the policy drops.
 
 `GenerationParams` declares its `KNOWN_KEYS` — the preset-driven flags below:
 
 | Flag | Default | Effect |
 |---|---|---|
-| `fixed_temperature` | `None` | Override caller-supplied temperature (legacy compat knob). |
+| `fixed_temperature` | `None` | Send this `temperature` in place of the config's or caller's. Sent even when `supports_sampling_params` is `false`. |
 | `supports_seed` | `true` | Forward `seed` kwarg when caller or config supplies one. |
+| `supports_sampling_params` | `true` | `false` sends no `temperature` / `top_p` / `top_k` from the config or the caller (a `fixed_temperature` is still sent). For model families whose endpoints take no sampling parameters. An explicit `temperature` / `top_p` on such a config earns a warning from `config validate` and at run start. |
 | `reasoning_via_extra_body` | `false` | Adaptive reasoning → `extra_body.reasoning={effort, enabled:true}` (OpenRouter non-Anthropic path). |
 | `reasoning_via_thinking_kwarg` | `false` | Budget reasoning → top-level `thinking={"type":"enabled","budget_tokens":N}` (Anthropic-native). |
-| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k` whenever the `thinking` kwarg was emitted (P3b — OpenRouter silently strips them today; Anthropic raw 400s). |
+| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k`, from the config or the caller, whenever the `thinking` kwarg was emitted (OpenRouter silently strips them; Anthropic raw 400s). |
 | `reasoning_budget_default` | `None` | Default `budget_tokens` when `ReasoningConfig(mode="budget")` omits its own budget. |
 
 ### Reasoning routing matrix
