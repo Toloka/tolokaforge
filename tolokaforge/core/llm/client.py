@@ -16,6 +16,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -66,6 +67,7 @@ from tolokaforge.core.llm.providers import (
 )
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
+from tolokaforge.core.llm.session_header import OpenRouterDefaultHeader, session_header_conflict
 from tolokaforge.core.llm.usage import (
     CostSource,
     Usage,
@@ -683,6 +685,9 @@ class LLMClient:
         # scope for this provider, so downstream checks are a single
         # ``is None`` test. See ``tolokaforge/core/llm/proxy.py``.
         self._proxy = resolve_proxy_config()
+        conflict = session_header_conflict(config, self._proxy, header_path="session.header")
+        if conflict is not None:
+            raise conflict
         if self._proxy is not None and not self._proxy.applies_to(self.provider):
             if not self._provider_binding.unroutable:
                 # Warn rather than drop quietly: a deployment that configured a
@@ -1063,12 +1068,14 @@ class LLMClient:
         )
         title = os.getenv("TOLOKAFORGE_OPENROUTER_TITLE", "Tolokaforge Evaluation")
 
-        existing_headers.setdefault("HTTP-Referer", referer)
-        existing_headers.setdefault("X-Title", title)
+        existing_headers.setdefault(OpenRouterDefaultHeader.REFERER.value, referer)
+        existing_headers.setdefault(OpenRouterDefaultHeader.TITLE.value, title)
 
         opt_out_pref = os.getenv("TOLOKAFORGE_OPENROUTER_OPT_OUT", "true").lower()
         if opt_out_pref in {"1", "true", "yes", "on"}:
-            existing_headers.setdefault("X-Data-Collection-Opt-Out", "true")
+            existing_headers.setdefault(
+                OpenRouterDefaultHeader.DATA_COLLECTION_OPT_OUT.value, "true"
+            )
 
         litellm.openai_headers = existing_headers
         return existing_headers
@@ -1485,6 +1492,7 @@ class LLMClient:
         if self.provider == "mock":
             return self._mock_generate(messages, tools)
 
+        session_id = self._session_id_for_call(observation)
         retrying = self._build_retrying(observation)
         for attempt in retrying:
             with attempt:
@@ -1502,6 +1510,7 @@ class LLMClient:
                         reasoning=reasoning,
                         top_p=top_p,
                         max_tokens=max_tokens,
+                        session_id=session_id,
                     )
                 except BaseException as exc:
                     self._fire_call_finished(
@@ -1513,6 +1522,18 @@ class LLMClient:
                 )
                 return result
         raise RuntimeError("Retrying controller exited without a result")
+
+    def _session_id_for_call(self, observation: LLMCallObservation | None) -> str | None:
+        """The session header value every attempt of one ``generate()`` call sends.
+
+        ``None`` when this model declares no session header. Otherwise the
+        observation's conversation id, or one UUID4 for this call alone.
+        """
+        if self.config.session is None:
+            return None
+        if observation is not None and observation.session_id is not None:
+            return observation.session_id
+        return str(uuid.uuid4())
 
     def _build_retrying(self, observation: LLMCallObservation | None) -> Retrying:
         """Build the per-call outer :class:`Retrying` controller.
@@ -1743,6 +1764,7 @@ class LLMClient:
         reasoning: ReasoningConfig | None,
         top_p: float | None,
         max_tokens: int | None,
+        session_id: str | None,
     ) -> GenerationResult:
         """One outer-retry attempt: prepare → build → call → detect → assemble.
 
@@ -1763,6 +1785,7 @@ class LLMClient:
             reasoning=reasoning,
             top_p=top_p,
             max_tokens=max_tokens,
+            session_id=session_id,
         )
         start_time = time.time()
         response = self._call_with_key_rotation(kwargs)
@@ -1865,6 +1888,7 @@ class LLMClient:
         reasoning: ReasoningConfig | None,
         top_p: float | None,
         max_tokens: int | None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Build the complete kwargs dict for the downstream litellm call.
 
@@ -1873,6 +1897,8 @@ class LLMClient:
         (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
+        ``session_id`` is the value of this model's session header, required
+        when ``config.session`` is set (see :meth:`_session_id_for_call`).
         Providers whose binding declares ``kwargs_pin_transport`` defer their
         transport pinning to :meth:`_call_with_key_rotation` so the API key
         is read fresh per attempt.
@@ -2055,7 +2081,24 @@ class LLMClient:
             merged_headers.update(self._proxy.request_headers())
             kwargs["extra_headers"] = merged_headers
 
+        self._apply_session_header(kwargs, session_id)
         return kwargs
+
+    def _apply_session_header(self, kwargs: dict[str, Any], session_id: str | None) -> None:
+        """Add this model's session header to ``kwargs['extra_headers']``, if it declares one."""
+        session = self.config.session
+        if session is None:
+            return
+        if session_id is None:
+            raise ValueError(
+                f"{self.model_name} declares session header {session.header!r} but the "
+                f"request was built without a session id"
+            )
+        # Construction refused a name the gateway or OpenRouter defaults set, so this adds.
+        kwargs["extra_headers"] = {
+            **(kwargs.get("extra_headers") or {}),
+            session.header: session_id,
+        }
 
     def _is_timeout_error(self, exc: BaseException) -> bool:
         """Detect transport-level timeout errors from the LLM client stack.

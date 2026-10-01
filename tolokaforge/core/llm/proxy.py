@@ -49,7 +49,8 @@ All values are read through :class:`~tolokaforge.secrets.SecretManager`, so a
 ``LLM_PROXY_REQUEST_ID_HEADER``
     Optional header **name**. When set, each request gets that header with a
     fresh UUID4 value. Needed by gateways that want a per-request correlation
-    id; a static env var cannot express "new value per call".
+    id; a static env var cannot express "new value per call". A value stable
+    for a whole conversation is ``ModelConfig.session``'s header instead.
 
 ``LLM_PROXY_PROVIDERS``
     Optional comma-separated override of which ``provider`` values to route

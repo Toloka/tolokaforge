@@ -3,17 +3,48 @@
 Holds the LLM invocation config that flows across the trial spec wire:
 per-provider identity (name / provider), sampling parameters,
 :class:`ReasoningConfig`, an :class:`OpenRouterConfig` when the model is
-routed via OpenRouter, and an ordered ``fallbacks`` chain a client falls
-through on hard failure.
+routed via OpenRouter, a :class:`ModelSessionConfig` naming a per-conversation
+session header, and an ordered ``fallbacks`` chain a client falls through on
+hard failure.
 """
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
-__all__ = ["ModelConfig", "OpenRouterConfig"]
+__all__ = ["ModelConfig", "ModelSessionConfig", "OpenRouterConfig"]
+
+#: RFC 9110 ``field-name`` (a ``token``).
+_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+#: Transport headers litellm or the engine sets; a session value must not replace them.
+_RESERVED_SESSION_HEADERS = frozenset({"authorization", "content-type", "content-length", "host"})
+
+
+class ModelSessionConfig(BaseModel):
+    """The request header that carries this model's conversation id (docs/CONFIG.md)."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    header: str
+
+    @field_validator("header")
+    @classmethod
+    def _validate_header(cls, value: str) -> str:
+        if not _HEADER_NAME.fullmatch(value):
+            raise ValueError(
+                f"session.header {value!r} is not an HTTP header name: use letters, digits "
+                f"and !#$%&'*+.^_`|~- only, no spaces or colons."
+            )
+        if value.lower() in _RESERVED_SESSION_HEADERS:
+            raise ValueError(
+                f"session.header {value!r} names a transport header the engine or litellm "
+                f"sets ({', '.join(sorted(_RESERVED_SESSION_HEADERS))}); pick another name."
+            )
+        return value
 
 
 class OpenRouterConfig(BaseModel):
@@ -75,6 +106,8 @@ class ModelConfig(BaseModel):
     capabilities: dict[str, Any] | None = None  # Override auto-detected model capabilities
     # OpenRouter-only provider routing; rejected for other providers by the validator below.
     openrouter: OpenRouterConfig | None = None
+    # Not inherited by ``fallbacks`` entries: each declares its own or sends none.
+    session: ModelSessionConfig | None = None
     # Ordered fallback chain. When a hard failure hits the primary
     # model, subsequent turns for the affected trial use the next entry
     # in this list. Empty list (default) → no fallback wrapper. See

@@ -85,6 +85,7 @@ upgrading past v0.17.x.
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
+| [`session_header.py`](../tolokaforge/core/llm/session_header.py) | Refusal of a `ModelConfig.session` header another header source also sets; the engine's OpenRouter default header names |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `BuiltinUserSimulator` |
 
 ## `reasoning`
@@ -957,7 +958,7 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_BASE_URL` | Gateway base URL. **Setting this enables the transport**; everything else is optional. |
 | `LLM_PROXY_API_KEY` | Credential presented to the gateway. Omit only for gateways that authenticate by network position — litellm then falls through to its provider-env lookup and forwards the *provider's* key to the gateway host instead. |
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
-| `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
+| `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request: a per-request correlation id. A static env var cannot express "new value per call". For replica affinity, which needs one value per conversation, use the model's session header ([Session header](#session-header)). |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
 | `LLM_PROXY_PREFERRED_ROUTE` | Namespace(s) that win when the gateway serves one model under several names. A comma-separated list is honoured in order (`openrouter/,nebius/`), so multi-provider gateways can rank their routes. Without a matching entry an ambiguous lookup raises rather than guessing a serving path. |
 | `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` | `true`/`false` (default `false`). When true, a catalog entry of `<ns>/*` routes models whose own `provider` is `<ns>`, addressed by their untranslated name. Namespace-matched only - a foreign wildcard never routes. Exact entries always win. |
@@ -1112,6 +1113,33 @@ paths apart.
 tolokaforge requires litellm >= 1.93.0; environments pinned below it must
 upgrade (earlier releases strip Anthropic `cache_control` on resolved gateway
 routes, lack the native `meta` provider, or crash tool calls without `fastapi`).
+
+### Session header
+
+A model config's `session: {header: <name>}` (docs/CONFIG.md) makes every request
+that model sends carry `<name>` with a conversation id, for backends that keep one
+conversation on one replica so its prefix cache stays warm. It is a property of the
+model config, not of the gateway: the header is sent on every route that model takes,
+gateway on or off.
+
+- **Value.** `LLMClient.generate` reads `LLMCallObservation.session_id`. A call whose
+  observation carries one sends it; a call without (no observation, or
+  `session_id=None`) gets one fresh UUID4 for that `generate()` call. Either value is
+  fixed before the outer retry starts, so every outer attempt, timeout retry and the
+  OpenAI SDK's own re-sends of one call send the same value, and so does a fallback
+  hop, which forwards the same observation to the next client.
+- **Merge.** The header is added to `extra_headers` after the OpenRouter defaults and
+  the gateway's `request_headers()`; it is never written to the global
+  `litellm.openai_headers`. A config without `session` sends no session header, even
+  when its observation carries an id.
+- **Collision refusal.** A session header whose name (case-insensitively) is also an
+  `LLM_PROXY_HEADERS` key or the `LLM_PROXY_REQUEST_ID_HEADER` name, for a provider
+  the gateway routes, or one of the engine's OpenRouter defaults, for an OpenRouter
+  provider, is refused by `session_header_conflicts`. Every site feeds it the
+  env-resolved `resolve_proxy_config()` before any catalog lookup: `LLMClient`
+  construction, the `run` / `prepare` / `worker` start sweep over every model and
+  fallback, and `config validate`. A config whose gateway headers the catalog would
+  drop at runtime is therefore still refused.
 
 ### Serving a NEW provider behind the gateway
 
