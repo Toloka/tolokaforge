@@ -104,7 +104,7 @@ UNGRADED_REASONS = frozenset(
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_TIMEOUT,
         TerminationReason.EMPTY_COMPLETION,
-        TerminationReason.REASONING_BUDGET_EXHAUSTED,
+        TerminationReason.REASONING_WITHOUT_ACTION,
         TerminationReason.PROVISION_ERROR,
         TerminationReason.TRIAL_LOST,
     }
@@ -127,9 +127,9 @@ PROSE_IMPOSTORS: dict[TerminationReason, Exception] = {
     TerminationReason.PROVISION_ERROR: RuntimeError(
         "provisioning failed: the substrate never came up (provision_error)"
     ),
-    TerminationReason.REASONING_BUDGET_EXHAUSTED: RuntimeError(
+    TerminationReason.REASONING_WITHOUT_ACTION: RuntimeError(
         "LLM API call failed: the model spent its whole output budget on "
-        "reasoning and returned no action (reasoning_budget_exhausted)"
+        "reasoning and returned no action (reasoning_without_action)"
     ),
 }
 

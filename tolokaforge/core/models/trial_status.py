@@ -31,7 +31,9 @@ class TerminationReason(str, Enum):
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
     EMPTY_COMPLETION = "empty_completion"  # Provider returned no text and no tool calls
-    REASONING_BUDGET_EXHAUSTED = "reasoning_budget_exhausted"  # Output budget went entirely to reasoning, leaving no room for an action
+    REASONING_WITHOUT_ACTION = (
+        "reasoning_without_action"  # Billed reasoning tokens but returned no text and no tool call
+    )
     CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"  # Wire history exceeded the provider's max input tokens and no summarize recovery was possible
     PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
     TRIAL_LOST = "trial_lost"  # The substrate no longer holds the trial the engine was running

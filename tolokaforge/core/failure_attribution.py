@@ -63,7 +63,7 @@ EXCLUDED_TYPED_REASONS = frozenset(
         TerminationReason.EMPTY_COMPLETION,
         TerminationReason.PROVISION_ERROR,
         TerminationReason.RATE_LIMIT,
-        TerminationReason.REASONING_BUDGET_EXHAUSTED,
+        TerminationReason.REASONING_WITHOUT_ACTION,
     }
 )
 """The termination reasons that exclude a trial from the measured denominator.
@@ -71,8 +71,8 @@ EXCLUDED_TYPED_REASONS = frozenset(
 Membership is earned by *typed* evidence: every one of these reasons is
 produced from an exception type, an HTTP status, or a typed observation of a
 ``GenerationResult`` whose ``text`` is empty and whose ``tool_calls`` list is
-empty after retries — split between the one that billed reasoning tokens for
-the deliberation it truncated (``REASONING_BUDGET_EXHAUSTED``) and the one the
+empty after retries — split between the one that billed reasoning tokens and
+then produced no action (``REASONING_WITHOUT_ACTION``) and the one the
 provider returned nothing at all for (``EMPTY_COMPLETION``). Never from
 matching prose against an exception message. A reason produced by text
 matching cannot gate exclusion
@@ -170,7 +170,7 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_ERROR,
         TerminationReason.EMPTY_COMPLETION,
-        TerminationReason.REASONING_BUDGET_EXHAUSTED,
+        TerminationReason.REASONING_WITHOUT_ACTION,
         TerminationReason.CONTEXT_WINDOW_EXCEEDED,
         TerminationReason.ERROR,
     ):

@@ -79,7 +79,7 @@ from tolokaforge.core.models import (
     require_user_simulator_config,
 )
 from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
-from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
+from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
@@ -4059,6 +4059,7 @@ class Orchestrator:
             )
 
         aggregate["schema_version"] = AGGREGATE_SCHEMA_VERSION
+        aggregate["tolokaforge_version"] = _engine_version()
         aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
             by_alias=True, mode="json"
         )

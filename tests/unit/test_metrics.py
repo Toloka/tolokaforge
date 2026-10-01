@@ -255,7 +255,7 @@ class TestInfrastructureAbortsLeaveTheDenominator:
             "empty_completion": 0,
             "provision_error": 0,
             "rate_limit": 2,
-            "reasoning_budget_exhausted": 0,
+            "reasoning_without_action": 0,
         }
         assert metrics["harness_errors"] == 0
         assert metrics["successful_trials"] == 1

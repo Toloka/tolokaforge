@@ -388,7 +388,7 @@ def test_reasoning_only_truncation_is_not_an_empty_completion():
         config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
     ).run("sys", messages, time.time())
 
-    assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
     assert outcome.status == TrialStatus.FAILED
     assert messages[-1].role == MessageRole.SYSTEM
     assert "reasoning" in messages[-1].content
@@ -419,7 +419,7 @@ def test_reasoning_only_truncation_resamples_by_default():
     ).run("sys", messages, time.time())
 
     assert client.calls == 2
-    assert outcome.termination_reason != TerminationReason.REASONING_BUDGET_EXHAUSTED
+    assert outcome.termination_reason != TerminationReason.REASONING_WITHOUT_ACTION
     assert any(m.role == MessageRole.ASSISTANT and m.content == "recovered" for m in messages)
     # The actionless result is still never appended, so the next request's tail
     # is not an empty ``role=model`` turn.
@@ -473,7 +473,14 @@ def test_a_genuinely_empty_completion_still_terminates_one_shot():
 
 
 def test_reasoning_only_without_a_length_signal_is_still_a_stall():
-    """A model can stop mid-deliberation without reaching the ceiling."""
+    """A model can stop mid-deliberation without reaching the ceiling.
+
+    The commoner of the two shapes in practice. Observed live on
+    ``openai/gpt-oss-120b`` across a 10-trial sweep: six actionless turns, each
+    ``finish_reason="stop"`` with 220-414 reasoning tokens — nowhere near the
+    16384 ceiling that produced the shape this branch was first written for.
+    Gating on ``finish_reason == "length"`` alone would have missed every one.
+    """
     client = _ScriptedClient(
         [
             GenerationResult(
@@ -490,7 +497,7 @@ def test_reasoning_only_without_a_length_signal_is_still_a_stall():
         config=LoopConfig(max_turns=5, episode_timeout_s=10_000, reasoning_stall_retry_count=0),
     ).run("sys", [], time.time())
 
-    assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
 
 
 def test_empty_completion_still_records_generation_usage():
@@ -986,7 +993,7 @@ def test_length_finish_reason_with_empty_content_takes_the_stall_path():
     ).run("sys", messages, time.time())
 
     assert client.calls == 1
-    assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
+    assert outcome.termination_reason == TerminationReason.REASONING_WITHOUT_ACTION
     # The content-carrying length retry did NOT fire — its feedback tells the
     # model to split an action it did not produce.
     assert not any(
