@@ -161,7 +161,7 @@ def _trial_state(pack_tools: dict[str, Any], *calls: tuple[str, dict[str, Any]])
 def _check(
     db_state: dict[str, Any], actions: list[dict[str, Any]]
 ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
-    return StateChecker().check_hash_against_golden_replay(
+    score, reason, diff, replay, _ = StateChecker().check_hash_against_golden_replay(
         db_state=db_state,
         golden_actions=actions,
         task_dir=_TASK_DIR,
@@ -169,6 +169,7 @@ def _check(
         mcp_server_path=_MCP_SERVER,
         task_domain="shop",
     )
+    return score, reason, diff, replay
 
 
 def test_a_misspelled_action_raises_where_it_used_to_pass_the_wrong_trial(
@@ -428,7 +429,7 @@ def tau_golden_actions() -> list[dict[str, Any]]:
 
 
 def _replay_the_tau_pack(actions: list[dict[str, Any]]) -> GoldenReplayRecord:
-    _, _, _, replay = StateChecker().check_hash_against_golden_replay(
+    _, _, _, replay, _ = StateChecker().check_hash_against_golden_replay(
         db_state=json.loads((_TAU_TASK_DIR / _TAU_INITIAL_STATE).read_text()),
         golden_actions=actions,
         task_dir=_TAU_TASK_DIR,

@@ -1798,7 +1798,7 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
     )
     for case, hash_score in _COMPOSITION_HASH_CASES:
         db_state = extract_db_state(load_case(pack, case).state)
-        actual, _ = StateChecker().check_hash(db_state, expected_hash)
+        actual, _, _ = StateChecker().check_hash(db_state, expected_hash)
         assert actual == hash_score, (
             f"the composition fixture's {case!r} case scores {actual} against the hash of "
             f"the state its task declares it starts in, not the {hash_score} lock 6 assumes"

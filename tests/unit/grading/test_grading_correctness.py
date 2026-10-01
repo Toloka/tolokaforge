@@ -108,7 +108,7 @@ class TestGoldenMatchScoresOne:
 
         # Verify grading logic produces score=1.0
         checker = StateChecker()
-        score, reason = checker.check_hash(actual_state, expected_hash)
+        score, reason, _ = checker.check_hash(actual_state, expected_hash)
 
         assert score == 1.0, f"Score should be 1.0 for hash match, got {score}"
         assert "match" in reason.lower(), f"Reason should mention 'match': {reason}"
@@ -185,7 +185,7 @@ class TestGoldenMismatchScoresZero:
 
         # Verify grading logic produces score=0.0
         checker = StateChecker()
-        score, reason = checker.check_hash(actual_state, expected_hash)
+        score, reason, _ = checker.check_hash(actual_state, expected_hash)
 
         assert score == 0.0, f"Score should be 0.0 for hash mismatch, got {score}"
         assert "mismatch" in reason.lower(), f"Reason should mention 'mismatch': {reason}"

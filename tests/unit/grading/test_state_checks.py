@@ -264,7 +264,7 @@ class TestHashGrading:
         """Test matching hash"""
         state = {"status": "completed", "value": 42}
         expected_hash = consistent_hash(to_hashable(state))
-        score, reason = checker.check_hash(state, expected_hash)
+        score, reason, _ = checker.check_hash(state, expected_hash)
         assert score == 1.0
         assert "matches" in reason.lower()
 
@@ -272,7 +272,7 @@ class TestHashGrading:
         """Test mismatching hash"""
         state = {"status": "completed", "value": 42}
         wrong_hash = "0" * 64
-        score, reason = checker.check_hash(state, wrong_hash)
+        score, reason, _ = checker.check_hash(state, wrong_hash)
         assert score == 0.0
         assert "mismatch" in reason.lower()
 
