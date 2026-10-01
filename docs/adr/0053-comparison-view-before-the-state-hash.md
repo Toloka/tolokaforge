@@ -1,10 +1,10 @@
 # 0053. A one-sided comparison view before the state hash
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-30
 - **Deciders:** @CiroGamboa, @rsmtnn
 - **Supersedes:** none
-- **Realizes:** [ADR-0011](0011-seam-and-declaration-conventions.md) § Pattern B (the `comparison_view` declaration). § Pattern A (a registry) is prepared for, not realized: see [Extensibility](#extensibility-a-rule-table-in-the-registrys-shape).
+- **Realizes:** [ADR-0011](0011-seam-and-declaration-conventions.md) § Pattern A (the `tolokaforge.comparison_view_rules` seam, see [The seam](#the-seam-tolokaforgecomparison_view_rules)) and § Pattern B (the `comparison_view` declaration).
 - **Related issues:** #1472 (row order as a per-table hint), #1670 (unstable fields before `compare_columns` on both substrates, fixed by #1671), #612 (two legal final-state shapes — not addressed here), #1444 (hash / diff verdict parity)
 
 ## Context and Problem Statement
@@ -90,11 +90,13 @@ which logic ran or with which configuration.
 - **One vocabulary, reached incrementally.** v1 is its first slice, and no v1
   rule duplicates a mechanism that exists. The existing two-sided mechanisms move
   into it one step at a time, each step retiring what it replaces.
-- **Extensible shape, no dead plumbing.** The built-in rules dispatch through a
-  table shaped like the registry they may later become. No entry-point group
-  ships while a third-party rule cannot reach the runner image.
-- **Versioned.** Every grade records which function version and which
-  configuration (sha256) produced the view.
+- **A real seam, with its trust boundary stated.** A rule's `kind` resolves
+  through an entry-point group, and the built-in rules register there like any
+  other: a registry the built-ins bypass is not a seam. A rule decides which
+  states hash equal, so the seam states what the engine holds a registered rule
+  to.
+- **Versioned.** Every grade records which composition version and which rules
+  (their names, versions and settings, as a sha256) produced the view.
 - **Every `grading.yaml` key is accounted for.** One new key,
   `state_checks.comparison_view`, gets a `key_manifest` entry and a differential
   in `test_grading_substrate_parity`. Rule kinds are values under it, not keys.
@@ -102,13 +104,17 @@ which logic ran or with which configuration.
 ## Considered Options
 
 1. **v1 = `exclude_records` (with `exclude_tables` as a convenience) and
-   `normalize_ids`, dispatched through a built-in rule table in the future
-   registry's shape.** **Chosen.**
-2. **Option 1 plus a `tolokaforge.comparison_view_rules` entry-point group and a
-   `custom` kind.** Deferred. The runner image installs only the subset wheel,
-   and plugin delivery into it is a separate, deferred decision, so a package's
-   rule could not run where hashes are graded. The table in option 1 makes the
-   group a one-line change when delivery exists.
+   `normalize_ids`, resolved through a `tolokaforge.comparison_view_rules`
+   entry-point group the built-ins register in.** **Chosen.** A computed rule,
+   the first draft's `custom` kind, is any rule a distribution registers.
+2. **The same rules dispatched through a built-in table in the registry's
+   shape, the group deferred.** Rejected: registry ceremony with no registry
+   benefit. The Protocol, the per-rule validation and the resolution function
+   exist either way, and the table defers only the part that lets a rule from
+   outside the engine be one. Getting a distribution into the runner image is a
+   delivery question every runner-reachable group shares (a judge kind's
+   distribution must be installed there too), not a reason to give this seam
+   another shape.
 3. **The first draft's seven kinds.** Rejected.
    - `drop_fields` duplicates `unstable_fields`.
    - `unordered` duplicates `order: unordered`, which already sorts a table's
@@ -131,7 +137,8 @@ which logic ran or with which configuration.
 ## Decision
 
 Adopt **option 1**, as three reviewable changes: the module with
-`exclude_records` (including its nested `path` form) and `exclude_tables`;
+`exclude_records` (including its nested `path` form) and `exclude_tables`,
+resolved through the entry-point group;
 `normalize_ids` with property tests; the wiring into both substrates with the
 parity test. The wire carries the view's diff and record in one field,
 `Grade.comparison_view_json`.
@@ -139,7 +146,8 @@ parity test. The wire carries the view's diff and record in one field,
 ### The function
 
 `tolokaforge/core/grading/comparison_view.py`. It depends on stdlib and
-pydantic only. The wiring makes it runner-reachable, so it must not import
+pydantic, and reaches `tolokaforge.core.plugin_registry` only where a kind
+resolves. The wiring makes it runner-reachable, so it must not import
 `state_checks.py` or `combine.py`, which the subset wheel excludes. Until the
 wiring lands, `RUNNER_SUBSET_EXCLUDED_FILES` lists it: the partition lock refuses
 a subset file the runner never reaches.
@@ -221,9 +229,10 @@ state_checks:
         scope: new_records                # records absent from the initial state
 ```
 
-- **`kind` resolves through the rule table**, not through a static discriminated
-  union. The rule validates its own entry into its `extra="forbid"` config model.
-  This is the path a registered rule will take later.
+- **`kind` resolves through the `tolokaforge.comparison_view_rules` group**, not
+  through a static discriminated union, and the rule validates its own entry
+  into its `extra="forbid"` config model. A built-in and a registered rule take
+  the same path.
 - **Tables a rule names must exist** in `initial_state`; fields are checked only
   against a declared schema. Seeded records are not a schema: agents write
   fields no seeded row carries. Under `relaxed_validation` a missing table is a
@@ -250,42 +259,80 @@ Left out of v1, and where the need goes instead:
 | `drop_fields` | `unstable_fields`. One measured case needs a field nested in a dict column (1 of 16). We propose a separate change that lets `unstable_fields.field_name` take a dotted path into a dict column, and refuses a dotted name that matches nothing (today it silently does nothing). |
 | `unordered` | `compare_columns.<table>.<column>.order: unordered`, which already sorts the table's rows, until the first consolidation step below. |
 | `fold_values` | The existing equivalence flags. No measured case needs `round`, `sorted_set`, `equivalences` or `date_only`. |
-| `custom` | Held with the registry; the five remaining measured passes wait for it. |
+| `custom` | Any registered rule (see [The seam](#the-seam-tolokaforgecomparison_view_rules)). The five remaining measured passes need computed rules of that kind; none ships in the engine. |
 
-### Extensibility: a rule table in the registry's shape
+### The seam: `tolokaforge.comparison_view_rules`
 
 ```python
 @runtime_checkable
 class ComparisonViewRule(Protocol):
-    kind: str
-    config_model: type[ComparisonViewRuleConfig]
+    NAME: ClassVar[str]                                     # the entry-point name
+    VERSION: ClassVar[int]                                  # what the rule computes; hashed
+    config_model: ClassVar[type[ComparisonViewRuleConfig]]  # extra="forbid"
     def apply(self, state: dict[str, list[dict]], *, initial: Mapping | None,
               id_fields: Mapping[str, str | list[str]],
               config: ComparisonViewRuleConfig) -> RuleOutcome: ...
-
-_BUILTIN_RULES: Mapping[str, ComparisonViewRule] = {
-    "exclude_records": ExcludeRecords(),
-    "exclude_tables": ExcludeTables(),
-    "normalize_ids": NormalizeIds(),
-}
-
-def comparison_view_rules() -> Mapping[str, ComparisonViewRule]:
-    return _BUILTIN_RULES
 ```
 
-Every rule's config model derives from `ComparisonViewRuleConfig`, which
-carries `kind` and `names()`, the tables the entry names (the `exclude_tables`
-guard reads it). The shape follows `core/llm/presets.py`: a built-in table typed
-by a Protocol, and one function that resolves a name through it. Turning on
-third-party rules later changes only `comparison_view_rules()`:
+```toml
+[project.entry-points."tolokaforge.comparison_view_rules"]
+exclude_records = "tolokaforge.core.grading.comparison_view:ExcludeRecords"
+exclude_tables = "tolokaforge.core.grading.comparison_view:ExcludeTables"
+normalize_ids = "tolokaforge.core.grading.comparison_view:NormalizeIds"
+```
 
-- it merges `discover_entry_points("tolokaforge.comparison_view_rules")` into
-  the built-ins and refuses duplicates;
-- the group joins `RUNNER_REACHABLE_ENTRY_POINT_GROUPS`;
-- a `custom` kind becomes any registered name.
+- **The registry.** `load_comparison_view_rule(kind)` and
+  `available_comparison_view_rules()` in `plugin_registry` resolve the group
+  with the shared fail-loud discovery. An unknown kind raises
+  `UnknownImplementationError` naming the registered kinds, and a name two
+  distributions register raises `DuplicateRegistrationError` for every lookup
+  into the group. The loader returns the class, as `load_judge_kind` does; the
+  view instantiates it per entry.
+- **The contract.** `resolve_comparison_view_rule` holds a registration to its
+  declared parts: `NAME` is the entry-point name, `VERSION` a positive int,
+  `config_model` derives from `ComparisonViewRuleConfig` and keeps
+  `extra="forbid"`, and `apply` exists. `apply_comparison_view` refuses an
+  outcome that is not a `RuleOutcome`, or that records an application under
+  another rule's name.
+- **Validation per rule.** The block is a list of `{kind, ...}` entries: `kind`
+  picks the rule, and the rule's config model validates the rest. Every config
+  model derives from `ComparisonViewRuleConfig`, which carries `kind` and
+  `names()`, the tables the entry names (the `exclude_tables` guard reads it).
+- **The built-ins** register in `pyproject.toml` like any other rule. Nothing in
+  the engine branches on a built-in's name.
+- **Where it resolves.** The wiring makes the runner resolve rules:
+  `RegisterTrial` validates the trial spec, and grading applies the view. The
+  group is therefore runner-reachable, and the runner-subset wheel carries its
+  rows. A rule from another distribution grades on the runner where that
+  distribution is installed in the runner image; an image without it refuses
+  the trial at `RegisterTrial`, naming the kinds it has. The db-service neither
+  validates nor applies a view: the runner reads its full states and applies the
+  view itself, so the wheel-less db-service image needs no registry.
 
-The Protocol, the per-rule config validation and the error path stay as they
-are.
+#### The trust boundary
+
+A rule decides which two states hash equal, so a registered rule can turn a
+failing trial into a passing one: a rule that drops every table passes
+anything. That is a stronger grant than a judge kind's or a search backend's. A
+rule rewrites the evidence the deterministic hash verdict is computed from,
+before every mask, and only its identity in the grade shows that it did. The
+engine holds a rule to four things:
+
+1. **It runs only where it is named.** A rule runs for a task whose
+   `comparison_view` names its kind, so installing a distribution changes the
+   grade of no other task.
+2. **A name has one registration.** A distribution registering a built-in's
+   name, or another distribution's, fails every lookup into the group instead
+   of shadowing it.
+3. **It sees one side.** The other state is never an input, and the view hands
+   its rules deep copies of the state, the initial state and `id_fields`.
+4. **Its identity is in the grade.** `NAME` and `VERSION` are hashed into
+   `config_sha256`, and the record lists what it did under its `NAME`.
+
+The engine cannot tell a sound rule from an unsound one. A rule is part of the
+answer key: a distribution that registers one is reviewed and pinned as a
+task's golden actions are. The Protocol's docstring and
+`docs/GRADER_SERVICE.md` § Extension points state the same boundary.
 
 ### One vocabulary over time
 
@@ -318,17 +365,20 @@ loader translates into it.
 `ComparisonViewRecord` is recorded on the grade and in the bundle:
 
 - `version` — the block's schema version;
-- `function_version` — a module constant, bumped on any change to what a rule
-  does;
-- `config_sha256` — sha256 of what the rules do: per rule, its `kind` and its
-  settings that differ from their defaults, `reason` left out, as canonical JSON
-  the way `ModelsFingerprint` hashes model data;
+- `function_version` — a module constant, the version of the composition: the
+  order the rules run in, what each is handed and what the record holds;
+- `config_sha256` — sha256 of what the rules do: per rule, its `kind`, its
+  `VERSION` and its settings that differ from their defaults, `reason` left
+  out, as canonical JSON the way `ModelsFingerprint` hashes model data;
 - `applied` — per rule and table touched (`exclude_tables` gives one entry per listed table): kind, table, path, rows removed, ids rewritten.
 
-The sha changes only when a declaration asks for something else. A new optional
-field whose default keeps a rule's behaviour keeps every recorded sha; a change
-to what a rule does bumps `function_version` instead; `reason` is prose, not
-behaviour, and is not hashed.
+The sha changes when a declaration asks for something else, or when a rule it
+names changes what it computes. A new optional field whose default keeps a
+rule's behaviour keeps every recorded sha; a change to what a rule computes
+bumps the rule's `VERSION`, and a change to the composition bumps
+`function_version`; `reason` is prose, not behaviour, and is not hashed. A
+registered rule versions itself the same way, so the record of a view built
+with it names the implementation that built it.
 
 A grade then says which transform produced the digest it compares. A later
 engine can tell whether it would compute the same view. An unknown major
@@ -386,6 +436,12 @@ a `checks.py` hook cannot provide.
     not.
 - **`exclude_records`**: every predicate, `path`, `unless_referenced_by`, and the
   guards.
+- **The seam** (`tests/canonical/test_comparison_view_rule_registry.py`): a rule
+  a throwaway distribution registers through real entry-point metadata
+  resolves, validates its entry, applies, and moves the sha with its `VERSION`;
+  an unknown kind is refused naming the registered kinds; a distribution
+  registering a built-in's name fails every lookup; each breach of the contract
+  is refused.
 - **The invariants of the function**: no mutation, determinism, no golden input,
   no digest change without the block.
 
@@ -409,8 +465,11 @@ a `checks.py` hook cannot provide.
   client-side fetch of the full state, the path `compare_columns` already takes.
 - Until the consolidation steps land, a pack can shape the state in two places:
   the view and the older keys. The documented order says which runs first.
-- Five measured passes still need computed rules, which wait for plugin delivery
-  into the runner image.
+- A registered rule is trusted with the verdict. The seam states the boundary
+  and records the rule's identity; it cannot judge whether a rule is sound.
+- Five measured passes need computed rules. A pack's distribution can register
+  them; on the runner they grade only where that distribution is installed in
+  the runner image.
 
 ### Follow-ups
 
@@ -423,7 +482,8 @@ a `checks.py` hook cannot provide.
 ## Links
 
 - Realizes: [ADR-0011](0011-seam-and-declaration-conventions.md).
-- Same idiom, for later: [0050](0050-agent-loop-protocol-and-registry.md),
+- The same entry-point idiom: [0049](0049-judgekind-registry-consolidation.md)
+  (judge kinds), [0050](0050-agent-loop-protocol-and-registry.md),
   [0051](0051-user-simulator-protocol-and-registry.md),
   [0052](0052-search-backend-protocol-and-registry.md) (in review, #1672).
 - Related code:
@@ -434,7 +494,8 @@ a `checks.py` hook cannot provide.
   - `tolokaforge/runner/models.py`: `RunnerStateChecksConfig`, `HashGradingResult`;
   - `tolokaforge/core/models/task_config.py`: `StateChecksConfig`;
   - `tolokaforge/core/grading/key_manifest.py`;
-  - `tolokaforge/core/llm/presets.py`, the table shape;
+  - `tolokaforge/core/plugin_registry.py`: `load_comparison_view_rule`,
+    `available_comparison_view_rules`;
   - `tolokaforge/core/grading/checks_interface.py`, the `checks.py` hook.
 - Tests: `tests/canonical/test_expected_state_hash_is_not_portable.py`,
   `tests/canonical/test_grading_substrate_parity.py`,
