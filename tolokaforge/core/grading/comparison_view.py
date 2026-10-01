@@ -73,7 +73,17 @@ from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
 from types import MappingProxyType, ModuleType
-from typing import Annotated, Any, ClassVar, Final, Literal, Protocol, cast, runtime_checkable
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    Protocol,
+    TypeVar,
+    cast,
+    runtime_checkable,
+)
 
 from pydantic import (
     AfterValidator,
@@ -196,6 +206,21 @@ DottedPath = Annotated[StrictStr, AfterValidator(_dotted_path)]
 Scalar = StrictStr | StrictInt | StrictFloat | StrictBool | None
 
 
+_Serializer = TypeVar("_Serializer", bound=Callable[..., Any])
+
+
+def _schema_from_the_fields(serializer: _Serializer) -> _Serializer:
+    """Drop a model serializer's runtime return annotation, so the model keeps its schema.
+
+    Pydantic derives a wrap serializer's JSON schema from its return annotation, and a
+    ``dict[str, Any]`` one erases the model's; without one it keeps the schema the fields
+    give. (:mod:`tolokaforge.core.grading.omitted_fields` holds the same for the models
+    outside this standard-library-and-pydantic module.)
+    """
+    serializer.__annotations__.pop("return", None)
+    return serializer
+
+
 def _scalar(value: Any, what: str) -> Any:
     """``value`` if it is a JSON scalar; the unions below then see only values that fit."""
     if value is not None and not isinstance(value, str | int | float | bool):
@@ -234,6 +259,7 @@ class InCondition(BaseModel):
         return tuple(_scalar(item, "each value") for item in value)
 
     @model_serializer(mode="wrap")
+    @_schema_from_the_fields
     def _under_its_alias(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         dumped = handler(self)
         return {"in": dumped["in"] if "in" in dumped else dumped["any_of"]}

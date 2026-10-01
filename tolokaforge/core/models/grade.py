@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.models.grade_components import GradeComponents
 from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.runner.models import CriterionResult, TraceChecksSummary, TraceConstraintResult
@@ -209,6 +210,7 @@ class Grade(BaseModel):
     """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
 
     @model_serializer(mode="wrap")
+    @schema_from_the_fields
     def _omit_an_absent_comparison_view(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, Any]:
@@ -217,8 +219,4 @@ class Grade(BaseModel):
         Every recorded ``grade.yaml`` and grade snapshot predates the field, so a grade
         without a view dumps exactly as they do.
         """
-        dumped: dict[str, Any] = handler(self)
-        for name in self.omitted_when_absent:
-            if getattr(self, name) is None:
-                dumped.pop(name, None)
-        return dumped
+        return leave_out_absent_fields(self, handler)

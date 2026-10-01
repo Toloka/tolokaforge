@@ -17,8 +17,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from tolokaforge.adapters.native import NativeAdapter
-from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
-from tolokaforge.core.models import GradingConfig
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, InCondition
+from tolokaforge.core.models import Grade, GradingConfig
 from tolokaforge.core.models.task_config import StateChecksConfig
 from tolokaforge.runner.models import RunnerStateChecksConfig, TaskDescription
 
@@ -157,3 +157,25 @@ def test_a_task_without_a_view_puts_no_key_on_the_wire(tmp_path: Path) -> None:
     grading = adapter.get_grading_config("view_task")
     assert "comparison_view" not in json.loads(grading.model_dump_json())["state_checks"]
     assert isinstance(grading, GradingConfig)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [StateChecksConfig, RunnerStateChecksConfig, Grade, GradingConfig, TaskDescription],
+    ids=lambda model: model.__name__,
+)
+def test_leaving_the_key_out_keeps_the_serialization_schema(model: type[BaseModel]) -> None:
+    """The dump that drops an absent view still describes every field it can carry."""
+    serialization = model.model_json_schema(mode="serialization")
+    validation = model.model_json_schema(mode="validation")
+    assert set(serialization["properties"]) == set(validation["properties"])
+    for name, definition in validation.get("$defs", {}).items():
+        if "properties" in definition and name in serialization["$defs"]:
+            assert set(serialization["$defs"][name].get("properties", {})) == set(
+                definition["properties"]
+            ), f"{model.__name__}: the serialization schema lost {name}'s fields"
+
+
+def test_the_in_operator_keeps_its_serialization_schema() -> None:
+    schema = InCondition.model_json_schema(mode="serialization")
+    assert set(schema["properties"]) == {"in"} and schema["required"] == ["in"]

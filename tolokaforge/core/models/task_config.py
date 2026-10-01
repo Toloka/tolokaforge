@@ -23,6 +23,7 @@ from tolokaforge.core.deprecations import canonicalize_actor_config, drop_retire
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.state_composition import (
     AUTHORED_HASH_WEIGHT_CONTEXT,
     StateHashConfig,
@@ -806,6 +807,7 @@ class StateChecksConfig(BaseModel):
     """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
 
     @model_serializer(mode="wrap")
+    @schema_from_the_fields
     def _omit_an_absent_comparison_view(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, Any]:
@@ -815,11 +817,7 @@ class StateChecksConfig(BaseModel):
         key existed: recorded ``grading_config.json`` parts and canonical snapshots keep
         their bytes.
         """
-        dumped: dict[str, Any] = handler(self)
-        for name in self.omitted_when_absent:
-            if getattr(self, name) is None:
-                dumped.pop(name, None)
-        return dumped
+        return leave_out_absent_fields(self, handler)
 
     @model_validator(mode="before")
     @classmethod
