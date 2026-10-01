@@ -6,36 +6,33 @@ engine's OpenRouter defaults and the gateway's ``LLM_PROXY_HEADERS`` /
 the other on every request. The rule is fed the env-resolved, pre-catalog
 :func:`~tolokaforge.core.llm.proxy.resolve_proxy_config` at every site
 (``LLMClient`` construction, run start, ``config validate``), so each gives one
-verdict for one config and environment.
+verdict for one config and environment. Run start and ``config validate`` read
+that environment only when some model config declares ``session``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from enum import Enum
 from typing import TYPE_CHECKING
 
-from tolokaforge.core.llm.proxy import ENV_HEADERS, ENV_REQUEST_ID_HEADER, ProxyConfig
+from tolokaforge.core.llm.openrouter_headers import OpenRouterDefaultHeader, is_openrouter_provider
+from tolokaforge.core.llm.proxy import (
+    ENV_HEADERS,
+    ENV_REQUEST_ID_HEADER,
+    ProxyConfig,
+    resolve_proxy_config,
+)
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import ModelConfig
 
 __all__ = [
-    "OpenRouterDefaultHeader",
     "SessionHeaderConflictError",
     "session_header_conflict",
     "session_header_conflicts",
 ]
 
 _OPENROUTER_DEFAULTS_SOURCE = "the engine's OpenRouter default headers"
-
-
-class OpenRouterDefaultHeader(str, Enum):
-    """Headers the engine adds to every OpenRouter request."""
-
-    REFERER = "HTTP-Referer"
-    TITLE = "X-Title"
-    DATA_COLLECTION_OPT_OUT = "X-Data-Collection-Opt-Out"
 
 
 class SessionHeaderConflictError(ValueError):
@@ -66,7 +63,7 @@ def _competing_sources(cfg: ModelConfig, proxy: ProxyConfig | None) -> list[tupl
         if proxy.request_id_header:
             sources.append((proxy.request_id_header, ENV_REQUEST_ID_HEADER))
         sources.extend((name, ENV_HEADERS) for name in proxy.headers)
-    if cfg.provider.lower().startswith("openrouter"):
+    if is_openrouter_provider(cfg.provider):
         sources.extend(
             (header.value, _OPENROUTER_DEFAULTS_SOURCE) for header in OpenRouterDefaultHeader
         )
@@ -87,17 +84,24 @@ def session_header_conflict(
 
 
 def session_header_conflicts(
-    models: Mapping[str, ModelConfig], proxy: ProxyConfig | None
+    models: Mapping[str, ModelConfig],
 ) -> list[tuple[str, SessionHeaderConflictError]]:
-    """Every model config, fallbacks included, whose session header collides.
+    """Every model config, fallbacks included, whose session header collides with
+    this environment's header sources.
 
     ``config validate`` reports all of them and ``run`` / ``prepare`` /
-    ``worker`` raise the first, so both refuse the same configs.
+    ``worker`` raise the first, so both refuse the same configs. The gateway
+    environment is resolved only when some config declares ``session``, so its
+    :class:`~tolokaforge.core.llm.proxy.ProxyConfigError` reaches no other config.
     """
     from tolokaforge.core.models.run_config import iter_model_configs
 
+    configs = list(iter_model_configs(models))
+    if not any(cfg.session for _, cfg in configs):
+        return []
+    proxy = resolve_proxy_config()
     conflicts: list[tuple[str, SessionHeaderConflictError]] = []
-    for path, cfg in iter_model_configs(models):
+    for path, cfg in configs:
         conflict = session_header_conflict(cfg, proxy, header_path=f"{path}.session.header")
         if conflict is not None:
             conflicts.append((path, conflict))

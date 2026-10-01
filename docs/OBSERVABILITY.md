@@ -96,7 +96,7 @@ the engine's environment, printing nothing. A config that names its own `endpoin
 
 The same `trace_id` names the trial's conversation to a model's session header
 (`<trace_id>-agent` / `<trace_id>-user`, [LLM_LAYER.md § Session header](LLM_LAYER.md#session-header)),
-so a gateway's request log joins to the trace.
+so a gateway that logs that header can join its request log to the trace.
 
 `<i>` is the message's position in `trajectory.messages`, so a later upload of the bundle by the
 `langfuse-uploader` (tolokaforge-tools) lands on the same observations. For that parity the

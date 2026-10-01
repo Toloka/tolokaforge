@@ -59,7 +59,6 @@ from tolokaforge.core.llm.presets import (
     set_overlay_path,
     validate_overlay_file,
 )
-from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.session_header import session_header_conflicts
 from tolokaforge.core.logging import (
     LogFormat,
@@ -470,7 +469,7 @@ def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
     A fallback's client is built only on failover, so its construction-time
     check alone would fail mid-run.
     """
-    conflicts = session_header_conflicts(run_config.models, resolve_proxy_config())
+    conflicts = session_header_conflicts(run_config.models)
     if conflicts:
         raise conflicts[0][1]
 

@@ -279,7 +279,8 @@ simulator under the `tolokaforge.user_simulators` entry-point group and a task
    `last_system_prompt: str | None` (the runner writes it to `prompts.yaml`; leave
    it `None` if you never dispatch an LLM turn). A simulator that calls its own
    `LLMClient` passes `observation` on to `generate`: it carries the trial's
-   `session_id`, which keeps the user's conversation on one gateway replica.
+   `session_id`, which keeps the user's conversation on one replica when the user
+   model declares `session` and the backend hashes that header.
 2. **Read your own config from `simulator_config`.** The engine passes
    `actors.user.simulator_config` to your factory on the `UserSimulatorContext`
    verbatim and never interprets it — validate that mapping into your own model.

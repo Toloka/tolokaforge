@@ -28,14 +28,14 @@ from tolokaforge.core.llm.litellm_params import (
 )
 from tolokaforge.core.llm.presets import unclaimed_route_families
 from tolokaforge.core.llm.providers import litellm_model_id
-from tolokaforge.core.llm.proxy import ProxyConfigError, resolve_proxy_config
+from tolokaforge.core.llm.proxy import ProxyConfigError
 from tolokaforge.core.llm.session_header import session_header_conflicts
 from tolokaforge.core.models import (
     DOCKER_RUNTIME_ALIAS_TARGET,
     LEGACY_DOCKER_RUNTIME_ALIAS,
     RunConfig,
 )
-from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, iter_model_configs
+from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED
 from tolokaforge.core.plugin_registry import available_agent_loops, available_runtime_backends
 
 logger = logging.getLogger(__name__)
@@ -236,16 +236,13 @@ def _overlay_key_issues(run_config: RunConfig) -> list[ValidationIssue]:
 def _session_header_issues(run_config: RunConfig) -> list[ValidationIssue]:
     """An ERROR per model config whose session header another header source also
     sets, judged against this environment's gateway variables."""
-    # A malformed gateway environment is reported only for configs this check concerns.
-    if not any(cfg.session for _, cfg in iter_model_configs(run_config.models)):
-        return []
     try:
-        proxy = resolve_proxy_config()
+        conflicts = session_header_conflicts(run_config.models)
     except ProxyConfigError as err:
         return [ValidationIssue(severity=Severity.ERROR, path="(environment)", message=str(err))]
     return [
         ValidationIssue(severity=Severity.ERROR, path=err.path, message=err.reason)
-        for _, err in session_header_conflicts(run_config.models, proxy)
+        for _, err in conflicts
     ]
 
 

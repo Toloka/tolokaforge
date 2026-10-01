@@ -181,6 +181,12 @@ class TestTrialRunnerInit:
         runner = _make_runner(request_limiter=mock_limiter)
         assert runner.request_limiter is mock_limiter
 
+    @pytest.mark.parametrize("trace_id", ["", "  "], ids=["empty", "whitespace"])
+    def test_a_blank_trace_id_is_refused(self, trace_id: str) -> None:
+        """Every trial built with it would send the same ``-agent`` / ``-user`` id."""
+        with pytest.raises(ValueError, match="trace_id"):
+            _make_runner(trace_id=trace_id)
+
 
 # ===================================================================
 # _is_rate_limit_error (static method)
@@ -386,23 +392,16 @@ class TestTrialRunnerRun:
         assert traj.metrics.usage.prompt_tokens == 100
         assert traj.metrics.usage.completion_tokens == 50
 
-    @pytest.mark.parametrize(
-        "trace_id, agent_session, user_session",
-        [("0f" * 16, "0f" * 16 + "-agent", "0f" * 16 + "-user"), (None, None, None)],
-        ids=["trace-id", "no-trace-id"],
-    )
-    def test_each_role_observes_its_conversation_id(
-        self, trace_id: str | None, agent_session: str | None, user_session: str | None
-    ) -> None:
+    def test_without_a_trace_id_neither_role_has_a_conversation_id(self) -> None:
         agent = _make_agent_client()
         simulator = _make_user_simulator()
-        runner = _make_runner(agent_client=agent, user_simulator=simulator, trace_id=trace_id)
+        runner = _make_runner(agent_client=agent, user_simulator=simulator)
         runner.run("You are an agent.", "Please do the task")
 
         agent_observation = agent.generate.call_args.kwargs["observation"]
         user_observation = simulator.reply.call_args.kwargs["observation"]
-        assert (agent_observation.role, agent_observation.session_id) == ("agent", agent_session)
-        assert (user_observation.role, user_observation.session_id) == ("user", user_session)
+        assert (agent_observation.role, agent_observation.session_id) == ("agent", None)
+        assert (user_observation.role, user_observation.session_id) == ("user", None)
 
     def test_user_stop_signal(self) -> None:
         """Agent responds normally, then user sends a bare ###STOP###."""

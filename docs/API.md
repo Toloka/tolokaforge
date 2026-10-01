@@ -254,8 +254,8 @@ trajectory = runner.run(system_prompt, initial_message)
 
 `trace_id` (the trial attempt's `TrialIdentity.trace_id`) gives the agent's and the
 user simulator's calls the conversation ids `<trace_id>-agent` / `<trace_id>-user`
-that a model's session header sends ([CONFIG.md](CONFIG.md)); without it each call
-sends a fresh id.
+that a model's session header sends ([LLM_LAYER.md § Session header](LLM_LAYER.md#session-header));
+without it each call sends a fresh id. A blank `trace_id` is refused with `ValueError`.
 
 ## LLMClient
 

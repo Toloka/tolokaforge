@@ -57,6 +57,10 @@ from tolokaforge.core.llm.gateway_route import (
     resolve_gateway_route,
 )
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
+from tolokaforge.core.llm.openrouter_headers import (
+    is_openrouter_provider,
+    openrouter_default_headers,
+)
 from tolokaforge.core.llm.params_policy import RuleAction
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
@@ -67,7 +71,7 @@ from tolokaforge.core.llm.providers import (
 )
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
-from tolokaforge.core.llm.session_header import OpenRouterDefaultHeader, session_header_conflict
+from tolokaforge.core.llm.session_header import session_header_conflict
 from tolokaforge.core.llm.usage import (
     CostSource,
     Usage,
@@ -746,7 +750,7 @@ class LLMClient:
                     self._proxy = None
 
         self._openrouter_headers = (
-            self._configure_openrouter_headers() if self.provider.startswith("openrouter") else {}
+            openrouter_default_headers() if is_openrouter_provider(self.provider) else {}
         )
         if self._proxy is not None:
             self.logger.info(
@@ -763,7 +767,7 @@ class LLMClient:
                     "unless this gateway authenticates by network position.",
                     base_url=self._proxy.base_url,
                 )
-        elif self.provider.startswith("openrouter"):
+        elif is_openrouter_provider(self.provider):
             self._configure_openrouter_base_url()
         elif self._provider_binding.endpoint and self._provider_binding.api_base_env:
             os.environ.setdefault(
@@ -1058,27 +1062,6 @@ class LLMClient:
             model=self.model_name,
         )
         return configured
-
-    def _configure_openrouter_headers(self) -> dict[str, str]:
-        """Ensure OpenRouter requests include the required headers."""
-        existing_headers = dict(getattr(litellm, "openai_headers", {}) or {})
-
-        referer = os.getenv(
-            "TOLOKAFORGE_OPENROUTER_REFERER", "https://github.com/Toloka-F/tolokaforge"
-        )
-        title = os.getenv("TOLOKAFORGE_OPENROUTER_TITLE", "Tolokaforge Evaluation")
-
-        existing_headers.setdefault(OpenRouterDefaultHeader.REFERER.value, referer)
-        existing_headers.setdefault(OpenRouterDefaultHeader.TITLE.value, title)
-
-        opt_out_pref = os.getenv("TOLOKAFORGE_OPENROUTER_OPT_OUT", "true").lower()
-        if opt_out_pref in {"1", "true", "yes", "on"}:
-            existing_headers.setdefault(
-                OpenRouterDefaultHeader.DATA_COLLECTION_OPT_OUT.value, "true"
-            )
-
-        litellm.openai_headers = existing_headers
-        return existing_headers
 
     def _configure_openrouter_base_url(self) -> None:
         """Propagate OpenRouter base URL overrides to LiteLLM."""
@@ -2005,7 +1988,7 @@ class LLMClient:
             self._convert_messages(system, messages)
         )
 
-        if self.provider.startswith("openrouter"):
+        if is_openrouter_provider(self.provider):
             extra_headers = dict(self._openrouter_headers)
             existing_extra = kwargs.get("extra_headers")
             if isinstance(existing_extra, dict):

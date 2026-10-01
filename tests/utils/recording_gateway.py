@@ -100,6 +100,12 @@ class RecordingGateway(ThreadingHTTPServer):
     requests: list[RecordedRequest]
     scripts: dict[str, list[GatewayReply]]
 
+    def __init__(
+        self, server_address: tuple[str, int], handler: type[BaseHTTPRequestHandler]
+    ) -> None:
+        super().__init__(server_address, handler)
+        self.reset()
+
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.server_port}/v1"
@@ -146,7 +152,6 @@ class _GatewayHandler(BaseHTTPRequestHandler):
 def serving_recording_gateway() -> Iterator[RecordingGateway]:
     """Run a :class:`RecordingGateway` on a free loopback port for the block."""
     server = RecordingGateway(("127.0.0.1", 0), _GatewayHandler)
-    server.reset()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

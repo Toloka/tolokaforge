@@ -289,6 +289,10 @@ class TrialRunner:
         self._opening_line: Message | None = None
         # The trial attempt's trace id (``TrialIdentity.trace_id``); ``None`` leaves
         # both roles' calls without a conversation identity.
+        if trace_id is not None and not trace_id.strip():
+            raise ValueError(
+                f"TrialRunner trace_id must be a non-empty id or None, got {trace_id!r}"
+            )
         self._trace_id = trace_id
 
         self.messages: list[Message] = []

@@ -85,7 +85,8 @@ upgrading past v0.17.x.
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
-| [`session_header.py`](../tolokaforge/core/llm/session_header.py) | Refusal of a `ModelConfig.session` header another header source also sets; the engine's OpenRouter default header names |
+| [`openrouter_headers.py`](../tolokaforge/core/llm/openrouter_headers.py) | The headers the engine adds to every OpenRouter request, and the provider predicate that selects them |
+| [`session_header.py`](../tolokaforge/core/llm/session_header.py) | Refusal of a `ModelConfig.session` header another header source also sets — see [§ Session header](#session-header) |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `BuiltinUserSimulator` |
 
 ## `reasoning`
@@ -1113,38 +1114,6 @@ paths apart.
 tolokaforge requires litellm >= 1.93.0; environments pinned below it must
 upgrade (earlier releases strip Anthropic `cache_control` on resolved gateway
 routes, lack the native `meta` provider, or crash tool calls without `fastapi`).
-
-### Session header
-
-A model config's `session: {header: <name>}` (docs/CONFIG.md) makes every request
-that model sends carry `<name>` with a conversation id, for backends that keep one
-conversation on one replica so its prefix cache stays warm. It is a property of the
-model config, not of the gateway: the header is sent on every route that model takes,
-gateway on or off.
-
-- **Value.** `LLMClient.generate` reads `LLMCallObservation.session_id`. A trial's
-  `TrialRunner` sets it on its two observations from the trial attempt's trace id,
-  `conversation_session_id(trace_id, role)` = `<trace_id>-agent` / `<trace_id>-user`.
-  That is the trace id live tracing uses ([OBSERVABILITY.md](OBSERVABILITY.md)), so
-  gateway logs join to traces; it covers the attempt, so an orchestrator retry of a
-  trial is a new conversation. A call without one (no observation, or
-  `session_id=None`: the summarizer, the rubric judge, warm-up, certification) gets
-  one fresh UUID4 for that `generate()` call. Either value is
-  fixed before the outer retry starts, so every outer attempt, timeout retry and the
-  OpenAI SDK's own re-sends of one call send the same value, and so does a fallback
-  hop, which forwards the same observation to the next client.
-- **Merge.** The header is added to `extra_headers` after the OpenRouter defaults and
-  the gateway's `request_headers()`; it is never written to the global
-  `litellm.openai_headers`. A config without `session` sends no session header, even
-  when its observation carries an id.
-- **Collision refusal.** A session header whose name (case-insensitively) is also an
-  `LLM_PROXY_HEADERS` key or the `LLM_PROXY_REQUEST_ID_HEADER` name, for a provider
-  the gateway routes, or one of the engine's OpenRouter defaults, for an OpenRouter
-  provider, is refused by `session_header_conflicts`. Every site feeds it the
-  env-resolved `resolve_proxy_config()` before any catalog lookup: `LLMClient`
-  construction, the `run` / `prepare` / `worker` start sweep over every model and
-  fallback, and `config validate`. A config whose gateway headers the catalog would
-  drop at runtime is therefore still refused.
 
 ### Serving a NEW provider behind the gateway
 
@@ -2717,6 +2686,45 @@ signature or behaviour change to `LLMClient` construction — or to the
 capabilities-based retry opt-in this client exposes to `ToolCallingLoop`
 (see § *Provider-side empty completion* above) — must account for both
 consumers, not just the runner.
+
+### Session header
+
+A model config's `session: {header: <name>}` ([CONFIG.md](CONFIG.md)) makes every
+request that model sends carry `<name>` with a conversation id, for backends that
+keep one conversation on one replica so its prefix cache stays warm. It is a property
+of the model config, not of the gateway: the engine adds the header to every
+request's `extra_headers`, gateway on or off. Wire delivery is pinned for litellm's
+`openai` and `openrouter` transports by
+[`tests/canonical/test_litellm_extra_headers_contract.py`](../tests/canonical/test_litellm_extra_headers_contract.py).
+
+- **Value.** `LLMClient.generate` reads `LLMCallObservation.session_id`. A trial's
+  `TrialRunner` sets it on its two observations from the trial attempt's trace id,
+  `conversation_session_id(trace_id, role)` = `<trace_id>-agent` / `<trace_id>-user`;
+  a blank `trace_id` is refused at construction. That is the trace id live tracing
+  uses ([OBSERVABILITY.md](OBSERVABILITY.md)), so a gateway that logs the header can
+  join its request log to the trace. It covers the attempt, so an orchestrator retry
+  of a trial is a new conversation. A call that carries no conversation id (no
+  observation, or `session_id=None`: the summarizer, the rubric judge, warm-up,
+  certification) gets one fresh UUID4 for that `generate()` call. Either value is
+  fixed before the outer retry starts, so every outer attempt, timeout retry and the
+  OpenAI SDK's own re-sends of one call send the same value, and so does a fallback
+  hop, which forwards the same observation to the next client.
+- **Merge.** The header is added to `extra_headers` after the OpenRouter defaults
+  (seeded from the global `litellm.openai_headers`) and the gateway's
+  `request_headers()`, so its value wins over theirs; it is never written to
+  `litellm.openai_headers`. A config without `session` sends no session header, even
+  when its observation carries an id.
+- **Collision refusal.** A session header whose name (case-insensitively) is also an
+  `LLM_PROXY_HEADERS` key or the `LLM_PROXY_REQUEST_ID_HEADER` name, for a provider
+  the gateway routes, or one of the engine's OpenRouter defaults, for an OpenRouter
+  provider, is refused. Every site judges the env-resolved `resolve_proxy_config()`
+  before any catalog lookup: `LLMClient` construction (`session_header_conflict`),
+  and `session_header_conflicts` for the `run` / `prepare` / `worker` start sweep
+  over every model and fallback and for `config validate`. A config whose gateway
+  headers the catalog would drop at runtime is therefore still refused. The sweep
+  and `config validate` read the gateway environment only when some model config
+  declares `session`, so a malformed one is reported (`(environment)` in validate)
+  for those configs alone.
 
 ### Outer retry controllers
 

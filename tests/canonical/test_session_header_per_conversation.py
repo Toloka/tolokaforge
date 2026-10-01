@@ -10,8 +10,9 @@ Each trial here runs through :meth:`InProcessConductor._run_agent_loop` with a r
 :class:`LLMClient` agent and the built-in LLM user simulator (its own real client)
 against a loopback gateway. Requests are attributed to a role by the ``model`` their
 body names and to a trial by running trials one after another, never by the header
-under test. The single-client cases pin the header on the wire for both gateway
-catalog outcomes and beside the gateway's own per-request id.
+under test; the gateway's catalog serves both models, so every request takes the
+resolved route. The single-client cases pin the header on the wire when the catalog
+is unreadable and beside the gateway's own per-request id.
 """
 
 from __future__ import annotations
@@ -207,6 +208,7 @@ def test_each_trial_conversation_sends_one_id_per_role(
     gateway: RecordingGateway, tmp_path: Path
 ) -> None:
     agent_client = LLMClient(ModelConfig(provider="openai", name=AGENT_MODEL, session=_SESSION))
+    assert agent_client._gateway_route is not None
     retry_sleeps: list[float] = []
     agent_client._retry_sleep = retry_sleeps.append
     conductor = _conductor(agent_client, tmp_path)
@@ -242,13 +244,12 @@ def _say_ok(client: LLMClient, observation: LLMCallObservation) -> None:
     )
 
 
-@pytest.mark.parametrize("catalog", [[AGENT_MODEL], None], ids=["resolved-route", "unreadable"])
-def test_the_session_header_reaches_the_gateway_on_both_catalog_outcomes(
-    gateway: RecordingGateway, catalog: list[str] | None
+def test_the_session_header_reaches_a_gateway_whose_catalog_is_unreadable(
+    gateway: RecordingGateway,
 ) -> None:
-    gateway.catalog = catalog
+    gateway.catalog = None
     client = LLMClient(ModelConfig(provider="openai", name=AGENT_MODEL, session=_SESSION))
-    assert (client._gateway_route is not None) == (catalog is not None)
+    assert client._gateway_route is None
 
     _say_ok(client, _observation("conversation-1"))
 

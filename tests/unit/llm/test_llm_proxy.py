@@ -810,24 +810,22 @@ class TestSessionHeader:
         first, second = recorder.sent()
         assert first is not None and first == second
 
-    def test_the_session_header_rides_beside_the_gateway_request_id(
+    def test_the_observation_id_wins_over_a_stale_global_openai_header(
         self, install_secrets, monkeypatch, completion
     ) -> None:
-        install_secrets(
-            {
-                **_ROUTING_SECRETS,
-                **_GATEWAY_ON,
-                "LLM_PROXY_REQUEST_ID_HEADER": "X-Request-Id",
-            }
-        )
-        client = LLMClient(
-            ModelConfig(provider="openai", name=CANARY, session={"header": SESSION_HEADER})
+        """The OpenRouter defaults are seeded from ``litellm.openai_headers``, whose
+        keys no construction-time refusal sees."""
+        monkeypatch.setattr(litellm, "openai_headers", {SESSION_HEADER: "stale"})
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            "openrouter",
+            "anthropic/claude-opus-4.7",
+            None,
+            session={"header": SESSION_HEADER},
         )
         _generate(client, _observation("trace-agent"))
-        _generate(client, _observation("trace-agent"))
-        assert completion.sent() == ["trace-agent", "trace-agent"]
-        first_id, second_id = completion.sent("X-Request-Id")
-        assert first_id and second_id and first_id != second_id
+        assert completion.sent() == ["trace-agent"]
 
     def test_the_session_header_stays_off_litellms_global_headers(
         self, install_secrets, monkeypatch, completion
@@ -962,7 +960,7 @@ class TestSessionHeaderConflicts:
             ),
             "user": ModelConfig(provider="openai", name=CANARY),
         }
-        conflicts = session_header_conflicts(models, resolve_proxy_config())
+        conflicts = session_header_conflicts(models)
         assert [(path, err.path, err.source) for path, err in conflicts] == [
             (
                 "models.agent.fallbacks[0]",
