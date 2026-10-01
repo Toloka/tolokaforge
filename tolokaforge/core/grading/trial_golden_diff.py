@@ -12,12 +12,12 @@ records, on the runner and in core alike — which is why it lives here rather t
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from tolokaforge.core.hash import canonical_number
 from tolokaforge.runner.models import StateDiff, TableDiff
 
-__all__ = ["compute_state_diff"]
+__all__ = ["compute_state_diff", "compute_view_diff"]
 
 
 def compute_state_diff(trial_state: dict[str, Any], golden_state: dict[str, Any]) -> StateDiff:
@@ -217,3 +217,32 @@ def _get_field_diffs(expected: dict[str, Any], actual: dict[str, Any]) -> list[d
             diffs.append({"field": field, "expected": exp_val, "actual": act_val})
 
     return diffs
+
+
+def compute_view_diff(trial_view: dict[str, Any], golden_view: dict[str, Any]) -> StateDiff:
+    """:func:`compute_state_diff` over two comparison views, naming the tables on one side.
+
+    :func:`compute_state_diff` reads a table one state lacks as empty, so a table the
+    trial holds empty and the golden not at all shows no difference — while the two
+    digests differ, the absent key and the empty table being different states. The view
+    diff is the one a mismatched digest of the views must agree with (#1444), so it
+    names every table only one side holds, in ``tables_on_one_side`` and in the
+    summary. :func:`compute_state_diff` itself is unchanged, so every raw diff reads as
+    it did.
+    """
+    diff = compute_state_diff(trial_view, golden_view)
+    one_sided: dict[str, Literal["trial", "golden"]] = {
+        **{table: "trial" for table in trial_view if table not in golden_view},
+        **{table: "golden" for table in golden_view if table not in trial_view},
+    }
+    if not one_sided:
+        return diff
+    named = "; ".join(
+        f"{table}: present in the {side} only" for table, side in sorted(one_sided.items())
+    )
+    summary = (
+        f"State mismatch: {named}" if diff.summary == "States match" else f"{diff.summary}; {named}"
+    )
+    return diff.model_copy(
+        update={"tables_on_one_side": dict(sorted(one_sided.items())), "summary": summary}
+    )

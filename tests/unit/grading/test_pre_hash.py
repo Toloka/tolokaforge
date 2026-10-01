@@ -29,6 +29,7 @@ from tolokaforge.core.grading.pre_hash import (
     view_the_pair,
 )
 from tolokaforge.core.grading.state_checks import state_digest
+from tolokaforge.core.grading.trial_golden_diff import compute_state_diff
 from tolokaforge.core.hash import ColumnCompareRule, compute_stable_hash
 from tolokaforge.runner.models import ComparisonViewGradeRecord
 
@@ -337,6 +338,54 @@ def test_a_mismatch_records_the_diff_of_the_views_as_the_hash_reads_them() -> No
     assert comparison_view_reason(record) == f"Comparison view: {record.view_diff.summary}"
 
 
+def test_a_table_one_side_holds_empty_and_the_other_not_at_all_is_a_view_difference() -> None:
+    """The digests differ there, so the view diff must too — the raw diff reads it as equal."""
+    declaration = _declaration(_LOOKUPS)
+    trial = {**_state("D2", created_at="t5"), "notes": []}
+    golden = _state("D2", created_at="t5")
+    pair = _viewed(trial, golden, declaration)
+    assert compute_stable_hash(pair.trial) != compute_stable_hash(pair.golden)
+    assert state_digest(pair.trial) != state_digest(pair.golden)
+    record = comparison_view_grade_record(pair, matched=False)
+    assert record.view_diff is not None and not record.view_diff.identical
+    assert record.view_diff.tables_on_one_side == {"notes": "trial"}
+    assert record.view_diff.summary == "State mismatch: notes: present in the trial only"
+
+    raw = compute_state_diff(pair.trial_view, pair.golden_view)
+    assert raw.summary == "States match", "compute_state_diff itself reads as it did"
+    assert "tables_on_one_side" not in raw.model_dump()
+
+
+def test_a_one_sided_table_is_named_beside_the_rows_that_differ() -> None:
+    declaration = _declaration(_DOCUMENTS_BY_SOURCE, unstable_fields=_UNSTABLE)
+    trial = {**_state("D3", created_at="t9", reason="wrong client"), "notes": []}
+    pair = _viewed(trial, _state("D2", created_at="t5"), declaration)
+    record = comparison_view_grade_record(pair, matched=False)
+    assert record.view_diff is not None
+    assert record.view_diff.summary.startswith("State mismatch: corrections: ")
+    assert record.view_diff.summary.endswith("; notes: present in the trial only")
+
+
+def test_the_view_diff_reads_the_views_not_the_folded_states() -> None:
+    """A value the pipeline folds still shows in the diff as the author wrote it."""
+    declaration = _declaration(
+        _DOCUMENTS_BY_SOURCE,
+        unstable_fields=_UNSTABLE,
+        compare_columns={
+            "corrections": {"tags": ColumnCompareRule(treat_null_as_empty_collection=True)}
+        },
+    )
+    trial = _state("D3", created_at="t9", reason="wrong client")
+    trial["corrections"][0]["tags"] = None
+    golden = _state("D2", created_at="t5")
+    golden["corrections"][0]["tags"] = []
+    record = comparison_view_grade_record(_viewed(trial, golden, declaration), matched=False)
+    assert record.view_diff is not None
+    corrections = record.view_diff.tables["corrections"]
+    assert [row["tags"] for row in corrections.extra] == [None]
+    assert [row["tags"] for row in corrections.missing] == [[]]
+
+
 def test_the_record_round_trips_through_its_json() -> None:
     declaration = _declaration(_DOCUMENTS_BY_SOURCE, unstable_fields=_UNSTABLE)
     pair = _viewed(_state("D3", created_at="t9"), _state("D2", created_at="t5"), declaration)
@@ -385,7 +434,11 @@ def _filed_state(draw) -> dict[str, Any]:
         {"id": f"C{index}", "document_ref": draw(cited), "reason": draw(_REASONS)}
         for index in range(draw(st.integers(min_value=0, max_value=2)))
     ]
-    return {"documents": documents, "corrections": corrections, "lookup_log": []}
+    state = {"documents": documents, "corrections": corrections, "lookup_log": []}
+    notes = draw(st.sampled_from(["absent", "empty", "one"]))
+    if notes != "absent":
+        state["notes"] = [] if notes == "empty" else [{"id": "N1", "text": "x"}]
+    return state
 
 
 @given(_filed_state(), _filed_state())
