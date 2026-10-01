@@ -7,6 +7,7 @@ row order, a renamed trial gets the golden's digest) are property tests in
 
 from __future__ import annotations
 
+import pickle
 import re
 from datetime import date
 from typing import Any
@@ -15,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.comparison_view import (
+    ComparisonViewCollision,
     ComparisonViewConfig,
     ComparisonViewError,
     ComparisonViewResult,
@@ -344,8 +346,57 @@ def test_a_key_a_kept_record_already_holds_is_refused() -> None:
 
 def test_a_reference_already_holding_a_new_key_is_refused() -> None:
     state = {"journal": [_entry("FCJ-1")], "notices": [{"id": "N1", "entry": _A1_KEY}]}
-    with _raises("the new key of another record"):
+    with _raises("the new key of record 'FCJ-1', as a reference"):
         _apply(state, _normalize(references=[{"table": "notices", "field": "entry"}]))
+
+
+@pytest.mark.parametrize(
+    ("state", "rule", "initial", "ids"),
+    [
+        ({"journal": [_entry("FCJ-1"), _entry("FCJ-2")]}, _normalize(), {}, ("FCJ-1", "FCJ-2")),
+        (
+            {"journal": [_entry(_A1_KEY, account="A0"), _entry("FCJ-1")]},
+            _normalize(),
+            {"journal": [_entry(_A1_KEY, account="A0")]},
+            (_A1_KEY, "FCJ-1"),
+        ),
+        (
+            {"journal": [_posting("FCJ-1", "A1", 3), _posting("FCJ-2", "A1", 3)]},
+            {"kind": "normalize_ids", "table": "journal", "rank_by": ["posted_at"]},
+            {},
+            ("FCJ-1", "FCJ-2"),
+        ),
+        (
+            {"journal": [_entry("FCJ-1")], "notices": [{"id": "N1", "entry": _A1_KEY}]},
+            _normalize(references=[{"table": "notices", "field": "entry"}]),
+            {},
+            (_A1_KEY, "FCJ-1"),
+        ),
+    ],
+    ids=["shared-key", "key-of-a-kept-record", "rank-tie", "reference-holding-a-new-key"],
+)
+def test_a_bijectivity_refusal_is_a_collision_naming_the_ids(
+    state: dict[str, Any], rule: dict[str, Any], initial: dict[str, Any], ids: tuple[Any, ...]
+) -> None:
+    with pytest.raises(ComparisonViewCollision) as caught:
+        _apply(state, rule, initial=initial)
+    assert caught.value.ids == ids
+    assert isinstance(caught.value, ComparisonViewError)
+    assert pickle.loads(pickle.dumps(caught.value)).ids == ids
+    assert str(pickle.loads(pickle.dumps(caught.value))) == str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "journal",
+    [[_entry("FCJ-1"), _entry("FCJ-1", fee="F2")], [{"id": "FCJ-1", "account_id": "A1"}]],
+    ids=["shared-id", "missing-key-field"],
+)
+def test_a_state_that_does_not_fit_the_declaration_is_not_a_collision(
+    journal: list[dict[str, Any]],
+) -> None:
+    with pytest.raises(ComparisonViewError) as caught:
+        _apply({"journal": journal}, _normalize())
+    assert not isinstance(caught.value, ComparisonViewCollision)
 
 
 def test_two_records_sharing_an_id_are_refused() -> None:
