@@ -167,6 +167,15 @@ class ToolInventory:
     :attr:`SkipKind.STRUCTURAL` to keep the constructor uniform.
     """
 
+    json_db_builtins: frozenset[str] | None = None
+    """The declared tools the runner serves as source-less ``Dispatch.JSON_DB`` builtins.
+
+    Each reads and writes the trial's own store, which ``RegisterTrial`` seeds from the
+    task's initial state. ``None`` where the producer cannot say which declared tools
+    are builtins — a recorded wire tool list carries no source — and the rule reading
+    it then reports unchecked; ``frozenset()`` is the answer that none are.
+    """
+
     def __post_init__(self) -> None:
         carried = sorted(self.declared | self.agent_declared | self.user_declared)
         if not self.known and (carried or self.parameters):
@@ -175,6 +184,16 @@ class ToolInventory:
                 f"skipped, so {carried or sorted(self.parameters)} would be "
                 "resolved and then ignored. Report the tools with known=True, or report "
                 "nothing"
+            )
+        if not self.known and self.json_db_builtins is not None:
+            raise ValueError(
+                "an unresolvable inventory claims to know which of its tools are JSON-DB "
+                "builtins. It reports no tools, so it can say nothing of theirs"
+            )
+        if self.json_db_builtins is not None and not self.json_db_builtins <= self.declared:
+            raise ValueError(
+                f"the JSON-DB builtins {sorted(self.json_db_builtins - self.declared)} are not "
+                f"declared by the task, which declares {sorted(self.declared)}"
             )
         if not self.known and self.actor_split_known:
             raise ValueError(
@@ -909,6 +928,28 @@ _READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF = (
     "{where} from the pack."
 )
 
+_TOOLS_ADDRESS = "tools"
+
+_JSON_DB_BUILTINS_WITH_NO_SEEDED_STORE = (
+    "this task enables the JSON-DB tools {tools}, which read and write the trial's own "
+    "store, but its initial_state seeds no table — so RegisterTrial refuses the trial "
+    "rather than hand the agent an empty store. Seed the store under initial_state.json_db, "
+    'or declare an intentionally empty one as json_db: {{"<table>": []}}.'
+)
+
+_UNRESOLVED_JSON_DB_BUILTINS = (
+    "this task's tool set does not say whether {tools} are served as the source-less "
+    "JSON-DB builtins or by an MCP server, so whether they have a seeded store to read is "
+    "not checkable here"
+)
+
+_UNRESOLVED_SEEDED_TABLES_FOR_A_JSON_DB_TOOL = (
+    "no caller resolved the tables this task seeds — reading initial_state.json_db is the "
+    "native reading, and a task an adapter maintained outside this repository owns may seed "
+    "its state some other way — so whether the JSON-DB tools {tools} have a seeded store to "
+    "read is not checkable here"
+)
+
 _A_PATH_BEYOND_THE_RUNNERS_STATE = (
     "path {path!r} addresses state the runner's JSONPath grading does not carry: it "
     "composes db and tables from the trial's database and nothing else, while the core "
@@ -992,9 +1033,10 @@ def inspect_grading_authoring(
             rule's finding to ``unchecked`` where that rule would have refused, and
             fails nothing.
         seeded_tables: The tables the task seeds, which its ``state_checks.id_fields``
-            declaration keys. The default, :meth:`SeededTablesLayer.unresolvable`, is
-            the answer for a caller holding no ``task.yaml`` — it skips the rule reading
-            them wherever a declaration would have been checked, and fails nothing.
+            declaration keys, its database reads need and its JSON-DB builtins serve.
+            The default, :meth:`SeededTablesLayer.unresolvable`, is the answer for a
+            caller holding no ``task.yaml`` — it skips the rules reading them wherever
+            one would have been checked, and fails nothing.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
@@ -1016,6 +1058,7 @@ def inspect_grading_authoring(
     ]
     if inventory.known:
         reports += [
+            _check_json_db_builtins_have_a_seeded_store(inventory, seeded_tables),
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
             _check_required_action_names(rules.required_actions if rules else (), inventory),
@@ -1834,6 +1877,65 @@ def _check_state_reads_a_database_the_task_seeds(
                 where,
                 _READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF.format(declares=declares, where=where),
             ),
+        )
+    )
+
+
+def _check_json_db_builtins_have_a_seeded_store(
+    inventory: ToolInventory, seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A task enabling a JSON-DB builtin seeds the store that builtin reads and writes.
+
+    ``db_query`` and ``db_update`` address the trial's own store, which ``RegisterTrial``
+    seeds from the task's initial state, so a task seeding no table hands the agent an
+    empty one. ``RegisterTrial`` refuses that trial —
+    :func:`~tolokaforge.runner.service._unseeded_json_db_tools_refusal` is the runtime
+    half of this rule — and this is the half that costs nothing. Both read the same two
+    facts: a source-less builtin the registry dispatches as ``JSON_DB`` is enabled, and
+    the seeded tables are empty. Neither reads whether a database is provisioned, which a
+    task can do from schemas or unstable fields alone and still seed no table.
+
+    An inventory that cannot say which of its tools are builtins skips, but only over a
+    name the registry dispatches as ``JSON_DB``: a tool set holding none has nothing to
+    ask.
+
+    ``relaxed_validation`` does not downgrade this: a refused pack does not run.
+    """
+    from tolokaforge.tools.builtin import registry
+
+    if inventory.json_db_builtins is None:
+        undecided = sorted(
+            inventory.declared & registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+        )
+        if not undecided:
+            return AuthoringReport()
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    _TOOLS_ADDRESS,
+                    _UNRESOLVED_JSON_DB_BUILTINS.format(tools=undecided),
+                    kind=inventory.skip_kind,
+                ),
+            )
+        )
+    tools = sorted(inventory.json_db_builtins)
+    if not tools:
+        return AuthoringReport()
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    _TOOLS_ADDRESS,
+                    _UNRESOLVED_SEEDED_TABLES_FOR_A_JSON_DB_TOOL.format(tools=tools),
+                    kind=seeded_tables.skip_kind,
+                ),
+            )
+        )
+    if seeded_tables.tables:
+        return AuthoringReport()
+    return AuthoringReport(
+        errors=(
+            Finding(_TOOLS_ADDRESS, _JSON_DB_BUILTINS_WITH_NO_SEEDED_STORE.format(tools=tools)),
         )
     )
 

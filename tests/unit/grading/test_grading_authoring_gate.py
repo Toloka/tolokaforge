@@ -58,6 +58,7 @@ from tolokaforge.core.grading.config_validation import (
     _TOOL_EXPECTATION_HAZARDS,
     _TRANSCRIPT_RULE_KEYS,
     _UNCORRELATABLE_JSON_TYPES,
+    _UNRESOLVABLE_REASON,
     _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
     AdapterHashSource,
@@ -105,6 +106,7 @@ from tolokaforge.core.models import (
     TranscriptRulesConfig,
 )
 from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
+from tolokaforge.runner.service import _unseeded_json_db_tools_refusal
 
 pytestmark = pytest.mark.unit
 
@@ -131,6 +133,8 @@ _CODING = _EXAMPLES / "coding/dataset/tasks/coding/coding_public_example_01/task
 _SHOP_ORDERS = _REPO / "tests/data/tasks/shop_orders_02/task.yaml"
 _MOBILE = _REPO / "tests/data/tasks/synth_mobile_01/task.yaml"
 _RAG = _EXAMPLES / "rag_search/dataset/tasks/kb_lookup_01/task.yaml"
+# Enables both JSON-DB builtins in a block naming no MCP server.
+_TOOL_USE = _EXAMPLES / "tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml"
 
 
 @cache
@@ -311,6 +315,15 @@ class _Rule:
 
 
 _RULES: tuple[_Rule, ...] = (
+    _Rule(
+        label="json_db_builtins_on_a_task_that_seeds_no_table",
+        task=_TOOL_USE,
+        grading=_trace_block(_tool_call("db_query")),
+        checker="_check_json_db_builtins_have_a_seeded_store",
+        channel="errors",
+        message="enables the JSON-DB tools ['db_query', 'db_update']",
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    ),
     _Rule(
         label="state_read_on_a_task_that_seeds_no_database",
         task=_HELPDESK,
@@ -1546,6 +1559,173 @@ def test_an_unresolvable_hash_source_layer_may_not_carry_a_supplied_source() -> 
         )
 
     assert HashSourceLayer.unresolvable().supplied is None
+
+
+# ---------------------------------------------------------------------------
+# A JSON-DB builtin has a seeded store to read, at the gate and at RegisterTrial
+# ---------------------------------------------------------------------------
+
+_AN_MCP_FIXTURE = [{"name": "lookup", "description": "an MCP tool", "parameters": {}}]
+
+
+def _json_db_pack(tmp_path: Path, tools: dict[str, Any], json_db: Any) -> Path:
+    """A native pack declaring *tools* and *json_db*, with nothing else to refuse."""
+    task_dir = tmp_path / "tasks" / "json_db_probe"
+    (task_dir / "fixtures").mkdir(parents=True)
+    (task_dir / "mcp_server.py").write_text("")
+    (task_dir / "fixtures" / "tools.json").write_text(json.dumps(_AN_MCP_FIXTURE))
+    (task_dir / "grading.yaml").write_text("{}\n")
+    initial_state = {} if json_db is None else {"initial_state": {"json_db": json_db}}
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "json_db_probe",
+                "description": "enables JSON-DB tools",
+                "tools": tools,
+                "grading": "grading.yaml",
+                **initial_state,
+            }
+        )
+    )
+    return task_dir
+
+
+@pytest.mark.parametrize(
+    ("tools", "json_db", "refused"),
+    [
+        pytest.param(
+            {"agent": {"enabled": ["db_query"]}}, None, ["db_query"], id="builtin_no_json_db"
+        ),
+        pytest.param(
+            {"agent": {"enabled": []}, "user": {"enabled": ["db_update"]}},
+            None,
+            ["db_update"],
+            id="a_user_block_builtin",
+        ),
+        pytest.param({"agent": {"enabled": ["db_query"]}}, {}, ["db_query"], id="json_db_empty"),
+        pytest.param(
+            {"agent": {"enabled": ["db_query"]}}, {"t": []}, None, id="an_empty_table_is_a_seed"
+        ),
+        pytest.param(
+            {"agent": {"enabled": ["db_query"], "mcp_server": "mcp_server.py"}},
+            None,
+            None,
+            id="served_by_the_agents_mcp_server",
+        ),
+        pytest.param(
+            {
+                "agent": {"enabled": ["lookup"], "mcp_server": "mcp_server.py"},
+                "user": {"enabled": ["db_query"]},
+            },
+            None,
+            None,
+            id="a_user_block_falls_back_to_the_agents_server",
+        ),
+    ],
+)
+def test_the_gate_and_register_trial_refuse_the_same_unseeded_json_db_tools(
+    tmp_path: Path, tools: dict[str, Any], json_db: Any, refused: list[str] | None
+) -> None:
+    """``validate`` refuses exactly the packs ``RegisterTrial`` would, naming the same tools.
+
+    The two halves read the same two facts on their own substrates — the gate the
+    pack, the runner the task description built from it — so each row is decided by
+    both, from one pack on disk. The fallback row is the one a reading of the user
+    block's own ``mcp_server`` gets wrong: the runtime serves that ``db_query`` from
+    the agent's server, which needs no seed.
+    """
+    task_dir = _json_db_pack(tmp_path, tools, json_db)
+    task, effective_dir = load_task_yaml(task_dir / "task.yaml")
+    description = NativeAdapter(
+        {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+    ).to_task_description("json_db_probe")
+
+    runtime = _unseeded_json_db_tools_refusal(description)
+    try:
+        report = validate_grading_yaml(
+            task_dir / "grading.yaml",
+            inventory=build_tool_inventory(task, effective_dir),
+            seeded_tables=seeded_tables_under_adapter(task, effective_dir, task.adapter_type),
+        )
+    except ValueError as exc:
+        at_validate: str | None = str(exc)
+    else:
+        assert [skip for skip in report.unchecked if skip.where == "tools"] == []
+        at_validate = None
+
+    if refused is None:
+        assert runtime is None
+        assert at_validate is None
+        return
+    assert runtime is not None and f"JSON-DB tools {refused}" in runtime
+    assert at_validate is not None
+    assert f"tools: this task enables the JSON-DB tools {refused}" in at_validate
+    assert 'json_db: {"<table>": []}' in at_validate
+
+
+def _json_db_inventory(**overrides: Any) -> ToolInventory:
+    fields: dict[str, Any] = {
+        "declared": frozenset({"db_query"}),
+        "agent_declared": frozenset({"db_query"}),
+        "user_declared": frozenset(),
+        "actor_split_known": True,
+        "parameters": {},
+        "known": True,
+    }
+    return ToolInventory(**(fields | overrides))
+
+
+@pytest.mark.parametrize(
+    ("inventory", "seeded_tables", "reason"),
+    [
+        pytest.param(
+            _json_db_inventory(),
+            _THE_TASK_SEEDS_NO_TABLES,
+            "does not say whether ['db_query'] are served as the source-less JSON-DB builtins",
+            id="an_inventory_built_without_the_field",
+        ),
+        pytest.param(
+            _json_db_inventory(json_db_builtins=frozenset({"db_query"})),
+            _NO_CALLER_READ_WHAT_THE_TASK_SEEDS,
+            "no caller resolved the tables this task seeds",
+            id="seeded_tables_unresolved",
+        ),
+        pytest.param(
+            ToolInventory.unresolvable(),
+            _THE_TASK_SEEDS_NO_TABLES,
+            _UNRESOLVABLE_REASON,
+            id="an_unresolvable_inventory",
+        ),
+    ],
+)
+def test_a_json_db_tool_whose_store_cannot_be_read_is_unchecked_not_refused(
+    inventory: ToolInventory, seeded_tables: SeededTablesLayer, reason: str
+) -> None:
+    """Either fact unknown, and the rule reports what it could not check and fails nothing.
+
+    ``None`` is what an adapter building :class:`ToolInventory` without the field
+    reports, and what a recorded wire tool list reports, since neither can say which
+    of its tools are builtins.
+    """
+    report = inspect_grading_authoring(
+        _trace_block(_tool_call("db_query")), inventory, seeded_tables=seeded_tables
+    )
+
+    assert report.errors == ()
+    assert any(reason in skip.reason for skip in report.unchecked), report.unchecked
+
+
+def test_an_inventory_without_the_field_and_no_json_db_name_asks_nothing() -> None:
+    """A tool set naming no ``Dispatch.JSON_DB`` builtin has no store to ask about."""
+    report = inspect_grading_authoring(
+        _trace_block(_tool_call("http_request")),
+        _json_db_inventory(
+            declared=frozenset({"http_request"}), agent_declared=frozenset({"http_request"})
+        ),
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert report == AuthoringReport()
 
 
 # ---------------------------------------------------------------------------
@@ -2786,7 +2966,33 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
             known=False,
         )
 
+    with pytest.raises(ValueError, match="which of its tools are JSON-DB builtins"):
+        ToolInventory(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+            json_db_builtins=frozenset(),
+        )
+
     assert ToolInventory.unresolvable().known is False
+    assert ToolInventory.unresolvable().json_db_builtins is None
+
+
+def test_the_json_db_builtins_are_declared_tools() -> None:
+    """A builtin the task does not declare is a refusal naming a tool no actor has."""
+    with pytest.raises(ValueError, match=r"JSON-DB builtins \['db_update'\] are not declared"):
+        ToolInventory(
+            declared=frozenset({"db_query"}),
+            agent_declared=frozenset({"db_query"}),
+            user_declared=frozenset(),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+            json_db_builtins=frozenset({"db_query", "db_update"}),
+        )
 
 
 def test_the_declared_set_is_the_union_of_the_two_actors() -> None:

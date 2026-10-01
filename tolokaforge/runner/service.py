@@ -338,6 +338,10 @@ def _unseeded_json_db_tools_refusal(task: TaskDescription) -> str | None:
     ``RegisterTrial`` seeds from ``initial_state.tables``. The predicate reads the
     tables rather than :func:`provisions_database`: a task can provision a database
     from schemas or unstable fields alone and still hand the agent an empty store.
+
+    The authoring gate states the same rule before a trial is paid for, off the same two
+    facts. A trial can reach here without passing it: the gate never ships in the
+    runner image, and it skips a task whose tool set it cannot read.
     """
     # Deferred, as in ToolFactory: importing the builtin package imports every tool driver.
     from tolokaforge.tools.builtin import registry as builtin_registry

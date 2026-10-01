@@ -3230,6 +3230,7 @@ Findings come in three classes:
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `state_checks` block reading the trial's database — a `path:` addressing it, or a `hash` enabled with or without a source — on a task whose `initial_state` seeds no tables, where the caller resolved what the task seeds | error | `state_checks.jsonpaths` or `state_checks.hash.enabled` |
+| a task enabling `db_query` or `db_update` in a block no MCP server serves — `tools.agent` naming no `mcp_server`, or `tools.user` naming none and the agent naming none either — whose `initial_state` seeds no table, where the caller resolved what the task seeds. `RegisterTrial` refuses the same trial; an intentionally empty store is `json_db: {"<table>": []}` | error | `tools` |
 | a `state_checks.jsonpaths[*].path` rooted at `filesystem`, which the runner's JSONPath state does not carry — read from the block alone, so it answers whatever the caller resolved | error | `state_checks.jsonpaths` |
 | a `state_checks.jsonpaths[*].path_glob` compared with anything but `contains_ci` — including no operator at all — which the runner's file evaluator reads as the empty string every file contains | error | `state_checks.jsonpaths` |
 | a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
@@ -3254,6 +3255,7 @@ Findings come in three classes:
 | a golden-action world the adapter's `grading_replay_world` hook answers `unresolvable()` for | unchecked | `state_checks.hash.golden_actions` |
 | a database-reading `state_checks` block whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks` |
 | an `id_fields` declaration whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks.id_fields` |
+| a task enabling `db_query` or `db_update` whose tool set does not say whether they are builtins (a `ToolInventory` reporting `json_db_builtins=None`, such as a recorded wire tool list), or whose adapter's `grading_seeded_tables` hook answers `unresolvable()` | unchecked | `tools` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
