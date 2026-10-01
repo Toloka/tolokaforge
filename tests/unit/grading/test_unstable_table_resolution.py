@@ -62,11 +62,18 @@ def test_an_exact_name_wins_over_every_other_strategy() -> None:
 
 
 def test_paths_keep_the_declared_name_where_nothing_matches_and_keep_their_order() -> None:
-    fields = [("reservation", "id"), ("payments", "created_at"), ("flights", "updated_at")]
-    assert resolve_unstable_field_paths(fields, _TABLES) == [
+    paths = ["reservation.id", "payments.created_at", "flights.updated_at", "version"]
+    assert resolve_unstable_field_paths(paths, _TABLES) == [
         "reservations.id",
         "payments.created_at",
         "flight.updated_at",
+        "version",
+    ]
+
+
+def test_a_path_splits_at_its_first_dot_as_the_filter_reads_it() -> None:
+    assert resolve_unstable_field_paths(["reservation.meta.id"], _TABLES) == [
+        "reservations.meta.id"
     ]
 
 
@@ -82,4 +89,4 @@ def test_the_db_service_masks_by_the_shared_resolution(declared: str, resolved: 
     )
     expected = f"{resolved or declared}.id"
     assert trial.get_unstable_field_list() == [expected]
-    assert resolve_unstable_field_paths([(declared, "id")], _TABLES) == [expected]
+    assert resolve_unstable_field_paths([f"{declared}.id"], _TABLES) == [expected]

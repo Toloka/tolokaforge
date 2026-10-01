@@ -753,19 +753,24 @@ def resolve_unstable_table_name(table: str, data_tables: Iterable[str]) -> str |
     return None
 
 
-def resolve_unstable_field_paths(
-    fields: Iterable[tuple[str, str]], data_tables: Iterable[str]
-) -> list[str]:
-    """``(table, field)`` unstable-field entries as the ``table.field`` paths a state is masked by.
+def resolve_unstable_field_paths(paths: Iterable[str], data_tables: Iterable[str]) -> list[str]:
+    """Dotted ``table.field`` unstable-field paths with each table name resolved.
 
-    Each table name resolves through :func:`resolve_unstable_table_name`; a name that
+    The path splits at its first ``.``, as :func:`filter_unstable_fields` reads it, and
+    the table name resolves through :func:`resolve_unstable_table_name`. A name that
     matches no data table keeps its declared spelling, so it masks nothing rather than
-    another table's column. The input order is kept.
+    another table's column; a path without a ``.`` names no table and is kept as
+    written. The input order is kept.
     """
     tables = set(data_tables)
-    return [
-        f"{resolve_unstable_table_name(table, tables) or table}.{field}" for table, field in fields
-    ]
+    resolved: list[str] = []
+    for path in paths:
+        table, dot, field = path.partition(".")
+        if not dot:
+            resolved.append(path)
+            continue
+        resolved.append(f"{resolve_unstable_table_name(table, tables) or table}.{field}")
+    return resolved
 
 
 def filter_unstable_fields(
