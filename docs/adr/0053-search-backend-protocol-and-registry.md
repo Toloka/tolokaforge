@@ -1,6 +1,6 @@
 # 0053. The `SearchBackend` Protocol and entry-point registry
 
-- **Status:** Accepted (change 1 of 3 implemented)
+- **Status:** Accepted (changes 1 and 2 of 3 implemented)
 - **Date:** 2026-09-30
 - **Deciders:** @CiroGamboa, @rsmtnn
 - **Supersedes:** none
@@ -430,17 +430,20 @@ The backend landed as the table says, with these refinements, documented in
   means whole documents, so a task undoes a project figure by writing `200`. The
   dump leaves it out at its default, so every existing `TaskDescription` is
   byte-identical and an older image accepts a task that does not set it.
-- **It reaches the judge as a keyword of `JudgeKind.evaluate`**, beside
-  `disable_knowledge_search`, from each of the four dispatch sites (runner
-  composite, grader composite dispatch, offline composite regrade, `judge_only`)
-  and from replay, which reads it from the bundle's recorded customization. This
-  is the first parameter added to the Protocol since it shipped; a downstream
-  kind must accept it. No kind outside the engine is registered in the tasks or
-  tools repositories.
+- **It reaches the judge in `JudgeTrialOptions`** (issue #1716), not as a keyword
+  of its own. `JudgeKind.evaluate` takes the trial's per-trial customization as one
+  frozen `options` object — `disable_knowledge_search`, `custom_system_prompt`,
+  `include_agent_system_prompt`, `judge_snippet_chars` — so the Protocol's
+  signature, the detachment surface for out-of-tree kinds, does not change when a
+  knob is added: the knob is a field with a default. `resolve_judge_trial_options`
+  builds it from `JudgeCustomization` in one place (`grade_llm_judge`, which the
+  runner composite, the grader composite dispatch and the offline composite regrade
+  call, and the `judge_only` helper, which lays the run-level override over it);
+  replay builds it from the bundle, stamping each value's source in
+  `replay_provenance.yaml`, `judge_snippet_chars` included.
 - **Left out:** the run-level `grader.judge` overrides (`JudgeGraderConfig`),
   whose `None` means "inherit" and so cannot carry a `null` that means whole
-  documents; and the judge report's provenance fields, since replay already reads
-  the value from the recorded task.
+  documents.
 
 ### Snapshots
 
