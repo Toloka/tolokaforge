@@ -74,4 +74,4 @@ def _refusal_clause(model: type[BaseModel], key: Any) -> str:
             f"unknown key {key!r}, which YAML read as {type(key).__name__} — grading "
             f"keys must be strings. Quote it to write it as one."
         )
-    return f"unknown key '{key}'{suggest_closest_field(model, key)}".rstrip()
+    return f"unknown key '{key}'{suggest_closest_field(model.model_fields, key, owner=model.__name__)}".rstrip()

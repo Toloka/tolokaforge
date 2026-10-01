@@ -352,6 +352,10 @@ Callers needing the full parameter block read that block directly.
 `ModelConfig` from a role block (offline judge replay does, for `judge`) drops
 it first.
 
+A reader that rebuilds model configs from a bundle (`task.yaml` `model_config`,
+`judge_model_config.json`) refuses a key its `ModelConfig` does not declare, so
+it must be at least as new as the engine that wrote the bundle.
+
 The `judge` role (the run-level read-only rubric judge, `models.judge`) is
 recorded symmetrically with `agent` / `user` — its own role block plus a
 `resolved.*` fingerprint — so every grade bundle records which judge produced

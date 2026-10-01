@@ -97,7 +97,7 @@ def _unknown_key_line(model: type[BaseModel], key: str, source: Path, section: s
     where = source.name + (f" ({section})" if section else "")
     return (
         f"unknown key '{key}' in {where}"
-        f"{suggest_closest_field(model, key)}"
+        f"{suggest_closest_field(model.model_fields, key, owner=model.__name__)}"
         f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
     )
 

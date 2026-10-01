@@ -8,11 +8,13 @@ session header, and an ordered ``fallbacks`` chain a client falls through on
 hard failure.
 """
 
+import dataclasses
 import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tolokaforge.core.deprecations import refuse_undeclared_keys
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
 __all__ = ["RESOLVED_RECORD_KEY", "ModelConfig", "ModelSessionConfig", "OpenRouterConfig"]
@@ -22,6 +24,8 @@ __all__ = ["RESOLVED_RECORD_KEY", "ModelConfig", "ModelSessionConfig", "OpenRout
 #: :class:`ModelConfig` from that block drops it.
 RESOLVED_RECORD_KEY = "resolved"
 
+_REASONING_FIELDS = tuple(field.name for field in dataclasses.fields(ReasoningConfig))
+
 #: RFC 9110 ``field-name`` (a ``token``).
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
@@ -29,7 +33,18 @@ _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _RESERVED_SESSION_HEADERS = frozenset({"authorization", "content-type", "content-length", "host"})
 
 
-class ModelSessionConfig(BaseModel):
+class _RefusesUndeclaredKeys(BaseModel):
+    """Answers an undeclared key with :func:`refuse_undeclared_keys` before ``extra="forbid"`` can."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_undeclared_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            refuse_undeclared_keys(data, tuple(cls.model_fields), owner=cls.__name__)
+        return data
+
+
+class ModelSessionConfig(_RefusesUndeclaredKeys):
     """The request header that carries this model's conversation id (docs/CONFIG.md)."""
 
     model_config = {"frozen": True, "extra": "forbid"}
@@ -52,7 +67,7 @@ class ModelSessionConfig(BaseModel):
         return value
 
 
-class OpenRouterConfig(BaseModel):
+class OpenRouterConfig(_RefusesUndeclaredKeys):
     """OpenRouter provider-routing knobs (https://openrouter.ai/docs/features/provider-routing).
 
     ``provider_order`` lists case-sensitive OpenRouter provider slugs in priority
@@ -61,16 +76,16 @@ class OpenRouterConfig(BaseModel):
     is how a model pins around a rate-limited default provider.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     provider_order: list[str] | None = None
     allow_fallbacks: bool = True
 
 
-class ModelConfig(BaseModel):
+class ModelConfig(_RefusesUndeclaredKeys):
     """LLM model configuration"""
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     provider: str
     name: str
@@ -141,6 +156,7 @@ class ModelConfig(BaseModel):
                 f"not the bare string {value!r}. See docs/CONFIG.md."
             )
         if isinstance(value, dict):
+            refuse_undeclared_keys(value, _REASONING_FIELDS, owner=ReasoningConfig.__name__)
             return ReasoningConfig(**value)
         raise TypeError(
             f"`reasoning:` must be ReasoningConfig | dict | None, got {type(value).__name__}"

@@ -611,6 +611,18 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                     f"expected a mapping, got {type(params).__name__}."
                 )
             _reject_unknown_params(params, _params_slot_known_keys(), f"{where}.params")
+        openrouter_defaults = block.get("openrouter_defaults")
+        if openrouter_defaults is not None:
+            if not isinstance(openrouter_defaults, dict):
+                raise ValueError(
+                    f"Preset overlay {path!r} at {where}.openrouter_defaults: "
+                    f"expected a mapping, got {type(openrouter_defaults).__name__}."
+                )
+            _reject_unknown_params(
+                openrouter_defaults,
+                frozenset(OpenRouterConfig.model_fields),
+                f"{where}.openrouter_defaults",
+            )
 
     def _reject_unknown_params(
         params: dict[str, Any],

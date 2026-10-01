@@ -246,6 +246,11 @@ emitted on **every** pack, so a newer engine against an older image is rejected 
 `RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden` error naming
 the field. Which keys bite, from which release, and in which direction is one table:
 [`GRADING.md`](GRADING.md#runner-engine-version-lock) § Runner-engine version lock.
+The model configs inside the trial spec are held to the same `extra="forbid"` rule,
+and every model-config field is emitted on every trial: the spec carries each model
+config's full dump, defaults included. A new model-config field therefore locks every
+pack's trials to an image that declares it. Images released before this engine
+version drop a model-config key they do not declare instead of refusing it.
 
 **So the order matters: rebuild the image before rolling the engine.** Upgrading
 the engine first leaves you inside the one window this gate cannot close, and — for
