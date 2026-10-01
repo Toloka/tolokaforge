@@ -2777,6 +2777,10 @@ to every request's `extra_headers`, gateway on or off. Wire delivery is pinned f
   `request_headers()`, so its value wins over theirs; it is never written to
   `litellm.openai_headers`. A config without `session` sends no session header, even
   when its observation carries an id.
+- **Reserved names.** `ModelSessionConfig` refuses, case-insensitively, a header
+  litellm or the engine sets itself, since the session value would replace it:
+  `authorization`, `content-type`, `content-length`, `host`, the provider auth
+  headers `x-api-key` and `api-key`, and `anthropic-version` / `anthropic-beta`.
 - **Collision refusal.** A session header whose name (case-insensitively) is also an
   `LLM_PROXY_HEADERS` key or the `LLM_PROXY_REQUEST_ID_HEADER` name, for a provider
   the gateway routes, or one of the engine's OpenRouter defaults, for an OpenRouter

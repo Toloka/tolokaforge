@@ -7,6 +7,7 @@ import pickle
 import uuid
 from pathlib import Path
 
+import click
 import litellm
 import pytest
 import yaml
@@ -79,6 +80,31 @@ def _write_run_config(tmp_path: Path, raw: dict) -> Path:
     path = tmp_path / "run.yaml"
     path.write_text(yaml.safe_dump(raw))
     return path
+
+
+#: Every command that builds the run's model clients, with the arguments that
+#: reach its refusals without starting a run.
+RUN_COMMANDS = [
+    pytest.param(["run", "--dry-run"], id="run"),
+    pytest.param(["prepare", "--run-dir", "{run_dir}"], id="prepare"),
+    pytest.param(["worker", "--run-dir", "{run_dir}"], id="worker"),
+]
+
+
+def _invoke(command: list[str], config: Path, tmp_path: Path):
+    args = [arg.format(run_dir=tmp_path / "run-dir") for arg in command]
+    return CliRunner().invoke(cli, [args[0], "--config", str(config), *args[1:]])
+
+
+def _refusal(result, error_type: type[Exception]) -> Exception:
+    """The typed error behind a command's one-line `Error:` refusal."""
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output, result.output
+    refusal = result.exception.__context__
+    assert isinstance(refusal, click.ClickException), repr(result.exception)
+    assert isinstance(refusal.__cause__, error_type), repr(refusal.__cause__)
+    assert f"Error: {refusal.__cause__}" in result.output, result.output
+    return refusal.__cause__
 
 
 @pytest.mark.parametrize("provider, name", CONFIGS)
@@ -211,10 +237,17 @@ def test_an_entry_under_the_raw_name_is_refused_by_validate_and_run_alike(
     assert f"{path}.name:" in errors[0]
     assert repr(raw_key) in errors[0] and repr(expected_key) in errors[0]
 
-    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert run.exit_code != 0
-    assert isinstance(run.exception, OverlayKeyMismatchError), run.output
-    assert repr(raw_key) in str(run.exception) and repr(expected_key) in str(run.exception)
+    refused = _refusal(_invoke(["run", "--dry-run"], config, tmp_path), OverlayKeyMismatchError)
+    assert (refused.declared_key, refused.expected_key) == (raw_key, expected_key)
+
+
+@pytest.mark.parametrize("command", RUN_COMMANDS)
+def test_every_run_command_refuses_a_raw_name_entry_without_a_traceback(command, tmp_path):
+    overlay = _write_overlay(tmp_path, [GATEWAY[1]])
+    config = _write_run_config(tmp_path, _run_config(*GATEWAY, overlay))
+
+    refused = _refusal(_invoke(command, config, tmp_path), OverlayKeyMismatchError)
+    assert refused.expected_key == "/".join(GATEWAY)
 
 
 def test_an_entry_under_the_raw_name_is_inert_beside_the_canonical_one(tmp_path):
@@ -228,7 +261,7 @@ def test_an_entry_under_the_raw_name_is_inert_beside_the_canonical_one(tmp_path)
     validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
     assert "[ERROR]" not in validated.output, validated.output
     run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert not isinstance(run.exception, OverlayKeyMismatchError), run.exception
+    assert "Rename the entry" not in run.output, run.output
 
 
 #: A first segment that names a provider in both sets the refusal consults, in
@@ -348,8 +381,9 @@ def _install_gateway_env(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -
     monkeypatch.setattr(secrets_manager, "_default_manager", SecretManager([DictProvider(env)]))
 
 
+@pytest.mark.parametrize("command", RUN_COMMANDS)
 def test_a_session_header_conflict_on_a_fallback_is_refused_by_validate_and_run_alike(
-    tmp_path, monkeypatch
+    command, tmp_path, monkeypatch
 ):
     """No presets overlay is declared, so the run's refusal cannot come from the
     overlay's own check."""
@@ -374,9 +408,8 @@ def test_a_session_header_conflict_on_a_fallback_is_refused_by_validate_and_run_
     assert "models.agent.fallbacks[0].session.header:" in errors[0]
     assert "LLM_PROXY_REQUEST_ID_HEADER" in errors[0]
 
-    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
-    assert isinstance(run.exception, SessionHeaderConflictError), run.output
-    assert run.exception.path == "models.agent.fallbacks[0].session.header"
+    refused = _refusal(_invoke(command, config, tmp_path), SessionHeaderConflictError)
+    assert refused.path == "models.agent.fallbacks[0].session.header"
 
 
 @pytest.mark.parametrize(

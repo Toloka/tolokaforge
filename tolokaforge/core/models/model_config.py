@@ -30,8 +30,20 @@ _REASONING_FIELDS = tuple(field.name for field in dataclasses.fields(ReasoningCo
 #: RFC 9110 ``field-name`` (a ``token``).
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
-#: Transport headers litellm or the engine sets; a session value must not replace them.
-_RESERVED_SESSION_HEADERS = frozenset({"authorization", "content-type", "content-length", "host"})
+#: Transport, auth and API-version headers litellm or the engine sets; a session value
+#: must not replace them.
+_RESERVED_SESSION_HEADERS = frozenset(
+    {
+        "authorization",
+        "content-type",
+        "content-length",
+        "host",
+        "x-api-key",
+        "api-key",
+        "anthropic-version",
+        "anthropic-beta",
+    }
+)
 
 
 class _RefusesUndeclaredKeys(BaseModel):
@@ -64,7 +76,7 @@ class ModelSessionConfig(_RefusesUndeclaredKeys):
             )
         if value.lower() in _RESERVED_SESSION_HEADERS:
             raise ValueError(
-                f"session.header {value!r} names a transport header the engine or litellm "
+                f"session.header {value!r} names a header the engine or litellm "
                 f"sets ({', '.join(sorted(_RESERVED_SESSION_HEADERS))}); pick another name."
             )
         return value

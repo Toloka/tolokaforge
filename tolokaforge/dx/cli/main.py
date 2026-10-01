@@ -459,12 +459,13 @@ def _activate_presets_overlay(
         validate_overlay_file(resolved)
         mismatches = overlay_key_mismatches(run_config.models)
         if mismatches:
-            raise mismatches[0][1]
+            err = mismatches[0][1]
+            raise click.ClickException(str(err)) from err
     return resolved
 
 
 def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
-    """Raise the first session header, over every model and fallback, that
+    """Refuse the first session header, over every model and fallback, that
     another header source also sets.
 
     A fallback's client is built only on failover, so its construction-time
@@ -472,7 +473,8 @@ def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
     """
     conflicts = session_header_conflicts(run_config.models)
     if conflicts:
-        raise conflicts[0][1]
+        err = conflicts[0][1]
+        raise click.ClickException(str(err)) from err
 
 
 def _refuse_unbuildable_capabilities(run_config: RunConfig) -> None:
