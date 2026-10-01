@@ -471,3 +471,62 @@ def test_a_table_value_that_is_not_a_list_is_refused_whoever_reads_it() -> None:
     """A plugin adapter handing its tables as declared is held to the same rule."""
     error = _only_error(_NORMALIZE, tables={**_TABLES, "documents": {"D1": {"id": "D1"}}})
     assert "names table 'documents', which the initial state seeds as a dict" in error
+
+
+# ---------------------------------------------------------------------------
+# Seeded records are not a schema
+# ---------------------------------------------------------------------------
+
+#: Every table a rule reads is seeded with rows, and no seeded row carries the fields
+#: the rules read: agents write fields no seeded record carries, so none of them is
+#: a reason to refuse the view on any path.
+_ROWS_WITHOUT_THE_FIELDS: dict[str, Any] = {
+    "documents": [{"id": "D1", "client_id": "C1"}],
+    "corrections": [{"id": "R0", "reason": "seeded"}],
+    "holds": [{"id": "H0", "client_id": "C1"}],
+    "lookup_log": [{"id": "L0"}],
+}
+_VIEW_READING_UNSEEDED_FIELDS = {
+    "hash": {"enabled": True, "expect_initial_state": True},
+    "comparison_view": {
+        "version": 1,
+        "rules": [
+            {**_RELEASED, "where": {"status": "released", "reason_code": {"in": ["x"]}}},
+            _NORMALIZE,
+            _LOOKUPS,
+        ],
+    },
+}
+
+
+def test_fields_no_seeded_row_carries_load_on_every_path(
+    tmp_path: Path, runner_service, mock_grpc_context
+) -> None:
+    adapter = _write_pack(
+        tmp_path, _VIEW_READING_UNSEEDED_FIELDS, tables=_ROWS_WITHOUT_THE_FIELDS, unstable=[]
+    )
+    description = adapter.to_task_description("view_task")
+    assert description.grading.state_checks.comparison_view is not None
+    assert adapter.get_grading_config("view_task").state_checks.comparison_view is not None
+
+    trial_id = "seeded_rows_are_no_schema:0"
+    registered = runner_service.RegisterTrial(
+        register_request(
+            trial_spec_json(description.model_dump(mode="json"), trial_id=trial_id),
+            trial_id=trial_id,
+        ),
+        mock_grpc_context,
+    )
+    assert registered.success is True, registered.error
+
+    layer = NativeAdapter.grading_seeded_tables(
+        adapter.get_task("view_task"), adapter.get_task_dir("view_task")
+    )
+    report = inspect_grading_authoring(
+        {"state_checks": _VIEW_READING_UNSEEDED_FIELDS},
+        ToolInventory.unresolvable(),
+        seeded_tables=layer,
+    )
+    assert not [f for f in report.errors if f.where == "state_checks.comparison_view"]
+    result = _validate(tmp_path, "--strict-authoring")
+    assert result.exit_code == 0, result.output
