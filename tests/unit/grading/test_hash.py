@@ -9,6 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+from tests.utils.db_service_fallback import load_standalone_fallback
 from tolokaforge.core.grading.state_checks import load_task_unstable_fields, state_digest
 from tolokaforge.core.hash import (
     AUTO_MASKED_CLOCK_COLUMNS,
@@ -722,44 +723,8 @@ class TestComputeStableHashNumericCanonicalization:
 
 
 def _load_standalone_fallback_hash():
-    """Import the json_db_service standalone ``compute_stable_hash`` fallback.
-
-    The service prefers ``tolokaforge.core.hash`` and only defines the local
-    fallback when that import fails (standalone/testing). Force the ImportError
-    branch by poisoning ``sys.modules`` so we exercise the vendored copy, then
-    restore the real module so no other test is affected.
-    """
-    import builtins
-    import importlib
-    import sys
-
-    real_import = builtins.__import__
-
-    def blocking_import(name, *args, **kwargs):
-        if name == "tolokaforge.core.hash":
-            raise ImportError("forced for parity test")
-        return real_import(name, *args, **kwargs)
-
-    saved = {m: sys.modules[m] for m in list(sys.modules) if "json_db_service" in m}
-    for m in saved:
-        del sys.modules[m]
-    builtins.__import__ = blocking_import
-    try:
-        app = importlib.import_module("tolokaforge.env.json_db_service.app")
-        fn = app.compute_stable_hash
-        # Guard: make sure we actually got the vendored fallback (defined in
-        # app.py), not the real core function — otherwise this parity test would
-        # silently compare the real implementation against itself.
-        assert (
-            fn.__module__ == "tolokaforge.env.json_db_service.app"
-        ), "fallback poisoning failed; got the real core.hash function"
-        return fn
-    finally:
-        builtins.__import__ = real_import
-        for m in list(sys.modules):
-            if "json_db_service" in m:
-                del sys.modules[m]
-        sys.modules.update(saved)
+    """The json_db_service standalone ``compute_stable_hash`` fallback (see the loader)."""
+    return load_standalone_fallback("compute_stable_hash")
 
 
 class TestStandaloneFallbackParity:

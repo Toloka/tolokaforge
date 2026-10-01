@@ -10,7 +10,10 @@ cases below pin what each strategy answers, and the service is held to them.
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
+from tests.utils.db_service_fallback import load_standalone_fallback
 from tolokaforge.core.hash import resolve_unstable_field_paths, resolve_unstable_table_name
 from tolokaforge.env.json_db_service.app import TrialState, UnstableFieldSpec
 
@@ -90,3 +93,22 @@ def test_the_db_service_masks_by_the_shared_resolution(declared: str, resolved: 
     expected = f"{resolved or declared}.id"
     assert trial.get_unstable_field_list() == [expected]
     assert resolve_unstable_field_paths([f"{declared}.id"], _TABLES) == [expected]
+
+
+_FALLBACK = load_standalone_fallback("resolve_unstable_table_name")
+_NAME = st.text(alphabet="as_b", min_size=0, max_size=5)
+
+
+@pytest.mark.parametrize(("declared", "resolved"), _CASES)
+def test_the_db_service_images_own_copy_resolves_each_case_alike(
+    declared: str, resolved: str | None
+) -> None:
+    """The image ships ``json_db_service/`` alone and runs its vendored copy."""
+    assert _FALLBACK(declared, _TABLES) == resolved
+
+
+@given(_NAME, st.sets(_NAME, max_size=6))
+@settings(max_examples=500, deadline=None)
+def test_the_vendored_copy_agrees_with_the_shared_function(declared: str, tables: set[str]) -> None:
+    """Over names drawn from an alphabet every strategy can match on: ``s``, ``_``, prefixes."""
+    assert _FALLBACK(declared, tables) == resolve_unstable_table_name(declared, tables)
