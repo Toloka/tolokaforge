@@ -951,6 +951,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     auto_normalize_nullables=state_checks_data.get(
                         "auto_normalize_nullables", False
                     ),
+                    comparison_view=state_checks_data.get("comparison_view"),
                 )
 
             # Build transcript rules. One model serves the authored block and the

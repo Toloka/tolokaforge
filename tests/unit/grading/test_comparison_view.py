@@ -48,6 +48,8 @@ from tolokaforge.core.plugin_registry import (
 
 pytestmark = pytest.mark.unit
 
+_UNLESS = "unless_referenced_by"
+
 
 def _view(*rules: dict[str, Any]) -> ComparisonViewConfig:
     return ComparisonViewConfig.model_validate({"version": 1, "rules": list(rules)})
@@ -241,6 +243,86 @@ def test_the_block_round_trips_through_its_json_dump() -> None:
     again = ComparisonViewConfig.model_validate(dump)
     assert again == view
     assert again.config_sha256() == view.config_sha256()
+
+
+def test_the_in_operator_dumps_under_its_alias_without_being_asked() -> None:
+    """The trial spec crosses as a plain ``model_dump_json()``, which must validate back."""
+    view = _view(_DRAFT_PROPOSALS)
+    plain = view.model_dump(mode="json")
+    assert plain["rules"][0]["where"]["status"] == {"in": ["draft", "superseded"]}
+    assert ComparisonViewConfig.model_validate(plain) == view
+    assert ComparisonViewConfig.model_validate_json(view.model_dump_json()) == view
+
+
+# ---------------------------------------------------------------------------
+# What a task's load reads off the declaration
+# ---------------------------------------------------------------------------
+
+_ID_FIELD_CONFLICTS = (
+    pytest.param(
+        {**_JOURNAL_KEYS, "key": ["entry_no", "account_id"]},
+        {"fee_credit_journal": "entry_no"},
+        "the id field it replaces",
+        id="normalize-ids-key-names-the-id",
+    ),
+    pytest.param(
+        {**_JOURNAL_KEYS, "references": [{"table": "fee_credit_journal", "field": "id"}]},
+        {},
+        "a record's own id is not a reference to it",
+        id="normalize-ids-references-its-own-id",
+    ),
+    pytest.param(
+        _JOURNAL_KEYS,
+        {"fee_credit_journal": ["account_id", "fee_id"]},
+        "composite key",
+        id="normalize-ids-composite-key",
+    ),
+    pytest.param(
+        _RELEASED_HOLDS,
+        {"transfer_holds": ["id", "kind"]},
+        "composite key",
+        id="unless-referenced-by-composite-key",
+    ),
+    pytest.param(
+        {**_RELEASED_HOLDS, "unless_referenced_by": [{"table": "transfer_holds", "field": "id"}]},
+        {},
+        "a record's own id is not a reference to it",
+        id="unless-referenced-by-its-own-id",
+    ),
+)
+
+
+@pytest.mark.parametrize(("entry", "id_fields", "fragment"), _ID_FIELD_CONFLICTS)
+def test_an_id_field_conflict_reads_at_load_as_it_raises_at_apply(
+    entry: dict[str, Any], id_fields: dict[str, Any], fragment: str
+) -> None:
+    """One set of checks: what the load reports is the message the apply raises."""
+    view = _view(entry)
+    (found,) = view.rules[0].id_field_errors(id_fields)
+    assert fragment in found
+    state = {table: [] for table in view.rules[0].names()}
+    state[view.rules[0].table] = [{"id": "X1", "status": "released", "account_id": "A"}]
+    with pytest.raises(ComparisonViewError) as raised:
+        apply_comparison_view(state, initial=state, view=view, id_fields=id_fields)
+    assert str(raised.value) == found
+
+
+def test_a_rule_without_an_id_field_to_read_has_no_conflict() -> None:
+    for entry in (_ZERO_ALLOCATIONS, _DRAFT_PROPOSALS, _BOOKKEEPING):
+        assert _view(entry).rules[0].id_field_errors({"x": ["a", "b"]}) == ()
+    unreferenced = {key: value for key, value in _RELEASED_HOLDS.items() if key != _UNLESS}
+    assert _view(unreferenced).rules[0].id_field_errors({"transfer_holds": ["a", "b"]}) == ()
+
+
+def test_the_rekeyed_fields_read_off_the_declaration_are_the_records() -> None:
+    view = _view(_RELEASED_HOLDS, _JOURNAL_KEYS)
+    id_fields = {"fee_credit_journal": "entry_no"}
+    state = {**_STATE, "fee_credit_journal": [], "notices": [], "payments": []}
+    record = apply_comparison_view(state, initial=_INITIAL, view=view, id_fields=id_fields).record
+    assert view.rekeyed_fields(id_fields) == record.rekeyed_fields
+    assert [field.dotted for field in record.rekeyed_fields] == ["fee_credit_journal.entry_no"]
+    with pytest.raises(ComparisonViewError, match="composite key"):
+        view.rekeyed_fields({"fee_credit_journal": ["account_id", "fee_id"]})
 
 
 # ---------------------------------------------------------------------------

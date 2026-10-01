@@ -300,6 +300,7 @@ class _RetiredWireKey:
 _WALK_STOPS: tuple[str, ...] = (
     "grading.trace_checks",
     "grading.state_checks.compare_columns",
+    "grading.state_checks.comparison_view",
     "environment_manifest",
 )
 """The paths the model walk records without descending into. Read by the walk and by
@@ -522,6 +523,17 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 since=_UNRELEASED,
                 breadth="a pack declaring a table's rows are a set (row-permutation-insensitive)",
             ),
+        ),
+    ),
+    _WireKey(
+        path="grading.state_checks.comparison_view",
+        emitted_for="grading.state_checks.comparison_view",
+        wire_shape="ComparisonViewConfig | None",
+        is_leaf_container=True,
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="state_checks.comparison_view",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
         ),
     ),
     _WireKey(
@@ -927,8 +939,11 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
     ``gate`` is the nearest ancestor a pack must declare — the nearest optional field or
     list above this one — which is a property of the ancestors and never of the field
     itself: an optional container is emitted unconditionally as ``null`` and only its
-    children wait on it.
+    children wait on it. The one exception is a field its model names in
+    ``omitted_when_absent``: the dump leaves it out rather than writing ``null``, so it
+    waits on itself.
     """
+    omitted = getattr(model, "omitted_when_absent", frozenset())
     for name, field in model.model_fields.items():
         path = f"{prefix}.{name}" if prefix else name
         nested = _nested_model(field.annotation)
@@ -943,7 +958,7 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
             )
         yield _WalkedKey(
             path=path,
-            emitted_for=gate,
+            emitted_for=path if name in omitted else gate,
             wire_shape=rendered,
             descended=not stopped and (nested is not None or element is not None),
         )

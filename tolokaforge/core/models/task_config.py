@@ -7,12 +7,21 @@ and both inherit :class:`TaskDefaults` from ``project.yaml``.
 """
 
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import canonicalize_actor_config, drop_retired_max_idle_turns
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
     AUTHORED_HASH_WEIGHT_CONTEXT,
@@ -798,6 +807,31 @@ class StateChecksConfig(BaseModel):
     # Applied symmetrically to both trial and golden. See
     # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
     auto_normalize_nullables: bool = False
+    # Opt-in: a one-sided transform each side's full state goes through before every
+    # other step of the hash — records that do not count dropped, generated ids
+    # re-keyed together with the references to them (ADR-0053). Validated by its own
+    # model; checked against the task when it loads. Absent, the hash reads the
+    # states exactly as before, and the key is left out of every dump.
+    comparison_view: ComparisonViewConfig | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a dump that has none.
+
+        So a block declaring no view dumps byte-identically to one written before the
+        key existed: recorded ``grading_config.json`` parts and canonical snapshots keep
+        their bytes.
+        """
+        dumped: dict[str, Any] = handler(self)
+        for name in self.omitted_when_absent:
+            if getattr(self, name) is None:
+                dumped.pop(name, None)
+        return dumped
 
     @model_validator(mode="before")
     @classmethod
