@@ -62,11 +62,10 @@ from tolokaforge.core.grading.golden_replay import (
     incomplete_replay_reason,
     resolve_golden_action_names,
 )
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.runner.models import (
     GoldenAction,
-    HashComparisonBasis,
-    HashGradingResult,
     RunnerStateChecksConfig,
     TaskDescription,
 )
@@ -158,10 +157,8 @@ def _trial_state(pack_tools: dict[str, Any], *calls: tuple[str, dict[str, Any]])
     return data
 
 
-def _check(
-    db_state: dict[str, Any], actions: list[dict[str, Any]]
-) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
-    score, reason, diff, replay, _ = StateChecker().check_hash_against_golden_replay(
+def _check(db_state: dict[str, Any], actions: list[dict[str, Any]]) -> HashGradingResult:
+    return StateChecker().check_hash_against_golden_replay(
         db_state=db_state,
         golden_actions=actions,
         task_dir=_TASK_DIR,
@@ -169,7 +166,6 @@ def _check(
         mcp_server_path=_MCP_SERVER,
         task_domain="shop",
     )
-    return score, reason, diff, replay
 
 
 def test_a_misspelled_action_raises_where_it_used_to_pass_the_wrong_trial(
@@ -267,11 +263,13 @@ def test_the_pack_as_authored_still_grades_a_correct_trial_as_a_pass(
     """
     paid = _trial_state(pack_tools, _PLACE_ORDER, _CONFIRM_PAYMENT)
 
-    score, reason, diff, replay = _check(paid, copy.deepcopy(golden_actions))
+    result = _check(paid, copy.deepcopy(golden_actions))
 
-    assert (score, diff) == (1.0, None)
-    assert reason == "State hash matches"
-    assert incomplete_replay_reason(replay) is None
+    assert (result.hash_score, result.state_diff) == (1.0, None)
+    assert result.reason == "State hash matches"
+    assert result.basis is HashComparisonBasis.GOLDEN_REPLAY
+    assert result.golden_replay is not None
+    assert incomplete_replay_reason(result.golden_replay) is None
 
 
 def test_the_pack_as_authored_still_fails_a_trial_that_never_paid(
@@ -279,11 +277,11 @@ def test_the_pack_as_authored_still_fails_a_trial_that_never_paid(
 ) -> None:
     never_paid = _trial_state(pack_tools, _PLACE_ORDER)
 
-    score, reason, diff, _ = _check(never_paid, copy.deepcopy(golden_actions))
+    result = _check(never_paid, copy.deepcopy(golden_actions))
 
-    assert score == 0.0
-    assert "State hash mismatch" in reason
-    assert diff is not None
+    assert result.hash_score == 0.0
+    assert "State hash mismatch" in str(result.reason)
+    assert result.state_diff is not None
 
 
 def test_an_action_that_raised_still_scores_the_trial_and_says_what_did_not_take_effect(
@@ -299,12 +297,14 @@ def test_an_action_that_raised_still_scores_the_trial_and_says_what_did_not_take
     """
     never_paid = _trial_state(pack_tools, _PLACE_ORDER)
 
-    score, reason, _, replay = _check(never_paid, _misspell_payment_kwarg(golden_actions))
+    result = _check(never_paid, _misspell_payment_kwarg(golden_actions))
 
-    assert score == 1.0
-    assert reason == "State hash matches"
+    assert result.hash_score == 1.0
+    assert result.reason == "State hash matches"
+    assert result.hash_unscorable is True
 
-    sentence = incomplete_replay_reason(replay)
+    assert result.golden_replay is not None
+    sentence = incomplete_replay_reason(result.golden_replay)
     assert sentence is not None
     assert sentence.startswith("GOLDEN REPLAY ERRORS:"), sentence
     assert "1 of 2" in sentence, sentence
@@ -328,12 +328,13 @@ def test_an_action_that_reported_its_failure_is_recorded_like_one_that_raised(
     """
     never_paid = _trial_state(pack_tools, _PLACE_ORDER)
 
-    score, reason, _, replay = _check(never_paid, _report_payment_failure(golden_actions))
+    result = _check(never_paid, _report_payment_failure(golden_actions))
 
-    assert score == 1.0
-    assert reason == "State hash matches"
+    assert result.hash_score == 1.0
+    assert result.reason == "State hash matches"
 
-    sentence = incomplete_replay_reason(replay)
+    assert result.golden_replay is not None
+    sentence = incomplete_replay_reason(result.golden_replay)
     assert sentence is not None
     assert sentence.startswith("GOLDEN REPLAY ERRORS:"), sentence
     assert "1 of 2" in sentence, sentence
@@ -350,10 +351,10 @@ def test_an_action_whose_tool_returns_a_list_reports_no_failure(pack_tools, gold
     paid = _trial_state(pack_tools, _PLACE_ORDER, _CONFIRM_PAYMENT)
     listing_too = copy.deepcopy(golden_actions) + [{"name": "list_products"}]
 
-    score, reason, _, replay = _check(paid, listing_too)
+    result = _check(paid, listing_too)
 
-    assert (score, reason) == (1.0, "State hash matches")
-    assert replay == GoldenReplayRecord(authored=3)
+    assert (result.hash_score, result.reason) == (1.0, "State hash matches")
+    assert result.golden_replay == GoldenReplayRecord(authored=3)
 
 
 @pytest.mark.parametrize(
@@ -429,14 +430,19 @@ def tau_golden_actions() -> list[dict[str, Any]]:
 
 
 def _replay_the_tau_pack(actions: list[dict[str, Any]]) -> GoldenReplayRecord:
-    _, _, _, replay, _ = StateChecker().check_hash_against_golden_replay(
-        db_state=json.loads((_TAU_TASK_DIR / _TAU_INITIAL_STATE).read_text()),
-        golden_actions=actions,
-        task_dir=_TAU_TASK_DIR,
-        initial_state_path=_TAU_INITIAL_STATE,
-        mcp_server_path=_TAU_MCP_SERVER,
-        task_domain="food_delivery",
+    replay = (
+        StateChecker()
+        .check_hash_against_golden_replay(
+            db_state=json.loads((_TAU_TASK_DIR / _TAU_INITIAL_STATE).read_text()),
+            golden_actions=actions,
+            task_dir=_TAU_TASK_DIR,
+            initial_state_path=_TAU_INITIAL_STATE,
+            mcp_server_path=_TAU_MCP_SERVER,
+            task_domain="food_delivery",
+        )
+        .golden_replay
     )
+    assert replay is not None
     return replay
 
 

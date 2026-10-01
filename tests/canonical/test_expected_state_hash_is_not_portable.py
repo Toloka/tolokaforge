@@ -44,6 +44,8 @@ from tests.utils.comparison_view_runner import (
 )
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewError
+from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.pre_hash import PreHashDeclaration, ViewedPair, view_the_pair
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
@@ -366,7 +368,7 @@ def _compare_columns(case: _ViewCase) -> dict[str, dict[str, ColumnCompareRule]]
 def _core_view_verdict(case: _ViewCase) -> Verdict:
     """Core's own hash check over the pair: the composition, then ``state_digest``."""
     try:
-        score, _, _ = StateChecker().check_hash(
+        result = StateChecker().check_hash(
             copy.deepcopy(case.trial),
             expected_state=copy.deepcopy(case.golden),
             comparison_view=_view(case),
@@ -374,6 +376,7 @@ def _core_view_verdict(case: _ViewCase) -> Verdict:
             unstable_fields=[f"{table}.{name}" for table, name in case.unstable],
             compare_columns=_compare_columns(case),
         )
+        score = result.hash_score
     except ComparisonViewError:
         return Verdict.GRADING_ERROR
     return Verdict.PASS if score == 1.0 else Verdict.FAIL
@@ -432,6 +435,8 @@ def _runner_view_verdict(case: _ViewCase, servicer: Any, context: Any) -> Verdic
                 description.grading.state_checks,
                 copy.deepcopy(case.trial),
                 copy.deepcopy(case.golden),
+                basis=HashComparisonBasis.GOLDEN_REPLAY,
+                golden_replay=GoldenReplayRecord(authored=1),
             )
         except ComparisonViewError:
             return Verdict.GRADING_ERROR
@@ -595,8 +600,10 @@ def test_routing_the_declared_literal_to_the_runner_would_score_zero(
     )
 
     checker = StateChecker()
-    matched, _, _ = checker.check_hash(state, literal)
-    crossed, _, _ = checker.check_hash(state, runner_digest)
+    result = checker.check_hash(state, literal)
+    matched = result.hash_score
+    result = checker.check_hash(state, runner_digest)
+    crossed = result.hash_score
 
     assert matched == 1.0, f"{trial_dir}: core no longer scores 1.0 against the declared literal"
     assert crossed == 0.0, (

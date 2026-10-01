@@ -57,8 +57,9 @@ def _filed(new_id: str, reason: str = "typo") -> dict[str, Any]:
     }
 
 
-def _check(trial: dict, golden: dict, **kwargs: Any):
-    return StateChecker().check_hash(
+def _check(trial: dict, golden: dict, **kwargs: Any) -> tuple[float, str, Any]:
+    """Core's verdict through the view: the score, the reason and the view's record."""
+    result = StateChecker().check_hash(
         trial,
         expected_state=golden,
         comparison_view=_DOCUMENTS,
@@ -66,16 +67,20 @@ def _check(trial: dict, golden: dict, **kwargs: Any):
         unstable_fields=["documents.id"],
         **kwargs,
     )
+    assert result.reason is not None
+    return result.hash_score, result.reason, result.comparison_view
 
 
 def test_a_pair_that_differs_in_a_generated_id_matches_through_the_view() -> None:
     score, reason, record = _check(_filed("D3"), _filed("D2"))
     assert score == 1.0, reason
     assert record is not None and record.view_diff is None
-    unviewed, _, none = StateChecker().check_hash(
+    unviewed = StateChecker().check_hash(
         _filed("D3"), expected_state=_filed("D2"), unstable_fields=["documents.id"]
     )
-    assert unviewed == 0.0 and none is None, "the control: without the view it is a mismatch"
+    assert (
+        unviewed.hash_score == 0.0 and unviewed.comparison_view is None
+    ), "the control: without the view it is a mismatch"
 
 
 def test_a_mismatch_names_the_view_diff() -> None:
@@ -120,12 +125,13 @@ def test_a_golden_view_error_propagates_instead_of_scoring_zero() -> None:
 
 def test_every_other_hashing_error_still_scores_zero() -> None:
     """No behaviour change outside the view: the catch-all is kept for the rest."""
-    score, reason, record = StateChecker().check_hash(
+    result = StateChecker().check_hash(
         {"t": [{"id": 1}]},
         expected_state={"t": [{"id": 1}]},
         numeric_string_fields=42,  # type: ignore[arg-type]
     )
-    assert score == 0.0 and reason.startswith("Error computing hash") and record is None
+    assert result.hash_score == 0.0 and result.comparison_view is None
+    assert str(result.reason).startswith("Error computing hash")
 
 
 def test_a_view_needs_the_expected_state_not_a_stored_digest() -> None:
@@ -175,7 +181,7 @@ def test_the_view_under_golden_replay_reads_a_fresh_initial_state() -> None:
     assert [order["id"] for order in trial["orders"]] == ["O-001"]
     trial["orders"][0]["id"] = "O-009"
 
-    score, reason, _, replay, record = StateChecker().check_hash_against_golden_replay(
+    result = StateChecker().check_hash_against_golden_replay(
         db_state=copy.deepcopy(trial),
         golden_actions=_golden_actions(),
         task_dir=_SHOP,
@@ -184,9 +190,9 @@ def test_the_view_under_golden_replay_reads_a_fresh_initial_state() -> None:
         task_domain="shop",
         comparison_view=_ORDERS_BY_CONTENT,
     )
-    assert score == 1.0, reason
-    assert not replay.failures
-    assert record is not None and record.view_diff is None
+    assert result.hash_score == 1.0, result.reason
+    assert result.golden_replay is not None and not result.golden_replay.failures
+    assert result.comparison_view is not None and result.comparison_view.view_diff is None
 
     replayed = _replayed_by_hand()
     stale = view_the_pair(

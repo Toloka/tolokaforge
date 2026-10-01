@@ -619,7 +619,10 @@ def test_grade_trial_refuses_when_a_hash_pack_golden_replay_errors(
         GoldenActionFailure,
         GoldenReplayRecord,
     )
-    from tolokaforge.runner.models import HashComparisonBasis, HashGradingResult
+    from tolokaforge.core.grading.hash_grading_result import (
+        HashComparisonBasis,
+        HashGradingResult,
+    )
 
     trial_id = "hash_replay_errors_dispatch:0"
     task_dict = simple_task_description()

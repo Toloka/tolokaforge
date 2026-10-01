@@ -496,26 +496,25 @@ because the hash verdict either substrate produces is `0.0` or `1.0`, never a
 fraction, so the value handed in is one the runner's own path would yield; the same
 lock asserts core's evaluator returns exactly those two for the fixture's two states.
 
-**That premise is guarded, within a stated limit.** The producers the manifest names
-split by the shape their verdict leaves in. Core's `check_hash` and
-`check_hash_against_golden_replay` hand theirs on as a bare float in a tuple, so the
-suite reads their sources: each must choose its score between literals rather than
-computing it, and every `return` must carry that score somewhere the audit reads. The
-runner's `_execute_hash_grading` returns its verdict inside `HashGradingResult`, whose
-`hash_score` is derived from the boolean `hash_match` — a non-binary or contradictory
-verdict is unrepresentable, so that producer's source needs no audit; the suite proves
-the derivation over both `hash_match` values, that constructing the model with an
-explicit `hash_score` is refused, and that the producer's declared return type keeps
-its verdict inside the model. The runner-side diff reports an order-mismatch verdict
-on the same-set-different-order class, so a `hash_score: 0.0` never sits beside a
-`state_diff` that reads as identical (see [§ Hash / diff verdict
-parity](#hash--diff-verdict-parity)). The producer set is derived from the hash family's
-declared evaluators and asserted as set equality against the union of the two frozen
-partitions, so a fourth producer forces a reviewable edit rather than landing with the
-guard green. What the source audit cannot see is a producer reached only *through* one
-of the functions it reads: it follows declared evaluators, not call graphs. So a
-partial hash score cannot land inside a guarded producer without the sweep's premise
-being re-examined, and a new producer cannot be declared without one.
+**That premise is a type invariant on both substrates.** Every producer the manifest
+names — core's `check_hash` and `check_hash_against_golden_replay`, and the runner's
+`_execute_hash_grading` — returns the one frozen
+[`HashGradingResult`](../tolokaforge/core/grading/hash_grading_result.py), whose
+`hash_score` is derived from the boolean `hash_match`: a non-binary or contradictory
+verdict is unrepresentable, so no producer's source needs reading. The suite proves
+that each producer declares that return type, the derivation over both `hash_match`
+values, and that the type has no score to set — a `hash_score` passed at construction
+or assigned afterwards is refused, and so is a `hash_match` that is not a `bool`. The
+same result carries the reason core reports, the comparison basis, the golden replay's
+record, the diff beside a mismatch and the comparison view's record, so what a
+comparison reports is a field of it rather than another element of a returned tuple.
+The runner-side diff reports an order-mismatch verdict on the same-set-different-order
+class, so a `hash_score: 0.0` never sits beside a `state_diff` that reads as identical
+(see [§ Hash / diff verdict parity](#hash--diff-verdict-parity)). The producer set is
+derived from the hash family's declared evaluators and asserted as set equality
+against a frozen set, so a fourth producer forces a reviewable edit rather than
+landing with the guard green; what the guard cannot see is a producer the manifest
+does not declare.
 
 ### Score-parity keys outside the hash family
 

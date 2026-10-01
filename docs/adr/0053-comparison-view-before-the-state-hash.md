@@ -481,7 +481,8 @@ a follow-up. This is what a `checks.py` hook cannot provide.
     state it already holds (`trial_context.task_description.initial_state`).
   - After `restore_snapshot` it applies the view to each side, then steps 2–5.
   - On a mismatch it computes the raw `state_diff` and a `view_diff`.
-  - `HashGradingResult` carries `view_diff` and the record. The wire gains
+  - The shared `HashGradingResult` (below) carries the record and the view diff in
+    it. The wire gains
     `Grade.comparison_view_json` (field 12, proto3 `optional`, mirrored on the
     grader's `Grade`), which carries both, and the host writes it into
     `Grade.comparison_view` in `grade.yaml`. Without a view the field is unset and
@@ -513,9 +514,18 @@ a follow-up. This is what a `checks.py` hook cannot provide.
   - `check_hash` stops folding a `ComparisonViewError` into
     `0.0, "Error computing hash"` and lets it propagate; every other error is still
     folded. The rule for trial-side errors is the runner's.
-  - Both checks return the record as a further tuple element, which
-    `GradingEngine` puts on `Grade.comparison_view`: the same JSON the runner puts
-    on the wire.
+  - Both checks return the `HashGradingResult` the runner returns, and
+    `GradingEngine` puts its record on `Grade.comparison_view`: the same JSON the
+    runner puts on the wire.
+- **One result on both substrates.** `core/grading/hash_grading_result.py` holds
+  the frozen `HashGradingResult` that core's two checks and the runner's
+  `_execute_hash_grading` all return: `hash_match`, the reason core reports, the
+  comparison basis, the golden replay's record, the diff beside a mismatch and the
+  comparison view's record. `hash_score` is derived from `hash_match` and cannot
+  be set, so the hash verdict is binary as a type invariant on both substrates, and
+  what a comparison reports is a field of the result, not an element of a widening
+  tuple. The module imports only the standard library at runtime, so core's hash
+  checks return it without loading the runner models.
 - **Accounting.**
   - `key_manifest`: `state_checks.comparison_view`, `CONFIG_INPUT`,
     `BOTH_SCORE_PARITY`, `DIFFERENTIAL_CANONICAL`, listed in the differentials
@@ -610,7 +620,9 @@ a follow-up. This is what a `checks.py` hook cannot provide.
     `apply_compare_columns_pipeline`, `filter_unstable_fields`;
   - `tolokaforge/core/grading/state_checks.py`: `state_digest`, `check_hash*`;
   - `tolokaforge/runner/service.py`: `_execute_hash_grading`;
-  - `tolokaforge/runner/models.py`: `RunnerStateChecksConfig`, `HashGradingResult`;
+  - `tolokaforge/runner/models.py`: `RunnerStateChecksConfig`;
+  - `tolokaforge/core/grading/hash_grading_result.py`: `HashGradingResult`,
+    `HashComparisonBasis`;
   - `tolokaforge/core/models/task_config.py`: `StateChecksConfig`;
   - `tolokaforge/core/grading/key_manifest.py`;
   - `tolokaforge/core/plugin_registry.py`: `load_comparison_view_rule`,
