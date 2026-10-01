@@ -156,7 +156,6 @@ from tolokaforge.runner.models import (
     TraceChecksResult,
     TranscriptEvaluationResult,
     TranscriptRulesConfig,
-    judge_snippet_chars_of,
     provisions_database,
 )
 from tolokaforge.runner.protocol import (
@@ -2450,10 +2449,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Resolves ``load_judge_kind(llm_judge_config.judge_kind)()`` and hands
         the kind together with the run-level :attr:`_judge_model_provider` and
-        the per-trial customization kwargs (``disable_knowledge_search``,
-        ``custom_system_prompt``, ``include_agent_system_prompt``, plus the
-        opaque ``kind_config`` from ``llm_judge_config.kind_config``) to
-        :func:`composite.grade_llm_judge`. This wrapper
+        the opaque ``kind_config`` from ``llm_judge_config.kind_config`` to
+        :func:`composite.grade_llm_judge`, which resolves the trial's
+        :class:`JudgeTrialOptions` from ``llm_judge_config.customization``. This wrapper
         also collects the trial-context passthroughs (judge ``ModelConfig``,
         ``search_policy`` connector reuse) and renders the
         ``initial → final`` state diff for the judge's opening message. The
@@ -2493,15 +2491,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # runner-side; the composite receives the resolved list.
         extra_read_tools = self._build_judge_search_policy_tools(trial_context)
 
-        customization = llm_judge_config.customization
-        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
-        custom_system_prompt = customization.system_prompt if customization else None
-        include_agent_system_prompt = (
-            customization.include_agent_system_prompt
-            if customization and customization.include_agent_system_prompt is not None
-            else True
-        )
-        judge_snippet_chars = judge_snippet_chars_of(customization)
         judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
         from tolokaforge.core import logging as _tolokaforge_logging
 
@@ -2522,10 +2511,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 substrate=substrate,
                 judge_kind=judge_kind,
                 judge_model_provider=self._judge_model_provider,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
-                judge_snippet_chars=judge_snippet_chars,
                 kind_config=llm_judge_config.kind_config,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,

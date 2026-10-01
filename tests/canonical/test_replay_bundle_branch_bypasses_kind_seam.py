@@ -20,6 +20,7 @@ import pytest
 
 from tests.unit.grading.test_judge import ScriptedClient
 from tolokaforge.core.grading import replay as replay_mod
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     FidelityMode,
@@ -80,10 +81,8 @@ def _inputs(*, explicit_system_prompt: str | None) -> ReplayInputs:
         transcript=[{"role": "user", "content": "Refund."}],
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
-        disable_knowledge_search=False,
-        custom_system_prompt=None,
+        options=JudgeTrialOptions(),
         explicit_system_prompt=explicit_system_prompt,
-        include_agent_system_prompt=True,
         judge_kind="single_shot_rubric",
         kind_config=None,
         provenance=_provenance(),

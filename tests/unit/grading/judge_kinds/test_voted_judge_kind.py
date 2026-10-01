@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
-from tolokaforge.core.grading.judge_kinds import VotedRubricJudgeKind
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions, VotedRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds._shared import member_failure_reason
 from tolokaforge.core.grading.judge_kinds.voted import DEFAULT_N_SAMPLES, _merge_sample_results
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
@@ -96,9 +96,7 @@ def _evaluate(
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
         judge_model_provider=provider,
-        disable_knowledge_search=False,
-        custom_system_prompt=None,
-        include_agent_system_prompt=True,
+        options=JudgeTrialOptions(),
         kind_config=kind_config,
         logger=StructuredLogger(name="test-voted"),
     )

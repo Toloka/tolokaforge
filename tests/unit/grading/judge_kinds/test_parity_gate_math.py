@@ -28,6 +28,7 @@ from tolokaforge.core.grading.agreement import (
     CriterionObservation,
     build_report,
 )
+from tolokaforge.core.grading.judge_kinds import JudgeTrialOptions
 from tolokaforge.core.grading.judge_kinds.parity import (
     ParityCorpusEntry,
     ParityGateThresholds,
@@ -333,10 +334,7 @@ class _ScriptedFixtureKind:
         state_diff: str | None,  # noqa: ARG002
         judge_model_config: ModelConfig,  # noqa: ARG002
         judge_model_provider,  # noqa: ARG002
-        disable_knowledge_search: bool,  # noqa: ARG002
-        custom_system_prompt: str | None,  # noqa: ARG002
-        include_agent_system_prompt: bool,  # noqa: ARG002
-        judge_snippet_chars: int | None = 200,  # noqa: ARG002
+        options: JudgeTrialOptions,  # noqa: ARG002
         kind_config: Mapping[str, Any] | None,  # noqa: ARG002
         logger: StructuredLogger,  # noqa: ARG002
     ) -> JudgeResult:
@@ -366,9 +364,6 @@ def _entry(entry_id: str, rubric: Rubric) -> ParityCorpusEntry:
         agent_system_prompt="you are a refund agent",
         transcript=[{"role": "user", "content": "please refund me"}],
         state_diff=None,
-        disable_knowledge_search=False,
-        custom_system_prompt=None,
-        include_agent_system_prompt=True,
         judge_scripts={},
     )
 
