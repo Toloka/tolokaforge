@@ -196,10 +196,9 @@ full state (unstable fields present)
 - **Where the view runs in the runner.** After the trial's database is restored
   (`restore_snapshot`), when both raw states are already in memory. A failing
   view then cannot leave the golden state in the trial's database.
-- **Both substrates run steps 2 and 3 in this order.** Core used to filter the
-  unstable fields after `compare_columns`, which let `order: unordered` sort by a
-  generated id (#1670); #1671 moved core to the runner's order and locked it with
-  a both-substrate test. The parity test below covers steps 2–5 as well.
+- **Both substrates run steps 2 and 3 in this order** (#1671), so `order:
+  unordered` never sorts by a generated id the unstable filter drops (#1670); a
+  both-substrate test locks it. The parity test below covers steps 2–5 as well.
 
 ### The declaration
 
