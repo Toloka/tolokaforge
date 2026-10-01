@@ -4081,10 +4081,20 @@ class Orchestrator:
             failure_attribution_payload,
         )
 
-        # Log summary
+        # Log summary. ``measured_trials`` and the aborts that reduced it ride
+        # beside the rates they are the denominator for: a run reporting 1.0
+        # over four of five trials and a run reporting 1.0 over five of five
+        # read identically without them, and the difference is the whole
+        # question of whether the number describes the model.
         self.logger.info(
             "Aggregate Results",
             total_trials=aggregate["total_trials"],
+            measured_trials=aggregate.get("measured_trials"),
+            infrastructure_aborts={
+                reason: count
+                for reason, count in (aggregate.get("infrastructure_aborts") or {}).items()
+                if count
+            },
             total_tasks=aggregate["total_tasks"],
             success_rate_micro=aggregate.get("success_rate_micro"),
             avg_score_micro=aggregate.get("avg_score_micro"),

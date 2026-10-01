@@ -10,14 +10,20 @@ timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
 *policy* decision to pluggable seams. The engine consumes three wire-shape
 observations directly: the provider-shaped *empty completion* —
-``result.text == "" and not result.tool_calls`` — resamples up to
-``LoopConfig.empty_retry_count`` times without appending the empty assistant
-message, and on the ``(N + 1)``-th empty result terminates the trial with
-:attr:`TerminationReason.EMPTY_COMPLETION` (the Gemini-legal-tail invariant is
-preserved end-to-end because the empty message is never appended — appending
-it would send a request whose tail is an empty ``role=model`` turn on the
-next iteration and providers such as Gemini reject that as an API error
-rather than pass it through); the content-carrying *max-tokens truncation* —
+``result.text == "" and not result.tool_calls``, with no reasoning billed and
+no length signal — resamples up to ``LoopConfig.empty_retry_count`` times
+without appending the empty assistant message, and on the ``(N + 1)``-th empty
+result terminates the trial with :attr:`TerminationReason.EMPTY_COMPLETION`
+(the Gemini-legal-tail invariant is preserved end-to-end because the empty
+message is never appended — appending it would send a request whose tail is an
+empty ``role=model`` turn on the next iteration and providers such as Gemini
+reject that as an API error rather than pass it through); the *reasoning-only
+truncation* — the same actionless shape, but with reasoning tokens billed or
+``finish_reason == "length"``, meaning the output budget went to deliberation
+and left no room to act — resamples with a ``role=user`` feedback turn under
+``LoopConfig.output_length_retry_count`` and terminates with
+:attr:`TerminationReason.REASONING_BUDGET_EXHAUSTED`, carrying the token counts
+it was read from; the content-carrying *max-tokens truncation* —
 ``result.finish_reason == "length"`` on a content-carrying result —
 resamples with a ``role=user`` feedback turn under
 ``LoopConfig.output_length_retry_count`` before falling through to
@@ -629,6 +635,41 @@ so no classifier decision carries its evidence.
 """
 
 
+def _is_reasoning_only(result: Any) -> bool:
+    """Whether an actionless result is a truncated reasoning turn.
+
+    The provider billed output tokens and spent them deliberating instead of
+    acting, so there is a next sample worth drawing. A result carrying neither
+    signal is one the provider returned nothing for, where resampling buys
+    nothing and the trial ends.
+
+    ``finish_reason`` alone is not enough: a model can stop of its own accord
+    mid-deliberation without hitting the ceiling, which reads as ``"stop"`` and
+    still leaves reasoning tokens on the bill.
+    """
+    if result.finish_reason == "length":
+        return True
+    usage = getattr(result, "usage", None)
+    return bool(usage is not None and usage.reasoning_tokens)
+
+
+def _reasoning_stall_evidence(result: Any) -> str:
+    """What was actually observed, in the terms the next reader will need.
+
+    The reason this is spelled out rather than asserted: the same observation
+    was once reported as "the model returned an empty completion", which named
+    the wrong party and cost an investigation to correct.
+    """
+    usage = getattr(result, "usage", None)
+    reasoning_tokens = usage.reasoning_tokens if usage is not None else 0
+    completion_tokens = usage.completion_tokens if usage is not None else 0
+    return (
+        f"GenerationResult with no text and no tool calls after "
+        f"{completion_tokens} completion tokens, {reasoning_tokens} of them reasoning "
+        f"(finish_reason={result.finish_reason!r}), after the resample budget"
+    )
+
+
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
@@ -1132,6 +1173,7 @@ class ToolCallingLoop:
 
         empty_attempts = 0
         output_length_attempts = 0
+        reasoning_stall_attempts = 0
         parser_error_attempts = 0
         while True:
             try:
@@ -1215,6 +1257,51 @@ class ToolCallingLoop:
                     )
                     continue
                 break
+
+            if _is_reasoning_only(result):
+                # The same truncation that arrives with a token of text falls
+                # through to ``break`` above and the trial carries on. Arriving
+                # without one is the worse case, so it gets the same resample
+                # the content-carrying path has rather than ending the trial.
+                if reasoning_stall_attempts < self.config.output_length_retry_count:
+                    reasoning_stall_attempts += 1
+                    self._append_both(
+                        messages,
+                        Message(
+                            role=MessageRole.USER,
+                            content=(
+                                "The previous response spent its entire token budget on "
+                                "reasoning and returned no action. Keep deliberation short "
+                                "and reply with a tool call."
+                            ),
+                            ts=_now(),
+                        ),
+                    )
+                    self.logger.info(
+                        "Resampling after reasoning-only truncation",
+                        turn=turn,
+                        attempt=reasoning_stall_attempts,
+                        max_attempts=self.config.output_length_retry_count + 1,
+                        reasoning_tokens=(
+                            result.usage.reasoning_tokens if result.usage is not None else 0
+                        ),
+                        finish_reason=result.finish_reason,
+                    )
+                    continue
+
+                self._append_both(
+                    messages,
+                    self._system_message(
+                        "Model spent its whole output budget on reasoning and returned no "
+                        "action; trial terminated to keep the next request provider-legal."
+                    ),
+                )
+                self._excluding_reason_evidence = _reasoning_stall_evidence(result)
+                return (
+                    TrialStatus.FAILED,
+                    TerminationReason.REASONING_BUDGET_EXHAUSTED,
+                    True,
+                )
 
             if empty_attempts >= self.config.empty_retry_count:
                 self._append_both(

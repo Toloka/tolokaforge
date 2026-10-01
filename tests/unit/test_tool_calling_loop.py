@@ -364,6 +364,123 @@ def test_empty_completion_terminates_before_appending():
     assert "empty completion" in messages[-1].content
 
 
+def test_reasoning_only_truncation_is_not_an_empty_completion():
+    """Billed reasoning with no action is a truncated turn, not an absent one.
+
+    The same provider event carrying one token of text falls through to
+    accept-and-continue; reporting this one as an empty completion named the
+    provider for a budget we set, and cost the whole trial.
+    """
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=15358, reasoning_tokens=15358),
+                finish_reason="length",
+            )
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
+        "sys", messages, time.time()
+    )
+
+    assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
+    assert outcome.status == TrialStatus.FAILED
+    assert messages[-1].role == MessageRole.SYSTEM
+    assert "reasoning" in messages[-1].content
+
+
+def test_reasoning_only_truncation_resamples_under_the_length_budget():
+    """It gets the resample the content-carrying truncation already gets."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=900, reasoning_tokens=900),
+                finish_reason="length",
+            ),
+            GenerationResult(text="recovered", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000, output_length_retry_count=1),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert outcome.termination_reason != TerminationReason.REASONING_BUDGET_EXHAUSTED
+    assert any(m.role == MessageRole.ASSISTANT and m.content == "recovered" for m in messages)
+    # The actionless result is still never appended, so the next request's tail
+    # is not an empty ``role=model`` turn.
+    assert not any(
+        m.role == MessageRole.ASSISTANT and m.content == "" and not m.tool_calls for m in messages
+    )
+
+
+def test_reasoning_only_truncation_carries_its_token_counts():
+    """The terminal evidence states the observation, not a conclusion."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=15358, reasoning_tokens=15358),
+                finish_reason="length",
+            )
+        ]
+    )
+    loop = _loop(client, should_terminate=_never_terminate, max_turns=5)
+    loop.run("sys", [], time.time())
+
+    evidence = loop._excluding_reason_evidence
+    assert "15358" in evidence
+    assert "length" in evidence
+
+
+def test_a_genuinely_empty_completion_still_terminates_one_shot():
+    """No reasoning billed and no length signal: resampling buys nothing."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="", tool_calls=[], usage=Usage(prompt_tokens=1), finish_reason="stop"
+            )
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(max_turns=5, episode_timeout_s=10_000, output_length_retry_count=3),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+
+
+def test_reasoning_only_without_a_length_signal_is_still_a_stall():
+    """A model can stop mid-deliberation without reaching the ceiling."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=400, reasoning_tokens=400),
+                finish_reason="stop",
+            )
+        ]
+    )
+    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
+        "sys", [], time.time()
+    )
+
+    assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
+
+
 def test_empty_completion_still_records_generation_usage():
     """The trial paid for the empty completion, so metrics record it — only the
     assistant message is skipped."""
@@ -823,11 +940,17 @@ def test_length_retry_does_not_advance_turn_counter():
     assert outcome.termination_reason == TerminationReason.MAX_TURNS
 
 
-def test_length_finish_reason_with_empty_content_uses_empty_path():
-    """A ``finish_reason=='length'`` result with no text / no tool_calls
-    routes through the empty-completion branch, not the length-retry branch.
-    Locks the disjoint-path invariant against a future refactor that flattens
-    the current nesting under ``if result.text or result.tool_calls:``."""
+def test_length_finish_reason_with_empty_content_takes_the_stall_path():
+    """A ``finish_reason=='length'`` result with no text / no tool_calls is a
+    truncation, so it routes to the reasoning-stall branch — not to the
+    empty-completion branch, and not to the content-carrying length retry
+    whose feedback assumes an action was produced.
+
+    Locks the three-way split against a refactor that collapses any two of
+    them. It once collapsed the other way: an actionless truncation was
+    reported as a completion the provider never sent, which named the provider
+    for a budget we set and ended the trial instead of resampling it.
+    """
     client = _ScriptedClient(
         [
             GenerationResult(
@@ -845,13 +968,14 @@ def test_length_finish_reason_with_empty_content_uses_empty_path():
             max_turns=1,
             episode_timeout_s=10_000,
             empty_retry_count=0,
-            output_length_retry_count=1,
+            output_length_retry_count=0,
         ),
     ).run("sys", messages, time.time())
 
     assert client.calls == 1
-    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
-    # Length-retry did NOT fire — no user feedback marker was inserted.
+    assert outcome.termination_reason == TerminationReason.REASONING_BUDGET_EXHAUSTED
+    # The content-carrying length retry did NOT fire — its feedback tells the
+    # model to split an action it did not produce.
     assert not any(
         m.role == MessageRole.USER and "truncated at max_tokens" in (m.content or "")
         for m in messages
