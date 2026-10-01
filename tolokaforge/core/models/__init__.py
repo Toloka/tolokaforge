@@ -9,7 +9,7 @@ Per-concern submodules hold the actual definitions:
 - :mod:`.docker_config` — :class:`DockerConfig`, the ``docker:`` block
   ``RunConfig`` carries
 - :mod:`.model_config` — :class:`ModelConfig` +
-  :class:`OpenRouterConfig`
+  :class:`ModelSessionConfig` + :class:`OpenRouterConfig`
 - :mod:`.docker_config` — :class:`DockerConfig`, the ``docker:`` block
   of ``run_config.yaml``
 - :mod:`.run_config` — :class:`RunConfig` and every orchestrator /
@@ -43,7 +43,11 @@ from tolokaforge.core.models.grade import (
     JudgeUsage,
 )
 from tolokaforge.core.models.grade_components import GradeComponents
-from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
+from tolokaforge.core.models.model_config import (
+    ModelConfig,
+    ModelSessionConfig,
+    OpenRouterConfig,
+)
 from tolokaforge.core.models.run_config import (
     DOCKER_RUNTIME_ALIAS_TARGET,
     LEGACY_DOCKER_RUNTIME_ALIAS,
@@ -227,6 +231,7 @@ __all__ = [
     "UserReplyOutcome",
     # Model config
     "ModelConfig",
+    "ModelSessionConfig",
     "OpenRouterConfig",
     # Run config
     "BundleStoreBackend",

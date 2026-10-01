@@ -26,8 +26,11 @@ from tolokaforge.core.llm.litellm_params import (
     overlay_key_mismatches,
     overlay_stray_entries,
 )
+from tolokaforge.core.llm.openrouter_headers import is_openrouter_provider
 from tolokaforge.core.llm.presets import unclaimed_route_families
 from tolokaforge.core.llm.providers import litellm_model_id
+from tolokaforge.core.llm.proxy import ProxyConfigError
+from tolokaforge.core.llm.session_header import session_header_conflicts
 from tolokaforge.core.models import (
     DOCKER_RUNTIME_ALIAS_TARGET,
     LEGACY_DOCKER_RUNTIME_ALIAS,
@@ -179,7 +182,7 @@ def _function_calling_issues(base: str, provider: str, name: str) -> list[Valida
         # `None` would quietly stop consulting the declaration.
         fc_support = True
     if fc_support is False:
-        severity = Severity.WARNING if provider.lower().startswith("openrouter") else Severity.ERROR
+        severity = Severity.WARNING if is_openrouter_provider(provider) else Severity.ERROR
         return [
             ValidationIssue(
                 severity=severity,
@@ -229,6 +232,19 @@ def _overlay_key_issues(run_config: RunConfig) -> list[ValidationIssue]:
         for path, lookup in overlay_stray_entries(run_config.models)
     ]
     return refused + stray
+
+
+def _session_header_issues(run_config: RunConfig) -> list[ValidationIssue]:
+    """An ERROR per model config whose session header another header source also
+    sets, judged against this environment's gateway variables."""
+    try:
+        conflicts = session_header_conflicts(run_config.models)
+    except ProxyConfigError as err:
+        return [ValidationIssue(severity=Severity.ERROR, path="(environment)", message=str(err))]
+    return [
+        ValidationIssue(severity=Severity.ERROR, path=err.path, message=err.reason)
+        for _, err in conflicts
+    ]
 
 
 def _route_family_issues(run_config: RunConfig) -> list[ValidationIssue]:
@@ -497,6 +513,7 @@ def validate_run_config(raw: dict[str, Any]) -> ValidationResult:
     #    miss their last segment's preset, for every model and fallback
     result.issues.extend(_overlay_key_issues(run_config))
     result.issues.extend(_route_family_issues(run_config))
+    result.issues.extend(_session_header_issues(run_config))
 
     # 3. Per-model checks
     models = raw.get("models", {})

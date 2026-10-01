@@ -59,6 +59,7 @@ from tolokaforge.core.llm.presets import (
     set_overlay_path,
     validate_overlay_file,
 )
+from tolokaforge.core.llm.session_header import session_header_conflicts
 from tolokaforge.core.logging import (
     LogFormat,
     configure_root_logging,
@@ -459,6 +460,18 @@ def _activate_presets_overlay(
         if mismatches:
             raise mismatches[0][1]
     return resolved
+
+
+def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
+    """Raise the first session header, over every model and fallback, that
+    another header source also sets.
+
+    A fallback's client is built only on failover, so its construction-time
+    check alone would fail mid-run.
+    """
+    conflicts = session_header_conflicts(run_config.models)
+    if conflicts:
+        raise conflicts[0][1]
 
 
 _UNGRADEABLE_TRIALS_NAMED = 5
@@ -866,6 +879,7 @@ def run(
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
 
     # Fallback-model chain lives on ``models.agent.fallbacks`` in the run
     # config (list of ModelConfig entries, in order). Empty list → no
@@ -1590,6 +1604,7 @@ def prepare(
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
 
     orchestrator = Orchestrator(
         run_config,
@@ -1684,6 +1699,7 @@ def worker(
     overlay_path = _activate_presets_overlay(presets_file, run_config, run_dir=Path(run_dir))
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
 
     orchestrator = Orchestrator(
         run_config,

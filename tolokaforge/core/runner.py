@@ -74,8 +74,10 @@ from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     LLMCallObservation,
+    LLMCallRole,
     RateLimitProbeStats,
     RunDisplayEvents,
+    conversation_session_id,
 )
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.summarize_policy import LLMSummarizer, SummarizePolicy
@@ -252,6 +254,7 @@ class TrialRunner:
         user_stop: UserStopRule = UserStopRule(),
         user_tool_turns: UserToolTurnRule = UserToolTurnRule(),
         first_agent_message: str | None = None,
+        trace_id: str | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -294,6 +297,13 @@ class TrialRunner:
         # turn counts can leave out the one assistant message no model generated.
         self._first_agent_message = first_agent_message
         self._opening_line: Message | None = None
+        # The trial attempt's trace id (``TrialIdentity.trace_id``); ``None`` leaves
+        # both roles' calls without a conversation identity.
+        if trace_id is not None and not trace_id.strip():
+            raise ValueError(
+                f"TrialRunner trace_id must be a non-empty id or None, got {trace_id!r}"
+            )
+        self._trace_id = trace_id
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
@@ -469,6 +479,7 @@ class TrialRunner:
                 trial_id=trial_id,
                 role="user",
                 probe_stats=self._probe_stats,
+                session_id=self._session_id("user"),
             )
 
             # Deferred import: the plugin registry pulls the conductor
@@ -542,6 +553,7 @@ class TrialRunner:
                             trial_id=trial_id,
                             role="agent",
                             probe_stats=self._probe_stats,
+                            session_id=self._session_id("agent"),
                         ),
                         observer=self._loop_observer,
                         agent_view=agent_view if self._user_tool_turns.isolated else None,
@@ -1800,6 +1812,9 @@ class TrialRunner:
                     )
 
         return None
+
+    def _session_id(self, role: LLMCallRole) -> str | None:
+        return None if self._trace_id is None else conversation_session_id(self._trace_id, role)
 
     def _policy_user_turn(self, policy: TurnPolicy, messages: list[Message]) -> UserTurnResult:
         """Route the loop's optional user turn through ``policy.next_actor``.

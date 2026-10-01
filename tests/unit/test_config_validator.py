@@ -5,6 +5,7 @@ API keys.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from tolokaforge.core.config_validator import (
     Severity,
@@ -12,6 +13,7 @@ from tolokaforge.core.config_validator import (
     _model_supports_reasoning,
     validate_run_config,
 )
+from tolokaforge.core.models import RunConfig
 
 pytestmark = pytest.mark.unit
 
@@ -151,6 +153,33 @@ class TestSchemaValidation:
         result = validate_run_config(_make_config())
         assert result.ok
         assert not [i for i in result.issues if i.path == "orchestrator.agent_loop"]
+
+    @pytest.mark.parametrize(
+        "session, offending",
+        [
+            pytest.param({}, "header", id="missing-header"),
+            pytest.param({"header": "x session"}, "'x session'", id="space"),
+            pytest.param({"header": "x:y"}, "'x:y'", id="colon"),
+            pytest.param({"header": "Authorization"}, "'Authorization'", id="reserved"),
+            pytest.param({"header": "x-session-id", "ttl": 30}, "ttl", id="unknown-key"),
+        ],
+    )
+    def test_a_malformed_session_block_is_refused_at_load(self, session, offending):
+        cfg = _make_config()
+        cfg["models"]["agent"]["session"] = session
+        with pytest.raises(ValidationError) as refused:
+            RunConfig(**cfg)
+        assert offending in str(refused.value)
+        result = validate_run_config(cfg)
+        assert [(i.path, offending in i.message) for i in result.errors] == [("(root)", True)]
+
+    def test_a_fallback_does_not_inherit_its_parents_session(self):
+        cfg = _make_config()
+        cfg["models"]["agent"]["session"] = {"header": "x-session-id"}
+        cfg["models"]["agent"]["fallbacks"] = [{"provider": "openrouter", "name": "openai/gpt-4o"}]
+        agent = RunConfig(**cfg).models["agent"]
+        assert agent.session is not None and agent.session.header == "x-session-id"
+        assert agent.fallbacks[0].session is None
 
 
 # ---------------------------------------------------------------------------

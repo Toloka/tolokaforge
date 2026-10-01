@@ -17,8 +17,12 @@ from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.litellm_params import OverlayKeyMismatchError, lookup_overlay
 from tolokaforge.core.llm.presets import set_overlay_path
 from tolokaforge.core.llm.providers import provider_binding_names
+from tolokaforge.core.llm.proxy import ProxyConfigError
+from tolokaforge.core.llm.session_header import SessionHeaderConflictError
 from tolokaforge.core.models.run_config import ModelConfig, iter_model_configs
 from tolokaforge.dx.cli.main import cli
+from tolokaforge.secrets import DictProvider, SecretManager
+from tolokaforge.secrets import manager as secrets_manager
 
 pytestmark = pytest.mark.unit
 
@@ -321,6 +325,85 @@ def test_the_refusal_survives_a_pickle_round_trip():
         "self-hosted/m",
         "openai/self-hosted/m",
     )
+
+
+def test_the_session_header_refusal_survives_a_pickle_round_trip():
+    err = SessionHeaderConflictError(
+        path="models.agent.fallbacks[0].session.header",
+        header="x-session-id",
+        source="LLM_PROXY_REQUEST_ID_HEADER",
+    )
+    back = pickle.loads(pickle.dumps(err))
+    assert (type(back), str(back), back.path, back.header, back.source, back.reason) == (
+        SessionHeaderConflictError,
+        str(err),
+        "models.agent.fallbacks[0].session.header",
+        "x-session-id",
+        "LLM_PROXY_REQUEST_ID_HEADER",
+        err.reason,
+    )
+
+
+def _install_gateway_env(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    monkeypatch.setattr(secrets_manager, "_default_manager", SecretManager([DictProvider(env)]))
+
+
+def test_a_session_header_conflict_on_a_fallback_is_refused_by_validate_and_run_alike(
+    tmp_path, monkeypatch
+):
+    """No presets overlay is declared, so the run's refusal cannot come from the
+    overlay's own check."""
+    _install_gateway_env(
+        monkeypatch,
+        {
+            "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+            "LLM_PROXY_REQUEST_ID_HEADER": "X-Session-Id",
+        },
+    )
+    fallback = _as_config(*GATEWAY, session={"header": "x-session-id"})
+    raw = _run_config_for(
+        {"agent": {**NATIVE_AGENT, "fallbacks": [fallback]}, "user": NATIVE_AGENT}
+    )
+    assert "engine" not in raw
+    config = _write_run_config(tmp_path, raw)
+
+    validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+    assert validated.exit_code != 0, validated.output
+    errors = [line for line in validated.output.splitlines() if "[ERROR]" in line]
+    assert len(errors) == 1, validated.output
+    assert "models.agent.fallbacks[0].session.header:" in errors[0]
+    assert "LLM_PROXY_REQUEST_ID_HEADER" in errors[0]
+
+    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
+    assert isinstance(run.exception, SessionHeaderConflictError), run.output
+    assert run.exception.path == "models.agent.fallbacks[0].session.header"
+
+
+@pytest.mark.parametrize(
+    "agent_extra, environment_errors, run_refused",
+    [({"session": {"header": "x-session-id"}}, 1, True), ({}, 0, False)],
+    ids=["declares-session", "no-session"],
+)
+def test_a_malformed_gateway_environment_concerns_only_configs_that_declare_session(
+    tmp_path, monkeypatch, agent_extra, environment_errors, run_refused
+):
+    """Gateway headers without a gateway base URL are malformed; a config that never
+    declares ``session`` does not read them, in validate or at run start."""
+    _install_gateway_env(monkeypatch, {"LLM_PROXY_HEADERS": '{"x-team-id": "research"}'})
+    raw = _run_config_for({"agent": _as_config(*GATEWAY, **agent_extra), "user": NATIVE_AGENT})
+    config = _write_run_config(tmp_path, raw)
+
+    validated = CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+    environment = [
+        line
+        for line in validated.output.splitlines()
+        if "[ERROR]" in line and "(environment)" in line
+    ]
+    assert len(environment) == environment_errors, validated.output
+    assert all("LLM_PROXY_HEADERS" in line for line in environment), validated.output
+
+    run = CliRunner().invoke(cli, ["run", "--config", str(config), "--dry-run"])
+    assert isinstance(run.exception, ProxyConfigError) is run_refused, repr(run.exception)
 
 
 def test_the_walk_reaches_every_fallback_depth_first():
