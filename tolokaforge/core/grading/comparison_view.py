@@ -510,7 +510,7 @@ class RuleApplication(BaseModel):
 
 
 class RekeyedField(BaseModel):
-    """An id field ``normalize_ids`` re-keyed: its values are now a function of content.
+    """An id field ``normalize_ids`` re-keyed, whose values are a function of content.
 
     A masked id is unstable because it is generated; a re-keyed one is not, so it
     must reach the hash. The masks applied after the view (the unstable filter and

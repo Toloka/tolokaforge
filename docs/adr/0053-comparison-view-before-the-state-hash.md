@@ -202,7 +202,7 @@ full state (unstable fields present)
 - **A re-keyed id reaches step 5.** After `normalize_ids` an id is a function of
   its record's content, not a generated value. If step 2 or step 4 dropped it
   (it is typically declared `unstable(auto_id)`), nothing would link a key to its
-  record's content any more, and a reference to the wrong record could pass
+  record's content, and a reference to the wrong record could pass
   (records ranked by a masked timestamp, a dispute naming the hold of the other
   card). The record lists the re-keyed `(table, id field)` pairs in
   `rekeyed_fields`, and the wiring removes them from the unstable filter and the
@@ -257,7 +257,7 @@ state_checks:
 |---|---|---|
 | `exclude_records` | Drops the rows of `table` — or, with `path`, the items of the nested list at that path in each row — that match `where`, unless `unless_referenced_by` finds a reference to them in another row. `where` is a conjunction of equality, `in`, `is_null`, `starts_with` and `all_zero`; a missing field reads as null. | `where` is non-empty; no rule drops a whole table because some of its rows are optional. |
 | `exclude_tables` | Drops the named tables whole, key included, so a table present on one side only stops counting too; `reason` is required. | Refused for a table another rule names. |
-| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. A re-keyed id is no longer unstable: the masks after the view leave it in, so it reaches the hash. |
+| `normalize_ids` | Rewrites the key of the records of `table` in `scope` (`new_records`, the default: ids the initial state's table lacks; or `all`) to a deterministic key, built from `key` fields or from an `ordinal_by` group (the whole scope when absent) and an ordinal ranked by `rank_by`, and every exact reference to it named in `references` (a top-level field or a dotted path). | Bijective: distinct records stay distinct. A key two records share, a key a kept record holds, a rank tie and a reference that already holds a new key raise. A dangling reference stays as it is. Records of the initial state keep their keys under `scope: new_records`, which needs the initial state. A re-keyed id is a function of its record's content, not a generated value: the masks after the view leave it in, so it reaches the hash. |
 
 **The rendered key** of `normalize_ids` is `<table>:<canonical JSON of its key
 fields>`, for example `line_items:{"order_id":"O1","quantity":2,"sku":"S2"}`;
@@ -276,8 +276,8 @@ What the key reads, and what follows from it:
   therefore refuses at load a `normalize_ids` whose `key`, `ordinal_by` or
   `rank_by` field is masked (an unstable field or an auto-masked clock column) or
   listed in `numeric_string_fields`: the key would carry a value the hash is told
-  to ignore or to fold. One limitation remains: under `auto_normalize_nullables`,
-  `""` and `null` in a key field still give different keys.
+  to ignore or to fold. One limitation: under `auto_normalize_nullables`, `""`
+  and `null` in a key field give different keys.
 - **A masked reference is refused too.** A `references` field the masks would
   drop links nothing after its rewrite, and leaving it in instead is no fix: a
   dangling reference keeps its generated value. The wiring therefore refuses at
@@ -295,7 +295,7 @@ What the key reads, and what follows from it:
   `normalize_ids` first can give a draft and its final version one content key
   and collide; an `exclude_records` on the id field after `normalize_ids` sees
   the new keys, not the generated ids.
-- **The id-field checks move to load time.** `apply_comparison_view` checks the id
+- **The id-field checks run at load time too.** `apply_comparison_view` checks the id
   field against `key`, `ordinal_by`, `rank_by` and `references` because only it
   receives `id_fields`; the wiring repeats those checks when the task loads.
 
