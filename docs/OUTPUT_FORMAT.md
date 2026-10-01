@@ -1412,6 +1412,11 @@ state_diff:  # Present when state check fails
     ...
   diff_lines: 200
   has_diff: true
+comparison_view:                # present only when the pack declares state_checks.comparison_view
+  golden: { version: 1, function_version: 1, config_sha256: "…", applied: [...], rekeyed_fields: [...] }
+  trial: { … }                  # null when the trial's view collided
+  view_diff: null               # the diff of the two views, on a mismatch
+  trial_collision: null         # { message, ids } when the trial's records could not be re-keyed
 custom_checks_details: null     # list[CustomCheckDetail] or null
 trace_check_results:            # one entry per declared trace constraint; [] when none ran
   - id: lookup_before_denial

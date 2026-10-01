@@ -1331,6 +1331,136 @@ An engine old enough to predate both keys declares a protocol version below the
 image's bound, so it is refused at registration before any key is read — see
 [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock.
 
+### Comparison view
+
+`state_checks.comparison_view` declares a one-sided transform each side of a hash
+comparison goes through before anything else reads it: which records of a state
+count, and what keys a generated id. A rule is a function of one state, its initial
+state and the declaration — never of the other side — so a trial is compared on what
+it did rather than on the order it numbered its records in or the drafts it left
+behind. The design is [ADR-0053](adr/0053-comparison-view-before-the-state-hash.md);
+[`examples/native/comparison_view`](../examples/native/comparison_view/README.md) is a
+pack using every rule kind.
+
+```yaml
+state_checks:
+  hash: { enabled: true, golden_actions: [...] }
+  comparison_view:
+    version: 1                       # the block's schema version; an unknown one is refused
+    rules:                           # applied in list order; an empty list is refused
+      - kind: exclude_tables
+        tables: [lookup_log]
+        reason: written by the read tools; not business state   # required
+      - kind: exclude_records
+        table: holds
+        where: { status: released }
+        unless_referenced_by: [{ table: corrections, field: hold_ref }]
+      - kind: exclude_records
+        table: decisions
+        path: allocations            # the items of a nested list in each row
+        where: { all_zero: [amount, tax] }
+      - kind: normalize_ids
+        table: documents
+        key: [client_id, source_id]  # or rank_by: [...] with an optional ordinal_by: [...]
+        references: [{ table: corrections, field: document_ref }]
+        scope: new_records           # the default; or all
+```
+
+| kind | what it does |
+|---|---|
+| `exclude_records` | Drops the rows of `table` — with `path`, the items of the nested list there — matching `where`, unless a field `unless_referenced_by` names holds the row's id. `where` is a non-empty conjunction of `field: value` (exact, before any `numeric_string_fields` fold), `{in: [...]}`, `{is_null: bool}`, `{starts_with: prefix}` and `all_zero: [fields]`; a missing field reads as null. |
+| `exclude_tables` | Drops the named tables whole, key included, so a table one side writes and the other does not stops counting. Refused for a table another rule names. |
+| `normalize_ids` | Re-keys the records of `table` in `scope` (`new_records`: ids the initial state's table lacks; `all`) to `<table>:<canonical JSON of the key fields>` — or of the `ordinal_by` group plus `#<n>`, ranked by `rank_by` — and rewrites every exact reference to them in `references` (a top-level field or a dotted path). The re-keying is bijective or raises `ComparisonViewCollision`: two records sharing a key, a key a kept record holds, a rank tie, a reference that already holds a new key. A reference to no re-keyed record stays as it is. |
+
+**The order.** Both substrates put both sides through five steps:
+
+```
+full state (unstable fields present)
+  → 1. comparison view, rules in list order
+  → 2. unstable_fields
+  → 3. compare_columns pipeline
+  → 4. clock / nullable masks
+  → 5. compute_stable_hash (runner) | state_digest (core)
+```
+
+Steps 1–3 are one function, `tolokaforge.core.grading.pre_hash.view_the_pair`, which
+both substrates call; steps 4–5 are each substrate's own, so the two digests keep their
+different algebras while the states they hash are the same. Step 2 resolves each
+`unstable_fields` table name the way the db-service does (exact, singular / plural,
+suffix — `tolokaforge.core.hash.resolve_unstable_table_name`), against the tables of
+both full states before the view drops any, and leaves in every id field the view
+re-keyed: once re-keyed, an id is a function of its record's content, and dropping it
+as `unstable(auto_id)` would let a reference to the wrong record pass.
+
+- **Runner.** With a view declared, `_execute_hash_grading` reads the full state of
+  both sides over `DBServiceClient.get_state` — the trial's before the reset, the
+  golden's after the replay — restores the trial's database, and only then runs the
+  five steps on the client. A view that cannot be computed therefore never leaves the
+  golden state in the trial's database. A pack without a view keeps the server-side
+  `get_stable_hash` / `get_stable_state` path unchanged.
+- **Core.** `StateChecker.check_hash` and `check_hash_against_golden_replay` run the
+  same composition with an initial state of their own: the golden replay mutates the
+  initial state it loads, so the view reads a separate load taken before the replay.
+  Without a view, core's unstable filter keeps its exact table names.
+
+**Errors and the collision rule.** The golden side is viewed first.
+
+| what the view hits | the trial |
+|---|---|
+| any `ComparisonViewError` on the golden side, a `ComparisonViewCollision` included | grading error: `GradeTrialResponse(success=False)` on the runner, the error raised out of `grade_trajectory` in core |
+| a `ComparisonViewCollision` on the trial side, after the golden's view succeeded | **fails**: `state_checks` scores `0.0`, the reason names the collision and the ids involved |
+| any other `ComparisonViewError` on the trial side | grading error, as above |
+
+Core no longer folds a `ComparisonViewError` into `0.0, "Error computing hash"`; every
+other hashing error still scores `0.0` there.
+
+**What the grade records.** A grade reached through a view carries a record of it —
+`Grade.comparison_view` on the host (and in `grade.yaml`), the JSON in the
+presence-tracked `Grade.comparison_view_json` on the wire, the same on both substrates:
+
+```yaml
+comparison_view:
+  golden:                      # the golden's view
+    version: 1
+    function_version: 1        # bumped on any change to what a rule computes
+    config_sha256: 3f1c…       # sha256 of what the rules do: kinds and non-default settings, reason left out
+    applied:                   # per rule and table touched
+      - { kind: exclude_tables, table: lookup_log, path: null, rows_removed: 0, ids_rewritten: 0, references_rewritten: 0 }
+      - { kind: normalize_ids, table: documents, path: null, rows_removed: 0, ids_rewritten: 1, references_rewritten: 1 }
+    rekeyed_fields: [{ table: documents, field: id }]
+  trial: { … }                 # the trial's view — null when it collided
+  view_diff: null              # the diff of the two views after step 2, on a mismatch
+  trial_collision: null        # { message, ids } when the trial's view collided
+```
+
+The key is absent from a grade, and from the wire, when no view is declared. On a
+mismatch `state_diff` is still the raw diff (over the stable states on the runner, the
+raw states in core), and the reasons carry `Comparison view: <view diff summary>` or the
+collision beside the hash sentence. The hash / diff parity below holds on the view pair:
+the digest is of the view, so the diff that agrees with it is `view_diff`.
+
+**Checked when the task loads.** The native adapter's `to_task_description` and
+`get_grading_config`, the runner's `RegisterTrial` and `tolokaforge validate` hold a
+view to its task through one function
+(`tolokaforge.core.grading.comparison_view_checks.comparison_view_findings`), naming
+the task, the rule and the field. Refused:
+
+- a table a rule names that the initial state does not seed — a warning instead under
+  `relaxed_validation`, as for `id_fields`. Fields are checked only against a declared
+  schema, never against seeded records;
+- the id-field conflicts the rules raise when they apply: `key`, `ordinal_by` or
+  `rank_by` naming the id field, a reference naming the rule's own id field, a
+  composite key;
+- a `normalize_ids` `key`, `ordinal_by` or `rank_by` field the unstable filter drops,
+  the clock mask drops (`auto_mask_clock_columns`), or `numeric_string_fields` folds:
+  a key is read as it is, before any fold;
+- a `normalize_ids` `references` field the masks drop (a nested reference by its
+  top-level column);
+- a re-keyed id field the clock mask drops.
+
+A view declared beside a `hash` that is not enabled is read by nothing: a `⚠` hint in
+`tolokaforge validate`, a logged warning at load, never a refusal.
+
 ### Runner-engine version lock
 
 The trial spec crosses the wire as a plain `model_dump_json()` parsed by
@@ -1810,6 +1940,12 @@ coincidental (many tables order rows by insertion time, not by contract), a per-
 `state_checks.ordered_tables` hint would let the hash ignore that order — tracked in
 [#1472](https://github.com/Toloka/tolokaforge/issues/1472).
 
+Through a [comparison view](#comparison-view) the invariant holds on the view pair: the
+digest is of the two views, so the diff that agrees with it is the grade's
+`comparison_view.view_diff`, computed by the same `compute_state_diff` over the views
+after the unstable filter. The raw `state_diff` beside it may read as identical where
+the views differ only in a generated id the view re-keyed.
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
@@ -1818,6 +1954,9 @@ coincidental (many tables order rows by insertion time, not by contract), a per-
 - Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
 - Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
+- Where a correct trajectory can leave drafts, released holds, read-tool logs or
+  differently numbered records behind, declare a
+  [comparison view](#comparison-view) rather than masking the ids that other tables cite
 - Combining the hash with JSONPath assertions requires an explicit `weight` —
   decide which source carries the verdict, per
   [Folding the hash verdict with `jsonpaths`](#folding-the-hash-verdict-with-jsonpaths).
@@ -3246,6 +3385,8 @@ Findings come in three classes:
 | a `state_checks.jsonpaths[*].path` rooted at `filesystem`, which the runner's JSONPath state does not carry — read from the block alone, so it answers whatever the caller resolved | error | `state_checks.jsonpaths` |
 | a `state_checks.jsonpaths[*].path_glob` compared with anything but `contains_ci` — including no operator at all — which the runner's file evaluator reads as the empty string every file contains | error | `state_checks.jsonpaths` |
 | a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
+| a `state_checks.comparison_view` a run's load refuses — a table a rule names that the seeded `initial_state` lacks, a field a declared schema does not carry, an id-field conflict, a `normalize_ids` key field the unstable filter or the clock mask drops or `numeric_string_fields` folds, a `references` field the masks drop, a re-keyed id field the clock mask drops ([§ Comparison view](#comparison-view)) — where the caller resolved the seeded tables | error | `state_checks.comparison_view` |
+| a missing table under `relaxed_validation`, or a `comparison_view` beside a `hash` that is not enabled | hint — printed by `validate`, never fatal | `state_checks.comparison_view` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | any hash source declared under a `hash.enabled` a run reads as off — written `false`, `"false"`, `0`, `"0"`, `"no"`, `"off"`, `null`, or absent — wherever the adapter answers at all, whatever it answers: a source the block declares and nothing reads is the author's defect regardless | error, one for the block | `state_checks.hash.<the declared source>` |
@@ -3269,6 +3410,7 @@ Findings come in three classes:
 | an `id_fields` declaration whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks.id_fields` |
 | a task enabling `db_query` or `db_update` whose tool set does not say whether they are builtins (a `ToolInventory` reporting `json_db_builtins=None`, such as a recorded wire tool list), or whose adapter's `grading_seeded_tables` hook answers `unresolvable()` | unchecked | `tools` |
 | a task enabling `db_query` or `db_update` whose tool set does not say what their tool blocks carry (a `ToolInventory` reporting `json_db_tool_config_keys=None`, such as a recorded wire tool list) | unchecked | `tools` |
+| a `comparison_view` whose adapter's `grading_seeded_tables` hook answers `unresolvable()` | unchecked | `state_checks.comparison_view` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
