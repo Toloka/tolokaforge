@@ -195,3 +195,31 @@ class TestWhatTheRunGetsToldAboutIt:
 
         assert result.reasoning is None
         assert result.reasoning_channel_unknown is True
+
+
+def test_a_codec_result_is_never_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Even one carrying no text.
+
+    Gemini builds exactly that from an encrypted-only envelope: blocks with
+    ``text=""`` whose ``encrypted_data`` and ``id`` are what the next turn
+    needs — stripping the ``id`` halved turn-2 reasoning tokens in a measured
+    A/B. A route that fills the readable mirror *and* the encrypted envelope
+    would, on an earlier form of this fallback, have had that payload swapped
+    for text that cannot be replayed at all.
+    """
+    response = _response(
+        provider_specific_fields={
+            "reasoning": "readable mirror",
+            "reasoning_details": [
+                {"type": "reasoning.encrypted", "data": "rsn_abc", "id": "call_7", "index": 0}
+            ],
+        }
+    )
+    _, result = _generate(monkeypatch, "google/gemini-3.1-pro-preview", response)
+
+    assert result.reasoning is not None
+    assert result.reasoning.capture_only is False
+    block = result.reasoning.blocks[0]
+    assert block.encrypted_data == "rsn_abc"
+    assert dict(block.extras)["id"] == "call_7"
+    assert result.reasoning_recovered_by_fallback is False

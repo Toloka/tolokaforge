@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import pytest
 
+from tolokaforge.core.llm.client import LLMClient
+from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
 from tolokaforge.core.llm.reasoning_transport import (
     PermissiveReasoningReader,
     arriving_reasoning,
 )
+from tolokaforge.core.models.trajectory import Message, MessageRole
 
 pytestmark = pytest.mark.unit
 
@@ -147,32 +150,56 @@ class TestThePermissiveReader:
         assert len(got.blocks) == 1
 
 
-def test_recovering_reasoning_does_not_change_the_wire() -> None:
-    """Recovery is safe only because replay still asks the preset's codec.
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-5",  # codec replays nothing
+        "moonshotai/kimi-k2.7-code",  # codec replays summary blocks
+        "google/gemini-3.1-pro-preview",  # codec *raises* on a summary block
+        "anthropic/claude-sonnet-4.5",  # so does this one
+    ],
+)
+def test_recovered_reasoning_never_reaches_the_wire(model: str) -> None:
+    """The safety claim, on every codec family rather than a convenient one.
 
-    ``_convert_messages`` splices a replay payload from
-    ``capabilities.reasoning_codec``, never from whatever read the reasoning.
-    So a message carrying recovered reasoning serialises identically to one
-    carrying none, for any preset whose codec does not replay — which is every
-    preset on the non-replaying allow-list.
+    A reader does not know which shape the route round-trips, so the blocks it
+    builds are not ones the codec can necessarily encode. Gemini's and
+    Anthropic's codecs raise ``ValueError`` on a ``summary_text`` block, and
+    because the splice runs while assembling the *next* request, that raise
+    would kill a turn rather than lose a capture.
+
+    ``capture_only`` is what prevents it: the splice skips the reasoning
+    entirely, so the serialised messages are identical with and without it.
     """
-    from tolokaforge.core.llm.client import LLMClient
-    from tolokaforge.core.llm.presets import build_capabilities
-    from tolokaforge.core.models.trajectory import Message, MessageRole
-
     client = LLMClient.__new__(LLMClient)
-    client.capabilities = build_capabilities("openai/gpt-5", "openrouter")
+    client.capabilities = build_capabilities(model, "openrouter")
 
-    recovered = StructuredReasoning(
-        blocks=(ReasoningBlock(type="summary_text", text="recovered deliberation"),)
+    recovered = PermissiveReasoningReader().extract(
+        _Message(provider_specific_fields={"reasoning": "I should list files first."})
     )
+    assert recovered is not None and recovered.capture_only
+
     with_reasoning = [Message(role=MessageRole.ASSISTANT, content="hi", reasoning=recovered)]
     without = [Message(role=MessageRole.ASSISTANT, content="hi")]
 
     assert client._convert_messages(None, with_reasoning) == client._convert_messages(None, without)
+    # Nor is it a *dropped* replay: nothing promised to send it back.
+    assert client._reasoning_replay_dropped_for(with_reasoning) is False
 
-    # And the comparison above means something: on a preset whose codec *does*
-    # replay, the same message pair serialises differently. Without this,
-    # a `_convert_messages` that ignored `reasoning` entirely would pass.
+
+def test_the_splice_is_otherwise_live() -> None:
+    """So the test above means something.
+
+    Without this, a ``_convert_messages`` that ignored ``reasoning`` altogether
+    would satisfy every assertion in it.
+    """
+    client = LLMClient.__new__(LLMClient)
     client.capabilities = build_capabilities("moonshotai/kimi-k2.7-code", "openrouter")
+
+    extracted = StructuredReasoning(
+        blocks=(ReasoningBlock(type="summary_text", text="what the codec read"),)
+    )
+    with_reasoning = [Message(role=MessageRole.ASSISTANT, content="hi", reasoning=extracted)]
+    without = [Message(role=MessageRole.ASSISTANT, content="hi")]
+
     assert client._convert_messages(None, with_reasoning) != client._convert_messages(None, without)

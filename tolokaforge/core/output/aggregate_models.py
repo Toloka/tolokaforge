@@ -84,22 +84,6 @@ __all__ = [
 ]
 
 AGGREGATE_SCHEMA_VERSION = 4
-
-
-def _engine_version() -> str:
-    """The installed tolokaforge version, or ``"unknown"`` off-distribution.
-
-    Read from distribution metadata rather than through ``tolokaforge``'s own
-    namespace: this module is imported during that package's initialisation,
-    and the metadata lookup is the same source ``tolokaforge.__version__``
-    uses, so the two cannot disagree.
-    """
-    try:
-        return _pkg_version("tolokaforge")
-    except PackageNotFoundError:  # pragma: no cover - source checkout, not installed
-        return "unknown"
-
-
 """The ``aggregate.json`` wire generation.
 
 Rates are over ``measured_trials`` — the trials that measured the agent,
@@ -116,6 +100,20 @@ summed from the trials' ``cost_by_role``, plus a synthesized ``judge`` row from
 agent, user and judge roles exist today, so ``total_cost_incl_all_usd`` equals
 the legacy ``total_cost_incl_judge_usd``.
 """
+
+
+def _engine_version() -> str:
+    """The installed tolokaforge version, or ``"unknown"`` off-distribution.
+
+    Read from distribution metadata rather than through ``tolokaforge``'s own
+    namespace: this module is imported during that package's initialisation,
+    and the metadata lookup is the same source ``tolokaforge.__version__``
+    uses, so the two cannot disagree.
+    """
+    try:
+        return _pkg_version("tolokaforge")
+    except PackageNotFoundError:  # pragma: no cover - source checkout, not installed
+        return "unknown"
 
 
 class OutcomeReasonCount(BaseModel):

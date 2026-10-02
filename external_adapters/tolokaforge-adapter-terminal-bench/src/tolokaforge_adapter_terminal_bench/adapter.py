@@ -24,6 +24,7 @@ from tolokaforge.adapters.base import (
     ComposeImageBuild,
     DockerStackRequirements,
 )
+from tolokaforge.core.agent_prompt_contract import CONTRACTS
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -163,6 +164,16 @@ def _resolve_provider_env(
     return resolved
 
 
+def _looks_like_a_bare_name(selector: str) -> bool:
+    """Whether *selector* names a shipped contract rather than a file.
+
+    Mirrors :func:`~tolokaforge.core.agent_prompt_contract.resolve_agent_prompt_contract`,
+    which tries the registry first and falls back to a path relative to the
+    task's own directory.
+    """
+    return "/" not in selector and not selector.endswith((".md", ".txt"))
+
+
 class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     """Adapter that runs terminal-bench tasks through
     :class:`~tolokaforge.core.per_trial_runtime.PerTrialRuntimeBackend`.
@@ -237,10 +248,26 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     f"{prompt_file!r} is empty — omit the key to use the default"
                 )
         # Names a reply contract the engine resolves, rather than a prompt this
-        # adapter writes. Left unset the adapter supplies no prompt at all, so a
-        # model preset's default can reach the task; an explicit
-        # ``agent_system_prompt_file`` still wins, for byte-exact replay.
+        # adapter writes. Set, the adapter supplies no prompt of its own and the
+        # engine composes one; unset, the adapter's own terminal-bench prompt
+        # applies, which is what keeps scores comparable with the benchmark. An
+        # explicit ``agent_system_prompt_file`` wins over both, for byte-exact
+        # replay. A model preset's ``default_agent_prompt_contract`` therefore
+        # does not reach a terminal-bench task either way — changing that would
+        # change what every task in the corpus is scored against.
         self._agent_prompt_contract: str | None = params.get("agent_prompt_contract")
+        if self._agent_prompt_contract and _looks_like_a_bare_name(self._agent_prompt_contract):
+            # Checked here rather than at the first trial's prompt build, which
+            # happens after the run has provisioned images. Only bare names:
+            # a path-shaped selector resolves against each task's own directory,
+            # which this object does not know yet.
+            if self._agent_prompt_contract not in CONTRACTS:
+                known = ", ".join(sorted(CONTRACTS))
+                raise ValueError(
+                    f"terminal-bench adapter: unknown agent_prompt_contract "
+                    f"{self._agent_prompt_contract!r} — shipped contracts are {known}, "
+                    f"or give a path to a contract file beside the tasks"
+                )
         if self._agent_prompt_contract and self._agent_system_prompt is not None:
             raise ValueError(
                 "terminal-bench adapter: set agent_system_prompt_file or "
@@ -639,10 +666,12 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """The task's ``policies`` block, carrying a prompt only when one was asked for.
 
         ``build_system_prompt`` returns ``policies["agent_system_prompt"]``
-        before it considers anything else, so the key is written only when the
-        run supplied a prompt file — the one case where a verbatim prompt is
-        the point. Absent, every lower-priority source stays reachable,
-        including a model preset's default contract.
+        before it considers anything else, so writing the key decides the
+        prompt outright. It is written for a run that supplied a prompt file,
+        and for a run that named no contract — the latter is how a
+        terminal-bench task keeps the prompt the benchmark scores it against.
+        Only an explicit ``agent_prompt_contract`` leaves the key out and lets
+        the engine compose one.
         """
         if self._agent_system_prompt is not None:
             return {"agent_system_prompt": self._agent_system_prompt}
@@ -681,6 +710,15 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
             grading=RunnerGradingConfig(
+                # The task's own ``[verifier] timeout_sec``, in both directions.
+                # 613 of the 974 delivered tasks ask for more than the grading
+                # kind's 300s default and 360 ask for less — commonly 180s. A
+                # task is the authority on how long its own suite needs, and
+                # substituting a longer budget would score it under a rule its
+                # author did not write. A suite killed by the clock is not
+                # silent: it reaches the grade as ``script_exec_error``, so
+                # ``grade.yaml`` says the verifier ran out of time rather than
+                # that the agent failed.
                 **self.emit_test_execution_grading(meta.verifier_timeout_sec)
             ),
             metadata=self._metadata(meta),

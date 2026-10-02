@@ -39,6 +39,7 @@ messages:
     summary: Short summary of the model's private rationale.
     budget_used: 512
     transport: null
+    capture_only: false
   openrouter_generation_id: null
   ts: '2026-01-01T12:00:00Z'
 user_reply_guard_events: []

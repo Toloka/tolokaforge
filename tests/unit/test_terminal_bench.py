@@ -3320,13 +3320,26 @@ class TestTerminalBenchAgentPromptContract:
                 agent_prompt_contract="reasoning_agent",
             )
 
-    def test_an_unknown_contract_name_fails_when_the_prompt_is_built(self, fixture_dir, tmp_path):
+    def test_an_unknown_contract_name_is_refused_at_construction(self, fixture_dir, tmp_path):
+        """Before the run provisions anything.
+
+        The prompt is built at the first trial, by which point the images are
+        up; a typo found there has already cost the setup, and every task after
+        it would run on the wrong prompt if the selector were merely ignored.
+        """
+        with pytest.raises(ValueError, match="unknown agent_prompt_contract"):
+            self._adapter(fixture_dir, tmp_path, agent_prompt_contract="no_such_thing")
+
+    def test_a_missing_contract_file_still_fails_when_the_prompt_is_built(
+        self, fixture_dir, tmp_path
+    ):
+        """A path selector resolves against each task's own directory, which the
+        adapter does not know at construction, so this one can only fail late."""
         from tolokaforge.core.agent_prompt_contract import UnknownAgentPromptContractError
         from tolokaforge.core.system_prompt import build_system_prompt
 
-        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="no_such_thing")
-        task_id = self.TASK_ID
-        task = adapter.get_task(task_id)
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="contracts/absent.md")
+        task = adapter.get_task(self.TASK_ID)
 
         with pytest.raises(UnknownAgentPromptContractError):
             build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)

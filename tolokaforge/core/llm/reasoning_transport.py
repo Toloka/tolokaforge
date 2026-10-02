@@ -136,4 +136,6 @@ class PermissiveReasoningReader:
 
         if not blocks:
             return None
-        return StructuredReasoning(blocks=tuple(blocks))
+        # ``capture_only``: these blocks were read, not extracted by the codec
+        # that will be asked to replay them, so they must never reach the wire.
+        return StructuredReasoning(blocks=tuple(blocks), capture_only=True)

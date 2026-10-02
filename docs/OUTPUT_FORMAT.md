@@ -824,11 +824,10 @@ written by `write_metrics` includes a root-level `schema_version: 7` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
-such a bundle is refused offline anyway. Generation 7 bundles replace
-`reasoning_billed_not_captured` with `reasoning_recovered_by_fallback` and
-`reasoning_channel_unknown`; the old counter could not tell a preset reading the
-wrong channel from a provider billing for an opaque blob, and fired on the
-latter. Generation 5 bundles report a
+such a bundle is refused offline anyway. Generation 7 bundles record what became
+of the reasoning the trial was billed for: `reasoning_recovered_by_fallback`,
+`reasoning_channel_unknown`, `reasoning_replay_dropped`, and `capture_only` on
+any reasoning a reader rather than a codec produced. Generation 5 bundles report a
 coding-harness trial's `turns` and `usage` from the CLI's own totals wherever
 the CLI prints them, instead of the single-tool-call artefacts (`turns: 1`, a
 null cost, an empty usage block) every such trial carried through generation 4;

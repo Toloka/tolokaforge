@@ -1206,9 +1206,13 @@ class ToolCallingLoop:
         suppress_replay = False
         stalled_this_turn = False
         while True:
+            # Cleared before the call, not after: a raise here is still the
+            # one resample the suppression was for, and leaving the flag set
+            # would silently suppress replay on the following turn instead.
+            replay_reasoning = not suppress_replay
+            suppress_replay = False
             try:
-                result = self._generate(turn, system_prompt, replay_reasoning=not suppress_replay)
-                suppress_replay = False
+                result = self._generate(turn, system_prompt, replay_reasoning=replay_reasoning)
             except litellm.exceptions.ContextWindowExceededError:
                 reactive_decision = self._maybe_reactive_summarize(turn, system_prompt, messages)
                 if reactive_decision is not None:
@@ -1365,25 +1369,6 @@ class ToolCallingLoop:
                 turn=turn,
                 consecutive_stall_turns=self._consecutive_stall_turns,
             )
-            limit = self.config.reasoning_stall_turn_limit
-            if limit and self._consecutive_stall_turns >= limit:
-                self._append_both(
-                    messages,
-                    self._system_message(
-                        f"Model stalled on reasoning in {self._consecutive_stall_turns} "
-                        "consecutive turns; trial terminated."
-                    ),
-                )
-                self._excluding_reason_evidence = (
-                    f"{self._consecutive_stall_turns} consecutive turns each contained a "
-                    f"generation with no text and no tool calls that billed reasoning "
-                    f"tokens, against a limit of {limit}"
-                )
-                return (
-                    TrialStatus.FAILED,
-                    TerminationReason.REASONING_WITHOUT_ACTION,
-                    True,
-                )
         else:
             self._consecutive_stall_turns = 0
 
@@ -1397,6 +1382,30 @@ class ToolCallingLoop:
                 result=result,
                 started_at=ended_at - timedelta(seconds=max(0.0, result.latency_s or 0.0)),
                 ended_at=ended_at,
+            )
+
+        # Checked after the turn is recorded, not at the point the counter
+        # moved. This turn produced an action — ``record_generation`` has
+        # already counted it — so returning before the append would leave the
+        # bundle with a generation in its metrics and no message to match.
+        limit = self.config.reasoning_stall_turn_limit
+        if stalled_this_turn and limit and self._consecutive_stall_turns >= limit:
+            self._append_both(
+                messages,
+                self._system_message(
+                    f"Model stalled on reasoning in {self._consecutive_stall_turns} "
+                    "consecutive turns; trial terminated."
+                ),
+            )
+            self._excluding_reason_evidence = (
+                f"{self._consecutive_stall_turns} consecutive turns each contained a "
+                f"generation with no text and no tool calls that billed reasoning "
+                f"tokens, against a limit of {limit}"
+            )
+            return (
+                TrialStatus.FAILED,
+                TerminationReason.REASONING_WITHOUT_ACTION,
+                True,
             )
 
         decision = self.should_terminate(result, turn, messages)

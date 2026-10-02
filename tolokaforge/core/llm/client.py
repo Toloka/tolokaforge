@@ -1373,10 +1373,17 @@ class LLMClient:
         per trial across a whole eval. Same idiom as
         :data:`~tolokaforge.core.llm.litellm_params._LOGGED`.
 
-        Not an error. A route that refuses echoed reasoning makes this the
-        correct behaviour, and only a live probe can tell the two apart —
-        ``scripts/analysis/probe_reasoning_transport.py``. The line exists so
-        the question gets asked at all.
+        Not an error, and expected on a whole class of runs: every OpenAI
+        preset reaches this line on every trial that reasons, because those
+        routes refuse an echoed payload and the codec is right to emit none.
+        Only a live probe tells that apart from the case that cost
+        ``moonshotai/kimi-k2.7-code`` half its score —
+        ``scripts/analysis/probe_reasoning_transport.py``.
+
+        The preset rides the line so the answer is one lookup away:
+        ``tests/canonical/test_reasoning_codec_preset_routing.py`` holds the
+        presets permitted to replay nothing, each with its reason. A preset
+        named here and absent there has not been decided about.
         """
         key = f"{self.provider}/{self.model_name}"
         if key in _REPLAY_DROP_WARNED:
@@ -1387,6 +1394,7 @@ class LLMClient:
             "its codec returns no replay payload, so each turn reads a history "
             "in which it never reasoned",
             model=self.model_name,
+            preset=resolve_effective_preset(self.model_name, self.provider),
             codec=type(self.capabilities.reasoning_codec).__name__,
         )
 
@@ -1426,6 +1434,10 @@ class LLMClient:
         ``encode_for_replay`` is a pure rebuild of a payload the caller is
         about to build anyway.
 
+        ``capture_only`` reasoning is skipped: a reader produced it, no codec
+        promised to encode it, and it was never going to be sent back. Counting
+        it would warn about the recovery that kept it.
+
         ``is_empty`` is the load-bearing guard. A codec can return a
         :class:`StructuredReasoning` carrying no text — Gemini builds one from
         a summary-only response, and again from OpenRouter's no-real-thinking
@@ -1437,7 +1449,7 @@ class LLMClient:
         for msg in messages:
             if msg.role != MessageRole.ASSISTANT or msg.reasoning is None:
                 continue
-            if msg.reasoning.is_empty():
+            if msg.reasoning.is_empty() or msg.reasoning.capture_only:
                 continue
             if not codec.encode_for_replay(msg.reasoning):
                 self._warn_reasoning_replay_dropped()
@@ -1532,7 +1544,11 @@ class LLMClient:
             # P4b — splice reasoning-codec replay payload (e.g. Anthropic
             # ``thinking_blocks``) onto assistant dicts. Zero provider-specific
             # branching: the codec Protocol is the only abstraction.
-            if msg.role == MessageRole.ASSISTANT and msg.reasoning is not None:
+            if (
+                msg.role == MessageRole.ASSISTANT
+                and msg.reasoning is not None
+                and not msg.reasoning.capture_only
+            ):
                 replay_payload = self.capabilities.reasoning_codec.encode_for_replay(msg.reasoning)
                 if replay_payload:
                     litellm_msg.update(replay_payload)
@@ -2479,11 +2495,17 @@ class LLMClient:
         reasoning_result = self.capabilities.reasoning_codec.extract(message)
         arrived = arriving_reasoning(message)
         recovered_by_fallback = False
-        if arrived.readable and (reasoning_result is None or reasoning_result.is_empty()):
+        # ``is None``, not ``is_empty()``: a codec that returned an object owns
+        # the result, including one carrying no text. Gemini builds exactly that
+        # from an encrypted-only envelope, and its blocks hold the
+        # ``encrypted_data`` and the ``id`` ↔ ``tool_call.id`` binding the next
+        # turn needs. Replacing it with text read from the mirror field would
+        # trade a payload replay depends on for one that cannot be replayed.
+        if arrived.readable and reasoning_result is None:
             # The provider sent deliberation this preset's codec does not read.
-            # Keep it: reading is wire-neutral — the replay splice in
-            # ``_convert_messages`` asks the preset's codec, not this one — so
-            # the only alternative is to drop text we were already billed for.
+            # Keep it: the result is marked ``capture_only`` and the replay
+            # splice skips it, so the only alternative is dropping text we were
+            # already billed for.
             reasoning_result = _PERMISSIVE_READER.extract(message)
             if reasoning_result is not None:
                 recovered_by_fallback = True
