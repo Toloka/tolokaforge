@@ -154,7 +154,16 @@ _PACKAGED_SUBSET_BUILD_DIR = "_subset_build"
 # tree slice rather than a resolved wheel, so it needs no host-side wheel
 # resolution — but it DOES pair with ``_runner_definition()``, which picks
 # between the repo-root paths (source checkout) and the packaged copies
-# (wheel install, where the repo root is ``site-packages``).
+# (wheel install, where the repo root is ``site-packages``). The grader
+# image compiles the identical source set, so ``_grader_definition()`` shares
+# that mapping.
+#
+# This module is the single source of truth for every service's build-context
+# spec (dockerfile, context, context_files, build_args). The stack layer
+# (``docker/stacks/core.py``, ``docker/stacks/full.py``) reads each
+# ServiceDefinition's build-context fields from ``get_image_definition`` rather
+# than re-declaring them, so the images the stack builds and the images
+# ``make docker-build`` builds hash the same inputs and cannot drift.
 
 IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "db-service": {
