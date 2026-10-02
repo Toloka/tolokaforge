@@ -135,7 +135,6 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/bundle_producer.py",
     "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
-    "tolokaforge/core/grading/comparison_view.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
     "tolokaforge/core/grading/judge_kinds/parity.py",
@@ -196,13 +195,6 @@ authoring gate, the rubric-to-trace-check migration and the offline replay
 commands all run on the host, before or after any trial is scheduled, and they
 would ship as dead weight. The runner container's runtime
 closure reaches none of them.
-
-``core.grading.comparison_view`` (ADR-0053) is written for the runner: it
-depends on the standard library and pydantic only, and the runner's hash grading
-is to apply it to both sides. No runner module calls it yet, so it stays out of
-the image until the change that wires it into ``_execute_hash_grading``, which
-removes it from this tuple: ``test_runner_boot_closure_is_covered_by_subset``
-fails until it does.
 
 ``core.grading.bundle`` is the offline grade-bundle format library — a
 manifest-first, part-addressable, content-addressable directory carrying

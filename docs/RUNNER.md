@@ -304,7 +304,8 @@ entry, and carries every runner-reachable seam group verbatim from
 `tolokaforge.judge_model_providers`, `tolokaforge.rubric_evaluators`,
 `tolokaforge.transcript_rule_matchers`, `tolokaforge.state_check_backends`,
 `tolokaforge.trace_check_operators`, `tolokaforge.grading_methods`,
-`tolokaforge.grader_kinds`, and `tolokaforge.judge_kinds`. Without these, the runner boots
+`tolokaforge.grader_kinds`, `tolokaforge.judge_kinds`, and `tolokaforge.comparison_view_rules`
+(the trial spec's `state_checks.comparison_view` resolves its rules at `RegisterTrial`). Without these, the runner boots
 then crashes at first seam load with "Unknown implementation …". The
 canonical enumeration lives at
 `scripts/hatch/hatch_runner_subset_builder.py::RUNNER_REACHABLE_ENTRY_POINT_GROUPS`
@@ -392,7 +393,6 @@ canonical test rejects drift between them and the pyproject mirror.
 | `tolokaforge/core/actors/turn_policy.py` | Reaches `core.plugin_registry` (orchestrator-only) for `TurnPolicyContext`. |
 | `tolokaforge/core/grading/agreement.py` | Shared-spine imports only; consumed by the offline rubric-migration commands. |
 | `tolokaforge/core/grading/combine.py` | Imports `core.grading.state_checks`, itself orchestrator-only. |
-| `tolokaforge/core/grading/comparison_view.py` | Standard library and pydantic only; no runner caller until the [ADR-0053](adr/0053-comparison-view-before-the-state-hash.md) wiring lands. |
 | `tolokaforge/core/grading/config_validation.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
 | `tolokaforge/core/grading/corpus_curation.py` | Imports `core.output.artifacts` and `core.output_writer` (orchestrator-only). |
 | `tolokaforge/core/grading/migration_declaration.py` | Reaches the same two through its `corpus_curation` import. |

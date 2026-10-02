@@ -20,6 +20,7 @@ import pytest
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.timelines import Turn, build_turn_timeline
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.key_manifest import (
     MIN_ASSISTANT_TURNS_KEY,
     Enforcement,
@@ -55,7 +56,6 @@ from tolokaforge.runner.grading_ledger import (
 )
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
-    HashComparisonBasis,
     KeyAccounting,
     KeyAccountingRecord,
     RunnerGradingConfig,

@@ -715,6 +715,64 @@ def _drop_clock_columns_from_row(row: Any) -> Any:
     return {key: value for key, value in row.items() if key not in AUTO_MASKED_CLOCK_COLUMNS}
 
 
+def resolve_unstable_table_name(table: str, data_tables: Iterable[str]) -> str | None:
+    """The data table an ``unstable_fields`` entry's table name means, or ``None``.
+
+    The db-service's resolution, shared so every reader of a task's unstable fields
+    masks the same columns. The strategies, first match wins:
+
+    1. the exact name;
+    2. the name plus ``s`` (a singular name for a plural table);
+    3. the name minus a trailing ``s`` (a plural name for a singular table);
+    4. a suffix match, over the data tables in sorted order: a table ending with the
+       name or with its singular, or a name ending with the table, with its plural, or
+       (minus a trailing ``s``) with the table. This handles a prefixed name such as
+       ``servicenow_csm_sn_customerservice_cases`` against ``sn_customerservice_case``.
+
+    Sorting is what makes a name two tables match by suffix resolve the same way in
+    every process; set iteration order varies with the interpreter's hash seed.
+    """
+    tables = set(data_tables)
+    if table in tables:
+        return table
+    if table + "s" in tables:
+        return table + "s"
+    if table.endswith("s") and table[:-1] in tables:
+        return table[:-1]
+    for data_table in sorted(tables):
+        if data_table.endswith(table):
+            return data_table
+        if table.endswith("s") and data_table.endswith(table[:-1]):
+            return data_table
+        if table.endswith(data_table):
+            return data_table
+        if table.endswith("s") and table[:-1].endswith(data_table):
+            return data_table
+        if table.endswith(data_table + "s"):
+            return data_table
+    return None
+
+
+def resolve_unstable_field_paths(paths: Iterable[str], data_tables: Iterable[str]) -> list[str]:
+    """Dotted ``table.field`` unstable-field paths with each table name resolved.
+
+    The path splits at its first ``.``, as :func:`filter_unstable_fields` reads it, and
+    the table name resolves through :func:`resolve_unstable_table_name`. A name that
+    matches no data table keeps its declared spelling, so it masks nothing rather than
+    another table's column; a path without a ``.`` names no table and is kept as
+    written. The input order is kept.
+    """
+    tables = set(data_tables)
+    resolved: list[str] = []
+    for path in paths:
+        table, dot, field = path.partition(".")
+        if not dot:
+            resolved.append(path)
+            continue
+        resolved.append(f"{resolve_unstable_table_name(table, tables) or table}.{field}")
+    return resolved
+
+
 def filter_unstable_fields(
     state: dict[str, Any],
     unstable_fields: list[str] | None = None,

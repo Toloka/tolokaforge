@@ -64,6 +64,7 @@ from tolokaforge.core.deprecations import (
     source_context,
     warn_deprecated,
 )
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.config_validation import (
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
@@ -249,6 +250,7 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
         retired_keys=RETIRED_STATE_CHECK_KEYS,
         nested_block_models=(
             _NestedBlock("hash", StateHashConfig, retired_keys=frozenset(RETIRED_HASH_KEYS)),
+            _NestedBlock("comparison_view", ComparisonViewConfig),
         ),
     ),
     # A turn window whose floor sits above its ceiling admits no assistant-turn count,
@@ -1000,6 +1002,32 @@ def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[
     disk raises :class:`RuntimeError` — a task declaring state it cannot supply
     is broken wherever it is read.
     """
+    return {
+        name: _seeded_records(collection)
+        for name, collection in _declared_json_db(task, task_dir).items()
+    }
+
+
+def seeded_table_shapes(task: TaskConfig, task_dir: Path) -> dict[str, str]:
+    """The tables *task* seeds as something other than a list of records, and as what.
+
+    :func:`seeded_tables_from_task` normalises such a collection — records keyed by id
+    become their values, a lone mapping one record — and the runner's db-service holds
+    that normalised list. Core's hash reads the declared JSON as written, so a grading
+    rule reading a table row by row has to know it was not written as rows: a
+    comparison view naming one is refused (see
+    :func:`~tolokaforge.core.grading.comparison_view_checks.comparison_view_findings`).
+    A table seeded as a list is absent from the answer.
+    """
+    return {
+        name: _collection_shape(collection)
+        for name, collection in _declared_json_db(task, task_dir).items()
+        if not isinstance(collection, list)
+    }
+
+
+def _declared_json_db(task: TaskConfig, task_dir: Path) -> dict[str, Any]:
+    """``initial_state.json_db`` as declared: the named file's JSON, the inline mapping, or ``{}``."""
     if not (task.initial_state and task.initial_state.json_db):
         return {}
     json_db = task.initial_state.json_db
@@ -1008,10 +1036,19 @@ def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[
         if not json_db_path.exists():
             raise RuntimeError(f"JSON DB file not found: {json_db_path}")
         with open(json_db_path) as f:
-            data = json.load(f)
-    else:
-        data = json_db
-    return {name: _seeded_records(collection) for name, collection in data.items()}
+            data: dict[str, Any] = json.load(f)
+        return data
+    return dict(json_db)
+
+
+def _collection_shape(collection: Any) -> str:
+    """How a seeded collection that is not a list of records is written, in an author's words."""
+    if isinstance(collection, dict):
+        values = list(collection.values())
+        if values and all(isinstance(value, dict) for value in values):
+            return "a mapping of records keyed by id"
+        return "a single record (a mapping)"
+    return f"a {type(collection).__name__}"
 
 
 def seeded_tables_under_adapter(

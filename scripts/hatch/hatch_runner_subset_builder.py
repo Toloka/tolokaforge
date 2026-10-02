@@ -57,9 +57,11 @@ if TYPE_CHECKING:
 SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
 
 # Base wheel entry-point groups the runner subset MUST carry. Every seam
-# the runner reaches through ``load_*`` at boot or during a Grade RPC —
-# the six sub-component seams reachable from ``RunnerServiceImpl``
-# (ADR-0040) — is loaded via ``importlib.metadata.entry_points``, so the
+# the runner reaches through ``load_*`` at boot, at ``RegisterTrial`` or
+# during a Grade RPC — the six sub-component seams reachable from
+# ``RunnerServiceImpl`` (ADR-0040), and the comparison-view rules a trial
+# spec's ``state_checks.comparison_view`` names (ADR-0053) — is loaded via
+# ``importlib.metadata.entry_points``, so the
 # group's rows must appear in the subset wheel's ``entry_points.txt``
 # even though their target modules are already inside the subset
 # partition. Groups NOT listed here — ``runtime_backends``,
@@ -85,6 +87,7 @@ RUNNER_REACHABLE_ENTRY_POINT_GROUPS: tuple[str, ...] = (
     "tolokaforge.grading_methods",
     "tolokaforge.grader_kinds",
     "tolokaforge.judge_kinds",
+    "tolokaforge.comparison_view_rules",
 )
 
 
