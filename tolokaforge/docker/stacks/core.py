@@ -119,10 +119,9 @@ def core_stack(
             interval_s=1.0,
         )
 
-    # DB Service — state storage with trial isolation. Build-context spec
-    # (dockerfile/context/context_files/build_args) comes from the builder's
-    # image definition so the stack and ``make docker-build`` hash the same
-    # inputs — the single source of truth per #653.
+    # DB Service — state storage with trial isolation. Build-context fields
+    # come from the builder's image definition (see builder.py) so the stack
+    # and ``make docker-build`` hash the same inputs.
     db_defn = get_image_definition("db-service")
     db_service = ServiceDefinition(
         name="db-service",
@@ -231,13 +230,10 @@ def core_stack(
     if enable_docker_cli:
         runner_build_args["INSTALL_DOCKER_CLI"] = "true"
 
-    # Build-context spec comes from the builder's image definition (#653), so
-    # the stack and ``make docker-build`` hash the same inputs. On a wheel
-    # install the factory swaps the repo-root sources for the packaged
-    # ``_subset_build/`` copies — re-listing them here is what previously
-    # broke an installed engine, so read the spec from the builder and let the
-    # two stay in lockstep. ``runner_build_args`` (playwright / docker-cli
-    # opt-ins) layer on top of the factory's ``PYTHON_VERSION`` base.
+    # Build-context fields come from get_image_definition (see builder.py); on
+    # a wheel install the factory swaps the repo-root sources for the packaged
+    # ``_subset_build/`` copies. The stack adds only runner_build_args opt-ins
+    # on top of the factory's ``PYTHON_VERSION`` base.
     runner_defn = get_image_definition("runner")
     runner = ServiceDefinition(
         name="runner",

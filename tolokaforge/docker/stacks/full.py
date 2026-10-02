@@ -90,12 +90,11 @@ def full_stack(
         rag_service_url="http://tolokaforge-rag-service:8001",
     )
 
-    # RAG Service — hybrid BM25 + FAISS search. Build-context spec comes from
-    # the builder's image definition (#653): its ``_rag_definition`` factory
+    # RAG Service — hybrid BM25 + FAISS search. Build-context fields come from
+    # get_image_definition (see builder.py): its ``_rag_definition`` factory
     # resolves the base wheel, sets ``WHEEL_FILENAME``, and remaps the sibling
-    # source trees to the packaged ``_subset_build/`` copies on a wheel
-    # install — so the stack and ``make docker-build`` hash the same inputs and
-    # cannot drift into "COPY failed: file not found in build context".
+    # source trees to the packaged ``_subset_build/`` copies on a wheel install,
+    # so the stack and ``make docker-build`` hash the same inputs.
     rag_defn = get_image_definition("rag-service")
     rag_service = ServiceDefinition(
         name="rag-service",
@@ -128,10 +127,10 @@ def full_stack(
         network_aliases=["rag-service"],
     )
 
-    # Mock Web Service — for browser tasks. Build-context spec from the
-    # builder's image definition (#653); its narrow ``context_files``
-    # (the service dir only) keeps the build-context hash from churning on
-    # unrelated repo edits.
+    # Mock Web Service — for browser tasks. Build-context fields come from
+    # get_image_definition (see builder.py); its narrow ``context_files`` (the
+    # service dir only) keeps the build-context hash from churning on unrelated
+    # repo edits.
     mock_web_defn = get_image_definition("mock-web")
     mock_web_service = ServiceDefinition(
         name="mock-web",
