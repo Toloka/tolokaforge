@@ -102,6 +102,8 @@
     "unstable_fields": []
   },
   "initialization_actions": [],
+  "max_environment_errors": null,
+  "max_simulation_steps": null,
   "metadata": {
     "agent_harness": "engine-loop",
     "difficulty": "easy",

@@ -31,6 +31,8 @@
   },
   "initial_user_message": "Echo 'hello'.",
   "interaction_mode": "conversational",
+  "max_environment_errors": null,
+  "max_simulation_steps": null,
   "max_turns": null,
   "metadata": {
     "complexity": null,
