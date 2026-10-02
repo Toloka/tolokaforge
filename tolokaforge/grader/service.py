@@ -100,6 +100,8 @@ def _grade_to_wire(grade: Grade) -> grader_pb2.Grade:
     if grade.comparison_view is not None:
         # The comparison view's record, JSON-encoded as on runner.Grade.
         wire.comparison_view_json = json.dumps(grade.comparison_view)
+    if grade.state_snapshots is not None:
+        wire.state_snapshots_json = grade.state_snapshots.model_dump_json()
     if grade.components is not None:
         wire.components.state_checks = _sentinel(grade.components.state_checks)
         wire.components.transcript_rules = _sentinel(grade.components.transcript_rules)
