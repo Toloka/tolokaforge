@@ -71,6 +71,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.models.grade import GradingStateSnapshots
 from tolokaforge.core.plugin_registry import load_grading_method
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.grader.wire_snapshot import build_grade_request_fields
@@ -112,6 +113,32 @@ class GradingFailedError(Exception):
     own ``termination_reason``, writes its bundle, and counts as an attempt that
     scored nothing — never as an attempt the agent failed.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        judge_usage: JudgeUsage | None = None,
+        state_snapshots: GradingStateSnapshots | None = None,
+        state_diff: dict[str, Any] | None = None,
+        comparison_view: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.judge_usage = judge_usage
+        self.state_snapshots = state_snapshots
+        self.state_diff = state_diff
+        self.comparison_view = comparison_view
+
+    def evidence(self) -> dict[str, Any]:
+        """Structured work already completed before the verdict failed."""
+        return {
+            "judge_usage": self.judge_usage.model_dump(mode="json") if self.judge_usage else None,
+            "state_snapshots": (
+                self.state_snapshots.model_dump(mode="json") if self.state_snapshots else None
+            ),
+            "state_diff": self.state_diff,
+            "comparison_view": self.comparison_view,
+        }
 
 
 @runtime_checkable
@@ -331,7 +358,35 @@ class RunnerRPCTrialGrader:
                 trial_index=trial_idx,
                 error=error_msg,
             )
-            raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {error_msg}")
+            evidence = grade_result.get("failure_evidence") or {}
+            try:
+                judge_usage = (
+                    JudgeUsage.model_validate(evidence["judge_usage"])
+                    if evidence.get("judge_usage") is not None
+                    else None
+                )
+                snapshots = (
+                    GradingStateSnapshots.model_validate(evidence["state_snapshots"])
+                    if evidence.get("state_snapshots") is not None
+                    else None
+                )
+                state_diff = evidence.get("state_diff")
+                comparison_view = evidence.get("comparison_view")
+                if state_diff is not None and not isinstance(state_diff, dict):
+                    raise TypeError("state_diff is not a mapping")
+                if comparison_view is not None and not isinstance(comparison_view, dict):
+                    raise TypeError("comparison_view is not a mapping")
+            except (TypeError, ValidationError) as exc:
+                raise GradingFailedError(
+                    f"Grading failed for trial {spec.trial_id!r}; runner failure evidence is invalid: {exc}"
+                ) from exc
+            raise GradingFailedError(
+                f"Grading failed for trial {spec.trial_id!r}: {error_msg}",
+                judge_usage=judge_usage,
+                state_snapshots=snapshots,
+                state_diff=state_diff,
+                comparison_view=comparison_view,
+            )
 
         grade = _parse_grade_result(grade_result["grade"])
         self.logger.info(
@@ -448,6 +503,15 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         except (json.JSONDecodeError, TypeError):
             pass
 
+    snapshots = None
+    if raw_grade.get("state_snapshots_json"):
+        try:
+            snapshots = GradingStateSnapshots.model_validate_json(raw_grade["state_snapshots_json"])
+        except ValidationError as exc:
+            raise GradingFailedError(
+                f"the runner's Grade.state_snapshots_json payload is not readable: {exc}"
+            ) from exc
+
     criterion_results = None
     raw_criterion_results = raw_grade.get("criterion_results")
     if raw_criterion_results:
@@ -537,6 +601,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         ),
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,
+        state_snapshots=snapshots,
         comparison_view=_parse_comparison_view(raw_grade.get("comparison_view_json")),
         custom_checks_details=custom_checks_details,
         criterion_results=criterion_results,

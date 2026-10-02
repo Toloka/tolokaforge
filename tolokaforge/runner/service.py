@@ -120,6 +120,7 @@ from tolokaforge.core.search.stack_services import (
     declared_stack_service,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
+from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
 from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
@@ -1773,6 +1774,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         try:
             result = self._run_async(self._grade_trial_async(request), timeout=600.0)
             return result
+        except GradingFailedError as e:
+            logger.error(f"GradeTrial: Grader could not produce a verdict: {e}")
+            return pb2.GradeTrialResponse(
+                success=False,
+                error=str(e),
+                failure_evidence_json=json.dumps(e.evidence()),
+            )
         except Exception as e:
             logger.error(f"GradeTrial: Unexpected error: {e}")
             logger.error(traceback.format_exc())
