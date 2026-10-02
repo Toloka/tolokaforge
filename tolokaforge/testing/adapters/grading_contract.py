@@ -2,10 +2,11 @@
 
 An adapter subclasses :class:`AdapterGradingContractSuite`, provides an
 ``adapter`` fixture and a ``task_and_dir`` fixture, and (optionally)
-overrides ``expected_*`` class attributes for the three capability flags and
-the preferred grader kind whose adapter declaration disagrees with the
-shipped defaults (all three flags default ``False``; preferred kind defaults
-``"composite"``). The subclass then collects the 13 test methods below,
+overrides ``expected_*`` class attributes for the capability flags, the
+supported execution modes, and the preferred grader kind whose adapter
+declaration disagrees with the shipped defaults (the three booleans default
+``False``; execution modes default ``{ENGINE_LOOP}``; preferred kind defaults
+``"composite"``). The subclass then collects the 14 test methods below,
 pinning:
 
 - The six methods :class:`~tolokaforge.adapters.grading_contract.AdapterGradingContract`
@@ -14,6 +15,9 @@ pinning:
 - The three capability flags matching the subclass's declared expectation
   (``requires_docker_cli_in_runner``, ``grades_from_task_grading_file``,
   ``syncs_adapter_env_to_state``).
+- ``supported_execution_modes`` matching the subclass's declared expectation
+  (a ``frozenset`` of :class:`~tolokaforge.core.execution_mode.ExecutionMode`
+  always containing ``ENGINE_LOOP``).
 - ``grading_source`` classmethod-dispatch parity: the class-level call
   (``type(adapter).grading_source(task, task_dir)``) returns the same
   :class:`~tolokaforge.adapters._task_loader.GradingSource` the instance
@@ -50,6 +54,7 @@ import pytest
 from tolokaforge.adapters._task_loader import GradingSource, GradingSourceKind
 from tolokaforge.adapters.base import BaseAdapter
 from tolokaforge.adapters.grading_contract import AdapterGradingContract
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.grading.config_validation import (
     ReplayWorld,
     SeededTablesLayer,
@@ -73,6 +78,9 @@ class AdapterGradingContractSuite:
     expected_grades_from_task_grading_file: ClassVar[bool] = False
     expected_syncs_adapter_env_to_state: ClassVar[bool] = False
     expected_preferred_grader_kind: ClassVar[str] = "composite"
+    expected_supported_execution_modes: ClassVar[frozenset[ExecutionMode]] = frozenset(
+        {ExecutionMode.ENGINE_LOOP}
+    )
 
     @pytest.fixture
     def adapter(self) -> BaseAdapter:
@@ -106,6 +114,16 @@ class AdapterGradingContractSuite:
         self, adapter: BaseAdapter
     ) -> None:
         assert adapter.syncs_adapter_env_to_state is self.expected_syncs_adapter_env_to_state
+
+    def test_supported_execution_modes_matches_declared_expectation(
+        self, adapter: BaseAdapter
+    ) -> None:
+        modes = adapter.supported_execution_modes
+        assert isinstance(modes, frozenset)
+        assert all(isinstance(mode, ExecutionMode) for mode in modes)
+        # Every adapter runs the engine's own loop.
+        assert ExecutionMode.ENGINE_LOOP in modes
+        assert modes == self.expected_supported_execution_modes
 
     def test_grading_source_returns_a_grading_source(
         self, adapter: BaseAdapter, task_and_dir: tuple[TaskConfig, Path]

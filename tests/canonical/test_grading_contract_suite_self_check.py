@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from tolokaforge.adapters._task_loader import GradingSource, GradingSourceKind
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.grading.config_validation import (
     ReplayWorld,
     SeededTablesLayer,
@@ -46,6 +47,7 @@ class _FakeAdapterBase:
     requires_docker_cli_in_runner = False
     grades_from_task_grading_file = False
     syncs_adapter_env_to_state = False
+    supported_execution_modes = frozenset({ExecutionMode.ENGINE_LOOP})
 
     @classmethod
     def grading_source(cls, task, task_dir):
@@ -129,9 +131,9 @@ def test_both_branches_of_the_emit_payload_schema_check_fire(
     )
 
     outcomes = result.parseoutcomes()
-    assert outcomes.get("passed", 0) >= 23, (
-        f"expected the two subclasses' 13 test methods each to run (26 total, "
-        f"minus 3 skips leaves 23 passes), got outcomes={outcomes!r}"
+    assert outcomes.get("passed", 0) >= 25, (
+        f"expected the two subclasses' 14 test methods each to run (28 total, "
+        f"minus 3 skips leaves 25 passes), got outcomes={outcomes!r}"
     )
     assert outcomes.get("skipped", 0) == 3, (
         f"expected exactly three skips — the empty-payload branch of the "

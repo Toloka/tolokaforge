@@ -21,6 +21,7 @@ import pytest
 
 from tolokaforge.adapters import NativeAdapter
 from tolokaforge.adapters._task_loader import GradingSourceKind, load_task_yaml
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.testing.adapters import AdapterGradingContractSuite
 
@@ -33,6 +34,10 @@ _A_REAL_TASK = (
 
 
 class TestNativeAdapterGradingContract(AdapterGradingContractSuite):
+    expected_supported_execution_modes = frozenset(
+        {ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED}
+    )
+
     @pytest.fixture
     def adapter(self, tmp_path: Path) -> NativeAdapter:
         return NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "**/task.yaml"})

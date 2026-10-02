@@ -25,6 +25,7 @@ from tolokaforge.adapters.base import (
     DockerStackRequirements,
 )
 from tolokaforge.core.agent_prompt_contract import CONTRACTS
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -187,6 +188,11 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
     requires_docker_cli_in_runner: ClassVar[bool] = True
     """Runner runs docker CLI + compose plugin against the host daemon via the mounted socket."""
+
+    supported_execution_modes: ClassVar[frozenset[ExecutionMode]] = frozenset(
+        {ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED}
+    )
+    """Terminal-bench runs the engine loop and can also delegate to a coding-harness CLI."""
 
     def preferred_grader_kind(self) -> str:
         """Grades via ``test_execution`` on both branches.
