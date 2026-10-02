@@ -765,14 +765,20 @@ too. Consumers that need per-call attribution read `usage.calls`; consumers that
 need "did this trial reach OpenRouter at all" read the flat list. See
 [LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter generation ids.
 
-`reasoning_billed_not_captured` counts the calls where the provider charged
-reasoning tokens and the preset's `reasoning_codec` surfaced no reasoning at
-all — the model deliberated somewhere the codec does not read.
+`reasoning_recovered_by_fallback` counts the calls whose readable reasoning the
+preset's `reasoning_codec` does not read and the engine kept anyway. Nothing was
+lost on those calls — the trajectory carries the reasoning either way — but the
+preset is routed too narrowly, and the next model landing on the same glob will
+be too. `reasoning_channel_unknown` counts the calls the provider charged
+reasoning tokens for while reasoning arrived in no channel the engine knows
+about: the one remaining way to actually lose it. An opaque
+`reasoning.encrypted` payload counts as neither, because it arrived somewhere
+known and holds no text anyone could keep.
+
 `reasoning_replay_dropped` is `true` when reasoning *was* captured and then not
 sent back on the next request, so the model saw a history in which it had never
-reasoned. Neither is automatically a defect: OpenAI and Grok bill for an opaque
-`reasoning.encrypted` blob nothing can surface, and OpenAI refuses echoed
-reasoning. Both are how that case is told apart from the one that cost
+reasoned. Not automatically a defect — OpenAI refuses echoed reasoning — but it
+is how that case is told apart from the one that cost
 `moonshotai/kimi-k2.7-code` roughly half its Terminal-Bench score. See
 [LLM_LAYER.md](LLM_LAYER.md:1) § Reasoning that never reaches the model back.
 
@@ -814,11 +820,15 @@ the client slug the calls were served by, `null` only for a call built without a
 serving client.
 
 To help analytics consumers detect schema evolution, a trial-level metrics file
-written by `write_metrics` includes a root-level `schema_version: 6` marker. The
+written by `write_metrics` includes a root-level `schema_version: 7` marker. The
 one shape that carries no marker is a `metrics.yaml` the writer created for the
 redaction stamp alone, where the caller wrote no metrics of its own (see
 [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
-such a bundle is refused offline anyway. Generation 5 bundles report a
+such a bundle is refused offline anyway. Generation 7 bundles replace
+`reasoning_billed_not_captured` with `reasoning_recovered_by_fallback` and
+`reasoning_channel_unknown`; the old counter could not tell a preset reading the
+wrong channel from a provider billing for an opaque blob, and fired on the
+latter. Generation 5 bundles report a
 coding-harness trial's `turns` and `usage` from the CLI's own totals wherever
 the CLI prints them, instead of the single-tool-call artefacts (`turns: 1`, a
 null cost, an empty usage block) every such trial carried through generation 4;
@@ -904,7 +914,8 @@ harness_stdout_dialect: null       # non-null only when a coding-harness CLI rep
 harness_usage_source: null         # non-null only when the tokens were measured on the wire, not printed by the CLI
 harness_reported_cost_usd: null    # what that CLI said it billed, where it said anything
 cost_cache_rate_fallback: false
-reasoning_billed_not_captured: 0   # calls billed for reasoning the codec surfaced none of
+reasoning_recovered_by_fallback: 0 # readable reasoning the preset's codec does not read, kept anyway
+reasoning_channel_unknown: 0       # billed for reasoning that arrived in no channel we know
 reasoning_replay_dropped: false    # reasoning was extracted and then never sent back
 tool_calls: 7
 tool_success_rate: 1.0
@@ -1275,7 +1286,7 @@ contains — on this path it is stamped and most of them are absent.
   `provision_stage` set to the lifecycle step that raised (see below),
   `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 6`, empty `tool_usage`) plus three top-level failure-signal
+  `schema_version: 7`, empty `tool_usage`) plus three top-level failure-signal
   keys:
 
   ```yaml
@@ -1973,7 +1984,7 @@ evidence about us, and our own defects stay counted. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
-| `metrics.yaml` | `schema_version` | `6` | The per-trial bundle's file set or field semantics change |
+| `metrics.yaml` | `schema_version` | `7` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `4` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |

@@ -13,7 +13,7 @@ this list is claiming its route refuses echoed reasoning, which
 ``scripts/analysis/probe_reasoning_transport.py`` answers in one live call.
 
 This pins the *routing*. The runtime counters on ``Metrics``
-(``reasoning_billed_not_captured`` / ``reasoning_replay_dropped``) catch the
+(``reasoning_channel_unknown`` / ``reasoning_replay_dropped``) catch the
 same defect for a model nobody thought to list here, and the capability
 registry refuses an unjustified "this model has no usable reasoning" claim.
 """

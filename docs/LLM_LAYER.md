@@ -1344,9 +1344,9 @@ It is a silent defect for a route that would have honoured it, and from inside
 the engine the two are indistinguishable. Three things make the difference
 visible:
 
-* **Runtime.** `Metrics.reasoning_billed_not_captured` counts calls the provider
-  charged reasoning tokens for while the codec surfaced none;
-  `Metrics.reasoning_replay_dropped` marks a trial in which reasoning was
+* **Runtime.** `Metrics.reasoning_channel_unknown` counts calls the provider
+  charged reasoning tokens for while nothing arrived in a channel the engine
+  knows; `Metrics.reasoning_replay_dropped` marks a trial in which reasoning was
   extracted and then not sent back. Both land in `metrics.yaml`. The second also
   warns once per run per model — a client is built per trial per role, so the
   guard is keyed module-side rather than held on the client.

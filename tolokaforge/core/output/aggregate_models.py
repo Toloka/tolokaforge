@@ -77,6 +77,7 @@ __all__ = [
     "MetadataSlices",
     "OutcomeReasonCount",
     "PerTaskMetrics",
+    "ReasoningTransportRollup",
     "RunAggregate",
     "ServiceLogCaptureEntry",
     "ServiceLogCaptureSource",
@@ -408,6 +409,28 @@ class CapturedServiceLogsRollup(BaseModel):
     entries: list[ServiceLogCaptureEntry] = Field(default_factory=list)
 
 
+class ReasoningTransportRollup(BaseModel):
+    """How this run's reasoning travelled, over the trials that ran.
+
+    Two counts, because they ask for different work. Recovery says a preset
+    reads a narrower channel than its model uses: nothing was lost, and the fix
+    is a preset edit before the next model lands on the same glob. An unknown
+    channel says the provider billed for deliberation that arrived nowhere the
+    engine looks, which is the one remaining way to lose it and needs
+    ``scripts/analysis/probe_reasoning_transport.py`` to resolve.
+
+    An opaque ``reasoning.encrypted`` payload appears in neither: it arrived
+    somewhere known and holds no text anyone could keep.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    recovered_by_fallback_calls: int = 0
+    recovered_by_fallback_trials: int = 0
+    channel_unknown_calls: int = 0
+    channel_unknown_trials: int = 0
+
+
 class RunAggregate(AggregateMetrics):
     """The top-level ``aggregate.json`` shape — :class:`AggregateMetrics`
     plus the ``schema_version`` envelope field every downstream consumer
@@ -438,6 +461,9 @@ class RunAggregate(AggregateMetrics):
     Read from the installed distribution metadata, so it is the version that
     actually ran rather than one a config declared.
     """
+
+    reasoning_transport: ReasoningTransportRollup = Field(default_factory=ReasoningTransportRollup)
+    """Whether the run kept the reasoning it was billed for, and how."""
 
     captured_service_logs: CapturedServiceLogsRollup | None = None
 

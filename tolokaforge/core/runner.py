@@ -2229,8 +2229,10 @@ class _TrialMetricsSink(MetricsSink):
         # calls did.
         if result.cost_cache_rate_fallback:
             self._metrics.cost_cache_rate_fallback = True
-        if result.reasoning_billed_not_captured:
-            self._metrics.reasoning_billed_not_captured += 1
+        if result.reasoning_recovered_by_fallback:
+            self._metrics.reasoning_recovered_by_fallback += 1
+        if result.reasoning_channel_unknown:
+            self._metrics.reasoning_channel_unknown += 1
         # Sticky for the same reason the cache-rate flag is: once a codec
         # declines to replay, it declines on every turn, so a count would only
         # restate the turn count.

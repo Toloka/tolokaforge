@@ -59,6 +59,7 @@ from tolokaforge.core.llm.presets import (
     UNCLAIMED_ROUTE_FAMILY,
     get_overlay_path,
     ignored_sampling_params,
+    resolve_effective_preset,
     unclaimed_route_families,
 )
 from tolokaforge.core.logging import get_logger
@@ -3949,6 +3950,52 @@ class Orchestrator:
                 pass_at_k_without_coverage=lost_k,
             )
 
+    def _reasoning_transport_rollup(self) -> dict[str, int]:
+        """How the run's reasoning actually travelled, counted over trials.
+
+        Two numbers, because they ask for different things. Recovery means a
+        preset reads a narrower channel than its model uses — nothing was lost,
+        and the fix is a preset edit. An unknown channel means the provider
+        billed for deliberation that arrived nowhere the engine looks, which is
+        the one remaining way to lose it and needs a live probe to resolve.
+        """
+        recovered = [t.metrics.reasoning_recovered_by_fallback for t in self.results]
+        unknown = [t.metrics.reasoning_channel_unknown for t in self.results]
+        return {
+            "recovered_by_fallback_calls": sum(recovered),
+            "recovered_by_fallback_trials": sum(1 for n in recovered if n),
+            "channel_unknown_calls": sum(unknown),
+            "channel_unknown_trials": sum(1 for n in unknown if n),
+        }
+
+    def _warn_on_reasoning_transport(self, rollup: dict[str, int]) -> None:
+        """Say once per run what the per-call logs said per model and upstream."""
+        if not (rollup["recovered_by_fallback_calls"] or rollup["channel_unknown_calls"]):
+            return
+        agent = (self.config.models or {}).get("agent")
+        model = agent.name if agent else None
+        preset = resolve_effective_preset(agent.name, agent.provider) if agent else None
+        if rollup["recovered_by_fallback_calls"]:
+            self.logger.warning(
+                "Reasoning arrived in a channel this run's preset does not read; "
+                "it was kept, but the preset is routed too narrowly",
+                model=model,
+                preset=preset,
+                calls=rollup["recovered_by_fallback_calls"],
+                trials=rollup["recovered_by_fallback_trials"],
+                probe="scripts/analysis/probe_reasoning_transport.py",
+            )
+        if rollup["channel_unknown_calls"]:
+            self.logger.warning(
+                "Billed for reasoning that arrived in no channel the engine knows; "
+                "this run lost it",
+                model=model,
+                preset=preset,
+                calls=rollup["channel_unknown_calls"],
+                trials=rollup["channel_unknown_trials"],
+                probe="scripts/analysis/probe_reasoning_transport.py",
+            )
+
     def _finalize_run_reports_and_status(self, output_dir: Path) -> None:
         """Publish completeness, generate reports, and stamp completion status.
 
@@ -4081,6 +4128,10 @@ class Orchestrator:
             metadata_slices["by_expected_failure_mode"][key] = calculate_aggregate_metrics(
                 group, weighted=True
             )
+
+        reasoning_transport = self._reasoning_transport_rollup()
+        self._warn_on_reasoning_transport(reasoning_transport)
+        aggregate["reasoning_transport"] = reasoning_transport
 
         aggregate["schema_version"] = AGGREGATE_SCHEMA_VERSION
         aggregate["tolokaforge_version"] = _engine_version()

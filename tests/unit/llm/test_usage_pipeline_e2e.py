@@ -263,21 +263,23 @@ class TestReasoningLossIsObservable:
 
         assert client._reasoning_replay_dropped_for(turn) is False
 
-    def test_billed_reasoning_the_codec_did_not_surface_is_recorded(self) -> None:
-        """The predicate, stated directly: charged for thinking, captured none."""
+    def test_reasoning_billed_into_a_channel_we_do_not_know_is_recorded(self) -> None:
+        """The one remaining way to lose reasoning: charged for thinking that
+        arrived nowhere the engine can read. Anything arriving in a channel we
+        do know is captured, by the preset's codec or by the fallback."""
         from tolokaforge.core.llm.client import GenerationResult
         from tolokaforge.core.llm.usage import Usage
 
-        billed = GenerationResult(
+        lost = GenerationResult(
             text=" ",
             usage=Usage(reasoning_tokens=42),
             reasoning=None,
-            reasoning_billed_not_captured=True,
+            reasoning_channel_unknown=True,
         )
         clean = GenerationResult(text="ok", usage=Usage(reasoning_tokens=0))
 
-        assert billed.reasoning_billed_not_captured is True
-        assert clean.reasoning_billed_not_captured is False
+        assert lost.reasoning_channel_unknown is True
+        assert clean.reasoning_channel_unknown is False
 
 
 class TestTheReplayObservationRidesTheCallNotTheClient:

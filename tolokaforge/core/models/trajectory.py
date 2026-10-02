@@ -647,19 +647,33 @@ class Metrics(BaseModel):
     ``False`` on every litellm-priced call (provider-authoritative, already
     cache-aware) and on every model whose row carries its cache rates."""
 
-    reasoning_billed_not_captured: int = 0
-    """Calls the provider charged reasoning tokens for while the codec
-    surfaced no reasoning at all.
+    reasoning_recovered_by_fallback: int = 0
+    """Calls whose readable reasoning this preset's ``reasoning_codec`` does
+    not read, kept by the permissive reader instead.
 
-    The model deliberated somewhere this preset's ``reasoning_codec`` does not
-    read. Often benign — OpenAI and Grok bill for an opaque
-    ``reasoning.encrypted`` blob there is no way to surface — and the shape of
-    a real defect when the payload was readable text. Which one it is takes a
-    live call to answer: ``scripts/analysis/probe_reasoning_transport.py``.
+    Nothing was lost — the trajectory carries the reasoning either way. What
+    this counts is a preset routed too narrowly, which is worth fixing before
+    the next model lands on the same glob. Run
+    ``scripts/analysis/probe_reasoning_transport.py`` against the model and
+    route the preset at the channel it actually uses.
 
     Independent of ``reasoning.mode``: the engine asks for reasoning only when
     the mode says so, but a model may reason unasked, and one measured here
     did so on every turn."""
+
+    reasoning_channel_unknown: int = 0
+    """Calls the provider charged reasoning tokens for while reasoning arrived
+    in no channel the engine knows about.
+
+    The one remaining way to actually lose reasoning, and the reason the token
+    count is still read: a channel nobody has seen reads as "nothing arrived"
+    to any enumeration, so it cannot be captured — but the bill still says the
+    deliberation happened.
+
+    An opaque ``reasoning.encrypted`` payload does **not** count here. It
+    arrived in a channel we know and holds no text anyone could keep, so
+    counting it would report a loss on most calls of the routes that are
+    behaving correctly."""
 
     reasoning_replay_dropped: bool = False
     """At least one request in this trial carried an earlier turn's reasoning

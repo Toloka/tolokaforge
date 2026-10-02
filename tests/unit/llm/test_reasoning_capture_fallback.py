@@ -155,3 +155,43 @@ def test_recovering_warns_once_per_model_and_upstream(
     assert kwargs["preset"] == "gemma"
     assert kwargs["codec"] == "NoReasoningCodec"
     assert kwargs["arrived_in"] == ["reasoning_content"]
+
+
+class TestWhatTheRunGetsToldAboutIt:
+    """Two signals, because the old single one could not tell a mis-routed
+    preset from a channel nobody has ever seen -- and fired on neither as
+    loudly as it fired on the encrypted-only calls that were fine."""
+
+    def test_recovery_is_reported_as_a_config_fact(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, result = _generate(
+            monkeypatch, _KEEPS_NOTHING, _response(reasoning_content="checked the log")
+        )
+        assert result.reasoning_recovered_by_fallback is True
+        assert result.reasoning_channel_unknown is False
+
+    def test_an_opaque_payload_is_neither(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """What the old counter got wrong: billed, nothing kept, nothing wrong."""
+        response = _response(
+            provider_specific_fields={
+                "reasoning_details": [{"type": "reasoning.encrypted", "data": "xxxx"}]
+            }
+        )
+        response.usage.completion_tokens_details = MagicMock(reasoning_tokens=512)
+        _, result = _generate(monkeypatch, _KEEPS_NOTHING, response)
+
+        assert result.usage.reasoning_tokens == 512
+        assert result.reasoning_recovered_by_fallback is False
+        assert result.reasoning_channel_unknown is False
+
+    def test_a_channel_we_do_not_know_is_the_remaining_loss(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Billed for deliberation that arrived nowhere we look. It cannot be
+        captured -- an enumeration reads an unknown channel as silence -- but
+        the bill says it happened, which is what notices it."""
+        response = _response(provider_specific_fields={"reasoning_somewhere_new": "thought"})
+        response.usage.completion_tokens_details = MagicMock(reasoning_tokens=512)
+        _, result = _generate(monkeypatch, _KEEPS_NOTHING, response)
+
+        assert result.reasoning is None
+        assert result.reasoning_channel_unknown is True

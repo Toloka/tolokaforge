@@ -625,13 +625,18 @@ class GenerationResult:
         effective_system_prompt: str | None = None,
         openrouter_generation_id: str | None = None,
         finish_reason: str | None = None,
-        reasoning_billed_not_captured: bool = False,
+        reasoning_recovered_by_fallback: bool = False,
+        reasoning_channel_unknown: bool = False,
         reasoning_replay_dropped: bool = False,
     ):
         self.text = text
-        # The provider charged for reasoning this turn and the codec surfaced
-        # none of it: the deliberation happened somewhere we do not read.
-        self.reasoning_billed_not_captured = reasoning_billed_not_captured
+        # Readable reasoning arrived in a channel this preset's codec does not
+        # read, and was kept by the permissive reader instead. Nothing was
+        # lost; the preset is routed too narrowly.
+        self.reasoning_recovered_by_fallback = reasoning_recovered_by_fallback
+        # The provider charged for reasoning and it arrived in no channel we
+        # know of. The only remaining way to actually lose it.
+        self.reasoning_channel_unknown = reasoning_channel_unknown
         # The reasoning on an earlier turn of this request's history was
         # extracted and then not replayed, so the model cannot see it.
         self.reasoning_replay_dropped = reasoning_replay_dropped
@@ -2473,6 +2478,7 @@ class LLMClient:
 
         reasoning_result = self.capabilities.reasoning_codec.extract(message)
         arrived = arriving_reasoning(message)
+        recovered_by_fallback = False
         if arrived.readable and (reasoning_result is None or reasoning_result.is_empty()):
             # The provider sent deliberation this preset's codec does not read.
             # Keep it: reading is wire-neutral — the replay splice in
@@ -2480,6 +2486,7 @@ class LLMClient:
             # the only alternative is to drop text we were already billed for.
             reasoning_result = _PERMISSIVE_READER.extract(message)
             if reasoning_result is not None:
+                recovered_by_fallback = True
                 self._warn_reasoning_recovered(arrived, response)
 
         # Build per-tool root-level parameter type maps once per call so the
@@ -2578,10 +2585,12 @@ class LLMClient:
             # that returned no usage block contributes no call record, and the
             # routing decision is still worth recording for that turn.
             openrouter_generation_id=extract_openrouter_generation_id(response),
-            reasoning_billed_not_captured=(
-                usage.reasoning_tokens > 0
-                and (reasoning_result is None or reasoning_result.is_empty())
-            ),
+            reasoning_recovered_by_fallback=recovered_by_fallback,
+            # Deliberately not "billed and nothing extracted": that is true of
+            # every encrypted-only call, where keeping nothing is correct, so
+            # it fired loudest on the presets that were right. A channel we do
+            # not know about is the one case the enumeration cannot reach.
+            reasoning_channel_unknown=(usage.reasoning_tokens > 0 and not arrived.anything),
             reasoning_replay_dropped=reasoning_replay_dropped,
             # litellm post-maps every current provider's max-tokens truncation
             # to the OpenAI-compatible ``"length"`` on this field; a response

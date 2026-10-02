@@ -18,8 +18,14 @@ from tolokaforge.core.redaction import (
     RedactionStamp,
 )
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 6
+TRIAL_BUNDLE_SCHEMA_VERSION = 7
 """The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 7 bundles replace ``reasoning_billed_not_captured`` with
+``reasoning_recovered_by_fallback`` and ``reasoning_channel_unknown``. The old
+counter conflated a preset reading the wrong channel with a provider billing
+for an opaque blob, and fired on the latter — which is most calls on some
+routes, and correct every time.
 
 Version 6 bundles stamp each ``usage.calls[*]`` record with the ``role`` of the
 actor whose loop issued the call and the ``model`` slug it was served by, so
