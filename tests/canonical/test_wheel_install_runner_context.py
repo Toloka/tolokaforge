@@ -64,8 +64,8 @@ _EXPECTED_FORCE_INCLUDES: tuple[str, ...] = (
     "tolokaforge/_python_version.txt",
     # The two workspace-sibling source trees the runner/grader/rag
     # sibling-wheel-builder stages compile in-container. Their ``pyproject.toml``
-    # is the input whose absence from a wheel install broke rag-service and
-    # grader (#1738): ``hatchling build`` in a dir with no pyproject.
+    # must ship on a wheel install, or ``hatchling build`` runs in a sibling dir
+    # with no pyproject and the build dies.
     "tolokaforge/_subset_build/tolokaforge_models/pyproject.toml",
     "tolokaforge/_subset_build/tolokaforge_coding_harnesses/pyproject.toml",
 )
@@ -233,8 +233,8 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
             shutil.rmtree(build_dir, ignore_errors=True)
 
         # Grader shares the runner's full source set and has no stack, so its
-        # production path is get_image_definition("grader"). On a wheel install
-        # this used to emit repo-relative sibling paths and die (#1738).
+        # production path is get_image_definition("grader"); on a wheel install
+        # it must resolve to the packaged copies, not repo-relative paths.
         grader = get_image_definition("grader")
         grader_dir = assemble_build_context(root, grader["dockerfile"], grader["context_files"])
         try:
@@ -245,7 +245,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         # rag-service remaps only its two sibling trees. rag_service_context_files
         # is wheel/env-aware and takes the wheel path directly (no resolve_wheel),
         # so a fake wheel exercises the sibling remap + assembly network-free; the
-        # real resolve_wheel + docker build is the integration gate's job (#866).
+        # real resolve_wheel + docker build is the integration gate's job.
         fake_whl = root / "probe-fake-tolokaforge.whl"
         fake_whl.write_bytes(b"PK\\x03\\x04")
         rag_ctx = rag_service_context_files(str(fake_whl))
@@ -332,14 +332,14 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     )
 
     # grader shares the runner's full source set; on a wheel install it must
-    # assemble the same inputs (#1738 — grader had no wheel-install remap).
+    # assemble the same inputs.
     grader_missing = [
         n for n in _EXPECTED_CONTEXT_ENTRIES if not probe_data["grader_present"].get(n)
     ]
     assert not grader_missing, (
         "``get_image_definition('grader')`` did not land these inputs on a wheel "
         f"install: {grader_missing}. grader must share the runner's packaged "
-        "``_subset_build`` mapping (#1738)."
+        "``_subset_build`` mapping."
     )
 
     # rag-service remaps only its two sibling trees plus its own service dir;
@@ -348,7 +348,7 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     assert not rag_missing, (
         "``rag_service_context_files`` did not land these inputs on a wheel "
         f"install: {rag_missing}. The sibling trees must remap to the packaged "
-        "``_subset_build`` copies (#1738 / #866)."
+        "``_subset_build`` copies."
     )
     assert probe_data["rag_wheel_present"], (
         "the rag-service build context did not land the engine wheel on a wheel "

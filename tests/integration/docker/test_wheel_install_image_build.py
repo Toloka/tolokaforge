@@ -1,19 +1,21 @@
 """Real-docker acceptance gate for building first-party images from a wheel install.
 
-#1738: on a wheel install ``repo_root()`` is ``site-packages``; rag-service and
-grader emitted repo-relative sibling paths (``tolokaforge_models/``,
+On a wheel install ``repo_root()`` is ``site-packages``; rag-service and grader
+would emit repo-relative sibling paths (``tolokaforge_models/``,
 ``tolokaforge_coding_harnesses/``) that do not exist there, so their
-``sibling-wheel-builder`` stage ran ``hatchling build`` in a directory with no
-``pyproject.toml`` and the build died before the first trial.
+``sibling-wheel-builder`` stage would run ``hatchling build`` in a directory with
+no ``pyproject.toml`` and die before the first trial.
 
 The unit and canonical tiers assert the assembled build *context*. This tier runs
 an actual ``docker build`` end-to-end from a scratch wheel-install venv — the only
 tier that proves the Dockerfile's in-container ``hatchling build`` stage actually
-compiles against the packaged ``_subset_build/`` sources. For rag-service it also
-exercises ``resolve_wheel`` on a wheel install (#866).
+compiles against the packaged ``_subset_build/`` sources, and that ``resolve_wheel``
+works on a wheel install for rag-service.
 
 Needs a Docker daemon; builds three images that compile wheels in-container, so it
-is marked ``slow`` and runs in the push/schedule integration lane.
+is marked ``slow`` and runs in the push/schedule integration lane. The three
+parametrized cases share a module-scoped venv, so they are pinned to one xdist
+worker (``--dist loadgroup``) to avoid rebuilding wheels + venv per worker.
 """
 
 from __future__ import annotations
@@ -32,7 +34,12 @@ from tests.utils.wheel_builds import (
     make_wheel_install_venv,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.requires_docker, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.requires_docker,
+    pytest.mark.slow,
+    pytest.mark.xdist_group("wheel_install_image_build"),
+]
 
 _BUILD_TIMEOUT_S = 1800
 
@@ -54,7 +61,8 @@ def test_image_builds_from_wheel_install(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     """``docker build`` of *service* must succeed when driven from a wheel-install
-    venv — the exact repro of #1738 for rag-service / grader.
+    venv — the wheel-install repro for rag-service / grader (whose
+    sibling-wheel-builder stage compiles the packaged sources in-container).
 
     The build runs from a CWD outside the repo so a ``sys.path[0]`` prepend cannot
     shadow the wheel-installed package with the source tree; the probe asserts it
@@ -87,7 +95,7 @@ def test_image_builds_from_wheel_install(
     if result.returncode != 0:
         pytest.fail(
             f"docker build of '{service}' from a wheel install failed "
-            f"(exit {result.returncode}) — this is the #1738 failure mode:\n"
+            f"(exit {result.returncode}):\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
 
@@ -102,4 +110,8 @@ def test_image_builds_from_wheel_install(
             f"absent from the daemon:\n{inspect.stderr}"
         )
     finally:
-        subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, text=True)
+        rmi = subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, text=True)
+        if rmi.returncode != 0:
+            # Report rather than swallow — a failed cleanup leaves a multi-GB
+            # image on the runner.
+            print(f"warning: failed to remove image {tag!r} (exit {rmi.returncode}): {rmi.stderr}")

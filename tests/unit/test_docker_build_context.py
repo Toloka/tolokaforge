@@ -100,7 +100,16 @@ def test_assemble_build_context_contains_only_declared_files(tmp_path: Path) -> 
 def test_assemble_build_context_omits_nested_build_artifacts(
     tmp_path: Path, absolute_context: bool
 ) -> None:
-    """Both directory-copy paths omit stale dist, build, and egg-info outputs."""
+    """Both directory-copy paths omit stale dist / build / egg-info outputs and
+    the base wheel's force-include artifacts (``_subset_build``,
+    ``_python_version.txt``).
+
+    The force-include artifacts are the ones that matter on a wheel install: the
+    copied ``tolokaforge/`` package carries them, and an image that rebuilds the
+    base wheel from the copied tree (grader's ``hatchling build --target
+    wheel``) re-creates them from the force-include table — a stale copy makes
+    the build die with "a second file is being added to the wheel archive at the
+    same path"."""
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "Dockerfile").write_text("FROM alpine\n")
@@ -114,6 +123,9 @@ def test_assemble_build_context_omits_nested_build_artifacts(
     (models / "pkg" / "build" / "generated.py").write_text("stale = True\n")
     (models / "pkg" / "example.egg-info").mkdir()
     (models / "pkg" / "example.egg-info" / "PKG-INFO").write_text("stale metadata\n")
+    (models / "_subset_build").mkdir()
+    (models / "_subset_build" / "pyproject.toml").write_text("# force-include artifact\n")
+    (models / "_python_version.txt").write_text("3.12\n")
 
     context_entry = models if absolute_context else "tolokaforge_models"
     build_dir = assemble_build_context(repo, "Dockerfile", [context_entry])
@@ -123,6 +135,8 @@ def test_assemble_build_context_omits_nested_build_artifacts(
         assert not (staged_models / "dist").exists()
         assert not (staged_models / "pkg" / "build").exists()
         assert not (staged_models / "pkg" / "example.egg-info").exists()
+        assert not (staged_models / "_subset_build").exists()
+        assert not (staged_models / "_python_version.txt").exists()
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
 
@@ -277,7 +291,7 @@ def test_assembled_context_lives_under_docker_shared_tmpdir() -> None:
 def test_stack_build_context_specs_match_builder_definitions() -> None:
     """Every stack ``ServiceDefinition`` draws its build-context spec
     (dockerfile, context, context_files, build_args) from the builder's image
-    definition — the single source of truth per #653.
+    definition — the single source of truth for the build-context spec.
 
     The two lists must agree for the content-hash / ``:local`` alias to stay
     coherent; they have drifted before (#627 dropped the sibling trees from the
@@ -639,90 +653,45 @@ def test_build_and_prepare_builds_images_and_networks_without_starting_container
     stack.destroy(remove_networks=False)
 
 
-def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monkeypatch) -> None:
-    """On a wheel install the runner context must resolve to the PACKAGED
-    copies, not the repo-root paths.
+@pytest.mark.parametrize("service", ["runner", "grader"])
+def test_full_source_image_context_resolves_from_installed_wheel(
+    service: str, tmp_path: Path, monkeypatch
+) -> None:
+    """On a wheel install, runner and grader — which compile the identical full
+    source set in-container — resolve their context to the PACKAGED
+    ``_subset_build`` copies, not the absent repo-root paths.
 
-    ``repo_root()`` is ``Path(__file__).parents[2]``, which is
-    ``site-packages`` once tolokaforge is installed as a wheel — so
-    ``pyproject.toml`` / ``README.md`` / ``LICENSE`` / ``scripts/hatch`` are
-    simply not there. 0.14.0 shipped the repo-relative set unconditionally,
-    so every Docker-runtime run died in ``build_images()`` with
-    ``FileNotFoundError: Declared context path not found: pyproject.toml``
-    before a single trial executed — invisible to CI, which
-    only ever builds from a source checkout.
-
-    This locks the wheel-install branch: entries are absolute paths into the
-    packaged ``_subset_build`` dir, and they land in the assembled context
-    under exactly the names the Dockerfile ``COPY`` lines expect."""
-    site_packages = tmp_path / "site-packages"
-    pkg = site_packages / "tolokaforge"
-    packaged = pkg / "_subset_build"
-    (packaged / "scripts" / "hatch").mkdir(parents=True)
-    for name in ("pyproject.toml", "README.md", "LICENSE"):
-        (packaged / name).write_text(f"# {name}\n")
-    (packaged / "scripts" / "hatch" / "hatch_runner_subset_builder.py").write_text("")
-    # The base wheel also ships tolokaforge_models sources for the
-    # in-container `hatchling build` step (Milestone 29 / ADR-0030).
-    (packaged / "tolokaforge_models" / "src" / "tolokaforge_models").mkdir(parents=True)
-    (packaged / "tolokaforge_models" / "pyproject.toml").write_text("# models pyproject\n")
-    # Same shape for tolokaforge_coding_harnesses: bundled INSIDE the base
-    # wheel on PyPI, with a packaged copy of its source at
-    # ``tolokaforge/_subset_build/tolokaforge_coding_harnesses/`` so the
-    # runner Dockerfile's in-container hatchling build step still has it.
-    (packaged / "tolokaforge_coding_harnesses" / "src" / "tolokaforge_coding_harnesses").mkdir(
-        parents=True
+    ``repo_root()`` is ``site-packages`` once installed as a wheel, so the
+    repo-relative set would not exist and the build would die in
+    ``build_images()`` before a single trial. Entries are absolute paths into
+    the packaged dir and land under exactly the names the Dockerfile ``COPY``
+    lines expect."""
+    site_packages = _simulate_wheel_install(
+        tmp_path, monkeypatch, dockerfiles=(f"{service}.Dockerfile",)
     )
-    (packaged / "tolokaforge_coding_harnesses" / "pyproject.toml").write_text(
-        "# coding-harnesses pyproject\n"
-    )
-    (pkg / "_python_version.txt").write_text("3.12\n")
-    # The base wheel ships the Dockerfiles inside the package, so
-    # ``assemble_build_context`` still finds the runner Dockerfile under
-    # ``repo_root``/``site-packages``.
-    dockerfiles = pkg / "docker" / "dockerfiles"
-    dockerfiles.mkdir(parents=True)
-    (dockerfiles / "runner.Dockerfile").write_text("FROM scratch\n")
-    # A wheel install has no repo-root pyproject.toml — that is the trigger.
-    monkeypatch.setattr("tolokaforge.docker.builder.repo_root", lambda: site_packages)
-    monkeypatch.setattr("tolokaforge.docker.builder.installed_package_dir", lambda: pkg)
 
-    runner_def = get_image_definition("runner")
-    entries = runner_def["context_files"]
-
+    defn = get_image_definition(service)
+    entries = defn["context_files"]
     for entry in entries:
         src = Path(entry[0] if isinstance(entry, tuple) else entry)
         assert src.is_absolute(), f"wheel-install entry must be absolute: {entry}"
         assert src.exists(), f"wheel-install entry does not exist: {entry}"
 
-    build_dir = assemble_build_context(site_packages, runner_def["dockerfile"], entries)
+    build_dir = assemble_build_context(site_packages, defn["dockerfile"], entries)
     try:
-        for expected in (
-            "pyproject.toml",
-            "README.md",
-            "LICENSE",
-            ".python-version",
-            "scripts/hatch",
-            "tolokaforge",
-            "tolokaforge_models/pyproject.toml",
-            "tolokaforge_models/src/tolokaforge_models",
-            "tolokaforge_coding_harnesses/pyproject.toml",
-            "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses",
-        ):
+        for expected in _FULL_SOURCE_EXPECTED:
             assert (build_dir / expected).exists(), (
-                f"assembled runner context is missing '{expected}', which the "
-                "runner Dockerfile COPYs for its hatchling build stage"
+                f"assembled {service} context is missing '{expected}', which the "
+                f"{service} Dockerfile COPYs for its hatchling build stage"
             )
         # Content assertions — a broken rename or empty copy would pass the
-        # existence check above but fail the Dockerfile stage. The .python-
-        # version entry is the tuple-form rename (source is
-        # ``_python_version.txt``, destination is ``.python-version``); a
-        # regression that dropped the tuple handling would land an empty
+        # existence check above but fail the Dockerfile stage. ``.python-version``
+        # is the tuple-form rename (source ``_python_version.txt``, destination
+        # ``.python-version``); dropping the tuple handling would land an empty
         # file or the wrong name here.
         assert (build_dir / ".python-version").read_text() == "3.12\n", (
             ".python-version content mismatch — the (source, destination) tuple "
-            "form in ``assemble_build_context`` must copy source bytes to the "
-            "renamed destination"
+            "form in assemble_build_context must copy source bytes to the renamed dest"
         )
         for name in ("pyproject.toml", "README.md", "LICENSE"):
             assert (build_dir / name).read_text() == f"# {name}\n", (
@@ -733,20 +702,22 @@ def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monk
         shutil.rmtree(build_dir, ignore_errors=True)
 
 
-def test_runner_build_context_fails_loud_when_wheel_lacks_packaged_inputs(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("service", ["runner", "grader"])
+def test_full_source_image_context_fails_loud_when_wheel_lacks_packaged_inputs(
+    service: str, tmp_path: Path, monkeypatch
 ) -> None:
-    """A wheel built from a pyproject without the force-include entries must
-    fail with an actionable message naming the missing paths, not with a bare
-    ``FileNotFoundError`` from deep inside the context copy."""
-    site_packages = tmp_path / "site-packages"
-    pkg = site_packages / "tolokaforge"
-    pkg.mkdir(parents=True)
-    monkeypatch.setattr("tolokaforge.docker.builder.repo_root", lambda: site_packages)
-    monkeypatch.setattr("tolokaforge.docker.builder.installed_package_dir", lambda: pkg)
-
-    with pytest.raises(FileNotFoundError, match="force-include"):
-        get_image_definition("runner")
+    """A wheel missing the force-included subset-build inputs must fail with an
+    actionable message naming ``_subset_build``, not a bare ``FileNotFoundError``
+    from deep inside the context copy."""
+    _simulate_wheel_install(
+        tmp_path,
+        monkeypatch,
+        dockerfiles=(f"{service}.Dockerfile",),
+        with_full_source=False,
+        with_siblings=False,
+    )
+    with pytest.raises(FileNotFoundError, match="_subset_build"):
+        get_image_definition(service)
 
 
 def test_core_stack_runner_context_assembles_on_a_wheel_install(
@@ -766,52 +737,19 @@ def test_core_stack_runner_context_assembles_on_a_wheel_install(
 
     This test must run INSIDE the wheel-install simulation. A plain equality
     assert in a source checkout cannot fail: there the builder returns the same
-    six strings in the same order as the literal the bug reintroduces, so both
-    sides match either way. Assembling under the patch is what actually gates
-    it — reverting ``core.py`` to its duplicated list makes this raise."""
+    strings in the same order as the literal the bug reintroduces, so both sides
+    match either way. Assembling under the patch is what actually gates it —
+    reverting ``core.py`` to its duplicated list makes this raise."""
     from tolokaforge.docker.stacks.core import core_stack
 
-    site_packages = tmp_path / "site-packages"
-    pkg = site_packages / "tolokaforge"
-    packaged = pkg / "_subset_build"
-    (packaged / "scripts" / "hatch").mkdir(parents=True)
-    for name in ("pyproject.toml", "README.md", "LICENSE"):
-        (packaged / name).write_text(f"# {name}\n")
-    (packaged / "scripts" / "hatch" / "hatch_runner_subset_builder.py").write_text("")
-    # The base wheel also ships tolokaforge_models sources for the
-    # in-container `hatchling build` step (Milestone 29 / ADR-0030).
-    (packaged / "tolokaforge_models" / "src" / "tolokaforge_models").mkdir(parents=True)
-    (packaged / "tolokaforge_models" / "pyproject.toml").write_text("# models pyproject\n")
-    # Same shape for tolokaforge_coding_harnesses (bundled INSIDE the base
-    # wheel on PyPI; source copy under _subset_build for in-container hatch).
-    (packaged / "tolokaforge_coding_harnesses" / "src" / "tolokaforge_coding_harnesses").mkdir(
-        parents=True
+    site_packages = _simulate_wheel_install(
+        tmp_path, monkeypatch, dockerfiles=("runner.Dockerfile",)
     )
-    (packaged / "tolokaforge_coding_harnesses" / "pyproject.toml").write_text(
-        "# coding-harnesses pyproject\n"
-    )
-    (pkg / "_python_version.txt").write_text("3.12\n")
-    dockerfiles = pkg / "docker" / "dockerfiles"
-    dockerfiles.mkdir(parents=True)
-    (dockerfiles / "runner.Dockerfile").write_text("FROM scratch\n")
-    monkeypatch.setattr("tolokaforge.docker.builder.repo_root", lambda: site_packages)
-    monkeypatch.setattr("tolokaforge.docker.builder.installed_package_dir", lambda: pkg)
 
     svc = core_stack().services["runner"]
     build_dir = assemble_build_context(site_packages, svc.dockerfile, svc.context_files)
     try:
-        for expected in (
-            "pyproject.toml",
-            "README.md",
-            "LICENSE",
-            ".python-version",
-            "scripts/hatch",
-            "tolokaforge",
-            "tolokaforge_models/pyproject.toml",
-            "tolokaforge_models/src/tolokaforge_models",
-            "tolokaforge_coding_harnesses/pyproject.toml",
-            "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses",
-        ):
+        for expected in _FULL_SOURCE_EXPECTED:
             assert (build_dir / expected).exists(), (
                 f"core_stack()'s runner context is missing '{expected}' on a wheel "
                 "install — the service stack is not using the builder's resolved list"
@@ -881,72 +819,9 @@ _FULL_SOURCE_EXPECTED = (
 )
 
 
-def test_grader_build_context_resolves_from_installed_wheel(tmp_path: Path, monkeypatch) -> None:
-    """On a wheel install the grader context must resolve to the PACKAGED
-    copies, not the repo-root paths.
-
-    grader shipped as a static definition reusing the runner's repo-relative
-    source set with no wheel-install remap, so forcing ``image_source=build``
-    on a wheel install ran ``hatchling build`` in a ``tolokaforge_models/``
-    directory with no ``pyproject.toml`` and died before the first trial
-    (#1738). grader compiles the same full source set as the runner, so it
-    lands exactly the inputs its Dockerfile COPYs."""
-    site_packages = _simulate_wheel_install(
-        tmp_path, monkeypatch, dockerfiles=("grader.Dockerfile",)
-    )
-
-    grader_def = get_image_definition("grader")
-    for entry in grader_def["context_files"]:
-        src = Path(entry[0] if isinstance(entry, tuple) else entry)
-        assert src.is_absolute() and src.exists(), f"missing wheel-install entry: {entry}"
-
-    build_dir = assemble_build_context(
-        site_packages, grader_def["dockerfile"], grader_def["context_files"]
-    )
-    try:
-        for expected in _FULL_SOURCE_EXPECTED:
-            assert (build_dir / expected).exists(), (
-                f"assembled grader context is missing '{expected}', which the "
-                "grader Dockerfile COPYs for its hatchling build stage"
-            )
-        assert (build_dir / ".python-version").read_text() == "3.12\n"
-        # The copied ``tolokaforge/`` package must NOT carry the base wheel's
-        # force-include outputs — grader rebuilds the base wheel with
-        # ``hatchling build --target wheel``, which re-creates them from the
-        # force-include table, and a stale copy makes the build die with
-        # "a second file is being added to the wheel archive at the same path".
-        assert not (build_dir / "tolokaforge" / "_subset_build").exists(), (
-            "force-include artifact tolokaforge/_subset_build leaked into the "
-            "assembled context — grader's base-wheel build will collide"
-        )
-        assert not (build_dir / "tolokaforge" / "_python_version.txt").exists(), (
-            "force-include artifact tolokaforge/_python_version.txt leaked into "
-            "the assembled context — grader's base-wheel build will collide"
-        )
-    finally:
-        shutil.rmtree(build_dir, ignore_errors=True)
-
-
-def test_grader_build_context_fails_loud_when_wheel_lacks_packaged_inputs(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A wheel missing the force-included subset-build inputs must fail with an
-    actionable message naming ``_subset_build``, not a bare error deep in the
-    context copy."""
-    _simulate_wheel_install(
-        tmp_path,
-        monkeypatch,
-        dockerfiles=("grader.Dockerfile",),
-        with_full_source=False,
-        with_siblings=False,
-    )
-    with pytest.raises(FileNotFoundError, match="_subset_build"):
-        get_image_definition("grader")
-
-
 def test_rag_build_context_resolves_from_installed_wheel(tmp_path: Path, monkeypatch) -> None:
     """On a wheel install the rag-service context must remap its two sibling
-    trees to the packaged ``_subset_build/`` copies (#1738).
+    trees to the packaged ``_subset_build/`` copies.
 
     rag-service's other inputs — the resolved wheel and
     ``tolokaforge/env/rag_service/`` — already survive a wheel install; only

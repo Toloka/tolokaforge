@@ -344,7 +344,7 @@ def _context_files_from_entries(entries: list[Any]) -> list[Any]:
     return [(str(e[0]), e[1]) if isinstance(e, tuple) else str(e) for e in entries]
 
 
-def _packaged_full_source_entries() -> list[Any]:
+def _packaged_full_source_entries(service: str) -> list[Any]:
     """Packaged ``_subset_build/`` copies of the full source set.
 
     The runner and grader Dockerfiles each run ``hatchling build`` in-container
@@ -353,7 +353,8 @@ def _packaged_full_source_entries() -> list[Any]:
     they share this mapping. Absolute entries are copied flat into the build
     dir, landing under exactly the basenames the ``COPY`` lines expect;
     ``.python-version`` is the one exception, shipped as ``_python_version.txt``
-    and remapped with an explicit destination.
+    and remapped with an explicit destination. *service* names the image in the
+    fail-loud message.
     """
     packaged = packaged_subset_build_dir()
     pkg_dir = installed_package_dir()
@@ -367,7 +368,7 @@ def _packaged_full_source_entries() -> list[Any]:
         packaged / "tolokaforge_models",
         packaged / "tolokaforge_coding_harnesses",
     ]
-    _require_context_entries_exist(entries, service="runner/grader")
+    _require_context_entries_exist(entries, service=service)
     return entries
 
 
@@ -402,7 +403,7 @@ def _runner_definition() -> dict[str, Any]:
         return dict(IMAGE_DEFINITIONS["runner"])
     return {
         **IMAGE_DEFINITIONS["runner"],
-        "context_files": _context_files_from_entries(_packaged_full_source_entries()),
+        "context_files": _context_files_from_entries(_packaged_full_source_entries("runner")),
     }
 
 
@@ -418,7 +419,7 @@ def _grader_definition() -> dict[str, Any]:
         return dict(IMAGE_DEFINITIONS["grader"])
     return {
         **IMAGE_DEFINITIONS["grader"],
-        "context_files": _context_files_from_entries(_packaged_full_source_entries()),
+        "context_files": _context_files_from_entries(_packaged_full_source_entries("grader")),
     }
 
 
