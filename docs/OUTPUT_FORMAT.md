@@ -1462,6 +1462,21 @@ stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). The judge'
 prose (`reasons`, each criterion's `justification`) is written as the judge
 produced it: a key-name rule has no key to read there.
 
+### Host grader state snapshots
+
+A host grader can attach `Grade.state_snapshots` (`GradingStateSnapshots`) to
+its result. The writer puts it in `grading_state_snapshots.yaml`, leaving it
+out of `grade.yaml`. Its schema is `schema_version: 1`, `source` (how the grader
+obtained the states), and three mappings: `initial`, `golden`, `final`. These
+are grader evidence and may be reconstructed by replay; they do not replace
+the live environment in `env.yaml` or select a comparison policy.
+
+The sidecar is written for both pass and fail grades, through the same mapping
+redaction policy as `env.yaml`, and named in the redaction stamp when rewritten.
+No sidecar is written when the grader provides none; regrading a directory
+without snapshots removes an older snapshot sidecar. Graders that raise before
+returning a grade do not yet persist these snapshots.
+
 ### Trace-check verdicts
 
 `trace_check_results` carries one entry per constraint in the decision set that
