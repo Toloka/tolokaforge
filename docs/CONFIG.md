@@ -316,6 +316,7 @@ models:
 ```
 
 Available overrides:
+- `api_call_timeout_s` (positive number) — per-call read/connect timeout for this model; use it to bound one judge attempt without changing other roles.
 - `dict_map_prompt_hints` (bool) — enables the `DictMapHints` prompt policy which appends explicit hints to the system prompt about dict-map parameters (`additionalProperties: {schema}`). When enabled together with `StrictSchema` (auto-enabled for GPT-5 models), both schema-level enriched descriptions AND system prompt hints are applied. Dict-map detection uses the shared `detect_dict_maps()` utility in [`tolokaforge/core/llm/dict_maps.py`](../tolokaforge/core/llm/dict_maps.py).
 - `supports_typed_dict_maps` (bool) — whether model handles typed dict-map schemas natively (without `StrictSchema` rewriting)
 - `supports_schema_extras` (bool) — whether model accepts `title`, `examples`, `minProperties`
