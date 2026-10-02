@@ -2215,6 +2215,14 @@ class RunnerGradingConfig(BaseModel):
     # error naming both the offending key and the registered set.
     grading_method: str | None = None
 
+    # Per-task configuration for the kind ``grading_method`` selects, passed
+    # through to its ``evaluate(kind_config=...)``. Loose ``dict[str, Any]``
+    # here because each kind declares and validates its own model — the
+    # terminal-bench adapter emits ``{"timeout_s": ...}`` for
+    # ``test_execution``, which ``TestExecutionKindConfig`` refuses unknown
+    # keys on. ``None`` leaves every kind on its own defaults.
+    grading_method_config: dict[str, Any] | None = None
+
     state_checks: RunnerStateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
     trace_checks: TraceChecksConfig | None = None

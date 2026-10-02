@@ -18,8 +18,13 @@ from tolokaforge.core.redaction import (
     RedactionStamp,
 )
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 6
+TRIAL_BUNDLE_SCHEMA_VERSION = 7
 """The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 7 bundles carry what became of the reasoning the run was billed for:
+``reasoning_recovered_by_fallback`` on ``metrics``, ``reasoning_channel_unknown``
+beside it, ``reasoning_replay_dropped``, and ``capture_only`` on any
+``StructuredReasoning`` a reader rather than a codec produced.
 
 Version 6 bundles stamp each ``usage.calls[*]`` record with the ``role`` of the
 actor whose loop issued the call and the ``model`` slug it was served by, so

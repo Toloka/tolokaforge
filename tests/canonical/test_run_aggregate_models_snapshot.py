@@ -287,7 +287,7 @@ def test_per_task_metrics_round_trip_with_every_outcome_class() -> None:
     # The round trip above holds with both fields typed ``str``, so it locks the
     # wire shape and not the vocabulary. These do the typing's own work.
     model = PerTaskMetrics.model_validate(payload)
-    assert [type(reason) for reason in model.infrastructure_aborts] == [TerminationReason] * 4
+    assert [type(reason) for reason in model.infrastructure_aborts] == [TerminationReason] * 5
     assert [type(row.outcome_class) for row in model.outcomes_by_reason.values()] == [
         TrialOutcomeClass
     ] * 4
@@ -955,3 +955,32 @@ def test_current_producer_output_matches_model_dump_byte_for_byte() -> None:
             f"AggregateMetrics(weighted={weighted}) JSON drift between dict and "
             f"model path.\nsource: {_canonical(agg_payload)}\nmodel:  {_canonical(dumped)}"
         )
+
+
+def test_the_aggregate_records_the_engine_version_that_produced_it() -> None:
+    """``aggregate.json`` carries the tolokaforge version.
+
+    A benchmark number is only reproducible against the code that made it.
+    This was the one component of a run the artifacts did not record, so
+    recovering it afterwards meant matching run dates against release dates
+    and picking between two candidates.
+    """
+    from tolokaforge.core.output.aggregate_models import _engine_version
+
+    version = _engine_version()
+    assert version
+    assert version != "unknown", (
+        "the engine version resolved to the not-installed fallback; in a "
+        "normal checkout it must come from the distribution metadata"
+    )
+
+    model = RunAggregate.model_validate(
+        {
+            "total_tasks": 1,
+            "total_trials": 1,
+            "measured_trials": 1,
+            "scored_trials": 1,
+            "tolokaforge_version": version,
+        }
+    )
+    assert model.model_dump(exclude_unset=True)["tolokaforge_version"] == version

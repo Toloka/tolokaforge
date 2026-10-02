@@ -62,7 +62,7 @@ from tolokaforge.core.llm.openrouter_headers import (
     is_openrouter_provider,
 )
 from tolokaforge.core.llm.params_policy import RuleAction
-from tolokaforge.core.llm.presets import build_capabilities
+from tolokaforge.core.llm.presets import build_capabilities, resolve_effective_preset
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.providers import (
     compile_rate_limit_patterns,
@@ -71,12 +71,17 @@ from tolokaforge.core.llm.providers import (
 )
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
+from tolokaforge.core.llm.reasoning_transport import (
+    PermissiveReasoningReader,
+    arriving_reasoning,
+)
 from tolokaforge.core.llm.session_header import session_header_conflict
 from tolokaforge.core.llm.usage import (
     CostSource,
     Usage,
     UsageExtractor,
     extract_openrouter_generation_id,
+    extract_upstream_provider,
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -584,6 +589,20 @@ def _litellm_response_cost(response: Any) -> float | None:
     return value if value > 0 else None
 
 
+#: ``provider/model`` pairs whose dropped-reasoning-replay warning has been
+#: emitted. Nothing reads it but the logger.
+_REPLAY_DROP_WARNED: set[str] = set()
+
+#: ``provider/model/upstream`` triples whose recovered-reasoning warning has
+#: been emitted. Keyed on the upstream too: one slug fans out across machines
+#: that disagree about where reasoning goes, so the same model is two claims.
+_RECOVERED_WARNED: set[str] = set()
+
+#: Reads any channel a provider uses, for when the preset's codec reads none
+#: of them. Stateless, so one instance serves every client.
+_PERMISSIVE_READER = PermissiveReasoningReader()
+
+
 class GenerationResult:
     """Result from LLM generation.
 
@@ -606,8 +625,21 @@ class GenerationResult:
         effective_system_prompt: str | None = None,
         openrouter_generation_id: str | None = None,
         finish_reason: str | None = None,
+        reasoning_recovered_by_fallback: bool = False,
+        reasoning_channel_unknown: bool = False,
+        reasoning_replay_dropped: bool = False,
     ):
         self.text = text
+        # Readable reasoning arrived in a channel this preset's codec does not
+        # read, and was kept by the permissive reader instead. Nothing was
+        # lost; the preset is routed too narrowly.
+        self.reasoning_recovered_by_fallback = reasoning_recovered_by_fallback
+        # The provider charged for reasoning and it arrived in no channel we
+        # know of. The only remaining way to actually lose it.
+        self.reasoning_channel_unknown = reasoning_channel_unknown
+        # The reasoning on an earlier turn of this request's history was
+        # extracted and then not replayed, so the model cannot see it.
+        self.reasoning_replay_dropped = reasoning_replay_dropped
         self.tool_calls = tool_calls or []
         # Full, normalised usage — default to the empty Usage() so callers
         # never have to None-check before reading prompt/completion counters.
@@ -1333,6 +1365,97 @@ class LLMClient:
     # Message conversion
     # ------------------------------------------------------------------
 
+    def _warn_reasoning_replay_dropped(self) -> None:
+        """Say once per run that this model's reasoning is not reaching it back.
+
+        Keyed on the model rather than held on the client: a client is built
+        per trial per role, so an instance flag still repeats the sentence once
+        per trial across a whole eval. Same idiom as
+        :data:`~tolokaforge.core.llm.litellm_params._LOGGED`.
+
+        Not an error, and expected on a whole class of runs: every OpenAI
+        preset reaches this line on every trial that reasons, because those
+        routes refuse an echoed payload and the codec is right to emit none.
+        Only a live probe tells that apart from the case that cost
+        ``moonshotai/kimi-k2.7-code`` half its score —
+        ``scripts/analysis/probe_reasoning_transport.py``.
+
+        The preset rides the line so the answer is one lookup away:
+        ``tests/canonical/test_reasoning_codec_preset_routing.py`` holds the
+        presets permitted to replay nothing, each with its reason. A preset
+        named here and absent there has not been decided about.
+        """
+        key = f"{self.provider}/{self.model_name}"
+        if key in _REPLAY_DROP_WARNED:
+            return
+        _REPLAY_DROP_WARNED.add(key)
+        self.logger.warning(
+            "Reasoning extracted from this model is not being replayed to it: "
+            "its codec returns no replay payload, so each turn reads a history "
+            "in which it never reasoned",
+            model=self.model_name,
+            preset=resolve_effective_preset(self.model_name, self.provider),
+            codec=type(self.capabilities.reasoning_codec).__name__,
+        )
+
+    def _warn_reasoning_recovered(self, arrived: Any, response: Any) -> None:
+        """Say once per model and upstream that a preset is reading too little.
+
+        Nothing was lost — the reasoning is on the trajectory either way. What
+        this reports is that the preset's codec does not read the channel this
+        route uses, which is a configuration fact worth fixing before the next
+        model lands on the same preset.
+
+        Keyed on the upstream as well as the model: OpenRouter resolves one
+        slug to different machines per request, and they do not agree about
+        where reasoning goes.
+        """
+        upstream = extract_upstream_provider(response) or "-"
+        key = f"{self.provider}/{self.model_name}/{upstream}"
+        if key in _RECOVERED_WARNED:
+            return
+        _RECOVERED_WARNED.add(key)
+        self.logger.warning(
+            "Reasoning arrived in a channel this model's codec does not read; "
+            "recovered it, but the preset is routed too narrowly",
+            model=self.model_name,
+            upstream=upstream,
+            preset=resolve_effective_preset(self.model_name, self.provider),
+            codec=type(self.capabilities.reasoning_codec).__name__,
+            arrived_in=list(arrived.readable),
+        )
+
+    def _reasoning_replay_dropped_for(self, messages: list[Message]) -> bool:
+        """Whether this history carries reasoning the codec will not send back.
+
+        Computed per call and returned, never stored: one ``LLMClient`` serves
+        every concurrent trial in a run, so a per-request fact parked on
+        ``self`` is read by whichever trial reaches the result first. Cheap —
+        ``encode_for_replay`` is a pure rebuild of a payload the caller is
+        about to build anyway.
+
+        ``capture_only`` reasoning is skipped: a reader produced it, no codec
+        promised to encode it, and it was never going to be sent back. Counting
+        it would warn about the recovery that kept it.
+
+        ``is_empty`` is the load-bearing guard. A codec can return a
+        :class:`StructuredReasoning` carrying no text — Gemini builds one from
+        a summary-only response, and again from OpenRouter's no-real-thinking
+        placeholder — and then emit ``{}`` for it. Nothing was lost there, and
+        counting it would put a warning on the routes this engine classifies as
+        having nothing to keep.
+        """
+        codec = self.capabilities.reasoning_codec
+        for msg in messages:
+            if msg.role != MessageRole.ASSISTANT or msg.reasoning is None:
+                continue
+            if msg.reasoning.is_empty() or msg.reasoning.capture_only:
+                continue
+            if not codec.encode_for_replay(msg.reasoning):
+                self._warn_reasoning_replay_dropped()
+                return True
+        return False
+
     def _convert_messages(
         self,
         system: str | list[dict[str, Any]] | None,
@@ -1421,7 +1544,11 @@ class LLMClient:
             # P4b — splice reasoning-codec replay payload (e.g. Anthropic
             # ``thinking_blocks``) onto assistant dicts. Zero provider-specific
             # branching: the codec Protocol is the only abstraction.
-            if msg.role == MessageRole.ASSISTANT and msg.reasoning is not None:
+            if (
+                msg.role == MessageRole.ASSISTANT
+                and msg.reasoning is not None
+                and not msg.reasoning.capture_only
+            ):
                 replay_payload = self.capabilities.reasoning_codec.encode_for_replay(msg.reasoning)
                 if replay_payload:
                     litellm_msg.update(replay_payload)
@@ -1785,6 +1912,7 @@ class LLMClient:
             max_tokens=max_tokens,
             session_id=session_id,
         )
+        reasoning_replay_dropped = self._reasoning_replay_dropped_for(messages)
         start_time = time.time()
         response = self._call_with_key_rotation(kwargs)
         latency = time.time() - start_time
@@ -1806,6 +1934,7 @@ class LLMClient:
             latency_s=latency,
             sanitized_tools=sanitized_tools,
             role=role,
+            reasoning_replay_dropped=reasoning_replay_dropped,
         )
 
     # ------------------------------------------------------------------
@@ -2333,6 +2462,7 @@ class LLMClient:
         latency_s: float,
         sanitized_tools: list[dict[str, Any]] | None = None,
         role: LLMCallRole = "agent",
+        reasoning_replay_dropped: bool = False,
     ) -> GenerationResult:
         """Convert a raw litellm response into a :class:`GenerationResult`.
 
@@ -2363,6 +2493,23 @@ class LLMClient:
         tool_calls: list[ToolCall] = []
 
         reasoning_result = self.capabilities.reasoning_codec.extract(message)
+        arrived = arriving_reasoning(message)
+        recovered_by_fallback = False
+        # ``is None``, not ``is_empty()``: a codec that returned an object owns
+        # the result, including one carrying no text. Gemini builds exactly that
+        # from an encrypted-only envelope, and its blocks hold the
+        # ``encrypted_data`` and the ``id`` ↔ ``tool_call.id`` binding the next
+        # turn needs. Replacing it with text read from the mirror field would
+        # trade a payload replay depends on for one that cannot be replayed.
+        if arrived.readable and reasoning_result is None:
+            # The provider sent deliberation this preset's codec does not read.
+            # Keep it: the result is marked ``capture_only`` and the replay
+            # splice skips it, so the only alternative is dropping text we were
+            # already billed for.
+            reasoning_result = _PERMISSIVE_READER.extract(message)
+            if reasoning_result is not None:
+                recovered_by_fallback = True
+                self._warn_reasoning_recovered(arrived, response)
 
         # Build per-tool root-level parameter type maps once per call so the
         # response policy's schema-aware coercions (currently: empty-container
@@ -2460,6 +2607,13 @@ class LLMClient:
             # that returned no usage block contributes no call record, and the
             # routing decision is still worth recording for that turn.
             openrouter_generation_id=extract_openrouter_generation_id(response),
+            reasoning_recovered_by_fallback=recovered_by_fallback,
+            # Deliberately not "billed and nothing extracted": that is true of
+            # every encrypted-only call, where keeping nothing is correct, so
+            # it fired loudest on the presets that were right. A channel we do
+            # not know about is the one case the enumeration cannot reach.
+            reasoning_channel_unknown=(usage.reasoning_tokens > 0 and not arrived.anything),
+            reasoning_replay_dropped=reasoning_replay_dropped,
             # litellm post-maps every current provider's max-tokens truncation
             # to the OpenAI-compatible ``"length"`` on this field; a response
             # that carries no finish_reason at all lands as ``None``.

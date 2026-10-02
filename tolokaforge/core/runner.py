@@ -532,6 +532,8 @@ class TrialRunner:
                             max_turns=self.max_turns,
                             episode_timeout_s=self.episode_timeout_s,
                             empty_retry_count=capabilities.empty_retry_count,
+                            reasoning_stall_retry_count=capabilities.reasoning_stall_retry_count,
+                            reasoning_stall_turn_limit=capabilities.reasoning_stall_turn_limit,
                             output_length_retry_count=capabilities.output_length_retry_count,
                             parser_error_retry_count=capabilities.parser_error_retry_count,
                             tool_output_max_chars=capabilities.tool_output_max_chars,
@@ -2227,6 +2229,15 @@ class _TrialMetricsSink(MetricsSink):
         # calls did.
         if result.cost_cache_rate_fallback:
             self._metrics.cost_cache_rate_fallback = True
+        if result.reasoning_recovered_by_fallback:
+            self._metrics.reasoning_recovered_by_fallback += 1
+        if result.reasoning_channel_unknown:
+            self._metrics.reasoning_channel_unknown += 1
+        # Sticky for the same reason the cache-rate flag is: once a codec
+        # declines to replay, it declines on every turn, so a count would only
+        # restate the turn count.
+        if result.reasoning_replay_dropped:
+            self._metrics.reasoning_replay_dropped = True
         self._last_prompt_tokens = result.usage.prompt_tokens
         self._events.trial_progress(
             trial_id=self._trial_id,

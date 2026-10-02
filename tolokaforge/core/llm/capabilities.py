@@ -126,6 +126,42 @@ class ModelCapabilities:
     every resampled generation because the trial paid for each call.
     """
 
+    reasoning_stall_retry_count: int = 1
+    """Resample budget for an actionless turn the model deliberated before.
+
+    The actionless shape of :attr:`empty_retry_count`, but with reasoning
+    tokens billed or ``finish_reason == "length"`` — whether the model was cut
+    off mid-thought at the output ceiling or stopped of its own accord after a
+    short deliberation. On the ``(N + 1)``-th such result the trial terminates
+    with ``TerminationReason.REASONING_WITHOUT_ACTION``.
+
+    The default is ``1`` rather than ``0`` because, unlike an empty completion,
+    the evidence is positive: the provider billed output tokens, so there is a
+    next sample worth drawing. One resample costs a fraction of the trial it
+    saves — the whole trajectory's spend is forfeit when a stall ends a trial —
+    and a model that never stalls never pays it.
+    """
+
+    reasoning_stall_turn_limit: int = 0
+    """Consecutive stalling turns before the trial is ended, or 0 to not end it.
+
+    Counts only turns the typed reasoning-stall predicate fired on, which is
+    what separates it from the bare "N tool-call-free turns" heuristic ADR-0035
+    measured and rejected: a turn of ordinary closing prose does not count.
+
+    The default is 0 because the threshold is the part that needs evidence, and
+    the first evidence says no threshold is safe yet. Ten trials of
+    ``openai/gpt-oss-120b`` on terminal-bench, 2026-10-01: trials that went on
+    to be measured reached runs of 1 (x10), 2 (x4), 3 (x2), 4 (x2) and 5 (x1)
+    consecutive stalling turns. A limit of 3 — the figure
+    ``docs/GEMINI_QUIRKS.md`` 3.1 uses for the Gemini runaway — would have
+    ended five healthy trials there.
+
+    ADR-0035's defect was a threshold nobody checked against real trajectories.
+    The counter and its logging ship so the distribution can be gathered at
+    scale; the number waits for data that separates a stall from a slow turn.
+    """
+
     output_length_retry_count: int = 0
     """Resample budget for a content-carrying max-tokens truncation.
 
@@ -201,6 +237,20 @@ class ModelCapabilities:
     ``OrchestratorConfig.max_turns`` still ceilings the resolved value.
     ``None`` (the default) leaves the engine-wide fallback in place — every
     preset that does not name the key inherits it.
+    """
+
+    default_agent_prompt_contract: str | None = None
+    """Preset-level reply contract for a task the agent works on its own.
+
+    Names a shipped contract in
+    :data:`~tolokaforge.core.agent_prompt_contract.CONTRACTS`, or a path
+    resolved against the task directory. It reaches the prompt only when
+    ``TaskConfig.interaction_mode`` is ``agent_only``: the contract says a
+    message carrying no tool call ends the task, which holds under that mode
+    and nowhere else. It is the lowest-priority source —
+    ``TaskConfig.agent_prompt_contract`` names a contract over it, and an
+    inline ``policies["agent_system_prompt"]`` replaces the prompt entirely.
+    ``None`` (the default) leaves a solo task on the authoring chain alone.
     """
 
     max_context_tokens: int | None = None

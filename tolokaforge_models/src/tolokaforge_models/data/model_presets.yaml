@@ -466,16 +466,24 @@ presets:
     reasoning_codec: openai_summary_replay
 
   xai_grok:
+    # The ``*/`` variants carry the ``openrouter/x-ai/…`` spelling a run config
+    # writes. Without them the vendor-anchored globs match only the bare name
+    # and the prefixed one falls through to ``default`` — passthrough schema,
+    # no response policy, no reasoning codec — with nothing raised.
     match:
       - "x-ai/*"
       - "xai/*"
-      - "grok*"
       - "*/x-ai/*"
       - "*/xai/*"
+      - "grok*"
       - "*/grok*"
     schema_sanitizer: strict
     response_policy: array_dict_map
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30,
+    # grok-4.3 returns readable reasoning that was extracted and never
+    # replayed. Siblings that emit only a ``reasoning.encrypted`` blob
+    # (grok-4.5) are unaffected — there is nothing readable to carry.
+    reasoning_codec: openai_summary_replay
 
   # qwen/qwen3.8-max — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #845). Declared BEFORE the generic
@@ -517,13 +525,16 @@ presets:
     # ``json_coerce`` recovers the stringified-JSON failure mode.
     match:
       - "qwen/*"
-      - "qwen3*"
       - "*/qwen/*"
+      - "qwen3*"
       - "*/qwen3*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30,
+    # qwen3.6-plus on Alibaba returns readable reasoning the parent codec
+    # extracts and then declines to replay.
+    reasoning_codec: openai_summary_replay
 
   # deepseek/deepseek-v4-flash-0731 — model-specific overlay landed via
   # auto-resolve (Slack-requested integration, PR #846). Declared BEFORE the
@@ -708,7 +719,15 @@ presets:
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: these routes answer in
+    # the reasoning channel and the parent codec's ``encode_for_replay``
+    # returns ``{}``, so the note never rides the next request and the model
+    # reads a history in which it never reasoned. Probed 2026-09-30
+    # (``scripts/analysis/probe_reasoning_transport.py``): deepseek-v4-pro,
+    # mimo-v2.5-pro, nemotron-3-super and nemotron-3-ultra each returned
+    # readable reasoning in ``reasoning_content`` / ``reasoning_details``,
+    # extracted fine, replayed nothing.
+    reasoning_codec: openai_summary_replay
 
   # moonshotai/kimi-k2 (K2.6, K2.7-code, …) — the wire-shape recovery the
   # ``openrouter_dict_stringify_recovery`` preset gives the rest of its
@@ -751,6 +770,25 @@ presets:
   # trajectories only, since a median trial never approaches it. Same
   # posture as the K3 sibling, which caps at 128 K on a 1 M-window model.
   #
+  # ``reasoning_codec: openai_summary_replay`` because this line puts its
+  # whole deliberation in the reasoning channel and none of it in
+  # ``content``. Live capture 2026-09-29, one bash tool, both on Moonshot
+  # direct and on a fan-out mirror: ``content`` comes back ``null`` (litellm
+  # normalises it to ``" "``) while ``reasoning`` / ``reasoning_details``
+  # carry the note. The parent ``openai`` codec extracts that correctly but
+  # its ``encode_for_replay`` returns ``{}``, so the note is never echoed on
+  # the next request and the model reads a history in which it has never
+  # reasoned. It then reasons far less: on the 2026-09-25 ten-task sweep
+  # (50 trials) every turn-1 call carried reasoning and only 15-34% of later
+  # turns did, 28.5% of 2,241 calls overall; on a three-task run over two
+  # fan-out mirrors it fell to 2.7% of 411 calls, against 98.2% of 277 once
+  # the note was replayed. A controlled A/B on a two-turn exchange, 3 samples
+  # per cell,
+  # moves turn-2 reasoning from 1.0 tokens without the echo to 12-19 with
+  # it. ``openai_summary_replay`` is the parent plus an ``encode_for_replay``
+  # that rebuilds the ``reasoning.text`` envelope, which is the shape this
+  # route emits.
+  #
   # NOT opted in here, deliberately: the ``openrouter_defaults`` Moonshot
   # pin. K3 pairs that pin with an empty-assistant filler because Moonshot
   # direct rejects empty-content assistant turns; pinning K2.x without a
@@ -764,7 +802,7 @@ presets:
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
-    reasoning_codec: openai
+    reasoning_codec: openai_summary_replay
     default_max_turns: 90
     empty_retry_count: 1
     max_context_tokens: 120000
@@ -857,6 +895,12 @@ presets:
   # ~6 % headroom — enough for a normal-sized reasoning turn plus its
   # tool-call reply. See ``docs/LLM_LAYER.md § Context-window handoff``.
   moonshot_kimi_k3:
+    # ``reasoning_codec`` was unset (→ ``NoReasoningCodec``) while the route
+    # returns readable reasoning on every turn: probed 2026-09-30 on
+    # InferenceNet, ``reasoning_content`` / ``reasoning_details`` populated and
+    # nothing extracted. Same loss its K2 sibling was measured losing half a
+    # Terminal-Bench score to, one step earlier in the path.
+    reasoning_codec: openai_summary_replay
     match:
       - "moonshotai/kimi-k3*"
       - "*kimi-k3*"
@@ -906,7 +950,9 @@ presets:
       - "*/thinkingmachines/inkling*"
     schema_sanitizer: passthrough
     prompt_policy: dict_map_hints_ref
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: probed 2026-09-30 on
+    # Together, readable reasoning extracted and never replayed.
+    reasoning_codec: openai_summary_replay
 
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
@@ -932,6 +978,11 @@ presets:
     content_policy: nova
     response_policy: unwrap_input
     message_assembly_policy: nova
+    # Stated rather than inherited. Not probed — the Bedrock route is not
+    # reachable from this account, so `none` is what we can defend, not what
+    # we measured. See the allow-list in
+    # tests/canonical/test_reasoning_codec_preset_routing.py.
+    reasoning_codec: none
 
   # Amazon Nova via OpenRouter arrives org-prefixed as ``amazon/nova-*``
   # (e.g. ``amazon/nova-2-lite-v1``) with provider ``openrouter``, which
@@ -952,6 +1003,9 @@ presets:
     content_policy: nova
     response_policy: standard
     message_assembly_policy: nova
+    # Stated rather than inherited. Not probed — the OpenRouter nova slug
+    # 404s from this account.
+    reasoning_codec: none
 
   # google/gemini-3.5-flash — model-specific overlay landed via
   # auto-resolve (Slack-requested integration, PR #560). Declared BEFORE the
@@ -1103,7 +1157,11 @@ presets:
     match:
       - "openai/gpt-oss*"
       - "*gpt-oss*"
-    reasoning_codec: openai
+    # ``openai_summary_replay`` rather than ``openai``: the name is OpenAI's
+    # but the route is not — probed 2026-09-30 on AkashML, readable reasoning
+    # extracted and never replayed. The parent codec's empty replay is a
+    # statement about OpenAI's own endpoints, not about this lineage.
+    reasoning_codec: openai_summary_replay
 
   # Gemma 4 (Google open-weights via OpenRouter) — NOT the Gemini API line
   # (no reasoning_details envelope), so it borrows the Gemini *schema*
@@ -1117,6 +1175,10 @@ presets:
       - "*/google/gemma*"
     schema_sanitizer: gemini
     response_policy: array_dict_map
+    # Stated rather than inherited: Gemma is the open-weights line with no
+    # reasoning surface at all, unlike the Gemini line whose schema
+    # sanitizer it borrows.
+    reasoning_codec: none
 
   # MiniMax-M3 (MiniMax via OpenRouter): reasoning model on the M-series
   # 1M-context line. The ``openai`` reasoning codec surfaces the
@@ -1190,6 +1252,20 @@ presets:
       - "*/o3-pro*"
       - "*/o3-deep-research*"
       - "*/o4-mini*"
+    # ``openai`` rather than the silent default this preset carried. Probed
+    # 2026-10-02 via OpenRouter, five samples: ``openai/o3`` returned an
+    # encrypted-only blob every time, and ``openai/o4-mini`` returned one with
+    # readable ``reasoning_content`` / ``reasoning_details`` once in five — the
+    # route fans out and the arrival channel is not stable. ``NoReasoningCodec``
+    # drops that readable case on the floor, which is the shape that cost
+    # kimi-k2.7-code half its score; this codec extracts it when it arrives and
+    # costs nothing on the encrypted samples, where it extracts nothing.
+    #
+    # Replay still emits nothing, so this preset stays on the non-replaying
+    # allow-list in tests/canonical/test_reasoning_codec_preset_routing.py —
+    # OpenAI refuses echoed reasoning, the constraint its gpt5/gpt6 siblings
+    # already record.
+    reasoning_codec: openai
     params:
       supports_sampling_params: false
 

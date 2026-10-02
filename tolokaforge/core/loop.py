@@ -10,14 +10,21 @@ timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
 *policy* decision to pluggable seams. The engine consumes three wire-shape
 observations directly: the provider-shaped *empty completion* —
-``result.text == "" and not result.tool_calls`` — resamples up to
-``LoopConfig.empty_retry_count`` times without appending the empty assistant
-message, and on the ``(N + 1)``-th empty result terminates the trial with
-:attr:`TerminationReason.EMPTY_COMPLETION` (the Gemini-legal-tail invariant is
-preserved end-to-end because the empty message is never appended — appending
-it would send a request whose tail is an empty ``role=model`` turn on the
-next iteration and providers such as Gemini reject that as an API error
-rather than pass it through); the content-carrying *max-tokens truncation* —
+``result.text == "" and not result.tool_calls``, with no reasoning billed and
+no reasoning billed — resamples up to ``LoopConfig.empty_retry_count`` times
+without appending the empty assistant message, and on the ``(N + 1)``-th empty
+result terminates the trial with :attr:`TerminationReason.EMPTY_COMPLETION`
+(the Gemini-legal-tail invariant is preserved end-to-end because the empty
+message is never appended — appending it would send a request whose tail is an
+empty ``role=model`` turn on the next iteration and providers such as Gemini
+reject that as an API error rather than pass it through); the *reasoning
+without action* — the same actionless shape, but with reasoning tokens billed
+or ``finish_reason == "length"``, covering both a model cut off mid-thought at
+the ceiling and one that deliberated briefly and then returned nothing —
+resamples with a ``role=user`` feedback turn under
+``LoopConfig.reasoning_stall_retry_count`` and terminates with
+:attr:`TerminationReason.REASONING_WITHOUT_ACTION`, carrying the
+``finish_reason`` and token counts it was read from; the content-carrying *max-tokens truncation* —
 ``result.finish_reason == "length"`` on a content-carrying result —
 resamples with a ``role=user`` feedback turn under
 ``LoopConfig.output_length_retry_count`` before falling through to
@@ -183,6 +190,8 @@ class LoopConfig:
     api_error_retries: int = 1
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
+    reasoning_stall_retry_count: int = 1
+    reasoning_stall_turn_limit: int = 0
     output_length_retry_count: int = 0
     parser_error_retry_count: int = 0
     tool_output_max_chars: int | None = None
@@ -629,6 +638,51 @@ so no classifier decision carries its evidence.
 """
 
 
+def _is_reasoning_only(result: Any) -> bool:
+    """Whether an actionless result is one the model deliberated before.
+
+    Two shapes reach here and both are worth another sample, because the
+    provider billed output tokens either way:
+
+    * the model spent its whole budget thinking and was cut off before it
+      could act — ``finish_reason == "length"``, reasoning filling the
+      completion;
+    * the model deliberated briefly and then returned nothing of its own
+      accord — ``finish_reason == "stop"`` with a few hundred reasoning
+      tokens and no text.
+
+    Hence both signals rather than either alone. A result carrying neither is
+    one the provider returned nothing for, where resampling buys nothing.
+
+    The reason this is a predicate and not an inferred cause: naming the
+    second shape "budget exhausted" would be false, and the counts that tell
+    the two apart are recorded on the terminal evidence instead.
+    """
+    if result.finish_reason == "length":
+        return True
+    usage = getattr(result, "usage", None)
+    return bool(usage is not None and usage.reasoning_tokens)
+
+
+def _reasoning_stall_evidence(result: Any) -> str:
+    """What was actually observed, in the terms the next reader will need.
+
+    Spelled out rather than asserted because the same observation was once
+    reported as "the model returned an empty completion", which named the
+    wrong party and cost an investigation to correct. ``finish_reason`` and
+    the token split are what separate a truncation at the ceiling from a model
+    that stopped early, so both ride the evidence.
+    """
+    usage = getattr(result, "usage", None)
+    reasoning_tokens = usage.reasoning_tokens if usage is not None else 0
+    completion_tokens = usage.completion_tokens if usage is not None else 0
+    return (
+        f"GenerationResult with no text and no tool calls after "
+        f"{completion_tokens} completion tokens, {reasoning_tokens} of them reasoning "
+        f"(finish_reason={result.finish_reason!r}), after the resample budget"
+    )
+
+
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
@@ -963,6 +1017,17 @@ class ToolCallingLoop:
     # two paths that can reach such a reason — the classifier's decision and the
     # empty-completion observation — and read once, into ``LoopOutcome``.
     _excluding_reason_evidence: str | None = field(default=None, init=False)
+    _consecutive_stall_turns: int = field(default=0, init=False)
+    """Unbroken run of turns that each stalled on reasoning and then recovered.
+
+    Cross-turn because the resample budgets are not: they are per-turn locals
+    re-zeroed every turn, so a model that stalls once per turn, every turn,
+    exhausts nothing and the shape is invisible from inside a single turn.
+
+    Counts recoveries, not deaths — a turn whose stall outlives its resample
+    ends the trial before reaching here. So this is the "limping along" signal:
+    a model paying for deliberation every turn and still moving.
+    """
     # Wire message list sent to the provider. Distinct from the caller-owned
     # ``messages`` (which becomes ``Trajectory.messages``) so a summarize event
     # can rewrite the wire view while the recorded history keeps the full
@@ -994,6 +1059,7 @@ class ToolCallingLoop:
         termination_reason: TerminationReason | None = None
         self._wire_messages = self._read_as_agent(messages)
         self._excluding_reason_evidence = None
+        self._consecutive_stall_turns = 0
 
         for turn in range(self.config.max_turns):
             outcome = self._attempt_turn(turn, system_prompt, messages, start_time)
@@ -1132,10 +1198,21 @@ class ToolCallingLoop:
 
         empty_attempts = 0
         output_length_attempts = 0
+        reasoning_stall_attempts = 0
         parser_error_attempts = 0
+        # Set by the reasoning-stall branch for the one resample that follows
+        # it, and cleared as soon as that call is made: the suppression is a
+        # way out of a stall, not a standing change to what the model sees.
+        suppress_replay = False
+        stalled_this_turn = False
         while True:
+            # Cleared before the call, not after: a raise here is still the
+            # one resample the suppression was for, and leaving the flag set
+            # would silently suppress replay on the following turn instead.
+            replay_reasoning = not suppress_replay
+            suppress_replay = False
             try:
-                result = self._generate(turn, system_prompt)
+                result = self._generate(turn, system_prompt, replay_reasoning=replay_reasoning)
             except litellm.exceptions.ContextWindowExceededError:
                 reactive_decision = self._maybe_reactive_summarize(turn, system_prompt, messages)
                 if reactive_decision is not None:
@@ -1216,6 +1293,53 @@ class ToolCallingLoop:
                     continue
                 break
 
+            if _is_reasoning_only(result):
+                # The same truncation that arrives with a token of text falls
+                # through to ``break`` above and the trial carries on. Arriving
+                # without one is the worse case, so it gets the same resample
+                # the content-carrying path has rather than ending the trial.
+                stalled_this_turn = True
+                if reasoning_stall_attempts < self.config.reasoning_stall_retry_count:
+                    reasoning_stall_attempts += 1
+                    suppress_replay = True
+                    self._append_both(
+                        messages,
+                        Message(
+                            role=MessageRole.USER,
+                            content=(
+                                "The previous response contained reasoning but no action. "
+                                "Keep deliberation short and reply with a tool call."
+                            ),
+                            ts=_now(),
+                        ),
+                    )
+                    self.logger.info(
+                        "Resampling after reasoning-only truncation",
+                        turn=turn,
+                        attempt=reasoning_stall_attempts,
+                        max_attempts=self.config.reasoning_stall_retry_count + 1,
+                        reasoning_tokens=(
+                            result.usage.reasoning_tokens if result.usage is not None else 0
+                        ),
+                        finish_reason=result.finish_reason,
+                        replaying_reasoning=False,
+                    )
+                    continue
+
+                self._append_both(
+                    messages,
+                    self._system_message(
+                        "Model returned reasoning but no text and no tool call; trial "
+                        "terminated to keep the next request provider-legal."
+                    ),
+                )
+                self._excluding_reason_evidence = _reasoning_stall_evidence(result)
+                return (
+                    TrialStatus.FAILED,
+                    TerminationReason.REASONING_WITHOUT_ACTION,
+                    True,
+                )
+
             if empty_attempts >= self.config.empty_retry_count:
                 self._append_both(
                     messages,
@@ -1235,6 +1359,19 @@ class ToolCallingLoop:
                 max_attempts=self.config.empty_retry_count + 1,
             )
 
+        # The turn produced an action. Fold it into the cross-turn count before
+        # anything else reads it: a run of stalling turns is only interesting
+        # while it is unbroken, and a productive turn breaks it.
+        if stalled_this_turn:
+            self._consecutive_stall_turns += 1
+            self.logger.info(
+                "Turn recovered from a reasoning-only stall",
+                turn=turn,
+                consecutive_stall_turns=self._consecutive_stall_turns,
+            )
+        else:
+            self._consecutive_stall_turns = 0
+
         self._append_both(messages, self._assistant_message(result))
         if self.observer is not None:
             ended_at = messages[-1].ts or _now()
@@ -1245,6 +1382,30 @@ class ToolCallingLoop:
                 result=result,
                 started_at=ended_at - timedelta(seconds=max(0.0, result.latency_s or 0.0)),
                 ended_at=ended_at,
+            )
+
+        # Checked after the turn is recorded, not at the point the counter
+        # moved. This turn produced an action — ``record_generation`` has
+        # already counted it — so returning before the append would leave the
+        # bundle with a generation in its metrics and no message to match.
+        limit = self.config.reasoning_stall_turn_limit
+        if stalled_this_turn and limit and self._consecutive_stall_turns >= limit:
+            self._append_both(
+                messages,
+                self._system_message(
+                    f"Model stalled on reasoning in {self._consecutive_stall_turns} "
+                    "consecutive turns; trial terminated."
+                ),
+            )
+            self._excluding_reason_evidence = (
+                f"{self._consecutive_stall_turns} consecutive turns each contained a "
+                f"generation with no text and no tool calls that billed reasoning "
+                f"tokens, against a limit of {limit}"
+            )
+            return (
+                TrialStatus.FAILED,
+                TerminationReason.REASONING_WITHOUT_ACTION,
+                True,
             )
 
         decision = self.should_terminate(result, turn, messages)
@@ -1356,13 +1517,33 @@ class ToolCallingLoop:
         messages.append(marker)
         return None
 
-    def _generate(self, turn: int, system_prompt: str) -> GenerationResult:
+    def _generate(
+        self, turn: int, system_prompt: str, *, replay_reasoning: bool = True
+    ) -> GenerationResult:
+        """One agent call. ``replay_reasoning=False`` sends the history with the
+        model's own prior deliberation stripped off the wire.
+
+        A resample that replays the reasoning which just produced an actionless
+        turn is close to re-rolling the same dice, and measurably behaves like
+        it. Only the wire copy is stripped — the recorded messages the grader
+        reads keep their reasoning, so nothing leaves the trajectory.
+        """
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
             self.request_limiter.acquire()
+        wire = self._wire_messages
+        if not replay_reasoning:
+            wire = [
+                (
+                    m.model_copy(update={"reasoning": None})
+                    if m.role == MessageRole.ASSISTANT and m.reasoning is not None
+                    else m
+                )
+                for m in wire
+            ]
         return self.llm_client.generate(
             system=system_prompt,
-            messages=self._wire_messages,
+            messages=wire,
             tools=self.tool_schemas,
             tool_choice="auto",
             observation=self.call_observation,

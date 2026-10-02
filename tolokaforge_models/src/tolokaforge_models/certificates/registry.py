@@ -94,6 +94,11 @@ _ALL: list[MC] = [
                 C.PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30: no reasoning surfaced at all on a tool-calling turn"
+            ),
+        },
     ),
     MC(
         model_id="openrouter__openai_gpt-5.5",
@@ -131,6 +136,11 @@ _ALL: list[MC] = [
                 C.PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30: reasoning arrives only as an opaque reasoning.encrypted blob, and OpenAI refuses echoed reasoning on the next turn"
+            ),
+        },
     ),
     # -----------------------------------------------------------------
     # OpenAI GPT-5.6 family (Terra + Sol tiers) — routed through the same
@@ -223,6 +233,11 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30: reasoning arrives only as an opaque reasoning.encrypted blob, and OpenAI refuses echoed reasoning on the next turn"
+            ),
+        },
     ),
     MC(
         model_id="openrouter__openai_gpt-5.6-sol",
@@ -259,6 +274,11 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30: reasoning arrives only as an opaque reasoning.encrypted blob, and OpenAI refuses echoed reasoning on the next turn"
+            ),
+        },
     ),
     # -----------------------------------------------------------------
     # OpenAI GPT-6 Astra (``openai/gpt-6-astra``, listed on OpenRouter
@@ -333,6 +353,11 @@ _ALL: list[MC] = [
                 C.RECURSIVE_REF_TOOL_CALL,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30: no reasoning surfaced at all on a tool-calling turn"
+            ),
+        },
     ),
     # -----------------------------------------------------------------
     # Anthropic Claude family — structured thinking blocks + ephemeral
@@ -720,6 +745,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -744,7 +770,6 @@ _ALL: list[MC] = [
             {
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 C.PROMPT_CACHING,
                 # No implicit upstream cache surfaced on the OpenRouter
                 # qwen/* routes.
@@ -956,6 +981,11 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "deprecated upstream (OpenRouter 404s the slug), so unprobeable; inherited from the sibling and not re-tested"
+            ),
+        },
     ),
     # Grok-4.3 routes through the same ``xai_grok`` preset as Grok-4
     # (strict schema sanitiser + array_dict_map response policy +
@@ -1044,6 +1074,11 @@ _ALL: list[MC] = [
                 C.RE2_PATTERN_TOLERANCE,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30 on xAI: readable on one call and reasoning.encrypted on another, so the round-trip is not dependable enough to require"
+            ),
+        },
     ),
     # Grok-4.5 — xAI's successor to the 4.x line, routed through the same
     # ``xai_grok`` preset as grok-4 / grok-4.3 (strict schema sanitiser +
@@ -1113,6 +1148,11 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30 on xAI: reasoning arrives only as an opaque reasoning.encrypted blob"
+            ),
+        },
     ),
     # Grok-4.6 — landed via auto-resolve (Slack-requested integration,
     # PR #1161). It does NOT route through the shared ``xai_grok`` preset its
@@ -1297,6 +1337,11 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30 on Google: reasoning arrives only as an opaque reasoning.encrypted blob, which the gemini codec round-trips without exposing text"
+            ),
+        },
     ),
     # -----------------------------------------------------------------
     # Gemini 3.5 Flash — GA Flash-tier successor to 3-flash-preview.
@@ -1393,6 +1438,11 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30 on Google: reasoning arrives only as an opaque reasoning.encrypted blob, which the gemini codec round-trips without exposing text"
+            ),
+        },
     ),
     # -----------------------------------------------------------------
     # Gemini 3.6 Flash - certified via the auto-resolve integration
@@ -1555,6 +1605,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -1578,7 +1629,6 @@ _ALL: list[MC] = [
                 C.DECIMAL_FIELD_TOOL_CALL,
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
                 # Kimi K2.6 emits the discriminated-union arg shape
@@ -1613,6 +1663,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -1636,7 +1687,6 @@ _ALL: list[MC] = [
                 C.DECIMAL_FIELD_TOOL_CALL,
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
                 # kimi-k2.6 emits the discriminated-union arg shape correctly as
@@ -1669,6 +1719,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -1705,7 +1756,6 @@ _ALL: list[MC] = [
                 # in ``required`` above.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 C.PROMPT_CACHING,
             }
         ),
@@ -1717,6 +1767,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -1741,7 +1792,6 @@ _ALL: list[MC] = [
                 C.DECIMAL_FIELD_TOOL_CALL,
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 C.PROMPT_CACHING,
                 # DeepSeek's OpenRouter route caches statistically in
                 # aggregate (~80% cache hits over many large-prompt
@@ -2014,6 +2064,11 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        known_unsupported_reasons={
+            C.UNSIGNED_THINKING_REPLAY: (
+                "probed 2026-09-30 on SiliconFlow: no reasoning surfaced at all"
+            ),
+        },
     ),
     MC(
         model_id="openrouter__xiaomi_mimo-v2.5-pro",
@@ -2022,6 +2077,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -2055,7 +2111,6 @@ _ALL: list[MC] = [
                 C.DECIMAL_FIELD_TOOL_CALL,
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 C.PROMPT_CACHING,
             }
         ),
@@ -2464,6 +2519,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -2491,7 +2547,6 @@ _ALL: list[MC] = [
                 # not reliable. Replay is a no-op on the openai codec.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 # No ephemeral cache markers; auto-cache probe read 0.
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
@@ -2515,6 +2570,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.RECURSIVE_REF_TOOL_CALL,
@@ -2542,7 +2598,6 @@ _ALL: list[MC] = [
                 # the openai codec.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 # No ephemeral cache markers; auto-cache probe reads 0.
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
@@ -2998,6 +3053,7 @@ _ALL: list[MC] = [
         env_key="OPENROUTER_API_KEY",
         required=frozenset(
             {
+                C.UNSIGNED_THINKING_REPLAY,
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
@@ -3023,7 +3079,6 @@ _ALL: list[MC] = [
             {
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
                 C.PROMPT_CACHING,
             }
         ),

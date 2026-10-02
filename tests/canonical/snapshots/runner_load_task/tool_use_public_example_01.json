@@ -16,6 +16,7 @@
   },
   "adapter_settings": null,
   "adapter_type": "native",
+  "agent_prompt_contract": null,
   "category": "tool_use",
   "description": "Use database tools to triage a high-priority support ticket, update status, and produce an operator-facing action plan.",
   "environment_manifest": null,

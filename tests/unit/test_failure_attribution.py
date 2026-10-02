@@ -63,6 +63,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
+    (TrialStatus.COMPLETED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
@@ -79,6 +80,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
+    (TrialStatus.FAILED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
@@ -95,6 +97,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
+    (TrialStatus.TIMEOUT, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
@@ -111,6 +114,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
+    (TrialStatus.ERROR, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS, True),
@@ -198,7 +202,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 128
+        assert len(_OUTCOME_CELLS) == len(expected) == 136
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,

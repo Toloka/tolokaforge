@@ -510,6 +510,18 @@ class TaskConfig(BaseModel):
     )  # Can contain guidance list or agent_system_prompt string
     grading: str | None = None  # Path to grading.yaml; sibling grading.yaml auto-picked when unset
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
+    agent_prompt_contract: str | None = None
+    """How the agent should reply, distinct from what the task is.
+
+    A name from :data:`~tolokaforge.core.agent_prompt_contract.CONTRACTS`, or a
+    path to a file beside the task. Composed ahead of the task's own policy
+    document rather than replacing it, so a pack keeps its domain text and
+    gains a reply contract.
+
+    Left unset, a model preset may still supply one — see
+    ``ModelCapabilities.default_agent_prompt_contract``. An explicit
+    ``policies["agent_system_prompt"]`` overrides both, because that surface
+    exists to reproduce a prompt byte for byte."""
     adapter_settings: dict[str, Any] | None = None  # Opaque dict parsed by each adapter type
 
     stuck_heuristics: StuckHeuristicsDefaults | None = None

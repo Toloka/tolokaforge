@@ -104,6 +104,7 @@ UNGRADED_REASONS = frozenset(
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_TIMEOUT,
         TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.REASONING_WITHOUT_ACTION,
         TerminationReason.PROVISION_ERROR,
         TerminationReason.TRIAL_LOST,
     }
@@ -125,6 +126,10 @@ PROSE_IMPOSTORS: dict[TerminationReason, Exception] = {
     ),
     TerminationReason.PROVISION_ERROR: RuntimeError(
         "provisioning failed: the substrate never came up (provision_error)"
+    ),
+    TerminationReason.REASONING_WITHOUT_ACTION: RuntimeError(
+        "LLM API call failed: the model spent its whole output budget on "
+        "reasoning and returned no action (reasoning_without_action)"
     ),
 }
 
@@ -293,6 +298,14 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
         _run_trial(GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))),
+        _run_trial(
+            GenerationResult(
+                text="",
+                tool_calls=[],
+                usage=Usage(prompt_tokens=1, completion_tokens=15358, reasoning_tokens=15358),
+                finish_reason="length",
+            )
+        ),
         _run_trial(ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")),
         _user_tool_loop_trajectory(),
         _provision_failure_trajectory(),

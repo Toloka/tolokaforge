@@ -56,6 +56,7 @@ __all__ = [
     "Usage",
     "UsageExtractor",
     "extract_openrouter_generation_id",
+    "extract_upstream_provider",
 ]
 
 
@@ -123,6 +124,17 @@ class ProviderRawCall:
     ``None`` for every route that is not OpenRouter — no other provider sends
     the header this is read from. See
     :func:`extract_openrouter_generation_id`."""
+
+    upstream_provider: str | None = None
+    """Which upstream actually served this call, as OpenRouter names it.
+
+    A model slug on OpenRouter resolves to one of many upstreams, each with
+    its own quantisation, and the choice is made per request — so two calls
+    in one trial can be served by different machines. Recording the name is
+    what lets a run be audited afterwards instead of re-run, and a re-run
+    samples routing afresh. ``None`` off the OpenRouter path, where the
+    provider is whatever the base URL addresses. See
+    :func:`extract_upstream_provider`."""
 
 
 @dataclass(frozen=True)
@@ -232,6 +244,26 @@ def extract_openrouter_generation_id(response: Any) -> str | None:
                 return value.decode("utf-8", errors="replace")
             return str(value)
     return None
+
+
+def extract_upstream_provider(response: Any) -> str | None:
+    """Lift the upstream OpenRouter routed to off a litellm response.
+
+    OpenRouter returns the serving provider's display name as a top-level
+    ``provider`` field on the completion body; litellm keeps unmodelled body
+    fields on ``response.model_extra``. Observed values are human-readable
+    vendor names — ``"Moonshot AI"``, ``"CoreWeave"``, ``"Novita"``.
+
+    Returns ``None`` when the field is absent, which is the normal state for
+    every direct-provider route. Never raises: telemetry, not control flow.
+    """
+    extra = getattr(response, "model_extra", None)
+    if not isinstance(extra, dict):
+        return None
+    provider = extra.get("provider")
+    if isinstance(provider, bytes):
+        return provider.decode("utf-8", errors="replace")
+    return str(provider) if provider else None
 
 
 def _int_attr(obj: Any, name: str) -> int:
@@ -378,6 +410,7 @@ class UsageExtractor:
             gateway_route=gateway_route,
             gateway_route_kind=gateway_route_kind,
             openrouter_generation_id=extract_openrouter_generation_id(response),
+            upstream_provider=extract_upstream_provider(response),
         )
 
         return Usage(

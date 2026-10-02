@@ -11,6 +11,34 @@ After a run, Tolokaforge writes analytics artifacts in `evaluation.output_dir`:
 - `metadata_slices.json`: aggregates sliced by benchmark type, complexity, tags, expected failure modes
 - `failure_attribution.json`: failed-attempt attribution summary + per-attempt evidence
 
+### `aggregate.json` → `reasoning_transport`
+
+Whether the run kept the reasoning it was billed for. Always present; a run
+that read everything its presets expected rolls up to zeros.
+
+```yaml
+reasoning_transport:
+  recovered_by_fallback_calls: 12   # readable reasoning the preset's codec does not read
+  recovered_by_fallback_trials: 3   # trials in which that happened at least once
+  channel_unknown_calls: 0          # billed for reasoning that arrived in no known channel
+  channel_unknown_trials: 0
+```
+
+The two counts call for different work. **Recovery is not a loss** — the
+trajectory carries the reasoning either way — but the preset reads a narrower
+channel than the model uses, and the next model matching the same glob will
+inherit that. Run `scripts/analysis/probe_reasoning_transport.py` against the
+model and point the preset at the channel it actually uses.
+
+**An unknown channel is a loss.** The provider charged for deliberation that
+arrived nowhere the engine looks, so nothing could capture it; the token count
+is what notices it at all. That one needs a live probe to find out where the
+model is putting it.
+
+An opaque `reasoning.encrypted` payload counts in neither. It arrived in a
+channel the engine knows and holds no text anyone could keep, so a run against
+such a route reports zeros and is correct to.
+
 ### `aggregate.json` → `captured_service_logs`
 
 `aggregate.json` carries a run-level roll-up of the per-service compose logs

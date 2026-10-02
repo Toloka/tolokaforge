@@ -59,6 +59,7 @@ from tolokaforge.core.llm.presets import (
     UNCLAIMED_ROUTE_FAMILY,
     get_overlay_path,
     ignored_sampling_params,
+    resolve_effective_preset,
     unclaimed_route_families,
 )
 from tolokaforge.core.logging import get_logger
@@ -83,7 +84,7 @@ from tolokaforge.core.models import (
     require_user_simulator_config,
 )
 from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
-from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
+from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
@@ -3949,6 +3950,52 @@ class Orchestrator:
                 pass_at_k_without_coverage=lost_k,
             )
 
+    def _reasoning_transport_rollup(self) -> dict[str, int]:
+        """How the run's reasoning actually travelled, counted over trials.
+
+        Two numbers, because they ask for different things. Recovery means a
+        preset reads a narrower channel than its model uses — nothing was lost,
+        and the fix is a preset edit. An unknown channel means the provider
+        billed for deliberation that arrived nowhere the engine looks, which is
+        the one remaining way to lose it and needs a live probe to resolve.
+        """
+        recovered = [t.metrics.reasoning_recovered_by_fallback for t in self.results]
+        unknown = [t.metrics.reasoning_channel_unknown for t in self.results]
+        return {
+            "recovered_by_fallback_calls": sum(recovered),
+            "recovered_by_fallback_trials": sum(1 for n in recovered if n),
+            "channel_unknown_calls": sum(unknown),
+            "channel_unknown_trials": sum(1 for n in unknown if n),
+        }
+
+    def _warn_on_reasoning_transport(self, rollup: dict[str, int]) -> None:
+        """Say once per run what the per-call logs said per model and upstream."""
+        if not (rollup["recovered_by_fallback_calls"] or rollup["channel_unknown_calls"]):
+            return
+        agent = (self.config.models or {}).get("agent")
+        model = agent.name if agent else None
+        preset = resolve_effective_preset(agent.name, agent.provider) if agent else None
+        if rollup["recovered_by_fallback_calls"]:
+            self.logger.warning(
+                "Reasoning arrived in a channel this run's preset does not read; "
+                "it was kept, but the preset is routed too narrowly",
+                model=model,
+                preset=preset,
+                calls=rollup["recovered_by_fallback_calls"],
+                trials=rollup["recovered_by_fallback_trials"],
+                probe="scripts/analysis/probe_reasoning_transport.py",
+            )
+        if rollup["channel_unknown_calls"]:
+            self.logger.warning(
+                "Billed for reasoning that arrived in no channel the engine knows; "
+                "this run lost it",
+                model=model,
+                preset=preset,
+                calls=rollup["channel_unknown_calls"],
+                trials=rollup["channel_unknown_trials"],
+                probe="scripts/analysis/probe_reasoning_transport.py",
+            )
+
     def _finalize_run_reports_and_status(self, output_dir: Path) -> None:
         """Publish completeness, generate reports, and stamp completion status.
 
@@ -4082,7 +4129,12 @@ class Orchestrator:
                 group, weighted=True
             )
 
+        reasoning_transport = self._reasoning_transport_rollup()
+        self._warn_on_reasoning_transport(reasoning_transport)
+        aggregate["reasoning_transport"] = reasoning_transport
+
         aggregate["schema_version"] = AGGREGATE_SCHEMA_VERSION
+        aggregate["tolokaforge_version"] = _engine_version()
         aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
             by_alias=True, mode="json"
         )
@@ -4105,10 +4157,20 @@ class Orchestrator:
             failure_attribution_payload,
         )
 
-        # Log summary
+        # Log summary. ``measured_trials`` and the aborts that reduced it ride
+        # beside the rates they are the denominator for: a run reporting 1.0
+        # over four of five trials and a run reporting 1.0 over five of five
+        # read identically without them, and the difference is the whole
+        # question of whether the number describes the model.
         self.logger.info(
             "Aggregate Results",
             total_trials=aggregate["total_trials"],
+            measured_trials=aggregate.get("measured_trials"),
+            infrastructure_aborts={
+                reason: count
+                for reason, count in (aggregate.get("infrastructure_aborts") or {}).items()
+                if count
+            },
             total_tasks=aggregate["total_tasks"],
             success_rate_micro=aggregate.get("success_rate_micro"),
             avg_score_micro=aggregate.get("avg_score_micro"),

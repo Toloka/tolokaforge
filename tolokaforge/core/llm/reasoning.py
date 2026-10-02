@@ -115,6 +115,20 @@ class StructuredReasoning:
     budget_used: int | None = None
     transport: ReasoningTransport | None = None
 
+    capture_only: bool = False
+    """True when a reader, not the preset's codec, produced these blocks.
+
+    Such reasoning is kept on the trajectory and never sent back. The reader
+    does not know which shape the route round-trips, so the blocks it builds
+    are not ones the codec can necessarily encode:
+    :class:`~tolokaforge.core.llm.reasoning_codec.GeminiReasoningCodec` and
+    :class:`~tolokaforge.core.llm.reasoning_codec.AnthropicReasoningCodec`
+    both raise on a ``summary_text`` block, and that raise would land on the
+    *next* request rather than on the capture that caused it.
+
+    So the flag is what makes "reading is wire-neutral" a property of the code
+    rather than a hope about which codec is installed."""
+
     def is_empty(self) -> bool:
         """True when no block carries text *and* no summary is set."""
         if self.summary:

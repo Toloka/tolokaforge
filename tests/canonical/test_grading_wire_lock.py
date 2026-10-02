@@ -791,6 +791,16 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
         ),
     ),
+    _WireKey(
+        path="grading.grading_method_config",
+        emitted_for="",
+        wire_shape="dict[str, Any] | None",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading_method_config",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
 )
 
 _RETIRED_WIRE_KEYS: tuple[_RetiredWireKey, ...] = (

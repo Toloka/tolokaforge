@@ -393,7 +393,8 @@ class TestTerminalBenchAdapterDockerStackRequirements:
             }
         )
         builds = adapter.docker_stack_requirements().image_builds
-        assert [b.service for b in builds] == ["main-base", "main", "main-base", "main"]
+        # One base + one layered build per task, in task order.
+        assert [b.service for b in builds] == ["main-base", "main"] * len(adapter.get_task_ids())
         for build in builds:
             with build.compose_file.open() as handle:
                 doc = yaml.safe_load(handle)
@@ -533,6 +534,221 @@ class TestTerminalBenchAdapterEnvironmentManifest:
         extra = td.agent_tools[0].source.extra
         env = adapter._environment("echo-hello")
         assert extra == {"service": env.agent_service, "compose_project_prefix": "tbench_"}
+
+
+class TestSingleContainerTaskIsRunnable:
+    """A task that ships no compose file still reaches a runnable environment.
+
+    This is the shape 691 of the 974 delivered tasks use. Discovery finding it
+    is only half the claim — the compose doc it never wrote has to be
+    synthesised, and the timeout its ``task.toml`` declares has to reach the
+    grader rather than being replaced by a default.
+    """
+
+    @pytest.fixture
+    def adapter(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(
+                    Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+                ),
+                "staging_root": str(tmp_path),
+            }
+        )
+
+    def test_compose_is_synthesised_from_the_dockerfile(self, adapter):
+        import yaml as _yaml
+
+        env = adapter._environment("echo-hello-single")
+        with env.compose_file.open() as handle:
+            doc = _yaml.safe_load(handle)
+
+        assert env.agent_service == "main"
+        service = doc["services"]["main"]
+        assert service["build"]["context"] == "./environment"
+        assert service["image"]
+        assert service["volumes"] == ["./tests:/tests", "./_logs:/logs"]
+        # The pre-harbor ${T_BENCH_*} variables are the task-side dialect; the
+        # synthesised doc is ours and nothing sets them, so one surviving here
+        # would expand to an empty string at compose time. The trial-slug
+        # variable the synthesiser stamps into container_name is expected.
+        assert "T_BENCH_" not in env.compose_file.read_text()
+
+    def test_declared_verifier_timeout_reaches_the_grading_config(self, adapter):
+        """45s from ``task.toml`` arrives as the kind's ``timeout_s``.
+
+        Dropped, the task would grade on the kind's 300s default — harmless
+        here, but the corpus has 552 tasks declaring *more* than 300s, whose
+        suites would be killed before writing a reward and scored zero.
+        """
+        td = adapter.to_task_description("echo-hello-single")
+        assert td.grading.grading_method == "test_execution"
+        assert td.grading.grading_method_config == {"timeout_s": 45.0}
+
+
+class TestComposeSynthesisHarborFormat:
+    """The canonical ``environment/`` compose shape — 197 of 974 delivered tasks.
+
+    Upstream layers its own base compose under the task's and reads the task's
+    file in place. We emit one merged document at the staging root instead, so
+    three things it gets for free have to be done explicitly: the agent service
+    inherits a build context, relative paths move up a directory, and the
+    harbor variable set is resolved.
+    """
+
+    def test_agent_service_inherits_a_build_context(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "inherits",
+            {"services": {"main": {"volumes": ["src:/app"]}, "db": {"image": "postgres:16"}}},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        main = _load_synthesised(env)["services"]["main"]
+        assert main["build"] == {"context": "./environment"}
+        assert (env.staging_dir / "environment" / "Dockerfile").is_file()
+
+    def test_a_declared_build_is_not_overridden(self, tmp_path):
+        """The task's own build wins — the inherited one is only a fallback."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "declared",
+            {"services": {"main": {"build": {"context": "./svc", "dockerfile": "Api.Dockerfile"}}}},
+            extras={"environment/svc/Api.Dockerfile": "FROM python:3.11-slim\n"},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        build = _load_synthesised(env)["services"]["main"]["build"]
+        assert build["dockerfile"] == "Api.Dockerfile"
+        assert build["context"] == "environment/svc"
+        assert (env.staging_dir / build["context"]).is_dir()
+
+    def test_relative_build_contexts_move_with_the_compose_file(self, tmp_path):
+        """``.`` meant ``environment/``; at the staging root it would mean the task root."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "reroot",
+            {
+                "services": {
+                    "main": {"build": {"context": "."}},
+                    "worker": {"build": "./svc"},
+                    "db": {"image": "postgres:16"},
+                }
+            },
+            extras={"environment/svc/Dockerfile": "FROM python:3.11-slim\n"},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        services = _load_synthesised(env)["services"]
+        assert services["main"]["build"]["context"] == "environment"
+        assert services["worker"]["build"] == "environment/svc"
+        for context in ("environment", "environment/svc"):
+            assert (env.staging_dir / context).is_dir()
+
+    def test_harbor_variables_are_resolved(self, tmp_path):
+        """``${CONTEXT_DIR}`` and friends have no value unless we give them one.
+
+        Nothing in our stack sets them, and compose expands an unset variable
+        to an empty string — a build context of ``""`` rather than an error.
+        """
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "vars",
+            {
+                "services": {
+                    "main": {
+                        "build": {"context": "${CONTEXT_DIR}"},
+                        "image": "${MAIN_IMAGE_NAME}",
+                        "environment": {"WHERE": "${TEST_DIR}"},
+                    },
+                    "sidecar": {
+                        "image": "busybox",
+                        "volumes": ["${HOST_AGENT_LOGS_PATH}:${ENV_AGENT_LOGS_PATH}"],
+                    },
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        services = _load_synthesised(env)["services"]
+        assert services["main"]["build"]["context"] == "./environment"
+        assert services["main"]["image"] == "tbench-vars:local"
+        assert services["main"]["environment"]["WHERE"] == "/tests"
+        assert services["sidecar"]["volumes"] == ["./_logs/agent:/logs/agent"]
+
+    def test_the_agent_services_own_volumes_survive(self, tmp_path):
+        """A named volume on the agent service is how it shares source with siblings."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "shared",
+            {
+                "services": {
+                    "main": {"volumes": ["app_src:/app"]},
+                    "worker": {"image": "busybox", "volumes": ["app_src:/app"]},
+                },
+                "volumes": {"app_src": None},
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        doc = _load_synthesised(env)
+        assert doc["services"]["main"]["volumes"] == [
+            "app_src:/app",
+            "./tests:/tests",
+            "./_logs:/logs",
+        ]
+        assert "app_src" in doc["volumes"]
+
+    def test_a_task_mount_on_a_reserved_path_gives_way_to_ours(self, tmp_path):
+        """Two mounts on one target is a compose error, and the reward lives under ours."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_harbor_task(
+            tmp_path,
+            "reserved",
+            {
+                "services": {
+                    "main": {
+                        "volumes": [
+                            "${HOST_VERIFIER_LOGS_PATH}:${ENV_VERIFIER_LOGS_PATH}",
+                            "keep_me:/srv",
+                        ]
+                    }
+                },
+                "volumes": {"keep_me": None},
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert _load_synthesised(env)["services"]["main"]["volumes"] == [
+            "keep_me:/srv",
+            "./tests:/tests",
+            "./_logs:/logs",
+        ]
 
 
 class TestTerminalBenchAgentSystemPromptVerbatim:
@@ -732,6 +948,96 @@ class TestTaskParser:
         assert meta.compose_file.name == "docker-compose.yaml"
         assert meta.compose_file.exists()
 
+    def test_single_container_task_is_discovered_without_a_compose_file(self, fixture_dir):
+        """The corpus-majority shape: ``task.toml`` and a Dockerfile, nothing else.
+
+        ``compose_file is None`` is the positive statement that this task
+        declares one container, which is what tells materialisation to
+        synthesise the compose doc rather than read one.
+        """
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        meta = discover_tasks(fixture_dir)["echo-hello-single"]
+        assert meta.compose_file is None
+        assert not (meta.task_dir / "task.yaml").exists()
+        assert (meta.task_dir / "environment" / "Dockerfile").is_file()
+        assert "greeting.txt" in meta.instruction
+
+    def test_declared_verifier_timeout_is_carried_verbatim(self, fixture_dir):
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        assert discover_tasks(fixture_dir)["echo-hello-single"].verifier_timeout_sec == 45.0
+
+    def test_undeclared_verifier_timeout_is_none(self, tmp_path):
+        """No ``[verifier]`` block leaves the grader's own default standing.
+
+        A number invented here would reach the grading kind indistinguishable
+        from one the task asked for, and silently outrank the default.
+        """
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        task_dir = tmp_path / "no-verifier-block"
+        task_dir.mkdir()
+        (task_dir / "task.toml").write_text('[metadata]\ndifficulty = "easy"\n')
+
+        assert discover_tasks(tmp_path)["no-verifier-block"].verifier_timeout_sec is None
+
+    def test_compose_under_environment_is_found(self, tmp_path):
+        """``environment/docker-compose.yaml`` is the canonical location.
+
+        197 of the 974 delivered tasks keep their compose there and 180 of
+        those declare two or more services. Missing it would build the agent's
+        container and silently drop every service it talks to — a task graded
+        against a database that was never started.
+        """
+        import yaml as _yaml
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        task_dir = tmp_path / "multi"
+        (task_dir / "environment").mkdir(parents=True)
+        (task_dir / "task.toml").write_text('[metadata]\ndifficulty = "easy"\n')
+        compose = task_dir / "environment" / "docker-compose.yaml"
+        compose.write_text(
+            _yaml.safe_dump({"services": {"main": {"build": "."}, "db": {"image": "postgres:16"}}})
+        )
+
+        meta = discover_tasks(tmp_path)["multi"]
+        assert meta.compose_file == compose
+        with meta.compose_file.open() as handle:
+            assert set(_yaml.safe_load(handle)["services"]) == {"main", "db"}
+
+    def test_environment_compose_outranks_a_root_one(self, tmp_path):
+        """Upstream reads only the ``environment/`` copy, so we do too."""
+        import yaml as _yaml
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        task_dir = tmp_path / "both"
+        (task_dir / "environment").mkdir(parents=True)
+        (task_dir / "task.toml").write_text('[metadata]\ndifficulty = "easy"\n')
+        (task_dir / "docker-compose.yaml").write_text(
+            _yaml.safe_dump({"services": {"main": {"build": "."}}})
+        )
+        (task_dir / "environment" / "docker-compose.yaml").write_text(
+            _yaml.safe_dump({"services": {"main": {"build": "."}, "db": {"image": "postgres:16"}}})
+        )
+
+        meta = discover_tasks(tmp_path)["both"]
+        assert meta.compose_file == task_dir / "environment" / "docker-compose.yaml"
+
+    @pytest.mark.parametrize("declared", [0, -30, "sixty"])
+    def test_an_unusable_verifier_timeout_is_refused_at_load(self, tmp_path, declared):
+        """The grading kind enforces the same bound, but only after a trial is spent."""
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        task_dir = tmp_path / "bad-timeout"
+        task_dir.mkdir()
+        (task_dir / "task.toml").write_text(
+            f"[verifier]\ntimeout_sec = {declared!r}\n".replace("'", '"')
+        )
+
+        with pytest.raises(ValueError, match="verifier.timeout_sec"):
+            discover_tasks(tmp_path)
+
     def test_empty_dir_returns_no_tasks(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
 
@@ -762,6 +1068,32 @@ def _write_task(
         task_id=task_id,
         task_dir=task_dir,
         compose_file=task_dir / "docker-compose.yaml",
+        instruction="test",
+    )
+
+
+def _write_harbor_task(tmp_path: Path, task_id: str, compose_body: dict, extras=None):
+    """A task in the canonical shape: compose under ``environment/``.
+
+    The directory matters. Upstream reads that file in place, so paths inside
+    it are relative to ``environment/`` rather than to the task root.
+    """
+    import yaml as _yaml
+    from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
+
+    task_dir = tmp_path / task_id
+    (task_dir / "environment").mkdir(parents=True)
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.11-slim\n")
+    compose = task_dir / "environment" / "docker-compose.yaml"
+    compose.write_text(_yaml.safe_dump(compose_body))
+    for rel, content in (extras or {}).items():
+        target = task_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    return TerminalBenchTask(
+        task_id=task_id,
+        task_dir=task_dir,
+        compose_file=compose,
         instruction="test",
     )
 
@@ -1377,8 +1709,15 @@ class TestComposeSynthesisHarnessLayer:
         assert "install-harness.sh npm @google/gemini-cli 0.55.1" in dockerfile
         assert (env.staging_dir / "_harness" / "install-harness.sh").exists()
 
-    def test_task_without_build_context_declares_no_base_service(self, tmp_path):
-        """A pre-built task image has nothing for the orchestrator to build first."""
+    def test_task_without_build_context_inherits_the_environment_build(self, tmp_path):
+        """A compose that names no build still has to name something buildable.
+
+        The upstream harness supplies ``build.context: ${CONTEXT_DIR}`` from
+        its own base layer, so 158 of the canonical compose files declare none.
+        Taking them at their word left the agent service on a locally-tagged
+        image with nothing in the stack building it, which compose can only
+        answer by trying to pull a tag that was never pushed.
+        """
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
             materialise_task_environment,
         )
@@ -1389,8 +1728,8 @@ class TestComposeSynthesisHarnessLayer:
         )
 
         compose = _load_synthesised(env)
-        assert "main-base" not in compose["services"]
-        assert env.base_build_service is None
+        assert compose["services"]["main-base"]["build"] == {"context": "./environment"}
+        assert env.base_build_service == "main-base"
         _assert_layered_image(
             compose["services"]["main"]["image"], "tbench-prebuilt:local-claude-code-2.1.233"
         )
@@ -2902,6 +3241,184 @@ class TestTerminalBenchAgentCompletionTool:
                 fixture_dir,
                 tmp_path,
                 agent_completion_tool=True,
+                agent_harness="claude-code",
+                agent_model="m",
+            )
+
+
+class TestTerminalBenchAgentPromptContract:
+    """``adapter_params.agent_prompt_contract`` names a contract the engine composes.
+
+    The adapter's own prompt is written into ``policies["agent_system_prompt"]``,
+    which ``build_system_prompt`` returns before it considers anything else. So
+    the adapter has to stand aside for any engine-side default to be reachable
+    at all — that, rather than the new param, is the behavioural change here.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    TASK_ID = "echo-hello"
+
+    def test_default_emission_is_unchanged(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.agent_prompt_contract is None
+        assert "agent_system_prompt" in task.policies
+
+    def test_selecting_a_contract_stops_the_adapter_writing_a_prompt(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="reasoning_agent")
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.agent_prompt_contract == "reasoning_agent"
+        assert (
+            "agent_system_prompt" not in task.policies
+        ), "the highest-priority key must be absent, or no contract can be reached"
+
+    def test_the_contract_reaches_the_built_prompt(self, fixture_dir, tmp_path):
+        from tolokaforge.core.agent_prompt_contract import CONTRACTS
+        from tolokaforge.core.system_prompt import build_system_prompt
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="reasoning_agent")
+        task_id = self.TASK_ID
+        task = adapter.get_task(task_id)
+
+        built = build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)
+
+        assert built.startswith(CONTRACTS["reasoning_agent"])
+
+    def test_a_verbatim_prompt_file_still_wins(self, fixture_dir, tmp_path):
+        prompt = tmp_path / "verbatim.md"
+        prompt.write_text("EXACTLY THIS")
+        adapter = self._adapter(fixture_dir, tmp_path, agent_system_prompt_file=str(prompt))
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.policies["agent_system_prompt"] == "EXACTLY THIS"
+
+    def test_asking_for_both_is_refused_at_construction(self, fixture_dir, tmp_path):
+        prompt = tmp_path / "verbatim.md"
+        prompt.write_text("EXACTLY THIS")
+
+        with pytest.raises(ValueError, match="not both"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                agent_system_prompt_file=str(prompt),
+                agent_prompt_contract="reasoning_agent",
+            )
+
+    def test_an_unknown_contract_name_is_refused_at_construction(self, fixture_dir, tmp_path):
+        """Before the run provisions anything.
+
+        The prompt is built at the first trial, by which point the images are
+        up; a typo found there has already cost the setup, and every task after
+        it would run on the wrong prompt if the selector were merely ignored.
+        """
+        with pytest.raises(ValueError, match="unknown agent_prompt_contract"):
+            self._adapter(fixture_dir, tmp_path, agent_prompt_contract="no_such_thing")
+
+    def test_a_missing_contract_file_still_fails_when_the_prompt_is_built(
+        self, fixture_dir, tmp_path
+    ):
+        """A path selector resolves against each task's own directory, which the
+        adapter does not know at construction, so this one can only fail late."""
+        from tolokaforge.core.agent_prompt_contract import UnknownAgentPromptContractError
+        from tolokaforge.core.system_prompt import build_system_prompt
+
+        adapter = self._adapter(fixture_dir, tmp_path, agent_prompt_contract="contracts/absent.md")
+        task = adapter.get_task(self.TASK_ID)
+
+        with pytest.raises(UnknownAgentPromptContractError):
+            build_system_prompt(task=task, task_dir=fixture_dir / self.TASK_ID)
+
+
+class TestTerminalBenchInteractionMode:
+    """``adapter_params.interaction_mode`` picks the turn-loop shape.
+
+    Default ``conversational``: a Terminal-Bench trial has always built a user
+    simulator, and the mode a run grades under must move because a config says
+    so, not because an adapter changed underneath it.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                **extra,
+            }
+        )
+
+    TASK_ID = "echo-hello"
+
+    def test_the_default_is_conversational(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+
+        assert adapter.get_task(self.TASK_ID).interaction_mode == "conversational"
+
+    def test_a_run_may_ask_for_the_solo_shape(self, fixture_dir, tmp_path):
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            interaction_mode="agent_only",
+            agent_prompt_contract="reasoning_agent",
+        )
+
+        assert adapter.get_task(self.TASK_ID).interaction_mode == "agent_only"
+
+    def test_the_solo_shape_needs_a_prompt_that_names_the_exit(self, fixture_dir, tmp_path):
+        """Under this mode a tool-call-free turn ends the trial at any index.
+
+        The adapter's default prompt never says so, so a model that opens with
+        a plan ends at turn 1 against an untouched container and the bundle
+        reads as a completed trial.
+        """
+        with pytest.raises(ValueError, match=r"needs a prompt that tells the agent"):
+            self._adapter(fixture_dir, tmp_path, interaction_mode="agent_only")
+
+    def test_the_solo_shape_carries_the_opener_it_requires(self, fixture_dir, tmp_path):
+        """``AgentOnlyTurnPolicy`` has no simulator to synthesise turn 0 from."""
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            interaction_mode="agent_only",
+            agent_prompt_contract="reasoning_agent",
+        )
+        task = adapter.get_task(self.TASK_ID)
+
+        assert task.initial_user_message, "a solo task without an opener fails at run start"
+
+    def test_an_unknown_mode_is_refused(self, fixture_dir, tmp_path):
+        with pytest.raises(ValueError, match=r"interaction_mode"):
+            self._adapter(fixture_dir, tmp_path, interaction_mode="monologue")
+
+    def test_the_solo_shape_is_refused_under_a_cli_harness(self, fixture_dir, tmp_path):
+        """A CLI drives its own trial; there is no engine turn loop to reshape."""
+        with pytest.raises(ValueError, match=r"interaction_mode 'agent_only' requires"):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                interaction_mode="agent_only",
+                agent_prompt_contract="reasoning_agent",
                 agent_harness="claude-code",
                 agent_model="m",
             )

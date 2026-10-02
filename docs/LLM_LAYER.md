@@ -129,7 +129,8 @@ the client never branches on provider. See
 |---|---|---|---|
 | `NoReasoningCodec` | default | — (always `None`) | `{}` |
 | `AnthropicReasoningCodec` | `anthropic` preset | `message.thinking_blocks` + `message.reasoning_content` | `{"thinking_blocks": [...]}` |
-| `OpenAIReasoningCodec` | `openai_gpt5` / `xai_grok` / `qwen` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAIReasoningCodec` | `openai_gpt5` / `openai_gpt6` presets | `message.reasoning_content` | `{}` (no replay contract) |
+| `OpenAISummaryReplayReasoningCodec` | every other route carrying readable reasoning — `moonshot_kimi_k2` / `k3`, `qwen`, `xai_grok`, `openrouter_dict_stringify_recovery`, `thinkingmachines_inkling`, `gpt_oss`, `z_ai_glm_5_3`, `cohere_command_a_plus_05_2026`, `deepseek_v4_flash_0731_resolve` | inherited from `OpenAIReasoningCodec` | `{"reasoning_details": [{"type": "reasoning.text", ...}]}` |
 
 ### `AnthropicReasoningCodec` contract (Stage 3, fixes P4a + P4c)
 
@@ -912,6 +913,22 @@ it. Persisting the id is therefore what makes that question answerable after the
 fact — without it, a suspect result can only be re-run, never checked, and a
 re-run samples routing afresh.
 
+The same body also names the upstream directly: OpenRouter returns a top-level
+`provider` field, which litellm keeps on `response.model_extra`.
+`extract_upstream_provider` ([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py))
+reads it onto `ProviderRawCall.upstream_provider`, so a finished run's
+`metrics.yaml` names the machine per call without an API round-trip. The
+generation id remains the richer handle — it also reports native token counts
+and finish reason — but the name is the one an audit reads first. Observed
+values are vendor display names: `"Moonshot AI"`, `"CoreWeave"`, `"Novita"`,
+`"Amazon Bedrock"`, `"Google"`.
+
+How much this matters is measurable: `moonshotai/kimi-k2.7-code` resolved to
+three different upstreams across four runs on one day, and the runs split into
+behavioural profiles that tracked the upstream rather than the task — one
+returning `content: ""` and repeating an identical shell command on 30% of
+calls, another returning `content: " "` and repeating on 4%.
+
 **The header is `x-generation-id`, not `x-openrouter-generation-id`** — the
 plausible-looking longer name is not the one OpenRouter actually returns.
 litellm re-keys raw upstream headers as `llm_provider-<name>` into
@@ -1307,6 +1324,50 @@ upstream through the OpenRouter generation id rather than trusting the request
 shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
+
+### Reasoning that never reaches the model back
+
+A `ReasoningCodec` has two halves and they fail differently. `extract` reads the
+provider's reasoning off the response; `encode_for_replay` says what to send back
+on the next request. A codec that extracts and replays nothing leaves the model
+reading a history in which it never reasoned — and models copy that. Measured on
+`moonshotai/kimi-k2.7-code` in two datasets that disagree on magnitude and agree on
+direction: the ten-task sweep behind the published report (50 trials) carried
+reasoning on **every turn-1 call and 15–34% of later ones** — 28.5% of 2,241 calls
+overall — while a three-task run served by two fan-out mirrors fell to **2.7%** of
+411 calls, against **98.2%** of 277 once the note was replayed. Score on those three
+tasks moved 0.380 → 0.688. How far the collapse goes evidently depends on the
+upstream; that it happens does not.
+
+An empty replay is *correct* for OpenAI, which does not accept echoed reasoning.
+It is a silent defect for a route that would have honoured it, and from inside
+the engine the two are indistinguishable. Three things make the difference
+visible:
+
+* **Runtime.** `Metrics.reasoning_channel_unknown` counts calls the provider
+  charged reasoning tokens for while nothing arrived in a channel the engine
+  knows; `Metrics.reasoning_replay_dropped` marks a trial in which reasoning was
+  extracted and then not sent back. Both land in `metrics.yaml`. The second also
+  warns once per run per model — a client is built per trial per role, so the
+  guard is keyed module-side rather than held on the client.
+* **Pull-request time.**
+  [`tests/canonical/test_reasoning_codec_preset_routing.py`](../tests/canonical/test_reasoning_codec_preset_routing.py)
+  holds the allow-list of presets permitted to replay nothing, each with its
+  reason;
+  [`tests/canonical/test_capability_registry.py`](../tests/canonical/test_capability_registry.py)
+  refuses a certificate that declares all three reasoning capabilities
+  `known_unsupported` while its preset installs a codec to extract them, unless
+  it says why.
+* **On demand.**
+  [`scripts/analysis/probe_reasoning_transport.py`](../scripts/analysis/probe_reasoning_transport.py)
+  answers, for about a cent per model, where the reasoning arrives, whether the
+  codec keeps it, and whether the upstream answers differently when it is echoed
+  back. That last question matters: one route accepts the field and ignores it.
+
+`OpenAISummaryReplayReasoningCodec` (`reasoning_codec: openai_summary_replay`) is
+the OpenAI extract plus a replay that rebuilds the `reasoning.text` envelope —
+the shape OpenRouter routes emit, and what a non-OpenAI route carrying readable
+reasoning should use.
 
 ### Preset-level `openrouter_defaults`
 
@@ -1912,34 +1973,55 @@ as a compatibility surface — user overlay syntax and the
 `resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
-### Provider-side empty completion
+### Actionless completions: reasoning without action, and empty
 
 A generation that comes back with both `text == ""` and `tool_calls == []`
-is a *provider-side empty completion*: the request round-tripped and the
-provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
-that shape immediately after `_generate` — before the assistant message
-would be appended — and resamples up to `capabilities.empty_retry_count`
-times without appending the empty message and without advancing the outer
-turn counter; on the `(N + 1)`-th empty result it terminates the trial with
-`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The metrics
-sink records every generation, resampled ones included, because the trial
-paid for each call. The default `empty_retry_count = 0` keeps the preset
-one-shot terminal for models that do not opt in. Presets that observably
-recover on a resample opt in through `empty_retry_count: <N>` on the model
-preset overlay; a `LoopConfig(empty_retry_count=N)` flows from
-`capabilities.empty_retry_count` at `runner.py` construction time.
+is *actionless*, and two different things produce that shape. The loop
+separates them on evidence the result already carries, because reporting
+one as the other names the wrong party:
+
+- **Reasoning without action** — reasoning tokens were billed, or
+  `finish_reason == "length"`. The provider did not return nothing; it
+  returned deliberation and no action. Two sub-shapes occur in practice: a
+  model cut off at its output ceiling mid-thought (`finish_reason: length`,
+  reasoning filling the completion), and a model that deliberated briefly
+  and then stopped of its own accord (`finish_reason: stop`, a few hundred
+  reasoning tokens). Resampled under `capabilities.reasoning_stall_retry_count`
+  with a `role=user` feedback turn, terminating on exhaustion with
+  `TerminationReason.REASONING_WITHOUT_ACTION`, whose evidence string carries
+  the `finish_reason` and the completion/reasoning token split it was read
+  from. The budget defaults to **1** rather than 0: the billed output tokens
+  are positive evidence that another sample is worth drawing, and a model
+  that never stalls never pays for it.
+- **Provider-side empty completion** — neither signal. The request
+  round-tripped and the provider returned nothing, where a resample has no
+  evidence behind it. Resampled up to `capabilities.empty_retry_count` times,
+  terminating on the `(N + 1)`-th with `TerminationReason.EMPTY_COMPLETION`.
+  The default `empty_retry_count = 0` keeps this one-shot terminal for models
+  that do not opt in.
+
+Both are recognised immediately after `_generate` — before the assistant
+message would be appended — and neither advances the outer turn counter.
+Both terminate with `TrialStatus.FAILED` and both sit in
+`EXCLUDED_TYPED_REASONS`, so a trial lost to either leaves the measured
+denominator rather than scoring zero against the agent.
+
+The metrics sink records every generation, resampled ones included, because
+the trial paid for each call. Presets that observably recover on a resample
+raise `empty_retry_count: <N>` on the model preset overlay; both budgets flow
+from `capabilities` at `runner.py` construction time.
 
 The distinction from `empty_assistant_filler` above is where the empty
 content lives. `empty_assistant_filler` handles empty **content the loop
 is about to send back to the provider on a tool-call turn** — Bedrock/Nova
 and Moonshot direct reject a request whose assistant turn has empty
 `content` alongside `tool_calls`, so those provider families opt in to a
-non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
+non-empty filler string. Both actionless branches handle empty **content the
 provider produced**: appending it would send a request whose tail is a
 `role=model` turn with empty `content` and no `tool_calls` on the next
 iteration, and Gemini rejects that as an API error. The Gemini-legal-tail
-invariant holds across resamples because the empty assistant message is
-still not appended on any of them; only the recovered non-empty result
+invariant holds across resamples on either branch because the empty
+assistant message is still not appended on any of them; only the recovered non-empty result
 lands on `messages`. The engine consumes this one wire-shape observation
 directly rather than routing it through `classify_loop_error` so post-run
 analysis can tell "the model produced nothing" apart from the API-error
@@ -2252,6 +2334,36 @@ the loop-layer behaviour and the helper contract are pinned by
 and
 [`tests/unit/test_tool_output_truncation.py`](../tests/unit/test_tool_output_truncation.py).
 
+### Preset-level reply contract
+
+`ModelCapabilities.default_agent_prompt_contract: str | None` names the reply
+contract a model gets when it works a task on its own. It is preset data of the
+same shape as `default_max_turns`: a value the run can still override, resolved
+to text by
+[`resolve_agent_prompt_contract`](../tolokaforge/core/agent_prompt_contract.py)
+and composed ahead of the task's own document by `build_system_prompt`.
+
+Not every model needs one. Some narrate their reasoning unprompted and some stop
+when nothing rewards it, and on a benchmark whose grader reads the container
+rather than the transcript, nothing does. The measured spread is wide — one
+model wrote text on 5 of 2,239 assistant turns here against 100% under a harness
+whose prompt asks for it, scoring 0.321 against 0.826 on the same tasks. The knob
+is per-preset because the behaviour is per-model. See
+[ADR-0052](adr/0052-agent-reply-contract.md).
+
+Precedence, lowest to highest:
+
+1. `ModelCapabilities.default_agent_prompt_contract` — this model's preset.
+   Applies **only** when `TaskConfig.interaction_mode` is `agent_only`: the
+   shipped text tells an agent that a message carrying no tool call ends the
+   task, which is what `AgentOnlyTurnPolicy` does and what a conversational turn
+   policy does not.
+2. `TaskConfig.agent_prompt_contract` — this task names one, in either mode.
+3. `task.policies["agent_system_prompt"]` — an inline prompt, reproduced byte
+   for byte; no contract is composed onto it.
+
+`None` (the default) leaves a solo task on the prompt-authoring chain alone.
+
 ### Per-model turn-budget default
 
 `ModelCapabilities.default_max_turns: int | None` is the preset-level value
@@ -2445,14 +2557,14 @@ false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 |------------------------|---------------------------------------------------------------------------------------------------------------------------|--------------------|-------------------|------------------|------------------|-------------------|---------------------------|-------------------------|
 | `default`              | *(fallthrough)*                                                                                                           | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
 | `anthropic_claude_4_7` | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*`                                                       | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `anthropic`            | `anthropic/*`, `*claude*`, `*/anthropic/*`                                                                                | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`            | `anthropic/*`, `*/anthropic/*`, `*claude*`                                                                                | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
 | `openai_gpt5`          | `openai/gpt-5*`, `*gpt-5*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `openai_gpt6`          | `openai/gpt-6*`, `*gpt-6*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `openai_o_series`      | `openai/o{1,3,4}*`, bare `o1` / `o3`, their tiers (`o3-mini*`, dated `o3-20*`, …) and `o4-mini*`, and their `*/` siblings | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
-| `xai_grok`             | `x-ai/*`, `xai/*`, `grok*`, `*/x-ai/*`, `*/xai/*`, `*/grok*`                                                              | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `qwen`                 | `qwen/*`, `qwen3*`, `*/qwen/*`, `*/qwen3*`                                                                                | `passthrough`      | `json_coerce`     | `dict_map_hints` | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `xai_grok`             | `x-ai/*`, `xai/*`, `*/x-ai/*`, `*/xai/*`, `grok*`, `*/grok*`                                                              | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
+| `qwen`                 | `qwen/*`, `*/qwen/*`, `qwen3*`, `*/qwen3*`                                                                                | `passthrough`      | `json_coerce`     | `dict_map_hints` | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
 | `aws_nova`             | `nova*` (+ provider `nova`)                                                                                               | `passthrough`      | `unwrap_input`    | `none`           | `nova`           | `none`            | `nova`                    | `passthrough`           |
-| `moonshot_kimi_k3`     | `moonshotai/kimi-k3*`, `*kimi-k3*`                                                                                        | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
+| `moonshot_kimi_k3`     | `moonshotai/kimi-k3*`, `*kimi-k3*`                                                                                        | `passthrough`      | `standard`        | `none`           | `openai`         | `openai_summary_replay` | `nova` (filler `" "`) | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
@@ -2750,7 +2862,7 @@ ever compares registered `JudgeKind`s against this one provider. A
 signature or behaviour change to `LLMClient` construction — or to the
 `empty_retry_count` / `output_length_retry_count` / `parser_error_retry_count`
 capabilities-based retry opt-in this client exposes to `ToolCallingLoop`
-(see § *Provider-side empty completion* above) — must account for both
+(see § *Actionless completions* above) — must account for both
 consumers, not just the runner.
 
 ### Session header
@@ -2902,16 +3014,20 @@ outer controllers above, transport-timeout retry in
 protocol. Retrying them at the loop level would double-count the exclusion and
 confuse the denominator.
 
-The empty-completion retry, the output-length retry and the parser-error
-retry are three separate classes that live in `_run_turn`, each under its
-own budget on `LoopConfig.empty_retry_count`,
+The empty-completion retry, the reasoning-stall retry, the output-length
+retry and the parser-error retry are four separate classes that live in
+`_run_turn`, each under its own budget on `LoopConfig.empty_retry_count`,
+`LoopConfig.reasoning_stall_retry_count`,
 `LoopConfig.output_length_retry_count` and
-`LoopConfig.parser_error_retry_count`. The four retry classes are
+`LoopConfig.parser_error_retry_count`. The five retry classes are
 orthogonal — each fires on a distinct trigger: the API-error retry
 replays a *raised exception*, the empty-completion retry resamples a
-*returned empty-shape result* (see § *Provider-side empty completion*
-above for the resample mechanics and the Gemini-legal-tail invariant),
-the output-length retry appends a `role=user` feedback turn and
+*returned actionless result with no reasoning billed*, the
+reasoning-stall retry appends a `role=user` feedback turn and resamples a
+*returned actionless result that did carry reasoning* (see § *Actionless
+completions* above for both, the resample mechanics and the
+Gemini-legal-tail invariant), the output-length retry appends a `role=user`
+feedback turn and
 resamples a *returned content-carrying truncation* under its own budget
 before falling through to accept-and-continue (see § *Output-length
 retry* above), and the parser-error retry appends a `role=user` feedback
