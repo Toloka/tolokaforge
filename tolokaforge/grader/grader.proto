@@ -146,6 +146,7 @@ message Grade {
   repeated TraceConstraintResult trace_checks = 10;
   TraceChecksSummary trace_checks_summary = 11;
   optional string comparison_view_json = 12;
+  optional string state_snapshots_json = 13;
 }
 
 // GradeComponents — mirrors runner.GradeComponents including the ``optional``
