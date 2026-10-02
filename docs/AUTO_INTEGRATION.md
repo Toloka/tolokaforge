@@ -530,9 +530,10 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   sentinel knows whatever `--tool-io` says; `input_chars` (its full length), `input_truncated`
   and `input_redacted_rules` in the trace metadata say what became of it, and a `--metadata` may
   not set them. A prompt file is never read as a transcript nor listed as not read, one without
-  its transcript is not read, and anything under that name that cannot be read as UTF-8 text (a
-  directory, a dangling link) refuses its transcript. Without one the trace has no input. The receiver is `LANGFUSE_BASE_URL` (or
-  `LANGFUSE_OTLP_ENDPOINT`); the key pair and
+  its transcript is not read, and anything under that name that is not a regular file of UTF-8
+  text (a directory, a dangling link, a named pipe, a device) refuses its transcript, the
+  irregular ones unopened. Without one the trace has no input. The receiver is
+  `LANGFUSE_BASE_URL` (or `LANGFUSE_OTLP_ENDPOINT`); the key pair and
   `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A
   file it did not send is a line in the report (`--receipt`, the job summary) and exit 1; a setup
   error (no receiver, no key pair, keys that open another project) is one line on stderr and exit
