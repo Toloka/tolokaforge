@@ -531,6 +531,7 @@ only-include = [
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",
+    "tolokaforge/core/simulation_budget.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/tool_message_format.py",
