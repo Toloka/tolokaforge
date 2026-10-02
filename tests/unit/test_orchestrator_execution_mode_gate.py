@@ -106,6 +106,33 @@ def _harness_via_params_run_config(agent_harness: str) -> RunConfig:
     )
 
 
+def _parsed_run_config_with_params_harness(agent_harness: str) -> RunConfig:
+    """A run parsed from a dict the normal way, so the parse-time alias lift
+    fires.
+
+    This is the real entry the engine loads through: passing a plain dict runs
+    the ``model_validator(mode="before")`` that folds
+    ``evaluation.harness_adapter.params.agent_harness`` onto
+    ``models.agent.harness`` and drops it from ``params``. A pre-built
+    ``EvaluationConfig`` object skips that lift, so a gate bug that only bites
+    *after* the lift (the sentinel landing on ``models.agent.harness``) is
+    invisible to the object-built fixtures above and needs this path.
+    """
+    return RunConfig.model_validate(
+        {
+            "models": {"agent": {"provider": "openai", "name": "gpt-4"}},
+            "orchestrator": {"workers": 1, "repeats": 1, "auto_start_services": False},
+            "evaluation": {
+                "output_dir": "/tmp/execution_mode_gate",
+                "harness_adapter": {
+                    "type": "terminal_bench",
+                    "params": {"agent_harness": agent_harness},
+                },
+            },
+        }
+    )
+
+
 class TestAdapterSupportedModes:
     def test_engine_loop_only_adapter_omits_delegated(self) -> None:
         modes = adapter_supported_modes(_EngineLoopOnlyAdapter({}))
@@ -126,9 +153,9 @@ class TestAdapterSupportedModes:
 
     def test_explicit_engine_loop_only_opts_out_despite_legacy_flag(self) -> None:
         # An explicit supported_execution_modes declaration beats the
-        # legacy-flag derivation: the identity check sees a frozenset distinct
-        # from BaseAdapter's default and reads it verbatim, so the legacy flag
-        # does not add DELEGATED back.
+        # legacy-flag derivation: the MRO check sees a class below BaseAdapter
+        # that defines the capability in its own __dict__ and reads it verbatim,
+        # so the legacy flag does not add DELEGATED back.
         class _ExplicitEngineLoopOnly(_EngineLoopOnlyAdapter):
             supports_coding_harness = True
             supported_execution_modes = frozenset({ExecutionMode.ENGINE_LOOP})
@@ -175,12 +202,29 @@ class TestDelegatedGate:
         assert ExecutionMode.DELEGATED.value in message
         assert ExecutionMode.ENGINE_LOOP.value in message
 
-    def test_engine_loop_sentinel_via_params_is_not_refused(self) -> None:
-        # The engine-loop sentinel is not a coding harness: it selects no
-        # delegated mode, so the gate never fires — the engine loop runs on
-        # any adapter, including this engine-loop-only one with no tasks.
-        orch = Orchestrator(_harness_via_params_run_config("engine-loop"))
+    def test_engine_loop_sentinel_through_real_parse_is_not_refused(self) -> None:
+        # The real correctness case: a dict-parsed config lifts the
+        # ``engine-loop`` param onto ``models.agent.harness`` and drops it from
+        # ``params``. The sentinel is not a coding harness — it selects no
+        # delegated mode on either address — so the gate never fires and the
+        # engine loop runs on this engine-loop-only adapter.
+        orch = Orchestrator(_parsed_run_config_with_params_harness("engine-loop"))
         orch.adapter = _EngineLoopOnlyAdapter({})
 
         # No RuntimeError: the gate is skipped and the empty run loads cleanly.
         assert orch.load_tasks() is None
+
+    def test_delegated_harness_through_real_parse_is_refused(self) -> None:
+        # The post-lift positive: a real coding harness parsed from a dict lands
+        # on ``models.agent.harness`` and must still be refused by an
+        # engine-loop-only adapter, naming both sides of the mismatch.
+        orch = Orchestrator(_parsed_run_config_with_params_harness("claude-code"))
+        orch.adapter = _EngineLoopOnlyAdapter({})
+
+        with pytest.raises(RuntimeError) as excinfo:
+            orch.load_tasks()
+
+        message = str(excinfo.value)
+        assert "claude-code" in message
+        assert ExecutionMode.DELEGATED.value in message
+        assert ExecutionMode.ENGINE_LOOP.value in message

@@ -825,7 +825,14 @@ class InProcessConductor:
         A task whose metadata selects :attr:`ExecutionMode.DELEGATED` brings
         its own agent and takes the :meth:`_run_harness_trial` branch instead.
         """
-        if select_execution_mode(spec.task.metadata) is ExecutionMode.DELEGATED:
+        try:
+            execution_mode = select_execution_mode(spec.task.metadata)
+        except RuntimeError as exc:
+            # The classifier names the broken metadata key but not which trial
+            # emitted it; prepend the trial id so a multi-trial run stays
+            # diagnosable without changing the classifier's signature.
+            raise RuntimeError(f"trial {setup.trial_id}: {exc}") from exc
+        if execution_mode is ExecutionMode.DELEGATED:
             harness_command = spec.task.metadata[HARNESS_COMMAND_METADATA_KEY]
             return self._run_harness_trial(spec, task_config, setup, harness_command)
 

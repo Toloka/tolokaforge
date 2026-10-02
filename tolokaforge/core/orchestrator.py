@@ -306,9 +306,13 @@ def _configured_harness(config: Any) -> str | None:
     and the legacy param is what this repo's own matrix workflow and the
     terminal-bench recipes still write. A guard reading only the canonical
     field silently never runs on the shipped configuration.
+
+    The ``engine-loop`` sentinel is "no harness" on both addresses: it names
+    the engine's own turn loop, not a delegated coding-harness CLI, so it
+    returns ``None`` and never trips the delegated-mode gate.
     """
     agent = config.models.get("agent") if getattr(config, "models", None) else None
-    if agent is not None and getattr(agent, "harness", None):
+    if agent is not None and getattr(agent, "harness", None) and agent.harness != ENGINE_LOOP:
         return str(agent.harness)
     adapter = getattr(config.evaluation, "harness_adapter", None)
     params = getattr(adapter, "params", None) or {}
@@ -330,9 +334,13 @@ def adapter_supported_modes(adapter: Any) -> frozenset[ExecutionMode]:
     gate stays back-compatible for the deprecation window. Every adapter runs
     :attr:`~tolokaforge.core.execution_mode.ExecutionMode.ENGINE_LOOP`.
     """
-    declared = getattr(adapter, "supported_execution_modes", None)
-    if declared is not None and declared is not BaseAdapter.supported_execution_modes:
-        return frozenset(declared)
+    overrides_capability = any(
+        "supported_execution_modes" in klass.__dict__
+        for klass in type(adapter).__mro__
+        if klass is not BaseAdapter and issubclass(klass, BaseAdapter)
+    )
+    if overrides_capability:
+        return frozenset(adapter.supported_execution_modes)
     if getattr(adapter, "supports_coding_harness", False):
         return frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})
     return frozenset({ExecutionMode.ENGINE_LOOP})
@@ -2335,6 +2343,9 @@ class Orchestrator:
         # ``get_task_ids()`` or any container work — against an adapter that
         # does not run that mode, with a message naming both sides of the
         # pair and the modes the adapter does run.
+        # This gate classifies delegation from the config harness slug, while
+        # the conductor classifies from emitted command metadata — two seams
+        # that can diverge; unifying them is tracked in #1758.
         selected_harness = _configured_harness(self.config)
         if selected_harness is not None:
             supported = adapter_supported_modes(self.adapter)
