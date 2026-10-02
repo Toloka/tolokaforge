@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.28.1 (2026-10-02)
+
+### Feat
+
+- **observability**: read, gate and project coding-agent transcripts, and an uploader for them (#1624)
+
+### Fix
+
+- **core**: run every Terminal-Bench task, keep the reasoning models hand us, and stop losing trials to turns that reasoned without acting (#1727)
+- **models**: models wheel requires engine >=0.28 — the bundled presets set supports_sampling_params (#1737)
+
 ## v0.28.0 (2026-10-01)
 
 ### BREAKING CHANGE
