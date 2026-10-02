@@ -13,6 +13,7 @@ dropped, as rag-service drops zero scores.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -119,8 +120,13 @@ class _MockTransportRagClient(RAGServiceClient):
         self._transport = transport
 
     async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url, timeout=self.timeout, transport=self._transport
-            )
-        return self._client
+        running = asyncio.get_running_loop()
+        bound = self._bound
+        if bound is not None and bound[1] is running and not bound[0].is_closed:
+            return bound[0]
+        await self.close()
+        client = httpx.AsyncClient(
+            base_url=self.base_url, timeout=self.timeout, transport=self._transport
+        )
+        self._bound = (client, running)
+        return client
