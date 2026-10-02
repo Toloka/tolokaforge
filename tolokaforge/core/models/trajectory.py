@@ -24,7 +24,7 @@ from pydantic import (
 
 from tolokaforge.core.llm.reasoning import StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
-from tolokaforge.core.models.grade import Grade
+from tolokaforge.core.models.grade import Grade, GradingStateSnapshots, JudgeUsage
 from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
 
@@ -916,6 +916,11 @@ class Trajectory(BaseModel):
     # reason it gave. ``None`` means grading either succeeded or was correctly
     # not attempted — it does not distinguish those two, ``grade`` does.
     grading_error: str | None = None
+    # Work completed before a grading failure, without inventing a verdict.
+    grading_judge_usage: JudgeUsage | None = None
+    grading_state_snapshots: GradingStateSnapshots | None = None
+    grading_state_diff: dict[str, Any] | None = None
+    grading_comparison_view: dict[str, Any] | None = None
     # Which point of the provisioning lifecycle raised ``ProvisionError``.
     # Non-``None`` iff ``termination_reason == PROVISION_ERROR``; ``None`` on
     # every other trial including bundles the executor writes for a failure
@@ -952,4 +957,14 @@ class Trajectory(BaseModel):
                 "grading_error records that no verdict could be computed, so a grade "
                 "alongside it describes a trial two different ways."
             )
+        if self.grading_error is None and any(
+            value is not None
+            for value in (
+                self.grading_judge_usage,
+                self.grading_state_snapshots,
+                self.grading_state_diff,
+                self.grading_comparison_view,
+            )
+        ):
+            raise ValueError("grading failure evidence requires grading_error")
         return self

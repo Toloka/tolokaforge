@@ -307,10 +307,14 @@ def _cost_by_role_rows(trajectories: Sequence[Trajectory]) -> list[dict[str, Any
     judge = _role_spend_bucket()
     judge_seen = False
     for trajectory in trajectories:
-        if trajectory.grade is None or trajectory.grade.judge_usage is None:
+        usage = (
+            trajectory.grade.judge_usage
+            if trajectory.grade is not None
+            else trajectory.grading_judge_usage
+        )
+        if usage is None:
             continue
         judge_seen = True
-        usage = trajectory.grade.judge_usage
         judge["cost_usd"] += usage.cost_usd
         judge["prompt_tokens"] += usage.prompt_tokens
         judge["completion_tokens"] += usage.completion_tokens
@@ -367,9 +371,10 @@ def _spend_metrics(trajectories: Sequence[Trajectory]) -> dict[str, Any]:
     spend["unpriced_trials"] = n_total - len(known_costs)
 
     judge_costs = [
-        t.grade.judge_usage.cost_usd
+        usage.cost_usd
         for t in trajectories
-        if t.grade is not None and t.grade.judge_usage is not None
+        if (usage := t.grade.judge_usage if t.grade is not None else t.grading_judge_usage)
+        is not None
     ]
     spend["judge_cost_usd"] = sum(judge_costs) if judge_costs else None
     # ``None`` unless *both* halves are known. Coercing one to ``0.0`` reported

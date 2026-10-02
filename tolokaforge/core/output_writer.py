@@ -287,6 +287,21 @@ class OutputWriter:
             ),
             "provision_stage": trajectory.provision_stage,
             "grading_error": trajectory.grading_error,
+            "grading_judge_usage": (
+                trajectory.grading_judge_usage.model_dump(mode="json")
+                if trajectory.grading_judge_usage is not None
+                else None
+            ),
+            "grading_state_diff": (
+                self.redaction.redact_mapping(trajectory.grading_state_diff)
+                if trajectory.grading_state_diff is not None
+                else None
+            ),
+            "grading_comparison_view": (
+                self.redaction.redact_mapping(trajectory.grading_comparison_view)
+                if trajectory.grading_comparison_view is not None
+                else None
+            ),
             "snapshot_status": (
                 trajectory.snapshot_status.model_dump(mode="json")
                 if trajectory.snapshot_status is not None
@@ -555,5 +570,22 @@ class OutputWriter:
 
         if trajectory.grade:
             self.write_grade(trajectory.grade)
+        else:
+            for name in (GRADE_FILENAME, JUDGE_TRAJECTORY_FILENAME, JUDGE_INPUTS_FILENAME):
+                (self.output_dir / name).unlink(missing_ok=True)
+                self._rewritten.discard(name)
+                self._omitted.discard(name)
+            if trajectory.grading_state_snapshots is not None:
+                snapshots = self.redaction.redact_mapping(
+                    trajectory.grading_state_snapshots.model_dump(mode="json")
+                )
+                with open(self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME, "w") as f:
+                    yaml.safe_dump(snapshots, f, allow_unicode=True, sort_keys=False)
+                self._note_rewritten(GRADING_STATE_SNAPSHOTS_FILENAME)
+            else:
+                (self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME).unlink(missing_ok=True)
+                self._rewritten.discard(GRADING_STATE_SNAPSHOTS_FILENAME)
+            if self._redacting:
+                self._declare_or_discard()
 
         self.write_logs(logger)

@@ -562,3 +562,18 @@ class TestJudgeCost:
         m = calculate_task_metrics([traj])
         assert m["judge_cost_usd"] == pytest.approx(0.003)
         assert m["total_cost_incl_judge_usd"] == pytest.approx(0.013)
+
+    def test_failed_judge_without_grade_still_counts_cost(self):
+        traj = self._trial(0, 0.01, None)
+        traj.grade = None
+        traj.grading_error = "judge malformed"
+        traj.grading_judge_usage = JudgeUsage(
+            calls=1, prompt_tokens=100, completion_tokens=5, cost_usd=0.003
+        )
+        m = calculate_task_metrics([traj])
+        assert m["judge_cost_usd"] == pytest.approx(0.003)
+        assert m["total_cost_incl_judge_usd"] == pytest.approx(0.013)
+        assert (
+            next(row for row in m["total_cost_by_role"] if row["role"] == "judge")["prompt_tokens"]
+            == 100
+        )

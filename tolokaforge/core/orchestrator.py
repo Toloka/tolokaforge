@@ -981,6 +981,8 @@ class Orchestrator:
         grade = trajectory.grade
         if grade is not None and grade.judge_usage is not None:
             total += grade.judge_usage.cost_usd
+        elif grade is None and trajectory.grading_judge_usage is not None:
+            total += trajectory.grading_judge_usage.cost_usd
         return total
 
     @staticmethod
@@ -1012,6 +1014,13 @@ class Orchestrator:
                         grade = yaml.safe_load(f) or {}
                     judge_usage = grade.get("judge_usage") or {}
                     total_cost += float(judge_usage.get("cost_usd", 0.0) or 0.0)
+                else:
+                    trajectory_path = metrics_path.parent / "trajectory.yaml"
+                    if trajectory_path.exists():
+                        with open(trajectory_path) as f:
+                            trajectory = yaml.safe_load(f) or {}
+                        judge_usage = trajectory.get("grading_judge_usage") or {}
+                        total_cost += float(judge_usage.get("cost_usd", 0.0) or 0.0)
             except Exception as exc:
                 logger.warning(
                     "Skipping unreadable trial bundle during resume cost seed",

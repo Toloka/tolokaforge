@@ -134,4 +134,6 @@ def grade_to_runner_wire(grade: Grade) -> pb2.Grade:
     )
     if grade.comparison_view is not None:
         wire.comparison_view_json = json.dumps(grade.comparison_view)
+    if grade.state_snapshots is not None:
+        wire.state_snapshots_json = grade.state_snapshots.model_dump_json()
     return wire
