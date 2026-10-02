@@ -13,6 +13,7 @@ Usage:
 FAIL FAST: All methods raise RAGServiceError on failures.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -183,21 +184,45 @@ class RAGServiceClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client."""
-        if self._client is None or self._client.is_closed:
+        """Get or create the HTTP client, bound to the running event loop.
+
+        One ``RAGServiceClient`` is driven from two loops: the server's
+        startup/shutdown health probes run on the main server loop, while trial
+        handlers run on :class:`RunnerServiceImpl`'s dedicated loop thread.
+        httpx binds its connection-pool primitives to the loop a client is first
+        used on, so a client cached on one loop raises "Event is bound to a
+        different event loop" when reused on another. Rebuild whenever the
+        running loop changes; the stale client belongs to a foreign loop and
+        cannot be awaited closed from here, so drop the reference.
+        """
+        running = asyncio.get_running_loop()
+        if self._client is None or self._client.is_closed or self._client_loop is not running:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout,
             )
+            self._client_loop = running
         return self._client
 
     async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
+        """Close the HTTP client when it belongs to the running loop.
+
+        A client bound to a different loop (the startup probe's client once
+        trials have rebuilt it on the servicer loop) cannot be awaited closed
+        from here, so drop the reference instead — this never raises during
+        shutdown.
+        """
+        client = self._client
+        bound_loop = self._client_loop
+        self._client = None
+        self._client_loop = None
+        if client is None or client.is_closed:
+            return
+        if bound_loop is asyncio.get_running_loop():
+            await client.aclose()
 
     async def __aenter__(self) -> "RAGServiceClient":
         """Async context manager entry."""
