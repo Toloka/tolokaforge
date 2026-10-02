@@ -6,7 +6,6 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from requests import Response
 
 pytest.importorskip("opentelemetry.sdk")
 from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
@@ -711,29 +710,10 @@ class TestErrorRoots:
 class TestHowManyTimesABatchIsPosted:
     """The v4 producer policy makes one POST attempt per batch (ADR-0048).
 
-    The count is taken at the HTTP layer, not at the SDK's ``_export``: that method re-posts the
-    same bytes in an ``except ConnectionError`` branch of its own, so a test that stubs it cannot
-    see the repeat it is there to rule out.
+    ``test_otlp_transport.py`` owns the counts: it sends real batches to a local receiver and
+    counts what reaches the wire. What stays here is what only an in-process test reaches: the
+    endpoint's adapter, and the refusal when the single-attempt exporter cannot be built.
     """
-
-    def _count_posts(self, exporter, answer=None, raises=None):
-        """Replace the session's ``post`` with a counter; returns the list of calls."""
-        posts = []
-
-        def post(*args, **kwargs):
-            posts.append(kwargs)
-            if raises is not None:
-                raise raises
-            return answer
-
-        exporter._session.post = post
-        return posts
-
-    @staticmethod
-    def _answer(status_code: int = 503) -> Response:
-        answer = Response()
-        answer.status_code = status_code
-        return answer
 
     def _write_once(self):
         from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
@@ -742,76 +722,16 @@ class TestHowManyTimesABatchIsPosted:
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
         )
 
-    def test_the_default_exporter_keeps_the_sdk_retries(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
-
-        exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"})
-        posts = self._count_posts(exporter, answer=self._answer())
-        exporter._shutdown_in_progress.set()  # do not wait out the backoff in a unit test
-        exporter.export([])
-        assert type(exporter).__name__ == "OTLPSpanExporter"
-        assert len(posts) >= 1
-
-    def test_a_lost_connection_is_not_a_second_post(self) -> None:
-        """The case the guarantee exists for: the receiver took the body and the answer never
-        came back. The SDK's own ``_export`` posts again here; this exporter may not."""
-        from opentelemetry.sdk.trace.export import SpanExportResult
-        from requests.exceptions import ConnectionError as RequestsConnectionError
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, raises=RequestsConnectionError("peer closed"))
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1, "a batch whose answer was lost may not be posted again"
-
-    def test_a_refused_batch_is_not_posted_again(self) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, answer=self._answer())
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-
-    def test_a_timeout_is_not_posted_again(self) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-        from requests.exceptions import Timeout
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, raises=Timeout("read timed out"))
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-
-    @pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
-    def test_a_redirect_is_not_followed(self, status_code: int) -> None:
-        """``requests`` follows a 307 or 308 by re-sending the body, which would be a second
-        write; the request asks for no redirect and the answer counts as a failure."""
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        answer = self._answer(status_code)
-        answer.headers["Location"] = "http://127.0.0.1:9/redirected"
-        posts = self._count_posts(exporter, answer=answer)
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-        assert posts[0]["allow_redirects"] is False
-
     def test_the_endpoints_adapter_makes_no_attempt_of_its_own(self) -> None:
-        """A session supplied through the SDK's credential-provider hook may carry an adapter
-        with a retry policy; the exporter mounts its own with none."""
+        """requests' own adapters make no retries; the exporter mounts one with none for its
+        endpoint anyway, so the guarantee does not rest on a library default."""
         exporter = self._write_once()
         adapter = exporter._session.get_adapter("http://127.0.0.1:9/v1/traces")
         assert adapter.max_retries.total == 0
 
-    @pytest.mark.parametrize("status_code", [200, 202, 204, 207, 299])
-    def test_a_successful_post_is_one_post(self, status_code: int) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, answer=self._answer(status_code))
-        assert exporter.export([]) is SpanExportResult.SUCCESS
-        assert len(posts) == 1
-
-    def test_an_sdk_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
-        """An incompatible SDK must refuse the run instead of silently enabling retries."""
+    def test_an_install_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
+        """An install that cannot build the single-attempt request must refuse the run instead
+        of silently enabling retries."""
         from tolokaforge_langfuse import otlp_transport
 
         monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
@@ -820,27 +740,8 @@ class TestHowManyTimesABatchIsPosted:
                 "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
             )
 
-    def test_an_exporter_missing_what_the_post_reads_refuses_the_run(self, monkeypatch) -> None:
-        """The subclass posts off the SDK exporter's own session, endpoint, timeout, compression
-        and certificates. An SDK that renames one of them must stop the run rather than let the
-        exporter fall back to the ``_export`` that re-posts."""
-        from tolokaforge_langfuse import otlp_transport
-
-        real = otlp_transport._single_attempt_exporter_class()
-
-        class _Renamed(real):  # type: ignore[misc, valid-type]
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                del self._compression
-
-        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: _Renamed)
-        with pytest.raises(otlp_transport.SingleAttemptUnavailable, match="_compression"):
-            otlp_transport.make_otlp_exporter(
-                "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
-            )
-
-    def test_the_same_sdk_still_serves_a_retrying_exporter(self, monkeypatch) -> None:
-        """Only the single-attempt policy needs these internals; v3 keeps the stock exporter."""
+    def test_the_retrying_exporter_does_not_need_the_single_attempt_one(self, monkeypatch) -> None:
+        """v3 keeps the stock exporter whether or not the single-attempt one can be built."""
         from tolokaforge_langfuse import otlp_transport
 
         monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
@@ -848,20 +749,3 @@ class TestHowManyTimesABatchIsPosted:
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}
         )
         assert type(exporter).__name__ == "OTLPSpanExporter"
-
-
-class TestTheIngestionHeader:
-    def test_the_exporter_asks_for_the_direct_ingestion_path(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
-
-        exporter = make_otlp_exporter("http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"})
-        assert exporter._session.headers[INGESTION_VERSION_HEADER] == "4"
-
-    def test_a_caller_may_turn_it_off_and_keeps_its_own_headers(self) -> None:
-        from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
-
-        exporter = make_otlp_exporter(
-            "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, ingestion_version=None
-        )
-        assert INGESTION_VERSION_HEADER not in exporter._session.headers
-        assert exporter._session.headers["Authorization"] == "Basic x"

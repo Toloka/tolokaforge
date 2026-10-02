@@ -117,14 +117,17 @@ the family in `details`. The first three count what was queued; what left is the
   policy; it does not prevent an undeletable duplicate. A failed batch is reported in the receipt,
   and the offline sibling can recover missing observations. A root the exporter posted but could
   not confirm gets **no** error root, only a counter and a warning, so a minimal error record does
-  not overwrite a complete root that may already be stored. An OpenTelemetry SDK that cannot
-  enforce the single-attempt policy fails the run instead of silently enabling retries.
+  not overwrite a complete root that may already be stored. An install that cannot build the
+  single-attempt request fails the run instead of silently enabling retries.
 - **The guarantee is about the physical request, and the stock transport repeats it in three
   places.** Turning off the exporter's own retry loop is not enough: the SDK's `_export` re-posts
-  the same bytes in an `except ConnectionError` branch (which is precisely the lost-answer case),
+  the same bytes in an `except ConnectionError` branch (its OTLP client's `_submit` from
+  OpenTelemetry 1.45; precisely the lost-answer case),
   and `requests` follows a 307 or 308 by re-sending the body while a caller-supplied session's
-  adapter may retry on its own. The exporter therefore issues the `session.post` itself, with
-  redirects refused and the endpoint's adapter mounted with no retries. Only 2xx responses count
+  adapter may retry on its own. The exporter therefore builds and issues the request itself,
+  without the SDK's exporter (the body from the SDK's public OTLP encoder, the `session.post`
+  through a session of its own), with redirects refused and the endpoint's adapter mounted with
+  no retries, so no SDK-private setting is read. Only 2xx responses count
   as successful exports; a redirect is a failed export. Tests count posts at the HTTP layer and
   use real response objects to preserve HTTP status semantics.
 - A live re-run under the same run id can overwrite existing observation ids. A new run id keeps

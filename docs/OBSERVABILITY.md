@@ -244,12 +244,17 @@ refused at run start.
 that failed with a connection error or a retryable status. The v4 producer makes one POST attempt
 per batch to avoid unnecessary requests and unintended overwrites. This does not guarantee
 delivery or prevent an undeletable duplicate. It takes more than disabling the exporter's retry
-loop: the SDK's own `_export` posts a second time on a lost connection, `requests` follows a 307 or 308
-by re-sending the body, and a session's adapter can retry by itself. The exporter makes the
-request itself with redirects refused and no adapter retries. Only 2xx responses are successful;
-3xx responses, including 307 and 308, are failed exports. An OpenTelemetry SDK whose exporter cannot
-enforce this policy fails the run at start rather than silently enabling retries. A v3 run keeps
-the stock retrying exporter. The consequences are visible in the receipt:
+loop: the SDK posts a second time on a lost connection (`_export` up to OpenTelemetry 1.44, its
+OTLP client from 1.45), `requests` follows a 307 or 308 by re-sending the body, and a session's
+adapter can retry by itself. So this exporter does not use the SDK's: it encodes the batch with
+the SDK's public OTLP encoder and makes the one POST itself, through a `requests` session of its
+own, with redirects refused and no adapter retries. It reads nothing the SDK keeps private: the
+encoder's public module is all it takes from the SDK's exporter packages. Only 2xx responses are
+successful; 3xx responses, including 307 and 308, are failed exports. An install that cannot build
+the request fails the run at start rather than silently enabling retries. The receiver's headers
+come from the caller alone, so a run without them, or with a credential provider only the SDK's
+exporter would load, fails at start too rather than sending every batch to be refused. A v3 run
+keeps the stock retrying exporter. The consequences are visible in the receipt:
 
 - a batch the queue never took (it was full, or the flush budget ran out) is certainly unwritten,
   so the trace gets its **error root** at run end;
