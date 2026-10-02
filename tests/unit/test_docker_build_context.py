@@ -910,6 +910,19 @@ def test_grader_build_context_resolves_from_installed_wheel(tmp_path: Path, monk
                 "grader Dockerfile COPYs for its hatchling build stage"
             )
         assert (build_dir / ".python-version").read_text() == "3.12\n"
+        # The copied ``tolokaforge/`` package must NOT carry the base wheel's
+        # force-include outputs — grader rebuilds the base wheel with
+        # ``hatchling build --target wheel``, which re-creates them from the
+        # force-include table, and a stale copy makes the build die with
+        # "a second file is being added to the wheel archive at the same path".
+        assert not (build_dir / "tolokaforge" / "_subset_build").exists(), (
+            "force-include artifact tolokaforge/_subset_build leaked into the "
+            "assembled context — grader's base-wheel build will collide"
+        )
+        assert not (build_dir / "tolokaforge" / "_python_version.txt").exists(), (
+            "force-include artifact tolokaforge/_python_version.txt leaked into "
+            "the assembled context — grader's base-wheel build will collide"
+        )
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
 

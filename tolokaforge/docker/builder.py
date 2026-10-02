@@ -663,8 +663,18 @@ def assemble_build_context(
 
     # Copy declared context files. The staged contexts bypass the root
     # .dockerignore, so apply its build-artifact exclusions while copying
-    # source directories as well.
-    ignore_build_artifacts = shutil.ignore_patterns("*.egg-info", "dist", "build")
+    # source directories as well. ``_subset_build`` and ``_python_version.txt``
+    # are the base wheel's own force-include OUTPUTS, baked into the installed
+    # ``tolokaforge/`` package on a wheel install; an image that rebuilds the
+    # base wheel from the copied tree (grader's ``hatchling build --target
+    # wheel``) would then re-create them from the force-include table and die
+    # with "a second file is being added to the wheel archive at the same path".
+    # Excluding them keeps the copied package a clean source tree (and drops the
+    # sibling trees ``_subset_build`` duplicates). No-op on a source checkout,
+    # where neither artifact exists.
+    ignore_build_artifacts = shutil.ignore_patterns(
+        "*.egg-info", "dist", "build", "_subset_build", "_python_version.txt"
+    )
     # Paths may be relative (resolved against repo_root) or absolute
     # (e.g. a wheel from the wheel-cache — copied flat into build_dir).
     # An entry may also be a ``(source, destination)`` pair when the name the
