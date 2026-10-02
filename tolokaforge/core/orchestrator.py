@@ -2356,9 +2356,11 @@ class Orchestrator:
                     "declares the delegated mode by overriding "
                     "``supported_execution_modes`` to include "
                     "``ExecutionMode.DELEGATED`` (the shipped opt-ins are "
-                    "terminal_bench and native). Either drop "
-                    "``models.agent.harness`` to run the engine's LLM loop, "
-                    "or switch to an adapter that runs the delegated mode."
+                    "terminal_bench and native). Either drop the harness "
+                    "(``models.agent.harness`` or "
+                    "``evaluation.harness_adapter.params.agent_harness``) to "
+                    "run the engine's LLM loop, or switch to an adapter that "
+                    "runs the delegated mode."
                 )
 
         self._warn_on_unreliable_pricing()
