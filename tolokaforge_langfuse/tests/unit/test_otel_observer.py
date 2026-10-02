@@ -6,7 +6,6 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from requests import Response
 
 pytest.importorskip("opentelemetry.sdk")
 from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
@@ -711,30 +710,10 @@ class TestErrorRoots:
 class TestHowManyTimesABatchIsPosted:
     """The v4 producer policy makes one POST attempt per batch (ADR-0048).
 
-    The count is taken at the HTTP layer, not at the SDK's ``_export``: that method re-posts the
-    same bytes in an ``except ConnectionError`` branch of its own, so a test that stubs it cannot
-    see the repeat it is there to rule out. ``test_otlp_transport.py`` counts the same cases on
-    the wire, against a local receiver.
+    ``test_otlp_transport.py`` owns the counts: it sends real batches to a local receiver and
+    counts what reaches the wire. What stays here is what only an in-process test reaches: the
+    endpoint's adapter, and the refusal when the single-attempt exporter cannot be built.
     """
-
-    def _count_posts(self, exporter, answer=None, raises=None):
-        """Replace the session's ``post`` with a counter; returns the list of calls."""
-        posts = []
-
-        def post(*args, **kwargs):
-            posts.append(kwargs)
-            if raises is not None:
-                raise raises
-            return answer
-
-        exporter._session.post = post
-        return posts
-
-    @staticmethod
-    def _answer(status_code: int = 503) -> Response:
-        answer = Response()
-        answer.status_code = status_code
-        return answer
 
     def _write_once(self):
         from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
@@ -743,63 +722,12 @@ class TestHowManyTimesABatchIsPosted:
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
         )
 
-    def test_a_lost_connection_is_not_a_second_post(self) -> None:
-        """The case the guarantee exists for: the receiver took the body and the answer never
-        came back. The SDK's own ``_export`` posts again here; this exporter may not."""
-        from opentelemetry.sdk.trace.export import SpanExportResult
-        from requests.exceptions import ConnectionError as RequestsConnectionError
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, raises=RequestsConnectionError("peer closed"))
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1, "a batch whose answer was lost may not be posted again"
-
-    def test_a_refused_batch_is_not_posted_again(self) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, answer=self._answer())
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-
-    def test_a_timeout_is_not_posted_again(self) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-        from requests.exceptions import Timeout
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, raises=Timeout("read timed out"))
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-
-    @pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
-    def test_a_redirect_is_not_followed(self, status_code: int) -> None:
-        """``requests`` follows a 307 or 308 by re-sending the body, which would be a second
-        write; the request asks for no redirect and the answer counts as a failure."""
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        answer = self._answer(status_code)
-        answer.headers["Location"] = "http://127.0.0.1:9/redirected"
-        posts = self._count_posts(exporter, answer=answer)
-        assert exporter.export([]) is SpanExportResult.FAILURE
-        assert len(posts) == 1
-        assert posts[0]["allow_redirects"] is False
-
     def test_the_endpoints_adapter_makes_no_attempt_of_its_own(self) -> None:
         """requests' own adapters make no retries; the exporter mounts one with none for its
         endpoint anyway, so the guarantee does not rest on a library default."""
         exporter = self._write_once()
         adapter = exporter._session.get_adapter("http://127.0.0.1:9/v1/traces")
         assert adapter.max_retries.total == 0
-
-    @pytest.mark.parametrize("status_code", [200, 202, 204, 207, 299])
-    def test_a_successful_post_is_one_post(self, status_code: int) -> None:
-        from opentelemetry.sdk.trace.export import SpanExportResult
-
-        exporter = self._write_once()
-        posts = self._count_posts(exporter, answer=self._answer(status_code))
-        assert exporter.export([]) is SpanExportResult.SUCCESS
-        assert len(posts) == 1
 
     def test_an_install_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
         """An install that cannot build the single-attempt request must refuse the run instead
