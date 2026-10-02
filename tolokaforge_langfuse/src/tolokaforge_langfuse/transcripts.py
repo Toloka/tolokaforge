@@ -103,6 +103,10 @@ TOOL_IO_SCRUB = "scrub"
 TOOL_IO_POLICIES = (TOOL_IO_DROP, TOOL_IO_SCRUB)
 SCRUB_MAX_CHARS = 2000
 
+# the trace metadata key that keeps the transcript's own model name when the caller names the
+# model that served the run (``TranscriptOptions.model``)
+CLI_MODEL_KEY = "cli_model"
+
 _ZONE_SUFFIX = re.compile(r"[+-]\d{2}:?\d{2}$")
 
 
@@ -614,6 +618,13 @@ class TranscriptOptions:
     # the subject of the work, the pull request); it may not overwrite a schema key
     metadata: Mapping[str, Any] = field(default_factory=dict)
     resolver: ModelNameResolver = field(default_factory=RawModelNameResolver)
+    # the model that served the run, when the CLI was pointed at an alias a gateway routes to
+    # another model: the CLI reports the alias, so only the caller can name it. It becomes the
+    # generations' model and the model facets; the transcript's own names stay in the trace
+    # metadata (``cli_model``: the first it reports; ``model_names``: all of them, then this one
+    # when they do not include it). None (or empty): the first name the transcript reports, and
+    # nothing is inferred from a second one
+    model: str | None = None
 
 
 def build_events(
@@ -627,14 +638,16 @@ def build_events(
     caller = _caller_tags(options.caller_tags)
     trace_id = ids.trace(options.run_tag, options.run_id, transcript.transcript_id)
     root_id = ids.root(trace_id)
-    identity = _identity(transcript, options.resolver)
+    served = _tag_value("model", options.model) if options.model else None
+    identity = _identity(transcript, options.resolver, served)
     start = transcript.started_at
     end = transcript.ended_at or start
     result = transcript.result
     tool_names = transcript.tool_names
 
-    metadata = _trace_metadata(transcript, options, caller, identity, ids)
-    clashes = sorted(set(options.metadata) & set(metadata))
+    metadata = _trace_metadata(transcript, options, caller, identity, ids, served)
+    # ``cli_model`` is the projection's key even on a trace that does not carry it
+    clashes = sorted(set(options.metadata) & (set(metadata) | {CLI_MODEL_KEY}))
     if clashes:
         raise TranscriptError(
             f"{transcript.origin}: metadata may not override schema keys: " + ", ".join(clashes)
@@ -767,9 +780,10 @@ def _trace_metadata(
     caller: Mapping[str, str],
     identity: ModelIdentity | None,
     ids: IdContract,
+    served: str | None,
 ) -> dict[str, Any]:
     result = transcript.result
-    return {
+    metadata: dict[str, Any] = {
         "transcript_id": transcript.transcript_id,
         "task_id": transcript.transcript_id,  # the id-contract position a transcript occupies
         "trial_index": TRIAL_INDEX,
@@ -788,7 +802,7 @@ def _trace_metadata(
         "producer_version": options.producer_version,
         "id_contract": ids.version,
         "model_name": _text(identity.canonical if identity else None),
-        "model_names": _text(" ".join(_models(transcript))),
+        "model_names": _text(" ".join(_model_names(transcript, served))),
         "model_rules": _text(getattr(options.resolver, "rules_version", None)),
         "cli_version": _text(transcript.cli_version),
         "cli_session_id": _text(transcript.session_id),
@@ -807,6 +821,9 @@ def _trace_metadata(
         "permission_denials": result.permission_denials if result else 0,
         "is_error": bool(result.is_error) if result else False,
     }
+    if served:
+        metadata[CLI_MODEL_KEY] = _text(_cli_model(transcript))
+    return metadata
 
 
 def _caller_tags(tags: Mapping[str, str]) -> dict[str, str]:
@@ -832,13 +849,16 @@ def _tag_value(prefix: str, value: str) -> str:
         raise TranscriptError(str(exc)) from exc
 
 
-def _identity(transcript: Transcript, resolver: ModelNameResolver) -> ModelIdentity | None:
-    """The agent's own model, from the first turn that names one."""
-    names = _models(transcript)
-    if not names:
+def _identity(
+    transcript: Transcript, resolver: ModelNameResolver, served: str | None
+) -> ModelIdentity | None:
+    """The agent's model: the one the caller says served the run, else the first the transcript
+    names."""
+    name = served or next(iter(_models(transcript)), None)
+    if name is None:
         return None
     try:
-        return resolver.resolve(None, names[0])
+        return resolver.resolve(None, name)
     except ModelNameResolverError as exc:
         raise TranscriptError(f"{transcript.origin}: {exc}") from exc
 
@@ -849,6 +869,20 @@ def _models(transcript: Transcript) -> list[str]:
         if turn.model and turn.model not in seen:
             seen.append(turn.model)
     return seen
+
+
+def _model_names(transcript: Transcript, served: str | None) -> list[str]:
+    """Every name the run goes by: the transcript's own, then the served model it does not name."""
+    names = _models(transcript)
+    if served and served not in names:
+        names.append(served)
+    return names
+
+
+def _cli_model(transcript: Transcript) -> str | None:
+    """The first name the transcript reports: the one its trace would carry without the served
+    model, whatever the spelling the caller gives that model."""
+    return next(iter(_models(transcript)), None)
 
 
 def _call_of(transcript: Transcript, call_id: str) -> ToolCall | None:
@@ -963,6 +997,7 @@ def transcript_files(root: Path) -> list[Path]:
 
 __all__ = [
     "ASSISTANT_BLOCKS",
+    "CLI_MODEL_KEY",
     "CONTEXT_CHARS",
     "CONTEXT_MESSAGES",
     "EVENT_TYPES",

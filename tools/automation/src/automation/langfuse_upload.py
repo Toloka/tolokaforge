@@ -304,14 +304,23 @@ def upload(
     caller_tags: Mapping[str, str],
     metadata: Mapping[str, Any] | None = None,
     tool_io: str | None = None,
+    model: str | None = None,
     producer_version: str = "automation",
     receiver: Receiver | None = None,
     dry_run: bool = False,
 ) -> UploadReport:
-    """Read, gate, project and send every agent transcript under ``directory``."""
+    """Read, gate, project and send every agent transcript under ``directory``.
+
+    ``model`` is the model that served the runs when the CLI was pointed at an alias: the CLI
+    reports the alias, and a gateway routes it to whatever it is configured to serve.
+    """
     from tolokaforge.observability import ids as engine_ids
     from tolokaforge_langfuse import otlp_spans, otlp_transport
     from tolokaforge_langfuse import transcripts as tr
+
+    # surrounding whitespace goes, as from a --tag or --metadata value: a trailing newline read
+    # from a file would otherwise end up inside the model tag
+    served_model = (model or "").strip() or None
 
     files = tr.transcript_files(Path(directory))
     ignored: list[str] = []
@@ -350,6 +359,7 @@ def upload(
                 project_verified=verified,
                 caller_tags=dict(caller_tags),
                 metadata=dict(metadata or {}),
+                model=served_model,
             )
             built = tr.build_events(gated, options, ids=contract)
         except tr.TranscriptError as exc:

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tolokaforge_langfuse.model_names import ModelIdentity
 
 from tolokaforge.observability import ids as engine_ids
 from tolokaforge_langfuse import safety
@@ -27,6 +28,10 @@ CLEAN = FIXTURES / "clean.jsonl"
 GOLDEN = FIXTURES / "clean.events.json"
 
 CALLER = {"team": "acme", "run_kind": "test", "ci_run": "12345", "ci_chain": "999"}
+
+# the name the fixture's CLI reports, and the model a gateway routed that alias to
+ALIAS = "claude-opus-4-8"
+SERVED = "anthropic/claude-opus-5.5"
 
 
 def options(**overrides: Any) -> tr.TranscriptOptions:
@@ -463,6 +468,120 @@ class TestTheProjection:
         span = one(built(first), "span-create")[1]
         assert span["id"] == one(built(again), "span-create")[1]["id"]
         assert span["metadata"]["key_source"] == "call_id"
+
+
+class VendorResolver:
+    """A resolver with rules of its own: the vendor of a vendor-qualified name is a facet."""
+
+    description = "vendor facets"
+    rules_version = "vendor-rules-1"
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def resolve(self, provider: str | None, name: str) -> ModelIdentity:
+        self.asked.append(name)
+        return ModelIdentity(
+            canonical=name, tags=(f"model:{name}", f"model_vendor:{name.partition('/')[0]}")
+        )
+
+
+def gateway_events(turn_event: int = 3) -> list[dict[str, Any]]:
+    """The fixture as a gateway left it: the CLI reports the alias, and one answer (the second
+    turn's by default) names the model the gateway routed the alias to."""
+    events = [json.loads(line) for line in CLEAN.read_text().splitlines() if line.strip()]
+    events[turn_event]["message"]["model"] = SERVED
+    return events
+
+
+class TestTheServedModel:
+    """The CLI was pointed at an alias that a gateway routes to another model, and the CLI
+    reports the alias. The caller names the model that served; the transcript's own names stay
+    in the trace metadata."""
+
+    def test_it_is_every_generations_model_and_the_model_tag(self) -> None:
+        build = built(tr.redact(read()), model=SERVED)
+        generations = one(build, "generation-create")
+        assert {g["model"] for g in generations} == {SERVED}
+        # every turn still says what the CLI reported for it
+        assert {g["metadata"]["model_raw"] for g in generations} == {ALIAS}
+        tags = one(build, "trace-create")[0]["tags"]
+        assert f"model:{SERVED}" in tags
+        assert f"model:{ALIAS}" not in tags
+
+    def test_the_metadata_keeps_the_name_the_cli_reported(self) -> None:
+        metadata = one(built(tr.redact(read()), model=SERVED), "trace-create")[0]["metadata"]
+        assert metadata["model_name"] == SERVED
+        assert metadata["cli_model"] == ALIAS
+        assert metadata["model_names"] == f"{ALIAS} {SERVED}"
+
+    def test_a_transcript_that_already_names_it_keeps_its_own_names(self) -> None:
+        transcript = tr.redact(tr.read_claude_text(stream(gateway_events()), transcript_id="t"))
+        metadata = one(built(transcript, model=SERVED), "trace-create")[0]["metadata"]
+        assert metadata["model_names"] == f"{ALIAS} {SERVED}"
+        assert metadata["cli_model"] == ALIAS
+        assert metadata["model_name"] == SERVED
+
+    @pytest.mark.parametrize("model", [SERVED, "claude-opus-5.5"], ids=["same", "other-spelling"])
+    def test_the_cli_model_is_the_first_name_the_transcript_reports(self, model: str) -> None:
+        """What the trace would have carried without the override, in the transcript's order and
+        whatever spelling the caller uses: the first turn here names the routed model."""
+        events = gateway_events(turn_event=1)
+        transcript = tr.redact(tr.read_claude_text(stream(events), transcript_id="t"))
+        metadata = one(built(transcript, model=model), "trace-create")[0]["metadata"]
+        assert metadata["cli_model"] == SERVED
+        assert metadata["model_names"].split()[:2] == [SERVED, ALIAS]
+
+    def test_cli_model_is_the_projections_key_with_or_without_the_override(self) -> None:
+        for model in (None, SERVED):
+            with pytest.raises(tr.TranscriptError, match="may not override schema keys: cli_model"):
+                built(tr.redact(read()), model=model, metadata={"cli_model": "from the caller"})
+
+    def test_its_facets_come_through_the_callers_resolver(self) -> None:
+        resolver = VendorResolver()
+        build = built(tr.redact(read()), model=SERVED, resolver=resolver)
+        assert resolver.asked == [SERVED]
+        trace = one(build, "trace-create")[0]
+        assert {f"model:{SERVED}", "model_vendor:anthropic"} <= set(trace["tags"])
+        assert trace["metadata"]["model_rules"] == "vendor-rules-1"
+
+    def test_a_transcript_without_a_turn_takes_it_too(self) -> None:
+        """The result object alone (``--output-format json``) names no model of its own."""
+        events = [json.loads(line) for line in CLEAN.read_text().splitlines() if line.strip()]
+        only = tr.read_claude_text(json.dumps(events[-1]), transcript_id="t", origin="object")
+        trace = one(built(tr.redact(only), model=SERVED), "trace-create")[0]
+        assert f"model:{SERVED}" in trace["tags"]
+        assert trace["metadata"]["cli_model"] == tr.NONE
+        assert trace["metadata"]["model_names"] == SERVED
+
+    def test_without_it_the_first_name_the_transcript_reports_is_the_model(self) -> None:
+        """The golden pins the whole projection; these are the facts the override changes."""
+        build = built(tr.redact(read()))
+        trace = one(build, "trace-create")[0]
+        assert trace["metadata"]["model_name"] == ALIAS
+        assert "cli_model" not in trace["metadata"]
+        assert f"model:{ALIAS}" in trace["tags"]
+        assert {g["model"] for g in one(build, "generation-create")} == {ALIAS}
+
+    def test_the_transcript_alone_never_picks_the_served_model(self) -> None:
+        """A second, vendor-qualified name is what a gateway answering some turns with the routed
+        model leaves behind, which is a habit rather than a contract: without the caller's word
+        nothing is inferred from it."""
+        transcript = tr.redact(tr.read_claude_text(stream(gateway_events()), transcript_id="t"))
+        build = built(transcript)
+        trace = one(build, "trace-create")[0]
+        assert trace["metadata"]["model_name"] == ALIAS
+        assert trace["metadata"]["model_names"] == f"{ALIAS} {SERVED}"
+        assert "cli_model" not in trace["metadata"]
+        assert {g["model"] for g in one(build, "generation-create")} == {ALIAS}
+
+    def test_an_empty_name_is_no_override(self) -> None:
+        assert bodies(built(tr.redact(read()), model="")) == bodies(built(tr.redact(read())))
+
+    @pytest.mark.parametrize("model", ["two words", "/leading-slash", "m" * 129])
+    def test_a_name_the_vocabulary_refuses_refuses_the_transcript(self, model: str) -> None:
+        with pytest.raises(tr.TranscriptError, match="the value must be"):
+            built(tr.redact(read()), model=model)
 
 
 class TestTheVocabulary:

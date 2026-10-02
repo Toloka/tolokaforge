@@ -21,6 +21,10 @@ pytestmark = pytest.mark.unit
 
 CALLER = {"team": "acme", "run_kind": "test", "ci_run": "12345"}
 
+# the name the CLI reports in CLEAN_EVENTS, and the model a gateway routed that alias to
+ALIAS = "claude-opus-4-8"
+SERVED = "anthropic/claude-opus-5.5"
+
 CLEAN_EVENTS: list[dict[str, Any]] = [
     {
         "type": "system",
@@ -100,6 +104,27 @@ class FakeExporter:
         if self._outcome == "raise":
             raise ConnectionError("receiver unreachable")
         return type("Result", (), {"name": self._outcome})()
+
+
+def model_facts(batch: list[Any]) -> dict[str, Any]:
+    """What one exported transcript says about its model: the generations' native model, the
+    root's model tags and the root's model metadata."""
+    generations = [
+        span for span in batch if span.attributes["langfuse.observation.type"] == "generation"
+    ]
+    root = next(span for span in batch if span.parent is None)
+    metadata = "langfuse.trace.metadata."
+    return {
+        "generation_models": {
+            span.attributes["langfuse.observation.model.name"] for span in generations
+        },
+        "model_tags": sorted(
+            tag for tag in root.attributes["langfuse.trace.tags"] if tag.startswith("model")
+        ),
+        "model_name": root.attributes[f"{metadata}model_name"],
+        "model_names": root.attributes[f"{metadata}model_names"],
+        "cli_model": root.attributes.get(f"{metadata}cli_model"),
+    }
 
 
 class TestTheTranscriptId:
@@ -540,15 +565,61 @@ class TestTheUpload:
         assert expected in report.failed[0]["reason"]
         assert not report.ok
 
+    def test_the_served_model_names_the_trace_the_receiver_gets(self, tmp_path: Path) -> None:
+        """An analysis agent runs ``claude -p`` against an alias a gateway routes to another
+        model, and the CLI reports the alias: the model that served is the caller's to name."""
+        (tmp_path / "analysis_four_bucket.json").write_text(
+            json.dumps(CLEAN_EVENTS), encoding="utf-8"
+        )
+        exporter = FakeExporter()
+        report = self._send(tmp_path, exporter, model=SERVED)
+        assert report.ok and len(exporter.batches) == 1
+        assert model_facts(exporter.batches[0]) == {
+            "generation_models": {SERVED},
+            "model_tags": [f"model:{SERVED}"],
+            "model_name": SERVED,
+            "model_names": f"{ALIAS} {SERVED}",
+            "cli_model": ALIAS,
+        }
+
+    def test_without_a_served_model_the_cli_reported_name_stays(self, tmp_path: Path) -> None:
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        exporter = FakeExporter()
+        assert self._send(tmp_path, exporter).ok
+        assert model_facts(exporter.batches[0]) == {
+            "generation_models": {ALIAS},
+            "model_tags": [f"model:{ALIAS}"],
+            "model_name": ALIAS,
+            "model_names": ALIAS,
+            "cli_model": None,
+        }
+
+    def test_surrounding_whitespace_never_reaches_the_model_tag(self, tmp_path: Path) -> None:
+        """A value read from a file keeps its line break unless something takes it off."""
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        exporter = FakeExporter()
+        assert self._send(tmp_path, exporter, model=f" {SERVED}\n").ok
+        facts = model_facts(exporter.batches[0])
+        assert facts["model_tags"] == [f"model:{SERVED}"]
+        assert facts["generation_models"] == {SERVED}
+
+    def test_a_served_model_the_vocabulary_refuses_sends_nothing(self, tmp_path: Path) -> None:
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        exporter = FakeExporter()
+        report = self._send(tmp_path, exporter, model="two words")
+        assert report.sent == [] and exporter.batches == []
+        assert "the value must be" in report.refused[0]["reason"]
+        assert not report.ok
+
     @staticmethod
-    def _send(directory: Path, exporter: FakeExporter) -> lu.UploadReport:
+    def _send(directory: Path, exporter: FakeExporter, **overrides: Any) -> lu.UploadReport:
         import tolokaforge_langfuse.otlp_transport as transport
 
         receiver = lu.Receiver(endpoint="https://h/v1/traces", headers={"Authorization": "Basic x"})
         original = transport.make_otlp_exporter
         transport.make_otlp_exporter = lambda *a, **k: exporter  # type: ignore[assignment]
         try:
-            return upload(directory, dry_run=False, receiver=receiver)
+            return upload(directory, dry_run=False, receiver=receiver, **overrides)
         finally:
             transport.make_otlp_exporter = original  # type: ignore[assignment]
 
@@ -607,6 +678,68 @@ class TestACrash:
         assert result.returncode != 0
         assert "the upload crashed" in result.stderr
         assert "fake-credential-value" not in result.stderr + result.stdout
+
+
+class TestTheModelOption:
+    """``--model`` through the command itself, as far as the spans it hands the exporter."""
+
+    @staticmethod
+    def _run(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str
+    ) -> tuple[Any, FakeExporter]:
+        import automation.cli as cli
+        import tolokaforge_langfuse.otlp_transport as transport
+        from typer.testing import CliRunner
+
+        exporter = FakeExporter()
+        monkeypatch.setattr(transport, "make_otlp_exporter", lambda *a, **k: exporter)
+        for name in ("LANGFUSE_BASE_URL", "LANGFUSE_PROJECT", "LANGFUSE_ENVIRONMENT"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv("LANGFUSE_EXTRA_HEADERS", raising=False)
+        monkeypatch.setenv("LANGFUSE_OTLP_ENDPOINT", "https://receiver.invalid/v1/traces")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "public-not-real")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "secret-not-real")
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        (stage / "analysis_four_bucket.json").write_text(json.dumps(CLEAN_EVENTS), encoding="utf-8")
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "langfuse-upload",
+                str(stage),
+                "--run-id",
+                "automation/eval-orchestrate/1/1",
+                "--label",
+                "pilot",
+                "--tag",
+                "team:acme",
+                "--tag",
+                "run_kind:test",
+                "--summary",
+                str(tmp_path / "summary.md"),
+                *extra,
+            ],
+        )
+        return result, exporter
+
+    def test_it_names_the_model_that_served(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = self._run(tmp_path, monkeypatch, "--model", SERVED)
+        assert result.exit_code == 0, result.output
+        facts = model_facts(exporter.batches[0])
+        assert facts["generation_models"] == {SERVED}
+        assert facts["model_tags"] == [f"model:{SERVED}"]
+        assert facts["cli_model"] == ALIAS
+
+    def test_without_it_the_command_sends_what_the_cli_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = self._run(tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+        facts = model_facts(exporter.batches[0])
+        assert facts["generation_models"] == {ALIAS}
+        assert facts["cli_model"] is None
 
 
 class TestThePairParsing:

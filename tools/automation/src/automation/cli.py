@@ -327,6 +327,12 @@ def langfuse_upload_cmd(
         "--tool-io",
         help="what happens to tool arguments and results: drop (default) or scrub",
     ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="the model that served the run, when the CLI was pointed at an alias "
+        "(default: the first name the transcript reports)",
+    ),
     receipt: str | None = typer.Option(None, "--receipt", help="write the report JSON here"),
     summary: str | None = typer.Option(
         None, "--summary", help="append the report here (default: GITHUB_STEP_SUMMARY)"
@@ -348,6 +354,7 @@ def langfuse_upload_cmd(
             caller_tags=langfuse_upload.parse_pairs(tag, ":", "--tag"),
             metadata=langfuse_upload.parse_pairs(metadata, "=", "--metadata"),
             tool_io=tool_io,
+            model=model,
             dry_run=dry_run,
         )
     except langfuse_upload.UploadError as exc:
