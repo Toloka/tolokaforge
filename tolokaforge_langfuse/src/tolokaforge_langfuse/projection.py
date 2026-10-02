@@ -1422,6 +1422,14 @@ class _CallPairing:
     paired: Mapping[int, Mapping[str, Any]]
     user_usage_match: str
     user_paired: Mapping[int, Mapping[str, Any]]
+    # ``usage.calls`` as written, positions included: the paired calls are its own objects,
+    # which is how the unpaired calls are told apart
+    recorded: Sequence[Any]
+
+    @property
+    def calls(self) -> list[Mapping[str, Any]]:
+        """The recorded entries that are calls (a malformed entry is not)."""
+        return [c for c in self.recorded if isinstance(c, Mapping)]
 
     @property
     def taken(self) -> list[Mapping[str, Any]]:
@@ -1430,8 +1438,9 @@ class _CallPairing:
 
 
 def _pair_calls(
-    bundle: Bundle, messages: Sequence[Mapping[str, Any]], calls: Sequence[Mapping[str, Any]]
+    bundle: Bundle, messages: Sequence[Mapping[str, Any]], recorded: Sequence[Any]
 ) -> _CallPairing:
+    calls = [c for c in recorded if isinstance(c, Mapping)]
     usage_match, paired = pair_usage(
         messages, calls, opening=_opening_line_position(messages, bundle.task)
     )
@@ -1441,7 +1450,7 @@ def _pair_calls(
         simulated_user_turns(messages, bundle.trajectory, bundle.task),
         trajectory=bundle.trajectory,
     )
-    return _CallPairing(usage_match, paired, user_usage_match, user_paired)
+    return _CallPairing(usage_match, paired, user_usage_match, user_paired, recorded)
 
 
 def _transcript_observations(
@@ -1476,7 +1485,7 @@ def _transcript_observations(
     )
     out.extend(
         _unpaired_call_generations(
-            _mapping(bundle.metrics.get("usage")).get("calls") or [],
+            pairing.recorded,
             pairing.taken,
             trace_id=trace_id,
             root_id=root_id,
@@ -1508,9 +1517,8 @@ def build_projection(
     user_model_name = _role_canonical(bundle.task, "user", resolver)
     judge_model_name = _role_canonical(bundle.task, "judge", resolver)
     messages = [m for m in trajectory.get("messages") or [] if isinstance(m, Mapping)]
-    usage = _mapping(bundle.metrics.get("usage"))
-    calls = [c for c in (usage.get("calls") or []) if isinstance(c, Mapping)]
-    pairing = _pair_calls(bundle, messages, calls)
+    recorded = _mapping(bundle.metrics.get("usage")).get("calls") or []
+    pairing = _pair_calls(bundle, messages, recorded)
     stats.usage_match = pairing.usage_match
     start, _ = trace_time(trajectory)
     end = _normalize_ts(trajectory.get("end_ts"))
@@ -1564,7 +1572,7 @@ def build_projection(
         resolver=resolver,
         agent=agent,
         usage_match=pairing.usage_match,
-        unpaired_calls=len(calls) - len(pairing.taken),
+        unpaired_calls=len(pairing.calls) - len(pairing.taken),
         primary_summary=summary,
         primary=stats.grading_id,
         grading_ids=[stats.grading_id] if stats.grading_id else [],

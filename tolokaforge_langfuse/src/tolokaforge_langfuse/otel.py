@@ -483,19 +483,6 @@ class OTelTrialObserver:
         agent_role = role == "agent"
         name = f"assistant turn {index}" if agent_role else f"judge turn {index}"
         usage = getattr(result, "usage", None)
-        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-        completion = int(getattr(usage, "completion_tokens", 0) or 0)
-        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-        details: dict[str, int] = {
-            "input": max(0, prompt - cache_read),
-            "output": completion,
-            "total": prompt + completion,
-        }
-        if cache_read:
-            details["cache_read_input_tokens"] = cache_read
-        if cache_creation:
-            details["cache_creation_input_tokens"] = cache_creation
         model_name = (
             state.agent.canonical
             if (role == "agent" and state.agent)
@@ -532,6 +519,39 @@ class OTelTrialObserver:
         if model_name:
             attributes["langfuse.observation.model.name"] = model_name
             attributes["gen_ai.request.model"] = model_name
+        attributes.update(self._usage_cost_attributes(usage, result))
+        kind, key = (
+            ("gen", (index,)) if agent_role else ("jgen", (f"live:{identity.run_id}", index))
+        )
+        self._emit(
+            name=self._live_name(name),
+            identity=identity,
+            span_id=self._live_observation_id(identity, kind, *key),
+            parent_id=self._live_parent_id(identity),
+            attributes={**attributes, **self._live_extras(identity)},
+            start=started_at,
+            end=ended_at,
+            preview=self._write_once,
+        )
+
+    def _usage_cost_attributes(self, usage: Any, result: Any) -> dict[str, Any]:
+        """A live generation's usage and cost attributes and its ``cost_basis``: the final
+        figures on a receiver that updates rows in place, zeros (the figures as metadata) on a
+        v4 preview, which stays in the trace beside the final row."""
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        details: dict[str, int] = {
+            "input": max(0, prompt - cache_read),
+            "output": completion,
+            "total": prompt + completion,
+        }
+        if cache_read:
+            details["cache_read_input_tokens"] = cache_read
+        if cache_creation:
+            details["cache_creation_input_tokens"] = cache_creation
+        attributes: dict[str, Any] = {}
         # the call's own record carries the charge the provider stated; a result without one
         # (no usage block) has only the eval's figure, if any
         calls = getattr(usage, "calls", None) or ()
@@ -560,19 +580,7 @@ class OTelTrialObserver:
             attributes["langfuse.observation.cost_details"] = self._json(
                 {"total": cost if cost is not None else 0}
             )
-        kind, key = (
-            ("gen", (index,)) if agent_role else ("jgen", (f"live:{identity.run_id}", index))
-        )
-        self._emit(
-            name=self._live_name(name),
-            identity=identity,
-            span_id=self._live_observation_id(identity, kind, *key),
-            parent_id=self._live_parent_id(identity),
-            attributes={**attributes, **self._live_extras(identity)},
-            start=started_at,
-            end=ended_at,
-            preview=self._write_once,
-        )
+        return attributes
 
     def tool_call(
         self,
