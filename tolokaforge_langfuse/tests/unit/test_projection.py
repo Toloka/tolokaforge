@@ -590,9 +590,9 @@ class TestUserToolSteps:
 class TestCostOnTheTrace:
     """A generation's cost is the charge the provider stated, else the eval's own figure, and
     ``cost_basis`` says which; every LLM call of the bundle is counted on exactly one
-    generation, so the trace's cost is what the trial spent. The golden pins the billed path
-    with the agent's and the user simulator's calls paired by generation id; these pin the
-    rest."""
+    generation, so the trace's cost is the cost of every call the bundle records. The golden
+    pins the billed path with the agent's and the user simulator's calls paired by generation
+    id; these pin the rest."""
 
     def _projection(
         self,

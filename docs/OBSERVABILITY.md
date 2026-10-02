@@ -321,7 +321,7 @@ connector):
 | `billed` | the charge the response stated |
 | `litellm` | litellm's figure: a charge the response stated (OpenRouter's `usage.cost` in a bundle from before the charge was recorded, a LiteLLM gateway's response-cost header) or litellm's own price map; the bundle does not say which |
 | `list` | the engine's pricing table |
-| `eval` | the eval's figure, its source not recorded (the judge's aggregate, an unknown `cost_source`) |
+| `eval` | the eval's figure, its source not recorded (the judge's aggregate, or a `cost_source` value this producer does not recognise) |
 | `none` | no figure at all: no call is paired, or the call states neither a charge nor an eval figure (`cost_source: unknown`, a route nothing could price); the cost is an explicit zero, so the receiver prices nothing from its own model table, and a paired call keeps its usage |
 
 The judge generation that holds `grade.judge_usage` follows the same rule with the judge's
@@ -347,7 +347,8 @@ trace). A call the bundle never records is not on the trace either: a user reply
 rejected, an auto-anchored warm-up that failed, possibly an attempt that timed out after the
 provider billed it. On the v4 write-once layout a preview generation states zero usage and cost,
 its own figures in metadata, so each call counts once, on its final row; a trace whose final rows
-never arrive (the trial never persisted, or the final batch was lost) therefore shows 0 USD, and
+never arrive (the trial never persisted, or every final batch was lost) therefore shows 0 USD (a lost
+batch among several leaves the cost short), and
 an offline upload restores its cost only where a bundle exists. The trace carries no total of its
 own; its metadata `cost_usd` stays the eval's figure (the agent's and the user simulator's calls,
 priced as the eval priced them). `projection: gradings` sends no call records, so there the
