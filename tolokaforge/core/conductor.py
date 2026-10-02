@@ -38,6 +38,11 @@ from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
+from tolokaforge.core.execution_mode import (
+    HARNESS_COMMAND_METADATA_KEY,
+    ExecutionMode,
+    select_execution_mode,
+)
 from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, build_capabilities
 from tolokaforge.core.llm.presets import (
@@ -817,17 +822,11 @@ class InProcessConductor:
         system prompt string (used by :meth:`_grade` when the runner has
         not yet populated its ``effective_system_prompt``).
 
-        A task whose metadata carries ``agent_harness_command`` brings its own
-        agent and takes the :meth:`_run_harness_trial` branch instead.
+        A task whose metadata selects :attr:`ExecutionMode.DELEGATED` brings
+        its own agent and takes the :meth:`_run_harness_trial` branch instead.
         """
-        harness_command = spec.task.metadata.get("agent_harness_command")
-        if harness_command is not None:
-            if not isinstance(harness_command, str) or not harness_command.strip():
-                raise RuntimeError(
-                    f"trial {setup.trial_id}: task metadata "
-                    f"'agent_harness_command' must be a non-blank string; got "
-                    f"{harness_command!r}. Omit the key to run the LLM turn loop."
-                )
+        if select_execution_mode(spec.task.metadata) is ExecutionMode.DELEGATED:
+            harness_command = spec.task.metadata[HARNESS_COMMAND_METADATA_KEY]
             return self._run_harness_trial(spec, task_config, setup, harness_command)
 
         task = task_config
