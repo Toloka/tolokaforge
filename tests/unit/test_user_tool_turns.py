@@ -375,9 +375,9 @@ class TestIsolatedTurns:
         agent = _RecordingAgent("Still here.")
         user = _QueuedUser(*(_say("Again.") for _ in range(99)))
 
-        trajectory = _isolated_trial(
-            agent, user, max_turns=100, simulation_max_steps=200
-        ).run("System", "Hi")
+        trajectory = _isolated_trial(agent, user, max_turns=100, simulation_max_steps=200).run(
+            "System", "Hi"
+        )
 
         assert trajectory.termination_reason is TerminationReason.MAX_STEPS
         assert trajectory.simulation_steps == 200
@@ -388,9 +388,9 @@ class TestIsolatedTurns:
         agent = _RecordingAgent("Thanks.")
         user = _QueuedUser(_say("###STOP###"))
 
-        trajectory = _isolated_trial(
-            agent, user, simulation_max_steps=3, stop_with_text="end"
-        ).run("System", "Hi")
+        trajectory = _isolated_trial(agent, user, simulation_max_steps=3, stop_with_text="end").run(
+            "System", "Hi"
+        )
 
         assert trajectory.termination_reason is TerminationReason.MAX_STEPS
         assert trajectory.simulation_steps == 3
@@ -401,16 +401,19 @@ class TestIsolatedTurns:
         user = _QueuedUser(_say("unreached"))
         tools = _UserTools()
 
-        trajectory = _isolated_trial(
-            agent, user, agent_tools=tools, simulation_max_steps=3
-        ).run("System", "Hi")
+        trajectory = _isolated_trial(agent, user, agent_tools=tools, simulation_max_steps=3).run(
+            "System", "Hi"
+        )
 
         assert trajectory.termination_reason is TerminationReason.MAX_STEPS
         assert trajectory.status is TrialStatus.COMPLETED
         assert trajectory.simulation_steps == 3
         assert trajectory.environment_errors == 0
         assert tools.calls == ["check_balance", "list_cards"]
-        assert len([message for message in trajectory.messages if message.role is MessageRole.TOOL]) == 2
+        assert (
+            len([message for message in trajectory.messages if message.role is MessageRole.TOOL])
+            == 2
+        )
         assert user.contexts == []
 
     def test_user_tool_batch_finishes_before_simulation_step_limit(self) -> None:
@@ -418,9 +421,9 @@ class TestIsolatedTurns:
         user = _QueuedUser(_tool_step(_call("u1"), _call("u2", "list_cards")))
         tools = _UserTools()
 
-        trajectory = _isolated_trial(
-            agent, user, tools=tools, simulation_max_steps=4
-        ).run("System", "Hi")
+        trajectory = _isolated_trial(agent, user, tools=tools, simulation_max_steps=4).run(
+            "System", "Hi"
+        )
 
         assert trajectory.termination_reason is TerminationReason.MAX_STEPS
         assert trajectory.simulation_steps == 4
@@ -429,8 +432,14 @@ class TestIsolatedTurns:
 
     def test_environment_errors_count_each_failed_result_in_a_single_batch(self) -> None:
         class ErrorTools(_UserTools):
-            def execute(self, tool_name: str, arguments: dict | None = None, *, call_id: str,
-                        validation_schema: dict | None = None) -> ToolResult:
+            def execute(
+                self,
+                tool_name: str,
+                arguments: dict | None = None,
+                *,
+                call_id: str,
+                validation_schema: dict | None = None,
+            ) -> ToolResult:
                 self.calls.append(tool_name)
                 return ToolResult(
                     success=True,
@@ -442,14 +451,18 @@ class TestIsolatedTurns:
         agent = _RecordingAgent(_tool_step(_call("a1"), _call("a2", "list_cards")))
         user = _QueuedUser(_say("unreached"))
 
-        trajectory = _isolated_trial(
-            agent, user, agent_tools=tools, simulation_max_errors=2
-        ).run("System", "Hi")
+        trajectory = _isolated_trial(agent, user, agent_tools=tools, simulation_max_errors=2).run(
+            "System", "Hi"
+        )
 
         assert trajectory.termination_reason is TerminationReason.TOO_MANY_ERRORS
         assert trajectory.environment_errors == 2
         assert trajectory.simulation_steps == 3
-        assert [message.tool_status for message in trajectory.messages if message.role is MessageRole.TOOL] == [
+        assert [
+            message.tool_status
+            for message in trajectory.messages
+            if message.role is MessageRole.TOOL
+        ] == [
             ToolExecutionStatus.ENVIRONMENT_ERROR,
             ToolExecutionStatus.ENVIRONMENT_ERROR,
         ]

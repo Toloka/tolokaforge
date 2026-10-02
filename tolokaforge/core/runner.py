@@ -1549,9 +1549,7 @@ class TrialRunner:
             )
         )
         if self._simulation_budget is not None:
-            reason = self._simulation_budget.participant(
-                calls_environment=bool(first_user_calls)
-            )
+            reason = self._simulation_budget.participant(calls_environment=bool(first_user_calls))
             if reason is not None:
                 raise SimulationBudgetReached(reason)
 
