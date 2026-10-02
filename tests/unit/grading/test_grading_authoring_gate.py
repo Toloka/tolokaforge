@@ -266,6 +266,29 @@ _NO_CALLER_READ_WHAT_THE_TASK_SEEDS = SeededTablesLayer.unresolvable()
 _THE_TASK_SEEDS_THESE_TABLES = SeededTablesLayer(tables=_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY)
 _THE_TASK_SEEDS_NO_TABLES = SeededTablesLayer(tables={})
 
+# A comparison view is held to the same seeded state, and to the unstable fields the
+# task declares beside it: a view ranking documents by a column the unstable filter
+# drops is refused, and one declared where no hash reads it is a hint.
+_DOCUMENTS = {"documents": [{"id": "D1", "client_id": "C1", "filed_at": "2026-01-01"}]}
+_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT = SeededTablesLayer(
+    tables=_DOCUMENTS, unstable_fields=lambda: ("documents.filed_at",)
+)
+_A_VIEW_RANKED_BY_A_MASKED_COLUMN = {
+    "version": 1,
+    "rules": [
+        {
+            "kind": "normalize_ids",
+            "table": "documents",
+            "ordinal_by": ["client_id"],
+            "rank_by": ["filed_at"],
+        }
+    ],
+}
+_A_VIEW_OF_THE_DOCUMENTS = {
+    "version": 1,
+    "rules": [{"kind": "normalize_ids", "table": "documents", "key": ["client_id"]}],
+}
+
 _A_FILESYSTEM_ROOTED_ASSERTION = {
     "path": "$.filesystem['/env/fs/agent-visible/x.py']",
     "contains": "def divide",
@@ -695,6 +718,47 @@ _RULES: tuple[_Rule, ...] = (
         message="declares key component(s) ['ticker'] absent from every seeded record "
         "of table 'positions'",
         seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    ),
+    _Rule(
+        label="a_comparison_view_keyed_by_a_column_the_unstable_filter_drops",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": _A_VIEW_RANKED_BY_A_MASKED_COLUMN,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="errors",
+        message="builds its key from documents.filed_at, which unstable_fields masks",
+        seeded_tables=_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT,
+    ),
+    _Rule(
+        label="a_comparison_view_no_hash_reads",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "jsonpaths": [{"path": "$.db.documents[0].client_id", "equals": "C1"}],
+                "comparison_view": _A_VIEW_OF_THE_DOCUMENTS,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="hints",
+        message="state_checks.hash is not enabled, so no hash reads the view",
+        seeded_tables=_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT,
+    ),
+    _Rule(
+        label="a_comparison_view_nothing_resolved_the_seeded_tables_for",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": _A_VIEW_OF_THE_DOCUMENTS,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="unchecked",
+        message="no caller resolved the tables this task seeds",
     ),
     _Rule(
         label="weight_naming_a_component_the_pack_never_configures",

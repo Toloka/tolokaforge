@@ -1,0 +1,45 @@
+task_id: state_checks_comparison_view
+name: "Substrate differential: state_checks_comparison_view"
+category: test
+description: |
+  Substrate-parity fixture for a declared comparison view: the expected final state
+  is the state the task starts in, and the view decides which of a trial's changes
+  count. A document re-filed under a new id, together with the correction citing it,
+  a released hold and a lookup the read tools logged are all invisible to it; a
+  changed correction is not.
+
+# Both substrates read their expected side from here — core hashes this mapping
+# directly, and RegisterTrial provisions the trial's DB service from it so the
+# runner's evaluator resets to it and hashes what it restored. Every table the view
+# names is seeded, which the load-time check of the view requires.
+initial_state:
+  json_db:
+    documents:
+      - id: D1
+        client_id: C1
+        source_id: S1
+        status: final
+    corrections:
+      - id: R1
+        document_ref: D1
+        reason: typo in the amount
+    holds: []
+    lookup_log: []
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

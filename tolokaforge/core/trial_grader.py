@@ -74,7 +74,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.plugin_registry import load_grading_method
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.grader.wire_snapshot import build_grade_request_fields
-from tolokaforge.runner.models import RunnerGradingConfig
+from tolokaforge.runner.models import ComparisonViewGradeRecord, RunnerGradingConfig
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.client import LLMClient
@@ -413,6 +413,26 @@ def _parse_trace_checks_summary(payload: dict[str, Any] | None) -> TraceChecksSu
         ) from exc
 
 
+def _parse_comparison_view(payload: str | None) -> dict[str, Any] | None:
+    """The comparison view's record, as the runner's JSON carries it, or a grading failure.
+
+    Empty is the runner reporting no view — a pack without one, or a runner predating the
+    field, which such a pack is the only kind it accepts. A payload that is present and
+    unreadable rejects, as the trace-check payloads do: the record says which transform
+    produced the digest the verdict compared, and a grade that cannot say so is one this
+    engine cannot report.
+    """
+    if not payload:
+        return None
+    try:
+        record = ComparisonViewGradeRecord.model_validate_json(payload)
+    except ValidationError as exc:
+        raise GradingFailedError(
+            f"the runner's Grade.comparison_view_json payload is not readable: {exc}"
+        ) from exc
+    return record.model_dump(mode="json")
+
+
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     """Materialise a :class:`Grade` from the runner's ``grade_trial`` dict.
 
@@ -517,6 +537,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         ),
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,
+        comparison_view=_parse_comparison_view(raw_grade.get("comparison_view_json")),
         custom_checks_details=custom_checks_details,
         criterion_results=criterion_results,
         judge_status=JudgeStatus.from_proto(raw_grade.get("judge_status", 0)),

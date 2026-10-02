@@ -202,10 +202,10 @@ _TEST_DATA = TEST_DATA_ROOT
 # placeholder ``grading.yaml`` so the standard pre-run gate accepts it; the
 # harness driver's own decoration overrides ``grading`` with
 # ``test_execution`` at trial time, so the placeholder is never scored.
-_GRADED_TASK_COUNT = 30
-# Tool schemas the corpus puts on the wire, across the 24 tasks that declare any, so a
+_GRADED_TASK_COUNT = 31
+# Tool schemas the corpus puts on the wire, across the 25 tasks that declare any, so a
 # parameter comparison that resolved nothing fails instead of passing over empty maps.
-_CORPUS_TOOL_COUNT = 56
+_CORPUS_TOOL_COUNT = 63
 _TASKS_WITHOUT_A_PROJECT = (
     _EXAMPLES / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-billing-holds" / "task.yaml",
@@ -272,7 +272,7 @@ _TASKS_OUTSIDE_THE_GRADED_CORPUS = _TASKS_WITHOUT_A_PROJECT + (
 # Every authored pack in the repository whose grading config loads: 29 under
 # ``examples/``, each beneath a ``project.yaml``, and 80 project-less packs under
 # ``tests/data``. Reconciled by the partition guard rather than only counted here.
-_AUTHORED_PACK_COUNT = 110
+_AUTHORED_PACK_COUNT = 112
 
 
 def _is_a_recorded_artifact(task_yaml: Path) -> bool:
@@ -466,7 +466,7 @@ _TEST_DATA_TASKS = Path(__file__).resolve().parents[1] / "data" / "tasks"
 
 # Every pack under the two roots that ships a grading.yaml, so a guard that
 # enumerated nothing fails instead of passing over the empty set.
-_GATED_PACK_COUNT = 61
+_GATED_PACK_COUNT = 62
 
 # The one pack whose tool inventory cannot be built: it declares
 # ``tools.agent.mobile: true``, a typo fixture whose whole point is that a non-mapping
@@ -960,7 +960,7 @@ def test_no_authored_golden_action_names_a_tool_no_actor_can_call() -> None:
 # projects and the migration fixtures. Pinned so a walk that stopped finding them fails
 # rather than passing over the empty set, and computed as a difference so a fifth root
 # is covered the day someone adds one.
-_PACKS_OUTSIDE_THE_GATE_WALK = 49
+_PACKS_OUTSIDE_THE_GATE_WALK = 50
 
 # The two addresses a name no actor can call is reported under, one per producer.
 _UNCALLABLE_TOOL_ADDRESSES = ("trace_checks.", "transcript_rules.tool_expectations.")
@@ -1272,7 +1272,7 @@ _AN_INJECTED_PROBE = {
 # How many of the 109 declare a state source the fold also scores, so the control's two
 # arms cannot silently collapse into one: 26 packs where injecting a probe must be
 # refused, and 83 where it must not, because the injection leaves them probe-only.
-_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 27
+_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 29
 
 
 def _probe_exclusivity_findings(report: AuthoringReport) -> list[str]:

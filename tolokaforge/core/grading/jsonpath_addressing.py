@@ -146,7 +146,7 @@ def block_addresses_the_database(state_checks: Mapping[str, Any]) -> bool:
     ``_execute_hash_grading`` fetches the trial's stable hash before it consults
     ``expect_initial_state`` or ``golden_actions``, and a block declaring neither is a
     supported shape that compares against
-    :attr:`~tolokaforge.runner.models.HashComparisonBasis.UNDECLARED_INITIAL_STATE`.
+    :attr:`~tolokaforge.core.grading.hash_grading_result.HashComparisonBasis.UNDECLARED_INITIAL_STATE`.
 
     ``db_probes`` never counts: a probe carries its own ``dsn`` and is evaluated
     against the postgres its task declares, never against the trial's DB service.

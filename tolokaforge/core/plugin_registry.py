@@ -18,6 +18,7 @@ External code discovers and loads alternative implementations of the
 :data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`,
 :class:`~tolokaforge.core.grading.bundle_store.BundleStore`,
 :class:`~tolokaforge.core.search.backend.SearchBackend`,
+:class:`~tolokaforge.core.grading.comparison_view.ComparisonViewRule`,
 :class:`~tolokaforge.core.composition_runtime.ComposeMaterialiser`,
 :class:`~tolokaforge.core.composition_runtime.ServiceLifecycleDispatcher`,
 and :class:`~tolokaforge.core.composition_runtime.SubstrateComposer`
@@ -38,6 +39,9 @@ class-typed idiom: each loader returns the impl *class* itself, and the
 caller instantiates with the class's own optional injection seams
 (``docker_compose_factory``, ``subprocess_runner``, ``materialiser``,
 ``dispatcher_registry``, ``runner_client_factory``, …).
+The comparison-view-rule loader resolves to the rule *class* as well: the view
+instantiates it per entry, and the rule's ``NAME`` / ``VERSION`` / ``config_model``
+are class attributes it reads before any instance exists.
 The trace-check-operator loader resolves directly to the operator callable
 — one operator per entry point, no factory wrapper, since the callable
 itself IS the seam contract.
@@ -70,6 +74,7 @@ The groups:
 * ``tolokaforge.transcript_rule_matchers`` → :data:`TranscriptRuleMatcherFactory`
 * ``tolokaforge.state_check_backends`` → :data:`StateCheckBackendFactory`
 * ``tolokaforge.trace_check_operators`` → :data:`TraceCheckOperator`
+* ``tolokaforge.comparison_view_rules`` → ``type[ComparisonViewRule]``
 * ``tolokaforge.bundle_stores`` → ``type[BundleStore]``
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
@@ -148,6 +153,7 @@ if TYPE_CHECKING:
     )
     from tolokaforge.core.conductor import Conductor, ConductorContext
     from tolokaforge.core.grading.bundle_store import BundleStore
+    from tolokaforge.core.grading.comparison_view import ComparisonViewRule
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
     from tolokaforge.core.runtime import RuntimeBackend
@@ -201,6 +207,7 @@ __all__ = [
     "UserSimulatorFactory",
     "available_agent_loops",
     "available_bundle_stores",
+    "available_comparison_view_rules",
     "available_compose_materialisers",
     "available_conductors",
     "available_custom_check_executors",
@@ -224,6 +231,7 @@ __all__ = [
     "discover_entry_points",
     "load_agent_loop",
     "load_bundle_store",
+    "load_comparison_view_rule",
     "load_compose_materialiser",
     "load_conductor",
     "load_custom_check_executor",
@@ -265,6 +273,7 @@ TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
 STATE_CHECK_BACKENDS_GROUP = "tolokaforge.state_check_backends"
 TRACE_CHECK_OPERATORS_GROUP = "tolokaforge.trace_check_operators"
 BUNDLE_STORES_GROUP = "tolokaforge.bundle_stores"
+COMPARISON_VIEW_RULES_GROUP = "tolokaforge.comparison_view_rules"
 COMPOSE_MATERIALISERS_GROUP = "tolokaforge.compose_materialisers"
 SERVICE_LIFECYCLE_DISPATCHERS_GROUP = "tolokaforge.service_lifecycle_dispatchers"
 SUBSTRATE_COMPOSERS_GROUP = "tolokaforge.substrate_composers"
@@ -765,6 +774,29 @@ def load_bundle_store(name: str) -> type[BundleStore]:
     return cast("type[BundleStore]", _load(BUNDLE_STORES_GROUP, name))
 
 
+def load_comparison_view_rule(name: str) -> type[ComparisonViewRule]:
+    """Resolve a registered comparison-view rule kind to its rule class.
+
+    Returns the class itself, matching :func:`load_judge_kind`: the ``kind`` of a
+    ``comparison_view`` entry is the registered name, and the view instantiates the
+    class for each entry naming it. The built-in ``exclude_records``,
+    ``exclude_tables`` and ``normalize_ids`` resolve through this loader like any
+    other registration.
+    :func:`tolokaforge.core.grading.comparison_view.resolve_comparison_view_rule`
+    is the caller: it holds the class to the rule contract. A registered rule
+    decides which states hash equal, the trust boundary
+    :class:`~tolokaforge.core.grading.comparison_view.ComparisonViewRule` states.
+
+    The :class:`ComparisonViewRule` Protocol is a TYPE_CHECKING-only forward
+    reference, as for :func:`load_compose_materialiser`: the view's module is not
+    imported until a kind resolves.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast("type[ComparisonViewRule]", _load(COMPARISON_VIEW_RULES_GROUP, name))
+
+
 def load_grading_substrate(name: str) -> type[GradingSubstrate]:
     """Resolve a registered grading-substrate name to its implementation class.
 
@@ -912,6 +944,11 @@ def available_trace_check_operators() -> list[str]:
 def available_bundle_stores() -> list[str]:
     """Sorted names registered in the ``tolokaforge.bundle_stores`` group."""
     return sorted(discover_entry_points(BUNDLE_STORES_GROUP))
+
+
+def available_comparison_view_rules() -> list[str]:
+    """Sorted kinds registered in the ``tolokaforge.comparison_view_rules`` group."""
+    return sorted(discover_entry_points(COMPARISON_VIEW_RULES_GROUP))
 
 
 def available_compose_materialisers() -> list[str]:

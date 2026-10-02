@@ -692,6 +692,7 @@ _LOADER_TO_GROUP: dict[str, str] = {
     "load_grading_method": "tolokaforge.grading_methods",
     "load_grader_kind": "tolokaforge.grader_kinds",
     "load_judge_kind": "tolokaforge.judge_kinds",
+    "load_comparison_view_rule": "tolokaforge.comparison_view_rules",
 }
 
 

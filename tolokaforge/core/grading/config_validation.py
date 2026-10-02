@@ -40,11 +40,14 @@ import re
 import types
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import Enum
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ValidationError
 
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
+from tolokaforge.core.grading.comparison_view_checks import comparison_view_findings
 from tolokaforge.core.grading.golden_replay import (
     InitialStateSource,
     unreplayable_golden_source,
@@ -470,6 +473,22 @@ class SeededTablesLayer:
 
     tables: Mapping[str, list[dict[str, Any]]] | None
     known: bool = True
+    unstable_fields: Callable[[], tuple[str, ...]] | None = dataclass_field(
+        default=None, compare=False
+    )
+    """Reads the dotted ``table.field`` paths the task declares unstable beside its
+    seeded state (the native reading: ``fixtures/unstable_fields.json``), table names
+    as declared. Called only by the comparison-view rule, for a pack declaring a view,
+    which refuses a key or a reference the unstable filter would drop — so a pack
+    without one has nothing read on its behalf. ``None`` is an adapter that does not
+    report them: the rule then reports its masked-field checks unchecked rather than
+    holding the view to a mask it was not told of. A reader answering ``()`` is a task
+    declaring none."""
+    table_shapes: Mapping[str, str] = dataclass_field(default_factory=dict)
+    """The seeded tables written as something other than a list of records, and as what
+    (the native reading: :func:`~tolokaforge.adapters._task_loader.seeded_table_shapes`).
+    ``tables`` holds them normalised to lists, so this is the only place the shape
+    survives; a comparison view naming one is refused."""
     skip_kind: SkipKind = SkipKind.STRUCTURAL
     """The kind of skip a rule reading this layer reports where it cannot check.
 
@@ -485,11 +504,13 @@ class SeededTablesLayer:
                 "would be held against nothing. Report the tables the task seeds — {} "
                 "where it seeds none — or report unresolvable()"
             )
-        if not self.known and self.tables is not None:
+        if not self.known and (
+            self.tables is not None or self.unstable_fields is not None or self.table_shapes
+        ):
             raise ValueError(
-                "an unresolvable seeded-tables layer carries facts: the rule that reads "
-                f"them is skipped, so tables {sorted(self.tables)} would be resolved and "
-                "then ignored. Report the tables with known=True, or report nothing"
+                "an unresolvable seeded-tables layer carries facts: the rules that read "
+                "them are skipped, so its tables and unstable fields would be resolved and "
+                "then ignored. Report them with known=True, or report nothing"
             )
 
     @classmethod
@@ -930,6 +951,7 @@ _UNRESOLVED_SEEDED_TABLES_REASON = (
 )
 
 _ID_FIELDS_ADDRESS = "state_checks.id_fields"
+_COMPARISON_VIEW_ADDRESS = "state_checks.comparison_view"
 
 _JSONPATHS_ADDRESS = "state_checks.jsonpaths"
 _HASH_ENABLED_ADDRESS = "state_checks.hash.enabled"
@@ -1075,6 +1097,7 @@ def inspect_grading_authoring(
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
         _check_id_fields_against_seeded_tables(grading, seeded_tables),
+        _check_comparison_view_against_the_task(grading, seeded_tables),
         _check_state_reads_a_database_the_task_seeds(grading, seeded_tables),
         _check_jsonpaths_address_a_reachable_state(grading),
         _check_path_glob_is_compared_the_way_the_runner_reads_it(grading),
@@ -1833,6 +1856,72 @@ def _check_id_fields_against_seeded_tables(
         )
         return AuthoringReport()
     return AuthoringReport(errors=tuple(Finding(_ID_FIELDS_ADDRESS, f) for f in findings))
+
+
+def _check_comparison_view_against_the_task(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A declared comparison view reads tables the task seeds and columns its masks keep.
+
+    The findings the run path's loads refuse a view with, from the same computation
+    (:func:`~tolokaforge.core.grading.comparison_view_checks.comparison_view_findings`).
+    A refusal is an error; a warning — a missing table downgraded by
+    ``relaxed_validation``, or a view declared beside a disabled hash, which nothing
+    reads — is a hint: the pack still grades as written. What the layer does not report
+    is unchecked rather than assumed: every check where the seeded tables are
+    unresolvable, and the masked-field checks where the unstable fields are not
+    reported. Neither reports a defect, and ``RegisterTrial`` checks the description's
+    own unstable fields whatever this gate read. A block the view model refuses is
+    reported as an error naming the model's message.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping) or not state_checks.get("comparison_view"):
+        return AuthoringReport()
+    try:
+        view = ComparisonViewConfig.model_validate(state_checks["comparison_view"])
+    except ValidationError as exc:
+        return AuthoringReport(
+            errors=(
+                Finding(
+                    _COMPARISON_VIEW_ADDRESS,
+                    f"{_COMPARISON_VIEW_ADDRESS} is not a view this engine reads: "
+                    + "; ".join(error["msg"] for error in exc.errors()),
+                ),
+            )
+        )
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    _COMPARISON_VIEW_ADDRESS,
+                    _UNRESOLVED_SEEDED_TABLES_REASON,
+                    kind=seeded_tables.skip_kind,
+                ),
+            )
+        )
+    assert seeded_tables.tables is not None
+    hash_block = state_checks.get("hash")
+    findings = comparison_view_findings(
+        view,
+        tables=seeded_tables.tables,
+        unstable_fields=(
+            None if seeded_tables.unstable_fields is None else seeded_tables.unstable_fields()
+        ),
+        table_shapes=seeded_tables.table_shapes,
+        id_fields=state_checks.get("id_fields") or {},
+        numeric_string_fields=state_checks.get("numeric_string_fields") or (),
+        auto_mask_clock_columns=bool(state_checks.get("auto_mask_clock_columns")),
+        relaxed_validation=bool(state_checks.get("relaxed_validation")),
+        hash_enabled=isinstance(hash_block, Mapping) and bool(hash_block.get("enabled")),
+    )
+    return AuthoringReport(
+        errors=tuple(Finding(_COMPARISON_VIEW_ADDRESS, error) for error in findings.errors),
+        hints=tuple(Finding(_COMPARISON_VIEW_ADDRESS, warning) for warning in findings.warnings),
+        unchecked=tuple(
+            Skip(_COMPARISON_VIEW_ADDRESS, reason, kind=SkipKind.ADAPTER_DECLARED)
+            for reason in findings.unchecked
+        ),
+    )
 
 
 def _jsonpath_assertions(grading: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:

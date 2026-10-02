@@ -66,9 +66,11 @@ from tolokaforge.core.deprecations import (
     warn_deprecated,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
-from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -497,26 +499,6 @@ class DbProbe(BaseModel):
 _HASH_WEIGHT_CONTEXT = "task_description grading.state_checks.hash_weight"
 
 
-class HashComparisonBasis(str, Enum):
-    """The state a hash comparison was run against, and what selected it.
-
-    The two initial-state members grade identically by construction — the evaluator
-    resets the trial's database and hashes it either way — and are separate members
-    because the ledger accounts for a *declared* source and has nothing to file for a
-    block that declared none. Collapsing them would leave ``expect_initial_state``
-    accounted for without being read.
-    """
-
-    DECLARED_INITIAL_STATE = "declared_initial_state"
-    """``expect_initial_state``: the author asked for the state the task starts in."""
-
-    GOLDEN_REPLAY = "golden_replay"
-    """``golden_actions``: the state replaying them from the initial state produces."""
-
-    UNDECLARED_INITIAL_STATE = "undeclared_initial_state"
-    """No source at all: the same initial state, reached by falling through."""
-
-
 _RETIRED_EXPECTED_HASH_MESSAGE: str = (
     "state_checks.expected_hash has been retired — the key carried a stored digest, "
     "and the current wire schema replaces it with expect_initial_state: bool, a "
@@ -605,11 +587,38 @@ class RunnerStateChecksConfig(BaseModel):
     # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
     auto_normalize_nullables: bool = False
 
+    # Opt-in: the one-sided transform both sides' full states go through before the
+    # unstable filter, the compare_columns pipeline and the masks (ADR-0053). Declared,
+    # it moves the hash onto the client path: ``_execute_hash_grading`` reads both full
+    # states and runs :func:`tolokaforge.core.grading.pre_hash.view_the_pair`. Absent,
+    # the key is left out of the wire dump, so an image predating it still accepts
+    # every spec that does not declare one — and refuses one that does.
+    comparison_view: ComparisonViewConfig | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``.
+
+    Read by the dump below and by the wire census, which gates such a key on itself:
+    it is on the wire only for a pack that declares it."""
+
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
 
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a dump that has none — the wire's absence.
+
+        A ``null`` would be a key an image predating the field refuses under
+        ``extra="forbid"``; leaving it out keeps every spec without a view
+        byte-identical to the one an older engine emitted.
+        """
+        return leave_out_absent_fields(self, handler)
 
     @model_validator(mode="before")
     @classmethod
@@ -3730,16 +3739,38 @@ class TableDiff(BaseModel):
 
 
 class StateDiff(BaseModel):
-    """Human-readable diff between two stable states."""
+    """Human-readable diff between two stable states.
+
+    ``tables_on_one_side`` names the tables only one of the two states holds, and which
+    one: the diff of a table reads an absent one as empty, so a table one side holds
+    empty and the other not at all otherwise shows no difference while the two hash
+    apart. Only a comparison view's diff fills it in
+    (:func:`tolokaforge.core.grading.trial_golden_diff.compute_view_diff`); it is left out
+    of every dump while absent, so a diff without it dumps byte-identically to one from
+    an engine without the field.
+    """
 
     tables: dict[str, TableDiff] = Field(default_factory=dict)
     summary: str = ""
+    tables_on_one_side: dict[str, Literal["trial", "golden"]] | None = None
 
     model_config = {"extra": "forbid"}
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"tables_on_one_side"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_absent_one_sided_tables(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
 
     @property
     def identical(self) -> bool:
         """Check if states are identical (no differences)."""
+        if self.tables_on_one_side:
+            return False
         for table_diff in self.tables.values():
             if (
                 table_diff.missing
@@ -3937,52 +3968,52 @@ class TraceChecksResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class HashGradingResult(BaseModel):
-    """Result of hash-based grading."""
+class ComparisonViewTrialError(BaseModel):
+    """What kept the trial's state from being viewed, once the golden's view succeeded.
 
-    hash_match: bool
-    basis: HashComparisonBasis
-    """Which state the verdict was reached against, and which declaration selected it.
-
-    Carried out of the evaluator rather than re-derived from the config by whoever
-    needs it: the runtime ledger accounts for the source key this names, so a config
-    read a second time at the accounting site would report a key as evaluated whether
-    or not the evaluator ever looked at it.
+    ``error`` names the error's type (``ComparisonViewCollision`` for a re-keying that is
+    not bijective, ``ComparisonViewError`` for a record the rules cannot read), and
+    ``ids`` the ids it involves — empty where it names none.
     """
-    state_diff: StateDiff | None = None
-    golden_replay: GoldenReplayRecord
-    """How much of the golden path ran, in the shape both substrates report from.
 
-    An unresolvable name never reaches the replay — it fails the whole grade — so every
-    failure here describes an action that ran against a world it did not fit.
-    """
+    error: str
+    message: str
+    ids: list[Any] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
-    @property
-    def hash_score(self) -> float:
-        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist.
 
-        Meaningful only when :attr:`hash_unscorable` is ``False``: a broken replay hashed
-        the trial against a state no author asked for, so the caller reads
-        :attr:`hash_unscorable` before writing this into the runner components — the write
-        skipped, the ``hash_score`` field stays at the ``-1.0`` not-evaluated sentinel, and
-        the fold refuses the trial rather than composing a fabricated verdict.
-        """
-        return 1.0 if self.hash_match else 0.0
+class ComparisonViewGradeRecord(BaseModel):
+    """What a grade records about a comparison view (ADR-0053 § Versioning).
 
-    @property
-    def hash_unscorable(self) -> bool:
-        """Whether the golden replay left the trial's state hashable against a real world.
+    ``golden`` and ``trial`` are the records of the two views: the same ``version``,
+    ``function_version`` and ``config_sha256``, with each side's own ``applied``. A
+    trial whose state could not be viewed has no record of its own and carries
+    ``trial_error`` instead; it failed. ``view_diff`` is the diff of the two views on a
+    mismatch, the diff the hash verdict agrees with (#1444); ``None`` on a match or a
+    trial error. Both substrates build it with
+    :func:`tolokaforge.core.grading.pre_hash.comparison_view_grade_record`, so the
+    runner's ``Grade.comparison_view_json`` and core's ``Grade.comparison_view`` carry
+    the same JSON.
+    """
 
-        ``True`` when :attr:`golden_replay.failures` is non-empty — one or more per-action
-        failures during replay left partial state behind, so a hash against it would grade
-        the trial against a world no author asked for. The runner call site reads this bit
-        before writing :attr:`hash_score` into the runner components, so the ``-1.0``
-        not-evaluated sentinel survives and the fold's declared-but-unscored refusal fires
-        downstream.
-        """
-        return bool(self.golden_replay.failures)
+    golden: ComparisonViewRecord
+    trial: ComparisonViewRecord | None = None
+    view_diff: StateDiff | None = None
+    trial_error: ComparisonViewTrialError | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _a_trial_has_a_view_or_an_error(self) -> ComparisonViewGradeRecord:
+        if (self.trial is None) == (self.trial_error is None):
+            raise ValueError(
+                "a comparison-view record carries the trial's view record or the error that "
+                "kept it from one, exactly one of the two"
+            )
+        if self.trial_error is not None and self.view_diff is not None:
+            raise ValueError("a trial whose state could not be viewed has no view to diff")
+        return self
 
 
 _DEPRECATED_MODEL_ALIASES: dict[str, str] = {
