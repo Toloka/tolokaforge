@@ -234,10 +234,10 @@ def core_stack(
     # Build-context spec comes from the builder's image definition (#653), so
     # the stack and ``make docker-build`` hash the same inputs. On a wheel
     # install the factory swaps the repo-root sources for the packaged
-    # ``_subset_build/`` copies — spelling them out here is what shipped
-    # v0.14.0/v0.14.1 broken on an installed engine. ``runner_build_args``
-    # (playwright / docker-cli opt-ins) layer on top of the factory's
-    # ``PYTHON_VERSION`` base.
+    # ``_subset_build/`` copies — re-listing them here is what previously
+    # broke an installed engine, so read the spec from the builder and let the
+    # two stay in lockstep. ``runner_build_args`` (playwright / docker-cli
+    # opt-ins) layer on top of the factory's ``PYTHON_VERSION`` base.
     runner_defn = get_image_definition("runner")
     runner = ServiceDefinition(
         name="runner",
