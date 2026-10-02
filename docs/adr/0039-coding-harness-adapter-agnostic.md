@@ -1,6 +1,6 @@
 # 0039. Coding-harness as an adapter-agnostic run-config concept
 
-- **Status:** Accepted (with amendment 2026-08-27, see below)
+- **Status:** Accepted (amended 2026-08-27, corrected 2026-10-02 — see below)
 - **Date:** 2026-08-25
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
@@ -23,33 +23,51 @@
     credential-shielded LLM gateway that the driver form of this design
     hosts.
 
-## Amendment — 2026-08-27: `AgentDriver` Strategy replaces the mixin
+## Amendment — 2026-08-27 (corrected 2026-10-02): the execution-mode seam
 
-The initial shipped implementation of this ADR used a
-`CodingHarnessAdapterMixin` that adapters inherited alongside
-`BaseAdapter` to opt into harness mode, with a
-`supports_coding_harness = True` class-attr gate. The mixin approach
-proved to leak mode-specific state and mode branches into every adapter
-that opted in — the exact "adapter-agnostic" property this ADR's
-Consequences section named as the win. In the same milestone, the shape
-was refactored into a first-class `AgentDriver` Strategy
-([`tolokaforge/core/agent_driver.py`](../../tolokaforge/core/agent_driver.py)):
-`EngineLoopDriver` and `CodingHarnessDriver` own "how a trial runs";
-adapters expose `BaseAdapter.stage_task(task_id) -> StagedTask | None`
-and nothing else about harness mode. `CodingHarnessAdapterMixin` and
-its class-attr gate are retired.
+> **Correction (2026-10-02).** The 2026-08-27 amendment announced an
+> `AgentDriver` Strategy (`EngineLoopDriver` / `CodingHarnessDriver`,
+> `tolokaforge/core/agent_driver.py`, `BaseAdapter.stage_task`) as the
+> shipped replacement for the mixin. **That driver Strategy never
+> shipped.** The paragraphs below describe what is actually in the tree.
 
-**Everywhere the Decision + Consequences sections below say "mixin":
-read "`AgentDriver` (specifically `CodingHarnessDriver`)".**
-Everywhere they say "`supports_coding_harness = True`": read
-"`BaseAdapter.stage_task` returns a real `StagedTask`". Everywhere they
-say "adapter inherits the mixin": read "adapter overrides
-`stage_task`". The problem statement, the analysis of the seams already
-in place, the six wire-artefact contracts, and the two shipped adopters
-are unchanged — the pluggability layer moved from a mixin inherited by
-each adapter into a Strategy the orchestrator holds. Design record for
-the shipped shape: same file, plus
-[ADR-0041 § "Three-layer split"](0041-coding-harness-credential-gateway.md).
+The initial implementation of this ADR used a `CodingHarnessAdapterMixin`
+that adapters inherit alongside `BaseAdapter` to opt into harness mode,
+with a `supports_coding_harness = True` class-attr gate. That mixin
+**still ships** and still carries the six wire-artefact helpers — the
+package-boundary invariant (`tolokaforge_coding_harnesses/` imports no
+engine module) is the reason the opt-in flag is a plain string on the
+mixin rather than an engine type.
+
+What the shipped refactor added is a first-class **execution-mode seam**,
+engine-side only:
+
+- `ExecutionMode(str, Enum)` in
+  [`tolokaforge/core/execution_mode.py`](../../tolokaforge/core/execution_mode.py)
+  — `ENGINE_LOOP` (the engine's own turn loop drives the trial) and
+  `DELEGATED` (a task-provided coding-harness CLI drives it). Distinct
+  from the hyphenated `engine-loop` harness-registry sentinel.
+- `select_execution_mode(metadata)` classifies a trial from its metadata
+  (`agent_harness_command` present and non-blank → `DELEGATED`); the
+  conductor branches on its result. The enum is never written back into
+  metadata or any wire artefact.
+- `supported_execution_modes: ClassVar[frozenset[ExecutionMode]]` on
+  `BaseAdapter` (default `{ENGINE_LOOP}`), overridden by `NativeAdapter`
+  and `TerminalBenchAdapter` to add `DELEGATED`. The orchestrator gate
+  reads it through `adapter_supported_modes()`, which derives `DELEGATED`
+  from a legacy `supports_coding_harness = True` for one release so
+  external adapters that predate the capability keep working.
+
+`supports_coding_harness` is **retained as a compat surface for one
+release**: the engine-facing capability is now `supported_execution_modes`,
+and the string flag is the back-compat fallback the gate honours during
+the deprecation window.
+
+**Everywhere the Decision + Consequences sections below say
+"`supports_coding_harness = True`": the engine-facing equivalent is
+`supported_execution_modes` including `ExecutionMode.DELEGATED`.** The
+problem statement, the analysis of the seams already in place, the six
+wire-artefact contracts, and the two shipped adopters are unchanged.
 
 ## Context and Problem Statement
 

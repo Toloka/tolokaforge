@@ -3114,11 +3114,11 @@ class EnvironmentManifest(BaseModel):
     ``limited_internet`` — the service is trusted to make its own choices
     about egress destinations.
 
-    Consumed by the coding-harness :class:`CodingHarnessDriver` for the
-    LLM-gateway sidecar: the sidecar bridges the trial container (on the
-    internal network) to the LLM provider (via the edge network), and
-    exchanges the trial container's dummy credential for the real one
-    that never touches the CLI's env or the pack's image."""
+    Consumed by the coding-harness LLM-gateway sidecar the compose
+    synthesis adds to a shielded trial: the sidecar bridges the trial
+    container (on the internal network) to the LLM provider (via the edge
+    network), and exchanges the trial container's dummy credential for the
+    real one that never touches the CLI's env or the pack's image."""
 
     stripped_container_secrets: frozenset[str] = frozenset()
     """Secret keys the runner container must NOT receive from the host's
@@ -3132,8 +3132,8 @@ class EnvironmentManifest(BaseModel):
     compose file. Absent (default empty), the runner keeps the full
     payload — unchanged behaviour.
 
-    Consumed by the coding-harness :class:`CodingHarnessDriver` for the
-    provider credential its gateway sidecar already carries. Under the
+    Consumed by the coding-harness shield for the provider credential its
+    gateway sidecar already carries. Under the
     shield the runner has no reason to reach the provider itself
     (grading runs against the CLI's output, not the LLM), and duplicating
     the credential into the runner's env would leave a second copy of the
