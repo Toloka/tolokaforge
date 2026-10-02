@@ -200,11 +200,14 @@ class RAGServiceClient:
         """
         running = asyncio.get_running_loop()
         if self._client is None or self._client.is_closed or self._client_loop is not running:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                timeout=self.timeout,
-            )
+            # Return the client this call built, not ``self._client``: the probe
+            # and servicer loops can briefly overlap (the server accepts RPCs
+            # while startup still awaits ``is_healthy``), and a concurrent
+            # reassignment must not swap a foreign-loop client back in here.
+            client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+            self._client = client
             self._client_loop = running
+            return client
         return self._client
 
     async def close(self) -> None:
