@@ -322,7 +322,7 @@ connector):
 | `litellm` | litellm's figure: a charge the response stated (OpenRouter's `usage.cost` in a bundle from before the charge was recorded, a LiteLLM gateway's response-cost header) or litellm's own price map; the bundle does not say which |
 | `list` | the engine's pricing table |
 | `eval` | the eval's figure, its source not recorded (the judge's aggregate, an unknown `cost_source`) |
-| `none` | no figure at all; the generation carries no cost |
+| `none` | no figure at all: no call is paired, or the call states neither a charge nor an eval figure (`cost_source: unknown`, a route nothing could price); the cost is an explicit zero, so the receiver prices nothing from its own model table, and a paired call keeps its usage |
 
 The judge generation that holds `grade.judge_usage` follows the same rule with the judge's
 `billed_cost_usd`, the sum over its calls. Every other call in `usage.calls` counts on exactly

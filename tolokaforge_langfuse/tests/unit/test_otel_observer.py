@@ -823,6 +823,18 @@ class TestLiveCost:
         assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
         assert attrs["langfuse.observation.metadata.cost_basis"] == "eval"
 
+    def test_a_call_without_any_figure_states_a_zero_cost(self) -> None:
+        """No stated charge and no eval figure: an explicit zero, so the receiver prices
+        nothing from its own model table."""
+        call = ProviderRawCall(prompt_tokens=100, completion_tokens=20, cost_source="unknown")
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(call,))
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "none"
+        assert json.loads(attrs["langfuse.observation.usage_details"])["total"] == 120
+
     @pytest.mark.parametrize("role", ["agent", "judge"])
     def test_a_preview_counts_nothing_toward_the_trace(self, role: str) -> None:
         """A preview stays beside the final row the bundle writes, and the receiver adds up the

@@ -822,6 +822,22 @@ class TestCostOnTheTrace:
             ({"total": 0.003}, "billed"),
         ]
 
+    def test_a_call_without_any_figure_states_a_zero_cost(self, tmp_path: Path) -> None:
+        """No stated charge and no eval figure (a route litellm cannot price, say): the usage is
+        the call's, the cost an explicit zero, so the receiver prices nothing from its table."""
+        calls = pb.metrics()["usage"]["calls"]
+        unpriced = {**self._without_the_charge(calls[2], source="unknown"), "cost_usd": None}
+        calls[2] = unpriced
+        bodies = self._generations(self._projection(tmp_path, calls=calls), "assistant")
+
+        assert (bodies[1]["costDetails"], bodies[1]["metadata"]["cost_basis"]) == (
+            {"total": 0},
+            "none",
+        )
+        assert bodies[1]["usageDetails"]["total"] == (
+            unpriced["prompt_tokens"] + unpriced["completion_tokens"]
+        )
+
     def test_an_assistant_turn_without_a_call_states_it_has_none(self, tmp_path: Path) -> None:
         """No agent call is recorded (a mock run): the turns carry explicit zeros, so a
         receiver that merges an update cannot keep a live row's figures."""

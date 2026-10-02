@@ -398,7 +398,9 @@ def _price(body: dict[str, Any], call: Mapping[str, Any] | None) -> None:
     """Put a paired call's usage and cost on a generation body, or state that it has none.
 
     The cost is the charge the provider stated, else the eval's figure; ``cost_basis`` says
-    which (``none`` when no call is paired)."""
+    which. Without either (no call paired, or a call that states no figure) the cost is an
+    explicit zero with ``cost_basis: none``: the receiver prices a generation that states none
+    from its own model table."""
     if call is None:
         body["usageDetails"] = dict(NO_USAGE)
         body["costDetails"] = dict(NO_COST)
@@ -408,8 +410,7 @@ def _price(body: dict[str, Any], call: Mapping[str, Any] | None) -> None:
     body["usageDetails"] = details
     body["metadata"].update(usage_metadata)
     cost, body["metadata"]["cost_basis"] = call_cost(call)
-    if cost is not None:
-        body["costDetails"] = {"total": cost}
+    body["costDetails"] = {"total": cost} if cost is not None else dict(NO_COST)
 
 
 def usage_fields(call: Mapping[str, Any]) -> tuple[dict[str, int], dict[str, Any]]:

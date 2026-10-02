@@ -552,12 +552,14 @@ class OTelTrialObserver:
             attributes["langfuse.observation.metadata.completion_tokens"] = completion
             attributes["langfuse.observation.metadata.cost"] = _attribute_value(cost)
         else:
-            # on a receiver that updates rows in place the live row is the final row
+            # on a receiver that updates rows in place the live row is the final row; a call
+            # without any figure states an explicit zero, so the receiver prices nothing itself
             attributes["langfuse.observation.usage_details"] = self._json(details)
             attributes["gen_ai.usage.input_tokens"] = prompt
             attributes["gen_ai.usage.output_tokens"] = completion
-            if cost is not None:
-                attributes["langfuse.observation.cost_details"] = self._json({"total": cost})
+            attributes["langfuse.observation.cost_details"] = self._json(
+                {"total": cost if cost is not None else 0}
+            )
         kind, key = (
             ("gen", (index,)) if agent_role else ("jgen", (f"live:{identity.run_id}", index))
         )
