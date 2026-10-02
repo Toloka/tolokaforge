@@ -33,7 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCodec
@@ -41,6 +41,7 @@ from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCod
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.llm.presets import resolve_effective_preset
 from tolokaforge.core.llm.reasoning_codec import NoReasoningCodec
+from tolokaforge.core.llm.reasoning_transport import ArrivingReasoning, arriving_reasoning
 from tolokaforge.secrets import get_default
 
 #: Slugs whose presets resolve to a codec that replays nothing, plus the two
@@ -95,7 +96,7 @@ class ProbeResult:
     preset: str = ""
     codec: str = ""
     upstream: str | None = None
-    arrives_in: tuple[str, ...] = ()
+    arrived: ArrivingReasoning = field(default_factory=ArrivingReasoning)
     content_empty: bool | None = None
     extracted: bool | None = None
     replay_emits: bool | None = None
@@ -108,9 +109,9 @@ class ProbeResult:
         """What a reader should do about this row."""
         if self.error:
             return "ERROR"
-        if not self.arrives_in:
+        if not self.arrived.anything:
             return "no reasoning"
-        if self.arrives_in == ("encrypted-only",):
+        if not self.arrived.readable:
             return "opaque: nothing to keep"
         if not self.extracted:
             return "FIX: arrives readable, not extracted"
@@ -127,6 +128,11 @@ class ProbeResult:
         if without is None or with_ is None:
             return None
         return with_ > without
+
+    @property
+    def arrives_in(self) -> str:
+        """The channels column, for the table."""
+        return ",".join(self.arrived.readable) or ("encrypted-only" if self.arrived.opaque else "-")
 
 
 def _completion(
@@ -153,37 +159,9 @@ def _reasoning_tokens(response: Any) -> int:
     return int(getattr(details, "reasoning_tokens", 0) or 0)
 
 
-#: ``reasoning_details`` entry types whose payload a later turn could read.
-#: ``reasoning.encrypted`` is deliberately absent: an opaque blob is not
-#: deliberation we can keep, and a probe that counted it would report a loss
-#: where none is possible.
 #: Used only to build a replay payload for question 3, so the upstream is
 #: asked the same question whatever codec the preset happens to install.
 _ALWAYS_REPLAYS = OpenAISummaryReplayReasoningCodec()
-
-_READABLE_DETAIL_TYPES: frozenset[str] = frozenset({"reasoning.text", "reasoning.summary"})
-
-
-def _where_reasoning_arrives(message: Any) -> tuple[str, ...]:
-    """Fields carrying reasoning a later turn could act on, most canonical first."""
-    found: list[str] = []
-    if getattr(message, "reasoning_content", None):
-        found.append("reasoning_content")
-    psf = getattr(message, "provider_specific_fields", None) or {}
-    if isinstance(psf, dict):
-        if psf.get("reasoning"):
-            found.append("reasoning")
-        details = psf.get("reasoning_details") or []
-        kinds = {
-            d.get("type")
-            for d in details
-            if isinstance(d, dict) and d.get("type") in _READABLE_DETAIL_TYPES
-        }
-        if kinds:
-            found.append("reasoning_details")
-        elif details:
-            found.append("encrypted-only")
-    return tuple(found)
 
 
 def probe(slug: str, key: str) -> ProbeResult:
@@ -202,7 +180,7 @@ def probe(slug: str, key: str) -> ProbeResult:
         first = _completion(slug, base, key)
         msg = first.choices[0].message
         out.upstream = (getattr(first, "model_extra", None) or {}).get("provider")
-        out.arrives_in = _where_reasoning_arrives(msg)
+        out.arrived = arriving_reasoning(msg)
         out.content_empty = not (getattr(msg, "content", None) or "").strip()
 
         reasoning = codec.extract(msg)
@@ -219,7 +197,7 @@ def probe(slug: str, key: str) -> ProbeResult:
             _ALWAYS_REPLAYS.encode_for_replay(reasoning) if reasoning is not None else {}
         )
 
-        if isinstance(codec, NoReasoningCodec) or not out.arrives_in:
+        if isinstance(codec, NoReasoningCodec) or not out.arrived.anything:
             return out
 
         tool_calls = getattr(msg, "tool_calls", None) or []
@@ -270,7 +248,7 @@ def _render(results: list[ProbeResult]) -> str:
         lines.append(
             f"{r.slug[:30]:30s} {(r.preset or '-')[:30]:30s} {r.codec[:34]:34s} "
             f"{(r.upstream or '-')[:14]:14s} "
-            f"{(','.join(r.arrives_in) or '-')[:44]:44s} "
+            f"{r.arrives_in[:44]:44s} "
             f"{('yes' if r.extracted else 'no'):4s} {('yes' if r.replay_emits else 'no'):4s} "
             f"{t2:10s} {r.verdict}"
         )

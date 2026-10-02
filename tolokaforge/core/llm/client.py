@@ -62,7 +62,7 @@ from tolokaforge.core.llm.openrouter_headers import (
     is_openrouter_provider,
 )
 from tolokaforge.core.llm.params_policy import RuleAction
-from tolokaforge.core.llm.presets import build_capabilities
+from tolokaforge.core.llm.presets import build_capabilities, resolve_effective_preset
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.providers import (
     compile_rate_limit_patterns,
@@ -71,12 +71,17 @@ from tolokaforge.core.llm.providers import (
 )
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
+from tolokaforge.core.llm.reasoning_transport import (
+    PermissiveReasoningReader,
+    arriving_reasoning,
+)
 from tolokaforge.core.llm.session_header import session_header_conflict
 from tolokaforge.core.llm.usage import (
     CostSource,
     Usage,
     UsageExtractor,
     extract_openrouter_generation_id,
+    extract_upstream_provider,
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -587,6 +592,15 @@ def _litellm_response_cost(response: Any) -> float | None:
 #: ``provider/model`` pairs whose dropped-reasoning-replay warning has been
 #: emitted. Nothing reads it but the logger.
 _REPLAY_DROP_WARNED: set[str] = set()
+
+#: ``provider/model/upstream`` triples whose recovered-reasoning warning has
+#: been emitted. Keyed on the upstream too: one slug fans out across machines
+#: that disagree about where reasoning goes, so the same model is two claims.
+_RECOVERED_WARNED: set[str] = set()
+
+#: Reads any channel a provider uses, for when the preset's codec reads none
+#: of them. Stateless, so one instance serves every client.
+_PERMISSIVE_READER = PermissiveReasoningReader()
 
 
 class GenerationResult:
@@ -1369,6 +1383,33 @@ class LLMClient:
             "in which it never reasoned",
             model=self.model_name,
             codec=type(self.capabilities.reasoning_codec).__name__,
+        )
+
+    def _warn_reasoning_recovered(self, arrived: Any, response: Any) -> None:
+        """Say once per model and upstream that a preset is reading too little.
+
+        Nothing was lost — the reasoning is on the trajectory either way. What
+        this reports is that the preset's codec does not read the channel this
+        route uses, which is a configuration fact worth fixing before the next
+        model lands on the same preset.
+
+        Keyed on the upstream as well as the model: OpenRouter resolves one
+        slug to different machines per request, and they do not agree about
+        where reasoning goes.
+        """
+        upstream = extract_upstream_provider(response) or "-"
+        key = f"{self.provider}/{self.model_name}/{upstream}"
+        if key in _RECOVERED_WARNED:
+            return
+        _RECOVERED_WARNED.add(key)
+        self.logger.warning(
+            "Reasoning arrived in a channel this model's codec does not read; "
+            "recovered it, but the preset is routed too narrowly",
+            model=self.model_name,
+            upstream=upstream,
+            preset=resolve_effective_preset(self.model_name, self.provider),
+            codec=type(self.capabilities.reasoning_codec).__name__,
+            arrived_in=list(arrived.readable),
         )
 
     def _reasoning_replay_dropped_for(self, messages: list[Message]) -> bool:
@@ -2431,6 +2472,15 @@ class LLMClient:
         tool_calls: list[ToolCall] = []
 
         reasoning_result = self.capabilities.reasoning_codec.extract(message)
+        arrived = arriving_reasoning(message)
+        if arrived.readable and (reasoning_result is None or reasoning_result.is_empty()):
+            # The provider sent deliberation this preset's codec does not read.
+            # Keep it: reading is wire-neutral — the replay splice in
+            # ``_convert_messages`` asks the preset's codec, not this one — so
+            # the only alternative is to drop text we were already billed for.
+            reasoning_result = _PERMISSIVE_READER.extract(message)
+            if reasoning_result is not None:
+                self._warn_reasoning_recovered(arrived, response)
 
         # Build per-tool root-level parameter type maps once per call so the
         # response policy's schema-aware coercions (currently: empty-container
