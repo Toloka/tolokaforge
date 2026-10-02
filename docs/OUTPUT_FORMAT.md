@@ -1471,7 +1471,7 @@ produced it: a key-name rule has no key to read there.
 
 A host grader can attach `Grade.state_snapshots` (`GradingStateSnapshots`) to
 its result. The writer puts it in `grading_state_snapshots.yaml`, leaving it
-out of `grade.yaml`. Its schema is `schema_version: 1`, `source` (how the grader
+out of `grade.yaml`. That sidecar has schema version 1, `source` (how the grader
 obtained the states), and three mappings: `initial`, `golden`, `final`. These
 are grader evidence and may be reconstructed by replay; they do not replace
 the live environment in `env.yaml` or select a comparison policy.
