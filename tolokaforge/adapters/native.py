@@ -1321,28 +1321,34 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         )
 
     def _bundle_corpus_artifacts(self, task_dir: Path, corpus_dir: str) -> dict[str, str]:
-        """Bundle the RAG corpus's ``.md``/``.txt`` files as base64 artifacts.
+        """Bundle the RAG corpus's ``.md``/``.txt``/``.json`` files as base64 artifacts.
 
         Only the corpus files travel, keyed under the declared *corpus_dir*
         prefix, so the runner resolves ``artifacts_dir / documents_path`` to
         the same tree. Globs are flat (non-recursive), matching
-        ``load_documents_from_directory``. The whole task directory is
-        deliberately NOT bundled — that would ship ``grading.yaml`` (which may
-        carry a planted retrieval fact) into the runner.
+        ``load_documents_from_directory``. ``.json`` files are the ``bm25``
+        backend's ``{id, title, content}`` documents (ADR-0053); which files a
+        backend indexes is the backend's own rule — ``rag_service`` reads the
+        ``.md``/``.txt`` ones. The whole task directory is deliberately NOT
+        bundled — that would ship ``grading.yaml`` (which may carry a planted
+        retrieval fact) into the runner.
 
         Raises:
-            ValueError: if the corpus directory holds no ``.md``/``.txt`` files.
+            ValueError: if the corpus directory holds no ``.md``/``.txt``/``.json``
+                files.
         """
         corpus_path = task_dir / corpus_dir
         artifacts: dict[str, str] = {}
-        for pattern in ("*.md", "*.txt"):
+        for pattern in ("*.md", "*.txt", "*.json"):
             for file_path in sorted(corpus_path.glob(pattern)):
                 if not file_path.is_file():
                     continue
                 rel_path = f"{corpus_dir}/{file_path.name}"
                 artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
         if not artifacts:
-            raise ValueError(f"RAG corpus at {corpus_path} contains no .md or .txt files to index.")
+            raise ValueError(
+                f"RAG corpus at {corpus_path} contains no .md, .txt or .json files to index."
+            )
         return artifacts
 
     def _bundle_task_artifacts(self, task_dir: Path) -> dict[str, str]:
