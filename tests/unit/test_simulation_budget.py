@@ -33,3 +33,14 @@ def test_nine_errors_continue_and_tenth_stops() -> None:
     budget.participant(calls_environment=True)
     assert budget.environment(errors=1) is TerminationReason.TOO_MANY_ERRORS
     assert budget.steps == 20
+
+
+def test_a_success_between_environment_errors_does_not_reset_the_counter() -> None:
+    budget = SimulationBudget(max_steps=200, max_errors=10)
+    for error in [1] * 5 + [0] + [1] * 4:
+        assert budget.participant(calls_environment=True) is None
+        assert budget.environment(errors=error) is None
+    assert budget.errors == 9
+    assert budget.participant(calls_environment=True) is None
+    assert budget.environment(errors=1) is TerminationReason.TOO_MANY_ERRORS
+    assert budget.steps == 22
