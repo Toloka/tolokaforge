@@ -173,6 +173,7 @@ class ToolExecutionStatus(str, Enum):
     """
 
     SUCCESS = "success"
+    ENVIRONMENT_ERROR = "environment_error"
     ERROR = "error"
     TIMEOUT = "timeout"
     TOOL_NOT_FOUND = "tool_not_found"

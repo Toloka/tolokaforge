@@ -27,6 +27,7 @@ from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 from tolokaforge.core.models.grade import Grade, GradingStateSnapshots, JudgeUsage
 from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 __all__ = [
     "REPLY_DEFECT_EXCERPT_MAX_CHARS",
@@ -193,6 +194,9 @@ class Message(BaseModel):
     content_blocks: list[dict[str, Any]] | None = None  # Multimodal content (screenshots)
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
+    # The completed tool outcome when known. Keeps a literal "Error: ..."
+    # returned by an environment distinct from the engine's error prefix.
+    tool_status: ToolExecutionStatus | None = None
     # Structured reasoning / thinking blocks. See tolokaforge.core.llm.reasoning.
     # Bare strings are rejected (Stage 0 migration); callers must pass
     # ``StructuredReasoning`` or a dict parsable by it.
@@ -873,6 +877,8 @@ class Trajectory(BaseModel):
     # executor. Persisted as the ``tool_log.yaml`` sidecar, not as a key on
     # ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
     tool_log: list[RecordedToolCall] = Field(default_factory=list)
+    simulation_steps: int | None = None
+    environment_errors: int | None = None
     grade: Grade | None = None
     # Grading ran for this trial and could not produce a verdict; this is the
     # reason it gave. ``None`` means grading either succeeded or was correctly

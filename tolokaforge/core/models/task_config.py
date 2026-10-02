@@ -572,6 +572,8 @@ class TaskConfig(BaseModel):
     description: str
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
+    max_simulation_steps: int | None = Field(default=None, ge=1)
+    max_environment_errors: int | None = Field(default=None, ge=1)
     initial_user_message: str | None = None
     """The task's pinned opener. When set, this exact text — whitespace
     included — is message index 0, and no simulator dispatch produces the

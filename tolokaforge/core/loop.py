@@ -94,6 +94,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
+from tolokaforge.core.simulation_budget import SimulationBudget
 from tolokaforge.core.summarize_policy import SummarizePolicy, SummarizerFailedError
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
@@ -101,6 +102,7 @@ from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import (
     ToolExecuting,
+    ToolExecutionStatus,
     ToolResult,
     resolve_tool_output,
     resolve_tool_status,
@@ -614,6 +616,7 @@ class AgentLoopContext:
     validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
     tool_output_max_chars_by_tool: dict[str, int] | None = None
     agent_view: Callable[[list[Message]], list[Message]] | None = None
+    simulation_budget: SimulationBudget | None = None
 
 
 AgentLoopFactory = Callable[[AgentLoopContext], AgentLoop]
@@ -744,10 +747,9 @@ class ToolCallFunnel:
         calls: Sequence[ToolCall],
         append_tool_message: ToolMessageAppender,
         assistant_text: str = "",
-    ) -> None:
+    ) -> list[ToolResult]:
         """:meth:`execute` over ``calls``, in declaration order."""
-        for call in calls:
-            self.execute(call, append_tool_message, assistant_text)
+        return [self.execute(call, append_tool_message, assistant_text) for call in calls]
 
     def execute(
         self,
@@ -812,6 +814,7 @@ class ToolCallFunnel:
             content=self.cap_tool_message_content(call.name, raw_content),
             content_blocks=(tool_result.content_blocks if tool_result.success else None),
             tool_call_id=call.id,
+            tool_status=resolve_tool_status(tool_result),
             ts=_now(),
         )
         index = append_tool_message(message)
@@ -950,6 +953,7 @@ class ToolCallingLoop:
     # ``None`` reads the whole record; a trial whose user takes isolated tool
     # steps passes :func:`~tolokaforge.core.actors.tool_turns.agent_view`.
     agent_view: Callable[[list[Message]], list[Message]] | None = None
+    simulation_budget: SimulationBudget | None = None
 
     # The single path every tool call this loop makes travels: id assignment,
     # execution, recording, error wording, output cap, metrics and observer.
@@ -1236,6 +1240,10 @@ class ToolCallingLoop:
             )
 
         self._append_both(messages, self._assistant_message(result))
+        if self.simulation_budget is not None:
+            reason = self.simulation_budget.participant(calls_environment=bool(result.tool_calls))
+            if reason is not None:
+                return self._stop_for_simulation_limit(messages, reason)
         if self.observer is not None:
             ended_at = messages[-1].ts or _now()
             self.observer.generation(
@@ -1253,7 +1261,15 @@ class ToolCallingLoop:
             return self._stop_on(decision)
 
         if result.tool_calls:
-            self._execute_tool_calls(result, messages)
+            results = self._execute_tool_calls(result, messages)
+            if self.simulation_budget is not None:
+                errors = sum(
+                    resolve_tool_status(tool_result) is ToolExecutionStatus.ENVIRONMENT_ERROR
+                    for tool_result in results
+                )
+                reason = self.simulation_budget.environment(errors=errors)
+                if reason is not None:
+                    return self._stop_for_simulation_limit(messages, reason)
             return None, None, False
 
         return self._advance_user_turn(messages)
@@ -1382,18 +1398,36 @@ class ToolCallingLoop:
         outcome = self.user_turn(messages)
         if outcome.message is not None:
             self._append_both(messages, outcome.message)
+            if self.simulation_budget is not None:
+                reason = self.simulation_budget.participant(
+                    calls_environment=bool(outcome.message.tool_calls)
+                )
+                if reason is not None:
+                    return self._stop_for_simulation_limit(messages, reason)
 
         if outcome.termination is not None:
             self._append_both(messages, self._system_message(outcome.termination.system_message))
             return self._stop_on(outcome.termination)
         return None, None, False
 
-    def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
-        self.funnel.execute_all(
+    def _execute_tool_calls(
+        self, result: GenerationResult, messages: list[Message]
+    ) -> list[ToolResult]:
+        return self.funnel.execute_all(
             result.tool_calls,
             lambda message: self._append_tool_message(messages, message),
             result.text,
         )
+
+    def _stop_for_simulation_limit(
+        self, messages: list[Message], reason: TerminationReason
+    ) -> tuple[TrialStatus | None, TerminationReason | None, bool]:
+        decision = TerminationDecision(
+            reason=reason,
+            system_message=f"Simulation ended at {reason.value}.",
+        )
+        self._append_both(messages, self._system_message(decision.system_message))
+        return self._stop_on(decision)
 
     def _append_tool_message(self, messages: list[Message], message: Message) -> int:
         """Append a ``role: tool`` message to both views; its index in ``messages``."""
@@ -1486,4 +1520,5 @@ def _engine_loop_factory(context: AgentLoopContext) -> ToolCallingLoop:
         tool_output_max_chars_by_tool=context.tool_output_max_chars_by_tool,
         call_ids=context.call_ids,
         agent_view=context.agent_view,
+        simulation_budget=context.simulation_budget,
     )

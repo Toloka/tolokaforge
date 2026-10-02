@@ -98,6 +98,10 @@ message RegisterTrialResponse {
 
   // Number of user tools registered (for dual-control scenarios)
   int32 num_user_tools = 5;
+
+  // The runner's implemented wire contract. The host refuses an older image
+  // before any model call, even when that older runner accepts a newer host.
+  int32 runner_protocol_version = 6;
 }
 
 // Tool schema in OpenAI function calling format
@@ -181,6 +185,8 @@ enum ExecutionStatus {
   EXECUTION_STATUS_TOOL_NOT_FOUND = 4;
   EXECUTION_STATUS_INVALID_ARGUMENTS = 5;
   EXECUTION_STATUS_TRIAL_NOT_FOUND = 6;
+  // The MCP tool answered with isError=true; unlike ERROR, its call completed.
+  EXECUTION_STATUS_ENVIRONMENT_ERROR = 7;
 }
 
 message ToolMetrics {
