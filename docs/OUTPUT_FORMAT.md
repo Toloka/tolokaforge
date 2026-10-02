@@ -78,7 +78,7 @@ the adapter-side inputs that drove the trials.
     "package_version": "1.0.0",
     "content_sha256": "9f0d…64-hex chars…",
     "api_version": 1,
-    "minimum_engine_version": ">=0.17,<1.0"
+    "minimum_engine_version": ">=0.28,<1.0"
   },
   "adapter_fingerprints": {}
 }
@@ -324,7 +324,7 @@ authoring. `TaskConfig` ignores unknown keys, so `TaskConfig(**task.yaml)` drops
 it and resolves the default simulator — while `interaction_mode` and
 `initial_user_message`, both `TaskConfig` fields, are picked back up.
 
-### `model_config.<role>.resolved.*` (Stage 7, P6)
+### `model_config.<role>.resolved.*`
 
 Computed by the orchestrator at trial-start via
 [`tolokaforge.core.llm.presets.resolve_effective_preset`](../tolokaforge/core/llm/presets.py)
@@ -347,6 +347,14 @@ stateful [`GenerationParams`](../tolokaforge/core/llm/params_policy.py)
 dataclass whose constructor kwargs already serialise alongside the
 fingerprint via `agent.capabilities`, not a single-named policy.
 Callers needing the full parameter block read that block directly.
+
+`resolved` is the record, not a model-config field: a reader that rebuilds a
+`ModelConfig` from a role block (offline judge replay does, for `judge`) drops
+it first.
+
+A reader that rebuilds model configs from a bundle (`task.yaml` `model_config`,
+`judge_model_config.json`) refuses a key its `ModelConfig` does not declare, so
+it must be at least as new as the engine that wrote the bundle.
 
 The `judge` role (the run-level read-only rubric judge, `models.judge`) is
 recorded symmetrically with `agent` / `user` — its own role block plus a

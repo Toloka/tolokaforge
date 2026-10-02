@@ -331,6 +331,40 @@ def _no_plane_refusal(
     )
 
 
+def _unseeded_json_db_tools_refusal(task: TaskDescription) -> str | None:
+    """Why this task's source-less JSON-DB builtins would have no store to serve, if so.
+
+    ``db_query`` / ``db_update`` read and write the trial's own store, which
+    ``RegisterTrial`` seeds from ``initial_state.tables``. The predicate reads the
+    tables rather than :func:`provisions_database`: a task can provision a database
+    from schemas or unstable fields alone and still hand the agent an empty store.
+
+    The authoring gate states the same rule before a trial is paid for, off the same two
+    facts. A trial can reach here without passing it: the gate never ships in the
+    runner image, and it skips a task whose tool set it cannot read.
+    """
+    # Deferred, as in ToolFactory: importing the builtin package imports every tool driver.
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    json_db_tools = sorted(
+        {
+            tool.name
+            for tool in (*task.agent_tools, *task.user_tools)
+            if tool.source is None
+            and builtin_registry.is_builtin(tool.name)
+            and builtin_registry.get_dispatch(tool.name) is builtin_registry.Dispatch.JSON_DB
+        }
+    )
+    if not json_db_tools or task.initial_state.tables:
+        return None
+    return (
+        f"task '{task.task_id}' enables the JSON-DB tools {json_db_tools}, but its "
+        f"initial_state seeds no table, so they would read and write an empty store. "
+        f"Seed the store under initial_state.json_db, or declare an intentionally empty "
+        f'one as json_db: {{"<table>": []}}.'
+    )
+
+
 def _unreachable_state_checks_refusal(
     state_checks: RunnerStateChecksConfig, initial_state: RunnerInitialStateConfig
 ) -> str | None:
@@ -931,6 +965,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 )
                 logger.error(f"RegisterTrial: {trial_id} - {error}")
                 return pb2.RegisterTrialResponse(success=False, error=error)
+
+        json_db_error = _unseeded_json_db_tools_refusal(task_description)
+        if json_db_error is not None:
+            logger.error(f"RegisterTrial: {trial_id} - {json_db_error}")
+            return pb2.RegisterTrialResponse(success=False, error=json_db_error)
 
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None

@@ -53,6 +53,7 @@ from tolokaforge.core.grading.transcript_wire import (
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
+    RESOLVED_RECORD_KEY,
     CriterionResult,
     Grade,
     GradeComponents,
@@ -652,7 +653,8 @@ def _resolve_judge_model(
         return model_config_from_ref(judge_model_override), ProvenanceSource.OVERRIDE
     recorded = ((task or {}).get("model_config") or {}).get("judge")
     if isinstance(recorded, dict):
-        return ModelConfig.model_validate(recorded), ProvenanceSource.RECORDED
+        fields = {key: value for key, value in recorded.items() if key != RESOLVED_RECORD_KEY}
+        return ModelConfig.model_validate(fields), ProvenanceSource.RECORDED
     raise MissingReplayInputError(
         "no judge model: the bundle's task.yaml has no model_config.judge and no "
         "--judge-model override was supplied"

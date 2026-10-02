@@ -53,11 +53,15 @@ from tolokaforge.core.grading.trace_replay import (
 )
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
+from tolokaforge.core.llm.litellm_params import overlay_key_mismatches
 from tolokaforge.core.llm.presets import (
+    capability_override_errors,
     resolve_overlay_path,
     set_overlay_path,
     validate_overlay_file,
 )
+from tolokaforge.core.llm.proxy import ProxyConfigError
+from tolokaforge.core.llm.session_header import session_header_conflicts
 from tolokaforge.core.logging import (
     LogFormat,
     configure_root_logging,
@@ -441,7 +445,9 @@ def _activate_presets_overlay(
     contract (so tests can install paths cheaply), but at the CLI boundary
     we want a typo'd overlay to fail *here* — before the orchestrator is
     constructed, ``load_tasks()`` walks the task tree, or the Docker stack
-    auto-starts.
+    auto-starts. The same holds for a ``litellm_models`` entry stored under a
+    model's raw name (``litellm_params.OverlayKeyMismatchError``, the first in walk order
+    over every model and fallback).
     """
     config_value = run_config.engine.presets_file if run_config.engine else None
     queue_state_value = read_persisted_presets_file(run_dir) if run_dir is not None else None
@@ -452,7 +458,40 @@ def _activate_presets_overlay(
     set_overlay_path(resolved)
     if resolved is not None:
         validate_overlay_file(resolved)
+        mismatches = overlay_key_mismatches(run_config.models)
+        if mismatches:
+            mismatch = mismatches[0][1]
+            raise click.ClickException(str(mismatch)) from mismatch
     return resolved
+
+
+def _refuse_session_header_conflicts(run_config: RunConfig) -> None:
+    """Refuse the first session header, over every model and fallback, that
+    another header source also sets, or a malformed gateway environment when some
+    config declares ``session``.
+
+    A fallback's client is built only on failover, so its construction-time
+    check alone would fail mid-run.
+    """
+    try:
+        conflicts = session_header_conflicts(run_config.models)
+    except ProxyConfigError as err:
+        raise click.ClickException(str(err)) from err
+    if conflicts:
+        conflict = conflicts[0][1]
+        raise click.ClickException(str(conflict)) from conflict
+
+
+def _refuse_unbuildable_capabilities(run_config: RunConfig) -> None:
+    """Refuse a run naming every model config, fallbacks included, whose
+    capabilities do not build.
+
+    Every configured role is checked, including one this run never builds (a judge
+    on a deterministic-only task set), so the refusal does not depend on the tasks.
+    """
+    errors = capability_override_errors(run_config.models)
+    if errors:
+        raise click.ClickException("\n".join(str(err) for _, err in errors))
 
 
 _UNGRADEABLE_TRIALS_NAMED = 5
@@ -776,16 +815,15 @@ def run(
         console.print(f"[cyan]User model override: {user_model_override}[/cyan]")
 
     # Apply judge model: CLI flag > env var > YAML config (models.judge).
-    # Temperature is pinned to 0 for grading determinism (the judge does not
-    # honour a non-zero temperature yet). The YAML path is primary and parses
-    # with no loader change; this flag is the ergonomic override mirroring
-    # --user-model.
+    # The YAML path is primary; this flag is the ergonomic override mirroring
+    # --user-model. No temperature: ModelConfig's default 0.0 applies, and an
+    # explicit one would earn the ignored-value warning on a model whose
+    # preset sends no sampling parameters.
     judge_model_override = judge_model or os.environ.get("JUDGE_MODEL")
     if judge_model_override:
         config_data.setdefault("models", {})["judge"] = {
             "provider": DEFAULT_USER_MODEL_PROVIDER,
             "name": judge_model_override,
-            "temperature": 0.0,
         }
         console.print(f"[cyan]Judge model: {judge_model_override}[/cyan]")
 
@@ -860,6 +898,8 @@ def run(
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     # Fallback-model chain lives on ``models.agent.fallbacks`` in the run
     # config (list of ModelConfig entries, in order). Empty list → no
@@ -1584,6 +1624,8 @@ def prepare(
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,
@@ -1678,6 +1720,8 @@ def worker(
     overlay_path = _activate_presets_overlay(presets_file, run_config, run_dir=Path(run_dir))
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
+    _refuse_session_header_conflicts(run_config)
+    _refuse_unbuildable_capabilities(run_config)
 
     orchestrator = Orchestrator(
         run_config,

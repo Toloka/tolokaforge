@@ -343,10 +343,11 @@ def validate_grading_yaml(
             through :func:`hash_source_layer_under_adapter`, while a run's pre-flight
             asks the adapter instance it is about to grade with.
         seeded_tables: The tables the task seeds, which its ``state_checks.id_fields``
-            declaration keys, resolved through :func:`seeded_tables_under_adapter`. A
-            caller that cannot read them leaves the default,
-            :meth:`SeededTablesLayer.unresolvable`, which moves the declaration into
-            ``unchecked`` instead of holding it against a state nobody resolved.
+            declaration keys, its database reads need and its JSON-DB builtins serve,
+            resolved through :func:`seeded_tables_under_adapter`. A caller that cannot
+            read them leaves the default, :meth:`SeededTablesLayer.unresolvable`, which
+            moves each rule reading them into ``unchecked`` instead of holding it
+            against a state nobody resolved.
         combine_layer: What the task's enclosing project supplies beneath its own
             ``combine`` block. A caller that cannot resolve it leaves the default,
             :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
@@ -695,6 +696,20 @@ def actor_tool_block(task: Any, actor: ToolActor) -> dict[str, Any]:
     return getattr(task.tools, actor.value)
 
 
+def effective_mcp_server(task: Any, actor: ToolActor) -> str | None:
+    """The ``mcp_server`` script serving *actor*'s tools, or ``None`` where builtins do.
+
+    A user block declaring no ``mcp_server`` of its own is served by the agent's, so
+    a name it enables reaches the runner as that server's tool rather than as the
+    builtin of the same name. Every reader of "which server serves this block" asks
+    here, so the wire source, the resolved schemas and the gate's inventory agree.
+    """
+    server = actor_tool_block(task, actor).get("mcp_server")
+    if server is None and actor is ToolActor.USER:
+        server = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
+    return server or None
+
+
 def enabled_tool_names(task: Any, actor: ToolActor) -> frozenset[str]:
     """The tool names ``tools.<actor>.enabled`` lists."""
     return frozenset(actor_tool_block(task, actor).get("enabled", []))
@@ -789,8 +804,10 @@ def resolve_tool_schemas(
 ) -> dict[str, dict]:
     """Resolve ``{tool_name: {"description", "parameters"}}`` for *actor*'s tools.
 
-    An MCP block's schemas come from ``<task_dir>/fixtures/tools.json``; a block
-    without an ``mcp_server`` gets them from the builtin registry.
+    A block served by an MCP server — its own, or for the user block the agent's
+    (:func:`effective_mcp_server`) — gets its schemas from
+    ``<task_dir>/fixtures/tools.json``; a block served by none gets them from the
+    builtin registry.
 
     Args:
         task: The loaded task config.
@@ -808,13 +825,14 @@ def resolve_tool_schemas(
         RuntimeError: If a live ``tools/list`` query is reached and fails.
         ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
     """
-    block = actor_tool_block(task, actor)
-    mcp_server_ref = block.get("mcp_server")
-    if mcp_server_ref:
+    mcp_server_ref = effective_mcp_server(task, actor)
+    if mcp_server_ref is not None:
         return _load_rich_tool_schemas(
             task_dir, task_dir / mcp_server_ref, allow_subprocess=allow_subprocess
         )
-    return _builtin_tool_schemas(block.get("enabled", []), tool_configs(task, actor))
+    return _builtin_tool_schemas(
+        actor_tool_block(task, actor).get("enabled", []), tool_configs(task, actor)
+    )
 
 
 def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
@@ -834,6 +852,11 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     an MCP fixture listing the harness's own state tool — is dropped too, so one
     grading block cannot draw an undeclared-tool error and an argument finding
     from the same name.
+
+    :attr:`ToolInventory.json_db_builtins` is read off the same
+    :func:`effective_mcp_server` the wire build reads, so a ``db_query`` a user block
+    enables under the agent's server is that server's tool here as it is at
+    ``RegisterTrial``.
     """
     declared_by_executor = {
         ACTOR_EXECUTOR_IDENTITY[actor]: enabled_tool_names(task, actor) for actor in ToolActor
@@ -861,7 +884,41 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         actor_split_known=True,
         parameters=parameters,
         known=True,
+        json_db_builtins=_json_db_builtins(task),
+        json_db_tool_config_keys=_json_db_tool_config_keys(task),
     )
+
+
+def _json_db_builtins(task: TaskConfig) -> frozenset[str]:
+    """The enabled tools the runner builds as source-less ``Dispatch.JSON_DB`` builtins."""
+    from tolokaforge.tools.builtin import registry
+
+    json_db_names = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+    return frozenset().union(
+        *(
+            enabled_tool_names(task, actor) & json_db_names
+            for actor in ToolActor
+            if effective_mcp_server(task, actor) is None
+        )
+    )
+
+
+def _json_db_tool_config_keys(task: TaskConfig) -> dict[str, frozenset[str]]:
+    """The source-less ``Dispatch.JSON_DB`` builtins whose block carries init kwargs, to those keys."""
+    from tolokaforge.tools.builtin import registry
+
+    json_db_names = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
+    configured = (
+        (name, frozenset(kwargs))
+        for actor in ToolActor
+        if effective_mcp_server(task, actor) is None
+        for name, kwargs in tool_configs(task, actor).items()
+        if name in json_db_names
+    )
+    keys: dict[str, frozenset[str]] = {}
+    for name, kwargs in configured:
+        keys[name] = keys.get(name, frozenset()) | kwargs
+    return keys
 
 
 def _declared_parameters(

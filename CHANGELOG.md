@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.28.0 (2026-10-01)
+
+### BREAKING CHANGE
+
+- db-service no longer serves the flat routes
+`POST /reset`, `POST /query`, `POST /update`, `GET /dump`, `POST /sql`
+and `GET /schema`; requests to them get 404. There is no implicit
+`__default__` trial. `SQLQueryTool` and `SQLSchemaToolDB` are removed
+from `tolokaforge.tools.builtin` and its `__all__`. Migration: init a
+trial with `POST /trials/{trial_id}/init` and address it by its
+`/trials/{trial_id}/...` equivalent (`/reset` -> `/init`, `/query`,
+`/update`, `/dump` -> `/state`, `/sql`, `/schema`); for SQL access use
+`DBServiceClient.sql_query` / `get_schema` against a trial id. The
+standalone compose recipe's mock-web no longer sets `JSON_DB_URL` or
+waits on db-service.
+- `DBQueryTool` and `DBUpdateTool`, still exported from
+`tolokaforge.tools.builtin`, take no `db_url` and carry only the
+LLM-facing schema and `ToolPolicy`; their `execute()` raises, because the
+runner's ToolFactory serves them per trial through `Dispatch.JSON_DB`.
+Migration: call `DBServiceClient.query(trial_id, jsonpath)` /
+`DBServiceClient.update(trial_id, ops)` against an inited trial.
+`tools.<actor>.db_query` / `db_update` accept no `tool_config`; validate
+and RegisterTrial refuse one. `POST /trials/{trial_id}/update` now
+answers 400 where it used to answer "ok" with no change: for an `add`
+whose parent matches nothing or is a scalar, an `add` path not ending in
+a key name, and a `replace` of `$`. A `remove $` that was a 500, and a
+state the SQL mirror cannot store that was a 500 with the write
+committed, are now 400 with nothing applied.
+- A task enabling `db_query`/`db_update` as builtins must seed
+at least one table: `initial_state.json_db`, or `json_db: {"<table>": []}` for
+an intentionally empty store. `tolokaforge validate`, the run pre-flight and
+`RegisterTrial` refuse it otherwise. `add` on a table (list parent) now
+requires the `.-` append form (`$.tickets.-`); any other key is refused.
+- an unknown key under `models.<role>` (including `fallbacks`,
+`openrouter`, `session`, `reasoning`) now fails the run config's load, naming
+the key and suggesting the closest field; delete or rename it. `gateway_route`
+was never read and must be deleted. Worker and grader images from this release
+refuse a model-config key they do not declare: roll images before the engine.
+A `tolokaforge` reading a bundle refuses one written by a later engine with a
+newer model-config field.
+
+### Feat
+
+- **core**: M51 — Gateway & self-hosted model parity (#1714)
+
+### Fix
+
+- **runtime**: db_query/db_update read and write only the trial's own seeded JSON DB (#1734)
+- **docker**: exclude nested build artifacts from Docker contexts (#1705)
+- **observability**: role-generic actor LLM-spend accounting — record user-simulator spend in metrics, aggregate, and budget (#1656)
+
 ## v0.27.5 (2026-09-30)
 
 ### Feat

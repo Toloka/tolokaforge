@@ -13,7 +13,7 @@ shipped table can be refreshed from the OpenRouter API using the
 Values reflect *OpenRouter-routed* rates, which is what every Anthropic-family
 call in this harness is billed at — :class:`LLMClient` always prefixes the
 litellm model id with ``openrouter/`` for ``provider="openrouter"`` model
-configs (see ``_format_model_name``) and sets
+configs (see ``providers.litellm_model_id``) and sets
 ``custom_llm_provider="openrouter"`` (see ``_build_kwargs``); no preset
 configures direct Anthropic API. The OR-discounted Opus 4.5+ tier
 (``$5/$25`` input/output per 1M tokens — verified live against

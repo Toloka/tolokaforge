@@ -3,20 +3,86 @@
 Holds the LLM invocation config that flows across the trial spec wire:
 per-provider identity (name / provider), sampling parameters,
 :class:`ReasoningConfig`, an :class:`OpenRouterConfig` when the model is
-routed via OpenRouter, and an ordered ``fallbacks`` chain a client falls
-through on hard failure.
+routed via OpenRouter, a :class:`ModelSessionConfig` naming a per-conversation
+session header, and an ordered ``fallbacks`` chain a client falls through on
+hard failure.
 """
 
+import dataclasses
+import re
+from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
+from tolokaforge.core.unknown_keys import refuse_undeclared_keys
 
-__all__ = ["ModelConfig", "OpenRouterConfig"]
+__all__ = ["RESOLVED_RECORD_KEY", "ModelConfig", "ModelSessionConfig", "OpenRouterConfig"]
+
+#: The key the conductor adds to each ``task.yaml`` ``model_config.<role>`` block for the
+#: preset fingerprint. It is the record, not a field: a reader rebuilding a
+#: :class:`ModelConfig` from that block drops it.
+RESOLVED_RECORD_KEY = "resolved"
+
+_REASONING_FIELDS = tuple(field.name for field in dataclasses.fields(ReasoningConfig))
+
+#: RFC 9110 ``field-name`` (a ``token``).
+_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+#: Transport, auth and API-version headers litellm or the engine sets; a session value
+#: must not replace them.
+_RESERVED_SESSION_HEADERS = frozenset(
+    {
+        "authorization",
+        "content-type",
+        "content-length",
+        "host",
+        "x-api-key",
+        "api-key",
+        "anthropic-version",
+        "anthropic-beta",
+    }
+)
 
 
-class OpenRouterConfig(BaseModel):
+class _RefusesUndeclaredKeys(BaseModel):
+    """Answers an undeclared key with :func:`refuse_undeclared_keys` before ``extra="forbid"`` can."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_undeclared_keys(cls, data: Any) -> Any:
+        if isinstance(data, Mapping):
+            refuse_undeclared_keys(data, tuple(cls.model_fields), owner=cls.__name__)
+        return data
+
+
+class ModelSessionConfig(_RefusesUndeclaredKeys):
+    """The request header that carries this model's conversation id (docs/CONFIG.md)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    header: str
+
+    @field_validator("header")
+    @classmethod
+    def _validate_header(cls, value: str) -> str:
+        if not _HEADER_NAME.fullmatch(value):
+            raise ValueError(
+                f"session.header {value!r} is not an HTTP header name: use letters, digits "
+                f"and !#$%&'*+.^_`|~- only, no spaces or colons."
+            )
+        if value.lower() in _RESERVED_SESSION_HEADERS:
+            raise ValueError(
+                f"session.header {value!r} names a header the engine or litellm "
+                f"sets ({', '.join(sorted(_RESERVED_SESSION_HEADERS))}); pick another name."
+            )
+        return value
+
+
+class OpenRouterConfig(_RefusesUndeclaredKeys):
     """OpenRouter provider-routing knobs (https://openrouter.ai/docs/features/provider-routing).
 
     ``provider_order`` lists case-sensitive OpenRouter provider slugs in priority
@@ -25,16 +91,12 @@ class OpenRouterConfig(BaseModel):
     is how a model pins around a rate-limited default provider.
     """
 
-    model_config = {"extra": "ignore"}
-
     provider_order: list[str] | None = None
     allow_fallbacks: bool = True
 
 
-class ModelConfig(BaseModel):
+class ModelConfig(_RefusesUndeclaredKeys):
     """LLM model configuration"""
-
-    model_config = {"extra": "ignore"}
 
     provider: str
     name: str
@@ -75,6 +137,8 @@ class ModelConfig(BaseModel):
     capabilities: dict[str, Any] | None = None  # Override auto-detected model capabilities
     # OpenRouter-only provider routing; rejected for other providers by the validator below.
     openrouter: OpenRouterConfig | None = None
+    # Not inherited by ``fallbacks`` entries: each declares its own or sends none.
+    session: ModelSessionConfig | None = None
     # Ordered fallback chain. When a hard failure hits the primary
     # model, subsequent turns for the affected trial use the next entry
     # in this list. Empty list (default) → no fallback wrapper. See
@@ -102,7 +166,8 @@ class ModelConfig(BaseModel):
                 f"`reasoning:` must be a struct ({{mode: ..., budget_tokens: ...}}), "
                 f"not the bare string {value!r}. See docs/CONFIG.md."
             )
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
+            refuse_undeclared_keys(value, _REASONING_FIELDS, owner=ReasoningConfig.__name__)
             return ReasoningConfig(**value)
         raise TypeError(
             f"`reasoning:` must be ReasoningConfig | dict | None, got {type(value).__name__}"

@@ -144,11 +144,7 @@ def full_stack(
             "tolokaforge/env/mock_web_service/",
         ],
         ports=[PortConfig(container_port=8080, host_port=mock_web_port)],
-        environment={
-            "PYTHONUNBUFFERED": "1",
-            "JSON_DB_URL": "http://tolokaforge-db-service:8000",
-        },
-        depends_on=["db-service"],
+        environment={"PYTHONUNBUFFERED": "1"},
         networks=["runner-net"],
         profiles=["web"],
         network_aliases=["mock-web"],

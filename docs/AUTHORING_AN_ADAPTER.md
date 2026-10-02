@@ -126,7 +126,13 @@ declares exactly six methods, mapped to the numbered list in
 
 - `grading_tool_inventory(task, task_dir) -> ToolInventory` (item 14) — the
   tool set this adapter presents at runtime. Default:
-  `ToolInventory.unresolvable()`.
+  `ToolInventory.unresolvable()`. A concrete inventory may report
+  `json_db_builtins`, the declared tools its runtime serves as source-less
+  JSON-DB builtins, or leave it `None` when it cannot say; `None` skips the
+  rule refusing those tools on a task that seeds no table. It may likewise
+  report `json_db_tool_config_keys`, each of those builtins whose tool block
+  carries init kwargs mapped to the keys, which the gate refuses, with `{}`
+  for none; `None` says it cannot tell, and skips that rule.
 - `grading_replay_world(task, task_dir) -> ReplayWorld` (item 15) — the
   initial-state + `mcp_server` a golden-action replay executes against.
   Default: `ReplayWorld.unresolvable()`.
@@ -277,7 +283,10 @@ simulator under the `tolokaforge.user_simulators` entry-point group and a task
 1. **Implement the `UserSimulator` Protocol.** Satisfy the `Actor` reply
    contract (`reply(context, *, observation) -> GenerationResult`) and expose
    `last_system_prompt: str | None` (the runner writes it to `prompts.yaml`; leave
-   it `None` if you never dispatch an LLM turn).
+   it `None` if you never dispatch an LLM turn). A simulator that calls its own
+   `LLMClient` passes `observation` on to `generate`: it carries the trial's
+   `session_id`, which keeps the user's conversation on one replica when the user
+   model declares `session` and the backend hashes that header.
 2. **Read your own config from `simulator_config`.** The engine passes
    `actors.user.simulator_config` to your factory on the `UserSimulatorContext`
    verbatim and never interprets it — validate that mapping into your own model.

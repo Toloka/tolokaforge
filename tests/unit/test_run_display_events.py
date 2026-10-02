@@ -222,12 +222,19 @@ def test_llm_call_observation_is_frozen_dataclass_bundling_seam_and_identity() -
     assert LLMCallObservation.__dataclass_params__.frozen is True
 
     field_names = {f.name for f in dataclasses.fields(LLMCallObservation)}
-    assert field_names == {"events", "trial_id", "role", "probe_stats"}
+    assert field_names == {"events", "trial_id", "role", "probe_stats", "session_id"}
 
     observation = LLMCallObservation(events=_NULL_EVENTS, trial_id="a:0", role="agent")
     assert observation.probe_stats is None
+    assert observation.session_id is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         observation.trial_id = "b:0"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("session_id", ["", "   "])
+def test_llm_call_observation_refuses_a_blank_session_id(session_id: str) -> None:
+    with pytest.raises(ValueError, match="session_id"):
+        LLMCallObservation(events=_NULL_EVENTS, trial_id="a:0", role="agent", session_id=session_id)
 
 
 def test_rate_limit_probe_stats_accumulates_counts_waits_and_window() -> None:

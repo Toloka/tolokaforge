@@ -43,9 +43,14 @@ and no tokens are spent.
 engine emits several grading keys whether or not the pack declares them, so any pack at
 all reproduces this against an image older than the engine. A field's declared *value*
 shape locks the same way: the error is then a `string_type` or a value error naming the
-key rather than an `extra_forbidden`.
+key rather than an `extra_forbidden`. A model-config field reads differently again: an
+image of this engine version or newer refuses it as `Value error, ModelConfig was given a
+key it does not declare` (or `OpenRouterConfig`, `ModelSessionConfig`, `ReasoningConfig`
+for a nested block) at `agent_model_config`, `user_model_config` or `judge_model_config`,
+naming the key and every key the image accepts; an older image drops it without a word.
+Same cause, same fix.
 The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
-models, so an unknown key there is an error rather than a dropped field — unlike a
+models, so an unknown grading key there is an error rather than a dropped field — unlike a
 proto message field, which an older runner ignores.
 
 Which keys bite, from which release, and in which direction is one table:
@@ -108,6 +113,50 @@ Set a provider key in `.env` or your shell environment:
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
 ```
+
+## litellm_models entry '…' does not apply to provider '…'
+
+**Symptom.** `config validate` reports an ERROR at `models.<role>.name`, or
+`run` / `prepare` / `worker` stop before any trial, with:
+
+```text
+litellm_models entry 'self-hosted/qwen3.6-35b-a3b' does not apply to provider 'openai', name 'self-hosted/qwen3.6-35b-a3b': that config is looked up under 'openai/self-hosted/qwen3.6-35b-a3b', so the entry admits nothing. Rename the entry to 'openai/self-hosted/qwen3.6-35b-a3b'.
+```
+
+**Cause.** A `litellm_models:` entry in the presets overlay is keyed on the
+config's `name` alone. The key is `<provider>/<name>`, the model string the
+client sends, with the `name` verbatim, so an entry under the bare name is
+never found and the provider still refuses `tools` before sending.
+
+**Fix.** Rename the key in the overlay to the one the message names. See
+[`LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
+
+## A route-prefixed model name resolves to the 'default' preset
+
+**Symptom.** `config validate` reports a WARNING at `models.<role>.name`:
+
+```text
+⚠ [WARNING] models.agent.name: 'self-hosted/nova-pro-v1' (provider 'openai') resolves to the 'default' preset, but its last segment 'nova-pro-v1' matches preset 'aws_nova' (hint: If preset 'aws_nova' fits the model this route serves, add an overlay preset whose match covers the full name (match: ['*/nova-pro-v1'] or match: ['self-hosted/nova-pro-v1']) carrying the policies of preset 'aws_nova'; or, when the route also serves the unprefixed name, name the model 'nova-pro-v1'.)
+```
+
+The run logs one WARNING per such model config after its tasks load, with the
+same facts and remedy as fields:
+
+```text
+WARNING | family=aws_nova last_segment=nova-pro-v1 model_name=self-hosted/nova-pro-v1 path=models.agent.name provider=openai remedy="If preset 'aws_nova' fits …" | A route-prefixed model name resolves to the 'default' preset, but its last segment matches another preset
+```
+
+**Cause.** No preset matches the full name, but the name's last segment alone
+matches a preset. The bundled presets claim their models under any route
+prefix, so this points at a preset whose globs do not: typically an overlay
+preset with a bare glob and no `*/`-prefixed sibling, or `aws_nova`, which
+routes by provider. The run proceeds on `default`, whose policies may not fit
+the model.
+
+**Fix.** If the preset fits the model this route serves, add an overlay preset
+whose `match` covers the full name, as the hint shows. When the route also
+serves the unprefixed name, naming the model that way works too. See
+[`LLM_LAYER.md`](LLM_LAYER.md#preset-coverage).
 
 ## Task Validation Fails
 

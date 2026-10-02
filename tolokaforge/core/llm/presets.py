@@ -14,7 +14,8 @@ import difflib
 import fnmatch
 import inspect
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -42,7 +43,7 @@ from tolokaforge.core.llm.message_assembly_policy import (
     MessageAssemblyPolicy,
     NullMessageAssembly,
 )
-from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
+from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy, SamplingParam
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
@@ -72,17 +73,28 @@ from tolokaforge.core.model_data import (
     bundled_presets_path,
     load_policy_registrations,
 )
-from tolokaforge.core.models.model_config import OpenRouterConfig
+from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
+from tolokaforge.core.models.run_config import iter_model_configs
+from tolokaforge.core.unknown_keys import refuse_undeclared_keys
 
 __all__ = [
+    "IGNORED_SAMPLING_PARAM",
+    "UNCLAIMED_ROUTE_FAMILY",
+    "CapabilityOverrideError",
+    "IgnoredSamplingParam",
+    "UnclaimedRouteFamily",
     "build_capabilities",
+    "capability_override_errors",
     "get_overlay_path",
     "get_resolved_presets",
+    "ignored_sampling_params",
     "litellm_model_entries",
     "resolve_effective_preset",
     "resolve_overlay_path",
     "resolve_policy_names",
     "set_overlay_path",
+    "unclaimed_route_families",
+    "unclaimed_route_family",
     "validate_overlay_file",
 ]
 
@@ -600,6 +612,20 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                     f"expected a mapping, got {type(params).__name__}."
                 )
             _reject_unknown_params(params, _params_slot_known_keys(), f"{where}.params")
+        openrouter_defaults = block.get("openrouter_defaults")
+        if openrouter_defaults is not None:
+            if not isinstance(openrouter_defaults, dict):
+                raise ValueError(
+                    f"Preset overlay {path!r} at {where}.openrouter_defaults: "
+                    f"expected a mapping, got {type(openrouter_defaults).__name__}."
+                )
+            refuse_undeclared_keys(
+                openrouter_defaults,
+                tuple(OpenRouterConfig.model_fields),
+                owner=OpenRouterConfig.__name__,
+                subject=f"Preset overlay {path!r} at {where}.openrouter_defaults",
+                accepted_by="openrouter_defaults",
+            )
 
     def _reject_unknown_params(
         params: dict[str, Any],
@@ -777,7 +803,7 @@ def litellm_model_entries() -> dict[str, dict[str, Any]]:
 
     Empty unless an overlay declares them - the engine ships no list of its
     own, because a model missing from a third-party map is not a fact about
-    this release. See ``litellm_params.allowed_openai_params`` for what is done
+    this release. See ``litellm_params.lookup_overlay`` for what is done
     with them, and ``docs/LLM_LAYER.md`` for why they exist at all.
     """
     return dict(_load_presets().get("litellm_models") or {})
@@ -864,12 +890,25 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         # Params policy
         "fixed_temperature",
         "supports_seed",
+        "supports_sampling_params",
         "reasoning_via_extra_body",
         "reasoning_via_thinking_kwarg",
         "drop_sampling_when_thinking",
         "reasoning_budget_default",
     }
 )
+
+
+def _unrecognised_override_keys(overrides: Mapping[str, Any]) -> str | None:
+    """Why *overrides* carry a key outside :data:`_RECOGNISED_OVERRIDE_KEYS`, or ``None``."""
+    unknown = set(overrides) - _RECOGNISED_OVERRIDE_KEYS
+    if not unknown:
+        return None
+    return (
+        f"Unknown capability override keys: {sorted(unknown)}. "
+        f"Recognised keys: {sorted(_RECOGNISED_OVERRIDE_KEYS)}. "
+        f"See docs/CONFIG.md § Model Capability Presets for the contract."
+    )
 
 
 def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> None:
@@ -884,15 +923,11 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         :data:`_RECOGNISED_OVERRIDE_KEYS`. Typos in run-config YAML must
         surface loudly rather than silently no-op, per AGENTS.md rule #1
         ("Surface failures explicitly"). See ``docs/CONFIG.md`` §
-        ``ModelConfig.capabilities`` for the current contract.
+        "Model Capability Presets" for the current contract.
     """
-    unknown = set(overrides) - _RECOGNISED_OVERRIDE_KEYS
-    if unknown:
-        raise ValueError(
-            f"Unknown capability override keys: {sorted(unknown)}. "
-            f"Recognised keys: {sorted(_RECOGNISED_OVERRIDE_KEYS)}. "
-            f"See docs/CONFIG.md § ModelConfig.capabilities for the contract."
-        )
+    refusal = _unrecognised_override_keys(overrides)
+    if refusal is not None:
+        raise ValueError(refusal)
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):
@@ -947,6 +982,8 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         params["fixed_temperature"] = overrides["fixed_temperature"]
     if "supports_seed" in overrides:
         params["supports_seed"] = overrides["supports_seed"]
+    if "supports_sampling_params" in overrides:
+        params["supports_sampling_params"] = overrides["supports_sampling_params"]
     if "reasoning_via_extra_body" in overrides:
         params["reasoning_via_extra_body"] = overrides["reasoning_via_extra_body"]
     if "reasoning_via_thinking_kwarg" in overrides:
@@ -1223,6 +1260,189 @@ def resolve_effective_preset(model_name: str, provider: str = "") -> str:
     for preset_name, _preset in _iter_preset_matches(model_name, provider):
         return preset_name  # first match wins
     return "default"
+
+
+UNCLAIMED_ROUTE_FAMILY: Final = (
+    "A route-prefixed model name resolves to the 'default' preset, "
+    "but its last segment matches another preset"
+)
+
+
+@dataclass(frozen=True)
+class UnclaimedRouteFamily:
+    """A route-prefixed name no preset claims, whose last segment matches preset ``family``."""
+
+    model_name: str
+    provider: str
+    last_segment: str
+    family: str
+
+    @property
+    def remedy(self) -> str:
+        return (
+            f"If preset {self.family!r} fits the model this route serves, add an overlay preset "
+            f"whose match covers the full name (match: ['*/{self.last_segment}'] or match: "
+            f"[{self.model_name!r}]) carrying the policies of preset {self.family!r}; or, when "
+            f"the route also serves the unprefixed name, name the model {self.last_segment!r}."
+        )
+
+
+def unclaimed_route_family(model_name: str, provider: str = "") -> UnclaimedRouteFamily | None:
+    """The preset a route-prefixed name's last segment matches, when no preset claims the name.
+
+    Returns ``None`` when *model_name* has no ``/``, when a preset matches it
+    whole, or when its last segment resolves to ``"default"`` too. Reads the
+    merged table, so an overlay preset whose globs miss the route prefix counts.
+    """
+    if "/" not in model_name or resolve_effective_preset(model_name, provider) != "default":
+        return None
+    last_segment = model_name.rsplit("/", 1)[-1]
+    family = resolve_effective_preset(last_segment, provider)
+    if family == "default":
+        return None
+    return UnclaimedRouteFamily(model_name, provider, last_segment, family)
+
+
+def unclaimed_route_families(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, UnclaimedRouteFamily]]:
+    """``(path, finding)`` for every model config, fallbacks included, that
+    :func:`unclaimed_route_family` reports. ``config validate`` and the run both give these."""
+    findings: list[tuple[str, UnclaimedRouteFamily]] = []
+    for path, cfg in iter_model_configs(models):
+        finding = unclaimed_route_family(cfg.name, cfg.provider)
+        if finding is not None:
+            findings.append((path, finding))
+    return findings
+
+
+IGNORED_SAMPLING_PARAM: Final = (
+    "A model config sets a sampling parameter its preset declares the model does not take; "
+    "the value is not sent"
+)
+
+#: Already reported as ``USER_TEMPERATURE_IGNORED``.
+_USER_TEMPERATURE_PATH: Final = "models.user.temperature"
+
+
+class CapabilityOverrideError(ValueError):
+    """A model config's capabilities do not build, at ``<path>.capabilities`` when its
+    own overrides are the cause and at ``(presets)`` when a preset or overlay is."""
+
+    def __init__(self, *, path: str, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"{path}: {reason}")
+
+    def __reduce__(self) -> tuple[Callable[..., CapabilityOverrideError], tuple[str, str]]:
+        return _rebuild_capability_override_error, (self.path, self.reason)
+
+
+def _rebuild_capability_override_error(path: str, reason: str) -> CapabilityOverrideError:
+    return CapabilityOverrideError(path=path, reason=reason)
+
+
+_PRESETS_PATH: Final = "(presets)"
+
+
+def _capabilities_or_error(
+    path: str, cfg: ModelConfig
+) -> ModelCapabilities | CapabilityOverrideError:
+    """The capabilities *cfg* builds, or why they do not, blamed on its ``capabilities``
+    block only when the same name and provider build without it."""
+    overrides = cfg.capabilities or {}
+    reason = _unrecognised_override_keys(overrides)
+    if reason is not None:
+        return CapabilityOverrideError(path=f"{path}.capabilities", reason=reason)
+    try:
+        return build_capabilities(cfg.name, cfg.provider, overrides=overrides)
+    except (ValueError, TypeError) as err:
+        failure = err
+    try:
+        build_capabilities(cfg.name, cfg.provider)
+    except (ValueError, TypeError) as err:
+        return CapabilityOverrideError(path=_PRESETS_PATH, reason=str(err))
+    return CapabilityOverrideError(
+        path=f"{path}.capabilities",
+        reason=(
+            f"the overrides {sorted(overrides)} do not build for {cfg.name!r} "
+            f"(provider {cfg.provider!r}): {failure}"
+        ),
+    )
+
+
+def capability_override_errors(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, CapabilityOverrideError]]:
+    """Every model config, fallbacks included, whose capabilities do not build, whether
+    or not the run ever builds that role or sets a sampling value; a preset or overlay
+    conflict several configs share is named once.
+
+    ``config validate`` reports each as an ERROR at the error's ``path``, and
+    ``run`` / ``prepare`` / ``worker`` refuse to start naming all of them.
+    """
+    errors: list[tuple[str, CapabilityOverrideError]] = []
+    named: set[str] = set()
+    for path, cfg in iter_model_configs(models):
+        built = _capabilities_or_error(path, cfg)
+        if isinstance(built, CapabilityOverrideError) and str(built) not in named:
+            named.add(str(built))
+            errors.append((path, built))
+    return errors
+
+
+@dataclass(frozen=True)
+class IgnoredSamplingParam:
+    """An explicit ``temperature`` / ``top_p`` the capabilities built for its config drop."""
+
+    field: SamplingParam
+    model_name: str
+    provider: str
+    preset: str
+
+    @property
+    def remedy(self) -> str:
+        return (
+            f"Remove the key, or, for a transport that accepts it, set "
+            f"capabilities: {{supports_sampling_params: true}} on this model config "
+            f"(preset {self.preset!r} declares supports_sampling_params: false)"
+        )
+
+
+_REPORTED_SAMPLING_FIELDS: Final[tuple[SamplingParam, ...]] = ("temperature", "top_p")
+
+
+def ignored_sampling_params(
+    models: Mapping[str, ModelConfig],
+) -> list[tuple[str, IgnoredSamplingParam]]:
+    """``("<path>.<field>", finding)`` for every explicit, non-null ``temperature`` or
+    ``top_p``, fallbacks included, that the config's capabilities, its own
+    ``capabilities`` overrides applied, would not send. ``config validate`` and the
+    run both give these.
+
+    A config whose capabilities do not build is :func:`capability_override_errors`'s
+    finding and is passed over here."""
+    findings: list[tuple[str, IgnoredSamplingParam]] = []
+    for path, cfg in iter_model_configs(models):
+        explicit = [
+            field
+            for field in _REPORTED_SAMPLING_FIELDS
+            if field in cfg.model_fields_set
+            and getattr(cfg, field) is not None
+            and f"{path}.{field}" != _USER_TEMPERATURE_PATH
+        ]
+        if not explicit:
+            continue
+        capabilities = _capabilities_or_error(path, cfg)
+        if isinstance(capabilities, CapabilityOverrideError):
+            continue
+        preset = resolve_effective_preset(cfg.name, cfg.provider)
+        findings.extend(
+            (f"{path}.{field}", IgnoredSamplingParam(field, cfg.name, cfg.provider, preset))
+            for field in explicit
+            if capabilities.params_policy.declines_sampling_param(field)
+        )
+    return findings
 
 
 def _check_class_names_resolve() -> None:

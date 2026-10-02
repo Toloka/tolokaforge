@@ -29,6 +29,7 @@ from tolokaforge.runner.models import (
     SnapshotResponse,
     StableStateResponse,
     StateResponse,
+    UpdateResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,10 +92,7 @@ class SnapshotAlreadyExistsError(DBServiceError):
 
 
 class InvalidOperationError(DBServiceError):
-    """Invalid mutation operation."""
-
-    def __init__(self, message: str, operation: str | None = None):
-        super().__init__(message, {"operation": operation} if operation else {})
+    """Invalid mutation operation; ``details`` is the service's own (``op``, ``op_index``, …)."""
 
 
 class ETagMismatchError(DBServiceError):
@@ -115,6 +113,17 @@ class ConnectionError(DBServiceError):
     """Failed to connect to DB Service."""
 
     pass
+
+
+def _format_body_errors(errors: list[dict[str, Any]]) -> str:
+    """One ``<field path>: <reason>`` line per FastAPI body-validation error."""
+    lines = []
+    for error in errors:
+        loc = [str(part) for part in error["loc"]]
+        if loc[:1] == ["body"]:
+            loc = loc[1:]
+        lines.append(f"{'.'.join(loc)}: {error['msg']}")
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -253,6 +262,7 @@ class DBServiceClient:
         error_type = ""
         message = ""
         details: dict[str, Any] = {}
+        body_errors: list[dict[str, Any]] | None = None
 
         try:
             error_data = response.json()
@@ -262,6 +272,9 @@ class DBServiceClient:
                     error_type = detail.get("error", "")
                     message = detail.get("message", str(detail))
                     details = detail.get("details", {})
+                elif isinstance(detail, list):
+                    body_errors = detail
+                    message = _format_body_errors(detail)
                 else:
                     message = str(detail)
             else:
@@ -293,9 +306,12 @@ class DBServiceClient:
 
         elif response.status_code == 400:
             if error_type == "InvalidOperation":
-                raise InvalidOperationError(message, details.get("operation"))
+                raise InvalidOperationError(message, details)
             else:
                 raise ValidationError(message, details)
+
+        elif response.status_code == 422 and body_errors is not None:
+            raise ValidationError(message, {"errors": body_errors})
 
         else:
             raise DBServiceError(f"HTTP {response.status_code}: {message}", details)
@@ -483,6 +499,35 @@ class DBServiceClient:
             self._handle_error_response(response)
             return MutateResponse.model_validate(response.json())
 
+    async def update(
+        self, trial_id: str, ops: list[dict[str, Any]], timeout: float | None = None
+    ) -> UpdateResponse:
+        """
+        Apply a batch of JSONPath ``add`` / ``replace`` / ``remove`` ops, all or nothing.
+
+        Maps to: POST /trials/{trial_id}/update. ``timeout`` overrides the client's
+        budget for this one request.
+
+        Raises:
+            TrialNotFoundError: If trial not found
+            InvalidOperationError: If an op is refused (unknown op, ``replace`` of a
+                missing path, or a result that is not a map of table to row list)
+            ValidationError: If a path is not a valid JSONPath, or the request body
+                fails validation (one ``<field path>: <reason>`` line per error)
+        """
+        async with self._create_client() as client:
+            try:
+                response = await client.post(
+                    f"/trials/{trial_id}/update",
+                    json={"ops": ops},
+                    timeout=timeout if timeout is not None else self.timeout,
+                )
+            except httpx.ConnectError as e:
+                raise ConnectionError(f"Failed to connect to DB Service: {e}")
+
+            self._handle_error_response(response)
+            return UpdateResponse.model_validate(response.json())
+
     # =========================================================================
     # Snapshot Endpoints
     # =========================================================================
@@ -595,7 +640,9 @@ class DBServiceClient:
     # Query Endpoints
     # =========================================================================
 
-    async def query(self, trial_id: str, jsonpath: str) -> QueryResponse:
+    async def query(
+        self, trial_id: str, jsonpath: str, timeout: float | None = None
+    ) -> QueryResponse:
         """
         Query state using JSONPath expressions.
 
@@ -604,6 +651,8 @@ class DBServiceClient:
         Args:
             trial_id: Trial identifier
             jsonpath: JSONPath expression
+            timeout: Budget for this one request, overriding the client's default
+                ``timeout``
 
         Returns:
             QueryResponse with results and count
@@ -617,6 +666,7 @@ class DBServiceClient:
                 response = await client.post(
                     f"/trials/{trial_id}/query",
                     json={"jsonpath": jsonpath},
+                    timeout=timeout if timeout is not None else self.timeout,
                 )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")

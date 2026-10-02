@@ -85,6 +85,8 @@ upgrading past v0.17.x.
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
+| [`openrouter_headers.py`](../tolokaforge/core/llm/openrouter_headers.py) | The headers the engine adds to every OpenRouter request, and the provider predicate that selects them |
+| [`session_header.py`](../tolokaforge/core/llm/session_header.py) | Refusal of a `ModelConfig.session` header another header source also sets — see [§ Session header](#session-header) |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `BuiltinUserSimulator` |
 
 ## `reasoning`
@@ -746,6 +748,22 @@ Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
 
+Sampling parameters split the same way. The OpenRouter transport forwards
+`temperature` / `top_p` for GPT-5, GPT-6 and the o-series unchanged; a gateway's
+resolved route (`openrouter/openai/gpt-5.2`) goes out through the `openai`
+transport, whose `OpenAIGPT5Config` / `OpenAIOSeriesConfig` refuse any
+`temperature` but `1` in-process (`UnsupportedParamsError`) for the GPT-5 and
+o-series names. No OpenRouter endpoint applies a sampling parameter for these
+models (except gpt-5-image*), so `openai_gpt5`, `openai_gpt6` and
+`openai_o_series` declare `supports_sampling_params: false`: both routes send the
+same request, with no sampling key. GPT-6 is declared on OpenRouter's support list
+alone; litellm's `openai` transport accepts its `temperature`. The escape hatch,
+`capabilities: {supports_sampling_params: true}`, belongs on a `provider: openai`
+config, whose bare names (`gpt-5.2`) litellm admits a `temperature` for; on a
+`provider: openrouter` config it breaks the gateway route. gpt-5-image* is still
+claimed by `openai_gpt5` and loses its `temperature` too; that `provider: openai`
+hatch is its only way back, as none is gateway-safe on `provider: openrouter`.
+
 ## When litellm has never heard of the model
 
 litellm decides which OpenAI parameters a provider may be sent by looking the
@@ -759,12 +777,11 @@ litellm.UnsupportedParamsError: meta does not support parameters:
 ['tools', 'tool_choice'], for model=muse-spark-1.2
 ```
 
-Measured 2026-08-10 across litellm versions with an identical request: 1.83.14
-passes the tools through, 1.93.0 and 1.96.0 refuse them. The strictness arrived
-in a patch release, so a routine dependency bump can turn a working
-vendor-native model into one that cannot make a single tool call — and the
-error names the provider rather than the missing data, so it reads as "this
-vendor does not do tool calls".
+Measured with an identical request on litellm 1.93.0 and 1.96.0: both refuse
+the tools. Whether a model is in the map depends on the installed litellm
+release, and the error names the provider rather than the missing data, so it
+reads as "this vendor does not do tool calls". The outer retry does not
+re-attempt it (§ Outer retry controllers).
 
 It says nothing about the model. The identical request driven through litellm's
 `openai` transport against the same `api_base` returns a correct tool call —
@@ -791,7 +808,18 @@ litellm_models:
       against api.meta.ai returned a correct tool call."
 ```
 
-The key is the litellm model id, because that is the lookup litellm performs.
+The key is the litellm model id, because that is the lookup litellm performs:
+`<provider>/<name>` with both as the config states them and `name` verbatim,
+slashes included. `provider: openai` + `name: self-hosted/qwen3.6-35b-a3b` is
+keyed `openai/self-hosted/qwen3.6-35b-a3b`, and `provider: openrouter` + `name:
+anthropic/claude-opus-4.7` is keyed `openrouter/anthropic/claude-opus-4.7`. A
+name that already starts with `<provider>/` is the id as it stands, and Nova's
+bare name is keyed `nova/<name>`. `config validate` and the run look the entry
+up through the same function
+([`litellm_params.lookup_overlay`](../tolokaforge/core/llm/litellm_params.py)),
+which derives the key from
+[`providers.litellm_model_id`](../tolokaforge/core/llm/providers.py), the
+string the client sends; the provider segment is compared case-insensitively.
 An entry **declares**; it does not copy. Only the parameters its flags name are
 admitted, so a capability nothing observed is never asserted on the model's
 behalf.
@@ -819,6 +847,25 @@ entry has to cover what its config asks for.
 Validation is at overlay load and is louder than the preset blocks beside it: a
 preset that fails to apply changes how a request is shaped, while a dropped
 entry here decides whether a request is sent at all.
+
+The lookup refuses an entry stored under a config's raw `name` instead of its
+`<provider>/<name>` (`OverlayKeyMismatchError`, naming both keys and the one to
+rename to). It raises when all four hold: the `name` carries a `/` and does not
+start with `<provider>/`; no entry exists under `<provider>/<name>`; an entry
+exists under the raw `name` (vendor segment lowercased); and that key's first
+segment names no provider, being in neither `providers.yaml` nor litellm's
+`provider_list`. The last condition is what keeps the refusal honest. A raw key
+such as `anthropic/<model>` is also the key of the native `(anthropic,
+<model>)` config, which an operator can hold while running `(openrouter,
+anthropic/<model>)` too, and that openrouter config needs no entry of its own.
+So such a key is left alone for the openrouter config: it admits nothing there,
+and `config validate` emits an INFO, for every model in `models:` and each of
+its `fallbacks`, saying which provider the entry applies to and which key the
+config resolves. A key like `self-hosted/<model>`, `google/<model>` or
+`meta-llama/<model>` can be no config's key, so it is refused. `config validate`
+reports an ERROR for every model in `models:` and each of its `fallbacks`, and
+`run` / `prepare` / `worker` check the same models and raise the first before
+the orchestrator is built.
 
 Three things that look like fixes and are not:
 
@@ -949,7 +996,7 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_BASE_URL` | Gateway base URL. **Setting this enables the transport**; everything else is optional. |
 | `LLM_PROXY_API_KEY` | Credential presented to the gateway. Omit only for gateways that authenticate by network position — litellm then falls through to its provider-env lookup and forwards the *provider's* key to the gateway host instead. |
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
-| `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
+| `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request: a per-request correlation id. A static env var cannot express "new value per call". For replica affinity, which needs one value per conversation, use the model's session header ([Session header](#session-header)). |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
 | `LLM_PROXY_PREFERRED_ROUTE` | Namespace(s) that win when the gateway serves one model under several names. A comma-separated list is honoured in order (`openrouter/,nebius/`), so multi-provider gateways can rank their routes. Without a matching entry an ambiguous lookup raises rather than guessing a serving path. |
 | `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` | `true`/`false` (default `false`). When true, a catalog entry of `<ns>/*` routes models whose own `provider` is `<ns>`, addressed by their untranslated name. Namespace-matched only - a foreign wildcard never routes. Exact entries always win. |
@@ -959,7 +1006,10 @@ and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
 any companion variable while `LLM_PROXY_BASE_URL` is empty also raises, so a typo in
-the base-URL name cannot silently fall back to direct provider access.
+the base-URL name cannot silently fall back to direct provider access. When some
+model config declares `session`, `run` / `prepare` / `worker` resolve these variables
+at start and refuse a malformed value there as a one-line `Error:`, before any client
+is built ([Session header](#session-header)).
 
 ### Values may reference secrets
 
@@ -1042,6 +1092,13 @@ call to a non-OpenRouter-backed route failed. The dialect also decides prefix
 handling: the OpenRouter transport strips one leading `openrouter/`, the OpenAI one
 does not.
 
+The OpenAI transport forwards `cache_control` unchanged to any `api_base` whose host
+is neither `openai.com` nor under `.openai.com`, so a preset's `anthropic_ephemeral`
+markers reach the gateway on a resolved route. On the unreadable-catalog path the
+provider's own transport forwards them too.
+[`tests/canonical/test_gateway_prompt_cache_markers.py`](../tests/canonical/test_gateway_prompt_cache_markers.py)
+pins the markers on the wire for both paths.
+
 **The name.** Those two effects are coupled, so the name that arrives depends on the
 dialect, and the gateway's name for a model is not derivable from the engine's model
 string. It is whichever of `<provider>/<name>` or `<name>` the catalog contains:
@@ -1075,6 +1132,12 @@ per-client warning. On a gateway-only model that direct call fails; on any other
 runs unattributed. If a deployment cannot rename such a route, the exact-name entry
 has to be added alongside the alias.
 
+**Hard requirement on the gateway: no `openai.com` hostname.** litellm strips every
+`cache_control` marker from a request whose `api_base` host is `openai.com` or ends
+in `.openai.com` (`api.openai.com`, `gw.openai.com`), so Claude routes behind such a
+host run uncached. The check is on the hostname only: `openai.com.gateway.example`,
+`myopenai.com` and `*.openai.azure.com` keep the markers.
+
 Wildcard entries (`openrouter/*`, `anthropic/*`) are **not** accepted as evidence by
 default: a wildcard says the gateway will forward the request, not that the model
 exists behind it. Measured on a live gateway, `anthropic/*` accepted a name that its
@@ -1087,6 +1150,10 @@ by the untranslated model string. A foreign-namespace wildcard never routes, exa
 entries always win, and a wildcard-resolved call is recorded as such on the per-call
 usage (`gateway_route_kind: "wildcard"`), so a board audit can tell the serving
 paths apart.
+
+tolokaforge requires litellm >= 1.93.0; environments pinned below it must
+upgrade (earlier releases strip Anthropic `cache_control` on resolved gateway
+routes, lack the native `meta` provider, or crash tool calls without `fastapi`).
 
 ### Serving a NEW provider behind the gateway
 
@@ -1138,8 +1205,11 @@ so one gateway state cannot produce two different routing decisions.
 ### Which providers can be routed
 
 **Setting `api_base` does not make litellm speak OpenAI to that URL — it makes
-litellm speak that provider's native protocol to that URL.** Captured against
-litellm 1.87.0:
+litellm speak that provider's native protocol to that URL.**
+[`tests/canonical/test_llm_gateway_envelope_contract.py`](../tests/canonical/test_llm_gateway_envelope_contract.py)
+pins the chat-completions path of the first two rows against the installed
+litellm and checks that the other two stay off it. The last two rows are
+litellm's documented native routes, not a captured request:
 
 | provider | request litellm sends to the gateway |
 |---|---|
@@ -1195,7 +1265,7 @@ name: azure_ai/cohere-command-a-plus-05-2026
 
 List the routes a gateway serves with `GET {base_url}/models`.
 
-Gateway-specific names have two consequences, both following from the naming
+Gateway-specific names have three consequences, all following from the naming
 couplings described below:
 
 - **Cost may be unknown.** `normalize_model_name` cannot map
@@ -1208,6 +1278,11 @@ couplings described below:
   so reasoning routes through `reasoning_effort` rather than
   `extra_body.reasoning`. That is correct for an OpenAI-shaped gateway endpoint,
   but verify it for reasoning models before trusting a run.
+- **A `litellm_models:` entry is keyed on the formatted string.** A gateway
+  route litellm's map does not carry is declared under
+  `openai/self-hosted/<model>` (or `openai/openrouter/anthropic/claude-opus-4.7`),
+  the `<provider>/<name>` the client sends, not under the bare `name`. See
+  [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model).
 
 What `_build_kwargs` does differs by path. **On a resolved route** it rewrites
 `model` to the gateway's route name and forces `custom_llm_provider="openai"`.
@@ -1223,11 +1298,16 @@ ignores it. Two distinct couplings hang off
 model naming, and only the second is to the formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
-  overlay off `ModelConfig.provider` (see [`presets`](#presets)). Re-prefixing
-  the model, or renaming the provider to something gateway-specific, silently
-  drops the matched preset and the `reasoning_via_extra_body` overlay — the
-  reported `effective_preset` would not change, but the reasoning wire format
-  would.
+  overlay off `ModelConfig.provider` (see [`presets`](#presets)). A re-prefixed
+  name keeps its preset: `openrouter/anthropic/claude-opus-4.7` and
+  `self-hosted/qwen3.6-35b-a3b` resolve like `anthropic/claude-opus-4.7` and
+  `qwen3.6-35b-a3b` (see [§ Preset coverage](#preset-coverage)). A
+  route-prefixed name that no preset claims while its last segment matches
+  one (`self-hosted/nova-pro-v1`, or an overlay preset without a `*/` sibling)
+  draws a WARNING from `config validate` and at run start. Renaming the
+  provider to something gateway-specific does drop the
+  `reasoning_via_extra_body` overlay: the reported `effective_preset` does not
+  change, but the reasoning wire format does.
 - [`normalize_model_name`](../tolokaforge/core/pricing.py) strips exactly one
   leading `openrouter/` and then returns any remaining slash-bearing name
   verbatim. A second prefix guarantees a pricing-table miss, degrading
@@ -1420,11 +1500,11 @@ credential lookup, key rotation, slug rewrite, rate-limit text.
 | `custom_llm_provider` | `_call_with_key_rotation` | Value pinned into `kwargs["custom_llm_provider"]`. Nova: `"openai"`. OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`; simple providers let litellm default. |
 | `rate_limit_patterns` | `LLMClient._is_rate_limit_exception` (tier-3 text fallback), `LLMClient.classify_loop_error` | Regex strings compiled once at construction. `DEFAULT_RATE_LIMIT_PATTERNS` in [`providers.py`](../tolokaforge/core/llm/providers.py) is the shipped default every non-mock provider declares verbatim; each entry is a shape an *engine wrapper* produces (`Error code: 429`, `HTTP/1.1 429`, `too many requests`, rate-limit prose in an error construction), not provider quota prose. |
 | `slug_rewrite` | `_call_with_key_rotation` | Two-step rewrite of `kwargs["model"]` per attempt: strip `strip_prefix`, then ensure `ensure_prefix`. Nova's binding declares `strip_prefix: "nova/"` and `ensure_prefix: "openai/"` — turning `nova/busan-v1` into `openai/busan-v1` on the wire without a Python conditional on provider name. |
-| `format_model_name_bare` | `LLMClient._format_model_name` | When `true`, `_format_model_name` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
+| `format_model_name_bare` | `providers.litellm_model_id` | When `true`, `litellm_model_id` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
 | `kwargs_pin_transport` | `_call_with_key_rotation` | When `true`, the client reads `endpoint` and `api_key_env` fresh per attempt and pins them into `kwargs["api_base"]` / `kwargs["api_key"]`. Fires the `NOVA_API_KEY is required for nova provider` fail-loud when `api_key_env` resolves empty. Nova only. |
 
 Nova's three sites (init `NOVA_API_BASE` `os.environ.setdefault`,
-`_format_model_name` bare-name return, `_call_with_key_rotation` per-attempt
+`litellm_model_id` bare-name return, `_call_with_key_rotation` per-attempt
 `api_base` / `api_key` / `custom_llm_provider` / slug rewrite) are expressed
 entirely through the fields above — a provider whose transport matches Nova's
 shape is a `providers.yaml` entry, not a `client.py` edit.
@@ -1445,9 +1525,12 @@ where the mechanism is genuinely per-provider:
   (`OPENROUTER_BASE_URL` and `OPENROUTER_API_BASE`) into one pinned value. The
   single-field `api_base_env` schema cannot express dual-env coordination; a
   schema addition just for one provider is over-engineering.
-- **`_openrouter_headers`** (`HTTP-Referer` / `X-Title`) and
-  **`provider_order`** (upstream pinning) consume config off
-  `ModelConfig.openrouter`, not transport bindings. They stay engine code.
+- **`configure_openrouter_default_headers()`**
+  ([`openrouter_headers.py`](../tolokaforge/core/llm/openrouter_headers.py))
+  sets `HTTP-Referer`, `X-Title` and `X-Data-Collection-Opt-Out` from the
+  `TOLOKAFORGE_OPENROUTER_REFERER` / `_TITLE` / `_OPT_OUT` env vars, and
+  **`provider_order`** (upstream pinning) consumes `ModelConfig.openrouter`.
+  Neither is a transport binding; both stay engine code.
 - **Mock's `if self.provider == "mock": return self._mock_generate(...)`
   early-return** — mock's binding declares `unroutable: true` (captures the
   proxy behaviour), but the branch that never constructs kwargs stays
@@ -1507,7 +1590,9 @@ The policy attaches Anthropic's ephemeral (5-minute TTL) `cache_control`
 markers on three attach sites — system, tools, and up to two message
 positions — so a second request with the same cacheable prefix reads from
 the Anthropic cache. Observable via non-zero
-`Metrics.usage.cache_read_input_tokens` on the second call.
+`Metrics.usage.cache_read_input_tokens` on the second call. The same markers
+reach an LLM gateway on both of its paths, and on a resolved route the same
+signal comes back (see [Speaking to the gateway](#speaking-to-the-gateway)).
 
 **4-breakpoint budget.** Anthropic's Messages API caps at 4 `cache_control`
 markers per request. The policy uses at most:
@@ -1645,7 +1730,7 @@ params:
     reasoning_effort:
       medium:
         action: reject
-        evidence: "2026-05-21, litellm 1.83.14: empty response with tool calls, BerriAI/litellm#19403"
+        evidence: "<date>, <transport and version>: <what the route does with this value>"
       # or, when an answer matters more than a like-for-like comparison:
       #   action: override
       #   with: low
@@ -1686,9 +1771,9 @@ one rule delete every other rule, disarming a guard nobody touched.
 One pre-existing exception, inherited from how overlays work generally: an
 overlay `presets:` entry with the **same name** as a bundled preset replaces
 that preset wholesale, rules included. Shadowing by name is a replacement, not
-a merge. Only `providers.gemini` carries rules today, so nothing is affected in
-practice, but declare rules on a differently-named preset if you mean to add
-rather than replace.
+a merge. A bundled preset that carries rules loses them to a same-named overlay
+entry, so declare rules on a differently-named preset if you mean to add rather
+than replace.
 
 `tool_choice` rules are inert on a call that sends no tools, because the
 parameter is only ever attached alongside `tools`.
@@ -1752,17 +1837,28 @@ class ParamsPolicy(ABC):
         seed: int | None,
         reasoning: ReasoningConfig | None,
     ) -> dict: ...
+
+    def declines_sampling_param(self, param: SamplingParam) -> bool:
+        return False
 ```
+
+`kwargs` arrives carrying the request's `top_p` (config or caller), so a
+policy that drops sampling parameters drops it with the rest.
+`declines_sampling_param` answers whether a config's `temperature` / `top_p`
+is never sent (`SamplingParam` is `Literal["temperature", "top_p", "top_k"]`; any
+other name answers `False`); `config validate` and the run-start sweep read it to warn on an
+explicit value the policy drops.
 
 `GenerationParams` declares its `KNOWN_KEYS` — the preset-driven flags below:
 
 | Flag | Default | Effect |
 |---|---|---|
-| `fixed_temperature` | `None` | Override caller-supplied temperature (legacy compat knob). |
+| `fixed_temperature` | `None` | Send this `temperature` in place of the config's or caller's. Sent even when `supports_sampling_params` is `false`. |
 | `supports_seed` | `true` | Forward `seed` kwarg when caller or config supplies one. |
+| `supports_sampling_params` | `true` | `false` sends no `temperature` / `top_p` / `top_k` from the config or the caller (a `fixed_temperature` is still sent). For model families whose endpoints take no sampling parameters. An explicit `temperature` / `top_p` on such a config earns a warning from `config validate` and at run start. |
 | `reasoning_via_extra_body` | `false` | Adaptive reasoning → `extra_body.reasoning={effort, enabled:true}` (OpenRouter non-Anthropic path). |
 | `reasoning_via_thinking_kwarg` | `false` | Budget reasoning → top-level `thinking={"type":"enabled","budget_tokens":N}` (Anthropic-native). |
-| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k` whenever the `thinking` kwarg was emitted (P3b — OpenRouter silently strips them today; Anthropic raw 400s). |
+| `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k`, from the config or the caller, whenever the `thinking` kwarg was emitted (OpenRouter silently strips them; Anthropic raw 400s). |
 | `reasoning_budget_default` | `None` | Default `budget_tokens` when `ReasoningConfig(mode="budget")` omits its own budget. |
 
 ### Reasoning routing matrix
@@ -1795,12 +1891,13 @@ Rules made explicit:
 
 ### Preset → routing table
 
-| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` |
-|---|---|---|---|---|
-| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** |
-| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — |
-| `openai_gpt5` / `xai_grok` / `qwen` | `true`* | `false` | `false` | — |
-| `default` / `aws_nova` | `false` | `false` | `false` | — |
+| Preset | `reasoning_via_extra_body` | `reasoning_via_thinking_kwarg` | `drop_sampling_when_thinking` | `reasoning_budget_default` | `supports_sampling_params` |
+|---|---|---|---|---|---|
+| `anthropic_claude_4_7` (Claude 4.7 Opus + Sonnet) | `true`* | **`true`** | **`true`** | **`8000`** | `true` |
+| `anthropic` (Claude 4.5 / 4.6 / Sonnet 3.x) | `true`* | `false` | `false` | — | `true` |
+| `openai_gpt5` / `openai_gpt6` / `openai_o_series` | `true`* | `false` | `false` | — | **`false`** |
+| `xai_grok` / `qwen` | `true`* | `false` | `false` | — | `true` |
+| `default` / `aws_nova` | `false` | `false` | `false` | — | `true` |
 
 \* `reasoning_via_extra_body` comes from the `openrouter` provider overlay, not
 the preset itself. Anthropic direct (non-OpenRouter) would have `false`.
@@ -2449,22 +2546,25 @@ fresh `ModelCapabilities`. Presets live in
 
 ### Preset coverage
 
-Per-preset policy wiring as shipped today. The three `StrictSchema` presets
-all cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
-Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
-the same three policies. Keep this table in sync with
+Per-preset policy wiring as shipped today. The `StrictSchema` presets
+(`openai_gpt5`, `xai_grok`) cover `Decimal` look-ahead regex and typed
+`Dict[str, T]` parameters with `strict` + `array_dict_map`. `openai_gpt5`,
+`openai_gpt6` and `openai_o_series` also declare `supports_sampling_params:
+false` (§ litellm OpenRouter routing caveat). Keep this table in sync with
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
-| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
-|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
-| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
-| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
-| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `*/x-ai/*`, `*/xai/*`, `grok*`                | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
-| `qwen`                  | `qwen/*`, `*/qwen/*`, `qwen3*`                                   | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
-| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
-| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `openai_summary_replay` | `nova` (filler `" "`) | `passthrough`           |
+| Preset                 | Match globs                                                                                                               | `schema_sanitizer` | `response_policy` | `prompt_policy`  | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
+|------------------------|---------------------------------------------------------------------------------------------------------------------------|--------------------|-------------------|------------------|------------------|-------------------|---------------------------|-------------------------|
+| `default`              | *(fallthrough)*                                                                                                           | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `anthropic_claude_4_7` | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*`                                                       | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`            | `anthropic/*`, `*/anthropic/*`, `*claude*`                                                                                | `passthrough`      | `standard`        | `none`           | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `openai_gpt5`          | `openai/gpt-5*`, `*gpt-5*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_gpt6`          | `openai/gpt-6*`, `*gpt-6*`                                                                                                | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `openai_o_series`      | `openai/o{1,3,4}*`, bare `o1` / `o3`, their tiers (`o3-mini*`, dated `o3-20*`, …) and `o4-mini*`, and their `*/` siblings | `passthrough`      | `standard`        | `none`           | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `xai_grok`             | `x-ai/*`, `xai/*`, `*/x-ai/*`, `*/xai/*`, `grok*`, `*/grok*`                                                              | `strict`           | `array_dict_map`  | `none`           | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
+| `qwen`                 | `qwen/*`, `*/qwen/*`, `qwen3*`, `*/qwen3*`                                                                                | `passthrough`      | `json_coerce`     | `dict_map_hints` | `openai`         | `openai_summary_replay` | `null`              | `passthrough`           |
+| `aws_nova`             | `nova*` (+ provider `nova`)                                                                                               | `passthrough`      | `unwrap_input`    | `none`           | `nova`           | `none`            | `nova`                    | `passthrough`           |
+| `moonshot_kimi_k3`     | `moonshotai/kimi-k3*`, `*kimi-k3*`                                                                                        | `passthrough`      | `standard`        | `none`           | `openai`         | `openai_summary_replay` | `nova` (filler `" "`) | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
@@ -2472,6 +2572,38 @@ thinking-kwarg routing instead of falling through to the adaptive-effort
 path that 4.7 ignores (see
 [plans/eval_output_new_diagnosis.md](../plans/eval_output_new_diagnosis.md)
 Part 4).
+
+A route prefix does not change the preset, except for presets that route by
+`match_provider` (`aws_nova`, whose `nova` prefix is a litellm provider
+namespace, not a vendor segment). For every glob G that does not start with
+`*`, `<route>/G` resolves to the preset that owns G: G has an anchored `*/G`
+sibling unless a leading-`*` glob in the same preset already covers the routed
+name (`*gpt-5*` covers `openrouter/openai/gpt-5.5`). So
+`openrouter/qwen/qwen3-coder`, `litellm_proxy/qwen/qwen3-coder` and
+`self-hosted/qwen3.6-35b-a3b` resolve to `qwen` exactly as `qwen/qwen3-coder`
+does. A leading-`*` glob is anchored on a `/` boundary (`*/qwen3*`, not
+`*qwen3*`, which would claim any name that merely contains `qwen3`); the
+anywhere-matching globs shipped today are a frozen list.
+
+A model-specific preset declared ahead of its family preset also lists its
+vendor-dropped name (`gemini-3.5-flash` and `*/gemini-3.5-flash` on
+`gemini_35_flash_recursive`), so a gateway that serves the model without the
+vendor segment does not land in the family preset. Three
+`openai_summary_replay` presets measured on the OpenRouter route alone
+(`xai_grok_4_6`, `z_ai_glm_5_3`, `deepseek_v4_flash_0731_resolve`) are the
+exception: their replay rebuilds OpenRouter's `reasoning_details` envelope, and
+a vendor-dropped name is never an OpenRouter slug. What ties them to the route
+is where they were measured, not the codec: `cohere_command_a_plus_05_2026`
+shares the codec but was measured on `azure_ai`. The three claim only
+vendor-anchored names under any route prefix, so `self-hosted/grok-4.6`
+resolves to `xai_grok` and `self-hosted/glm-5.3` to
+`openrouter_dict_stringify_recovery`. The test names them in
+`_OPENROUTER_TIED_REPLAY_PRESETS`.
+
+[`test_preset_route_prefix_routing.py`](../tests/canonical/test_preset_route_prefix_routing.py)
+enforces all of this for every bundled glob and every `pricing.json` slug. A
+failure names the `preset:glob` whose routed name resolves elsewhere and
+suggests the `*/G` sibling to add.
 
 Because the match is whole-entry and first-match-wins, a slug that lands on a
 broad multi-vendor preset inherits that preset's silence on every budget knob
@@ -2482,15 +2614,17 @@ slug, plus the presets whose `max_context_tokens + context_watermark`
 disagrees with the smallest real window their globs cover. See
 [`scripts/README.md`](../scripts/README.md) § Preset fall-through audit.
 
-`qwen` additionally enables `dict_map_hints` (GPT-5-class presets currently
-opt-in to this via the legacy `capabilities: {dict_map_prompt_hints: true}`
-override on the model config — see the translation layer in
+`qwen` keeps the dict schema (`passthrough`) and pairs `dict_map_hints` with
+`json_coerce`: Qwen never picks the array shape, so the prompt hint names the
+dict format and `json_coerce` decodes the arguments Qwen sends as stringified
+JSON. The hint is baked in because every Qwen call with a typed dict-map needs
+it. Other presets opt in to the hint via the `capabilities:
+{dict_map_prompt_hints: true}` override on the model config — see the
+translation layer in
 [`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py) §
-`_apply_config_overrides`). Qwen bakes the hint in unconditionally because
-its stringification failure mode is not opt-in — every Qwen call with a
-typed dict-map needs the hint.
+`_apply_config_overrides`.
 
-### Fingerprint helpers (Stage 7, P6)
+### Fingerprint helpers
 
 Two public helpers on [`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
 produce the JSON-serialisable preset fingerprint landed on
@@ -2517,6 +2651,44 @@ guard: [`tests/unit/llm/test_preset_fingerprint.py`](../tests/unit/llm/test_pres
 parametrises over every preset in
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
+
+Next to `resolve_effective_preset`,
+`unclaimed_route_family(model_name, provider) -> UnclaimedRouteFamily | None`
+reports a route-prefixed name whose full name resolves to `"default"` while
+its last `/` segment resolves to a preset, and `None` otherwise. The frozen
+`UnclaimedRouteFamily` carries `model_name`, `provider`, `last_segment` and
+`family` (the preset the last segment matches), plus the `remedy` text. It
+reads the merged table, overlays included. `unclaimed_route_families(models)`
+returns `(path, finding)` for every hit across a run's model configs,
+fallbacks included. `config validate` reports each as a WARNING at
+`<path>.name` with the remedy as its hint; the run logs each once after its
+tasks load as the `UNCLAIMED_ROUTE_FAMILY` event, with the finding's fields
+and `path` as context. Unit guard: [`tests/unit/llm/test_route_family_warning.py`](../tests/unit/llm/test_route_family_warning.py).
+
+`ignored_sampling_params(models)` returns `(path, IgnoredSamplingParam)` for
+every explicit, non-null `temperature` / `top_p` across a run's model configs,
+fallbacks included and `models.user.temperature` excluded, that the config's
+capabilities (its own `capabilities` overrides applied) do not send. The frozen
+`IgnoredSamplingParam` carries `field`, `model_name`, `provider` and `preset`,
+plus the `remedy` text; `path` is `<config path>.<field>`. `config validate`
+reports each as a WARNING at that path with the remedy as its hint; the run logs
+each once after its tasks load as the `IGNORED_SAMPLING_PARAM` event, with the
+finding's fields and `path` as context. `capability_override_errors(models)`
+returns `(path, CapabilityOverrideError)` for every model config, fallbacks
+included, whose capabilities do not build, whether or not it sets a sampling
+value or the run builds that role. The keyword-only error carries `path` and
+`reason`, and pickles. `path` is `<config path>.capabilities` when the config's
+own `capabilities` block is the cause: a key outside the recognised overrides, or
+a recognised one the matched preset's policies cannot take (`OpenAIReasoningCodec()
+takes no arguments`). It is `(presets)` when the same name and provider do not
+build without that block either (a preset or overlay conflict), and such a
+conflict several configs share is named once with `build_capabilities`'s own
+message. `config validate` reports each as an ERROR at `err.path`, `run` /
+`prepare` / `worker` refuse to start naming all of them, and
+`ignored_sampling_params` passes every such config over while still reporting the
+others. Unit guards:
+[`tests/unit/test_sampling_temperature.py`](../tests/unit/test_sampling_temperature.py),
+[`tests/unit/llm/test_preset_overrides.py`](../tests/unit/llm/test_preset_overrides.py).
 
 ### Startup validation
 
@@ -2693,6 +2865,49 @@ capabilities-based retry opt-in this client exposes to `ToolCallingLoop`
 (see § *Actionless completions* above) — must account for both
 consumers, not just the runner.
 
+### Session header
+
+A model config's `session: {header: <name>}` ([CONFIG.md](CONFIG.md)) makes the
+engine add `<name>` with a conversation id to every request that model sends, for
+backends that keep one conversation on one replica so its prefix cache stays warm.
+It is a property of the model config, not of the gateway: the engine adds the header
+to every request's `extra_headers`, gateway on or off. Wire delivery is pinned for litellm's
+`openai` and `openrouter` transports by
+[`tests/canonical/test_litellm_extra_headers_contract.py`](../tests/canonical/test_litellm_extra_headers_contract.py).
+
+- **Value.** `LLMClient.generate` reads `LLMCallObservation.session_id`. A trial's
+  `TrialRunner` sets it on its two observations from the trial attempt's trace id,
+  `conversation_session_id(trace_id, role)` = `<trace_id>-agent` / `<trace_id>-user`;
+  a blank `trace_id` is refused at construction. That is the trace id live tracing
+  uses ([OBSERVABILITY.md](OBSERVABILITY.md)), so a gateway that logs the header can
+  join its request log to the trace. It covers the attempt, so an orchestrator retry
+  of a trial is a new conversation. A call that carries no conversation id (no
+  observation, or `session_id=None`: the summarizer, the rubric judge, warm-up,
+  certification) gets one fresh UUID4 for that `generate()` call. Either value is
+  fixed before the outer retry starts, so every outer attempt, timeout retry and the
+  OpenAI SDK's own re-sends of one call send the same value, and so does a fallback
+  hop, which forwards the same observation to the next client.
+- **Merge.** The header is added to `extra_headers` after the OpenRouter defaults
+  (seeded from the global `litellm.openai_headers`) and the gateway's
+  `request_headers()`, so its value wins over theirs; it is never written to
+  `litellm.openai_headers`. A config without `session` sends no session header, even
+  when its observation carries an id.
+- **Reserved names.** `ModelSessionConfig` refuses, case-insensitively, a header
+  litellm or the engine sets itself, since the session value would replace it:
+  `authorization`, `content-type`, `content-length`, `host`, the provider auth
+  headers `x-api-key` and `api-key`, and `anthropic-version` / `anthropic-beta`.
+- **Collision refusal.** A session header whose name (case-insensitively) is also an
+  `LLM_PROXY_HEADERS` key or the `LLM_PROXY_REQUEST_ID_HEADER` name, for a provider
+  the gateway routes, or one of the engine's OpenRouter defaults, for an OpenRouter
+  provider, is refused. Every site judges the env-resolved `resolve_proxy_config()`
+  before any catalog lookup: `LLMClient` construction (`session_header_conflict`),
+  and `session_header_conflicts` for the `run` / `prepare` / `worker` start sweep
+  over every model and fallback and for `config validate`. A config whose gateway
+  headers the catalog would drop at runtime is therefore still refused. The sweep
+  and `config validate` read the gateway environment only when some model config
+  declares `session`, so a malformed one is reported (`(environment)` in validate)
+  for those configs alone.
+
 ### Outer retry controllers
 
 `generate()` builds a fresh `tenacity.Retrying` per call, so a stubbed
@@ -2706,7 +2921,18 @@ consumers, not just the runner.
 
 Both install the same `before_sleep` hook (`_make_before_sleep`), so
 `llm_retry_scheduled` events are identical on either path. `retry` is
-`_should_retry_exception` on both.
+`_should_retry_exception` on both. It re-attempts every error except three,
+which end the call after one outer attempt:
+
+- `LLMApiTimeoutError` — the per-call timeout budget is already spent;
+- `openai.AuthenticationError` (which litellm's `AuthenticationError`
+  subclasses for every provider) — a 401 does not clear on retry;
+- `litellm.UnsupportedParamsError` — litellm refuses the parameter set
+  in-process, before any request is sent, so every attempt is refused the same.
+
+`_call_with_key_rotation` re-raises provider errors as `RuntimeError(...) from
+e`, so the predicate finds these types anywhere in the `__cause__` chain
+(bounded by `_EXCEPTION_CAUSE_DEPTH`), not only on the outer exception.
 
 The probe's split accounting is load-bearing: a 5xx must not inherit the
 multi-hour 429 budget, so the non-429 attempt cap counts only non-429
@@ -2730,8 +2956,9 @@ because `_call_with_key_rotation` re-raises provider errors as
    a spent credential set as transient and hand it the multi-hour budget —
    permanently, since `_rotate_key` only ever advances its index. The type stops
    the walk and returns `False`, so the condition takes the ordinary
-   five-attempt exponential branch instead. `_should_retry_exception` is
-   deliberately unchanged, so a probe-off run retries it exactly as before.
+   five-attempt exponential branch instead. `_should_retry_exception` does
+   not treat it as terminal, so a probe-off run gives it the same five
+   attempts.
 3. **Anchored text** (`binding.rate_limit_patterns` — see § Provider bindings),
    last resort: a 429 must sit in a status position (`Error code: 429`,
    `status_code=429`, `HTTP/1.1 429`), or the message must carry the HTTP reason

@@ -13,6 +13,11 @@ import httpx
 from starlette.testclient import TestClient
 
 
+def _in_process(kwargs: dict) -> dict:
+    """Drop a per-request ``timeout``: TestClient serves in-process and deprecates the kwarg."""
+    return {key: value for key, value in kwargs.items() if key != "timeout"}
+
+
 class MockAsyncClient:
     """
     Mock async HTTP client that wraps FastAPI TestClient for sync-to-async bridging.
@@ -43,27 +48,27 @@ class MockAsyncClient:
 
     async def get(self, url: str, **kwargs) -> httpx.Response:
         """Perform GET request via TestClient."""
-        response = self.test_client.get(url, **kwargs)
+        response = self.test_client.get(url, **_in_process(kwargs))
         return self._wrap_response(response)
 
     async def post(self, url: str, **kwargs) -> httpx.Response:
         """Perform POST request via TestClient."""
-        response = self.test_client.post(url, **kwargs)
+        response = self.test_client.post(url, **_in_process(kwargs))
         return self._wrap_response(response)
 
     async def put(self, url: str, **kwargs) -> httpx.Response:
         """Perform PUT request via TestClient."""
-        response = self.test_client.put(url, **kwargs)
+        response = self.test_client.put(url, **_in_process(kwargs))
         return self._wrap_response(response)
 
     async def delete(self, url: str, **kwargs) -> httpx.Response:
         """Perform DELETE request via TestClient."""
-        response = self.test_client.delete(url, **kwargs)
+        response = self.test_client.delete(url, **_in_process(kwargs))
         return self._wrap_response(response)
 
     async def patch(self, url: str, **kwargs) -> httpx.Response:
         """Perform PATCH request via TestClient."""
-        response = self.test_client.patch(url, **kwargs)
+        response = self.test_client.patch(url, **_in_process(kwargs))
         return self._wrap_response(response)
 
     async def aclose(self) -> None:

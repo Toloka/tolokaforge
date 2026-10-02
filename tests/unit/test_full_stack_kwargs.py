@@ -153,6 +153,12 @@ def test_full_stack_includes_db_runner_and_extras():
     assert {"db-service", "runner", "rag-service", "mock-web"}.issubset(services)
 
 
+def test_full_stack_mock_web_starts_standalone():
+    mock_web = full_stack().services["mock-web"]
+    assert mock_web.depends_on == []
+    assert mock_web.environment == {"PYTHONUNBUFFERED": "1"}
+
+
 def test_full_stack_forwards_enable_playwright():
     stack = full_stack(enable_playwright=True)
     runner = _runner_def(stack)

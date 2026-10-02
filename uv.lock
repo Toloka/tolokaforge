@@ -4931,7 +4931,7 @@ wheels = [
 
 [[package]]
 name = "tolokaforge"
-version = "0.27.5"
+version = "0.28.0"
 source = { editable = "." }
 dependencies = [
     { name = "addict" },
@@ -5084,7 +5084,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "jsonpath-ng", specifier = ">=1.6.0" },
     { name = "jsonschema", specifier = ">=4.20.0" },
-    { name = "litellm", specifier = ">=1.83.14,!=1.92.0,<2.0.0" },
+    { name = "litellm", specifier = ">=1.93.0,<2.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "mcp", specifier = ">=1.0,<2" },
     { name = "odata-query", marker = "extra == 'runner'", specifier = ">=0.10.0" },
@@ -5218,7 +5218,7 @@ requires-dist = [
 
 [[package]]
 name = "tolokaforge-models"
-version = "1.5.0"
+version = "1.6.0"
 source = { editable = "tolokaforge_models" }
 
 [[package]]

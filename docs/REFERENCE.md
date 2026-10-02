@@ -485,12 +485,14 @@ from the task it grades — see
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `db_query` | Query JSON DB with JSONPath | `jsonpath` (e.g., `$.users[?(@.id=='123')]`) |
-| `db_update` | Update JSON DB | `ops` array with `{op, path, value}` |
+| `db_query` | Query the trial's own JSON DB with JSONPath | `jsonpath` (e.g., `$.users[?(@.id=='123')]`) |
+| `db_update` | Update the trial's own JSON DB, all or nothing | `ops` array with `{op, path, value}`; `path` is JSONPath (e.g., `$.users[0].name`), not JSON Pointer |
 
 **JSONPath syntax**: `$.field`, `$.array[0]`, `$.array[-1]`, `$[?(@.field=='value')]`
 
 **Update operations**: `replace`, `add`, `remove`
+
+A task enabling either tool must seed at least one table under `initial_state.json_db` (an intentionally empty store is `json_db: {"<table>": []}`); a trial that seeds none is refused at registration.
 
 ### Web
 
@@ -521,13 +523,21 @@ from the task it grades — see
 
 Base URL: `http://json-db:8000`
 
+Every data route is scoped to one trial. Initialize the trial first; a route on a
+trial nobody initialized returns `404 TrialNotFound`.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/reset` | POST | Initialize state (body: JSON object) |
-| `/query` | POST | JSONPath query (body: `{jsonpath: "..."}`) |
-| `/update` | POST | JSON Patch operations (body: `{ops: [...]}`) |
-| `/dump` | GET | Get full normalized state |
+| `/trials/{trial_id}/init` | POST | Initialize the trial's tables (body: `{tables, schemas, unstable_fields}`) |
+| `/trials/{trial_id}/query` | POST | JSONPath query (body: `{jsonpath: "..."}`); serves `db_query` |
+| `/trials/{trial_id}/update` | POST | JSONPath `add` / `replace` / `remove` ops, all or nothing (body: `{ops: [...]}`); serves `db_update` |
+| `/trials/{trial_id}/state` | GET | Full state and version |
+| `/trials/{trial_id}/sql` | POST | SQL query over the trial's tables (body: `{query, params}`) |
+| `/trials/{trial_id}/schema` | GET | SQL schema of the trial's tables |
 | `/health` | GET | Health check |
+
+The full API, including snapshots, stable hashes and per-table mutations, is in
+[`DB_SERVICE_API.md`](DB_SERVICE_API.md).
 
 ### RAG Service API
 

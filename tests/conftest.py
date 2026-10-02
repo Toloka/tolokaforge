@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.utils.secret_state import secret_manager_state_restored
+from tests.utils.secret_state import secret_manager_installed
 from tolokaforge.core.llm.presets import set_overlay_path
 
 pytest_plugins = ["pytester"]
@@ -61,14 +61,8 @@ def installed_fake_secrets(request: pytest.FixtureRequest) -> Iterator[dict[str,
     Parametrise indirectly to install a different payload (``[{}]`` for a host
     that resolves no secrets). Yields the installed mapping.
     """
-    from tolokaforge.secrets import SecretManager, init_default_from
-    from tolokaforge.secrets import log_filter as log_filter_module
-
     payload: dict[str, str] = getattr(request, "param", FAKE_CONTAINER_SECRETS)
-    with secret_manager_state_restored():
-        init_default_from(SecretManager.from_dict(dict(payload)))
-        log_filter_module._cached_manager = None
-        log_filter_module._cached_values = frozenset()
+    with secret_manager_installed(payload):
         yield payload
 
 
@@ -197,6 +191,7 @@ from tests.utils.fixtures import (  # noqa: E402
     canonical_project_dir,
     canonical_task_dir,
     db_client,
+    db_service_loopback_url,
     db_test_client,
     mock_env_state,
     mock_grpc_context,
@@ -255,6 +250,7 @@ __all__ = [
     "mock_grpc_context",
     "db_test_client",
     "db_client",
+    "db_service_loopback_url",
     "runner_service",
     # Docker helper fixtures
     "skip_if_no_docker_runner",

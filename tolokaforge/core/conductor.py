@@ -45,6 +45,7 @@ from tolokaforge.core.llm.presets import (
     resolve_policy_names,
 )
 from tolokaforge.core.models import (
+    RESOLVED_RECORD_KEY,
     Grade,
     GradeComponents,
     Metrics,
@@ -806,7 +807,7 @@ class InProcessConductor:
         spec: TrialSpec,
         task_config: TaskConfig,
         setup: _TrialSetup,
-        identity: TrialIdentity | None = None,
+        identity: TrialIdentity,
     ) -> tuple[Trajectory, TrialRunner, str]:
         """Build the user simulator, stuck detector, system prompt, and
         :class:`TrialRunner`, then execute the agent ↔ user-simulator loop.
@@ -972,13 +973,14 @@ class InProcessConductor:
                 tool.name for tool in spec.task.agent_tools if tool.source is not None
             ),
             loop_observer=(
-                LoopObserverBinding(self.trial_observer, identity, role="agent")
-                if identity is not None and not isinstance(self.trial_observer, NullTrialObserver)
-                else None
+                None
+                if isinstance(self.trial_observer, NullTrialObserver)
+                else LoopObserverBinding(self.trial_observer, identity, role="agent")
             ),
             user_stop=user_stop,
             user_tool_turns=user_tool_turns,
             first_agent_message=first_agent_message,
+            trace_id=identity.trace_id,
         )
 
         # "" is the runner's "caller supplied nothing" seed: turn 0 is routed
@@ -1477,11 +1479,11 @@ class InProcessConductor:
 
         # Resolved fingerprint per role.
         if resolved_agent_config is not None:
-            result["agent"]["resolved"] = _build_resolved_block(resolved_agent_config)
+            result["agent"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_agent_config)
         if resolved_user_config is not None and result.get("user"):
-            result["user"]["resolved"] = _build_resolved_block(resolved_user_config)
+            result["user"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_user_config)
         if resolved_judge_config is not None and result.get("judge"):
-            result["judge"]["resolved"] = _build_resolved_block(resolved_judge_config)
+            result["judge"][RESOLVED_RECORD_KEY] = _build_resolved_block(resolved_judge_config)
 
         return result
 

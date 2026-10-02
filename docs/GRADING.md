@@ -1446,6 +1446,15 @@ dropped byte. The signature of the skew is a Pydantic `extra_forbidden` error na
 `hash_weight` or `min_assistant_turns` in the `RegisterTrialResponse.error` —
 whichever block the pack carries.
 
+**Model-config keys cross the same wire and are not on this table** (their census is
+tracked in [#1710](https://github.com/Toloka/tolokaforge/issues/1710)). The trial spec
+carries each model config's full dump, so a model-config field locks every pack's
+trials. Its signature is not `extra_forbidden`: an image of this engine version or newer
+refuses it as `Value error, ModelConfig was given a key it does not declare` (or
+`OpenRouterConfig`, `ModelSessionConfig`, `ReasoningConfig` for a nested block) at
+`agent_model_config`, `user_model_config` or `judge_model_config`, and an older image
+drops it.
+
 An old engine against a new runner image carries a second, narrower defect behind
 the version gate: such an engine drops `hash.weight` on the way to the wire, so a
 pack configuring a hash source *and* non-empty `jsonpaths` would reach the runner
@@ -3231,6 +3240,8 @@ Findings come in three classes:
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `state_checks` block reading the trial's database — a `path:` addressing it, or a `hash` enabled with or without a source — on a task whose `initial_state` seeds no tables, where the caller resolved what the task seeds | error | `state_checks.jsonpaths` or `state_checks.hash.enabled` |
+| a task enabling `db_query` or `db_update` in a block no MCP server serves — `tools.agent` naming no `mcp_server`, or `tools.user` naming none and the agent naming none either — whose `initial_state` seeds no table, where the caller resolved what the task seeds. `RegisterTrial` refuses the same trial; an intentionally empty store is `json_db: {"<table>": []}` | error | `tools` |
+| a task enabling `db_query` or `db_update` in a block no MCP server serves whose `tools.<actor>.db_query` / `db_update` block names any init kwarg other than the harness-side `output_max_chars` — those builtins read the trial's own store and take no `tool_config`; `RegisterTrial` refuses the same tool with the same message | error | `tools` |
 | a `state_checks.jsonpaths[*].path` rooted at `filesystem`, which the runner's JSONPath state does not carry — read from the block alone, so it answers whatever the caller resolved | error | `state_checks.jsonpaths` |
 | a `state_checks.jsonpaths[*].path_glob` compared with anything but `contains_ci` — including no operator at all — which the runner's file evaluator reads as the empty string every file contains | error | `state_checks.jsonpaths` |
 | a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
@@ -3255,6 +3266,8 @@ Findings come in three classes:
 | a golden-action world the adapter's `grading_replay_world` hook answers `unresolvable()` for | unchecked | `state_checks.hash.golden_actions` |
 | a database-reading `state_checks` block whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks` |
 | an `id_fields` declaration whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks.id_fields` |
+| a task enabling `db_query` or `db_update` whose tool set does not say whether they are builtins (a `ToolInventory` reporting `json_db_builtins=None`, such as a recorded wire tool list), or whose adapter's `grading_seeded_tables` hook answers `unresolvable()` | unchecked | `tools` |
+| a task enabling `db_query` or `db_update` whose tool set does not say what their tool blocks carry (a `ToolInventory` reporting `json_db_tool_config_keys=None`, such as a recorded wire tool list) | unchecked | `tools` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
