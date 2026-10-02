@@ -78,7 +78,11 @@ metadata, so a human and a naive reader can tell them apart too.
 the preview root, whose parent is the **final** root's id, with the trace name, session, the tags
 known then, the native fields and the identity metadata. Every live body then goes out under its
 preview kind, under the preview root. The trace has no root row until the trial ends; a reviewer
-reaches it by its deterministic trace id or by its session.
+reaches it by its deterministic trace id or by its session. A preview generation states zero usage
+and cost, its own figures in its metadata: the receiver adds every row of a trace into the trace's
+cost, and the final row written from the bundle carries the call's, so each call counts once. A
+trace whose final rows never arrive (the trial never persisted, or the final batch was lost)
+therefore shows 0 USD; an offline upload restores its cost only where a bundle exists.
 
 **4. The record is written once, from the bundle, root last.** At `trial_persisted`, after the
 attachment step, the bundle's projection is converted to OTLP spans by an engine-free converter in

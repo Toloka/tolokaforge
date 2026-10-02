@@ -341,13 +341,18 @@ one generation:
   merges an update into a live row keeps no figure of its own.
 
 Langfuse adds a trace's generation costs into the trace's cost, so with `projection: full` the
-trace's cost is what the trial spent: the agent's, the user simulator's and the judge's calls.
-On the v4 write-once layout a preview generation states zero usage and cost, its own figures in
-metadata, so each call counts once, on its final row. The trace carries no total of its own; its metadata
-`cost_usd` stays the eval's figure (the agent's and the user simulator's calls, priced as the
-eval priced them). `projection: gradings` sends no call records, so there the trace's cost
-covers the live agent turns and the judge. A bundle written before the engine recorded the
-charge keeps its eval cost on every generation, with the basis it names.
+trace's cost is the cost of every call the bundle records: the agent's, the user simulator's and
+the judge's (`gradings: false` writes no judge generation, so then the judge's cost is not on the
+trace). A call the bundle never records is not on the trace either: a user reply the reply guard
+rejected, an auto-anchored warm-up that failed, possibly an attempt that timed out after the
+provider billed it. On the v4 write-once layout a preview generation states zero usage and cost,
+its own figures in metadata, so each call counts once, on its final row; a trace whose final rows
+never arrive (the trial never persisted, or the final batch was lost) therefore shows 0 USD, and
+an offline upload restores its cost only where a bundle exists. The trace carries no total of its
+own; its metadata `cost_usd` stays the eval's figure (the agent's and the user simulator's calls,
+priced as the eval priced them). `projection: gradings` sends no call records, so there the
+trace's cost covers the live agent turns and the judge. A bundle written before the engine
+recorded the charge keeps its eval cost on every generation, with the basis it names.
 
 ## The trace vocabulary
 
