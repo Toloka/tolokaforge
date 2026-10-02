@@ -716,6 +716,23 @@ class TestThePrompt:
         assert "agent_iter_2.prompt.txt cannot be read" in report.refused[0]["reason"]
         assert not report.ok
 
+    @pytest.mark.parametrize("kind", ["directory", "dangling-link"])
+    def test_a_prompt_name_that_is_not_a_readable_file_refuses_too(
+        self, tmp_path: Path, kind: str
+    ) -> None:
+        """Something is there under the name, so the caller kept a prompt: reading it as none
+        would send the transcript as though the agent had been given no prompt."""
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        prompt = tmp_path / "agent_iter_1.prompt.txt"
+        if kind == "directory":
+            prompt.mkdir()
+        else:
+            prompt.symlink_to(tmp_path / "nowhere.txt")
+        report = upload(tmp_path)
+        assert report.sent == []
+        assert [e["file"] for e in report.refused] == ["agent_iter_1.jsonl"]
+        assert "agent_iter_1.prompt.txt cannot be read" in report.refused[0]["reason"]
+
     def test_a_prompt_past_the_cap_is_cut_and_says_so(self, tmp_path: Path) -> None:
         from tolokaforge_langfuse import transcripts as tr
 

@@ -246,11 +246,12 @@ def prompt_path(path: Path) -> Path:
 def read_prompt(path: Path) -> str | None:
     """The prompt of the agent run in ``path``, or ``None`` when its caller kept none.
 
-    A prompt file that is there but cannot be read raises (``OSError``, ``UnicodeDecodeError``):
-    its transcript is refused rather than sent as though the agent had been given no prompt.
+    Anything at that name that cannot be read as UTF-8 text (a directory, a dangling link, bytes
+    that are not UTF-8) raises (``OSError``, ``UnicodeDecodeError``): its transcript is refused
+    rather than sent as though the agent had been given no prompt.
     """
     prompt = prompt_path(path)
-    if not prompt.is_file():
+    if not prompt.exists() and not prompt.is_symlink():
         return None
     return prompt.read_text(encoding="utf-8")
 
