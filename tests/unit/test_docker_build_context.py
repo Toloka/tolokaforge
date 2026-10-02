@@ -377,6 +377,55 @@ def test_full_stack_pull_path_resolves_no_wheel(monkeypatch) -> None:
     assert image is pulled
 
 
+def test_build_path_resolves_rag_context_through_the_provider(monkeypatch, tmp_path) -> None:
+    """On the BUILD path, ``_build_one_image`` must resolve rag-service's context
+    through ``build_context_provider`` — carrying the resolved wheel into
+    ``context_files`` and ``WHEEL_FILENAME`` into ``build_args`` — not fall back
+    to rag's empty static fields.
+
+    If the build branch stopped consulting the provider, rag would build from
+    the whole-repo context with no ``WHEEL_FILENAME`` and the image would break;
+    this locks that the build half of the seam reads the provider.
+    """
+    from tolokaforge.core.models.docker_config import DockerConfig
+    from tolokaforge.docker import builder as builder_mod
+    from tolokaforge.docker.stacks.full import full_stack
+
+    captured: dict = {}
+
+    def fake_assemble(repo_root, dockerfile, context_files):
+        captured["context_files"] = list(context_files)
+        d = tmp_path / "ctx"
+        d.mkdir(exist_ok=True)
+        return d
+
+    monkeypatch.setattr(builder_mod, "assemble_build_context", fake_assemble)
+
+    built: dict = {}
+
+    def fake_build(cls, *, dockerfile, context, build_args, name):
+        built["build_args"] = dict(build_args)
+        built["name"] = name
+        return "built-sentinel"
+
+    monkeypatch.setattr(Image, "build", classmethod(fake_build))
+
+    stack = full_stack(DockerConfig(image_source="build"))
+    rag_svc = stack.services["rag-service"]
+    result = stack._build_one_image(rag_svc, force=True)
+
+    assert result == "built-sentinel"
+    assert captured.get("context_files"), (
+        "the build path used rag-service's EMPTY static context_files — the "
+        "build_context_provider was not consulted"
+    )
+    assert "WHEEL_FILENAME" in built["build_args"], (
+        "build_args is missing WHEEL_FILENAME — the build path did not resolve "
+        "rag-service's context through the provider"
+    )
+    assert built["name"] == "tolokaforge-rag-service"
+
+
 def test_core_stack_runner_merges_build_args_over_factory_base() -> None:
     """Runner opt-ins (playwright / docker-cli) layer on top of the factory's
     ``PYTHON_VERSION`` base rather than replacing it — so a wheel install still

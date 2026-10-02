@@ -33,9 +33,10 @@ import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.run_display_events import build_component_id
@@ -193,20 +194,37 @@ class ServiceDefinition(BaseModel):
         default=False,
         description="Run in privileged mode (required for Docker-in-Docker).",
     )
-    build_context_provider: Callable[[], BuildContextSpec] | None = Field(
-        default=None,
-        exclude=True,
-        repr=False,
-        description="When set, supplies the build path's context_files/build_args "
-        "lazily (called only when this service is actually built). The pull path "
-        "never invokes it. When None, the static context_files/build_args fields "
-        "are used.",
+    build_context_provider: Annotated[Callable[[], BuildContextSpec] | None, SkipJsonSchema()] = (
+        Field(
+            default=None,
+            exclude=True,
+            repr=False,
+            description="When set, supplies the build path's context_files/build_args "
+            "lazily (called only when this service is actually built). The pull path "
+            "never invokes it. When None, the static context_files/build_args fields "
+            "are used. Mutually exclusive with static context_files/build_args. "
+            "SkipJsonSchema keeps the callable out of model_json_schema().",
+        )
     )
 
     model_config = {
         "frozen": True,
         "extra": "forbid",
     }
+
+    @model_validator(mode="after")
+    def _build_context_is_static_or_lazy_not_both(self) -> ServiceDefinition:
+        """A service resolves its build context one way: statically via
+        ``context_files``/``build_args``, or lazily via ``build_context_provider``.
+        Setting both is a contradiction — the provider would silently shadow the
+        static fields — so reject it rather than pick a winner."""
+        if self.build_context_provider is not None and (self.context_files or self.build_args):
+            raise ValueError(
+                "build_context_provider is mutually exclusive with static "
+                "context_files/build_args; a service supplies its build context "
+                "lazily through the provider or statically, not both"
+            )
+        return self
 
 
 class ServiceStatus(BaseModel):
