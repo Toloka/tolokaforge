@@ -343,6 +343,7 @@ def _isolated_trial(
     stop_with_text: UserStopWithText = "deliver",
     simulation_max_steps: int | None = None,
     simulation_max_errors: int | None = None,
+    user_tool_turns: UserToolTurnRule | None = None,
     episode_timeout_s: int = 600,
 ) -> TrialRunner:
     return TrialRunner(
@@ -355,7 +356,7 @@ def _isolated_trial(
         max_turns=max_turns,
         user_tool_executor=tools or _UserTools(),
         episode_timeout_s=episode_timeout_s,
-        user_tool_turns=UserToolTurnRule("isolated", max_steps),
+        user_tool_turns=user_tool_turns or UserToolTurnRule("isolated", max_steps),
         user_stop=UserStopRule(with_text=stop_with_text),
         max_simulation_steps=simulation_max_steps,
         max_environment_errors=simulation_max_errors,
@@ -371,6 +372,20 @@ def _roles(messages: list[Message]) -> list[str]:
 
 
 class TestIsolatedTurns:
+    @pytest.mark.parametrize("limit", ["steps", "errors"])
+    def test_simulation_budget_refuses_shared_user_tool_turns(self, limit: str) -> None:
+        agent = _RecordingAgent("Unreached.")
+        user = _QueuedUser(_say("Unreached."))
+
+        with pytest.raises(ValueError, match="require isolated user-tool turns"):
+            _isolated_trial(
+                agent,
+                user,
+                user_tool_turns=UserToolTurnRule("shared"),
+                simulation_max_steps=200 if limit == "steps" else None,
+                simulation_max_errors=10 if limit == "errors" else None,
+            )
+
     def test_two_hundredth_message_precedes_max_turns_safety_cap(self) -> None:
         agent = _RecordingAgent("Still here.")
         user = _QueuedUser(*(_say("Again.") for _ in range(99)))
