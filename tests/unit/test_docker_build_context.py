@@ -293,17 +293,20 @@ def test_stack_build_context_specs_match_builder_definitions() -> None:
     (dockerfile, context, context_files, build_args) from the builder's image
     definition — the single source of truth for the build-context spec.
 
-    The two lists must agree for the content-hash / ``:local`` alias to stay
+    The two must agree for the content-hash / ``:local`` alias to stay
     coherent; they have drifted before (#627 dropped the sibling trees from the
-    stack copy of rag-service and broke every rag-using run at Step 5). Reading
-    the spec from ``get_image_definition`` rather than re-listing it is what
-    keeps them locked; this asserts the lock across all four stack services.
+    stack copy of rag-service and broke every rag-using run at Step 5). The
+    eager services read their spec statically from ``get_image_definition``;
+    rag-service defers its wheel-dependent fields to ``build_context_provider``,
+    so the lock runs through the provider there. Reading from the builder rather
+    than re-listing is what keeps them coherent; this asserts the lock across
+    all four stack services.
     """
-    from tolokaforge.docker.builder import get_image_definition
+    from tolokaforge.docker.builder import get_image_definition, static_image_definition
     from tolokaforge.docker.stacks.full import full_stack
 
     services = full_stack().services
-    for name in ("db-service", "runner", "rag-service", "mock-web"):
+    for name in ("db-service", "runner", "mock-web"):
         svc = services[name]
         defn = get_image_definition(name)
         assert svc.dockerfile == defn["dockerfile"], f"{name} dockerfile drifted"
@@ -317,6 +320,61 @@ def test_stack_build_context_specs_match_builder_definitions() -> None:
         # factory base exactly (runner merges runner_build_args on top of this
         # base — covered by test_core_stack_runner_merges_build_args).
         assert svc.build_args == defn["build_args"], f"{name} build_args drifted"
+
+    # rag-service: wheel-free fields match the static base; the wheel-dependent
+    # fields resolve lazily through the provider and must equal the full builder
+    # definition when it is invoked.
+    rag = services["rag-service"]
+    rag_static = static_image_definition("rag-service")
+    assert rag.dockerfile == rag_static["dockerfile"], "rag-service dockerfile drifted"
+    assert rag.context == rag_static["context"], "rag-service context drifted"
+    assert rag.build_context_provider is not None, (
+        "rag-service must defer its build-context spec to build_context_provider "
+        "so a pull run resolves no wheel"
+    )
+    spec = rag.build_context_provider()
+    rag_defn = get_image_definition("rag-service")
+    assert list(spec.context_files) == list(rag_defn["context_files"]), (
+        "rag-service provider context_files drifted from "
+        "get_image_definition('rag-service'); read the spec from the builder, "
+        "do not re-list it."
+    )
+    assert spec.build_args == rag_defn["build_args"], "rag-service provider build_args drifted"
+
+
+def test_full_stack_pull_path_resolves_no_wheel(monkeypatch) -> None:
+    """A full-stack construction and a rag-service pull both resolve no wheel.
+
+    rag-service defers its wheel-dependent build-context fields to
+    ``build_context_provider``, which is invoked only on the build path. With
+    ``resolve_wheel`` replaced by a raising stub (overriding the conftest
+    auto-mock): (a) ``full_stack`` constructs without resolving a wheel, and
+    (b) ``_build_one_image`` under ``image_source='pull'`` returns the pulled
+    image without ever invoking the provider.
+    """
+    from tolokaforge.core.models.docker_config import DockerConfig
+    from tolokaforge.docker.stacks.full import full_stack
+
+    def fail_resolve_wheel(*args, **kwargs):
+        raise AssertionError("resolve_wheel must not be called on the pull path")
+
+    monkeypatch.setattr("tolokaforge.docker.builder.resolve_wheel", fail_resolve_wheel)
+
+    stack = full_stack(DockerConfig(image_source="pull"))
+
+    pulled = Image(
+        name="tolokaforge-rag-service",
+        tag="0.0.0",
+        image_id="pulled-sentinel",
+        dockerfile="pulled",
+        context="pulled",
+        context_hash="pulled",
+    )
+    monkeypatch.setattr(Image, "pull", classmethod(lambda cls, **kwargs: pulled))
+
+    rag_svc = stack.services["rag-service"]
+    image = stack._build_one_image(rag_svc)
+    assert image is pulled
 
 
 def test_core_stack_runner_merges_build_args_over_factory_base() -> None:

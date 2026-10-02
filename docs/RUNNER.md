@@ -143,6 +143,14 @@ definitions (`tolokaforge.docker.builder.get_image_definition`). `core_stack` /
 the images the stack builds and the images `make docker-build` builds hash the
 same inputs and cannot drift.
 
+rag-service's wheel-dependent fields — the `context_files` entry carrying the
+resolved tolokaforge wheel and the `WHEEL_FILENAME` build arg — resolve lazily,
+on the build path only, through its `ServiceDefinition.build_context_provider`.
+The provider is invoked by `EngineStack._build_one_image` only once a service is
+definitely being built; a run that resolves rag-service to **pull** never
+invokes it and so never resolves a wheel. The stack and `make docker-build`
+still hash the same inputs on the build path.
+
 ### Runner readiness contract
 
 The runner is gated for readiness at two independent layers, and they answer

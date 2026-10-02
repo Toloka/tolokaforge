@@ -444,6 +444,23 @@ def get_image_definition(service_name: str) -> dict[str, Any]:
     raise KeyError(f"Unknown service '{service_name}'. Available: {sorted(_ALL_KNOWN_SERVICES)}")
 
 
+def static_image_definition(service_name: str) -> dict[str, Any]:
+    """Return the static ``IMAGE_DEFINITIONS`` base for *service_name*.
+
+    Reads the static entry directly, never invoking a dynamic factory, so a
+    caller can read the wheel-free fields (``dockerfile``, ``context``)
+    without triggering ``resolve_wheel()``. Fields a factory would add
+    (e.g. rag-service's ``context_files`` / ``build_args``) are absent from
+    the static base.
+
+    Raises:
+        KeyError: If *service_name* is not a known service.
+    """
+    if service_name in IMAGE_DEFINITIONS:
+        return IMAGE_DEFINITIONS[service_name]
+    raise KeyError(f"Unknown service '{service_name}'. Available: {sorted(_ALL_KNOWN_SERVICES)}")
+
+
 def service_name_for_image(image_name: str) -> str | None:
     """Return the service whose definition produces ``image_name`` (without tag).
 
