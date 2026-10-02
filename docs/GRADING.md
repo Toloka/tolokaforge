@@ -1383,6 +1383,8 @@ reject it.
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
 | `search.plane` | every pack | `unreleased` | new engine → old image |
+| `search.backend_config` | a pack declaring a non-empty `initial_state.rag.backend_config` | `unreleased` | new engine → old image |
+| `search.tool_name` | a pack naming its search tool other than `search_kb` | `unreleased` | new engine → old image |
 | `grading.llm_judge.judge_kind` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading_method_config` | every pack | `unreleased` | new engine → old image |
@@ -1391,7 +1393,9 @@ reject it.
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing
 under it, and `null` is a key an image must still declare. That is why `trace_checks`
 bites a pack that grades no trajectory at all, and why `search.plane` bites a task
-with no knowledge base.
+with no knowledge base. `search.backend_config` and `search.tool_name` are the
+opposite case: `SearchConfig` leaves them off the wire while they hold their default
+(an empty mapping, `search_kb`), so they bite only a pack that declares a value.
 
 Three rows need more than a cell:
 
@@ -3819,8 +3823,8 @@ generation with K-sample geometric-median aggregation.
   `{agent_system_prompt, transcript, rubric, read-only tools, state_diff}`.
 * **Harness-owned read-only tools.** The judge gets a fixed read-only allowlist —
   DB reads (`get_db_state` / `query_db`), a KB search mirroring the agent's
-  (`search_kb` for rag-service or the reused `search_policy` for TypeSense — see
-  *Judge KB faithfulness* below), `read_file` (only when the agent produced a
+  (`search_kb` over the task's search backend, or the reused `search_policy` for
+  TypeSense — see *Judge KB faithfulness* below), `read_file` (only when the agent produced a
   workspace), and the rubric-derived `submit_report`. No `write`, no `compute`.
 * **Single call, per-criterion output.** The judge inspects the final state, then
   calls `submit_report` once with `{justification, met|score}` for every criterion
@@ -3839,12 +3843,16 @@ able to read the **same knowledge base the agent read** — never a different
 corpus, and never none while still scoring policy compliance. The judge's KB
 capability is therefore resolved **per-trial to mirror the agent's** (issue #95):
 
-* **rag-service** — when the agent had the rag `search_kb` tool (a
-  `RAGSearchToolWrapper` was reconstructed and a rag client exists), the judge
-  gets a `search_kb` bound to the **same `rag_client` + `trial_id`**, querying the
-  per-trial `/trials/{trial_id}/search` index. Identical retrieval by
-  construction: the agent gets hits ⇒ the judge does too; the agent 404s ⇒ the
-  judge 404s.
+* **A search backend (`search.plane`, ADR-0053)** — when an agent tool is the
+  task's search tool (a `SearchToolWrapper` over the index the trial's backend
+  built — matched by instance, not by the tool's name, so a renamed tool keeps
+  it), the judge gets `search_kb` over that index's own `knowledge_search()`.
+  For `rag_service` that is bound to the **same `rag_client` + `trial_id`**,
+  querying the per-trial `/trials/{trial_id}/search` index. Identical retrieval
+  by construction: the agent gets hits ⇒ the judge does too; the agent 404s ⇒
+  the judge 404s. A backend whose `knowledge_search()` returns `None` gives the
+  judge no search. The judge's `search_kb` keeps its own name and its
+  `{query, top_k, alpha}` schema whatever the agent's tool is called.
 * **TypeSense (`search_policy`)** — when the agent had the read-only
   `search_policy` KB tool (the mcp_core TypeSense connector), the judge reuses
   **that exact reconstructed tool** through a read-only passthrough: same tool,

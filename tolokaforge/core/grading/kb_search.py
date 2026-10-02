@@ -12,11 +12,17 @@ Layering (AGENTS.md #6 / #7 — clean boundaries, interface-first):
   contract* the judge depends on; per the type-system guidance it is a Protocol,
   not Pydantic. The judge (:mod:`tolokaforge.core.grading.judge`) imports only
   this contract — never ``runner`` internals or mcp_core.
-* :class:`RagServiceKnowledgeSearch` is the tolokaforge-owned rag-service impl.
-  It lives here (its only dependency is :class:`RAGServiceClient`, which is
-  importable without pulling in mcp_core). The future TypeSense impl is
-  mcp_core-coupled and therefore lives runner-side behind this same contract —
-  this is the explicit extension point.
+* A search backend's per-trial index hands the judge its implementation
+  (:meth:`~tolokaforge.core.search.backend.SearchIndex.knowledge_search`, ADR-0053);
+  the runner binds it when an agent tool searched that same index. Two more
+  implementations serve other readers: the remote grader's gRPC ``KBSearch``
+  transport (``substrate_live``) and offline replay's recorded answers (``replay``).
+* :class:`RagServiceKnowledgeSearch` is the ``rag_service`` backend's
+  implementation. It lives here (its only dependency is the runner's declared
+  rag-service handle, :class:`~tolokaforge.core.search.stack_services.RagServiceHandle`,
+  which pulls in neither mcp_core nor the runner).
+  TypeSense has none: a TypeSense task's judge reuses the agent's ``search_policy``
+  tool through a read-only passthrough instead (``runner/service.py``).
 
 Reconciliation with ``tolokaforge/core/search/typesense.py`` (deliberate, see
 the plan's Decisions table): that module's ``SearchResult`` / ``SearchResponse``
@@ -41,7 +47,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import httpx
 
 if TYPE_CHECKING:
-    from tolokaforge.runner.rag_client import RAGServiceClient
+    from tolokaforge.core.search.stack_services import RagServiceHandle
 
 
 @dataclass(frozen=True)
@@ -65,8 +71,9 @@ class KnowledgeSearch(Protocol):
 
     Implementations are **per-trial** and point at the SAME index/collection the
     agent's KB tool used — that faithfulness is the whole point of the contract.
-    tolokaforge ships :class:`RagServiceKnowledgeSearch`; closed/mcp_core
-    adapters (TypeSense) register their own impl runner-side behind this Protocol.
+    A search backend's per-trial index supplies one through
+    :meth:`~tolokaforge.core.search.backend.SearchIndex.knowledge_search`;
+    tolokaforge ships :class:`RagServiceKnowledgeSearch` for ``rag_service``.
 
     Implementations MUST fail loud on transport/connection errors (raise), never
     degrade a failed search into empty results (AGENTS.md #1).
@@ -75,8 +82,8 @@ class KnowledgeSearch(Protocol):
     def search(self, query: str, top_k: int = 5, alpha: float = 0.5) -> list[SearchHit]:
         """Return up to ``top_k`` hits for ``query``.
 
-        ``alpha`` is a hybrid keyword/semantic weight; backends that do not
-        support it (e.g. TypeSense) ignore it. rag-service honours it.
+        ``alpha`` is a hybrid keyword/semantic weight; a backend without one
+        ignores it. rag-service honours it.
         """
         ...
 
@@ -85,23 +92,21 @@ class RagServiceKnowledgeSearch:
     """rag-service impl of :class:`KnowledgeSearch`, bound to one trial.
 
     Queries the **per-trial** ``/trials/{trial_id}/search`` endpoint — the SAME
-    index the agent's ``RAGSearchToolWrapper`` (``RAGServiceClient.search``)
-    used. This fixes the previous judge bug, where the builtin ``SearchKBTool``
-    POSTed to the GLOBAL ``/search`` (a different, legacy, non-isolated index).
+    index the agent's search tool (the ``rag_service`` backend, through
+    ``RagServiceHandle.search``) used.
 
-    Async/sync boundary: :class:`RAGServiceClient.search` is async, but the judge
-    loop runs synchronously in a worker thread (``run_in_executor``). Rather than
-    bridge an async client across threads, this impl issues a **direct sync
-    ``httpx.post``** to the per-trial endpoint — mirroring the style of the old
-    builtin tool, but with the correct per-trial path and request schema. It
-    reuses ``base_url`` + ``timeout`` from the trial's already-resolved
-    :class:`RAGServiceClient`, so it queries exactly the service the agent did.
+    Async/sync boundary: ``RagServiceHandle.search`` is async, but the judge loop
+    runs synchronously in a worker thread (``run_in_executor``). Rather than bridge
+    an async client across threads, this impl issues a **direct sync
+    ``httpx.post``** to the per-trial endpoint, with the service's request schema.
+    It reuses ``base_url`` + ``timeout`` from the trial's rag-service handle, so it
+    queries exactly the service the agent did.
 
     Fail-loud: any HTTP/transport error propagates as :class:`httpx.HTTPError`;
     the search is never silently turned into empty results.
     """
 
-    def __init__(self, rag_client: RAGServiceClient, trial_id: str):
+    def __init__(self, rag_client: RagServiceHandle, trial_id: str):
         self._base_url = rag_client.base_url.rstrip("/")
         self._timeout = rag_client.timeout
         self._trial_id = trial_id
@@ -114,8 +119,8 @@ class RagServiceKnowledgeSearch:
         )
         response.raise_for_status()
         data = response.json()
-        # Per-trial endpoint returns {"results": [...]}; the legacy global
-        # endpoint returned a bare list. Accept both so the impl is robust to the
+        # The per-trial endpoint answers {"results": [...]}; the legacy global
+        # /search answers a bare list. Accept both so the impl is robust to the
         # service's response shape, without ever hitting the global path.
         rows = data["results"] if isinstance(data, dict) else data
         return [

@@ -1,7 +1,9 @@
 """
 Search interfaces for TolokaForge.
 
-This module provides abstract interfaces for search backends like TypeSense.
+:mod:`tolokaforge.core.search.backend` holds the ``SearchBackend`` seam a task's
+knowledge-base search resolves through (ADR-0053); it is imported by its own path.
+This package re-exports the TypeSense client interfaces and domain state.
 """
 
 from .domain_state import DomainState, DomainStateManager, DomainStatus

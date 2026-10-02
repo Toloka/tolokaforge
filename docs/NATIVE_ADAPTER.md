@@ -229,9 +229,15 @@ the task under inspection.  Its answer for an unresolved tool is *unknown*, not
 keeps a zero-argument tool (`{"properties": {}}`) apart from a tool whose schema
 never resolved.
 
-`search_kb` is resolved from `create_search_kb_schema()` in both modes: the
-runner rebuilds it as a source-less RAG wrapper, so its canonical schema — not a
-fixture entry or a registry lookup — is what the agent is handed.
+The task's search tool (`initial_state.rag.tool.name`, default `search_kb`) is
+resolved from its declaration in both modes: the declared name and description
+over the declared backend's `tool_parameters()` (`rag_service`: `query`, `top_k`,
+`alpha`). The runner binds that source-less schema to the trial's search index by
+name, so the backend's schema — not a fixture entry or a registry lookup — is
+what the agent is handed. The same declaration sets the task's `search` block:
+`plane` is `rag.backend`, `enabled` is whether that backend needs rag-service, and
+`backend_config` / `tool_name` ride along when they are not at their defaults
+(see [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md)).
 
 `fixtures/tools.json` format (list of tool descriptors):
 

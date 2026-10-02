@@ -2,27 +2,32 @@
 
 The grading unit tests inject ``kb_search`` straight into ``LLMJudge.run``,
 so they bypass the runner-side gate that decides WHETHER the judge gets a KB at
-all. That gate is the faithfulness contract: the judge gets a rag-service KB
-**iff the agent got a rag ``search_kb``** (a ``RAGSearchToolWrapper`` was
-reconstructed) and a rag client exists — bound to the SAME ``rag_client`` +
-``trial_id`` the agent used. It must NOT key on ``search_config.enabled`` (the
-decoupled TypeSense plane). These tests exercise that real gate.
+all. That gate is the faithfulness contract: the judge gets a KB **iff an agent
+tool is a ``SearchToolWrapper`` over the trial's search index**, and the KB is
+that index's own ``knowledge_search()`` — for ``rag_service`` bound to the SAME
+client + trial id the agent's search used. It keys on neither the tool's name
+nor ``search.enabled`` (rag-service's flag). These tests exercise that real gate.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch
+from tolokaforge.core.search.backend import SearchBackendContext
+from tolokaforge.core.search.stack_services import StackServices
 from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.rag_client import RAGServiceClient
+from tolokaforge.runner.rag_service_backend import RagServiceSearchIndex
 from tolokaforge.runner.service import RunnerServiceImpl
-from tolokaforge.runner.tool_factory import RAGSearchToolWrapper, create_search_kb_schema
+from tolokaforge.runner.tool_factory import SearchToolWrapper
 
 pytestmark = pytest.mark.unit
 
@@ -32,21 +37,39 @@ def _service(rag_client: RAGServiceClient | None) -> RunnerServiceImpl:
     return RunnerServiceImpl(db_client=MagicMock(), rag_client=rag_client)
 
 
-def _rag_search_tool(rag_client: RAGServiceClient, trial_id: str) -> RAGSearchToolWrapper:
-    """A real agent rag search tool, exactly as the factory reconstructs it."""
-    return RAGSearchToolWrapper(create_search_kb_schema(), rag_client, trial_id)
+def _trial_index(rag_client: RAGServiceClient, trial_id: str) -> RagServiceSearchIndex:
+    """The index the ``rag_service`` backend hands RegisterTrial for a trial."""
+    context = SearchBackendContext(
+        backend_config={},
+        tool_name="search_kb",
+        tool_description="Search the knowledge base.",
+        logger=logging.getLogger("test.judge_kb_gate"),
+        trial_id=trial_id,
+        stack_services=StackServices(rag_service=rag_client),
+    )
+    return RagServiceSearchIndex(client=rag_client, trial_id=trial_id, context=context)
 
 
-def test_judge_kb_resolves_when_agent_has_rag_search_tool():
+def _search_tool(index: Any, name: str = "search_kb") -> SearchToolWrapper:
+    """The agent's search tool, exactly as the factory reconstructs it."""
+    schema = ToolSchema(
+        name=name,
+        description="Search the knowledge base.",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+        category="read",
+        timeout_s=15.0,
+    )
+    return SearchToolWrapper(schema, index)
+
+
+def test_judge_kb_resolves_when_agent_has_the_search_tool_over_the_trial_index():
     rag_client = RAGServiceClient(base_url="http://rag-service:8001")
     service = _service(rag_client)
     trial_id = "rag_task:0"
-    agent_tools = {
-        "some_other_tool": MagicMock(),
-        "search_kb": _rag_search_tool(rag_client, trial_id),
-    }
+    index = _trial_index(rag_client, trial_id)
+    agent_tools = {"some_other_tool": MagicMock(), "search_kb": _search_tool(index)}
 
-    kb = service._resolve_judge_kb_search(trial_id, agent_tools)
+    kb = service._resolve_judge_kb_search(index, agent_tools)
 
     # The judge gets a rag-service KB bound to the SAME client + trial the agent used.
     assert isinstance(kb, RagServiceKnowledgeSearch)
@@ -54,21 +77,57 @@ def test_judge_kb_resolves_when_agent_has_rag_search_tool():
     assert kb._base_url == "http://rag-service:8001"
 
 
-def test_judge_kb_is_none_without_rag_search_tool():
-    service = _service(RAGServiceClient(base_url="http://rag-service:8001"))
-    # Agent has tools, but none is a RAGSearchToolWrapper (e.g. native / DB-only task).
-    agent_tools = {"query_db": MagicMock(), "create_order": MagicMock()}
-
-    assert service._resolve_judge_kb_search("db_task:0", agent_tools) is None
-
-
-def test_judge_kb_is_none_when_no_rag_client_even_with_tool():
-    # No container rag client → no judge KB, regardless of agent tools.
-    service = _service(None)
+def test_judge_kb_resolves_for_a_renamed_search_tool():
+    """Bound by instance, not by name: a task naming its tool keeps the judge's search."""
     rag_client = RAGServiceClient(base_url="http://rag-service:8001")
-    agent_tools = {"search_kb": _rag_search_tool(rag_client, "t:0")}
+    index = _trial_index(rag_client, "t:0")
+    agent_tools = {"lookup_docs": _search_tool(index, name="lookup_docs")}
 
-    assert service._resolve_judge_kb_search("t:0", agent_tools) is None
+    assert isinstance(
+        _service(rag_client)._resolve_judge_kb_search(index, agent_tools),
+        RagServiceKnowledgeSearch,
+    )
+
+
+def test_judge_kb_is_none_without_a_search_tool():
+    rag_client = RAGServiceClient(base_url="http://rag-service:8001")
+    service = _service(rag_client)
+    # Agent has tools, but none is a SearchToolWrapper (e.g. native / DB-only task).
+    agent_tools = {"query_db": MagicMock(), "search_kb": MagicMock()}
+
+    assert service._resolve_judge_kb_search(_trial_index(rag_client, "t:0"), agent_tools) is None
+
+
+def test_judge_kb_is_none_when_the_trial_built_no_index():
+    # No index for this trial → no judge KB, regardless of agent tools.
+    rag_client = RAGServiceClient(base_url="http://rag-service:8001")
+    agent_tools = {"search_kb": _search_tool(_trial_index(rag_client, "t:0"))}
+
+    assert _service(None)._resolve_judge_kb_search(None, agent_tools) is None
+
+
+def test_judge_kb_is_none_for_a_search_tool_over_another_index():
+    rag_client = RAGServiceClient(base_url="http://rag-service:8001")
+    agent_tools = {"search_kb": _search_tool(_trial_index(rag_client, "other:0"))}
+
+    assert (
+        _service(rag_client)._resolve_judge_kb_search(_trial_index(rag_client, "t:0"), agent_tools)
+        is None
+    )
+
+
+def test_judge_kb_is_none_when_the_backend_gives_the_judge_nothing():
+    class _NoJudgeSearchIndex:
+        async def search(self, query: str, arguments: Any, *, budget_s: float) -> Any:
+            raise AssertionError("not searched here")
+
+        def knowledge_search(self) -> None:
+            return None
+
+    index = _NoJudgeSearchIndex()
+    agent_tools = {"search_kb": _search_tool(index)}
+
+    assert _service(None)._resolve_judge_kb_search(index, agent_tools) is None
 
 
 # ---------------------------------------------------------------------------

@@ -81,7 +81,6 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         "tolokaforge/tools/builtin/files.py",
         "tolokaforge/tools/builtin/http_request.py",
         "tolokaforge/tools/builtin/mobile.py",
-        "tolokaforge/tools/builtin/rag_search.py",
         "tolokaforge/tools/builtin/registry.py",
         "tolokaforge/tools/builtin/submit.py",
         # ``runner.proto`` is a source-level protobuf definition, not a
@@ -110,6 +109,11 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # time from ``judge.py``. Shipped in the subset because the runner
         # container calls each one on the grading path.
         "tolokaforge/core/grading/default_judge_model_provider.py",
+        # The built-in search backend, resolved through
+        # ``load_search_backend('rag_service')`` at ``RegisterTrial`` for a task
+        # whose ``search.plane`` names it — an entry-point load, never a
+        # module-level import, so the boot closure does not observe it.
+        "tolokaforge/runner/rag_service_backend.py",
         "tolokaforge/core/grading/default_rubric_evaluator.py",
         "tolokaforge/core/grading/default_state_check_backends.py",
         "tolokaforge/core/grading/default_transcript_rule_matcher.py",
@@ -676,6 +680,7 @@ _LOADER_TO_GROUP: dict[str, str] = {
     "load_turn_policy": "tolokaforge.turn_policies",
     "load_agent_loop": "tolokaforge.agent_loops",
     "load_user_simulator": "tolokaforge.user_simulators",
+    "load_search_backend": "tolokaforge.search_backends",
     "load_custom_check_executor": "tolokaforge.custom_check_executors",
     "load_judge_model_provider": "tolokaforge.judge_model_providers",
     "load_rubric_evaluator": "tolokaforge.rubric_evaluators",

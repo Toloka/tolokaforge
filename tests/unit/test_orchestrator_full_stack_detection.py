@@ -3,10 +3,14 @@ mock-web or rag-service (#125).
 
 ``core_stack`` only starts ``db-service`` + ``runner``. Tasks that resolve
 ``http://mock-web:8080/...`` (mobile/browser) or
-``http://tolokaforge-rag-service:8001/...`` (search_kb) need ``full_stack``,
+``http://tolokaforge-rag-service:8001/...`` (a search backend declaring the
+rag-service stack service — the default ``rag_service``) need ``full_stack``,
 which adds the two extra services on top. Detection mirrors
-``_tasks_need_playwright``: scan ``task.tools.agent.enabled`` AND look for
-``initial_state.mock_web`` / ``initial_state.rag`` declarations.
+``_tasks_need_playwright``: scan ``task.tools.agent.enabled``, look for
+``initial_state.mock_web``, and ask the task's declared search backend — for a
+task that declares a corpus or enables its search tool — which stack service it
+needs (ADR-0053). A backend that runs in the runner alone keeps the core stack
+whatever its tool is called.
 
 Adapters whose search signal is not visible in task tool names (e.g. a
 domain-shipped ``docindex/`` knowledge base surfaced as
@@ -19,9 +23,11 @@ from __future__ import annotations
 
 import pytest
 
+from tests.utils.search_backends import register_search_backends
 from tolokaforge.adapters.base import DockerStackRequirements
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.core.orchestrator import _run_needs_full_stack, _tasks_need_full_stack
+from tolokaforge.testing.search_backends import in_memory_search_backend_factory
 
 pytestmark = pytest.mark.unit
 
@@ -73,6 +79,43 @@ def test_initial_state_rag_triggers_full_stack():
     assert (
         _tasks_need_full_stack([_task(initial_state={"rag": {"corpus_dir": "rag/corpus"}})]) is True
     )
+
+
+def test_an_empty_initial_state_rag_does_not_trigger_full_stack():
+    """``rag: {}`` declares no corpus: a typed block is truthy, the corpus is what counts."""
+    assert _tasks_need_full_stack([_task(initial_state={"rag": {}})]) is False
+
+
+def test_a_renamed_search_tool_on_the_default_backend_triggers_full_stack():
+    task = _task(["lookup_docs"], initial_state={"rag": {"tool": {"name": "lookup_docs"}}})
+    assert _tasks_need_full_stack([task]) is True
+
+
+def test_a_rag_block_that_searches_nothing_does_not_trigger_full_stack():
+    """No corpus and no enabled search tool: the backend would serve nothing."""
+    task = _task(["bash"], initial_state={"rag": {"backend": "rag_service"}})
+    assert _tasks_need_full_stack([task]) is False
+
+
+class TestABackendWithoutAStackService:
+    """The backend's declaration selects the stack; a tool named ``search_kb`` does not."""
+
+    @pytest.fixture(autouse=True)
+    def _in_memory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        register_search_backends(monkeypatch, in_memory=in_memory_search_backend_factory)
+
+    def test_its_search_kb_tool_keeps_the_core_stack(self):
+        task = _task(["search_kb"], initial_state={"rag": {"backend": "in_memory"}})
+        assert _tasks_need_full_stack([task]) is False
+
+    def test_its_corpus_keeps_the_core_stack(self):
+        rag = {"corpus_dir": "kb", "backend": "in_memory", "tool": {"name": "lookup_docs"}}
+        task = _task(["lookup_docs"], initial_state={"rag": rag})
+        assert _tasks_need_full_stack([task]) is False
+
+    def test_a_default_backend_task_beside_it_still_triggers_full_stack(self):
+        in_memory = _task(["search_kb"], initial_state={"rag": {"backend": "in_memory"}})
+        assert _tasks_need_full_stack([in_memory, _task(["search_kb"])]) is True
 
 
 def test_mixed_tasks_one_full_stack_tool_triggers():

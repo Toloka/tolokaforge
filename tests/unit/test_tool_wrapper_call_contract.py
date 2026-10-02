@@ -11,21 +11,23 @@ signature alone.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
 
+from tolokaforge.core.search.backend import SearchBackendContext
 from tolokaforge.runner.models import ToolSchema
-from tolokaforge.runner.rag_client import SearchResponse
+from tolokaforge.runner.rag_client import RAGServiceClient, SearchResponse
+from tolokaforge.runner.rag_service_backend import RagServiceSearchIndex
 from tolokaforge.runner.service import _backstop_seconds
 from tolokaforge.runner.tool_factory import (
     BuiltinGenericToolWrapper,
     DockerComposeExecToolWrapper,
     PersistentShellToolWrapper,
-    RAGSearchToolWrapper,
+    SearchToolWrapper,
     ToolCallOutcome,
     ToolWrapper,
-    create_search_kb_schema,
 )
 from tolokaforge.tools.builtin import build_check as build_check_module
 from tolokaforge.tools.persistent_shell import CommandResult
@@ -145,18 +147,30 @@ def _record_build_check_budget(
     return recorded
 
 
+def _rag_service_index(client: RAGServiceClient) -> RagServiceSearchIndex:
+    """The trial index the ``rag_service`` backend builds, over ``client``."""
+    context = SearchBackendContext(
+        backend_config={},
+        tool_name="search_kb",
+        tool_description=None,
+        logger=logging.getLogger("test.tool_wrapper_call_contract"),
+        trial_id="t:0",
+    )
+    return RagServiceSearchIndex(client=client, trial_id="t:0", context=context)
+
+
 def _record_search_kb_budget(
-    wrapper: RAGSearchToolWrapper, monkeypatch: pytest.MonkeyPatch
+    wrapper: SearchToolWrapper, monkeypatch: pytest.MonkeyPatch
 ) -> list[float]:
-    """Stand a recorder in for the RAG request ``execute`` hands its budget to."""
+    """Stand a recorder in for the RAG request the index hands the wrapper's budget to."""
     recorded: list[float] = []
 
-    class _RecordingRagClient:
+    class _RecordingRagClient(RAGServiceClient):
         async def search(self, trial_id, query, limit, alpha, timeout):
             recorded.append(timeout)
             return SearchResponse(results=[], query=query, trial_id=trial_id, total_results=0)
 
-    wrapper.rag_client = _RecordingRagClient()
+    wrapper.index = _rag_service_index(_RecordingRagClient())
     return recorded
 
 
@@ -186,10 +200,10 @@ def _build_check(own_budget_s: float) -> BuiltinGenericToolWrapper:
     return BuiltinGenericToolWrapper(schema)
 
 
-def _search_kb(own_budget_s: float) -> RAGSearchToolWrapper:
-    schema = create_search_kb_schema()
+def _search_kb(own_budget_s: float) -> SearchToolWrapper:
+    schema = _schema("search_kb")
     schema.timeout_s = own_budget_s
-    return RAGSearchToolWrapper(tool_schema=schema, rag_client=None, trial_id="t:0")
+    return SearchToolWrapper(schema, _rag_service_index(RAGServiceClient()))
 
 
 @pytest.mark.parametrize(

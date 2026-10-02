@@ -58,7 +58,7 @@ from tolokaforge.core.grading.jsonpath_addressing import (
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
-from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
+from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.kinds import GraderKindRefusedError
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
 from tolokaforge.core.grading.substrate import (
@@ -83,6 +83,12 @@ from tolokaforge.core.models import (
     TerminationReason,
 )
 from tolokaforge.core.plugin_registry import (
+    RAG_SERVICE_STACK_SERVICE,
+    RegistryError,
+    SearchBackend,
+    SearchBackendContext,
+    SearchIndex,
+    SearchIndexBuildError,
     UnknownImplementationError,
     available_grader_kinds,
     available_grading_methods,
@@ -91,8 +97,15 @@ from tolokaforge.core.plugin_registry import (
     load_grading_method,
     load_judge_kind,
     load_judge_model_provider,
+    load_search_backend,
     load_state_check_backend,
     load_transcript_rule_matcher,
+)
+from tolokaforge.core.search.stack_services import (
+    StackServices,
+    StackServiceUnavailableError,
+    UndeclaredStackServiceError,
+    declared_stack_service,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -150,11 +163,7 @@ from tolokaforge.runner.protocol import (
     parse_termination_reason,
     recorded_status,
 )
-from tolokaforge.runner.rag_client import (
-    RAGServiceClient,
-    RAGServiceError,
-    load_documents_from_directory,
-)
+from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.search_plane import (
     PartialTypeSenseAddressError,
     ResolvedSearchPlane,
@@ -164,7 +173,7 @@ from tolokaforge.runner.search_plane import (
 )
 from tolokaforge.runner.tool_factory import (
     MCPServerToolWrapper,
-    RAGSearchToolWrapper,
+    SearchToolWrapper,
     ToolCallOutcome,
     ToolFactory,
     ToolLifecycleContext,
@@ -293,7 +302,7 @@ def _search_plane_context(
     """
     domain = search_config.domain_name or "default"
     plane = (
-        f"{resolved_plane.plane.value} ({resolved_plane.basis.value})"
+        f"{resolved_plane.plane} ({resolved_plane.basis.value})"
         if resolved_plane is not None
         else "none declared"
     )
@@ -363,6 +372,80 @@ def _unseeded_json_db_tools_refusal(task: TaskDescription) -> str | None:
         f"Seed the store under initial_state.json_db, or declare an intentionally empty "
         f'one as json_db: {{"<table>": []}}.'
     )
+
+
+def _registry_search_backend_name(search_config: SearchConfig) -> str | None:
+    """The registered search backend serving this trial, or ``None`` for none.
+
+    ``search.plane`` names it. ``typesense`` is the plane the runner serves itself
+    (:meth:`RunnerServiceImpl._register_search_plane`), and ``enabled`` is
+    rag-service's own flag: it predates ``plane`` and an adapter that has not
+    declared a plane sets it alone, so an undeclared or TypeSense plane with
+    ``enabled`` set is served by ``rag_service``, as is a task declaring both
+    planes.
+    """
+    plane = search_config.plane
+    if plane is not None and plane != SearchPlane.TYPESENSE:
+        return plane
+    return SearchPlane.RAG_SERVICE.value if search_config.enabled else None
+
+
+def _refuse_an_unreached_stack_service(
+    trial_id: str, name: str, backend: SearchBackend, stack_services: StackServices
+) -> None:
+    """Refuse the trial unless this runner reaches the stack service its backend declares.
+
+    The declaration is the contract: a backend that names a stack service gets its
+    index built only on a runner holding that service's handle, so no backend words
+    the refusal of its own.
+
+    Raises:
+        SearchIndexBuildError: the declared name is not a declared stack service, or
+            this runner does not reach it.
+    """
+    if backend.stack_service is None:
+        return
+    try:
+        stack_services.get(declared_stack_service(backend.stack_service))
+    except (UndeclaredStackServiceError, StackServiceUnavailableError) as e:
+        raise SearchIndexBuildError(
+            f"Trial {trial_id}: search backend {name!r} cannot build the trial's index: {e}"
+        ) from e
+
+
+def _declared_tool_description(task_description: TaskDescription, tool_name: str) -> str | None:
+    """The description the task's search tool carries on the wire, agent's first."""
+    for schema in (*task_description.agent_tools, *task_description.user_tools):
+        if schema.name == tool_name and schema.source is None:
+            return schema.description
+    return None
+
+
+def _resolve_corpus_dir(
+    trial_id: str, documents_path: str | None, artifacts_dir: Path | None
+) -> Path | None:
+    """Where the trial's corpus landed: ``artifacts_dir / documents_path``, or literal.
+
+    The corpus travels in ``tool_artifacts`` and is extracted to *artifacts_dir*; a
+    relative ``documents_path`` (the pack's declared ``corpus_dir``) is resolved
+    against it, mirroring :meth:`RunnerServiceImpl._resolve_mcp_server_scripts`. An
+    absolute ``documents_path`` is used literally (escape hatch).
+
+    Raises:
+        SearchIndexBuildError: a relative path arrived with no artifacts to resolve
+            it against.
+    """
+    if not documents_path:
+        return None
+    corpus_path = Path(documents_path)
+    if corpus_path.is_absolute():
+        return corpus_path
+    if artifacts_dir is None:
+        raise SearchIndexBuildError(
+            f"Trial {trial_id}: relative documents_path {documents_path!r} cannot be "
+            f"resolved — the task shipped no extracted artifacts directory"
+        )
+    return artifacts_dir / corpus_path
 
 
 def _unreachable_state_checks_refusal(
@@ -1089,36 +1172,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"Provisioned {len(initial_state.filesystem)} filesystem file(s)"
             )
 
-        # Initialize RAG service if search is enabled (FAIL FAST).
-        # ``enabled`` means the task needs rag-service; on the core stack
-        # (no rag-service ⇒ rag_client is None) this hard-fails ON PURPOSE.
+        # Build the trial's search index with the backend ``search.plane`` names
+        # (FAIL FAST). A rag-service task on the core stack (no rag-service ⇒ no
+        # client for the backend) hard-fails here ON PURPOSE.
         search_config = task_description.search
-        rag_client_for_trial = None
-        if search_config and search_config.enabled:
-            if self.rag_client is None:
-                logger.error("RegisterTrial: Search enabled but RAG client not configured")
-                return pb2.RegisterTrialResponse(
-                    success=False,
-                    error="Search enabled but RAG service not configured",
-                )
-
-            # Index documents for this trial
-            try:
-                self._run_async(
-                    self._index_documents_for_trial(
-                        trial_id=trial_id,
-                        search_config=search_config,
-                        artifacts_dir=artifacts_dir,
-                    )
-                )
-                rag_client_for_trial = self.rag_client
-                logger.info(f"RegisterTrial: {trial_id} - RAG documents indexed")
-            except RAGServiceError as e:
-                logger.error(f"RegisterTrial: Failed to index documents: {e}")
-                return pb2.RegisterTrialResponse(
-                    success=False,
-                    error=f"RAG indexing failed: {e}",
-                )
+        try:
+            search_index = self._build_search_index(trial_id, task_description, artifacts_dir)
+        except SearchIndexBuildError as e:
+            logger.error(f"RegisterTrial: {trial_id} - {e}")
+            return pb2.RegisterTrialResponse(success=False, error=str(e))
 
         # Reconstruct tools from ToolSource definitions (FAIL FAST)
         # Pass actual table names and data from initial_state so model registration uses correct names
@@ -1142,10 +1204,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             tool_factory = ToolFactory(
                 self.db_client,
                 trial_id,
-                rag_client_for_trial,
                 db_table_names,
                 initial_state_data,
                 id_fields=id_fields,
+                search_tool_name=search_config.tool_name,
+                search_index=search_index,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve
@@ -1162,7 +1225,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.agent_tools = dict(reconstructed.agent_tools.items())
             trial_context.user_tools = dict(reconstructed.user_tools.items())
 
-            kb_search = self._resolve_judge_kb_search(trial_id, trial_context.agent_tools)
+            kb_search = self._resolve_judge_kb_search(search_index, trial_context.agent_tools)
             if kb_search is not None:
                 trial_context.register_kb_search(kb_search)
 
@@ -2523,27 +2586,32 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return score, wire_results, reasons
 
     def _resolve_judge_kb_search(
-        self, trial_id: str, agent_tools: dict[str, Callable]
+        self, search_index: SearchIndex | None, agent_tools: dict[str, Callable]
     ) -> KnowledgeSearch | None:
         """Resolve the judge's per-trial KnowledgeSearch, or None.
 
-        Gated on the SAME signal that gave the AGENT a rag ``search_kb``: a
-        ``RAGSearchToolWrapper`` was reconstructed (dispatch=RAG + a rag client)
-        — NOT ``search_config.enabled`` (the decoupled TypeSense plane;
-        ``native.py`` hardcodes ``search.enabled=False``, so gating there never
-        fires for real rag tasks and wrongly fires for TypeSense ones). Detected
-        by instance, not tool name, so a renamed tool can't fool it.
+        Gated on the SAME signal that gave the AGENT a knowledge-base search: an
+        agent tool is a :class:`SearchToolWrapper` over this trial's index — not
+        ``search.enabled`` (rag-service's flag, false for a backend that needs no
+        rag-service) and not the tool's name. Detected by instance, so a renamed
+        search tool keeps the judge's search and a same-named tool of another kind
+        cannot claim it. A search tool only the user simulator holds gives the
+        judge nothing.
 
-        Binding to the same ``rag_client`` + ``trial_id`` means the judge
-        retrieves from the SAME per-trial index by construction: if the agent's
-        ``search_kb`` works the judge's does too, and if it 404s both do.
-        Per-trial indexing gating is a separate concern.
+        The judge's search is ``search_index.knowledge_search()``: the backend's
+        read over the SAME index the agent searched, by construction — for
+        rag-service the same client and trial id, so if the agent's search works
+        the judge's does too, and if it 404s both do. A backend may return
+        ``None`` to give the judge nothing.
         """
-        if self.rag_client is None:
+        if search_index is None:
             return None
-        if not any(isinstance(t, RAGSearchToolWrapper) for t in agent_tools.values()):
+        if not any(
+            isinstance(tool, SearchToolWrapper) and tool.index is search_index
+            for tool in agent_tools.values()
+        ):
             return None
-        return RagServiceKnowledgeSearch(self.rag_client, trial_id)
+        return search_index.knowledge_search()
 
     def _build_judge_search_policy_tools(
         self, trial_context: TrialContextRuntime
@@ -3368,8 +3436,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Three conditions decide whether a TypeSense client is registered: the plane
         serving this task's corpus is TypeSense, the task declares a corpus, and an
         address for that plane resolved. None of them is ``enabled`` — that flag
-        means "this task needs rag-service" and gates the RAG indexing block, so a
-        TypeSense-only domain sets ``enabled=False`` and still registers here.
+        means "this task needs rag-service" and gates the ``rag_service`` backend's
+        index build (:meth:`_build_search_index`), so a TypeSense-only domain sets
+        ``enabled=False`` and still registers here.
         """
         try:
             binding = resolve_typesense_binding(search_config)
@@ -3378,7 +3447,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         resolved_plane = resolve_search_plane(search_config)
         served_by_typesense = (
-            resolved_plane is not None and resolved_plane.plane is SearchPlane.TYPESENSE
+            resolved_plane is not None and resolved_plane.plane == SearchPlane.TYPESENSE
         )
         task_declares_kb = search_config.documents_path is not None
         address_resolved = binding is not None
@@ -3484,77 +3553,86 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return None
 
     # =========================================================================
-    # RAG Document Indexing
+    # Search Index (ADR-0053)
     # =========================================================================
 
-    async def _index_documents_for_trial(
-        self,
-        trial_id: str,
-        search_config: SearchConfig,
-        artifacts_dir: Path | None,
-    ) -> None:
-        """
-        Index a trial's search corpus into the RAG service.
+    def _build_search_index(
+        self, trial_id: str, task_description: TaskDescription, artifacts_dir: Path | None
+    ) -> SearchIndex | None:
+        """Build the trial's search index with the backend ``search.plane`` names.
 
-        The corpus travels in ``tool_artifacts`` and is extracted to
-        *artifacts_dir*; a relative ``documents_path`` (the pack's declared
-        ``corpus_dir``) is resolved against it as ``artifacts_dir /
-        documents_path``, mirroring :meth:`_resolve_mcp_server_scripts`. An
-        absolute ``documents_path`` is used literally (escape hatch).
-
-        Args:
-            trial_id: Unique trial identifier
-            search_config: SearchConfig with documents_path and domain_name
-            artifacts_dir: Directory the trial's tool_artifacts were extracted
-                to, or ``None`` when the task shipped none
+        The one construction site for knowledge-base search: the backend resolves
+        through ``tolokaforge.search_backends`` (:func:`_registry_search_backend_name`
+        says which, if any), its factory receives the trial's
+        :class:`SearchBackendContext`, and ``build_index`` runs on the runner's
+        event loop. ``None`` when the trial has no registered backend to build —
+        including a rag-service task that switched its indexing off with
+        ``enabled: false``, the flag an older engine gated rag work on.
 
         Raises:
-            RAGServiceError: if the RAG client is not configured, a relative
-                corpus path cannot be resolved, or the resolved directory
-                holds no documents — a declared corpus that indexes empty is a
-                bundling bug, not an agent failure, so the trial hard-fails
-                here rather than running against an empty index.
+            SearchIndexBuildError: the name is not registered, the backend refused
+                the trial, it declares a stack service that is not declared or that
+                this runner does not reach, or building the index failed — each the
+                refusal ``RegisterTrial`` returns.
         """
-        if self.rag_client is None:
-            raise RAGServiceError("RAG client not configured")
-
-        documents_path = search_config.documents_path
-        domain_name = search_config.domain_name or "default"
-
-        if not documents_path:
-            raise RAGServiceError(
-                f"Trial {trial_id}: search is enabled but documents_path is unset"
-            )
-
-        corpus_path = Path(documents_path)
-        if not corpus_path.is_absolute():
-            if artifacts_dir is None:
-                raise RAGServiceError(
-                    f"Trial {trial_id}: relative documents_path {documents_path!r} cannot be "
-                    f"resolved — the task shipped no extracted artifacts directory"
-                )
-            corpus_path = artifacts_dir / corpus_path
-
-        documents = load_documents_from_directory(str(corpus_path), domain_name)
-
-        if not documents:
-            raise RAGServiceError(
-                f"Trial {trial_id}: no documents in resolved corpus {corpus_path} "
-                f"(documents_path={documents_path!r}) — corpus bundling is broken"
-            )
-
-        logger.info(
-            f"Indexing {len(documents)} documents for trial {trial_id}",
-            extra={
-                "trial_id": trial_id,
-                "domain_name": domain_name,
-                "documents_path": str(corpus_path),
-            },
-        )
-
-        # Index documents in RAG service
-        await self.rag_client.index_documents(
+        search_config = task_description.search
+        name = _registry_search_backend_name(search_config)
+        if name is None:
+            return None
+        try:
+            factory = load_search_backend(name)
+        except RegistryError as e:
+            raise SearchIndexBuildError(f"Trial {trial_id}: search.plane {name!r}: {e}") from e
+        context = SearchBackendContext(
+            backend_config=search_config.backend_config,
+            tool_name=search_config.tool_name,
+            tool_description=_declared_tool_description(task_description, search_config.tool_name),
+            logger=logging.getLogger(f"tolokaforge.search_backends.{name}"),
             trial_id=trial_id,
-            domain_name=domain_name,
-            documents=documents,
+            domain_name=search_config.domain_name,
+            stack_services=self._stack_services(),
         )
+        try:
+            backend = factory(context)
+        except Exception as e:
+            raise SearchIndexBuildError(
+                f"Trial {trial_id}: search backend {name!r} refused the task's declaration: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+        if backend.stack_service == RAG_SERVICE_STACK_SERVICE and not search_config.enabled:
+            return None
+        _refuse_an_unreached_stack_service(trial_id, name, backend, context.stack_services)
+        corpus_dir = _resolve_corpus_dir(trial_id, search_config.documents_path, artifacts_dir)
+        index = self._run_backend_build(trial_id, name, backend, corpus_dir)
+        logger.info(f"RegisterTrial: {trial_id} - search index built by backend {name!r}")
+        return index
+
+    def _run_backend_build(
+        self, trial_id: str, name: str, backend: SearchBackend, corpus_dir: Path | None
+    ) -> SearchIndex:
+        """Await ``backend.build_index`` on the runner's loop; any failure refuses.
+
+        The coroutine is created here, inside the refusal's scope, and closed if it
+        never started (the loop refused to schedule it), so a failure leaves no
+        never-awaited coroutine behind.
+        """
+        build: Any = None
+        try:
+            build = backend.build_index(corpus_dir)
+            return self._run_async(build)
+        except SearchIndexBuildError:
+            raise
+        except Exception as e:
+            if (
+                inspect.iscoroutine(build)
+                and inspect.getcoroutinestate(build) == inspect.CORO_CREATED
+            ):
+                build.close()
+            raise SearchIndexBuildError(
+                f"Trial {trial_id}: search backend {name!r} failed to build the trial's index: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+
+    def _stack_services(self) -> StackServices:
+        """This runner's handle on each declared stack service it reaches."""
+        return StackServices(rag_service=self.rag_client)

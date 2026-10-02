@@ -39,6 +39,8 @@ from tests.utils.search_plane_harness import (
 
 pytestmark = pytest.mark.unit
 
+RAG_SERVICE_UNREACHABLE = "stack service 'rag_service' is not reachable"
+
 
 def _stack_offers_typesense(monkeypatch: pytest.MonkeyPatch) -> None:
     declare_stack_address(monkeypatch, STACK_HOST, STACK_PORT, STACK_KEY)
@@ -143,7 +145,7 @@ def test_a_task_declaring_the_rag_plane_does_no_typesense_work(
 
     assert registry.connections == []
     assert response.success is False
-    assert "RAG service not configured" in response.error
+    assert RAG_SERVICE_UNREACHABLE in response.error
     assert "disagree" not in response.error
     assert "documents_path is unset" not in response.error
 
@@ -221,8 +223,8 @@ def test_a_refusal_names_the_plane_and_whether_the_task_declared_it(
 @pytest.mark.parametrize(
     ("row", "enabled", "expected", "unexpected"),
     [
-        ("no-plane-serves-it", False, "search.plane", "RAG service not configured"),
-        ("the-rag-plane-serves-it", True, "RAG service not configured", "search.plane"),
+        ("no-plane-serves-it", False, "search.plane", RAG_SERVICE_UNREACHABLE),
+        ("the-rag-plane-serves-it", True, RAG_SERVICE_UNREACHABLE, "search.plane"),
     ],
 )
 def test_a_corpus_with_no_plane_and_no_address_of_its_own(

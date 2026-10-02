@@ -75,7 +75,7 @@ initial_state:
   mock_web:
     base_url: "http://mock-web:8080"
   rag:
-    corpus_dir: "rag/corpus"
+    corpus_dir: "rag/corpus"        # the corpus; backend / backend_config / tool: see CONFIG.md
 
 system_prompt: "../wiki.md"         # Custom system prompt (optional)
 
@@ -506,7 +506,7 @@ A task enabling either tool must seed at least one table under `initial_state.js
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `search_kb` | Hybrid search (BM25 + semantic) | `query`, `top_k`, `alpha` (0=keyword, 1=semantic) |
+| `search_kb` | The task's declared search tool; with the default `rag_service` backend, hybrid search (BM25 + semantic) | `query`, `top_k`, `alpha` (0=keyword, 1=semantic) — the parameters the backend declares |
 
 ### Utility
 

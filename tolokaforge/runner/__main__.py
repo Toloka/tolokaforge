@@ -12,7 +12,8 @@ Environment Variables:
     DB_SERVICE_URL: URL of the DB Service (default: http://localhost:8000)
     RAG_SERVICE_URL: URL of the RAG Service. Optional and has NO default: it is
         set only when a rag-service is actually running (full stack). Unset =>
-        the runner builds no RAG client and the judge gets no search_kb tool.
+        the runner reaches no rag-service and refuses to register a trial whose
+        search backend declares the ``rag_service`` stack service.
     RUNNER_PORT: gRPC server port (default: 50051)
     RUNNER_EXPOSE_SUBSTRATE: When "true" (any casing), the runner registers its
         read-only :class:`SubstrateService` gRPC servicer alongside
@@ -122,9 +123,10 @@ def get_config() -> dict:
         # No default: RAG_SERVICE_URL is present iff a rag-service is actually
         # running (injected by the full stack only). Defaulting it to a
         # localhost URL would make ``if self.rag_service_url:`` truthy on the
-        # core stack, so the runner would build a RAG client and the judge
-        # would be offered a search_kb tool that fails at runtime (no
-        # rag-service on this stack). Honest absence => no RAG client.
+        # core stack, so the runner would build a RAG client and register a
+        # rag_service trial whose every search fails at runtime (no
+        # rag-service on this stack). Honest absence => no RAG client, and
+        # such a trial is refused at RegisterTrial.
         "rag_service_url": os.environ.get("RAG_SERVICE_URL"),
         "runner_port": int(os.environ.get("RUNNER_PORT", DEFAULT_RUNNER_PORT)),
         # Honest-absence: env absent (or any value other than case-insensitive

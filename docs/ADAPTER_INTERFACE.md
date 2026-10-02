@@ -301,11 +301,20 @@ Which plane serves the task's `documents_path`:
 
 - **`"typesense"`** — the runner registers a search client for the domain, and
   `search_policy` tools reach the collection the host-side indexer built.
-- **`"rag_service"`** — rag-service indexes the corpus bundled in
-  `tool_artifacts`, per trial. Set `enabled: true` alongside it; that flag is
-  what gates the indexing.
+- **`"rag_service"`** — the engine's rag-service search backend indexes the
+  corpus bundled in `tool_artifacts`, per trial. Set `enabled: true` alongside
+  it: that flag means "this task needs rag-service", an older runner reads only
+  it, and `enabled: false` switches the indexing off.
+- **any other name** — a search backend registered under the
+  `tolokaforge.search_backends` entry-point group (ADR-0053). The runner builds
+  the trial's index with it at `RegisterTrial`, binds the source-less tool named
+  `search.tool_name` (default `search_kb`) to that index, and refuses the trial
+  when nothing is registered under the name. `search.backend_config` reaches the
+  backend's factory verbatim. See
+  [TASK_DESCRIPTION_SCHEMA.md](TASK_DESCRIPTION_SCHEMA.md).
 - **`None`** *(default)* — the adapter did not declare one, and the runner
-  derives `typesense` from a task that carries `host` / `port` / `api_key`.
+  derives `typesense` from a task that carries `host` / `port` / `api_key`; a
+  task carrying `enabled: true` and no plane is served by `rag_service`.
 
 The address is the stack's, not the task's: the runner container is created
 knowing `TYPESENSE_HOST` / `TYPESENSE_PORT`, so an adapter has no Docker

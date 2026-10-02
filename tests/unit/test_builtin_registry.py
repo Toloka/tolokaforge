@@ -32,7 +32,6 @@ def test_list_builtins_covers_every_consumer_today():
         "db_update",
         # executor side (was builtin_tool_factories, 10 entries)
         "list_dir",
-        "search_kb",
         # session-lifetime persistent shell (#566)
         "bash_session",
         # str-replace editor (#567)
@@ -46,17 +45,16 @@ def test_list_builtins_covers_every_consumer_today():
 def test_dispatch_groups_are_disjoint_and_exhaustive():
     generic = registry.list_for_dispatch(registry.Dispatch.GENERIC)
     files = registry.list_for_dispatch(registry.Dispatch.FILES)
-    rag = registry.list_for_dispatch(registry.Dispatch.RAG)
     shell = registry.list_for_dispatch(registry.Dispatch.PERSISTENT_SHELL)
     editor = registry.list_for_dispatch(registry.Dispatch.EDITOR)
     json_db = registry.list_for_dispatch(registry.Dispatch.JSON_DB)
-    groups = [generic, files, rag, shell, editor, json_db]
+    groups = [generic, files, shell, editor, json_db]
     # Disjoint
     for i, a in enumerate(groups):
         for b in groups[i + 1 :]:
             assert a.isdisjoint(b)
     # Exhaustive
-    assert generic | files | rag | shell | editor | json_db == registry.list_builtins()
+    assert generic | files | shell | editor | json_db == registry.list_builtins()
     assert json_db == {"db_query", "db_update"}
 
 
@@ -111,8 +109,11 @@ def test_file_tools_route_to_files_dispatch():
         assert registry.get_dispatch(name) is registry.Dispatch.FILES
 
 
-def test_search_kb_routes_to_rag_dispatch():
-    assert registry.get_dispatch("search_kb") is registry.Dispatch.RAG
+def test_the_knowledge_base_search_tool_is_not_a_builtin():
+    """``search_kb`` is the task's declared search tool, bound by the runner to the
+    trial's search index (ADR-0053) — not a name this registry dispatches."""
+    assert not registry.is_builtin("search_kb")
+    assert "RAG" not in registry.Dispatch.__members__
 
 
 def test_get_class_imports_real_classes():

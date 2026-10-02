@@ -322,7 +322,8 @@ entry, and carries every runner-reachable seam group verbatim from
 `tolokaforge.judge_model_providers`, `tolokaforge.rubric_evaluators`,
 `tolokaforge.transcript_rule_matchers`, `tolokaforge.state_check_backends`,
 `tolokaforge.trace_check_operators`, `tolokaforge.grading_methods`,
-`tolokaforge.grader_kinds`, and `tolokaforge.judge_kinds`. Without these, the runner boots
+`tolokaforge.grader_kinds`, `tolokaforge.judge_kinds`, and `tolokaforge.search_backends`
+(the backend a task's `search.plane` names, resolved at `RegisterTrial`). Without these, the runner boots
 then crashes at first seam load with "Unknown implementation …". The
 canonical enumeration lives at
 `scripts/hatch/hatch_runner_subset_builder.py::RUNNER_REACHABLE_ENTRY_POINT_GROUPS`
@@ -362,6 +363,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 | `tolokaforge/core/models/` | Wire types the gRPC surface serialises, plus the run-config blocks `RunConfig` is typed by — `docker_config.py` rides along because `RunConfig` carries it; the runner does not read it. |
 | `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
 | `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Eleven files excluded — see below.) |
+| `tolokaforge/core/search/` | The search-backend seam (ADR-0053): the `SearchBackend` Protocols and the declared stack-service surface (`stack_services.py`), beside the TypeSense client interfaces. (One file excluded — see below.) |
 
 **Loose files in the subset:**
 
@@ -372,8 +374,9 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 - `tolokaforge/core/__init__.py`, `tolokaforge/core/_runner_subset.py` —
   the subset's own audit artifact and the `core/` package init.
 - The shared-spine files at the root of `core/` the runner closure reaches
-  directly — `RUNNER_SUBSET_LOOSE_FILES` in `tolokaforge/core/_runner_subset.py`
-  is the list.
+  directly â `RUNNER_SUBSET_LOOSE_FILES` in `tolokaforge/core/_runner_subset.py`
+  is the list (`plugin_registry.py` among them, for the `load_*` calls of the
+  runner-reachable seams).
 
 **Data files in the subset:**
 
@@ -420,14 +423,15 @@ canonical test rejects drift between them and the pyproject mirror.
 | `tolokaforge/core/grading/trace_replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
 | `tolokaforge/core/grading/unknown_keys.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
 | `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
+| `tolokaforge/core/search/typesense_server.py` | Docker lifecycle of a local TypeSense server; only the orchestrator starts one. |
 
 **Not in the subset:** everything at the `tolokaforge/core/` root not listed above
 (the `Orchestrator` class, dry-run, output writer, config validator, compose
 materialisation, engine run state, backend capabilities, the `RuntimeBackend` /
 `Conductor` / `TrialGrader` Protocol definitions and their factories, the
-`run_trial` library entry, run queue, resume, project loader, plugin registry,
-metrics, budgets, and the remaining utility modules);
-`tolokaforge/core/output/`; `tolokaforge/core/search/`; `tolokaforge/core/utils/`;
+`run_trial` library entry, run queue, resume, project loader, metrics, budgets,
+and the remaining utility modules);
+`tolokaforge/core/output/`; `tolokaforge/core/utils/`;
 `tolokaforge/core/schema/`; `tolokaforge/adapters/`; `tolokaforge/dx/`;
 `tolokaforge/docker/`; `tolokaforge/env/`; `tolokaforge/runtime/`;
 `tolokaforge/_entry.py`.

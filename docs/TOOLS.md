@@ -35,11 +35,14 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   `$`. Each match of a multi-match write gets its own copy of the value. A
   `remove` matching nothing is a no-op. The full op table is in
   [DB_SERVICE_API.md § Update State](DB_SERVICE_API.md#11-update-state-jsonpath).
-- `search_kb`: RAG search over a per-trial corpus index. Functional for native
-  tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
-  corpus into the rag-service per trial (see `docs/TASKS.md`). Each search is
-  bounded at the tool's own 15 s, on both substrates, rather than inheriting
-  whatever the shared RAG client was constructed with.
+- `search_kb`: search over a per-trial corpus index. Not a builtin: it is the
+  default name of the task's declared search tool — declare
+  `initial_state.rag.corpus_dir` and the runner builds the trial's index with
+  the task's search backend (default `rag_service`, which indexes the corpus into
+  the rag-service); `initial_state.rag.tool` renames it (see `docs/TASKS.md`).
+  Each search is bounded at the tool's own 15 s budget, which the runner hands
+  the backend, rather than inheriting whatever the shared RAG client was
+  constructed with.
 - `http_request`: Restricted HTTP client for mock web services.
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface
   check). See [`build_check`](#build_check) below.
