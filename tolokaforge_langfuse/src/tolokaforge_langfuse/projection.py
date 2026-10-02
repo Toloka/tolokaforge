@@ -1413,6 +1413,80 @@ def _projection_events(
     return events
 
 
+@dataclass(frozen=True)
+class _CallPairing:
+    """Which recorded call each transcript turn pairs with: the agent's turns with the agent's
+    calls (``pair_usage``), the simulated user turns with the simulator's (``pair_user_usage``)."""
+
+    usage_match: str
+    paired: Mapping[int, Mapping[str, Any]]
+    user_usage_match: str
+    user_paired: Mapping[int, Mapping[str, Any]]
+
+    @property
+    def taken(self) -> list[Mapping[str, Any]]:
+        """Every call a turn pairs with."""
+        return [*self.paired.values(), *self.user_paired.values()]
+
+
+def _pair_calls(
+    bundle: Bundle, messages: Sequence[Mapping[str, Any]], calls: Sequence[Mapping[str, Any]]
+) -> _CallPairing:
+    usage_match, paired = pair_usage(
+        messages, calls, opening=_opening_line_position(messages, bundle.task)
+    )
+    user_usage_match, user_paired = pair_user_usage(
+        messages,
+        calls,
+        simulated_user_turns(messages, bundle.trajectory, bundle.task),
+        trajectory=bundle.trajectory,
+    )
+    return _CallPairing(usage_match, paired, user_usage_match, user_paired)
+
+
+def _transcript_observations(
+    bundle: Bundle,
+    pairing: _CallPairing,
+    *,
+    trace_id: str,
+    root_id: str,
+    start: str | None,
+    end: str | None,
+    model_name: str | None,
+    user_model_name: str | None,
+    media: MediaHandler | None,
+    stats: ProjectionStats,
+) -> list[tuple[str, dict[str, Any]]]:
+    """The transcript's observations, then a generation for every recorded call no turn pairs
+    with, so that every call counts on exactly one generation."""
+    out = _agent_observations(
+        bundle,
+        trace_id=trace_id,
+        root_id=root_id,
+        paired=pairing.paired,
+        usage_match=pairing.usage_match,
+        user_paired=pairing.user_paired,
+        user_usage_match=pairing.user_usage_match,
+        start=start,
+        end=end,
+        model_name=model_name,
+        user_model_name=user_model_name,
+        media=media,
+        stats=stats,
+    )
+    out.extend(
+        _unpaired_call_generations(
+            _mapping(bundle.metrics.get("usage")).get("calls") or [],
+            pairing.taken,
+            trace_id=trace_id,
+            root_id=root_id,
+            at=end or start,
+            model_names={"agent": model_name, "user": user_model_name},
+        )
+    )
+    return out
+
+
 def build_projection(
     identity: TrialIdentity,
     trial_dir: Path,
@@ -1436,16 +1510,8 @@ def build_projection(
     messages = [m for m in trajectory.get("messages") or [] if isinstance(m, Mapping)]
     usage = _mapping(bundle.metrics.get("usage"))
     calls = [c for c in (usage.get("calls") or []) if isinstance(c, Mapping)]
-    usage_match, paired = pair_usage(
-        messages, calls, opening=_opening_line_position(messages, bundle.task)
-    )
-    stats.usage_match = usage_match
-    user_usage_match, user_paired = pair_user_usage(
-        messages,
-        calls,
-        simulated_user_turns(messages, trajectory, bundle.task),
-        trajectory=trajectory,
-    )
+    pairing = _pair_calls(bundle, messages, calls)
+    stats.usage_match = pairing.usage_match
     start, _ = trace_time(trajectory)
     end = _normalize_ts(trajectory.get("end_ts"))
     at = end or start
@@ -1460,33 +1526,17 @@ def build_projection(
         )
     )
     typed.extend(
-        _agent_observations(
+        _transcript_observations(
             bundle,
+            pairing,
             trace_id=trace_id,
             root_id=root_id,
-            paired=paired,
-            usage_match=usage_match,
-            user_paired=user_paired,
-            user_usage_match=user_usage_match,
             start=start,
             end=end,
             model_name=agent.canonical if agent is not None else None,
             user_model_name=user_model_name,
             media=media,
             stats=stats,
-        )
-    )
-    typed.extend(
-        _unpaired_call_generations(
-            usage.get("calls") or [],
-            [*paired.values(), *user_paired.values()],
-            trace_id=trace_id,
-            root_id=root_id,
-            at=at,
-            model_names={
-                "agent": agent.canonical if agent is not None else None,
-                "user": user_model_name,
-            },
         )
     )
     typed.extend(
@@ -1513,8 +1563,8 @@ def build_projection(
         identity=identity,
         resolver=resolver,
         agent=agent,
-        usage_match=usage_match,
-        unpaired_calls=len(calls) - len(paired) - len(user_paired),
+        usage_match=pairing.usage_match,
+        unpaired_calls=len(calls) - len(pairing.taken),
         primary_summary=summary,
         primary=stats.grading_id,
         grading_ids=[stats.grading_id] if stats.grading_id else [],
