@@ -1272,6 +1272,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             tool_schemas=tool_schemas,
             num_agent_tools=len(task_description.agent_tools),
             num_user_tools=len(task_description.user_tools),
+            runner_protocol_version=ENGINE_PROTOCOL_VERSION,
         )
 
     # =========================================================================
@@ -1509,6 +1510,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         keeps running there, which is why a timed-out lifecycle tool has its
         session rebuilt by :meth:`_reset_backstopped_tool`.
         """
+        if isinstance(tool, MCPServerToolWrapper):
+            return await asyncio.wait_for(tool.execute_call(arguments), timeout=timeout_seconds)
         if hasattr(tool, "execute"):
             return await asyncio.wait_for(tool.execute(arguments), timeout=timeout_seconds)
         if not callable(tool):
@@ -1607,16 +1610,24 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             try:
                 result = await self._invoke_tool(tool, tool_name, arguments, timeout_seconds)
 
-                # Convert result to string
-                if isinstance(result, str):
+                # MCP completed the call and reported its own error flag beside
+                # the response text. This is an environment outcome, not a
+                # transport failure or a string-prefix heuristic.
+                if isinstance(result, ToolCallOutcome):
+                    output = result.output
+                    status = (
+                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
+                        if result.declared_failure
+                        else pb2.EXECUTION_STATUS_SUCCESS
+                    )
+                elif isinstance(result, str):
                     output = result
                 elif result is None:
                     output = "Success"
                 else:
                     output = json.dumps(result, default=str)
 
-                status = pb2.EXECUTION_STATUS_SUCCESS
-                logger.debug(f"ExecuteTool: {tool_name} completed successfully")
+                logger.debug(f"ExecuteTool: {tool_name} completed with status {status}")
 
             except asyncio.TimeoutError:
                 status = pb2.EXECUTION_STATUS_TIMEOUT
@@ -1646,7 +1657,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 call_id=call_id,
                 tool_name=tool_name,
                 arguments=arguments,
-                output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
+                output=(
+                    output
+                    if status
+                    in (
+                        pb2.EXECUTION_STATUS_SUCCESS,
+                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR,
+                    )
+                    else error_message
+                ),
                 status=recorded_status(status),
                 executor=executor,
                 latency_seconds=latency_seconds,
@@ -1659,7 +1678,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             error_message=error_message,
             metrics=pb2.ToolMetrics(
                 latency_seconds=latency_seconds,
-                exit_code=0 if status == pb2.EXECUTION_STATUS_SUCCESS else 1,
+                exit_code=(
+                    0
+                    if status
+                    in (
+                        pb2.EXECUTION_STATUS_SUCCESS,
+                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR,
+                    )
+                    else 1
+                ),
                 state_mutations=0,  # TODO: Track state mutations if needed
             ),
         )

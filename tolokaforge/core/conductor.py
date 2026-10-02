@@ -953,6 +953,8 @@ class InProcessConductor:
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
             max_turns=max_turns,
+            max_simulation_steps=task.max_simulation_steps,
+            max_environment_errors=task.max_environment_errors,
             turn_timeout_s=turn_timeout_s,
             episode_timeout_s=episode_timeout_s,
             stuck_detector=stuck_detector,
