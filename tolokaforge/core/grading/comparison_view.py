@@ -21,6 +21,24 @@ pre-hash steps and the versioning policy of the record. The semantics:
     references are read before the rule removes anything.
 ``exclude_tables``
     Drops the named tables, key included; refused for a table another rule names.
+``normalize_ids``
+    Re-keys the records of ``table`` in ``scope`` (``new_records``, the default:
+    those whose id the initial state's table lacks; or ``all``) and rewrites every
+    exact reference to them in the listed ``references`` fields. The new key is
+    ``<table>:<canonical JSON of its fields>``, built from the record's ``key``
+    fields (``line_items:{"order_id":"O1","quantity":2,"sku":"S2"}``) or
+    from its ``ordinal_by`` group plus ``#<ordinal>`` ranked by ``rank_by``
+    (``line_items:{"order_id":"O1"}#2``); an integral float renders as
+    the int it equals. The re-keying is bijective or raises: a key two records
+    share, a key a kept record already holds, a rank tie and a reference that
+    already holds a new key are refused. A reference to no re-keyed record stays
+    as it is. A re-keyed id is a function of its record's content, not a
+    generated value, so it must reach the hash: the unstable filter and the
+    clock mask after the view must not drop the fields the record lists in
+    ``rekeyed_fields``, even when ``unstable_fields`` names them. Key fields are
+    read as they are, before ``numeric_string_fields`` or
+    ``auto_normalize_nullables`` fold anything (``""`` and null give different
+    keys), and a missing key field raises.
 
 A path (``path``, ``unless_referenced_by.field``) is field names joined by ``.``.
 A list met on the way is walked item by item, a missing or null field ends the
@@ -30,7 +48,7 @@ give the same view and the same :class:`ComparisonViewRecord`.
 
 A rule is a class registered in the ``tolokaforge.comparison_view_rules``
 entry-point group (:class:`ComparisonViewRule`), and ``kind`` resolves through the
-group: the two above register there like any rule a distribution ships. A rule
+group: the three above register there like any rule a distribution ships. A rule
 decides which states hash equal, so registering one is a grading decision; the
 trust boundary is stated on :class:`ComparisonViewRule`.
 
@@ -45,12 +63,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 from abc import abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import partial
 from types import MappingProxyType, ModuleType
 from typing import Annotated, Any, ClassVar, Final, Literal, Protocol, cast, runtime_checkable
 
@@ -76,11 +96,13 @@ __all__ = [
     "COMPARISON_VIEW_FUNCTION_VERSION",
     "COMPARISON_VIEW_VERSIONS",
     "ComparisonViewConfig",
+    "ComparisonViewCollision",
     "ComparisonViewError",
     "ComparisonViewRecord",
     "ComparisonViewResult",
     "ComparisonViewRule",
     "ComparisonViewRuleConfig",
+    "RekeyedField",
     "RuleApplication",
     "RuleOutcome",
     "apply_comparison_view",
@@ -102,6 +124,8 @@ ALL_ZERO: Final[str] = "all_zero"
 It is reserved, so a field named ``all_zero`` cannot take a condition."""
 
 _DEFAULT_ID_FIELD: Final[str] = "id"
+_UNLESS: Final[str] = "unless_referenced_by"
+_NORMALIZE: Final[str] = "normalize_ids"
 _ID_TYPES: Final[tuple[type, ...]] = (str, int, float, bool)
 _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", re.ASCII)
 
@@ -112,6 +136,25 @@ class ComparisonViewError(ValueError):
     It is an evaluation error, never a pass or a fail: the grade reports it as a
     grading error.
     """
+
+
+class ComparisonViewCollision(ComparisonViewError):
+    """``normalize_ids`` cannot re-key this state bijectively.
+
+    Two records would share a key, a new key is the id of a kept record, two
+    records tie on ``rank_by``, or a reference already holds a new key. On the
+    golden side it is an evaluation error like any :class:`ComparisonViewError`.
+    On the trial side, once the golden's view succeeded, it is the trial's own
+    state that cannot be told apart, and the caller fails the trial with it as
+    the reason. ``ids`` are the ids involved.
+    """
+
+    def __init__(self, message: str, ids: tuple[Any, ...]) -> None:
+        super().__init__(message, ids)
+        self.ids = ids
+
+    def __str__(self) -> str:
+        return str(self.args[0])
 
 
 # ---------------------------------------------------------------------------
@@ -276,10 +319,13 @@ class ComparisonViewRuleConfig(BaseModel):
     ``extra="forbid"``, so an entry key the rule does not declare is refused.
     ``kind`` is the name the rule is registered under; everything else belongs to
     the rule. A field named ``reason`` is prose: :meth:`ComparisonViewConfig.config_sha256`
-    leaves it out.
+    leaves it out. ``order_free_fields`` are the list fields whose order has no
+    effect on what the rule does; the config sha sorts them.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    order_free_fields: ClassVar[frozenset[str]] = frozenset()
 
     kind: str
 
@@ -357,6 +403,85 @@ class ExcludeTablesConfig(ComparisonViewRuleConfig):
         return self.tables
 
 
+class NormalizeIdsConfig(ComparisonViewRuleConfig):
+    """``normalize_ids``: re-key the records in scope and every listed reference to them.
+
+    The new key comes from ``key`` (the record's own content) or from ``rank_by``
+    (its ordinal within its ``ordinal_by`` group, ranked by those fields), never
+    both.
+    """
+
+    order_free_fields: ClassVar[frozenset[str]] = frozenset({"key", "ordinal_by", "references"})
+
+    kind: Literal["normalize_ids"] = "normalize_ids"
+    table: NonBlankStr
+    key: tuple[FieldName, ...] = ()
+    ordinal_by: tuple[FieldName, ...] = ()
+    rank_by: tuple[FieldName, ...] = ()
+    references: tuple[RecordReference, ...] = ()
+    scope: Literal["new_records", "all"] = "new_records"
+    reason: NonBlankStr | None = None
+
+    @field_validator("key", "ordinal_by", "rank_by")
+    @classmethod
+    def _each_field_once(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError(f"lists a field more than once: {list(value)}")
+        return value
+
+    @field_validator("references")
+    @classmethod
+    def _each_reference_once(
+        cls, value: tuple[RecordReference, ...]
+    ) -> tuple[RecordReference, ...]:
+        named = [f"{reference.table}.{reference.field}" for reference in value]
+        repeated = sorted({name for name in named if named.count(name) > 1})
+        if repeated:
+            raise ValueError(f"lists the reference(s) {repeated} more than once")
+        return value
+
+    @model_validator(mode="after")
+    def _one_key_form(self) -> NormalizeIdsConfig:
+        if bool(self.key) == bool(self.rank_by):
+            raise ValueError(
+                "declare the new key either as key: [fields] or as rank_by: [fields] with "
+                "an optional ordinal_by: [fields], exactly one of the two"
+            )
+        if self.key and self.ordinal_by:
+            raise ValueError(
+                "ordinal_by groups the records rank_by orders; it does not combine with key"
+            )
+        shared = sorted(set(self.ordinal_by) & set(self.rank_by))
+        if shared:
+            raise ValueError(
+                f"ordinal_by and rank_by both list {shared}; a field that is constant within "
+                f"a group cannot rank it"
+            )
+        rewritten = sorted(self.key_fields() & self.rewritten_fields(self.table))
+        if rewritten:
+            raise ValueError(
+                f"the new key reads {rewritten}, which references rewrite in table "
+                f"{self.table!r}; the key would be built from values the rule then changes"
+            )
+        return self
+
+    def names(self) -> tuple[str, ...]:
+        references = (reference.table for reference in self.references)
+        return tuple(dict.fromkeys((self.table, *references)))
+
+    def key_fields(self) -> frozenset[str]:
+        """The fields of the table's records the new key is built from."""
+        return frozenset((*self.key, *self.ordinal_by, *self.rank_by))
+
+    def rewritten_fields(self, table: str) -> frozenset[str]:
+        """The top-level fields of ``table`` its ``references`` rewrite."""
+        return frozenset(
+            reference.field
+            for reference in self.references
+            if reference.table == table and "." not in reference.field
+        )
+
+
 # ---------------------------------------------------------------------------
 # What a view records
 # ---------------------------------------------------------------------------
@@ -369,7 +494,9 @@ class RuleApplication(BaseModel):
     ``path``, the items of the nested lists at that path. ``exclude_tables``
     contributes one application per listed table; a table held as a single value
     rather than a list of rows counts as one row, and an absent one as none.
-    ``ids_rewritten`` counts rewritten record keys; no v1 rule rewrites one yet.
+    ``ids_rewritten`` counts the records of ``table`` whose key ``normalize_ids``
+    changed, and ``references_rewritten`` the reference values it changed to
+    follow them, over every listed reference field.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -377,8 +504,28 @@ class RuleApplication(BaseModel):
     kind: str
     table: str
     path: str | None = None
-    rows_removed: int = Field(ge=0)
+    rows_removed: int = Field(default=0, ge=0)
     ids_rewritten: int = Field(default=0, ge=0)
+    references_rewritten: int = Field(default=0, ge=0)
+
+
+class RekeyedField(BaseModel):
+    """An id field ``normalize_ids`` re-keyed, whose values are a function of content.
+
+    A masked id is unstable because it is generated; a re-keyed one is not, so it
+    must reach the hash. The masks applied after the view (the unstable filter and
+    the clock mask) must not drop it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    table: str
+    field: str
+
+    @property
+    def dotted(self) -> str:
+        """The ``table.field`` form ``unstable_fields`` names it in."""
+        return f"{self.table}.{self.field}"
 
 
 class ComparisonViewRecord(BaseModel):
@@ -387,6 +534,9 @@ class ComparisonViewRecord(BaseModel):
     ``version`` is the block's schema version, ``function_version`` the engine's
     :data:`COMPARISON_VIEW_FUNCTION_VERSION`, and ``config_sha256`` the digest of
     what the rules do (:meth:`ComparisonViewConfig.config_sha256`).
+    ``rekeyed_fields`` are the id fields ``normalize_ids`` re-keyed; they follow
+    from the declaration and ``id_fields``, not from which records were in scope,
+    so both sides of a comparison name the same ones.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -395,14 +545,17 @@ class ComparisonViewRecord(BaseModel):
     function_version: int
     config_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     applied: tuple[RuleApplication, ...]
+    rekeyed_fields: tuple[RekeyedField, ...] = ()
 
 
 @dataclass(frozen=True)
 class RuleOutcome:
-    """What a rule returns: the state after it, and what it did to each table."""
+    """What a rule returns: the state after it, what it did to each table, and the
+    id fields it re-keyed."""
 
     state: dict[str, Any]
     applied: tuple[RuleApplication, ...]
+    rekeyed: tuple[RekeyedField, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -411,6 +564,11 @@ class ComparisonViewResult:
 
     state: dict[str, list[dict[str, Any]]]
     record: ComparisonViewRecord
+
+    @property
+    def rekeyed_fields(self) -> tuple[RekeyedField, ...]:
+        """The id fields the masks after the view must not drop (see :class:`RekeyedField`)."""
+        return self.record.rekeyed_fields
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +711,45 @@ def _row_count(state: Mapping[str, Any], table: str) -> int:
     return len(rows) if isinstance(rows, list) else 1
 
 
+class NormalizeIds:
+    """The ``normalize_ids`` rule."""
+
+    NAME: ClassVar[str] = "normalize_ids"
+    VERSION: ClassVar[int] = 1
+    config_model: ClassVar[type[ComparisonViewRuleConfig]] = NormalizeIdsConfig
+
+    def apply(
+        self,
+        state: dict[str, Any],
+        *,
+        initial: Mapping[str, Any] | None,
+        id_fields: Mapping[str, str | list[str]],
+        config: ComparisonViewRuleConfig,
+    ) -> RuleOutcome:
+        config = cast(NormalizeIdsConfig, config)
+        id_field = _record_id_field(config.table, id_fields, needed_by=_NORMALIZE)
+        _refuse_id_in_the_key(config, id_field)
+        _refuse_own_id_references(config.table, config.references, id_field, option="references")
+        kept_ids = _ids_that_keep_their_key(config, initial, id_field)
+        rekeyed_fields = (RekeyedField(table=config.table, field=id_field),)
+        if config.table not in state:
+            application = RuleApplication(kind=self.NAME, table=config.table)
+            return RuleOutcome(state=state, applied=(application,), rekeyed=rekeyed_fields)
+        rows = _records(state[config.table], f"{_NORMALIZE}: table {config.table!r}")
+        new_keys = _new_keys(config, rows, id_field, kept_ids)
+        rekeyed = [_rekeyed(row, id_field, new_keys) for row in rows]
+        next_state, references_rewritten = _follow_references(
+            {**state, config.table: rekeyed}, config, new_keys
+        )
+        application = RuleApplication(
+            kind=self.NAME,
+            table=config.table,
+            ids_rewritten=sum(new is not old for new, old in zip(rekeyed, rows)),
+            references_rewritten=references_rewritten,
+        )
+        return RuleOutcome(state=next_state, applied=(application,), rekeyed=rekeyed_fields)
+
+
 def _registry() -> ModuleType:
     """:mod:`tolokaforge.core.plugin_registry`, imported where a kind resolves.
 
@@ -639,6 +836,8 @@ def _checked_outcome(rule: type[ComparisonViewRule], outcome: object) -> RuleOut
 # ---------------------------------------------------------------------------
 
 Record = Mapping[str, Any]
+IdKey = tuple[bool, Any]
+"""An id or a reference as :func:`_reference_key` compares it."""
 
 
 def _records(value: Any, where: str) -> list[Record]:
@@ -704,8 +903,8 @@ def _rows_to_keep(
 ) -> list[Record]:
     if not config.unless_referenced_by:
         return [row for row in rows if not matches(row)]
-    id_field = _record_id_field(config.table, id_fields)
-    _refuse_own_id_references(config, id_field)
+    id_field = _record_id_field(config.table, id_fields, needed_by=_UNLESS)
+    _refuse_own_id_references(config.table, config.unless_referenced_by, id_field, option=_UNLESS)
     counts = _reference_counts(state, config.unless_referenced_by)
     return [
         row
@@ -714,31 +913,35 @@ def _rows_to_keep(
     ]
 
 
-def _refuse_own_id_references(config: ExcludeRecordsConfig, id_field: str) -> None:
-    for reference in config.unless_referenced_by:
-        if reference.table == config.table and reference.field == id_field:
+def _refuse_own_id_references(
+    table: str, references: Sequence[RecordReference], id_field: str, *, option: str
+) -> None:
+    for reference in references:
+        if reference.table == table and reference.field == id_field:
             raise ComparisonViewError(
-                f"unless_referenced_by names {config.table}.{id_field}, the id field of the "
-                f"rule's own table: every row would reference only itself"
+                f"{option} names {table}.{id_field}, the id field of the rule's own table: "
+                f"a record's own id is not a reference to it"
             )
 
 
 def _referenced_by_another_row(
-    row: Record, config: ExcludeRecordsConfig, id_field: str, counts: Counter[tuple[bool, Any]]
+    row: Record, config: ExcludeRecordsConfig, id_field: str, counts: Counter[IdKey]
 ) -> bool:
     """Whether a reference other than the row's own references to itself holds its id."""
-    key = _reference_key(_record_id(row, config.table, id_field))
+    key = _reference_key(_record_id(row, config.table, id_field, needed_by=_UNLESS))
     own = sum(
         1
         for reference in config.unless_referenced_by
         if reference.table == config.table
-        for value in _ids_at(row, _segments(reference.field), _reference_label(reference))
+        for value in _ids_at(row, _segments(reference.field), _reference_label(reference, _UNLESS))
         if _reference_key(value) == key
     )
     return counts[key] > own
 
 
-def _record_id_field(table: str, id_fields: Mapping[str, str | list[str]]) -> str:
+def _record_id_field(
+    table: str, id_fields: Mapping[str, str | list[str]], *, needed_by: str
+) -> str:
     """The one field holding ``table``'s record ids: its ``id_fields`` entry, else ``"id"``.
 
     Resolves as ``tolokaforge.runner.id_resolution.table_key`` does (a blank or
@@ -758,29 +961,34 @@ def _record_id_field(table: str, id_fields: Mapping[str, str | list[str]]) -> st
     if len(fields) > 1:
         raise ComparisonViewError(
             f"state_checks.id_fields[{table!r}] is the composite key {declared!r}; "
-            f"unless_referenced_by needs one id field for table {table!r}, and a composite "
-            f"key has no single field a reference could hold"
+            f"{needed_by} needs one id field for table {table!r}, and a composite key has "
+            f"no single field a reference could hold"
         )
     return fields[0]
 
 
-def _record_id(row: Record, table: str, id_field: str) -> Any:
+def _record_id(row: Record, table: str, id_field: str, *, needed_by: str) -> Any:
+    """A record's id, which ``needed_by`` reads: a JSON scalar, never missing or null."""
     value = row.get(id_field)
     if value is None:
         raise ComparisonViewError(
-            f"a record of table {table!r} matches exclude_records but its id field "
-            f"{id_field!r} is missing or null, so unless_referenced_by cannot tell whether "
-            f"it is referenced; declare state_checks.id_fields[{table!r}]"
+            f"{needed_by} reads the id of a record of table {table!r}, but its id field "
+            f"{id_field!r} is missing or null; declare state_checks.id_fields[{table!r}]"
         )
     if not isinstance(value, _ID_TYPES):
         raise ComparisonViewError(
             f"a record of table {table!r} holds a {type(value).__name__} in its id field "
             f"{id_field!r}; an id is a string, a number or a bool"
         )
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ComparisonViewError(
+            f"a record of table {table!r} holds {value!r} in its id field {id_field!r}; a "
+            f"non-finite number is not a JSON value and never equals a reference to it"
+        )
     return value
 
 
-def _reference_key(value: Any) -> tuple[bool, Any]:
+def _reference_key(value: Any) -> IdKey:
     """The key an id and a reference to it share, compared as JSON values.
 
     A bool never matches a number, ``1`` matches ``1.0``, and ``1`` does not match
@@ -791,20 +999,20 @@ def _reference_key(value: Any) -> tuple[bool, Any]:
 
 def _reference_counts(
     state: Mapping[str, Any], references: Sequence[RecordReference]
-) -> Counter[tuple[bool, Any]]:
+) -> Counter[IdKey]:
     """How many times each id is referenced by the listed fields, over every row."""
-    counts: Counter[tuple[bool, Any]] = Counter()
+    counts: Counter[IdKey] = Counter()
     for reference in references:
         if reference.table not in state:
             continue
-        rows = _records(state[reference.table], f"unless_referenced_by: table {reference.table!r}")
-        found = _ids_at(rows, _segments(reference.field), _reference_label(reference))
+        rows = _records(state[reference.table], f"{_UNLESS}: table {reference.table!r}")
+        found = _ids_at(rows, _segments(reference.field), _reference_label(reference, _UNLESS))
         counts.update(map(_reference_key, found))
     return counts
 
 
-def _reference_label(reference: RecordReference) -> str:
-    return f"unless_referenced_by: '{reference.table}.{reference.field}'"
+def _reference_label(reference: RecordReference, option: str) -> str:
+    return f"{option}: '{reference.table}.{reference.field}'"
 
 
 def _ids_at(value: Any, segments: Sequence[str], where: str) -> list[Any]:
@@ -876,6 +1084,226 @@ def _rewrite_at(value: Any, segments: Sequence[str], leaf: Callable[[Any], Any],
 
 
 # ---------------------------------------------------------------------------
+# normalize_ids helpers
+# ---------------------------------------------------------------------------
+
+
+def _refuse_id_in_the_key(config: NormalizeIdsConfig, id_field: str) -> None:
+    for option, fields in (
+        ("key", config.key),
+        ("ordinal_by", config.ordinal_by),
+        ("rank_by", config.rank_by),
+    ):
+        if id_field in fields:
+            raise ComparisonViewError(
+                f"{_NORMALIZE} {option} names {config.table}.{id_field}, the id field it "
+                f"replaces; a key built from the generated id normalizes nothing"
+            )
+
+
+def _ids_that_keep_their_key(
+    config: NormalizeIdsConfig, initial: Mapping[str, Any] | None, id_field: str
+) -> frozenset[IdKey]:
+    """The ids of the initial state's records of the table, under ``scope: new_records``."""
+    if config.scope == "all":
+        return frozenset()
+    if initial is None:
+        raise ComparisonViewError(
+            f"{_NORMALIZE} of table {config.table!r} has scope new_records, which reads the "
+            f"initial state, and none was given"
+        )
+    if config.table not in initial:
+        return frozenset()
+    rows = _records(initial[config.table], f"{_NORMALIZE}: initial table {config.table!r}")
+    return frozenset(
+        _reference_key(_record_id(row, config.table, id_field, needed_by=_NORMALIZE))
+        for row in rows
+    )
+
+
+def _new_keys(
+    config: NormalizeIdsConfig, rows: list[Record], id_field: str, kept_ids: frozenset[IdKey]
+) -> dict[IdKey, str]:
+    """old id → new key for the records in scope; raises unless the re-keying is bijective."""
+    ids = [_record_id(row, config.table, id_field, needed_by=_NORMALIZE) for row in rows]
+    _refuse_duplicate_ids(config.table, ids)
+    in_scope = [(row, old) for row, old in zip(rows, ids) if _reference_key(old) not in kept_ids]
+    if config.key:
+        rendered = [
+            (old, _rendered_key(config.table, _key_fields(config, row, old, config.key)))
+            for row, old in in_scope
+        ]
+    else:
+        rendered = _ordinal_keys(config, in_scope)
+    _refuse_colliding_keys(
+        config.table, rendered, [old for old in ids if _reference_key(old) in kept_ids]
+    )
+    return {_reference_key(old): new for old, new in rendered}
+
+
+def _refuse_duplicate_ids(table: str, ids: list[Any]) -> None:
+    seen: set[IdKey] = set()
+    for value in ids:
+        key = _reference_key(value)
+        if key in seen:
+            raise ComparisonViewError(
+                f"{_NORMALIZE}: two records of table {table!r} share the id {value!r}, so a "
+                f"reference to it cannot follow one of them"
+            )
+        seen.add(key)
+
+
+def _key_fields(
+    config: NormalizeIdsConfig, row: Record, old_id: Any, fields: Sequence[str]
+) -> dict[str, Any]:
+    missing = [field for field in fields if field not in row]
+    if missing:
+        raise ComparisonViewError(
+            f"{_NORMALIZE}: record {old_id!r} of table {config.table!r} lacks the key "
+            f"field(s) {missing}"
+        )
+    return {field: _key_value(row[field], config.table, old_id, field) for field in fields}
+
+
+def _key_value(value: Any, table: str, old_id: Any, field: str) -> Any:
+    """A key component as JSON renders it; an integral float renders as the int the hash folds
+    it to, so ``5.0`` and ``5``, and ``1e23`` and ``10**23``, keep one key."""
+    if value is not None and not isinstance(value, _ID_TYPES):
+        raise ComparisonViewError(
+            f"{_NORMALIZE}: record {old_id!r} of table {table!r} holds a "
+            f"{type(value).__name__} in key field {field!r}; a key is built from JSON scalars"
+        )
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ComparisonViewError(
+                f"{_NORMALIZE}: record {old_id!r} of table {table!r} holds {value!r} in key "
+                f"field {field!r}, which JSON cannot render"
+            )
+        if value.is_integer():
+            # Through the shortest decimal, as the hash folds it: int(1e23) is 99999999999999991611392.
+            return int(Decimal(repr(value)))
+    return value
+
+
+def _rendered_key(table: str, fields: Mapping[str, Any], ordinal: int | None = None) -> str:
+    """``<table>:<canonical JSON of the key fields>``, then ``#<ordinal>`` for the ordinal form."""
+    body = json.dumps(fields, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return f"{table}:{body}" if ordinal is None else f"{table}:{body}#{ordinal}"
+
+
+@dataclass(frozen=True)
+class _Ranked:
+    """A record in scope of the ordinal form: its rank, its old id and its group."""
+
+    order: tuple[tuple[int, Any], ...]
+    old_id: Any
+    group: dict[str, Any]
+
+
+def _ordinal_keys(
+    config: NormalizeIdsConfig, in_scope: list[tuple[Record, Any]]
+) -> list[tuple[Any, str]]:
+    """Each record's ordinal, from 1, within its ``ordinal_by`` group ranked by ``rank_by``."""
+    groups: dict[tuple[IdKey, ...], list[_Ranked]] = {}
+    for row, old in in_scope:
+        group = _key_fields(config, row, old, config.ordinal_by)
+        rank = _key_fields(config, row, old, config.rank_by)
+        member = _Ranked(tuple(map(_rank_order, rank.values())), old, group)
+        groups.setdefault(tuple(map(_reference_key, group.values())), []).append(member)
+    rendered: list[tuple[Any, str]] = []
+    for members in groups.values():
+        members.sort(key=lambda member: member.order)
+        _refuse_rank_ties(config, members)
+        rendered += [
+            (member.old_id, _rendered_key(config.table, member.group, ordinal))
+            for ordinal, member in enumerate(members, 1)
+        ]
+    return rendered
+
+
+def _refuse_rank_ties(config: NormalizeIdsConfig, members: list[_Ranked]) -> None:
+    for first, second in zip(members, members[1:]):
+        if first.order == second.order:
+            raise ComparisonViewCollision(
+                f"{_NORMALIZE}: records {first.old_id!r} and {second.old_id!r} of table "
+                f"{config.table!r} tie on rank_by {list(config.rank_by)}, so their ordinals "
+                f"would depend on row order",
+                (first.old_id, second.old_id),
+            )
+
+
+def _rank_order(value: Any) -> tuple[int, Any]:
+    """A total order over JSON scalars: null, then bools, numbers, strings."""
+    if value is None:
+        return (0, 0)
+    if isinstance(value, bool):
+        return (1, value)
+    if isinstance(value, int | float):
+        return (2, value)
+    return (3, value)
+
+
+def _refuse_colliding_keys(table: str, rendered: list[tuple[Any, str]], kept: list[Any]) -> None:
+    owners: dict[IdKey, Any] = {_reference_key(old): old for old in kept}
+    for old, new in rendered:
+        other = owners.get(_reference_key(new))
+        if other is not None:
+            raise ComparisonViewCollision(
+                f"{_NORMALIZE}: record {old!r} of table {table!r} gets the key {new!r}, which "
+                f"record {other!r} already holds; the key does not tell them apart",
+                (other, old),
+            )
+        owners[_reference_key(new)] = old
+
+
+def _rekeyed(row: Record, id_field: str, new_keys: Mapping[IdKey, str]) -> Record:
+    new = new_keys.get(_reference_key(row[id_field]))
+    if new is None or _reference_key(new) == _reference_key(row[id_field]):
+        return row
+    return {**row, id_field: new}
+
+
+def _follow_references(
+    state: dict[str, Any], config: NormalizeIdsConfig, new_keys: Mapping[IdKey, str]
+) -> tuple[dict[str, Any], int]:
+    """``state`` with every listed reference to a re-keyed record rewritten, and how many were."""
+    owners = {_reference_key(new): old_key[1] for old_key, new in new_keys.items()}
+    rewritten = 0
+
+    def follow(value: Any, where: str) -> Any:
+        nonlocal rewritten
+        if isinstance(value, list):
+            return [follow(item, where) for item in value]
+        if value is None:
+            return value
+        if not isinstance(value, _ID_TYPES):
+            raise ComparisonViewError(f"{where} holds a {type(value).__name__}, not an id")
+        key = _reference_key(value)
+        if key in new_keys:
+            rewritten += _reference_key(new_keys[key]) != key
+            return new_keys[key]
+        if key in owners:
+            raise ComparisonViewCollision(
+                f"{where} holds {value!r}, the new key of record {owners[key]!r}, as a "
+                f"reference to a record that is not re-keyed; it would follow the wrong record",
+                (value, owners[key]),
+            )
+        return value
+
+    for reference in config.references:
+        if reference.table not in state:
+            continue
+        where = _reference_label(reference, "references")
+        rows = _records(state[reference.table], f"references: table {reference.table!r}")
+        leaf = partial(follow, where=where)
+        state = {
+            **state,
+            reference.table: _rewrite_at(rows, _segments(reference.field), leaf, where),
+        }
+    return state, rewritten
+
+
+# ---------------------------------------------------------------------------
 # The block
 # ---------------------------------------------------------------------------
 
@@ -940,6 +1368,28 @@ class ComparisonViewConfig(BaseModel):
                 _refuse_shared_tables(index, rule, self.rules)
         return self
 
+    @model_validator(mode="after")
+    def _keys_are_built_from_rewritten_values(self) -> ComparisonViewConfig:
+        rules = list(enumerate(self.rules))
+        for index, rule in rules:
+            if isinstance(rule, NormalizeIdsConfig):
+                _refuse_a_later_rewrite_of_the_key(index, rule, rules[index + 1 :])
+        return self
+
+    @model_validator(mode="after")
+    def _a_table_is_normalized_once(self) -> ComparisonViewConfig:
+        normalized: dict[str, int] = {}
+        for index, rule in enumerate(self.rules):
+            if not isinstance(rule, NormalizeIdsConfig):
+                continue
+            if rule.table in normalized:
+                raise ValueError(
+                    f"rules[{normalized[rule.table]}] and rules[{index}] both normalize the ids "
+                    f"of table {rule.table!r}; a table is re-keyed once"
+                )
+            normalized[rule.table] = index
+        return self
+
     def config_sha256(self) -> str:
         """sha256 of what the rules do: each rule's kind, its ``VERSION`` and its settings.
 
@@ -947,21 +1397,27 @@ class ComparisonViewConfig(BaseModel):
         so a new optional field whose default keeps a rule's behaviour keeps every
         existing sha; a change to what a rule computes bumps the rule's ``VERSION``,
         which changes the sha of every view naming it; ``reason`` is prose, not
-        behaviour, and is not hashed. The JSON is canonical as ``ModelsFingerprint``
-        hashes model data (sorted keys, ASCII, no whitespace), so the key order of
-        the declaration does not change it either.
+        behaviour, and is not hashed; a list whose order has no effect
+        (``order_free_fields``) is hashed sorted. The JSON is canonical as
+        ``ModelsFingerprint`` hashes model data (sorted keys, ASCII, no whitespace),
+        so the key order of the declaration does not change it either.
         """
         payload = [_hashed_rule(rule) for rule in self.rules]
-        canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _hashed_rule(rule: ComparisonViewRuleConfig) -> dict[str, Any]:
     settings = rule.model_dump(
         mode="json", by_alias=True, exclude_defaults=True, exclude={"kind", "reason"}
     )
+    for name in rule.order_free_fields & settings.keys():
+        settings[name] = sorted(settings[name], key=_canonical_json)
     version = resolve_comparison_view_rule(rule.kind).VERSION
     return {"kind": rule.kind, "version": version, "settings": settings}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
 
 def _resolve_entry(index: int, entry: Any) -> ComparisonViewRuleConfig:
@@ -996,6 +1452,23 @@ def _resolve_entry(index: int, entry: Any) -> ComparisonViewRuleConfig:
         return rule.config_model.model_validate(entry)
     except ValidationError as exc:
         raise ValueError(f"rules[{index}] ({rule.NAME}): {_error_summary(exc)}") from None
+
+
+def _refuse_a_later_rewrite_of_the_key(
+    index: int,
+    rule: NormalizeIdsConfig,
+    later: Sequence[tuple[int, ComparisonViewRuleConfig]],
+) -> None:
+    for later_index, other in later:
+        if not isinstance(other, NormalizeIdsConfig):
+            continue
+        rewritten = sorted(rule.key_fields() & other.rewritten_fields(rule.table))
+        if rewritten:
+            raise ValueError(
+                f"rules[{index}] (normalize_ids) builds keys of table {rule.table!r} from "
+                f"{rewritten}, which rules[{later_index}] rewrites as references afterwards; "
+                f"put rules[{later_index}] first, so the key is built from rewritten values"
+            )
 
 
 def _refuse_shared_tables(
@@ -1038,6 +1511,7 @@ def apply_comparison_view(
     initial_copy = None if initial is None else copy.deepcopy(dict(initial))
     id_fields_copy = MappingProxyType(copy.deepcopy(dict(id_fields)))
     applied: list[RuleApplication] = []
+    rekeyed: list[RekeyedField] = []
     for config in view.rules:
         rule = resolve_comparison_view_rule(config.kind)
         outcome = rule().apply(
@@ -1045,10 +1519,12 @@ def apply_comparison_view(
         )
         working = _checked_outcome(rule, outcome).state
         applied.extend(outcome.applied)
+        rekeyed.extend(outcome.rekeyed)
     record = ComparisonViewRecord(
         version=view.version,
         function_version=COMPARISON_VIEW_FUNCTION_VERSION,
         config_sha256=view.config_sha256(),
         applied=tuple(applied),
+        rekeyed_fields=tuple(rekeyed),
     )
     return ComparisonViewResult(state=working, record=record)

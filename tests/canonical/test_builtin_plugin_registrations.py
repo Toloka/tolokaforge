@@ -30,7 +30,7 @@ from tolokaforge.core.conductor import (
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.docker_compose_materialiser import DockerComposeMaterialiser
 from tolokaforge.core.grading.bundle_store import LocalDiskBundleStore, S3BundleStore
-from tolokaforge.core.grading.comparison_view import ExcludeRecords, ExcludeTables
+from tolokaforge.core.grading.comparison_view import ExcludeRecords, ExcludeTables, NormalizeIds
 from tolokaforge.core.grading.grading_method import (
     CompositeGradingMethod,
     TestExecutionGradingMethod,
@@ -256,6 +256,7 @@ def test_bundle_store_name_resolves_to_its_class(name: str, expected_cls: type) 
     [
         ("exclude_records", ExcludeRecords),
         ("exclude_tables", ExcludeTables),
+        ("normalize_ids", NormalizeIds),
     ],
 )
 def test_comparison_view_rule_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
@@ -281,7 +282,11 @@ def test_available_listings_match_the_builtin_set() -> None:
         "voted_rubric",
     ]
     assert available_bundle_stores() == ["local_disk", "s3"]
-    assert available_comparison_view_rules() == ["exclude_records", "exclude_tables"]
+    assert available_comparison_view_rules() == [
+        "exclude_records",
+        "exclude_tables",
+        "normalize_ids",
+    ]
     assert available_compose_materialisers() == ["docker_compose"]
     assert available_service_lifecycle_dispatchers() == ["ephemeral", "reset", "shared"]
     assert available_substrate_composers() == ["default"]
@@ -313,7 +318,7 @@ def test_raw_entry_point_probe_lists_comparison_view_rules() -> None:
     names = sorted(
         ep.name for ep in importlib.metadata.entry_points(group=COMPARISON_VIEW_RULES_GROUP)
     )
-    assert names == ["exclude_records", "exclude_tables"]
+    assert names == ["exclude_records", "exclude_tables", "normalize_ids"]
 
 
 def test_raw_entry_point_probe_lists_grading_methods() -> None:
