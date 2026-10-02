@@ -509,9 +509,6 @@ class OTelTrialObserver:
                 [self._message_dict(m) for m in list(request)[-self._context_messages :]]
             ),
             "langfuse.observation.output": self._json(self._result_dict(result)),
-            "langfuse.observation.usage_details": self._json(details),
-            "gen_ai.usage.input_tokens": prompt,
-            "gen_ai.usage.output_tokens": completion,
             "langfuse.observation.metadata.turn": turn,
             "langfuse.observation.metadata.role": role,
             "langfuse.observation.metadata.message_index": index,
@@ -541,9 +538,26 @@ class OTelTrialObserver:
         cost, basis = call_cost(
             call_record(calls[-1]) if calls else {"cost_usd": getattr(result, "cost_usd", None)}
         )
-        if cost is not None:
-            attributes["langfuse.observation.cost_details"] = self._json({"total": cost})
         attributes["langfuse.observation.metadata.cost_basis"] = basis
+        if self._write_once:
+            # A preview row stays in the trace beside the final row the bundle writes, and the
+            # receiver adds up the usage and cost of every row: a preview states zero usage and
+            # cost (explicitly, so the receiver infers none from its model) and its figures as
+            # metadata, so each call counts once, on its final row.
+            attributes["langfuse.observation.usage_details"] = self._json(
+                {"input": 0, "output": 0, "total": 0}
+            )
+            attributes["langfuse.observation.cost_details"] = self._json({"total": 0})
+            attributes["langfuse.observation.metadata.prompt_tokens"] = prompt
+            attributes["langfuse.observation.metadata.completion_tokens"] = completion
+            attributes["langfuse.observation.metadata.cost"] = _attribute_value(cost)
+        else:
+            # on a receiver that updates rows in place the live row is the final row
+            attributes["langfuse.observation.usage_details"] = self._json(details)
+            attributes["gen_ai.usage.input_tokens"] = prompt
+            attributes["gen_ai.usage.output_tokens"] = completion
+            if cost is not None:
+                attributes["langfuse.observation.cost_details"] = self._json({"total": cost})
         kind, key = (
             ("gen", (index,)) if agent_role else ("jgen", (f"live:{identity.run_id}", index))
         )

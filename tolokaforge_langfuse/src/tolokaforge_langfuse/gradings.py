@@ -385,6 +385,7 @@ def _judge_observations(
                     "grading_id": grading_id,
                     "message_index": index,
                     "usage_source": NONE,
+                    "cost_basis": NONE,
                 },
                 "usageDetails": {"input": 0, "output": 0, "total": 0},
                 "costDetails": {"total": 0},
@@ -493,7 +494,12 @@ def _user_generations(
                     "actor": "user_simulator",
                     "message_index": index,
                     "openrouter_generation_id": _text(message.get("openrouter_generation_id")),
+                    "cost_basis": NONE,
                 },
+                # this pass reads no call records, so the turn states it carries no figure;
+                # the default projection pairs it with the simulator's call
+                "usageDetails": {"input": 0, "output": 0, "total": 0},
+                "costDetails": {"total": 0},
             }
             if user_model_name:
                 body["model"] = user_model_name

@@ -172,16 +172,33 @@ def metrics() -> dict[str, Any]:
     return {
         "latency_total_s": 39.5,
         "turns": 3,
-        "api_calls": 3,
+        "api_calls": 5,
         "usage": {
-            "prompt_tokens": 3000,
-            "completion_tokens": 90,
+            "prompt_tokens": 3720,
+            "completion_tokens": 127,
             "reasoning_tokens": 30,
             "cached_tokens": 0,
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 100,
             "calls": [
+                # the user simulator's opener (turn 0); a call of the agent and one of the user
+                # simulator in the order they were made
                 {
+                    "role": "user",
+                    "prompt_tokens": 300,
+                    "completion_tokens": 25,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cost_usd": 0.0002,
+                    "cost_source": "litellm",
+                    "latency_s": 1.0,
+                    "openrouter_generation_id": "gen-user-0",
+                    "billed_cost_usd": 0.0002,
+                },
+                {
+                    "role": "agent",
                     "prompt_tokens": 900,
                     "completion_tokens": 20,
                     "cached_tokens": 0,
@@ -195,6 +212,7 @@ def metrics() -> dict[str, Any]:
                     "billed_cost_usd": 0.001,
                 },
                 {
+                    "role": "agent",
                     "prompt_tokens": 1000,
                     "completion_tokens": 30,
                     "cached_tokens": 0,
@@ -209,6 +227,7 @@ def metrics() -> dict[str, Any]:
                     "billed_cost_usd": 0.0025,
                 },
                 {
+                    "role": "agent",
                     "prompt_tokens": 1100,
                     "completion_tokens": 40,
                     "cached_tokens": 0,
@@ -221,9 +240,24 @@ def metrics() -> dict[str, Any]:
                     "openrouter_generation_id": "gen-agent-3",
                     "billed_cost_usd": 0.003,
                 },
+                # the simulator's last turn (turn 6): billed above litellm's estimate
+                {
+                    "role": "user",
+                    "prompt_tokens": 420,
+                    "completion_tokens": 12,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cost_usd": 0.00025,
+                    "cost_source": "litellm",
+                    "latency_s": 0.8,
+                    "openrouter_generation_id": "gen-user-6",
+                    "billed_cost_usd": 0.0003,
+                },
             ],
         },
-        "cost_usd": 0.006,
+        "cost_usd": 0.00645,
         "tool_calls": 2,
         "tool_success_rate": 0.5,
         "stuck_detected": False,

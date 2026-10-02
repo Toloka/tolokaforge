@@ -589,9 +589,20 @@ class TestUserToolSteps:
 
 class TestCostOnTheTrace:
     """A generation's cost is the charge the provider stated, else the eval's own figure, and
-    ``cost_basis`` says which. The golden pins the billed path, these the paths without a charge."""
+    ``cost_basis`` says which; every LLM call of the bundle is counted on exactly one
+    generation, so the trace's cost is what the trial spent. The golden pins the billed path
+    with the agent's and the user simulator's calls paired by generation id; these pin the
+    rest."""
 
-    def _projection(self, tmp_path: Path, *, calls: list[dict], judge_usage: dict | None = None):
+    def _projection(
+        self,
+        tmp_path: Path,
+        *,
+        calls: list[dict],
+        judge_usage: dict | None = None,
+        generation_ids: bool = True,
+        ending: str | None = None,
+    ):
         trial_dir = pb.write_parity_bundle(tmp_path / "run")
         metrics = pb.metrics()
         metrics["usage"]["calls"] = calls
@@ -600,6 +611,25 @@ class TestCostOnTheTrace:
             grade = pb.grade()
             grade["judge_usage"] = judge_usage
             (trial_dir / "grade.yaml").write_text(yaml.safe_dump(grade), encoding="utf-8")
+        trajectory = pb.trajectory()
+        if not generation_ids:
+            # a route other than OpenRouter: no generation id on any message (the engine stamps
+            # none on a user message on any route)
+            for message in trajectory["messages"]:
+                message["openrouter_generation_id"] = None
+        if ending is not None:
+            # the simulator's second reply was the stop token alone (``stop_with_text:
+            # deliver``): no user message, the loop's own system line in its place
+            trajectory["messages"] = [
+                *trajectory["messages"][:6],
+                {
+                    "role": "system",
+                    "content": "User signaled stop (###STOP###). Dialogue ended.",
+                    "ts": trajectory["messages"][6]["ts"],
+                },
+            ]
+            trajectory["termination_reason"] = ending
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
         resolver = RawModelNameResolver()
         return build_projection(
             IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
@@ -611,12 +641,148 @@ class TestCostOnTheTrace:
         return {**legacy, "cost_source": source}
 
     @staticmethod
-    def _assistant_bodies(projection) -> list[dict]:
+    def _generations(projection, prefix: str = "") -> list[dict]:
         return [
             e["body"]
             for e in projection.events
-            if e["type"] == "generation-create" and e["body"]["name"].startswith("assistant")
+            if e["type"] == "generation-create" and e["body"]["name"].startswith(prefix)
         ]
+
+    @staticmethod
+    def _total(projection) -> float:
+        """What the receiver adds up for the trace: every generation's cost."""
+        return sum(
+            (b.get("costDetails") or {}).get("total", 0)
+            for b in TestCostOnTheTrace._generations(projection)
+        )
+
+    @staticmethod
+    def _spent(calls: list[dict], judge_billed: float) -> float:
+        return sum(c["billed_cost_usd"] for c in calls) + judge_billed
+
+    def test_the_trace_cost_is_every_call_the_trial_made(self, tmp_path: Path) -> None:
+        projection = _project(tmp_path, RawModelNameResolver())
+        calls = pb.metrics()["usage"]["calls"]
+        assert self._total(projection) == pytest.approx(
+            self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
+        )
+        users = self._generations(projection, "user turn")
+        assert [(b["costDetails"], b["metadata"]["cost_basis"]) for b in users] == [
+            ({"total": 0.0002}, "billed"),
+            ({"total": 0.0003}, "billed"),
+        ]
+        assert [b["usageDetails"]["total"] for b in users] == [325, 432]
+
+    def test_a_recorded_trial_pairs_the_user_turns_positionally(self, tmp_path: Path) -> None:
+        """The engine stamps no generation id on a message: the agent's calls pair with the
+        assistant turns and the simulator's calls with the user turns, each in order."""
+        calls = pb.metrics()["usage"]["calls"]
+        projection = self._projection(tmp_path, calls=calls, generation_ids=False)
+
+        assert projection.stats.usage_match == "positional"
+        users = self._generations(projection, "user turn")
+        assert [b["metadata"]["usage_match"] for b in users] == ["positional"] * 2
+        assert [b["costDetails"] for b in users] == [{"total": 0.0002}, {"total": 0.0003}]
+        assert [b["costDetails"] for b in self._generations(projection, "assistant")] == [
+            {"total": 0.001},
+            {"total": 0.0025},
+            {"total": 0.003},
+        ]
+        assert self._total(projection) == pytest.approx(
+            self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
+        )
+
+    def test_a_call_no_message_pairs_with_gets_a_generation_of_its_own(
+        self, tmp_path: Path
+    ) -> None:
+        """A resample the loop discarded, a summarizer call: billed, and on no message."""
+        calls = pb.metrics()["usage"]["calls"]
+        discarded = {
+            **calls[1],
+            "openrouter_generation_id": "gen-agent-discarded",
+            "billed_cost_usd": 0.0007,
+        }
+        calls.insert(2, discarded)
+        projection = self._projection(tmp_path, calls=calls)
+
+        (extra,) = self._generations(projection, "agent call")
+        assert extra["name"] == "agent call 2 (no message)"
+        assert extra["id"] == ids.observation_id(IDENTITY.trace_id, "gen", "call:2")
+        assert extra["costDetails"] == {"total": 0.0007}
+        assert extra["metadata"]["usage_match"] == "unpaired"
+        assert extra["metadata"]["cost_basis"] == "billed"
+        assert extra["model"] == "acme/pilot-1"
+        # the assistant turns still pair by generation id; nothing is counted twice
+        assert self._total(projection) == pytest.approx(
+            self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
+        )
+
+    def test_unpairable_user_calls_stay_on_the_trace(self, tmp_path: Path) -> None:
+        """Without generation ids and with one simulator call more than turns, no user turn can
+        be told its call: each turn states it has none, and every simulator call gets a
+        generation of its own."""
+        calls = pb.metrics()["usage"]["calls"]
+        calls.append({**calls[-1], "openrouter_generation_id": "gen-user-x"})
+        projection = self._projection(tmp_path, calls=calls, generation_ids=False)
+
+        users = self._generations(projection, "user turn")
+        assert [(b["costDetails"], b["metadata"]["cost_basis"]) for b in users] == [
+            ({"total": 0}, "none"),
+            ({"total": 0}, "none"),
+        ]
+        assert [b["usageDetails"] for b in users] == [{"input": 0, "output": 0, "total": 0}] * 2
+        extra = self._generations(projection, "user call")
+        assert [b["name"] for b in extra] == [
+            "user call 0 (no message)",
+            "user call 4 (no message)",
+            "user call 5 (no message)",
+        ]
+        assert all(b["model"] == "acme/sim-2" for b in extra)
+        assert self._total(projection) == pytest.approx(
+            self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
+        )
+
+    def test_a_dialogue_ended_on_a_bare_stop_pairs_the_leading_calls(self, tmp_path: Path) -> None:
+        """The stop token alone is recorded as a call and writes no message: the simulator has
+        one call more than turns, its last, which gets a generation of its own."""
+        calls = pb.metrics()["usage"]["calls"]
+        projection = self._projection(
+            tmp_path, calls=calls, generation_ids=False, ending="user_stop"
+        )
+
+        (user,) = self._generations(projection, "user turn")
+        assert (user["costDetails"], user["metadata"]["usage_match"]) == (
+            {"total": 0.0002},
+            "positional",
+        )
+        (stop,) = self._generations(projection, "user call")
+        assert stop["name"] == "user call 4 (no message)"
+        assert stop["costDetails"] == {"total": 0.0003}
+        assert self._total(projection) == pytest.approx(
+            self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
+        )
+
+    @pytest.mark.parametrize("ending", ["max_turns", None])
+    def test_one_call_too_many_without_a_bare_stop_is_not_guessed(
+        self, tmp_path: Path, ending: str | None
+    ) -> None:
+        """Without a stop that wrote no message, nothing says which call is the extra one."""
+        calls = pb.metrics()["usage"]["calls"]
+        if ending is None:
+            # one call too many, and the dialogue ends on a simulated turn: no bare stop
+            calls.append({**calls[-1], "openrouter_generation_id": "gen-user-x"})
+            projection = self._projection(tmp_path, calls=calls, generation_ids=False)
+        else:
+            projection = self._projection(
+                tmp_path, calls=calls, generation_ids=False, ending=ending
+            )
+
+        users = self._generations(projection, "user turn")
+        assert {b["metadata"]["usage_match"] for b in users} == {"unmatched"}
+        assert all(b["costDetails"] == {"total": 0} for b in users)
+        assert self._total(projection) == pytest.approx(
+            self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
+        )
 
     def test_a_bundle_from_before_the_billed_field_keeps_the_eval_cost(
         self, tmp_path: Path
@@ -627,7 +793,7 @@ class TestCostOnTheTrace:
         }
         projection = self._projection(tmp_path, calls=calls, judge_usage=legacy_judge)
 
-        bodies = self._assistant_bodies(projection)
+        bodies = self._generations(projection, "assistant")
         assert [b["costDetails"] for b in bodies] == [
             {"total": 0.001},
             {"total": 0.002},
@@ -635,28 +801,36 @@ class TestCostOnTheTrace:
         ]
         assert [b["metadata"]["cost_basis"] for b in bodies] == ["litellm"] * 3
         judge = next(
-            e["body"]
-            for e in projection.events
-            if e["type"] == "generation-create"
-            and e["body"]["name"].startswith("judge turn")
-            and e["body"].get("usageDetails", {}).get("total")
+            b
+            for b in self._generations(projection, "judge turn")
+            if b.get("usageDetails", {}).get("total")
         )
         assert judge["costDetails"] == {"total": 0.0015}
         assert judge["metadata"]["cost_basis"] == "eval"
         # the trace's own metadata is untouched: cost_usd stays the eval's figure
-        assert projection.trace_body["metadata"]["cost_usd"] == 0.006
+        assert projection.trace_body["metadata"]["cost_usd"] == 0.00645
         assert "cost_basis" not in projection.trace_body["metadata"]
 
     def test_a_call_whose_route_stated_no_charge_keeps_its_eval_cost(self, tmp_path: Path) -> None:
         calls = pb.metrics()["usage"]["calls"]
-        calls[1] = self._without_the_charge(calls[1], source="local")
-        bodies = self._assistant_bodies(self._projection(tmp_path, calls=calls))
+        calls[2] = self._without_the_charge(calls[2], source="local")
+        bodies = self._generations(self._projection(tmp_path, calls=calls), "assistant")
 
         assert [(b["costDetails"], b["metadata"]["cost_basis"]) for b in bodies] == [
             ({"total": 0.001}, "billed"),
             ({"total": 0.002}, "list"),
             ({"total": 0.003}, "billed"),
         ]
+
+    def test_an_assistant_turn_without_a_call_states_it_has_none(self, tmp_path: Path) -> None:
+        """No agent call is recorded (a mock run): the turns carry explicit zeros, so a
+        receiver that merges an update cannot keep a live row's figures."""
+        calls = [c for c in pb.metrics()["usage"]["calls"] if c["role"] == "user"]
+        bodies = self._generations(self._projection(tmp_path, calls=calls), "assistant")
+
+        assert {b["metadata"]["usage_match"] for b in bodies} == {"unmatched"}
+        assert all(b["costDetails"] == {"total": 0} for b in bodies)
+        assert all(b["metadata"]["cost_basis"] == "none" for b in bodies)
 
     @pytest.mark.parametrize(
         ("judge_usage", "cost", "basis"),

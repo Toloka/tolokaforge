@@ -151,15 +151,25 @@
  },
  {
   "body": {
+   "costDetails": {
+    "total": 0.0002
+   },
    "endTime": "2026-09-17T09:00:05.000000Z",
    "environment": "development",
    "id": "12dee17179e55c6c",
    "input": [],
    "metadata": {
     "actor": "user_simulator",
+    "cached_tokens": 0,
+    "cost_basis": "billed",
+    "cost_source": "litellm",
+    "latency_s": 1,
     "message_index": 0,
     "openrouter_generation_id": "gen-user-0",
-    "role": "user"
+    "reasoning_tokens": 0,
+    "role": "user",
+    "usage_clamped": false,
+    "usage_match": "generation_id"
    },
    "model": "acme/sim-2",
    "name": "user turn 0",
@@ -168,7 +178,14 @@
    },
    "parentObservationId": "dbde3e88597d5682",
    "startTime": "2026-09-17T09:00:01.000000Z",
-   "traceId": "31500a73337f515f9ee15ea2d06e357d"
+   "traceId": "31500a73337f515f9ee15ea2d06e357d",
+   "usageDetails": {
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "input": 300,
+    "output": 25,
+    "total": 325
+   }
   },
   "type": "generation-create"
  },
@@ -344,6 +361,9 @@
  },
  {
   "body": {
+   "costDetails": {
+    "total": 0.0003
+   },
    "endTime": "2026-09-17T09:00:40.500000+00:00",
    "environment": "development",
    "id": "f1274c91f5185d6a",
@@ -375,9 +395,16 @@
    ],
    "metadata": {
     "actor": "user_simulator",
+    "cached_tokens": 0,
+    "cost_basis": "billed",
+    "cost_source": "litellm",
+    "latency_s": 0.8,
     "message_index": 6,
     "openrouter_generation_id": "gen-user-6",
-    "role": "user"
+    "reasoning_tokens": 0,
+    "role": "user",
+    "usage_clamped": false,
+    "usage_match": "generation_id"
    },
    "model": "acme/sim-2",
    "name": "user turn 6",
@@ -386,7 +413,14 @@
    },
    "parentObservationId": "dbde3e88597d5682",
    "startTime": "2026-09-17T09:00:30.000000Z",
-   "traceId": "31500a73337f515f9ee15ea2d06e357d"
+   "traceId": "31500a73337f515f9ee15ea2d06e357d",
+   "usageDetails": {
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "input": 420,
+    "output": 12,
+    "total": 432
+   }
   },
   "type": "generation-create"
  },
@@ -945,7 +979,7 @@
     "attachments_skipped": [],
     "attempt": "0",
     "campaign": "parity",
-    "cost_usd": 0.006,
+    "cost_usd": 0.00645,
     "grading_count": 1,
     "grading_error": "none",
     "gradings": "[\"live:acme/pilot/parity/20260917T000000Z\"]",
@@ -965,8 +999,8 @@
     "status": "completed",
     "task_id": "T-001",
     "termination_reason": "user_stop",
-    "tokens_input": 3000,
-    "tokens_output": 90,
+    "tokens_input": 3720,
+    "tokens_output": 127,
     "tool_calls": 2,
     "trace_time_source": "<producer>",
     "trial_index": 0,
