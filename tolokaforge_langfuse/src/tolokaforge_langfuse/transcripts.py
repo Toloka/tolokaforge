@@ -26,7 +26,9 @@ Three steps, in order, each usable on its own:
 ``build_events``
     The transcript as ingestion bodies: the trace, its root span, one generation per assistant
     turn, one span per tool result. The same bodies the trial projection builds, so
-    :mod:`tolokaforge_langfuse.otlp_spans` turns them into v4 spans unchanged.
+    :mod:`tolokaforge_langfuse.otlp_spans` turns them into v4 spans unchanged. The prompt the
+    agent was given is not in its output, so it is the caller's to pass
+    (``TranscriptOptions.input``); it becomes the trace's input.
 
 **The id contract is injected, not imported.** The engine's ``tolokaforge.observability.ids`` and
 an offline uploader's own module implement the same contract v2 and differ in one keyword;
@@ -106,6 +108,21 @@ SCRUB_MAX_CHARS = 2000
 # the trace metadata key that keeps the transcript's own model name when the caller names the
 # model that served the run (``TranscriptOptions.model``)
 CLI_MODEL_KEY = "cli_model"
+
+# how much of the prompt the agent was given (``TranscriptOptions.input``) rides on the trace as
+# its input: an evaluation analysis's prompt is 25-35 KB (a shared context, one brief, the run's
+# facts), so only a runaway one is cut
+INPUT_MAX_CHARS = 65_536
+# the trace metadata keys that say what became of that prompt: its length as given, whether the
+# cap cut it, and the rules the scrub fired on it
+INPUT_CHARS_KEY = "input_chars"
+INPUT_TRUNCATED_KEY = "input_truncated"
+INPUT_REDACTED_RULES_KEY = "input_redacted_rules"
+# schema keys the projection writes on some traces only: reserved on every trace, so a caller's
+# metadata cannot take one where the projection happens not to write it
+RESERVED_KEYS = frozenset(
+    {CLI_MODEL_KEY, INPUT_CHARS_KEY, INPUT_TRUNCATED_KEY, INPUT_REDACTED_RULES_KEY}
+)
 
 _ZONE_SUFFIX = re.compile(r"[+-]\d{2}:?\d{2}$")
 
@@ -625,6 +642,12 @@ class TranscriptOptions:
     # when they do not include it). None (or empty): the first name the transcript reports, and
     # nothing is inferred from a second one
     model: str | None = None
+    # the prompt the agent was given (``claude -p <prompt>``), which its output does not repeat.
+    # It becomes the trace's input, and so the root observation's: cut at INPUT_MAX_CHARS with a
+    # visible marker and scrubbed of every shape the sentinel knows, whatever the tool i/o
+    # policy, while the trace metadata keeps its full length and what the cap and the scrub did.
+    # None: the trace has no input
+    input: str | None = None
 
 
 def build_events(
@@ -645,9 +668,11 @@ def build_events(
     result = transcript.result
     tool_names = transcript.tool_names
 
+    prompt, prompt_facts = _input(options.input)
     metadata = _trace_metadata(transcript, options, caller, identity, ids, served)
-    # ``cli_model`` is the projection's key even on a trace that does not carry it
-    clashes = sorted(set(options.metadata) & (set(metadata) | {CLI_MODEL_KEY}))
+    metadata.update(prompt_facts)
+    # a reserved key is the projection's even on a trace that does not carry it
+    clashes = sorted(set(options.metadata) & (set(metadata) | RESERVED_KEYS))
     if clashes:
         raise TranscriptError(
             f"{transcript.origin}: metadata may not override schema keys: " + ", ".join(clashes)
@@ -669,7 +694,7 @@ def build_events(
         "name": f"{options.label}/{transcript.transcript_id}",
         "timestamp": start,
         "sessionId": options.session,
-        "input": None,
+        "input": prompt,
         "output": result.text if result else None,
         "tags": tags,
         "metadata": metadata,
@@ -824,6 +849,21 @@ def _trace_metadata(
     if served:
         metadata[CLI_MODEL_KEY] = _text(_cli_model(transcript))
     return metadata
+
+
+def _input(prompt: str | None) -> tuple[str | None, dict[str, Any]]:
+    """The caller's prompt as the trace's input, and the trace metadata that says what became of
+    it. Cut with the scrub's own marker, then scrubbed: the prompt is built from templates and
+    run facts rather than tool output, but it is text leaving the runner all the same, and a
+    shape the scrub leaves in is one the sentinel refuses the whole transcript over."""
+    if prompt is None:
+        return None, {}
+    kept, removed = scrub(prompt, max_chars=INPUT_MAX_CHARS)
+    return kept, {
+        INPUT_CHARS_KEY: len(prompt),
+        INPUT_TRUNCATED_KEY: len(prompt) > INPUT_MAX_CHARS,
+        INPUT_REDACTED_RULES_KEY: ",".join(removed) or NONE,
+    }
 
 
 def _caller_tags(tags: Mapping[str, str]) -> dict[str, str]:
@@ -1002,7 +1042,12 @@ __all__ = [
     "CONTEXT_MESSAGES",
     "EVENT_TYPES",
     "HARNESS",
+    "INPUT_CHARS_KEY",
+    "INPUT_MAX_CHARS",
+    "INPUT_REDACTED_RULES_KEY",
+    "INPUT_TRUNCATED_KEY",
     "NO_ATTEMPT",
+    "RESERVED_KEYS",
     "SCRUB_MAX_CHARS",
     "SCRUB_SHAPES",
     "SHAPE_ARRAY",

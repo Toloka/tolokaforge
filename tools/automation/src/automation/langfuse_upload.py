@@ -8,7 +8,9 @@ This is the one step that takes those files off the runner, and it is deliberate
 What it does, in order, per file:
 
 1. **read** the output through :mod:`tolokaforge_langfuse.transcripts`, whose allowlist refuses a
-   shape it does not know rather than guessing at it;
+   shape it does not know rather than guessing at it, and the prompt the agent was given from
+   ``<stem>.prompt.txt`` beside it when its caller kept one: the output does not repeat the
+   prompt, and it becomes the trace's input;
 2. **gate** it: the tool input/output policy (``drop`` by default, so what a tool returned never
    leaves the runner at all);
 3. **project** it to ingestion bodies and then to OTLP spans, the same two steps the trial path
@@ -67,6 +69,11 @@ _ITERATION = re.compile(r"^agent_iter_(\d+)$")
 # its dot. A dimension that itself ends in such a number cannot be told from a later run by its
 # file name, here or anywhere else.
 _ANALYSIS = re.compile(r"^analysis_(?P<dimension>[A-Za-z0-9_.-]+?)(?:\.(?P<run>[2-9]|[1-9]\d+))?$")
+# The prompt an agent run was given, kept by its caller beside the output under the output's own
+# stem: ``analysis_four_bucket.2.json`` -> ``analysis_four_bucket.2.prompt.txt``. Only ``*.json``
+# and ``*.jsonl`` are listed, so a prompt file is never read as a transcript nor listed as not
+# read, and one without its transcript is not read at all.
+PROMPT_SUFFIX = ".prompt.txt"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -231,6 +238,23 @@ def transcript_id_for(path: Path) -> str:
     return stem
 
 
+def prompt_path(path: Path) -> Path:
+    """Where the prompt of the agent run in ``path`` is kept: ``<stem>.prompt.txt`` beside it."""
+    return path.with_name(path.stem + PROMPT_SUFFIX)
+
+
+def read_prompt(path: Path) -> str | None:
+    """The prompt of the agent run in ``path``, or ``None`` when its caller kept none.
+
+    A prompt file that is there but cannot be read raises (``OSError``, ``UnicodeDecodeError``):
+    its transcript is refused rather than sent as though the agent had been given no prompt.
+    """
+    prompt = prompt_path(path)
+    if not prompt.is_file():
+        return None
+    return prompt.read_text(encoding="utf-8")
+
+
 @dataclass
 class UploadReport:
     """What happened, in a shape a job summary and a receipt can both read."""
@@ -270,10 +294,12 @@ class UploadReport:
         }
 
     def as_markdown(self) -> str:
+        prompts = sum(1 for entry in self.sent if entry.get("prompt"))
         lines = [
             "### Agent transcripts",
             "",
             f"- sent: **{len(self.sent)}** transcript(s), {self.spans} span(s)"
+            + (f", {prompts} with the agent's prompt as input" if prompts else "")
             + (" (dry run, nothing left the runner)" if self.dry_run else ""),
         ]
         for label, entries in (
@@ -346,6 +372,13 @@ def upload(
     for path in files:
         name = path.name
         try:
+            prompt = read_prompt(path)
+        except (OSError, UnicodeDecodeError) as exc:
+            report.refused.append(
+                {"file": name, "reason": f"{prompt_path(path).name} cannot be read: {exc}"}
+            )
+            continue
+        try:
             transcript = tr.read_claude_output(path, transcript_id=transcript_id_for(path))
             gated = tr.redact(transcript, policy=tool_io or tr.TOOL_IO_DROP)
             options = tr.TranscriptOptions(
@@ -360,6 +393,7 @@ def upload(
                 caller_tags=dict(caller_tags),
                 metadata=dict(metadata or {}),
                 model=served_model,
+                input=prompt,
             )
             built = tr.build_events(gated, options, ids=contract)
         except tr.TranscriptError as exc:
@@ -394,14 +428,15 @@ def upload(
             if getattr(outcome, "name", str(outcome)) != "SUCCESS":
                 report.failed.append({"file": name, "reason": f"export returned {outcome}"})
                 continue
-        report.sent.append(
-            {
-                "file": name,
-                "transcript_id": gated.transcript_id,
-                "trace_id": built.trace_id,
-                "spans": len(spans),
-            }
-        )
+        entry: dict[str, Any] = {
+            "file": name,
+            "transcript_id": gated.transcript_id,
+            "trace_id": built.trace_id,
+            "spans": len(spans),
+        }
+        if prompt is not None:
+            entry["prompt"] = prompt_path(path).name
+        report.sent.append(entry)
         if elsewhere is None:
             report.unchecked.append(
                 {
