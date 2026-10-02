@@ -91,6 +91,23 @@ def test_both_wires_carry_the_record_and_leave_it_unset_without_one() -> None:
     assert _parse_grade_result(_grade_from_wire(_grade_to_wire(without))).comparison_view is None
 
 
+def test_runner_wire_preserves_host_grader_snapshots() -> None:
+    from tolokaforge.core.models.grade import GradingStateSnapshots
+
+    snapshots = GradingStateSnapshots(
+        source="tau3_env replay",
+        initial={"agent": {}},
+        golden={"agent": {"x": 1}},
+        final={"agent": {"x": 1}},
+    )
+    wire = grade_to_runner_wire(Grade(binary_pass=True, score=1.0, state_snapshots=snapshots))
+    restored = _parse_grade_result(_raw(state_snapshots_json=wire.state_snapshots_json))
+    assert restored.state_snapshots == snapshots
+    assert not grade_to_runner_wire(Grade(binary_pass=True, score=1.0)).HasField(
+        "state_snapshots_json"
+    )
+
+
 def test_the_view_reason_follows_the_hash_sentence() -> None:
     from tolokaforge.runner.models import ComparisonViewGradeRecord
 

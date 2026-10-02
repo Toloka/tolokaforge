@@ -83,6 +83,9 @@ a task definition an adapter reads, and shares nothing but the name."""
 GRADE_FILENAME = "grade.yaml"
 """The trial's verdict. Absent where nothing graded the trial."""
 
+GRADING_STATE_SNAPSHOTS_FILENAME = "grading_state_snapshots.yaml"
+"""Optional initial/golden/final states reconstructed by a host grader."""
+
 LOGS_FILENAME = "logs.yaml"
 """The trial's structured log records."""
 
@@ -279,6 +282,21 @@ class OutputWriter:
             ),
             "provision_stage": trajectory.provision_stage,
             "grading_error": trajectory.grading_error,
+            "grading_judge_usage": (
+                trajectory.grading_judge_usage.model_dump(mode="json")
+                if trajectory.grading_judge_usage is not None
+                else None
+            ),
+            "grading_state_diff": (
+                self.redaction.redact_mapping(trajectory.grading_state_diff)
+                if trajectory.grading_state_diff is not None
+                else None
+            ),
+            "grading_comparison_view": (
+                self.redaction.redact_mapping(trajectory.grading_comparison_view)
+                if trajectory.grading_comparison_view is not None
+                else None
+            ),
             "snapshot_status": (
                 trajectory.snapshot_status.model_dump(mode="json")
                 if trajectory.snapshot_status is not None
@@ -425,7 +443,9 @@ class OutputWriter:
         # Keep the transcript and the judge's structured inputs out of grade.yaml;
         # each lands in its own sidecar.
         grade_payload = self.redaction.redact_mapping(
-            grade.model_dump(mode="json", exclude={"judge_transcript", "judge_inputs"})
+            grade.model_dump(
+                mode="json", exclude={"judge_transcript", "judge_inputs", "state_snapshots"}
+            )
         )
         with open(self.output_dir / GRADE_FILENAME, "w") as f:
             yaml.dump(
@@ -436,6 +456,18 @@ class OutputWriter:
                 sort_keys=False,
             )
         self._note_rewritten(GRADE_FILENAME)
+
+        if grade.state_snapshots is not None:
+            snapshots = self.redaction.redact_mapping(grade.state_snapshots.model_dump(mode="json"))
+            with open(self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME, "w") as f:
+                yaml.safe_dump(snapshots, f, allow_unicode=True, sort_keys=False)
+            self._note_rewritten(GRADING_STATE_SNAPSHOTS_FILENAME)
+        else:
+            # Regrading the same directory must not leave evidence from an older grade.
+            (self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME).unlink(missing_ok=True)
+            self._rewritten.discard(GRADING_STATE_SNAPSHOTS_FILENAME)
+            if self._redacting:
+                self._declare_or_discard()
 
         # Sidecar: the judge's own message transcript, only when a judge ran and
         # captured a non-empty one. Absent file ⇒ either no judge transcript for
@@ -533,5 +565,22 @@ class OutputWriter:
 
         if trajectory.grade:
             self.write_grade(trajectory.grade)
+        else:
+            for name in (GRADE_FILENAME, JUDGE_TRAJECTORY_FILENAME, JUDGE_INPUTS_FILENAME):
+                (self.output_dir / name).unlink(missing_ok=True)
+                self._rewritten.discard(name)
+                self._omitted.discard(name)
+            if trajectory.grading_state_snapshots is not None:
+                snapshots = self.redaction.redact_mapping(
+                    trajectory.grading_state_snapshots.model_dump(mode="json")
+                )
+                with open(self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME, "w") as f:
+                    yaml.safe_dump(snapshots, f, allow_unicode=True, sort_keys=False)
+                self._note_rewritten(GRADING_STATE_SNAPSHOTS_FILENAME)
+            else:
+                (self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME).unlink(missing_ok=True)
+                self._rewritten.discard(GRADING_STATE_SNAPSHOTS_FILENAME)
+            if self._redacting:
+                self._declare_or_discard()
 
         self.write_logs(logger)

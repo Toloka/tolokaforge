@@ -364,6 +364,28 @@ class TestSimulatorSpendReachesTrialMetrics:
     keeps ``openrouter_generation_id=None``.
     """
 
+    def test_isolated_opening_records_each_generation_once(self) -> None:
+        from tests.unit.test_user_tool_turns import (
+            _call,
+            _isolated_trial,
+            _QueuedUser,
+            _RecordingAgent,
+        )
+
+        step = _user_result(0.02, "gen-opening-tool")
+        step.text = ""
+        step.tool_calls = [_call("opening-tool")]
+        opening = _user_result(0.03, "gen-opening-text")
+        user = _QueuedUser(step, opening)
+        runner = _isolated_trial(_RecordingAgent("unused"), user)
+        runner.logger = MagicMock()
+        text, calls = runner._bootstrap_isolated(user, [])
+
+        assert text == "please continue"
+        assert calls == []
+        assert runner.metrics.cost_usd == pytest.approx(0.05)
+        assert runner.metrics.openrouter_generation_ids == ["gen-opening-tool", "gen-opening-text"]
+
     def test_conversational_run_accrues_user_spend(self) -> None:
         sim = MagicMock()
         sim.reply.return_value = _user_result(0.02, "gen-user-1")

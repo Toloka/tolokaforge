@@ -37,6 +37,19 @@ pytestmark = pytest.mark.unit
 
 
 class TestApplyConfigOverridesRejectsUnknown:
+    @pytest.mark.parametrize("value", [0, -1, True, None, "600", float("inf"), float("nan")])
+    def test_timeout_override_refuses_invalid_values(self, value) -> None:
+        with pytest.raises(ValueError, match="finite positive"):
+            _apply_config_overrides({}, {"api_call_timeout_s": value})
+
+    def test_timeout_override_is_per_model(self) -> None:
+        from tolokaforge.core.llm import build_capabilities
+
+        ordinary = build_capabilities("openai/gpt-6-sol", "openrouter")
+        judge = build_capabilities("openai/gpt-6-sol", "openrouter", {"api_call_timeout_s": 600})
+        assert judge.api_call_timeout_s == 600
+        assert ordinary.api_call_timeout_s != 600
+
     def test_unknown_key_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown capability override keys"):
             _apply_config_overrides({}, {"some_typo": True})

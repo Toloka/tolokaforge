@@ -377,6 +377,9 @@ end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
 termination_reason: "agent_done"                      # TerminationReason enum or null
 grading_error: null                                   # why grading produced no verdict, or null
+grading_judge_usage: null                             # judge spend before an ungradeable verdict, or null
+grading_state_diff: null                              # DB diagnostic computed before judge failure, or null
+grading_comparison_view: null                         # projected DB diagnostic, or null
 snapshot_status:                                      # grade-bundle producer outcome; null when snapshot mode disabled or trial ended before grading
   outcome: "stored"                                   # stored | oversize | produce_failed | ungraded
   uri: "bundle://local_disk/f1c2..."                  # populated iff outcome == stored
@@ -422,6 +425,8 @@ user_reply_guard_events:                              # [] on a trial no detecto
 | `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers the first user message | Where the opening user turn came from. It is message index 0 unless the agent's opening line (`first_agent_message`) or a user's tool steps come first. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. A bootstrap the reply guard *refused* is one way to reach the first of those: it leaves the source `null` **and** records a `user_reply_guard_events` entry at the opening's `message_index` (0, or 1 after the agent's opening line) with `outcome: refused`, and that pair is the signature of a guard-refused opening. |
 | `user_reply_guard_events` | list of `{message_index, outcome, rejected[]}` | one entry per user turn the reply guard did not accept on its first generation | What a defective user turn cost. `[]` is the normal state — a turn accepted on its first generation records nothing. `outcome: delivered` means a later attempt passed the guard and the turn was delivered; `outcome: refused` means the attempt budget was spent, so no clean turn could be produced and the trial errored as a `harness_error`. `rejected` carries one `{detector, reason, excerpt}` per discarded attempt, in order, and is never empty — a turn that discarded nothing is recorded by the absence of an entry, not by an empty list. `detector` is the name the detector is registered under, and `excerpt` is the evidence that detector recorded, truncated to 200 characters — the matched phrase for `fourth_wall`, and for `scratchpad` the matched tag plus the text that follows it, because a bare think tag reads the same whether it leaked or was pasted. `message_index` is the position in `messages` the turn was **dispatched at** — for a turn whose accepted reply was a bare `###STOP###` under `stop_with_text: deliver`, and for a refused turn, that position holds the loop's own SYSTEM message rather than a USER turn. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
+| `grading_judge_usage` | mapping or `null` | a judge answered but gave no verdict | Structured token/cost usage. It contributes to judge totals, budget stops and resume cost; an unanswered transport call leaves it `null` because its spend is unknown. |
+| `grading_state_diff`, `grading_comparison_view` | mappings or `null` | DB replay finished before grading failed | Diagnostic DB evidence without an invented verdict. |
 | `provision_stage` | `"materialise_run"`, `"provision"`, `"await_ready"`, `"reset_recipe"`, `"register_trial"`, `"cycle"`, or `null` | non-null iff `termination_reason == provision_error` | Which point of the provisioning lifecycle raised `ProvisionError`. `materialise_run` — the composition-plan validation refused the plan before any substrate work; `provision` — compose-up failed; `await_ready` — the readiness gate rejected the substrate; `reset_recipe` — the per-trial reset hook failed; `register_trial` — the runner-side arming step refused registration after `provision` + `await_ready` succeeded; `cycle` — a `ServiceLifecycleDispatcher` refused a between-trial cycle. The same value also lands on the per-trial [`metrics.yaml`](#provision-failure-bundle) as `error_stage`, so a reader of either artifact alone tells them apart. `null` on every trial whose termination reason is not `provision_error`. |
 | `snapshot_status` | [`SnapshotStatus`](../tolokaforge/core/models/trajectory.py) mapping or `null` | non-null when the run enabled `grader.snapshot` and the trial reached the trial-end producer seam | The trial-end grade-bundle producer outcome — `outcome: stored` carries `uri` + `bundle_size_bytes`; `oversize` carries `bundle_size_bytes` + `cap_bytes` + `reason`; `produce_failed` carries `reason`; `ungraded` carries no side data. See [RUNNER.md § Snapshot bundle mode](RUNNER.md#snapshot-bundle-mode) for the producer lifecycle. `null` on a run with snapshot mode disabled or a trial that ended before grading. |
 
@@ -1461,6 +1466,21 @@ credential-named values at every nesting level and naming the file in
 stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). The judge's
 prose (`reasons`, each criterion's `justification`) is written as the judge
 produced it: a key-name rule has no key to read there.
+
+### Host grader state snapshots
+
+A host grader can attach `Grade.state_snapshots` (`GradingStateSnapshots`) to
+its result. The writer puts it in `grading_state_snapshots.yaml`, leaving it
+out of `grade.yaml`. That sidecar has schema version 1, `source` (how the grader
+obtained the states), and three mappings: `initial`, `golden`, `final`. These
+are grader evidence and may be reconstructed by replay; they do not replace
+the live environment in `env.yaml` or select a comparison policy.
+
+The sidecar is written for pass and fail grades, and when DB replay completed
+before a later judge failure left the trial without a grade. It uses the same
+mapping redaction policy as `env.yaml` and is named in the redaction stamp when
+rewritten. No sidecar is written when the grader provides none; regrading a
+directory without snapshots removes an older snapshot sidecar.
 
 ### Trace-check verdicts
 

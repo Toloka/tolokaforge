@@ -605,6 +605,11 @@ class GrpcRunnerClient:
                 "success": response.success,
                 "error": response.error if response.error else None,
                 "grade": None,
+                "failure_evidence": (
+                    json.loads(response.failure_evidence_json)
+                    if response.failure_evidence_json
+                    else None
+                ),
             }
 
             if response.success and response.grade:
@@ -616,6 +621,11 @@ class GrpcRunnerClient:
                     "state_diff_json": grade.state_diff_json if grade.state_diff_json else None,
                     "comparison_view_json": (
                         grade.comparison_view_json if grade.comparison_view_json else None
+                    ),
+                    "state_snapshots_json": (
+                        grade.state_snapshots_json
+                        if grade.HasField("state_snapshots_json")
+                        else None
                     ),
                     "components": _wire_components_to_scores(grade),
                     "custom_checks": [

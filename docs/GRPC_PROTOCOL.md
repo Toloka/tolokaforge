@@ -384,6 +384,9 @@ message GradeTrialResponse {
 
   // The computed grade
   Grade grade = 3;
+
+  // Structured judge usage and DB evidence when a grader raised before verdict.
+  string failure_evidence_json = 4;
 }
 
 message Grade {
@@ -440,6 +443,9 @@ message Grade {
   // one encodes byte-identically to a grade that has no field 12. A payload the Host
   // cannot read fails the grade parse. See docs/GRADING.md § Comparison view.
   optional string comparison_view_json = 12;
+
+  // Replay states reconstructed by a host grader, persisted as a bundle sidecar.
+  optional string state_snapshots_json = 13;
 }
 
 message TraceConstraintResult {
@@ -938,7 +944,9 @@ is declared once in
 ### GradeTrial Error Semantics
 
 `GradeTrialResponse.success = false` leaves `grade` unset — an unusable grade is
-never approximated with a score. The two views of the trial are joined into its
+never approximated with a score. A grader that already reconstructed DB states
+or received judge usage may set `failure_evidence_json`; the Host stores those
+facts without treating them as a verdict. The two views of the trial are joined into its
 [event timeline](GRADING.md#trial-event-timeline) **before** any component runs,
 so an unreadable or self-contradictory payload fails the RPC before golden replay
 touches the trial's state.

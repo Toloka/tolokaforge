@@ -9,7 +9,7 @@ come in via :class:`CriterionResult`, whose canonical home is
 """
 
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
@@ -21,6 +21,7 @@ from tolokaforge.runner.models import CriterionResult, TraceChecksSummary, Trace
 __all__ = [
     "CustomCheckDetail",
     "Grade",
+    "GradingStateSnapshots",
     "JudgeInputs",
     "JudgeKbGating",
     "JudgeStatus",
@@ -124,6 +125,22 @@ class CustomCheckDetail(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class GradingStateSnapshots(BaseModel):
+    """States reconstructed by a host grader, persisted in a separate sidecar.
+
+    These need not be live substrate snapshots: ``source`` names how the grader
+    obtained them. They are evidence, never an implicit grading configuration.
+    """
+
+    schema_version: Literal[1] = 1
+    source: str
+    initial: dict[str, Any]
+    golden: dict[str, Any]
+    final: dict[str, Any]
+
+    model_config = {"extra": "forbid"}
+
+
 class Grade(BaseModel):
     """Grading result"""
 
@@ -132,6 +149,8 @@ class Grade(BaseModel):
     components: GradeComponents = Field(default_factory=GradeComponents)
     reasons: str | dict[str, list[str]] = ""
     state_diff: dict[str, Any] | None = None
+    # Host-grader evidence; written to grading_state_snapshots.yaml, not grade.yaml.
+    state_snapshots: GradingStateSnapshots | None = None
     custom_checks_details: list[CustomCheckDetail] | None = None
     # Per-constraint trace-check verdicts, serialized inline in ``grade.yaml``:
     # small and scannable, so a reviewer reads which constraint failed and which
@@ -206,7 +225,9 @@ class Grade(BaseModel):
     # its bytes. See docs/GRADING.md § Comparison view.
     comparison_view: dict[str, Any] | None = None
 
-    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset(
+        {"comparison_view", "state_snapshots"}
+    )
     """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
 
     @model_serializer(mode="wrap")

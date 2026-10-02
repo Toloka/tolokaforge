@@ -59,6 +59,37 @@ def _make_client(**config_overrides: Any):
     return client
 
 
+@pytest.mark.unit
+class TestSingleAttemptPolicy:
+    def test_timeout_does_not_retry_at_any_layer(self) -> None:
+        client = _make_client()
+        with patch(
+            "tolokaforge.core.llm.client.completion",
+            side_effect=TimeoutError("read timed out"),
+        ) as completion:
+            with pytest.raises(LLMApiTimeoutError, match="after 1 attempts"):
+                client.generate(system="judge", retry_policy="single_attempt")
+        assert completion.call_count == 1
+        assert completion.call_args.kwargs["max_retries"] == 0
+        assert completion.call_args.kwargs["num_retries"] == 0
+
+    def test_quota_error_does_not_rotate_or_retry(self) -> None:
+        client = _make_client()
+        with patch.object(client, "_rotate_key", side_effect=AssertionError("rotated")):
+            with patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=RuntimeError("Key limit exceeded"),
+            ) as completion:
+                with pytest.raises(RuntimeError, match="failed without retry"):
+                    client.generate(system="judge", retry_policy="single_attempt")
+        assert completion.call_count == 1
+
+    def test_unknown_policy_fails_before_transport(self) -> None:
+        client = _make_client()
+        with pytest.raises(ValueError, match="Unknown LLM retry policy"):
+            client.generate(retry_policy="typo")
+
+
 # ===================================================================
 # _should_retry_exception
 # ===================================================================
