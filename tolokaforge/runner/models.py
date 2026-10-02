@@ -3350,6 +3350,8 @@ class TaskDescription(BaseModel):
     # edit; see AdapterType for the well-known built-in names.
     adapter_type: str
     schema_version: str = "1.0.0"
+    max_simulation_steps: int | None = Field(default=None, ge=1)
+    max_environment_errors: int | None = Field(default=None, ge=1)
 
     # --- System Prompt ---
     system_prompt: str  # Full content, not file path

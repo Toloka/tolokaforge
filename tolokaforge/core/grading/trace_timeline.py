@@ -362,8 +362,8 @@ def _require_every_record_names_its_declared_tool(
 
 def _index_message_results(
     messages: Sequence[Message], declared: Sequence[Sequence[_DeclaredCall]]
-) -> dict[str, str]:
-    """The text each ``role: tool`` message carries, keyed by the call it answers.
+) -> dict[str, Message]:
+    """Each ``role: tool`` message, keyed by the call it answers.
 
     Read only when no record view was supplied. That text is on disk in every
     recorded bundle, so dropping it would hide a tool's own output from every
@@ -377,7 +377,7 @@ def _index_message_results(
     """
     declared_keys = set(_declarations_by_key(declared))
     assigner = EpisodeUniqueCallIds()
-    results: dict[str, str] = {}
+    results: dict[str, Message] = {}
     for index, message in enumerate(messages):
         if message.role is not MessageRole.TOOL:
             continue
@@ -389,7 +389,7 @@ def _index_message_results(
                 "only surviving evidence of what that tool returned, so it can be neither "
                 "joined to a call nor dropped."
             )
-        results[key] = message.content
+        results[key] = message
     return results
 
 
@@ -414,7 +414,7 @@ class _TimelineBuilder:
     def __init__(
         self,
         records: dict[str, RecordedToolCall],
-        message_results: dict[str, str],
+        message_results: dict[str, Message],
         user_tool_step_call_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._records = records
@@ -492,16 +492,20 @@ class _TimelineBuilder:
         the "one text on both substrates" claim (#977) would hold only for
         records, not for messages.
         """
-        raw = self._message_results[declared.key]
+        message = self._message_results[declared.key]
+        raw = message.content
         result = (
             raw[len(TOOL_ERROR_MESSAGE_PREFIX) :]
             if raw.startswith(TOOL_ERROR_MESSAGE_PREFIX)
+            and message.tool_status
+            not in (ToolExecutionStatus.SUCCESS, ToolExecutionStatus.ENVIRONMENT_ERROR)
             else raw
         )
         self._append(
             kind=TraceEventKind.TOOL_RESULT,
             call_id=declared.key,
             tool_name=declared.call.name,
+            status=message.tool_status,
             result=result,
         )
 

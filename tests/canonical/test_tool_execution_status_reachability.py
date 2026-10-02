@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -43,6 +44,9 @@ from tolokaforge.core.loop import (
 from tolokaforge.core.models import ToolCall, ToolExecutionStatus
 from tolokaforge.core.runner import TrialToolCallRecorder
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.db_client import DBServiceClient
+from tolokaforge.runner.models import ToolSchema as RunnerToolSchema
+from tolokaforge.runner.tool_factory import MCPServerToolWrapper
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry, ToolResult
 
 pytestmark = pytest.mark.canonical
@@ -141,7 +145,7 @@ def _timeout_trial(runner_service, mock_grpc_context, request) -> str:
 
 
 def test_every_status_member_has_a_producing_recording_path(
-    runner_service, mock_grpc_context, _timeout_trial
+    runner_service, mock_grpc_context, _timeout_trial, monkeypatch
 ) -> None:
     observed = {
         _core_recorded_status("echo", {"payload": "hi"}),
@@ -160,6 +164,36 @@ def test_every_status_member_has_a_producing_recording_path(
         "the runner did not time the call out, so TIMEOUT was never recorded and this "
         "lock would pass for the wrong reason"
     )
+    observed.add(runner_service.trials[_timeout_trial].tool_call_history[-1].status)
+
+    mcp = MCPServerToolWrapper(
+        tool_schema=RunnerToolSchema(
+            name="native_error", description="An environment error", parameters={}
+        ),
+        server_script="/unused/mcp_server.py",
+        db_client=DBServiceClient("http://db-service.invalid"),
+        trial_id=_timeout_trial,
+    )
+    monkeypatch.setattr(
+        mcp,
+        "_get_server",
+        lambda: SimpleNamespace(
+            send_request=lambda method, params: {
+                "content": [{"type": "text", "text": "Error: case tool raised"}],
+                "isError": True,
+            }
+        ),
+    )
+    runner_service.trials[_timeout_trial].agent_tools["native_error"] = mcp
+    response = runner_service.ExecuteTool(
+        execute_request(
+            _timeout_trial, "native_error", call_id="toolu_native_error", timeout_seconds=1
+        ),
+        mock_grpc_context,
+    )
+    assert response.status == pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
+    assert response.output == "Error: case tool raised"
+    assert response.error_message == ""
     observed.add(runner_service.trials[_timeout_trial].tool_call_history[-1].status)
 
     assert observed == set(ToolExecutionStatus), (

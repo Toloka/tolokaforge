@@ -30,13 +30,14 @@ from tolokaforge.core.models import TerminationReason
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.tools.registry import ToolExecutionStatus
 
-ENGINE_PROTOCOL_VERSION = 2
+ENGINE_PROTOCOL_VERSION = 3
 
 # EXECUTION_STATUS_TRIAL_NOT_FOUND is absent because the client raises
 # TrialNotRegisteredError on it, and EXECUTION_STATUS_UNSPECIFIED because it names
 # no outcome. Neither ever reaches a recorder.
 RECORDED_STATUS_BY_PROTO: dict[int, ToolExecutionStatus] = {
     pb2.EXECUTION_STATUS_SUCCESS: ToolExecutionStatus.SUCCESS,
+    pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR: ToolExecutionStatus.ENVIRONMENT_ERROR,
     pb2.EXECUTION_STATUS_ERROR: ToolExecutionStatus.ERROR,
     pb2.EXECUTION_STATUS_TIMEOUT: ToolExecutionStatus.TIMEOUT,
     pb2.EXECUTION_STATUS_TOOL_NOT_FOUND: ToolExecutionStatus.TOOL_NOT_FOUND,
