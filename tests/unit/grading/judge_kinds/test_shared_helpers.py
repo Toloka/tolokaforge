@@ -1,7 +1,7 @@
 """Unit tests for ``tolokaforge.core.grading.judge_kinds._shared``.
 
-Locks the two helpers ``voted.py`` and ``auto_anchored.py`` reuse:
-``member_failure_reason`` and ``assert_construction_fields_match``.
+Locks the helpers ``voted.py`` and ``auto_anchored.py`` reuse:
+``member_failure_reason``, ``assert_construction_fields_match`` and ``sum_usage``.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import pytest
 from tolokaforge.core.grading.judge_kinds._shared import (
     assert_construction_fields_match,
     member_failure_reason,
+    sum_usage,
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.runner.models import CriterionResult
@@ -89,3 +90,31 @@ class TestAssertConstructionFieldsMatch:
             assert_construction_fields_match(
                 results, ("state_diff",), kind_label="voted_rubric", unit_noun="sample"
             )
+
+
+class TestSumUsage:
+    def test_the_stated_charge_sums_across_members(self) -> None:
+        members = [
+            _completed(usage=JudgeUsage(calls=2, cost_usd=0.002, billed_cost_usd=0.0021)),
+            _completed(usage=JudgeUsage(calls=1, cost_usd=0.001, billed_cost_usd=0.0009)),
+        ]
+        usage = sum_usage(members)
+        assert (usage.calls, usage.cost_usd) == (3, pytest.approx(0.003))
+        assert usage.billed_cost_usd == pytest.approx(0.003)
+
+    def test_a_member_that_stated_no_charge_leaves_the_sum_unknown(self) -> None:
+        members = [
+            _completed(usage=JudgeUsage(calls=1, cost_usd=0.001, billed_cost_usd=0.001)),
+            _completed(usage=JudgeUsage(calls=1, cost_usd=0.001)),
+        ]
+        usage = sum_usage(members)
+        assert usage.cost_usd == pytest.approx(0.002)
+        assert usage.billed_cost_usd is None
+
+    def test_a_member_that_made_no_call_neither_adds_nor_voids(self) -> None:
+        members = [
+            _completed(usage=JudgeUsage(calls=1, cost_usd=0.001, billed_cost_usd=0.001)),
+            _completed(usage=JudgeUsage()),
+        ]
+        assert sum_usage(members).billed_cost_usd == pytest.approx(0.001)
+        assert sum_usage([_completed(usage=JudgeUsage())]).billed_cost_usd is None

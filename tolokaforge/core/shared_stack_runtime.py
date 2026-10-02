@@ -709,6 +709,13 @@ class GrpcRunnerClient:
                                 if grade.judge_report.HasField("include_agent_system_prompt")
                                 else {}
                             ),
+                            # Presence-gated like field 15: absent means not every
+                            # judge call stated a charge, or a runner predating 17.
+                            **(
+                                {"billed_cost_usd": grade.judge_report.billed_cost_usd}
+                                if grade.judge_report.HasField("billed_cost_usd")
+                                else {}
+                            ),
                         }
                         if grade.HasField("judge_report")
                         else None

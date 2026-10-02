@@ -632,6 +632,74 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
         # the accessor, so presence is what proves the servicer populated it.
         assert report.HasField("include_agent_system_prompt")
         assert report.include_agent_system_prompt is False
+        # Field 17 is `optional` too: a judge whose calls stated no charge leaves it unset.
+        assert not report.HasField("billed_cost_usd")
+    finally:
+        service.shutdown()
+
+
+@pytest.mark.parametrize("billed", [0.0042, 0.0])
+def test_grade_trial_carries_the_judges_billed_cost(monkeypatch, billed):
+    """The judge's stated charge crosses into ``pb2.JudgeReport`` field 17, present even
+    at 0.0 (a charge of nothing is a charge), beside the unchanged ``cost_usd``."""
+    from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.runner import runner_pb2 as pb2
+    from tolokaforge.runner.models import (
+        LLMJudgeConfig,
+        Rubric,
+        RunnerGradingConfig,
+        TaskDescription,
+    )
+    from tolokaforge.runner.service import TrialContextRuntime
+
+    class _BilledJudge:
+        def __init__(self, model_config, **_kw):
+            pass
+
+        def run(self, **_kwargs):
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED,
+                usage=JudgeUsage(calls=2, cost_usd=0.004, billed_cost_usd=billed),
+                reasons="ok",
+                score=1.0,
+            )
+
+    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _BilledJudge)
+
+    rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+    task_desc = TaskDescription(
+        task_id="rubric_task",
+        name="rubric task",
+        category="tool_use",
+        description="rubric task",
+        adapter_type="native",
+        system_prompt="system",
+        grading=RunnerGradingConfig(
+            weights={"llm_judge": 1.0}, llm_judge=LLMJudgeConfig(rubric=rubric)
+        ),
+    )
+
+    service = _service(None)
+    try:
+        service.trials["t:0"] = TrialContextRuntime(
+            trial_id="t:0",
+            task_description=task_desc,
+            judge_model_config=ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0),
+        )
+        response = service.GradeTrial(
+            pb2.GradeTrialRequest(
+                trial_id="t:0",
+                llm_messages_json=json.dumps([{"role": "user", "content": "hi"}]),
+            ),
+            MagicMock(),
+        )
+
+        assert response.success is True
+        report = response.grade.judge_report
+        assert report.cost_usd == pytest.approx(0.004)
+        assert report.HasField("billed_cost_usd")
+        assert report.billed_cost_usd == pytest.approx(billed)
     finally:
         service.shutdown()
 

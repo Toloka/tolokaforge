@@ -198,8 +198,7 @@ def _generate(model_name: str, response: Any) -> Any:
     """Drive one generation with litellm's own cost unavailable.
 
     Local pricing is the fallback path, so the flag can only ever be about
-    it — a litellm-priced call is provider-authoritative and already
-    cache-aware.
+    it: a litellm-priced call is already cache-aware.
     """
     client = LLMClient(
         ModelConfig(

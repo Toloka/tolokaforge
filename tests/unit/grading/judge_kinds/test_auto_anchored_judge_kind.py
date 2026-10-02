@@ -31,6 +31,7 @@ from tolokaforge.core.grading.judge_kinds.auto_anchored import (
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.client import Usage as LLMUsage
+from tolokaforge.core.llm.usage import ProviderRawCall
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.runner.models import Criterion, Rubric
 
@@ -44,6 +45,7 @@ class _FakeJudgeModel:
     def __init__(self, response_text: str) -> None:
         self.response_text = response_text
         self.call_count = 0
+        self.usage = LLMUsage(prompt_tokens=42, completion_tokens=7)
 
     def generate(
         self,
@@ -58,7 +60,7 @@ class _FakeJudgeModel:
         return GenerationResult(
             text=self.response_text,
             tool_calls=[],
-            usage=LLMUsage(prompt_tokens=42, completion_tokens=7),
+            usage=self.usage,
             cost_usd=0.0001,
         )
 
@@ -87,13 +89,14 @@ class _CaptureWrappedKind:
     def __init__(self) -> None:
         self.rubric_seen: Rubric | None = None
         self.kind_config_seen: Any = "SENTINEL"
+        self.usage = JudgeUsage(calls=1, prompt_tokens=100, completion_tokens=20, cost_usd=0.001)
 
     def evaluate(self, **kwargs: Any) -> JudgeResult:
         self.rubric_seen = kwargs["rubric"]
         self.kind_config_seen = kwargs["kind_config"]
         return JudgeResult(
             status=JudgeStatus.COMPLETED,
-            usage=JudgeUsage(calls=1, prompt_tokens=100, completion_tokens=20, cost_usd=0.001),
+            usage=self.usage,
             reasons="wrapped-reasons",
             score=0.75,
             binary_pass=True,
@@ -236,6 +239,50 @@ def test_warmup_usage_folded_into_returned_judge_result(register_capture_kind):
     assert result.usage.prompt_tokens == 142
     assert result.usage.completion_tokens == 27
     assert result.usage.cost_usd == pytest.approx(0.0011)
+    # neither the warm-up result nor the wrapped stub carries a stated charge
+    assert result.usage.billed_cost_usd is None
+
+
+def test_the_warmups_charge_folds_into_the_wrapped_kinds(register_capture_kind):
+    provider = _FakeProvider(response_text='{"clarity": "one paragraph", "tone": "professional"}')
+    warmup_call = ProviderRawCall(cost_usd=0.0001, billed_cost_usd=0.00012)
+    provider.model.usage = LLMUsage(prompt_tokens=42, completion_tokens=7, calls=(warmup_call,))
+    register_capture_kind.usage = JudgeUsage(calls=1, cost_usd=0.001, billed_cost_usd=0.0009)
+
+    result = AutoAnchoredRubricJudgeKind().evaluate(
+        **_evaluate_kwargs(_rubric_with_two_graded_one_binary(), provider)
+    )
+
+    assert result.usage.cost_usd == pytest.approx(0.0011)  # the eval's figure, unchanged
+    assert result.usage.billed_cost_usd == pytest.approx(0.00102)
+
+
+def test_a_cached_warmup_is_not_charged_again(register_capture_kind):
+    provider = _FakeProvider(response_text='{"clarity": "one paragraph", "tone": "professional"}')
+    warmup_call = ProviderRawCall(cost_usd=0.0001, billed_cost_usd=0.00012)
+    provider.model.usage = LLMUsage(prompt_tokens=42, completion_tokens=7, calls=(warmup_call,))
+    register_capture_kind.usage = JudgeUsage(calls=1, cost_usd=0.001, billed_cost_usd=0.0009)
+    kwargs = _evaluate_kwargs(_rubric_with_two_graded_one_binary(), provider)
+
+    first = AutoAnchoredRubricJudgeKind().evaluate(**kwargs)
+    second = AutoAnchoredRubricJudgeKind().evaluate(**kwargs)
+
+    assert provider.model.call_count == 1  # the second evaluation hit the anchor cache
+    assert first.usage.billed_cost_usd == pytest.approx(0.00102)
+    # only the wrapped kind's calls were charged the second time
+    assert second.usage.billed_cost_usd == pytest.approx(0.0009)
+
+
+def test_without_a_warmup_the_charge_is_the_wrapped_kinds(register_capture_kind):
+    provider = _FakeProvider(response_text="{}")  # would fail parse if called
+    rubric = Rubric(criteria=[Criterion(id="mentions_id", description="binary", kind="binary")])
+    register_capture_kind.usage = JudgeUsage(calls=3, cost_usd=0.003, billed_cost_usd=0.003)
+
+    result = AutoAnchoredRubricJudgeKind().evaluate(**_evaluate_kwargs(rubric, provider))
+
+    assert provider.model.call_count == 0
+    # a warm-up that made no call neither adds to nor voids the judge's charge
+    assert result.usage.billed_cost_usd == pytest.approx(0.003)
 
 
 def test_anchor_audit_prefixes_reasons(register_capture_kind):

@@ -39,10 +39,17 @@ joins a call we made to the routing decision OpenRouter made for it, so
 :class:`UsageExtractor` lifts it onto the call record — see
 :func:`extract_openrouter_generation_id` and ``docs/LLM_LAYER.md``
 § "OpenRouter generation ids".
+
+**Billed cost.** An OpenRouter-served usage block also states what the call was
+charged (``usage.cost``, plus the upstream's own bill on a BYOK call), which
+:class:`UsageExtractor` records beside the eval's ``cost_usd`` without touching
+it: see :func:`extract_billed_cost` and ``docs/LLM_LAYER.md`` § "Billed cost".
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -55,8 +62,10 @@ __all__ = [
     "ProviderRawCall",
     "Usage",
     "UsageExtractor",
+    "extract_billed_cost",
     "extract_openrouter_generation_id",
     "extract_upstream_provider",
+    "sum_known",
 ]
 
 
@@ -64,7 +73,10 @@ CostSource = Literal["litellm", "local", "unknown"]
 """Which pricing path filled :attr:`ProviderRawCall.cost_usd`.
 
 * ``"litellm"`` — pulled from ``response._hidden_params['response_cost']``
-  (provider-authoritative, cache-aware).
+  (cache-aware). litellm fills it from a charge the response states
+  (OpenRouter's ``usage.cost``, a LiteLLM gateway's response-cost header) ahead
+  of its own price map, so the label alone does not say which;
+  :attr:`ProviderRawCall.billed_cost_usd` records the charge a usage block states.
 * ``"local"`` — fell back to :data:`tolokaforge.core.pricing.MODEL_PRICING`
   because litellm could not price the model.
 * ``"unknown"`` — neither path produced a value; ``cost_usd is None``.
@@ -135,6 +147,15 @@ class ProviderRawCall:
     samples routing afresh. ``None`` off the OpenRouter path, where the
     provider is whatever the base URL addresses. See
     :func:`extract_upstream_provider`."""
+
+    billed_cost_usd: float | None = None
+    """What the provider says this call was charged, in USD, else ``None``.
+
+    Read off the response's own usage block by :func:`extract_billed_cost`:
+    OpenRouter's ``usage.cost``, plus the upstream's bill on a BYOK call. ``None``
+    on every route whose response states no charge (a provider's own API, a
+    self-hosted model, a gateway that passes none through), and never filled in
+    from a price: :attr:`cost_usd` stays the eval's own figure either way."""
 
 
 @dataclass(frozen=True)
@@ -291,6 +312,55 @@ def _sub_obj(obj: Any, name: str) -> Any:
     return value
 
 
+def _amount_attr(obj: Any, name: str) -> float | None:
+    """A non-negative, finite number at ``obj.name`` / ``obj[name]``, else ``None``.
+
+    Strict on purpose: a charge read off a malformed block (a string, a bool, a
+    test double's auto-attribute) is no charge, not a coerced one.
+    """
+    value = _sub_obj(obj, name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    amount = float(value)
+    return amount if math.isfinite(amount) and amount >= 0 else None
+
+
+def sum_known(amounts: Iterable[float | None]) -> float | None:
+    """The sum of per-call amounts, or ``None`` when any is unknown (or there are none).
+
+    The aggregation rule for :attr:`ProviderRawCall.billed_cost_usd`: a sum over
+    only the calls that stated a charge would read as the bill for all of them.
+    """
+    known: list[float] = []
+    for amount in amounts:
+        if amount is None:
+            return None
+        known.append(amount)
+    return math.fsum(known) if known else None
+
+
+def extract_billed_cost(usage: Any) -> float | None:
+    """What a response's usage block says the call was charged, in USD, else ``None``.
+
+    OpenRouter states it on every response (``usage.cost``, in credits of one
+    USD each). On a BYOK call that is only OpenRouter's own fee, and the
+    inference is billed by the upstream to our own account, reported as
+    ``usage.cost_details.upstream_inference_cost``; the call cost the sum, and a
+    BYOK block without that figure states no complete charge. A block without a
+    ``cost`` returns ``None``: a provider's own API (Anthropic, OpenAI, Google)
+    states no price, so the eval's ``cost_usd`` is the only figure there is.
+    Never raises: telemetry, not control flow. See ``docs/LLM_LAYER.md``
+    § "Billed cost".
+    """
+    charged = _amount_attr(usage, "cost")
+    if charged is None:
+        return None
+    if _sub_obj(usage, "is_byok") is not True:
+        return charged
+    upstream = _amount_attr(_sub_obj(usage, "cost_details"), "upstream_inference_cost")
+    return None if upstream is None else charged + upstream
+
+
 def _jsonify(value: Any) -> Any:
     """Recursively coerce a value to a Pydantic/JSON-serializable primitive.
 
@@ -347,7 +417,8 @@ class UsageExtractor:
     Each call also yields a :class:`ProviderRawCall` in ``Usage.calls``
     when usage is present, carrying the per-call ``cost_usd``,
     ``cost_source``, and ``latency_s`` supplied by the caller, plus the
-    ``openrouter_generation_id`` read off the response's own headers.
+    ``openrouter_generation_id`` read off the response's own headers and the
+    ``billed_cost_usd`` read off its usage block.
     """
 
     def extract(
@@ -411,6 +482,7 @@ class UsageExtractor:
             gateway_route_kind=gateway_route_kind,
             openrouter_generation_id=extract_openrouter_generation_id(response),
             upstream_provider=extract_upstream_provider(response),
+            billed_cost_usd=extract_billed_cost(usage),
         )
 
         return Usage(

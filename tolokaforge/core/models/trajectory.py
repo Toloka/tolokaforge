@@ -644,7 +644,7 @@ class Metrics(BaseModel):
     marks the number unreliable rather than correcting it: the correction is
     the real rate, supplied via ``observability.pricing_overlay_path``.
 
-    ``False`` on every litellm-priced call (provider-authoritative, already
+    ``False`` on every litellm-priced call (litellm's figure, already
     cache-aware) and on every model whose row carries its cache rates."""
 
     reasoning_recovered_by_fallback: int = 0
