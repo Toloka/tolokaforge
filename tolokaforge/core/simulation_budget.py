@@ -48,7 +48,7 @@ class SimulationBudget:
     def reason(self) -> TerminationReason | None:
         if self.awaiting_environment:
             return None
-        # Sierra checks steps, then errors; the latter wins at a shared edge.
+        # Check errors first so they win when both limits are reached together.
         if self.max_errors is not None and self.errors >= self.max_errors:
             return TerminationReason.TOO_MANY_ERRORS
         if self.max_steps is not None and self.steps >= self.max_steps:

@@ -298,6 +298,12 @@ class TrialRunner:
         self._loop_observer = loop_observer
         self._user_stop = user_stop
         self._user_tool_turns = user_tool_turns
+        if (
+            max_simulation_steps is not None or max_environment_errors is not None
+        ) and not user_tool_turns.isolated:
+            raise ValueError(
+                "max_simulation_steps / max_environment_errors require isolated user-tool turns"
+            )
         # ``actors.user.first_agent_message``: written as the transcript's first
         # message, ahead of turn 0, when set. The message written is kept, so the
         # turn counts can leave out the one assistant message no model generated.
