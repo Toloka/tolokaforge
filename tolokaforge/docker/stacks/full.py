@@ -18,13 +18,12 @@ from pathlib import Path
 from typing import Literal
 
 from tolokaforge.core.models.docker_config import DockerConfig
-from tolokaforge.docker.builder import rag_service_context_files
+from tolokaforge.docker.builder import get_image_definition
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 from tolokaforge.docker.stacks.core import TypeSenseAddress, core_stack
-from tolokaforge.docker.wheel_resolver import resolve_wheel
 
 
 def full_stack(
@@ -91,20 +90,20 @@ def full_stack(
         rag_service_url="http://tolokaforge-rag-service:8001",
     )
 
-    # RAG Service — hybrid BM25 + FAISS search. Context file list is shared
-    # with :func:`tolokaforge.docker.builder._rag_definition` via
-    # :func:`rag_service_context_files`; keeping the two callers on one
-    # source prevents the drift that reproduces
-    # "COPY failed: file not found in build context" at Step 5.
-    artifact = resolve_wheel()
+    # RAG Service — hybrid BM25 + FAISS search. Build-context fields come from
+    # get_image_definition (see builder.py): its ``_rag_definition`` factory
+    # resolves the base wheel, sets ``WHEEL_FILENAME``, and remaps the sibling
+    # source trees to the packaged ``_subset_build/`` copies on a wheel install,
+    # so the stack and ``make docker-build`` hash the same inputs.
+    rag_defn = get_image_definition("rag-service")
     rag_service = ServiceDefinition(
         name="rag-service",
         image_name="tolokaforge-rag-service",
         published_image_repo="tolokasoft1/tolokaforge-rag-service",
-        dockerfile="tolokaforge/docker/dockerfiles/rag.Dockerfile",
-        context=".",
-        context_files=rag_service_context_files(str(artifact.path)),
-        build_args={"WHEEL_FILENAME": artifact.path.name},
+        dockerfile=rag_defn["dockerfile"],
+        context=rag_defn["context"],
+        context_files=rag_defn["context_files"],
+        build_args=rag_defn["build_args"],
         ports=[PortConfig(container_port=8001, host_port=rag_port)],
         mounts=[Mount.volume("rag_data", "/env/rag")],
         environment={
@@ -128,21 +127,19 @@ def full_stack(
         network_aliases=["rag-service"],
     )
 
-    # Mock Web Service — for browser tasks
+    # Mock Web Service — for browser tasks. Build-context fields come from
+    # get_image_definition (see builder.py); its narrow ``context_files`` (the
+    # service dir only) keeps the build-context hash from churning on unrelated
+    # repo edits.
+    mock_web_defn = get_image_definition("mock-web")
     mock_web_service = ServiceDefinition(
         name="mock-web",
         image_name="tolokaforge-mock-web",
         published_image_repo="tolokasoft1/tolokaforge-mock-web",
-        dockerfile="tolokaforge/docker/dockerfiles/mock_web.Dockerfile",
-        context=".",
-        # Narrow build-context-hash to what the Dockerfile actually COPYs.
-        # Mock-web only bundles its own service code; without this the
-        # orchestrator hashes the whole repo and rebuilds on every
-        # unrelated edit. Mirrors the pattern db-service / runner already
-        # use in core_stack.
-        context_files=[
-            "tolokaforge/env/mock_web_service/",
-        ],
+        dockerfile=mock_web_defn["dockerfile"],
+        context=mock_web_defn["context"],
+        context_files=mock_web_defn["context_files"],
+        build_args=mock_web_defn["build_args"],
         ports=[PortConfig(container_port=8080, host_port=mock_web_port)],
         environment={"PYTHONUNBUFFERED": "1"},
         networks=["runner-net"],

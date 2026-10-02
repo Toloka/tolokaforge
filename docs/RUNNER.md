@@ -125,6 +125,24 @@ should either configure authenticated pulls via the daemon's standard
 build` to skip pull entirely. A 429 in `auto` mode surfaces as a
 `WARNING` line naming `rate_limited` before the fallback build starts.
 
+**Building on a wheel install.** `build` — and the `auto` fallback — work
+identically whether the engine is a source checkout or a `pip install`. On a
+wheel install `repo_root()` is `site-packages`, so an image whose Dockerfile
+compiles the workspace sources in-container (`runner`, `rag-service`, and the
+standalone `grader`) assembles its build context from the copies the base wheel
+force-includes under `tolokaforge/_subset_build/` — both workspace siblings'
+`pyproject.toml` + `src/` ride along there. All three resolve their sibling
+sources through the same packaged-copy mapping, so none depends on a repo
+checkout being present; a wheel missing those force-included inputs fails loud
+at build-context assembly, naming `_subset_build`.
+
+The build-context spec for every first-party service — its Dockerfile, context,
+`context_files`, and `build_args` — has one source of truth: the builder's image
+definitions (`tolokaforge.docker.builder.get_image_definition`). `core_stack` /
+`full_stack` read each service's spec from there rather than re-declaring it, so
+the images the stack builds and the images `make docker-build` builds hash the
+same inputs and cannot drift.
+
 ### Runner readiness contract
 
 The runner is gated for readiness at two independent layers, and they answer

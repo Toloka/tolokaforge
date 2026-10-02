@@ -80,14 +80,13 @@ def _mock_wheel_resolver(tmp_path: Path):
         content_hash="unit-test-hash",
         provider_name="unit-test-mock",
     )
-    # ``tolokaforge.docker.stacks.core`` no longer resolves a host-side
-    # wheel — the runner Dockerfile builds the runner-subset wheel in the
-    # ``hatch build --target custom`` stage of the multi-stage image
-    # (ADR-0025 § subset target; ADR-0027 § the shim's build path). The
-    # remaining ``resolve_wheel`` consumers (``builder`` for the rag stack,
-    # ``stacks.full`` for its own service) still need the mock so
-    # ``core_stack()`` / ``full_stack()`` can compose without a real wheel
-    # build on disk.
+    # Neither stack resolves a host-side wheel directly: the runner Dockerfile
+    # builds the runner-subset wheel in its ``hatch build --target custom``
+    # stage (ADR-0025 § subset target; ADR-0027 § the shim's build path), and
+    # ``full_stack`` reads the rag-service build-context spec through
+    # ``builder.get_image_definition``. The sole remaining consumer is
+    # ``builder._rag_definition``, so mocking ``builder.resolve_wheel`` lets
+    # ``core_stack()`` / ``full_stack()`` compose without a real wheel on disk.
     with (
         patch(
             "tolokaforge.docker.wheel_resolver.resolve_wheel",
@@ -95,10 +94,6 @@ def _mock_wheel_resolver(tmp_path: Path):
         ),
         patch(
             "tolokaforge.docker.builder.resolve_wheel",
-            return_value=artifact,
-        ),
-        patch(
-            "tolokaforge.docker.stacks.full.resolve_wheel",
             return_value=artifact,
         ),
     ):
