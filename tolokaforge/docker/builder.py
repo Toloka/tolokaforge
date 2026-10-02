@@ -237,16 +237,27 @@ def rag_service_context_files(wheel_path: str) -> list[str]:
       ``tolokaforge_coding_harnesses``) that the ``sibling-wheel-builder``
       stage compiles into wheels the base wheel depends on.
 
-    Single source of truth for both the dynamic ``_rag_definition`` path
-    (``tolokaforge.docker.builder``) and the stack-level ``ServiceDefinition``
-    (``tolokaforge.docker.stacks.full.full_stack``). Any drift between them
-    reproduces "COPY failed: file not found in build context" at Step 5.
+    The wheel and ``tolokaforge/env/rag_service/`` survive a wheel install as
+    they are (an absolute path and a directory inside the installed package).
+    The two sibling trees do not: on a wheel install ``repo_root()`` is
+    ``site-packages`` and they live only under the packaged
+    ``tolokaforge/_subset_build/`` copies, so they are remapped there — the
+    same packaged-copy mapping the runner and grader Dockerfiles use.
+
+    Single source of truth for the dynamic ``_rag_definition`` path
+    (``tolokaforge.docker.builder``); the stack-level ``ServiceDefinition``
+    (``tolokaforge.docker.stacks.full.full_stack``) reads it through
+    ``get_image_definition("rag-service")``. Any drift reproduces "COPY failed:
+    file not found in build context" at Step 5.
     """
+    if _is_wheel_install():
+        siblings = [str(p) for p in _packaged_sibling_entries()]
+    else:
+        siblings = ["tolokaforge_models/", "tolokaforge_coding_harnesses/"]
     return [
         wheel_path,
         "tolokaforge/env/rag_service/",
-        "tolokaforge_models/",
-        "tolokaforge_coding_harnesses/",
+        *siblings,
     ]
 
 
@@ -281,50 +292,23 @@ def packaged_subset_build_dir() -> Path:
     return installed_package_dir() / _PACKAGED_SUBSET_BUILD_DIR
 
 
-def _runner_definition() -> dict[str, Any]:
-    """Resolve the runner build context for source-checkout OR wheel install.
+def _is_wheel_install() -> bool:
+    """True when running from an installed wheel rather than a source checkout.
 
-    The Dockerfile's ``hatchling build --target custom`` stage needs the
-    pyproject (which carries the ``[tool.hatch.build.targets.custom]``
-    table), the metadata files that pyproject references, the custom builder
-    script, and the ``tolokaforge`` sources. In a source checkout those sit
-    at the repo root. Installed as a wheel they do NOT: ``repo_root()`` is
-    ``site-packages``, so the repo-relative entries resolve to paths that do
-    not exist and the build dies before any trial runs.
-
-    Absolute context entries are copied flat into the build dir, so the
-    packaged copies land under exactly the names the ``COPY`` lines expect.
+    A source checkout (or editable install) carries ``pyproject.toml`` and the
+    sibling source trees at the repo root. Installed as a wheel, ``repo_root()``
+    is ``site-packages`` and those are absent — the packaged copies under
+    ``tolokaforge/_subset_build/`` stand in instead.
     """
-    if (repo_root() / "pyproject.toml").is_file():
-        # Source checkout / editable install — repo-relative entries work.
-        return dict(IMAGE_DEFINITIONS["runner"])
+    return not (repo_root() / "pyproject.toml").is_file()
 
-    packaged = packaged_subset_build_dir()
-    pkg_dir = installed_package_dir()
-    # Flat-copied absolutes land under their own basename, which is already
-    # the name each COPY line expects. ``.python-version`` is the exception:
-    # it ships as ``_python_version.txt`` (one force-include key per source),
-    # so it needs an explicit destination.
-    entries: list[Any] = [
-        packaged / "pyproject.toml",
-        packaged / "README.md",
-        packaged / "LICENSE",
-        packaged / "scripts",  # dir -> build_dir/scripts (holds hatch/)
-        pkg_dir,  # dir -> build_dir/tolokaforge
-        (pkg_dir / "_python_version.txt", ".python-version"),
-        # The runner Dockerfile builds tolokaforge-models wheel in-container
-        # too. The base wheel ships a copy of its source tree at
-        # `tolokaforge/_subset_build/tolokaforge_models/` (via the
-        # force-include entries in the workspace-root pyproject.toml). Its
-        # basename already matches what the Dockerfile expects at
-        # `COPY tolokaforge_models/ /src/tolokaforge_models/`, so a plain
-        # absolute-path entry lands the directory under the right name.
-        packaged / "tolokaforge_models",
-        # Same shape for tolokaforge_coding_harnesses — force-included by the
-        # base wheel and landed here so the Dockerfile's `COPY
-        # tolokaforge_coding_harnesses/` succeeds on a wheel install too.
-        packaged / "tolokaforge_coding_harnesses",
-    ]
+
+def _require_context_entries_exist(entries: list[Any], *, service: str) -> None:
+    """Raise if any packaged build-context entry is missing on a wheel install.
+
+    The build dies loud here with an actionable message rather than deep in
+    ``docker build`` with "COPY failed: file not found in build context".
+    """
     missing = [
         str(e[0] if isinstance(e, tuple) else e)
         for e in entries
@@ -332,20 +316,105 @@ def _runner_definition() -> dict[str, Any]:
     ]
     if missing:
         raise FileNotFoundError(
-            "Runner build context is incomplete for a wheel install. The base "
-            "wheel must force-include the runner's subset-build inputs into "
-            f"'tolokaforge/{_PACKAGED_SUBSET_BUILD_DIR}/' — missing: "
-            f"{missing}. Rebuild the wheel from a pyproject that carries the "
-            "[tool.hatch.build.targets.wheel.force-include] entries, or run "
-            "from a source checkout."
+            f"The {service} build context is incomplete for a wheel install. The "
+            "base wheel must force-include the subset-build inputs into "
+            f"'tolokaforge/{_PACKAGED_SUBSET_BUILD_DIR}/' — missing: {missing}. "
+            "Rebuild the wheel from a pyproject that carries the "
+            "[tool.hatch.build.targets.wheel.force-include] entries, or run from "
+            "a source checkout."
         )
+
+
+def _context_files_from_entries(entries: list[Any]) -> list[Any]:
+    """Normalise packaged entries to the ``context_files`` form.
+
+    A plain ``Path`` becomes its string; a ``(src, dst)`` tuple keeps its
+    explicit destination (used only for ``.python-version``, which ships as
+    ``_python_version.txt``).
+    """
+    return [(str(e[0]), e[1]) if isinstance(e, tuple) else str(e) for e in entries]
+
+
+def _packaged_full_source_entries() -> list[Any]:
+    """Packaged ``_subset_build/`` copies of the full source set.
+
+    The runner and grader Dockerfiles each run ``hatchling build`` in-container
+    against the same source slice (pyproject, metadata files, the hatch builder
+    script, the ``tolokaforge`` package, and both workspace-sibling trees), so
+    they share this mapping. Absolute entries are copied flat into the build
+    dir, landing under exactly the basenames the ``COPY`` lines expect;
+    ``.python-version`` is the one exception, shipped as ``_python_version.txt``
+    and remapped with an explicit destination.
+    """
+    packaged = packaged_subset_build_dir()
+    pkg_dir = installed_package_dir()
+    entries: list[Any] = [
+        packaged / "pyproject.toml",
+        packaged / "README.md",
+        packaged / "LICENSE",
+        packaged / "scripts",  # dir -> build_dir/scripts (holds hatch/)
+        pkg_dir,  # dir -> build_dir/tolokaforge
+        (pkg_dir / "_python_version.txt", ".python-version"),
+        packaged / "tolokaforge_models",
+        packaged / "tolokaforge_coding_harnesses",
+    ]
+    _require_context_entries_exist(entries, service="runner/grader")
+    return entries
+
+
+def _packaged_sibling_entries() -> list[Path]:
+    """Packaged ``_subset_build/`` copies of the two workspace-sibling trees.
+
+    The rag-service Dockerfile compiles ``tolokaforge_models`` and
+    ``tolokaforge_coding_harnesses`` into wheels in-container; its other inputs
+    (the resolved wheel and ``tolokaforge/env/rag_service/``) already survive a
+    wheel install, so only these two need remapping.
+    """
+    packaged = packaged_subset_build_dir()
+    entries: list[Path] = [
+        packaged / "tolokaforge_models",
+        packaged / "tolokaforge_coding_harnesses",
+    ]
+    _require_context_entries_exist(list(entries), service="rag-service")
+    return entries
+
+
+def _runner_definition() -> dict[str, Any]:
+    """Resolve the runner build context for source-checkout OR wheel install.
+
+    The Dockerfile's ``hatchling build --target custom`` stage needs the
+    pyproject (which carries the ``[tool.hatch.build.targets.custom]`` table),
+    the metadata files pyproject references, the custom builder script, and the
+    ``tolokaforge`` sources. In a source checkout those sit at the repo root;
+    installed as a wheel they do not, so the packaged copies stand in (see
+    ``docs/adr/0025-runner-wheel-split.md``).
+    """
+    if not _is_wheel_install():
+        return dict(IMAGE_DEFINITIONS["runner"])
     return {
         **IMAGE_DEFINITIONS["runner"],
-        "context_files": [(str(e[0]), e[1]) if isinstance(e, tuple) else str(e) for e in entries],
+        "context_files": _context_files_from_entries(_packaged_full_source_entries()),
+    }
+
+
+def _grader_definition() -> dict[str, Any]:
+    """Resolve the grader build context for source-checkout OR wheel install.
+
+    The grader Dockerfile compiles the same full source set as the runner (base
+    + ``tolokaforge_models`` + ``tolokaforge_coding_harnesses`` wheels
+    in-container), so it shares the runner's packaged-copy mapping on a wheel
+    install.
+    """
+    if not _is_wheel_install():
+        return dict(IMAGE_DEFINITIONS["grader"])
+    return {
+        **IMAGE_DEFINITIONS["grader"],
+        "context_files": _context_files_from_entries(_packaged_full_source_entries()),
     }
 
 
 _DYNAMIC_DEFINITIONS["runner"] = _runner_definition
+_DYNAMIC_DEFINITIONS["grader"] = _grader_definition
 
 
 def get_image_definition(service_name: str) -> dict[str, Any]:
