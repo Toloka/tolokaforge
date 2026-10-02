@@ -151,6 +151,7 @@ class RagToolConfig(BaseModel):
     description: str = DEFAULT_SEARCH_TOOL_DESCRIPTION
 
     @model_serializer(mode="wrap")
+    @schema_from_the_fields
     def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         return _dump_declared_fields_only(self, handler)
 
@@ -177,6 +178,7 @@ class RagConfig(BaseModel):
     tool: RagToolConfig = Field(default_factory=RagToolConfig)
 
     @model_serializer(mode="wrap")
+    @schema_from_the_fields
     def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         return _dump_declared_fields_only(self, handler)
 

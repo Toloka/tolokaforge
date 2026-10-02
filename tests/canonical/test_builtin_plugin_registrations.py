@@ -265,7 +265,18 @@ def test_comparison_view_rule_names_resolve_to_their_class(name: str, expected_c
     assert name == rule_cls.NAME
 
 
-def test_available_listings_match_the_builtin_set() -> None:
+def test_available_listings_match_the_builtin_set(monkeypatch) -> None:
+    # The runtime registry also lists installed plugins. Census only our own
+    # distribution here; resolution tests above still exercise the live registry.
+    from tolokaforge.core import plugin_registry
+
+    monkeypatch.setattr(plugin_registry, "_discovery_cache", {})
+    own_entries = importlib.metadata.distribution("tolokaforge").entry_points
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **kwargs: importlib.metadata.EntryPoints(own_entries).select(**kwargs),
+    )
     assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
     assert available_trial_graders() == ["grader_rpc", "judge_only", "queue", "runner_rpc"]
     assert available_conductors() == ["in_memory", "in_process"]
