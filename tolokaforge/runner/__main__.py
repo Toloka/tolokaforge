@@ -238,10 +238,16 @@ class RunnerServer:
             self.logger.warning(f"DB Service not available: {e}")
             self.logger.warning("Server started but DB Service connectivity is degraded")
 
-        # Check RAG Service connectivity (optional)
+        # Check RAG Service connectivity (optional). Probe with a throwaway
+        # client, not ``self.rag_client``: the latter's pooled httpx client
+        # binds to whichever loop first drives it, and it must bind to
+        # RunnerService's dedicated trial loop — not this startup loop — or the
+        # first trial reusing it raises "Event is bound to a different event
+        # loop".
         if self.rag_client:
             try:
-                rag_healthy = await self.rag_client.is_healthy()
+                async with RAGServiceClient(self.rag_service_url) as probe:
+                    rag_healthy = await probe.is_healthy()
                 self.logger.info(f"RAG Service health: {'healthy' if rag_healthy else 'unhealthy'}")
             except Exception as e:
                 self.logger.warning(f"RAG Service not available: {e}")

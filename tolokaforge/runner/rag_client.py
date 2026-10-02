@@ -157,6 +157,19 @@ class RAGConnectionError(RAGServiceError):
 # =============================================================================
 
 
+def _close_on_owning_loop(client: httpx.AsyncClient, loop: asyncio.AbstractEventLoop) -> None:
+    """Close *client* on *loop* — the loop its connection pool is bound to.
+
+    A pooled httpx client can service ``aclose`` only on its own loop, and a
+    stopped loop cannot run one, so the single safe close is a scheduled call on
+    its own still-running loop. When the loop has already stopped there is
+    nothing left to close against — its selector is gone — so the client is
+    dropped and its sockets are reclaimed when that loop's thread exits.
+    """
+    if loop.is_running() and not loop.is_closed():
+        loop.call_soon_threadsafe(lambda: loop.create_task(client.aclose()))
+
+
 class RAGServiceClient:
     """
     Async HTTP client for RAG service.
@@ -183,49 +196,44 @@ class RAGServiceClient:
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._client: httpx.AsyncClient | None = None
-        self._client_loop: asyncio.AbstractEventLoop | None = None
+        # The client and the loop it is bound to travel as one tuple, written in
+        # a single assignment, so a thread switch can never pair one loop's
+        # client with another loop.
+        self._bound: tuple[httpx.AsyncClient, asyncio.AbstractEventLoop] | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client, bound to the running event loop.
+        """Return an httpx client bound to the running event loop.
 
-        One ``RAGServiceClient`` is driven from two loops: the server's
-        startup/shutdown health probes run on the main server loop, while trial
-        handlers run on :class:`RunnerServiceImpl`'s dedicated loop thread.
-        httpx binds its connection-pool primitives to the loop a client is first
-        used on, so a client cached on one loop raises "Event is bound to a
-        different event loop" when reused on another. Rebuild whenever the
-        running loop changes; the stale client belongs to a foreign loop and
-        cannot be awaited closed from here, so drop the reference.
+        httpx binds a client's connection pool to the loop it is first driven
+        on, so reusing one for a request on a different loop raises "Event is
+        bound to a different event loop". In the runner this client is driven
+        only from :class:`RunnerServiceImpl`'s dedicated loop (the server's
+        startup/shutdown probes use their own throwaway client), so a rebuild
+        here guards against unexpected cross-loop use rather than the normal
+        path. Read ``self._bound`` once so a concurrent reassignment cannot hand
+        back a foreign-loop client.
         """
         running = asyncio.get_running_loop()
-        if self._client is None or self._client.is_closed or self._client_loop is not running:
-            # Return the client this call built, not ``self._client``: the probe
-            # and servicer loops can briefly overlap (the server accepts RPCs
-            # while startup still awaits ``is_healthy``), and a concurrent
-            # reassignment must not swap a foreign-loop client back in here.
-            client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
-            self._client = client
-            self._client_loop = running
-            return client
-        return self._client
+        bound = self._bound
+        if bound is not None and bound[1] is running and not bound[0].is_closed:
+            return bound[0]
+        client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+        self._bound = (client, running)
+        if bound is not None and not bound[0].is_closed:
+            _close_on_owning_loop(bound[0], bound[1])
+        return client
 
     async def close(self) -> None:
-        """Close the HTTP client when it belongs to the running loop.
-
-        A client bound to a different loop (the startup probe's client once
-        trials have rebuilt it on the servicer loop) cannot be awaited closed
-        from here, so drop the reference instead — this never raises during
-        shutdown.
-        """
-        client = self._client
-        bound_loop = self._client_loop
-        self._client = None
-        self._client_loop = None
-        if client is None or client.is_closed:
+        """Close the current client on the loop its connection pool is bound to."""
+        bound = self._bound
+        self._bound = None
+        if bound is None or bound[0].is_closed:
             return
-        if bound_loop is asyncio.get_running_loop():
+        client, loop = bound
+        if loop is asyncio.get_running_loop():
             await client.aclose()
+        else:
+            _close_on_owning_loop(client, loop)
 
     async def __aenter__(self) -> "RAGServiceClient":
         """Async context manager entry."""
