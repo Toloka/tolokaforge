@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from tolokaforge.core.grading.judge_kinds.options import resolve_judge_trial_options
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import build_replay_grade
 from tolokaforge.core.grading.transcript_wire import (
@@ -93,7 +94,8 @@ def run_judge_only_for_trajectory(
 
     Task customization is the base; a run-level ``override`` wins
     per-field when the field is not ``None`` (see :class:`JudgeGraderConfig`
-    — the override cannot express "reset to library default").
+    — the override cannot express "reset to library default"), both laid
+    together by :func:`resolve_judge_trial_options`.
 
     ``llm_client`` is a test-only injection point wrapped in
     :class:`_FixedClientJudgeModelProvider` so the kind sees a
@@ -112,27 +114,6 @@ def run_judge_only_for_trajectory(
         return None
     judge_agent_prompt, transcript = split_leading_system_message(json.loads(wire))
 
-    customization = llm_judge_config.customization
-    base_disable_kb = customization.disable_knowledge_search if customization else None
-    base_custom_prompt = customization.system_prompt if customization else None
-    base_include_agent = customization.include_agent_system_prompt if customization else None
-
-    disable_kb_resolved = (
-        override.disable_knowledge_search
-        if override is not None and override.disable_knowledge_search is not None
-        else base_disable_kb
-    )
-    custom_prompt = (
-        override.custom_system_prompt
-        if override is not None and override.custom_system_prompt is not None
-        else base_custom_prompt
-    )
-    include_agent_resolved = (
-        override.include_agent_system_prompt
-        if override is not None and override.include_agent_system_prompt is not None
-        else base_include_agent
-    )
-
     judge_model_provider: JudgeModelProvider = (
         _FixedClientJudgeModelProvider(llm_client)
         if llm_client is not None
@@ -150,11 +131,7 @@ def run_judge_only_for_trajectory(
         state_diff=None,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        disable_knowledge_search=bool(disable_kb_resolved),
-        custom_system_prompt=custom_prompt,
-        include_agent_system_prompt=(
-            include_agent_resolved if include_agent_resolved is not None else True
-        ),
+        options=resolve_judge_trial_options(llm_judge_config.customization, override=override),
         kind_config=llm_judge_config.kind_config,
         logger=logger,
     )

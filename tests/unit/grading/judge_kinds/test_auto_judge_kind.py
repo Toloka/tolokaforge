@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
-from tolokaforge.core.grading.judge_kinds import AutoRubricJudgeKind
+from tolokaforge.core.grading.judge_kinds import AutoRubricJudgeKind, JudgeTrialOptions
 from tolokaforge.core.grading.judge_kinds.auto_anchored import clear_anchor_cache
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.logging import StructuredLogger
@@ -78,9 +78,7 @@ def _evaluate_kwargs(rubric: Rubric, provider: _QueuedProvider, kind_config=None
         "state_diff": None,
         "judge_model_config": _JUDGE_MODEL,
         "judge_model_provider": provider,
-        "disable_knowledge_search": False,
-        "custom_system_prompt": None,
-        "include_agent_system_prompt": True,
+        "options": JudgeTrialOptions(),
         "kind_config": kind_config,
         "logger": StructuredLogger(name="test-auto"),
     }

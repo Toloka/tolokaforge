@@ -11,8 +11,10 @@ boot. Five holistic seams (custom-check executor, judge-model provider,
 transcript-rule matcher, state-check backends, substrate class) are
 loaded from :mod:`tolokaforge.core.plugin_registry` and cached on the
 instance; the sixth seam — the judge kind — is loaded per-``grade``
-call because :class:`~tolokaforge.runner.models.LLMJudgeConfig.customization`
-shapes the per-``evaluate`` kwargs and rides on the wire per trial.
+call because :class:`~tolokaforge.runner.models.LLMJudgeConfig.judge_kind`
+names it per trial, and its
+:class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` come from the
+trial's ``customization`` on the wire.
 
 Each :meth:`grade` call validates the required v2 wire fields, deserialises
 the run-scoped :class:`~tolokaforge.runner.models.RunnerGradingConfig` /
@@ -107,8 +109,8 @@ class GraderCompositeDispatch:
 
     Constructed once per grader process. Five holistic seams cache at
     construction; the judge-kind seam loads per-call because the trial's
-    :class:`LLMJudgeConfig.customization` shapes the per-``evaluate``
-    kwargs (KB gate, custom system-prompt, include-agent-system-prompt).
+    :class:`LLMJudgeConfig` names the kind, and its ``customization`` becomes
+    the kind's :class:`JudgeTrialOptions`.
     Every :meth:`grade` call constructs a fresh substrate against the
     trial's ``runner_substrate_address``, extracts the pack's
     ``tool_artifacts`` bundle if present, runs the composite mirroring
@@ -507,14 +509,6 @@ class GraderCompositeDispatch:
             return None, JudgeStatus.UNSPECIFIED, False, {LLM_JUDGE_KEY: NO_JUDGE_MESSAGES_SKIP}
         assert judge_model_config is not None, "llm_judge branch requires judge_model_config"
         judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
-        customization = llm_judge_config.customization
-        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
-        custom_system_prompt = customization.system_prompt if customization else None
-        include_agent_system_prompt = (
-            customization.include_agent_system_prompt
-            if customization and customization.include_agent_system_prompt is not None
-            else True
-        )
         state_diff_text = composite.build_judge_state_diff(
             trial_id=trial_id,
             substrate=substrate,
@@ -529,9 +523,6 @@ class GraderCompositeDispatch:
             substrate=substrate,
             judge_kind=judge_kind,
             judge_model_provider=self._judge_model_provider,
-            disable_knowledge_search=disable_knowledge_search,
-            custom_system_prompt=custom_system_prompt,
-            include_agent_system_prompt=include_agent_system_prompt,
             kind_config=llm_judge_config.kind_config,
             llm_messages=llm_messages,
             judge_model_config=judge_model_config,

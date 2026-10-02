@@ -452,7 +452,7 @@ class TestRanking:
         outcome = _search(_index(_backend({"ranking": {"top_k": 2}}), _seven_docs(tmp_path)), "zzz")
         assert [(hit.doc_id, hit.score) for hit in outcome.hits] == [("1", 0.0), ("2", 0.0)]
 
-    def test_hits_carry_the_whole_document_and_the_file_name(self, corpus: Path) -> None:
+    def test_hits_carry_the_whole_document_the_file_name_and_the_title(self, corpus: Path) -> None:
         outcome = _search(_index(_backend(), corpus), "refund")
         top = outcome.hits[0]
         assert top == SearchHit(
@@ -460,6 +460,7 @@ class TestRanking:
             source="a_returns.json",
             score=top.score,
             text="refund window thirty days",
+            title="Returns",
         )
         assert isinstance(outcome.hits, tuple)
 

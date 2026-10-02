@@ -47,6 +47,7 @@ from tolokaforge.runner.models import Criterion, Rubric
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
+    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
     from tolokaforge.core.logging import StructuredLogger
@@ -135,9 +136,7 @@ class AutoAnchoredRubricJudgeKind:
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
-        disable_knowledge_search: bool,
-        custom_system_prompt: str | None,
-        include_agent_system_prompt: bool,
+        options: JudgeTrialOptions,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -160,9 +159,7 @@ class AutoAnchoredRubricJudgeKind:
                 state_diff=state_diff,
                 judge_model_config=judge_model_config,
                 judge_model_provider=judge_model_provider,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
+                options=options,
                 logger=logger,
                 warmup_usage=JudgeUsage(),
                 anchor_map={},
@@ -189,9 +186,7 @@ class AutoAnchoredRubricJudgeKind:
             state_diff=state_diff,
             judge_model_config=judge_model_config,
             judge_model_provider=judge_model_provider,
-            disable_knowledge_search=disable_knowledge_search,
-            custom_system_prompt=custom_system_prompt,
-            include_agent_system_prompt=include_agent_system_prompt,
+            options=options,
             logger=logger,
             warmup_usage=warmup_usage,
             anchor_map=anchor_map,
@@ -398,9 +393,7 @@ def _dispatch_wrapped(
     state_diff: str | None,
     judge_model_config: ModelConfig,
     judge_model_provider: JudgeModelProvider,
-    disable_knowledge_search: bool,
-    custom_system_prompt: str | None,
-    include_agent_system_prompt: bool,
+    options: JudgeTrialOptions,
     logger: StructuredLogger,
     warmup_usage: JudgeUsage,
     anchor_map: _AnchorMap,
@@ -423,9 +416,7 @@ def _dispatch_wrapped(
         state_diff=state_diff,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        disable_knowledge_search=disable_knowledge_search,
-        custom_system_prompt=custom_system_prompt,
-        include_agent_system_prompt=include_agent_system_prompt,
+        options=options,
         kind_config=None,
         logger=logger,
     )

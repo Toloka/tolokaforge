@@ -68,6 +68,7 @@ from tolokaforge.core.deprecations import (
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -2122,13 +2123,45 @@ class JudgeCustomization(BaseModel):
     rubric grades without the agent's framing. Evidence gating, distinct from
     ``system_prompt`` (which is the judge's own wording). A task sets ``true`` or
     ``null`` to re-include over a project ``false``.
+
+    ``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:
+    the first that many characters (``200`` by default), or ``null`` for whole
+    documents — what a ``bm25`` task whose rubric reads a document's exact wording
+    needs. Not tri-state: ``null`` is a value, so a task resets a project's figure
+    by writing ``200``. Left off the dump at its default
+    (:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises
+    without it and an older image, which forbids a key it does not declare,
+    accepts it.
+
+    :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
+    a customization into the
+    :class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind
+    receives.
     """
+
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"judge_snippet_chars"})
+    """Fields the dump leaves out while they hold their default value."""
 
     disable_knowledge_search: bool | None = None
     system_prompt: str | None = None
     include_agent_system_prompt: bool | None = None
+    judge_snippet_chars: int | None = Field(default=DEFAULT_JUDGE_SNIPPET_CHARS, ge=1, strict=True)
 
     model_config = {"extra": "forbid"}
+
+    @model_serializer(mode="wrap")
+    def _omit_fields_at_their_default(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        if not isinstance(self, JudgeCustomization):
+            return handler(self)
+        data = handler(self)
+        for name in self.OMITTED_AT_DEFAULT:
+            if getattr(self, name) == type(self).model_fields[name].get_default(
+                call_default_factory=True
+            ):
+                data.pop(name, None)
+        return data
 
     @field_validator("system_prompt")
     @classmethod

@@ -53,12 +53,18 @@ class JudgeKind(Protocol):
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
-        disable_knowledge_search: bool,
-        custom_system_prompt: str | None,
-        include_agent_system_prompt: bool,
+        options: JudgeTrialOptions,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult: ...
+
+
+@dataclass(frozen=True)
+class JudgeTrialOptions:
+    disable_knowledge_search: bool = False
+    custom_system_prompt: str | None = None
+    include_agent_system_prompt: bool = True
+    judge_snippet_chars: int | None = 200
 ```
 
 **`NAME`** MUST equal the entry-point name the kind registers under — a
@@ -70,9 +76,27 @@ surface (`rubric` through `state_diff`) mirrors `LLMJudge.run`'s own
 inputs verbatim, so a kind that just wraps `LLMJudge` (`single_shot_rubric`)
 needs no translation layer. `judge_model_config` + `judge_model_provider`
 are construction inputs — the kind builds its own judge client(s) from
-them, once or many times per `evaluate` call. `disable_knowledge_search`,
-`custom_system_prompt`, and `include_agent_system_prompt` are per-trial
-customization every kind must honor identically to `LLMJudge`.
+them, once or many times per `evaluate` call.
+
+**`options: JudgeTrialOptions`** is the trial's per-trial customization, one
+frozen object (`tolokaforge.core.grading.judge_kinds`), every field of which a
+kind honours identically to `LLMJudge`; a kind that wraps another passes it on
+unchanged. The engine builds it once per trial from
+`grading.llm_judge.customization` with `resolve_judge_trial_options` (unset
+tri-state fields take their defaults; a run-level `grader.judge` override wins
+per field where it is set), and offline replay builds it from the recorded
+bundle. The fields:
+
+| field | default | from `customization` |
+|---|---|---|
+| `disable_knowledge_search` | `false` | `disable_knowledge_search` — withhold every knowledge-search tool from the judge |
+| `custom_system_prompt` | `null` | `system_prompt` — a body fragment replacing the default judge prompt; the marker contract is appended |
+| `include_agent_system_prompt` | `true` | `include_agent_system_prompt` — embed the agent's system prompt in the judge's evidence |
+| `judge_snippet_chars` | `200` | `judge_snippet_chars` — characters of each hit the judge's `search_kb` shows; `null` shows whole documents |
+
+A new customization knob is a field on `JudgeTrialOptions` whose default is
+the behaviour without the knob, so the `evaluate` signature does not change and
+a kind that does not read the field grades under that default.
 
 **`kind_config: Mapping[str, Any] | None`** is an opaque bag the Protocol
 itself does not interpret — each kind owns its own schema and validation.
@@ -465,8 +489,10 @@ verdicts to keep its per-criterion pool label-variant.
 
 Every fixture is one `entry.yaml` file in `ParityCorpusEntry` shape:
 `{entry_id, rubric, agent_system_prompt, transcript, state_diff,
-disable_knowledge_search, custom_system_prompt,
-include_agent_system_prompt, judge_scripts}`. The
+judge_scripts}`, plus the optional option keys
+`disable_knowledge_search` (default `false`), `custom_system_prompt`
+(`null`), `include_agent_system_prompt` (`true`) and `judge_snippet_chars`
+(`200`), which the loader gathers into the entry's `JudgeTrialOptions`. The
 `judge_scripts.<kind_name>` value is a list of turns; each turn is
 either a string (assistant text) or a list of tool-call dicts
 (`{name, arguments}`). The `single_shot_rubric` cassette is one turn
