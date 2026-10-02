@@ -33,8 +33,9 @@ dependencies = [
     "pydantic>=2.0.0",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
-    # the single-attempt exporter posts through a requests session; the OTLP HTTP exporter stopped
-    # requiring requests in 1.45 (its default transport became urllib3)
+    # the single-attempt exporter builds its own request: the body from this package's public
+    # OTLP encoder, the POST through requests (no longer brought by the HTTP exporter from 1.45)
+    "opentelemetry-exporter-otlp-proto-common>=1.27",
     "requests>=2.7",
     "pyyaml>=6.0.1",
     "tomli>=2.0; python_version < '3.11'",

@@ -1,14 +1,15 @@
 """The OTLP exporters on the wire (ADR-0048).
 
-Every test sends a real batch through the exporter's own request path to a local receiver and
-counts what arrived, so it holds for whichever OpenTelemetry SDK is installed: that path moved from
-the exporter into an OTLP client over a transport in 1.45. Engine-free, like the module.
+Every test sends a real batch through the exporter's request path to a local receiver and counts
+what arrived, so it holds for whichever OpenTelemetry SDK is installed. The single-attempt
+exporter takes nothing from the SDK but its public OTLP encoder. Engine-free, like the module.
 """
 
 from __future__ import annotations
 
 import gzip
-import re
+import subprocess
+import sys
 import zlib
 
 import pytest
@@ -21,9 +22,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from otlp_receiver import DROP, STALL, Receiver
-from requests.adapters import HTTPAdapter
 from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
-from urllib3.util.retry import Retry
 
 pytestmark = pytest.mark.unit
 
@@ -75,6 +74,7 @@ class TestOnePostPerBatch:
         assert post.headers["authorization"] == AUTHORIZATION
         assert post.headers[INGESTION_VERSION_HEADER] == "4"
         assert post.headers["content-type"] == "application/x-protobuf"
+        assert post.headers["user-agent"].startswith("tolokaforge-langfuse/")
 
     def test_a_lost_answer_is_not_posted_again(self, receiver, spans) -> None:
         """The case the guarantee exists for: the receiver took the body and the answer never
@@ -132,42 +132,14 @@ class TestOnePostPerBatch:
         assert exporter.export(spans) is SpanExportResult.FAILURE
         assert seen == [429]
 
-    def test_a_credential_providers_session_posts_once(self, receiver, spans, monkeypatch) -> None:
-        """A session the SDK loads from a credential provider is the one the post goes through,
-        and the retry policy its adapter brings makes no attempt of its own."""
-        common = pytest.importorskip("opentelemetry.exporter.otlp.proto.http._common")
-        if not hasattr(common, "_load_session_from_envvar"):
-            pytest.skip("this OpenTelemetry SDK loads no credential provider")
-        provided = requests.Session()
-        provided.mount(
-            "http://",
-            HTTPAdapter(
-                max_retries=Retry(
-                    total=3,
-                    status_forcelist=[503],
-                    allowed_methods=None,
-                    backoff_factor=0,
-                    raise_on_status=False,
-                )
-            ),
-        )
-        receiver.answer = 503
-        provided.post(receiver.url(), data=b"control")
-        assert len(receiver.requests) == 4, "the provider's adapter alone retries a 503"
-        receiver.requests.clear()
-
-        class _EntryPoint:
-            @staticmethod
-            def load():
-                return lambda: provided
-
-        monkeypatch.setattr(common, "entry_points", lambda **_: [_EntryPoint()])
-        monkeypatch.setenv("OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER", "provider")
-        exporter = _write_once(receiver)
-
-        assert exporter._session is provided
-        assert exporter.export(spans) is SpanExportResult.FAILURE
-        assert len(receiver.requests) == 1
+    def test_the_traces_variable_wins_over_the_generic_one(
+        self, receiver, spans, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_COMPRESSION", "deflate")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "gzip")
+        assert _write_once(receiver).export(spans) is SpanExportResult.SUCCESS
+        [post] = receiver.posts
+        assert post.headers["content-encoding"] == "gzip"
 
     def test_the_retrying_exporter_posts_a_lost_batch_again(
         self, receiver, spans, monkeypatch
@@ -186,35 +158,114 @@ class TestOnePostPerBatch:
         assert len(receiver.requests) >= 2
 
 
-def _without(exporter_class: type, dotted: str) -> type:
-    """``exporter_class`` with one attribute of the built exporter gone, as a moved SDK would."""
-    holder_path, _, attribute = dotted.rpartition(".")
+# The SDK's HTTP exporter packages made unimportable, in a process of its own (the exporter, and
+# the client and transport 1.45 moved its request code into): the batch still leaves as one POST
+# of its encoded spans, so whatever an OpenTelemetry release moves inside them cannot reach the
+# single-attempt exporter.
+WITHOUT_THE_SDK_EXPORTER = """
+import sys
+BLOCKED = (
+    "opentelemetry.exporter.otlp.proto.http",
+    "opentelemetry.exporter.otlp.common",
+    "opentelemetry.exporter.http",
+)
+class _Block:
+    def find_spec(self, name, path=None, target=None):
+        if any(name == blocked or name.startswith(blocked + ".") for blocked in BLOCKED):
+            raise ImportError(f"blocked: {name}")
+        return None
+sys.meta_path.insert(0, _Block())
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from tolokaforge_langfuse.otlp_transport import make_otlp_exporter
+memory = InMemorySpanExporter()
+provider = TracerProvider(shutdown_on_exit=False)
+provider.add_span_processor(SimpleSpanProcessor(memory))
+with provider.get_tracer("probe").start_as_current_span("generation"):
+    pass
+exporter = make_otlp_exporter(sys.argv[1], {"Authorization": "Basic x"}, retry=False)
+assert exporter.export(memory.get_finished_spans()) is SpanExportResult.SUCCESS
+assert not [name for name in sys.modules if name.startswith(BLOCKED)], "the block did nothing"
+print("ok")
+"""
 
-    class _Without(exporter_class):  # type: ignore[misc, valid-type]
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            holder = self
-            for part in filter(None, holder_path.split(".")):
-                holder = getattr(holder, part)
-            delattr(holder, attribute)
 
-    return _Without
+def test_the_single_attempt_exporter_needs_nothing_from_the_sdk_exporter(receiver) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", WITHOUT_THE_SDK_EXPORTER, receiver.url()],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0 and result.stdout.strip() == "ok", result.stderr
+    [post] = receiver.posts
+    assert _span_names(post.body) == ["generation"]
 
 
-def test_an_exporter_missing_anything_the_post_reads_refuses_the_run(monkeypatch) -> None:
-    """Whichever layout the installed SDK has, losing any one thing the post reads stops the run
-    rather than letting the exporter fall back to the SDK's retrying request path."""
-    real = otlp_transport._single_attempt_exporter_class()
-    built = real(endpoint="http://127.0.0.1:9/v1/traces")
-    has_client = hasattr(built, "_client")
-    layout = otlp_transport.CLIENT_LAYOUT if has_client else otlp_transport.SESSION_LAYOUT
-    for name in layout:
-        refused = _without(real, name)
-        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda c=refused: c)
-        with pytest.raises(otlp_transport.SingleAttemptUnavailable, match=re.escape(name)):
-            make_otlp_exporter(
-                "http://127.0.0.1:9/v1/traces", {"Authorization": AUTHORIZATION}, retry=False
-            )
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "OTEL_PYTHON_EXPORTER_OTLP_HTTP_CREDENTIAL_PROVIDER",
+        "OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER",
+    ],
+)
+def test_a_credential_provider_refuses_the_run(monkeypatch, variable: str) -> None:
+    """A provider's session is loaded by the SDK's exporter only; going on without it would post
+    without whatever it supplies, so the run stops and names the variable."""
+    monkeypatch.setenv(variable, "provider")
+    with pytest.raises(otlp_transport.SingleAttemptUnavailable, match=variable):
+        make_otlp_exporter(
+            "http://127.0.0.1:9/v1/traces", {"Authorization": AUTHORIZATION}, retry=False
+        )
+
+
+@pytest.mark.parametrize("headers", [None, {}])
+def test_no_caller_headers_refuses_the_run(monkeypatch, headers) -> None:
+    """The SDK's header variables are not read here, so without the caller's headers every batch
+    would be refused for want of credentials: the run stops at start instead."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "authorization=Basic%20x")
+    with pytest.raises(otlp_transport.SingleAttemptUnavailable, match="headers"):
+        make_otlp_exporter("http://127.0.0.1:9/v1/traces", headers, retry=False)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "soon"),
+        ("OTEL_EXPORTER_OTLP_TIMEOUT", "soon"),
+        # requests would take these and fail every post without sending it
+        ("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "0"),
+        ("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "-1"),
+        ("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "nan"),
+        ("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "inf"),
+        ("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "brotli"),
+        ("OTEL_EXPORTER_OTLP_COMPRESSION", "brotli"),
+    ],
+)
+def test_a_setting_the_exporter_cannot_honour_refuses_the_run(
+    monkeypatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(ValueError, match=value):
+        make_otlp_exporter(
+            "http://127.0.0.1:9/v1/traces", {"Authorization": AUTHORIZATION}, retry=False
+        )
+
+
+def test_a_netrc_entry_does_not_replace_the_callers_credentials(
+    receiver, spans, monkeypatch, tmp_path
+) -> None:
+    """requests would otherwise take a netrc entry for the endpoint over the Authorization header
+    the caller gave, and every batch would carry someone else's credentials."""
+    netrc = tmp_path / "netrc"
+    netrc.write_text("default login someone password elsewhere\n")
+    netrc.chmod(0o600)
+    monkeypatch.setenv("NETRC", str(netrc))
+    assert _write_once(receiver).export(spans) is SpanExportResult.SUCCESS
+    [post] = receiver.posts
+    assert post.headers["authorization"] == AUTHORIZATION
 
 
 class _RecordingAdapter(requests.adapters.BaseAdapter):
@@ -235,10 +286,10 @@ class _RecordingAdapter(requests.adapters.BaseAdapter):
         pass
 
 
-def test_the_certificates_the_sdk_resolved_reach_the_request(monkeypatch, spans) -> None:
-    """On every SDK the receiver's configured certificates win over requests' own
-    ``REQUESTS_CA_BUNDLE``. They are read where requests hands them to its adapter, because
-    honouring them on the wire would need a TLS receiver."""
+def test_the_configured_certificates_reach_the_request(monkeypatch, spans) -> None:
+    """The receiver's configured certificates win over requests' own ``REQUESTS_CA_BUNDLE``.
+    They are read where requests hands them to its adapter, because honouring them on the wire
+    would need a TLS receiver."""
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE", "/otel/ca.pem")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE", "/otel/client.pem")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY", "/otel/client.key")
@@ -252,6 +303,21 @@ def test_the_certificates_the_sdk_resolved_reach_the_request(monkeypatch, spans)
     [sent] = adapter.sent
     assert sent["verify"] == "/otel/ca.pem"
     assert sent["cert"] == ("/otel/client.pem", "/otel/client.key")
+
+
+def test_the_timeout_variable_is_read_in_seconds(monkeypatch, spans) -> None:
+    """The generic variable when the traces one is unset, in seconds as the Python SDK reads it
+    (the specification says milliseconds), so a deployment's value keeps its meaning."""
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", raising=False)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TIMEOUT", "2.5")
+    endpoint = "http://127.0.0.1:9/v1/traces"
+    exporter = make_otlp_exporter(endpoint, {"Authorization": AUTHORIZATION}, retry=False)
+    adapter = _RecordingAdapter()
+    exporter._session.mount(endpoint, adapter)
+
+    assert exporter.export(spans) is SpanExportResult.SUCCESS
+    [sent] = adapter.sent
+    assert sent["timeout"] == 2.5
 
 
 class TestTheIngestionHeader:

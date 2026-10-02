@@ -786,8 +786,8 @@ class TestHowManyTimesABatchIsPosted:
         assert posts[0]["allow_redirects"] is False
 
     def test_the_endpoints_adapter_makes_no_attempt_of_its_own(self) -> None:
-        """A session supplied through the SDK's credential-provider hook may carry an adapter
-        with a retry policy; the exporter mounts its own with none."""
+        """requests' own adapters make no retries; the exporter mounts one with none for its
+        endpoint anyway, so the guarantee does not rest on a library default."""
         exporter = self._write_once()
         adapter = exporter._session.get_adapter("http://127.0.0.1:9/v1/traces")
         assert adapter.max_retries.total == 0
@@ -801,8 +801,9 @@ class TestHowManyTimesABatchIsPosted:
         assert exporter.export([]) is SpanExportResult.SUCCESS
         assert len(posts) == 1
 
-    def test_an_sdk_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
-        """An incompatible SDK must refuse the run instead of silently enabling retries."""
+    def test_an_install_that_cannot_post_once_refuses_the_run(self, monkeypatch) -> None:
+        """An install that cannot build the single-attempt request must refuse the run instead
+        of silently enabling retries."""
         from tolokaforge_langfuse import otlp_transport
 
         monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)
@@ -811,27 +812,8 @@ class TestHowManyTimesABatchIsPosted:
                 "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
             )
 
-    def test_an_exporter_missing_what_the_post_reads_refuses_the_run(self, monkeypatch) -> None:
-        """The subclass posts off the SDK exporter's own session, endpoint, timeout, compression
-        and certificates. An SDK that renames one of them must stop the run rather than let the
-        exporter fall back to the ``_export`` that re-posts."""
-        from tolokaforge_langfuse import otlp_transport
-
-        real = otlp_transport._single_attempt_exporter_class()
-
-        class _Renamed(real):  # type: ignore[misc, valid-type]
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                del self._compression
-
-        monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: _Renamed)
-        with pytest.raises(otlp_transport.SingleAttemptUnavailable, match="_compression"):
-            otlp_transport.make_otlp_exporter(
-                "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}, retry=False
-            )
-
-    def test_the_same_sdk_still_serves_a_retrying_exporter(self, monkeypatch) -> None:
-        """Only the single-attempt policy needs these internals; v3 keeps the stock exporter."""
+    def test_the_retrying_exporter_does_not_need_the_single_attempt_one(self, monkeypatch) -> None:
+        """v3 keeps the stock exporter whether or not the single-attempt one can be built."""
         from tolokaforge_langfuse import otlp_transport
 
         monkeypatch.setattr(otlp_transport, "_single_attempt_exporter_class", lambda: None)

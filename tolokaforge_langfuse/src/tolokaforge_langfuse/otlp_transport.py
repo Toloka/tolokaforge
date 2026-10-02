@@ -5,22 +5,23 @@ Langfuse 4.38.0 ``events_only`` receiver, a re-sent observation id is an update,
 One attempt avoids unnecessary requests and unintended overwrites; it does not guarantee delivery.
 The receipt reports failed exports so the offline sibling can recover missing observations.
 
-Three repeats have to be off, and the stock exporter leaves two of them on:
+Three repeats have to be off, and the SDK's exporter leaves two of them on:
 
 - its ``export()`` runs a retry loop of its own (six attempts);
-- a lost connection is posted again with the same bytes (``_export()``'s ``except
-  ConnectionError`` branch; from OpenTelemetry 1.45 its OTLP client's ``_submit()``), which is
-  exactly the case that matters: the receiver took the body and the answer was lost. Skipping
-  only the outer loop therefore still double-posts, which is why :class:`SingleAttemptSpanExporter`
-  owns the ``session.post`` call instead of delegating to the SDK;
+- its request path posts a lost connection again with the same bytes, which is exactly the case
+  that matters: the receiver took the body and the answer was lost;
 - ``requests`` follows a 307 or 308 by re-sending the body, and a session's adapter can carry a
-  retry policy of its own (a caller-supplied session through
-  ``OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER`` may), so redirects are refused and
-  the endpoint's adapter is mounted with no retries.
+  retry policy of its own.
 
-That one post goes through a ``requests`` session on every supported SDK. Up to OpenTelemetry 1.44
-the exporter holds one; from 1.45 it holds an OTLP client over a transport, urllib3 unless the
-exporter is given a session, so the single-attempt exporter gives it one.
+So the single-attempt exporter does not go through the SDK's exporter at all: it builds the OTLP
+request itself. The body is the batch as the SDK's public OTLP encoder writes it
+(``opentelemetry.exporter.otlp.proto.common.trace_encoder.encode_spans``, the protobuf message of
+the OTLP/HTTP specification), sent in one POST through a ``requests`` session of its own, with
+redirects refused and the endpoint's adapter mounted with no retries. Its settings are the
+caller's endpoint and headers plus the standard exporter variables for the timeout, the
+compression and the certificates (``OTEL_EXPORTER_OTLP_TRACES_*``, then ``OTEL_EXPORTER_OTLP_*``).
+It reads nothing an SDK keeps private: the encoder's public module is all it takes from the SDK's
+exporter packages, and an install without it refuses the run at start rather than retrying.
 
 Engine-free by construction: both producers need this guarantee, and the offline connector imports
 it next to any engine pin, or with none.
@@ -30,14 +31,15 @@ from __future__ import annotations
 
 import gzip
 import logging
+import math
 import os
 import zlib
 from collections.abc import Mapping, Sequence
-from io import BytesIO
-from typing import Any
 
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+
+from tolokaforge_langfuse import __version__
 
 _log = logging.getLogger(__name__)
 
@@ -46,28 +48,16 @@ _log = logging.getLogger(__name__)
 INGESTION_VERSION_HEADER = "x-langfuse-ingestion-version"
 INGESTION_VERSION = "4"
 
-# what :class:`SingleAttemptSpanExporter` reads off the SDK's exporter to post for itself, checked
-# on the built object (they are instance attributes). Up to OpenTelemetry 1.44 the exporter keeps
-# the request settings itself and the headers on its session:
-SESSION_LAYOUT = (
-    "_session",
-    "_endpoint",
-    "_timeout",
-    "_compression",
-    "_certificate_file",
-    "_client_cert",
-)
-# from 1.45 an OTLP client keeps the resolved headers and timeout, and the session (taken from the
-# client's transport) the certificates:
-CLIENT_LAYOUT = (
-    "_session",
-    "_endpoint",
-    "_compression",
-    "_client._headers",
-    "_client._timeout",
-)
+# the OTLP/HTTP binary encoding
+PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
+USER_AGENT = f"tolokaforge-langfuse/{__version__}"
+# the SDK exporter's default; the timeout variables are read in seconds, as the Python SDK reads
+# them (the specification says milliseconds), so a deployment's value keeps its meaning
+DEFAULT_TIMEOUT_SECONDS = 10.0
+COMPRESSIONS = ("none", "gzip", "deflate")
 
-# a session named by one of these is the SDK's to load (its generic variable, then the traces one)
+# a session named by one of these is loaded by the SDK's exporter, which the single-attempt
+# exporter does not use, so naming one refuses the run rather than being ignored
 _CREDENTIAL_PROVIDER_VARIABLES = (
     "OTEL_PYTHON_EXPORTER_OTLP_HTTP_CREDENTIAL_PROVIDER",
     "OTEL_PYTHON_EXPORTER_OTLP_HTTP_TRACES_CREDENTIAL_PROVIDER",
@@ -75,90 +65,114 @@ _CREDENTIAL_PROVIDER_VARIABLES = (
 
 
 class SingleAttemptUnavailable(RuntimeError):
-    """This OpenTelemetry SDK cannot be asked to post a batch once."""
+    """The single-attempt exporter cannot be built here, so a batch cannot be posted once."""
+
+
+def _standard_variable(name: str) -> str | None:
+    """One of the exporter's standard settings: the traces variable, then the generic one."""
+    return (
+        os.environ.get(f"OTEL_EXPORTER_OTLP_TRACES_{name}")
+        or os.environ.get(f"OTEL_EXPORTER_OTLP_{name}")
+        or None
+    )
+
+
+def _timeout() -> float:
+    raw = _standard_variable("TIMEOUT")
+    if raw is None:
+        return DEFAULT_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = math.nan
+    # requests would take a zero, negative or non-finite timeout and fail every post unsent
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(
+            f"OTEL_EXPORTER_OTLP_(TRACES_)TIMEOUT={raw!r} is not a positive number of seconds"
+        )
+    return seconds
+
+
+def _compression() -> str:
+    value = (_standard_variable("COMPRESSION") or "none").strip().lower()
+    if value not in COMPRESSIONS:
+        raise ValueError(
+            f"OTEL_EXPORTER_OTLP_(TRACES_)COMPRESSION={value!r} is not one of {', '.join(COMPRESSIONS)}"
+        )
+    return value
+
+
+def _certificates() -> tuple[bool | str, str | tuple[str, str] | None]:
+    """What the receiver is verified against and the client certificate presented to it. They go
+    with each request, so ``REQUESTS_CA_BUNDLE`` cannot replace a configured certificate."""
+    verify: bool | str = _standard_variable("CERTIFICATE") or True
+    client_certificate = _standard_variable("CLIENT_CERTIFICATE")
+    client_key = _standard_variable("CLIENT_KEY")
+    if client_certificate and client_key:
+        return verify, (client_certificate, client_key)
+    return verify, client_certificate
 
 
 def _single_attempt_exporter_class() -> type | None:
-    """An ``OTLPSpanExporter`` that posts a batch **once**, or None when the SDK has moved on.
-
-    It reads the SDK exporter's own configuration (the session, the endpoint, the headers, the
-    timeout, the compression and the certificates) and makes the request itself, so none of the
-    three repeats described in this module's docstring can happen. An SDK that no longer offers
-    those internals fails :func:`make_otlp_exporter`'s check, which refuses the run rather than
-    falling back to a retrying exporter."""
+    """:class:`SingleAttemptSpanExporter`, or None when this install lacks what it posts with
+    (``requests``, or the SDK's OTLP encoder)."""
     try:
         import requests
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-            encode_spans,
-        )
+        from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
         from requests.adapters import HTTPAdapter
     except ImportError:
         return None
 
-    class SingleAttemptSpanExporter(OTLPSpanExporter):  # type: ignore[misc, valid-type]
+    def _the_callers_headers(request: requests.PreparedRequest) -> requests.PreparedRequest:
+        # requests' auth hook as a no-op: with one set, requests does not look the endpoint up in
+        # a netrc file, whose entry would replace the caller's Authorization header
+        return request
+
+    class SingleAttemptSpanExporter(SpanExporter):
         """One POST attempt per batch, without automatic repeats or overwrites."""
 
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            if kwargs.get("session") is None and not _credential_provider_named():
-                # up to 1.44 the SDK makes this session itself; from 1.45 a session selects its
-                # requests transport, which the single post goes through
-                kwargs["session"] = requests.Session()
-            super().__init__(*args, **kwargs)
-            client = getattr(self, "_client", None)
-            if client is not None:
-                session = getattr(getattr(client, "_transport", None), "_session", None)
-                if isinstance(session, requests.Session):
-                    self._session = session
-            session, endpoint = getattr(self, "_session", None), getattr(self, "_endpoint", "")
-            if session is not None and endpoint:
-                # a caller-supplied session may carry an adapter that retries on its own
-                session.mount(str(endpoint), HTTPAdapter(max_retries=0))
-
-        def _settings(self) -> dict[str, Any]:
-            """The request settings where this SDK resolved them (see :data:`CLIENT_LAYOUT`).
-
-            The certificates are always passed with the request, as up to 1.44, so that a
-            ``REQUESTS_CA_BUNDLE`` cannot replace the receiver's configured certificate."""
-            client = getattr(self, "_client", None)
-            if client is None:
-                return {
-                    "verify": self._certificate_file,
-                    "cert": self._client_cert,
-                    "timeout": self._timeout,
-                }
-            return {
-                "headers": client._headers,
-                "timeout": client._timeout,
-                "verify": self._session.verify,
-                "cert": self._session.cert,
+        def __init__(self, endpoint: str, headers: Mapping[str, str] | None = None) -> None:
+            self._endpoint = endpoint
+            self._timeout = _timeout()
+            self._compression = _compression()
+            self._verify, self._cert = _certificates()
+            self._headers = {
+                "User-Agent": USER_AGENT,
+                **(headers or {}),
+                "Content-Type": PROTOBUF_CONTENT_TYPE,
             }
+            if self._compression != "none":
+                self._headers["Content-Encoding"] = self._compression
+            # A caller reads each answer through this session's response hooks (the offline
+            # connector tells a rate limit apart this way). requests' own adapters make no
+            # retries; the endpoint's is mounted anyway, so the guarantee does not rest on that.
+            self._session = requests.Session()
+            self._session.mount(endpoint, HTTPAdapter(max_retries=0))
+            self._session.auth = _the_callers_headers
+            self._shutdown = False
 
         def _body(self, spans: Sequence[ReadableSpan]) -> bytes:
-            """The encoded batch under the exporter's own compression setting; 1.45 replaced the
-            compression enum, its values stayed."""
             raw: bytes = encode_spans(spans).SerializePartialToString()
-            compression = getattr(self._compression, "value", self._compression)
-            if compression == "gzip":
-                buffer = BytesIO()
-                with gzip.GzipFile(fileobj=buffer, mode="w") as stream:
-                    stream.write(raw)
-                return buffer.getvalue()
-            if compression == "deflate":
+            if self._compression == "gzip":
+                return gzip.compress(raw)
+            if self._compression == "deflate":
                 return zlib.compress(raw)
             return raw
 
-        def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:  # type: ignore[override]
-            if getattr(self, "_shutdown", False):
+        def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+            if self._shutdown:
                 return SpanExportResult.FAILURE
             try:
                 # the one request: no redirect is followed (that would re-send the body) and the
                 # adapter above makes no attempt of its own, so this is the only POST
                 answer = self._session.post(
-                    url=self._endpoint,
+                    self._endpoint,
                     data=self._body(spans),
+                    headers=self._headers,
+                    timeout=self._timeout,
+                    verify=self._verify,
+                    cert=self._cert,
                     allow_redirects=False,
-                    **self._settings(),
                 )
             except Exception as exc:  # noqa: BLE001 - the queue counts and reports a failure
                 # the receiver may still have written this batch: the caller treats a failure as
@@ -167,22 +181,18 @@ def _single_attempt_exporter_class() -> type | None:
                 return SpanExportResult.FAILURE
             if 200 <= answer.status_code < 300:
                 return SpanExportResult.SUCCESS
-            _log.warning("span export refused: HTTP %s", getattr(answer, "status_code", "unknown"))
+            _log.warning("span export refused: HTTP %s", answer.status_code)
             return SpanExportResult.FAILURE
 
+        def shutdown(self) -> None:
+            self._shutdown = True
+            self._session.close()
+
+        def force_flush(self, timeout_millis: int = 30_000) -> bool:
+            # nothing is buffered here: an export returns once its one request has
+            return True
+
     return SingleAttemptSpanExporter
-
-
-def _credential_provider_named() -> bool:
-    return any(os.environ.get(name) for name in _CREDENTIAL_PROVIDER_VARIABLES)
-
-
-def _has(obj: object, dotted: str) -> bool:
-    for name in dotted.split("."):
-        if not hasattr(obj, name):
-            return False
-        obj = getattr(obj, name)
-    return True
 
 
 def make_otlp_exporter(
@@ -192,42 +202,55 @@ def make_otlp_exporter(
     ingestion_version: str | None = INGESTION_VERSION,
     retry: bool = True,
 ) -> SpanExporter:
-    """The standard OTLP/HTTP span exporter; ``OTEL_EXPORTER_OTLP_HEADERS`` supplies the
-    receiver's credentials when ``headers`` is not given, and is never logged here. From
-    OpenTelemetry 1.45 the SDK also merges that variable under given ``headers``, whose keys win.
+    """The OTLP/HTTP span exporter for one receiver.
+
+    ``retry=True`` is the SDK's own exporter, as the v3 family has always used it:
+    ``OTEL_EXPORTER_OTLP_HEADERS`` supplies the receiver's credentials when ``headers`` is not
+    given, and is never logged here. From OpenTelemetry 1.45 the SDK also merges that variable
+    under given ``headers``, whose keys win.
+
+    ``retry=False`` makes one POST attempt per batch (:func:`_single_attempt_exporter_class`),
+    accepting only 2xx responses as successful exports. The receiver's headers come from the
+    caller alone (the plugin reads them through the secret manager): the SDK's header variables
+    are not read, and a netrc entry cannot replace them. These raise
+    :class:`SingleAttemptUnavailable` rather than silently changing the requested delivery policy
+    or sending every batch to be refused: no caller headers, a credential provider
+    (``OTEL_PYTHON_EXPORTER_OTLP_HTTP_*CREDENTIAL_PROVIDER``, the SDK exporter's), and an install
+    without ``requests`` or the SDK's OTLP encoder. A timeout that is not a positive number of
+    seconds, or an unknown compression, raises ``ValueError``.
 
     ``ingestion_version`` adds Langfuse's ``x-langfuse-ingestion-version`` header, which selects
     the receiver's direct ingestion path; the v3 family is not sent it at all. It joins
-    caller-supplied headers only: with none, the SDK's own environment variable owns the header
-    set.
-
-    ``retry=False`` makes one POST attempt per batch (:func:`_single_attempt_exporter_class`),
-    accepting only 2xx responses as successful exports. When this SDK no longer offers what
-    that requires (neither :data:`SESSION_LAYOUT` nor :data:`CLIENT_LAYOUT` is complete), it
-    raises :class:`SingleAttemptUnavailable` rather than silently changing the requested
-    delivery policy to a retrying exporter."""
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-
+    caller-supplied headers only: with none, ``retry=True`` leaves the header set to the SDK's
+    own environment variable."""
     merged = dict(headers) if headers else {}
     if merged and ingestion_version:
         merged.setdefault(INGESTION_VERSION_HEADER, ingestion_version)
     if retry:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
         return OTLPSpanExporter(endpoint=endpoint, headers=merged or None)
 
+    providers = [name for name in _CREDENTIAL_PROVIDER_VARIABLES if os.environ.get(name)]
+    if providers:
+        raise SingleAttemptUnavailable(
+            f"{', '.join(providers)} names a credential provider, which only the SDK's retrying "
+            "exporter loads: give the single-attempt exporter the receiver's headers instead"
+        )
+    if not merged:
+        raise SingleAttemptUnavailable(
+            "the single-attempt exporter takes the receiver's headers from its caller, and none "
+            "were given (it does not read OTEL_EXPORTER_OTLP_(TRACES_)HEADERS)"
+        )
     single = _single_attempt_exporter_class()
     if single is None:
         raise SingleAttemptUnavailable(_REFUSAL)
-    exporter: SpanExporter = single(endpoint=endpoint, headers=merged or None)
-    layout = CLIENT_LAYOUT if hasattr(exporter, "_client") else SESSION_LAYOUT
-    missing = [name for name in layout if not _has(exporter, name)]
-    if missing:
-        # the subclass posts for itself off these; without them it would have to delegate to the
-        # SDK's own retrying request path, which re-posts on a lost connection
-        raise SingleAttemptUnavailable(f"{_REFUSAL} (missing: {', '.join(missing)})")
+    exporter: SpanExporter = single(endpoint, merged or None)
     return exporter
 
 
 _REFUSAL = (
-    "the OTLP exporter of this OpenTelemetry SDK cannot enforce the single-attempt delivery "
-    "policy: pin an SDK this package supports"
+    "the single-attempt exporter builds its request with requests and the OpenTelemetry OTLP "
+    "encoder (opentelemetry-exporter-otlp-proto-common), and this install lacks one of them: "
+    "reinstall tolokaforge-langfuse with its dependencies"
 )

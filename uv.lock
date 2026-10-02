@@ -5200,6 +5200,7 @@ name = "tolokaforge-langfuse"
 version = "0.1.0"
 source = { editable = "tolokaforge_langfuse" }
 dependencies = [
+    { name = "opentelemetry-exporter-otlp-proto-common" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
@@ -5210,6 +5211,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "opentelemetry-exporter-otlp-proto-common", specifier = ">=1.27" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2.0.0" },
