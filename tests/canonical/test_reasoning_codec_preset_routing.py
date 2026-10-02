@@ -40,8 +40,9 @@ _MAY_KEEP_NOTHING: dict[str, str] = {
     "openai_gpt5": "OpenAI does not accept echoed reasoning on subsequent turns",
     "openai_gpt6": "OpenAI does not accept echoed reasoning on subsequent turns",
     "openai_o_series": (
-        "OpenAI does not accept echoed reasoning on subsequent turns — same vendor "
-        "constraint as the gpt5/gpt6 siblings above, inherited rather than probed"
+        "probed 2026-10-02 via OpenRouter, five samples: o3 encrypted-only every "
+        "time, o4-mini readable once in five. The preset extracts what arrives; "
+        "OpenAI still refuses the echo, so replay emits nothing"
     ),
     "gemma": "no reasoning surface on this lineage",
     "deepseek_v32": "probed 2026-09-30 on SiliconFlow: no reasoning surfaced at all",
@@ -97,4 +98,37 @@ def test_every_allow_list_entry_still_names_a_preset() -> None:
     assert not stale, (
         f"_MAY_KEEP_NOTHING names presets that no longer exist: {stale}. "
         "Remove them, so the list keeps meaning what it says."
+    )
+
+
+def test_every_preset_states_its_reasoning_stance() -> None:
+    """A preset must say what it does with reasoning, not inherit it by silence.
+
+    ``_instantiate_slot`` supplies ``none`` for an absent ``reasoning_codec``,
+    so a preset written for an unrelated reason — a sampling rule, a glob fix —
+    acquires ``NoReasoningCodec`` without anyone deciding it should. The
+    allow-list above then reads as a set of decisions when some of its entries
+    are omissions.
+
+    That is not hypothetical. ``openai_o_series`` was added to stop o-series
+    names falling through to a preset that would drop ``temperature``; reasoning
+    was never the subject, and the default dropped ``openai/o4-mini``'s readable
+    ``reasoning_content`` on the floor until a probe found it.
+
+    Declaring ``none`` satisfies this. The requirement is a statement, not a
+    particular answer.
+    """
+    silent = sorted(
+        name
+        for name, block in get_resolved_presets()["presets"].items()
+        if isinstance(block, dict) and "reasoning_codec" not in block
+    )
+    assert not silent, (
+        f"These presets do not state a reasoning stance: {silent}.\n\n"
+        "They will resolve to NoReasoningCodec and keep nothing, which is the "
+        "shape that cost kimi-k2.7-code half its score. Decide: run "
+        "scripts/analysis/probe_reasoning_transport.py against a model the "
+        "preset claims, route it to a codec that keeps what arrives, or write "
+        "`reasoning_codec: none` with a comment saying why there is nothing to "
+        "keep."
     )

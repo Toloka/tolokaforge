@@ -979,6 +979,11 @@ presets:
     content_policy: nova
     response_policy: unwrap_input
     message_assembly_policy: nova
+    # Stated rather than inherited. Not probed — the Bedrock route is not
+    # reachable from this account, so `none` is what we can defend, not what
+    # we measured. See the allow-list in
+    # tests/canonical/test_reasoning_codec_preset_routing.py.
+    reasoning_codec: none
 
   # Amazon Nova via OpenRouter arrives org-prefixed as ``amazon/nova-*``
   # (e.g. ``amazon/nova-2-lite-v1``) with provider ``openrouter``, which
@@ -999,6 +1004,9 @@ presets:
     content_policy: nova
     response_policy: standard
     message_assembly_policy: nova
+    # Stated rather than inherited. Not probed — the OpenRouter nova slug
+    # 404s from this account.
+    reasoning_codec: none
 
   # google/gemini-3.5-flash — model-specific overlay landed via
   # auto-resolve (Slack-requested integration, PR #560). Declared BEFORE the
@@ -1168,6 +1176,10 @@ presets:
       - "*/google/gemma*"
     schema_sanitizer: gemini
     response_policy: array_dict_map
+    # Stated rather than inherited: Gemma is the open-weights line with no
+    # reasoning surface at all, unlike the Gemini line whose schema
+    # sanitizer it borrows.
+    reasoning_codec: none
 
   # MiniMax-M3 (MiniMax via OpenRouter): reasoning model on the M-series
   # 1M-context line. The ``openai`` reasoning codec surfaces the
@@ -1241,6 +1253,20 @@ presets:
       - "*/o3-pro*"
       - "*/o3-deep-research*"
       - "*/o4-mini*"
+    # ``openai`` rather than the silent default this preset carried. Probed
+    # 2026-10-02 via OpenRouter, five samples: ``openai/o3`` returned an
+    # encrypted-only blob every time, and ``openai/o4-mini`` returned one with
+    # readable ``reasoning_content`` / ``reasoning_details`` once in five — the
+    # route fans out and the arrival channel is not stable. ``NoReasoningCodec``
+    # drops that readable case on the floor, which is the shape that cost
+    # kimi-k2.7-code half its score; this codec extracts it when it arrives and
+    # costs nothing on the encrypted samples, where it extracts nothing.
+    #
+    # Replay still emits nothing, so this preset stays on the non-replaying
+    # allow-list in tests/canonical/test_reasoning_codec_preset_routing.py —
+    # OpenAI refuses echoed reasoning, the constraint its gpt5/gpt6 siblings
+    # already record.
+    reasoning_codec: openai
     params:
       supports_sampling_params: false
 
