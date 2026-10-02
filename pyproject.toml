@@ -384,6 +384,16 @@ exists = "tolokaforge.core.grading.trace_check_operator:exists"
 equals_binding = "tolokaforge.core.grading.trace_check_operator:equals_binding"
 contains_binding = "tolokaforge.core.grading.trace_check_operator:contains_binding"
 
+# Comparison-view rule seam (``tolokaforge/core/grading/comparison_view.py``,
+# ADR-0053). Every entry resolves to a ``ComparisonViewRule`` class whose
+# ``NAME`` is the entry's name; the ``kind`` of a ``comparison_view`` entry
+# resolves here, and the built-ins register like any other rule. A rule decides
+# which states hash equal, so a distribution registering one makes a grading
+# decision: the Protocol's docstring states the trust boundary.
+[project.entry-points."tolokaforge.comparison_view_rules"]
+exclude_records = "tolokaforge.core.grading.comparison_view:ExcludeRecords"
+exclude_tables = "tolokaforge.core.grading.comparison_view:ExcludeTables"
+
 # Bundle-store Protocol (``tolokaforge/core/grading/bundle_store.py``). Two
 # built-ins ship: ``local_disk`` writes the bundle directory under
 # ``<root_dir>/grade_bundles/<digest>/`` with atomic per-worker staging;
@@ -525,6 +535,7 @@ exclude = [
     "tolokaforge/core/grading/bundle_producer.py",
     "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
+    "tolokaforge/core/grading/comparison_view.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
     "tolokaforge/core/grading/judge_kinds/parity.py",
