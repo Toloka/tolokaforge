@@ -471,6 +471,21 @@ class TestCollectExistingCost:
         total = Orchestrator._collect_existing_cost(tmp_path)
         assert abs(total - 0.07) < 1e-9
 
+    def test_sums_failed_judge_cost_from_trajectory_bundle(self, tmp_path: Path) -> None:
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trial_dir = tmp_path / "trials" / "T1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.05}))
+        (trial_dir / "trajectory.yaml").write_text(
+            yaml.dump(
+                {"grading_error": "judge malformed", "grading_judge_usage": {"cost_usd": 0.02}}
+            )
+        )
+        assert Orchestrator._collect_existing_cost(tmp_path) == pytest.approx(0.07)
+
     def test_grade_bundle_without_judge_usage(self, tmp_path: Path) -> None:
         """A grade bundle with no ``judge_usage`` adds nothing beyond the metrics cost."""
         import yaml
@@ -530,6 +545,16 @@ class TestTrialTotalSpendUsd:
 
         traj = _make_trajectory(cost=0.05, judge_cost=None)
         assert abs(Orchestrator._trial_total_spend_usd(traj) - 0.05) < 1e-9
+
+    def test_failed_judge_usage_counts_toward_budget(self) -> None:
+        from tolokaforge.core.models import JudgeUsage
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        traj = _make_trajectory(cost=0.05, judge_cost=None)
+        traj.grade = None
+        traj.grading_error = "judge malformed"
+        traj.grading_judge_usage = JudgeUsage(calls=1, cost_usd=0.02)
+        assert Orchestrator._trial_total_spend_usd(traj) == pytest.approx(0.07)
 
     def test_none_metrics_cost_counts_only_judge(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
