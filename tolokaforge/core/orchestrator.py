@@ -2660,9 +2660,8 @@ class Orchestrator:
         rejected here — before any trial executes — naming the offending tasks
         (AGENTS.md rule 1).
 
-        Assumes every adapter populates ``to_task_description().grading.llm_judge``
-        for rubric tasks; only ``NativeAdapter`` implements rubric grading today,
-        so non-native adapters simply surface no offending tasks here.
+        The adapter declares whether its grader needs a judge, including
+        host-side graders whose briefs are outside the runner rubric block.
         """
         judge_config = self.config.models.get("judge")
         if judge_config is not None:
@@ -2674,13 +2673,11 @@ class Orchestrator:
                 "Ensure load_tasks() has run successfully."
             )
         offending = [
-            task.task_id
-            for task in self.tasks
-            if self.adapter.to_task_description(task.task_id).grading.llm_judge is not None
+            task.task_id for task in self.tasks if self.adapter.requires_judge_model(task.task_id)
         ]
         if offending:
             raise ValueError(
-                "These selected tasks use an llm_judge grading component but the run "
+                "These selected tasks require a judge model but the run "
                 "config has no judge model: "
                 f"{', '.join(sorted(offending))}. Add a judge model to the run config "
                 "under models.judge (provider/name), e.g. "

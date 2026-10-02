@@ -895,6 +895,7 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "reasoning_via_thinking_kwarg",
         "drop_sampling_when_thinking",
         "reasoning_budget_default",
+        "api_call_timeout_s",
     }
 )
 
@@ -928,6 +929,16 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
     refusal = _unrecognised_override_keys(overrides)
     if refusal is not None:
         raise ValueError(refusal)
+
+    if "api_call_timeout_s" in overrides:
+        timeout = overrides["api_call_timeout_s"]
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout < float("inf")
+        ):
+            raise ValueError("api_call_timeout_s must be a finite positive number")
+        cfg["api_call_timeout_s"] = float(timeout)
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):

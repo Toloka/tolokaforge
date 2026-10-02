@@ -632,6 +632,10 @@ class GenerationResult:
         # :attr:`ModelCapabilities.output_length_retry_count`). ``None`` when
         # the response carries no finish_reason at all.
         self.finish_reason = finish_reason
+        # The sampling subset actually handed to the transport. None means the
+        # producer did not observe a request (e.g. a scripted client); an empty
+        # mapping means model policy omitted all sampling parameters.
+        self.sent_sampling: dict[str, float] | None = None
         # Defects of the attempts discarded before this reply was accepted.
         # Stamped only by ``BuiltinUserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
@@ -1446,6 +1450,7 @@ class LLMClient:
         reasoning: ReasoningConfig | None = None,
         top_p: float | None = None,
         observation: LLMCallObservation | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> GenerationResult:
         """Generate completion from LLM.
 
@@ -1508,6 +1513,7 @@ class LLMClient:
                         max_tokens=max_tokens,
                         role=role,
                         session_id=session_id,
+                        response_format=response_format,
                     )
                 except BaseException as exc:
                     self._fire_call_finished(
@@ -1763,6 +1769,7 @@ class LLMClient:
         max_tokens: int | None,
         role: LLMCallRole = "agent",
         session_id: str | None,
+        response_format: dict[str, Any] | None = None,
     ) -> GenerationResult:
         """One outer-retry attempt: prepare → build → call → detect → assemble.
 
@@ -1785,6 +1792,8 @@ class LLMClient:
             max_tokens=max_tokens,
             session_id=session_id,
         )
+        if response_format is not None:
+            kwargs["response_format"] = dict(response_format)
         start_time = time.time()
         response = self._call_with_key_rotation(kwargs)
         latency = time.time() - start_time
@@ -1800,13 +1809,17 @@ class LLMClient:
                 f"(native_finish_reason={synthetic!r}). Upstream provider "
                 f"produced an unrecoverable response; retrying."
             )
-        return self._assemble_result(
+        result = self._assemble_result(
             response=response,
             effective_system_prompt=effective_system_prompt,
             latency_s=latency,
             sanitized_tools=sanitized_tools,
             role=role,
         )
+        result.sent_sampling = {
+            key: kwargs[key] for key in ("temperature", "top_p", "top_k") if key in kwargs
+        }
+        return result
 
     # ------------------------------------------------------------------
     # generate() sub-phases
