@@ -39,6 +39,10 @@ _SAMPLE = StructuredReasoning(blocks=(ReasoningBlock(type="summary_text", text="
 _MAY_KEEP_NOTHING: dict[str, str] = {
     "openai_gpt5": "OpenAI does not accept echoed reasoning on subsequent turns",
     "openai_gpt6": "OpenAI does not accept echoed reasoning on subsequent turns",
+    "openai_o_series": (
+        "OpenAI does not accept echoed reasoning on subsequent turns — same vendor "
+        "constraint as the gpt5/gpt6 siblings above, inherited rather than probed"
+    ),
     "gemma": "no reasoning surface on this lineage",
     "deepseek_v32": "probed 2026-09-30 on SiliconFlow: no reasoning surfaced at all",
     "minimax": "probed 2026-09-30 on GMICloud: no reasoning surfaced at all",

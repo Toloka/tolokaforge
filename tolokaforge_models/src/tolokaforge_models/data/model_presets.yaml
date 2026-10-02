@@ -586,7 +586,7 @@ presets:
       # claimed because it serves the same weights; the replay envelope is
       # unmeasured there.
       - "deepseek/deepseek-v4-flash-0731"
-      - "*deepseek/deepseek-v4-flash-0731*"
+      - "*/deepseek/deepseek-v4-flash-0731*"
       - "deepseek/deepseek-v4-flash-0731*"
       - "*/deepseek/deepseek-v4-flash-0731*"
     schema_sanitizer: passthrough
@@ -948,7 +948,6 @@ presets:
     match:
       - "thinkingmachines/inkling"
       - "thinkingmachines/inkling*"
-      - "*thinkingmachines/inkling*"
       - "*/thinkingmachines/inkling*"
     schema_sanitizer: passthrough
     prompt_policy: dict_map_hints_ref
