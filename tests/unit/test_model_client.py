@@ -771,12 +771,12 @@ class TestSchemaStrictness:
         # Items must have key + value fields
         items = lines_schema["items"]
         assert "key" in items["properties"], "items must have 'key' field"
-        assert "requested_quantity" in items["properties"], (
-            "items must have requested_quantity from value schema"
-        )
-        assert "allocated_quantity" in items["properties"], (
-            "items must have allocated_quantity from value schema"
-        )
+        assert (
+            "requested_quantity" in items["properties"]
+        ), "items must have requested_quantity from value schema"
+        assert (
+            "allocated_quantity" in items["properties"]
+        ), "items must have allocated_quantity from value schema"
 
         # Position-aware sanitiser preserves metadata (``title`` / ``examples``)
         # — they're informational and accepted by every current provider.
