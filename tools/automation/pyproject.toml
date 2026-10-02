@@ -5,6 +5,8 @@ description = "Arena model automation: observe a candidate model's tool-calling 
 requires-python = ">=3.10"
 dependencies = [
     "tolokaforge",
+    # `langfuse-upload` reads, gates and sends agent transcripts through this wheel
+    "tolokaforge-langfuse>=0.1.0,<1.0.0",
     "typer>=0.12.5,<0.13",
     "click>=8.0.0,<8.2.0",
     "rich>=13.0.0",

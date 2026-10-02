@@ -507,6 +507,28 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 - `automation cost-summary` / `key-snapshot` / `agent-digest` - the accounting tail (see "Cost
   summary" above): key-usage snapshots, the per-run cost summary (JSON + markdown + one-liner) and
   the one-line job-log digest of an agent run's result event.
+- `automation langfuse-upload <dir>` - sends the agents' own `claude -p` output to a Langfuse
+  receiver, one trace per file (`agent_iter_<i>.jsonl` -> `resolve/<i>`, `agent_finalize.jsonl`
+  -> `finalize`, and an evaluation analysis's dimension agents: `analysis_<dimension>.json` ->
+  `analysis/<dimension>`, a later run `analysis_<dimension>.<n>.json` (n from 2) ->
+  `analysis/<dimension>/<n>`; from a directory only those names are read, so the stage's
+  `decision.json` and reprobe findings are listed as not read, not refused), through `tolokaforge_langfuse.transcripts`: a file with a shape the reader does
+  not know is refused, tool inputs and outputs are dropped unless `--tool-io scrub`, the serialised
+  payload is scanned by the outbound sentinel, keys that open another project than `--project`
+  refuse the upload, and a trace the receiver already holds in another environment is not
+  re-sent. The model is the first name the transcript reports, unless `--model <name>` names the
+  one that served the run: a CLI pointed at an alias reports the alias, whatever a gateway routes
+  it to. `--model` becomes every generation's model, the `model:` tag and `model_name`, and the
+  facets come through the projection's model-name resolver (raw here: `model:<name>`, no
+  `model_<facet>` tags). The transcript's own names stay in the trace metadata: `cli_model` is the
+  first it reports, `model_names` all of them, with the `--model` name added when it is not among
+  them. A `--model` the tag vocabulary refuses refuses every file. Nothing is inferred from a
+  second name in the transcript. The receiver is `LANGFUSE_BASE_URL` (or
+  `LANGFUSE_OTLP_ENDPOINT`); the key pair and
+  `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A
+  file it did not send is a line in the report (`--receipt`, the job summary) and exit 1; a setup
+  error (no receiver, no key pair, keys that open another project) is one line on stderr and exit
+  1, with no receipt. `--dry-run` needs no key. No workflow step calls it.
 - `tests/unit/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
 - `tests/unit/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
