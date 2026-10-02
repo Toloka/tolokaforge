@@ -69,10 +69,19 @@ CLEAN_EVENTS: list[dict[str, Any]] = [
 ]
 
 
+# what an agent's caller keeps beside its output as ``<stem>.prompt.txt``
+PROMPT = "You are one of five independent analysis agents.\n\n== CONTEXT ==\nthe run's facts\n"
+
+
 def write(directory: Path, name: str, events: list[dict[str, Any]]) -> Path:
     path = directory / name
     path.write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
     return path
+
+
+def root_of(batch: list[Any]) -> Any:
+    """The root span of one exported transcript: the trace itself on a v4 receiver."""
+    return next(span for span in batch if span.parent is None)
 
 
 def receiver_from(env: dict[str, str]) -> lu.Receiver:
@@ -624,6 +633,167 @@ class TestTheUpload:
             transport.make_otlp_exporter = original  # type: ignore[assignment]
 
 
+class TestThePrompt:
+    """The agent's output does not repeat the prompt it was given: its caller keeps it beside the
+    output as ``<stem>.prompt.txt``, and it becomes that transcript's trace input."""
+
+    INPUT = "langfuse.observation.input"
+    META = "langfuse.trace.metadata."
+
+    def test_a_prompt_beside_a_transcript_is_its_traces_input(self, tmp_path: Path) -> None:
+        for name in ("analysis_four_bucket.json", "analysis_harness_infra.json"):
+            (tmp_path / name).write_text(json.dumps(CLEAN_EVENTS), encoding="utf-8")
+        (tmp_path / "analysis_four_bucket.prompt.txt").write_text(PROMPT, encoding="utf-8")
+        exporter = FakeExporter()
+        report = TestTheUpload._send(tmp_path, exporter)
+        assert report.ok and len(exporter.batches) == 2
+        # name order: the dimension with the prompt first
+        prompted, plain = (root_of(batch) for batch in exporter.batches)
+        assert prompted.attributes[self.INPUT] == PROMPT
+        assert prompted.attributes[f"{self.META}input_chars"] == len(PROMPT)
+        assert prompted.attributes[f"{self.META}input_truncated"] is False
+        assert prompted.attributes[f"{self.META}input_redacted_rules"] == "none"
+        # without one nothing changes: no input, no input facts
+        assert self.INPUT not in plain.attributes
+        assert not [key for key in plain.attributes if key.startswith(f"{self.META}input_")]
+        assert [entry.get("prompt") for entry in report.sent] == [
+            "analysis_four_bucket.prompt.txt",
+            None,
+        ]
+        assert "2** transcript(s), 6 span(s), 1 with the agent's prompt as input" in (
+            report.as_markdown()
+        )
+
+    def test_a_retry_takes_its_own_prompt(self, tmp_path: Path) -> None:
+        for stem, text in (
+            ("analysis_four_bucket", "the first attempt's prompt"),
+            ("analysis_four_bucket.2", "the retry's prompt, with its correction"),
+        ):
+            (tmp_path / f"{stem}.json").write_text(json.dumps(CLEAN_EVENTS), encoding="utf-8")
+            (tmp_path / f"{stem}.prompt.txt").write_text(text, encoding="utf-8")
+        exporter = FakeExporter()
+        report = TestTheUpload._send(tmp_path, exporter)
+        assert report.ok
+        assert [(e["transcript_id"], e["prompt"]) for e in report.sent] == [
+            ("analysis/four_bucket/2", "analysis_four_bucket.2.prompt.txt"),
+            ("analysis/four_bucket", "analysis_four_bucket.prompt.txt"),
+        ]
+        assert [root_of(batch).attributes[self.INPUT] for batch in exporter.batches] == [
+            "the retry's prompt, with its correction",
+            "the first attempt's prompt",
+        ]
+
+    def test_a_prompt_file_is_never_a_transcript_nor_a_file_not_read(self, tmp_path: Path) -> None:
+        """Not parsed, not refused, not listed as not read. One without its transcript, which no
+        writer leaves, pairs with nothing and is not read either."""
+        (tmp_path / "analysis_four_bucket.json").write_text(
+            json.dumps(CLEAN_EVENTS), encoding="utf-8"
+        )
+        (tmp_path / "analysis_four_bucket.prompt.txt").write_text(PROMPT, encoding="utf-8")
+        (tmp_path / "analysis_harness_infra.prompt.txt").write_text("orphan", encoding="utf-8")
+        (tmp_path / "decision.json").write_text('{"fix_targets": []}', encoding="utf-8")
+        report = upload(tmp_path)
+        assert report.ok and report.refused == []
+        assert [e["file"] for e in report.sent] == ["analysis_four_bucket.json"]
+        assert report.ignored == ["decision.json"]
+        assert "harness_infra" not in json.dumps(report.as_dict())
+        assert "harness_infra" not in report.as_markdown()
+
+    def test_a_file_named_on_the_command_line_takes_its_prompt_too(self, tmp_path: Path) -> None:
+        path = write(tmp_path, "capture.jsonl", CLEAN_EVENTS)
+        (tmp_path / "capture.prompt.txt").write_text(PROMPT, encoding="utf-8")
+        report = upload(path)
+        assert report.ok and report.sent[0]["prompt"] == "capture.prompt.txt"
+
+    def test_a_prompt_that_cannot_be_read_refuses_its_transcript(self, tmp_path: Path) -> None:
+        """Sent without it, the trace would read as an agent that was given no prompt."""
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        write(tmp_path, "agent_iter_2.jsonl", CLEAN_EVENTS)
+        (tmp_path / "agent_iter_2.prompt.txt").write_bytes(b"\xff\xfe not utf-8")
+        report = upload(tmp_path)
+        assert [e["transcript_id"] for e in report.sent] == ["resolve/1"]
+        assert [e["file"] for e in report.refused] == ["agent_iter_2.jsonl"]
+        assert "agent_iter_2.prompt.txt cannot be read" in report.refused[0]["reason"]
+        assert not report.ok
+
+    @pytest.mark.parametrize("kind", ["directory", "dangling-link", "named-pipe"])
+    def test_a_prompt_name_that_is_not_a_regular_file_refuses_too(
+        self, tmp_path: Path, kind: str
+    ) -> None:
+        """Something is there under the name, so the caller kept a prompt: reading it as none
+        would send the transcript as though the agent had been given no prompt. And it is refused
+        unopened: a named pipe would block the open for good (a device would never end)."""
+        import os
+        import threading
+
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        prompt = tmp_path / "agent_iter_1.prompt.txt"
+        if kind == "directory":
+            prompt.mkdir()
+        elif kind == "dangling-link":
+            prompt.symlink_to(tmp_path / "nowhere.txt")
+        else:
+            os.mkfifo(prompt)
+        reports: list[lu.UploadReport] = []
+        # in a thread, so a regression that opens the pipe fails here instead of hanging the suite
+        worker = threading.Thread(target=lambda: reports.append(upload(tmp_path)), daemon=True)
+        worker.start()
+        worker.join(timeout=30)
+        assert not worker.is_alive(), "the upload blocked on the prompt file"
+        report = reports[0]
+        assert report.sent == []
+        assert [e["file"] for e in report.refused] == ["agent_iter_1.jsonl"]
+        assert "agent_iter_1.prompt.txt cannot be read" in report.refused[0]["reason"]
+
+    def test_a_prompt_past_the_cap_is_cut_and_says_so(self, tmp_path: Path) -> None:
+        from tolokaforge_langfuse import transcripts as tr
+
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        prompt = "p" * tr.INPUT_MAX_CHARS + "q" * 1000
+        (tmp_path / "agent_iter_1.prompt.txt").write_text(prompt, encoding="utf-8")
+        exporter = FakeExporter()
+        assert TestTheUpload._send(tmp_path, exporter).ok
+        root = root_of(exporter.batches[0])
+        assert root.attributes[self.INPUT] == "p" * tr.INPUT_MAX_CHARS + (
+            "... [1000 more characters]"
+        )
+        assert root.attributes[f"{self.META}input_chars"] == len(prompt)
+        assert root.attributes[f"{self.META}input_truncated"] is True
+
+    def test_a_credential_shape_in_the_prompt_is_scrubbed_not_blocked(self, tmp_path: Path) -> None:
+        line = "NPM_" + "TOKEN=" + "q" * 16
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        (tmp_path / "agent_iter_1.prompt.txt").write_text(f"{PROMPT}{line}\n", encoding="utf-8")
+        exporter = FakeExporter()
+        assert TestTheUpload._send(tmp_path, exporter).ok
+        root = root_of(exporter.batches[0])
+        assert line not in root.attributes[self.INPUT]
+        assert "[redacted:dotenv-secret]" in root.attributes[self.INPUT]
+        assert root.attributes[f"{self.META}input_redacted_rules"] == "dotenv-secret"
+
+    def test_the_sentinel_guards_the_prompt_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scrub knows shapes; a value only this process holds is the sentinel's to stop."""
+        value = "a-password-that-matches-no-shape"
+        monkeypatch.setenv("ACME_UPLOAD_TOKEN", value)
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        (tmp_path / "agent_iter_1.prompt.txt").write_text(
+            f"{PROMPT}log in with {value}\n", encoding="utf-8"
+        )
+        report = upload(tmp_path)
+        assert report.sent == []
+        assert "known-secret-value" in report.blocked[0]["reason"]
+        assert value not in json.dumps(report.as_dict())
+
+    def test_its_metadata_keys_are_not_the_callers(self, tmp_path: Path) -> None:
+        """Reserved even on a transcript without a prompt, like ``cli_model``."""
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        report = upload(tmp_path, metadata={"input_chars": "12"})
+        assert report.sent == []
+        assert "may not override schema keys: input_chars" in report.refused[0]["reason"]
+
+
 class TestTheReport:
     def test_the_summary_names_every_file_it_could_not_send(self, tmp_path: Path) -> None:
         report = lu.UploadReport(
@@ -685,7 +855,7 @@ class TestTheModelOption:
 
     @staticmethod
     def _run(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str, prompt: str | None = None
     ) -> tuple[Any, FakeExporter]:
         import automation.cli as cli
         import tolokaforge_langfuse.otlp_transport as transport
@@ -702,6 +872,8 @@ class TestTheModelOption:
         stage = tmp_path / "stage"
         stage.mkdir()
         (stage / "analysis_four_bucket.json").write_text(json.dumps(CLEAN_EVENTS), encoding="utf-8")
+        if prompt is not None:
+            (stage / "analysis_four_bucket.prompt.txt").write_text(prompt, encoding="utf-8")
         result = CliRunner().invoke(
             cli.app,
             [
@@ -740,6 +912,30 @@ class TestTheModelOption:
         facts = model_facts(exporter.batches[0])
         assert facts["generation_models"] == {ALIAS}
         assert facts["cli_model"] is None
+
+
+class TestThePromptThroughTheCommand:
+    """The command pairs a prompt with its transcript by itself: the step needs no option."""
+
+    def test_a_prompt_beside_the_output_is_the_input_the_receiver_gets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = TestTheModelOption._run(
+            tmp_path, monkeypatch, "--model", SERVED, prompt=PROMPT
+        )
+        assert result.exit_code == 0, result.output
+        root = root_of(exporter.batches[0])
+        assert root.attributes["langfuse.observation.input"] == PROMPT
+        assert root.attributes["langfuse.trace.metadata.input_chars"] == len(PROMPT)
+        assert "1 with the agent's prompt as input" in result.output
+
+    def test_without_one_the_trace_has_no_input(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = TestTheModelOption._run(tmp_path, monkeypatch, "--model", SERVED)
+        assert result.exit_code == 0, result.output
+        assert "langfuse.observation.input" not in root_of(exporter.batches[0]).attributes
+        assert "with the agent's prompt" not in result.output
 
 
 class TestThePairParsing:

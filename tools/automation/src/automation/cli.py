@@ -304,7 +304,9 @@ def resolve_models(
 @app.command("langfuse-upload")
 def langfuse_upload_cmd(
     directory: str = typer.Argument(
-        ..., help="a directory of claude -p output files (or one such file)"
+        ...,
+        help="a directory of claude -p output files (or one such file); a file's "
+        "<stem>.prompt.txt beside it is the agent's prompt, sent as the trace's input",
     ),
     run_id: str = typer.Option(..., "--run-id", help="the run this session belongs to"),
     label: str = typer.Option(..., "--label", help="what the agents worked on (the trace name)"),

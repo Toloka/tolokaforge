@@ -523,8 +523,17 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   `model_<facet>` tags). The transcript's own names stay in the trace metadata: `cli_model` is the
   first it reports, `model_names` all of them, with the `--model` name added when it is not among
   them. A `--model` the tag vocabulary refuses refuses every file. Nothing is inferred from a
-  second name in the transcript. The receiver is `LANGFUSE_BASE_URL` (or
-  `LANGFUSE_OTLP_ENDPOINT`); the key pair and
+  second name in the transcript. The output does not repeat the prompt the agent was given: a
+  caller that keeps it beside the file as `<stem>.prompt.txt` (`analysis_four_bucket.2.json` ->
+  `analysis_four_bucket.2.prompt.txt`) gets it as the trace's input, the root observation's, with
+  no option. It is cut at 65,536 characters with a visible marker and scrubbed of every shape the
+  sentinel knows whatever `--tool-io` says; `input_chars` (its full length), `input_truncated`
+  and `input_redacted_rules` in the trace metadata say what became of it, and a `--metadata` may
+  not set them. A prompt file is never read as a transcript nor listed as not read, one without
+  its transcript is not read, and anything under that name that is not a regular file of UTF-8
+  text (a directory, a dangling link, a named pipe, a device) refuses its transcript, the
+  irregular ones unopened. Without one the trace has no input. The receiver is
+  `LANGFUSE_BASE_URL` (or `LANGFUSE_OTLP_ENDPOINT`); the key pair and
   `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A
   file it did not send is a line in the report (`--receipt`, the job summary) and exit 1; a setup
   error (no receiver, no key pair, keys that open another project) is one line on stderr and exit

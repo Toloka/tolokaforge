@@ -584,6 +584,84 @@ class TestTheServedModel:
             built(tr.redact(read()), model=model)
 
 
+PROMPT = (
+    "You are one of five independent analysis agents.\n\n"
+    "== CONTEXT ==\nThe collected run is under output/collected-acme-sample.\n"
+)
+INPUT_KEYS = (tr.INPUT_CHARS_KEY, tr.INPUT_TRUNCATED_KEY, tr.INPUT_REDACTED_RULES_KEY)
+
+
+class TestThePromptAsInput:
+    """The agent's output does not repeat the prompt it was given, so the caller passes it and
+    it becomes the trace's input: the root observation's, since a v4 trace is its root."""
+
+    def test_it_is_the_traces_input_and_so_the_roots(self) -> None:
+        from tolokaforge_langfuse import otlp_spans
+
+        build = built(tr.redact(read()), input=PROMPT)
+        assert one(build, "trace-create")[0]["input"] == PROMPT
+        spans = otlp_spans.spans_from_events(build.events)
+        root = next(span for span in spans if span.parent is None)
+        assert root.attributes["langfuse.observation.input"] == PROMPT
+        children = [span for span in spans if span.parent is not None]
+        assert children
+        assert all(s.attributes.get("langfuse.observation.input") != PROMPT for s in children)
+
+    def test_the_metadata_says_how_long_it_was_and_that_nothing_was_done_to_it(self) -> None:
+        metadata = one(built(tr.redact(read()), input=PROMPT), "trace-create")[0]["metadata"]
+        assert metadata[tr.INPUT_CHARS_KEY] == len(PROMPT)
+        assert metadata[tr.INPUT_TRUNCATED_KEY] is False
+        assert metadata[tr.INPUT_REDACTED_RULES_KEY] == tr.NONE
+
+    def test_a_prompt_past_the_cap_is_cut_with_a_marker_and_says_so(self) -> None:
+        prompt = "p" * tr.INPUT_MAX_CHARS + "q" * 1000
+        trace = one(built(tr.redact(read()), input=prompt), "trace-create")[0]
+        assert trace["input"] == "p" * tr.INPUT_MAX_CHARS + "... [1000 more characters]"
+        assert trace["metadata"][tr.INPUT_CHARS_KEY] == tr.INPUT_MAX_CHARS + 1000
+        assert trace["metadata"][tr.INPUT_TRUNCATED_KEY] is True
+
+    def test_a_prompt_of_exactly_the_cap_is_kept_whole(self) -> None:
+        prompt = "p" * tr.INPUT_MAX_CHARS
+        trace = one(built(tr.redact(read()), input=prompt), "trace-create")[0]
+        assert trace["input"] == prompt
+        assert trace["metadata"][tr.INPUT_TRUNCATED_KEY] is False
+
+    @pytest.mark.parametrize(("rule", "payload"), SECRET_CASES, ids=[c[0] for c in SECRET_CASES])
+    def test_a_credential_shape_in_it_is_scrubbed_whatever_the_tool_io_policy(
+        self, rule: str, payload: str
+    ) -> None:
+        """Tool i/o is dropped by default; the prompt is the agent's brief, so it is scrubbed
+        rather than dropped, and the sentinel then has nothing to refuse."""
+        prompt = f"{PROMPT}the brief quoted:\n{payload}\nand went on"
+        build = built(tr.redact(read()), input=prompt)
+        trace = one(build, "trace-create")[0]
+        assert payload not in trace["input"]
+        assert f"[redacted:{rule}]" in trace["input"]
+        assert trace["input"].startswith(PROMPT) and trace["input"].endswith("and went on")
+        assert rule in trace["metadata"][tr.INPUT_REDACTED_RULES_KEY].split(",")
+        assert safety.SafetyGate().scan(json.dumps(bodies(build)).encode()) == []
+
+    def test_without_it_the_trace_has_no_input_and_no_input_facts(self) -> None:
+        """The golden pins the whole projection; these are the facts the prompt changes."""
+        trace = one(built(tr.redact(read())), "trace-create")[0]
+        assert trace["input"] is None
+        assert not set(INPUT_KEYS) & set(trace["metadata"])
+        assert bodies(built(tr.redact(read()), input=None)) == bodies(built(tr.redact(read())))
+
+    def test_an_empty_prompt_is_an_empty_input_the_metadata_still_counts(self) -> None:
+        """A caller that kept an empty prompt says so; that is not the same as keeping none."""
+        trace = one(built(tr.redact(read()), input=""), "trace-create")[0]
+        assert trace["input"] == ""
+        assert trace["metadata"][tr.INPUT_CHARS_KEY] == 0
+
+    @pytest.mark.parametrize("key", INPUT_KEYS)
+    def test_its_keys_are_the_projections_with_or_without_a_prompt(self, key: str) -> None:
+        assert key in tr.RESERVED_KEYS
+        for prompt in (None, PROMPT):
+            with pytest.raises(tr.TranscriptError, match=f"may not override schema keys: {key}"):
+                built(tr.redact(read()), input=prompt, metadata={key: "from the caller"})
+
+
 class TestTheVocabulary:
     @pytest.mark.parametrize("missing", ["team", "run_kind"])
     def test_a_transcript_needs_its_caller_tags(self, missing: str) -> None:
