@@ -88,6 +88,9 @@ a task definition an adapter reads, and shares nothing but the name."""
 GRADE_FILENAME = "grade.yaml"
 """The trial's verdict. Absent where nothing graded the trial."""
 
+GRADING_STATE_SNAPSHOTS_FILENAME = "grading_state_snapshots.yaml"
+"""Optional initial/golden/final states reconstructed by a host grader."""
+
 LOGS_FILENAME = "logs.yaml"
 """The trial's structured log records."""
 
@@ -430,7 +433,9 @@ class OutputWriter:
         # Keep the transcript and the judge's structured inputs out of grade.yaml;
         # each lands in its own sidecar.
         grade_payload = self.redaction.redact_mapping(
-            grade.model_dump(mode="json", exclude={"judge_transcript", "judge_inputs"})
+            grade.model_dump(
+                mode="json", exclude={"judge_transcript", "judge_inputs", "state_snapshots"}
+            )
         )
         with open(self.output_dir / GRADE_FILENAME, "w") as f:
             yaml.dump(
@@ -441,6 +446,18 @@ class OutputWriter:
                 sort_keys=False,
             )
         self._note_rewritten(GRADE_FILENAME)
+
+        if grade.state_snapshots is not None:
+            snapshots = self.redaction.redact_mapping(grade.state_snapshots.model_dump(mode="json"))
+            with open(self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME, "w") as f:
+                yaml.safe_dump(snapshots, f, allow_unicode=True, sort_keys=False)
+            self._note_rewritten(GRADING_STATE_SNAPSHOTS_FILENAME)
+        else:
+            # Regrading the same directory must not leave evidence from an older grade.
+            (self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME).unlink(missing_ok=True)
+            self._rewritten.discard(GRADING_STATE_SNAPSHOTS_FILENAME)
+            if self._redacting:
+                self._declare_or_discard()
 
         # Sidecar: the judge's own message transcript, only when a judge ran and
         # captured a non-empty one. Absent file ⇒ either no judge transcript for
