@@ -119,16 +119,19 @@ def core_stack(
             interval_s=1.0,
         )
 
-    # DB Service — state storage with trial isolation
+    # DB Service — state storage with trial isolation. Build-context spec
+    # (dockerfile/context/context_files/build_args) comes from the builder's
+    # image definition so the stack and ``make docker-build`` hash the same
+    # inputs — the single source of truth per #653.
+    db_defn = get_image_definition("db-service")
     db_service = ServiceDefinition(
         name="db-service",
         image_name="tolokaforge-db-service",
         published_image_repo="tolokasoft1/tolokaforge-db-service",
-        dockerfile="tolokaforge/docker/dockerfiles/db_service.Dockerfile",
-        context=".",
-        context_files=[
-            "tolokaforge/env/json_db_service/",
-        ],
+        dockerfile=db_defn["dockerfile"],
+        context=db_defn["context"],
+        context_files=db_defn["context_files"],
+        build_args=db_defn["build_args"],
         ports=[PortConfig(container_port=8000, host_port=db_port)],
         environment={"PYTHONUNBUFFERED": "1"},
         health_probe=db_health,
@@ -228,27 +231,28 @@ def core_stack(
     if enable_docker_cli:
         runner_build_args["INSTALL_DOCKER_CLI"] = "true"
 
+    # Build-context spec comes from the builder's image definition (#653), so
+    # the stack and ``make docker-build`` hash the same inputs. On a wheel
+    # install the factory swaps the repo-root sources for the packaged
+    # ``_subset_build/`` copies — spelling them out here is what shipped
+    # v0.14.0/v0.14.1 broken on an installed engine. ``runner_build_args``
+    # (playwright / docker-cli opt-ins) layer on top of the factory's
+    # ``PYTHON_VERSION`` base.
+    runner_defn = get_image_definition("runner")
     runner = ServiceDefinition(
         name="runner",
         image_name="tolokaforge-runner",
         published_image_repo="tolokasoft1/tolokaforge-runner",
-        dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
-        context=".",
-        # Sources ``hatch build --target custom`` consumes in the wheel-builder
-        # stage. Resolved by the builder rather than spelled out here: on a
-        # wheel install the repo-root paths do not exist (``repo_root()`` is
-        # ``site-packages``) and the factory swaps in the packaged copies. This
-        # list used to be duplicated here, which is how v0.14.0/v0.14.1 kept
-        # failing on an installed engine even after the builder was fixed —
-        # this is the code path the orchestrator's service stack actually takes.
-        context_files=get_image_definition("runner")["context_files"],
+        dockerfile=runner_defn["dockerfile"],
+        context=runner_defn["context"],
+        context_files=runner_defn["context_files"],
         ports=[PortConfig(container_port=50051, host_port=runner_port)],
         environment=runner_env,
         depends_on=runner_depends,
         mounts=runner_mounts,
         resources=runner_resources,
         networks=["runner-net"],
-        build_args=runner_build_args,
+        build_args={**runner_defn["build_args"], **runner_build_args},
         network_aliases=["runner"],
     )
     services.append(runner)
