@@ -109,6 +109,7 @@
    ],
    "metadata": {
     "cached_tokens": 0,
+    "cost_basis": "billed",
     "cost_source": "provider",
     "latency_s": 3,
     "message_index": 1,
@@ -203,6 +204,7 @@
    ],
    "metadata": {
     "cached_tokens": 0,
+    "cost_basis": "billed",
     "cost_source": "provider",
     "latency_s": 8,
     "message_index": 5,
@@ -235,7 +237,7 @@
  {
   "body": {
    "costDetails": {
-    "total": 0.0015
+    "total": 0.0016
    },
    "endTime": "2026-09-17T09:00:40.500000+00:00",
    "environment": "development",
@@ -252,6 +254,7 @@
    ],
    "level": "DEFAULT",
    "metadata": {
+    "cost_basis": "billed",
     "grading_id": "live:acme/pilot/parity/20260917T000000Z",
     "judge_calls": 1,
     "message_index": 2,
@@ -279,7 +282,7 @@
  {
   "body": {
    "costDetails": {
-    "total": 0.002
+    "total": 0.0025
    },
    "endTime": "2026-09-17T09:00:12.000000Z",
    "environment": "development",
@@ -300,6 +303,7 @@
    ],
    "metadata": {
     "cached_tokens": 0,
+    "cost_basis": "billed",
     "cost_source": "provider",
     "latency_s": 4,
     "message_index": 3,
@@ -826,7 +830,7 @@
    "metadata": {
     "attachments": {},
     "components": "{\"llm_judge\": 0.5, \"notes\": \"n/a\", \"state_checks\": 1.0}",
-    "content_fingerprint": "b2cb65a220faf60ec9f98d12e391863056ced0da18ae631399c6f43aa4ce8a23",
+    "content_fingerprint": "a79eedac439e30e59a46e6d1ee219a819c7f1b126562da0ea77c5ed506a22ca7",
     "criteria_met": 1,
     "criteria_total": 2,
     "env_sha256": "d6c47dbcfa8d8713f18f02bef2e6cc80708779d75df609eb4ff1eb7b445c973a",

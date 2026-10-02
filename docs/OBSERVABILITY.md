@@ -91,7 +91,7 @@ the engine's environment, printing nothing. A config that names its own `endpoin
 | Engine event | Span | Ids (contract v1, shared with the uploader) |
 |---|---|---|
 | trial (opened by the conductor, closed after grading) | root span `trial <task>/<trial>`, trace name `<label>/<task_id>`, session, tags, `langfuse.trace.metadata.*` (task, trial, attempt, run id, status, termination, pass, score, tokens, cost, model facets), input = first user message, output = last assistant message | `trace_id = uuid5(NS, "trace\|<run_tag>\|<run_id>\|<task_id>\|<trial_index>\|<attempt>")`, root span `uuid5(NS, "obs\|<trace>\|root\|0")[:16]` |
-| assistant turn (after the message is recorded) | generation `assistant turn <i>`, model name, usage details (`input` = prompt minus cache reads, `output`, `total`), cost, last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
+| assistant turn (after the message is recorded) | generation `assistant turn <i>`, model name, usage details (`input` = prompt minus cache reads, `output`, `total`), cost (§ Cost on a trace), last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
 | tool result (after the message is recorded) | span `tool: <name>`, redacted arguments as input, output or error, `ERROR` level on failure | `obs\|<trace>\|tool\|<i>` |
 
 The same `trace_id` names the trial's conversation to a model's session header
@@ -305,6 +305,32 @@ The bound is the receiver's: Langfuse's trace page renders its metadata table on
 top-level keys and shows nothing above that (3.205.1, verified 2026-09-17), so the schema stays
 well under it with room for the caller's keys, and a caller key that names a schema key is a
 configuration error.
+
+## Cost on a trace
+
+A generation's cost (`costDetails.total`) is what was actually spent where the bundle says so:
+the charge the provider's response stated for the call (`metrics.yaml`
+`usage.calls[*].billed_cost_usd`, see
+[LLM_LAYER.md § Billed cost](LLM_LAYER.md#billed-cost)), and the eval's own `cost_usd` where
+no charge was stated. The generation's metadata names which (`cost_basis`), so a reader tells
+an actual charge from an estimate (`tolokaforge_langfuse.costs`, the same rules in the offline
+connector):
+
+| `cost_basis` | `costDetails.total` is |
+|---|---|
+| `billed` | the charge the response stated |
+| `litellm` | litellm's figure: a charge the response stated (OpenRouter's `usage.cost` in a bundle from before the charge was recorded, a LiteLLM gateway's response-cost header) or litellm's own price map; the bundle does not say which |
+| `list` | the engine's pricing table |
+| `eval` | the eval's figure, its source not recorded (the judge's aggregate, an unknown `cost_source`) |
+| `none` | no figure at all; the generation carries no cost |
+
+The judge generation that holds `grade.judge_usage` follows the same rule with the judge's
+`billed_cost_usd`, the sum over its calls. Langfuse adds a trace's generation costs into the
+trace's cost, so the trace carries no total of its own; its metadata `cost_usd` stays the eval's
+figure. A simulated user turn is a generation without a cost (no call record pairs with it), so
+a trace's cost covers the agent's and the judge's calls, while `cost_usd` covers the agent's and
+the user simulator's. A bundle written before the engine recorded the charge keeps its eval cost on every
+generation, with the basis it names.
 
 ## The trace vocabulary
 

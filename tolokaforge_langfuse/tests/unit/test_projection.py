@@ -517,7 +517,9 @@ class TestAgentOpeningLine:
             for e in projection.events
             if e["type"] == "generation-create" and e["body"]["name"].startswith("assistant")
         ]
-        assert costs == [{"total": 0.001}, {"total": 0.002}, {"total": 0.003}]
+        # each generation is priced off its own call: the second call's stated charge (0.0025)
+        # rather than its eval figure (0.002) shows the pairing reached the right record
+        assert costs == [{"total": 0.001}, {"total": 0.0025}, {"total": 0.003}]
 
     def test_an_undeclared_leading_agent_turn_stays_a_generation(self, tmp_path: Path) -> None:
         """The line is read from ``task.yaml``, not guessed from the transcript's shape."""
@@ -583,3 +585,108 @@ class TestUserToolSteps:
         }
         assert roles["u1"] == "user_tool"
         assert roles["call_1"] == "agent_tool"
+
+
+class TestCostOnTheTrace:
+    """A generation's cost is the charge the provider stated, else the eval's own figure, and
+    ``cost_basis`` says which. The golden pins the billed path, these the paths without a charge."""
+
+    def _projection(self, tmp_path: Path, *, calls: list[dict], judge_usage: dict | None = None):
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        metrics = pb.metrics()
+        metrics["usage"]["calls"] = calls
+        (trial_dir / "metrics.yaml").write_text(yaml.safe_dump(metrics), encoding="utf-8")
+        if judge_usage is not None:
+            grade = pb.grade()
+            grade["judge_usage"] = judge_usage
+            (trial_dir / "grade.yaml").write_text(yaml.safe_dump(grade), encoding="utf-8")
+        resolver = RawModelNameResolver()
+        return build_projection(
+            IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
+        )
+
+    @staticmethod
+    def _without_the_charge(call: dict, source: str = "litellm") -> dict:
+        legacy = {k: v for k, v in call.items() if k != "billed_cost_usd"}
+        return {**legacy, "cost_source": source}
+
+    @staticmethod
+    def _assistant_bodies(projection) -> list[dict]:
+        return [
+            e["body"]
+            for e in projection.events
+            if e["type"] == "generation-create" and e["body"]["name"].startswith("assistant")
+        ]
+
+    def test_a_bundle_from_before_the_billed_field_keeps_the_eval_cost(
+        self, tmp_path: Path
+    ) -> None:
+        calls = [self._without_the_charge(c) for c in pb.metrics()["usage"]["calls"]]
+        legacy_judge = {
+            k: v for k, v in pb.grade()["judge_usage"].items() if k != "billed_cost_usd"
+        }
+        projection = self._projection(tmp_path, calls=calls, judge_usage=legacy_judge)
+
+        bodies = self._assistant_bodies(projection)
+        assert [b["costDetails"] for b in bodies] == [
+            {"total": 0.001},
+            {"total": 0.002},
+            {"total": 0.003},
+        ]
+        assert [b["metadata"]["cost_basis"] for b in bodies] == ["litellm"] * 3
+        judge = next(
+            e["body"]
+            for e in projection.events
+            if e["type"] == "generation-create"
+            and e["body"]["name"].startswith("judge turn")
+            and e["body"].get("usageDetails", {}).get("total")
+        )
+        assert judge["costDetails"] == {"total": 0.0015}
+        assert judge["metadata"]["cost_basis"] == "eval"
+        # the trace's own metadata is untouched: cost_usd stays the eval's figure
+        assert projection.trace_body["metadata"]["cost_usd"] == 0.006
+        assert "cost_basis" not in projection.trace_body["metadata"]
+
+    def test_a_call_whose_route_stated_no_charge_keeps_its_eval_cost(self, tmp_path: Path) -> None:
+        calls = pb.metrics()["usage"]["calls"]
+        calls[1] = self._without_the_charge(calls[1], source="local")
+        bodies = self._assistant_bodies(self._projection(tmp_path, calls=calls))
+
+        assert [(b["costDetails"], b["metadata"]["cost_basis"]) for b in bodies] == [
+            ({"total": 0.001}, "billed"),
+            ({"total": 0.002}, "list"),
+            ({"total": 0.003}, "billed"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("judge_usage", "cost", "basis"),
+        [
+            ({"calls": 3, "cost_usd": 0.0142, "billed_cost_usd": 0.0145}, 0.0145, "billed"),
+            ({"calls": 3, "cost_usd": 0.0142}, 0.0142, "eval"),  # a grade.yaml from before
+            ({"calls": 3, "cost_usd": 0.0142, "billed_cost_usd": 0.0}, 0, "billed"),
+            ({"calls": 3}, 0, "none"),
+        ],
+    )
+    def test_a_judge_without_a_transcript_is_priced_by_the_same_rule(
+        self, tmp_path: Path, judge_usage: dict, cost: float, basis: str
+    ) -> None:
+        """A grade with judge usage but no judge messages (an errored judge, a detached
+        regrade) gets one synthetic generation carrying the aggregate."""
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        (trial_dir / "judge_trajectory.yaml").unlink()
+        grade = pb.grade()
+        grade["judge_usage"] = judge_usage
+        (trial_dir / "grade.yaml").write_text(yaml.safe_dump(grade), encoding="utf-8")
+        resolver = RawModelNameResolver()
+        projection = build_projection(
+            IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
+        )
+
+        (judge,) = [
+            e["body"]
+            for e in projection.events
+            if e["type"] == "generation-create" and e["body"]["name"].startswith("judge")
+        ]
+        assert judge["name"] == "judge (aggregate usage, no transcript)"
+        assert judge["costDetails"] == {"total": cost}
+        assert judge["metadata"]["cost_basis"] == basis

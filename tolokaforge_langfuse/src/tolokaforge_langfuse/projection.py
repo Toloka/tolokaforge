@@ -41,6 +41,7 @@ from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.observability import ids
 from tolokaforge.observability.observer import TrialIdentity
 from tolokaforge_langfuse.attachments import ATTACHMENTS_SCHEMA
+from tolokaforge_langfuse.costs import call_cost
 from tolokaforge_langfuse.gradings import (
     CONTEXT_CHARS,
     CONTEXT_MESSAGES,
@@ -608,8 +609,10 @@ def _assistant_generation(
         details, usage_metadata = usage_fields(call)
         body["usageDetails"] = details
         body["metadata"].update(usage_metadata)
-        if call.get("cost_usd") is not None:
-            body["costDetails"] = {"total": call["cost_usd"]}
+        # the charge the provider stated, else the eval's figure; cost_basis says which
+        cost, body["metadata"]["cost_basis"] = call_cost(call)
+        if cost is not None:
+            body["costDetails"] = {"total": cost}
     return body
 
 

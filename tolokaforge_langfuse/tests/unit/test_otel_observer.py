@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from tolokaforge_langfuse.otel import HARNESS_TAG, OTelTrialObserver, SpanQueue  # noqa: E402
 
 from tolokaforge.core.llm.client import GenerationResult  # noqa: E402
-from tolokaforge.core.llm.usage import Usage  # noqa: E402
+from tolokaforge.core.llm.usage import ProviderRawCall, Usage  # noqa: E402
 from tolokaforge.core.models import Message, MessageRole, ToolCall  # noqa: E402
 from tolokaforge.observability.observer import ModelRef, TrialIdentity  # noqa: E402
 from tolokaforge.tools.registry import ToolResult  # noqa: E402
@@ -749,3 +749,74 @@ class TestHowManyTimesABatchIsPosted:
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}
         )
         assert type(exporter).__name__ == "OTLPSpanExporter"
+
+
+class TestLiveCost:
+    """A live generation shows the charge its call record states, else the eval's figure, and
+    names which."""
+
+    BILLED = ProviderRawCall(
+        prompt_tokens=100,
+        completion_tokens=20,
+        cost_usd=0.0266895,
+        cost_source="litellm",
+        billed_cost_usd=0.027022,
+    )
+
+    def _generation_attrs(self, result, *, role: str = "agent") -> dict:
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter)
+        observer.trial_started(
+            IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
+        )
+        observer.generation(
+            IDENTITY,
+            role=role,
+            index=1,
+            turn=0,
+            request=[Message(role=MessageRole.USER, content="hello", ts=T0)],
+            result=result,
+            started_at=T0,
+            ended_at=T0 + timedelta(seconds=1),
+        )
+        observer.run_finished()
+        name = "assistant turn 1" if role == "agent" else "judge turn 1"
+        (span,) = [s for s in exporter.get_finished_spans() if s.name == name]
+        return _attrs(span)
+
+    def test_the_stated_charge_is_the_generations_cost(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.027022}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def test_a_live_judge_turn_is_priced_by_the_same_rule(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result, role="judge")
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.027022}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def test_a_call_that_stated_no_charge_shows_the_eval_figure(self) -> None:
+        call = ProviderRawCall(prompt_tokens=100, cost_usd=0.01, cost_source="local")
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, calls=(call,)), cost_usd=0.01
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "list"
+
+    def test_a_result_without_a_call_record_shows_the_eval_figure(self) -> None:
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, completion_tokens=20), cost_usd=0.01
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "eval"

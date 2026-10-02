@@ -192,6 +192,7 @@ def metrics() -> dict[str, Any]:
                     "cost_source": "provider",
                     "latency_s": 3.0,
                     "openrouter_generation_id": "gen-agent-1",
+                    "billed_cost_usd": 0.001,
                 },
                 {
                     "prompt_tokens": 1000,
@@ -204,6 +205,8 @@ def metrics() -> dict[str, Any]:
                     "cost_source": "provider",
                     "latency_s": 4.0,
                     "openrouter_generation_id": "gen-agent-2",
+                    # a BYOK call: the upstream's bill is above the eval's own figure
+                    "billed_cost_usd": 0.0025,
                 },
                 {
                     "prompt_tokens": 1100,
@@ -216,6 +219,7 @@ def metrics() -> dict[str, Any]:
                     "cost_source": "provider",
                     "latency_s": 8.0,
                     "openrouter_generation_id": "gen-agent-3",
+                    "billed_cost_usd": 0.003,
                 },
             ],
         },
@@ -270,6 +274,7 @@ def grade() -> dict[str, Any]:
             "completion_tokens": 60,
             "reasoning_tokens": 20,
             "cost_usd": 0.0015,
+            "billed_cost_usd": 0.0016,
             "tool_calls": 0,
             "consistency_rejections": 0,
         },

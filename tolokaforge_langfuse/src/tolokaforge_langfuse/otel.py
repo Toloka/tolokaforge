@@ -48,6 +48,7 @@ from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
 from tolokaforge_langfuse.attachments import AttachCounts
+from tolokaforge_langfuse.costs import call_cost, call_record
 
 # the receiver families this observer writes for: `media` owns the names because the capability
 # probe lives there, and a run resolves its family there once, never from the version a receiver
@@ -534,9 +535,15 @@ class OTelTrialObserver:
         if model_name:
             attributes["langfuse.observation.model.name"] = model_name
             attributes["gen_ai.request.model"] = model_name
-        cost = getattr(result, "cost_usd", None)
+        # the call's own record carries the charge the provider stated; a result without one
+        # (no usage block) has only the eval's figure, if any
+        calls = getattr(usage, "calls", None) or ()
+        cost, basis = call_cost(
+            call_record(calls[-1]) if calls else {"cost_usd": getattr(result, "cost_usd", None)}
+        )
         if cost is not None:
-            attributes["langfuse.observation.cost_details"] = self._json({"total": float(cost)})
+            attributes["langfuse.observation.cost_details"] = self._json({"total": cost})
+        attributes["langfuse.observation.metadata.cost_basis"] = basis
         kind, key = (
             ("gen", (index,)) if agent_role else ("jgen", (f"live:{identity.run_id}", index))
         )

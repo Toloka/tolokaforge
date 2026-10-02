@@ -31,6 +31,7 @@ import yaml
 
 from tolokaforge.core.actors.tool_steps import user_tool_step_positions_of
 from tolokaforge.observability import ids
+from tolokaforge_langfuse.costs import judge_cost
 
 _log = logging.getLogger(__name__)
 
@@ -303,6 +304,7 @@ def _aggregate_judge_generation(
     out: list[tuple[str, dict[str, Any]]] = []
     if judge_usage and int(judge_usage.get("calls") or 0) > 0:
         details, usage_metadata = _judge_usage_fields(judge_usage)
+        cost, basis = judge_cost(judge_usage)
         body: dict[str, Any] = {
             "id": ids.observation_id(trace_id, "jgen", grading_id, 0),
             **common,
@@ -315,9 +317,10 @@ def _aggregate_judge_generation(
                 "grading_id": grading_id,
                 "message_index": 0,
                 **usage_metadata,
+                "cost_basis": basis,
             },
             "usageDetails": details,
-            "costDetails": {"total": judge_usage.get("cost_usd") or 0},
+            "costDetails": {"total": cost or 0},
         }
         if judge_model_name:
             body["model"] = judge_model_name
@@ -391,9 +394,11 @@ def _judge_observations(
             if index == assistant_indexes[-1] and judge_usage:
                 details, usage_metadata = _judge_usage_fields(judge_usage)
                 body["usageDetails"] = details
-                if judge_usage.get("cost_usd") is not None:
-                    body["costDetails"] = {"total": judge_usage["cost_usd"]}
+                cost, basis = judge_cost(judge_usage)
+                if cost is not None:
+                    body["costDetails"] = {"total": cost}
                 body["metadata"].update(usage_metadata)
+                body["metadata"]["cost_basis"] = basis
             out.append(("generation-create", body))
         elif role == "tool":
             call_id = message.get("tool_call_id")
