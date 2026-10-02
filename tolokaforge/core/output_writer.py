@@ -312,6 +312,10 @@ class OutputWriter:
                 event.model_dump(mode="json") for event in trajectory.user_reply_guard_events
             ],
         }
+        if trajectory.simulation_steps is not None:
+            traj_data["simulation_steps"] = trajectory.simulation_steps
+        if trajectory.environment_errors is not None:
+            traj_data["environment_errors"] = trajectory.environment_errors
 
         with open(self.output_dir / TRAJECTORY_FILENAME, "w") as f:
             yaml.dump(traj_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
