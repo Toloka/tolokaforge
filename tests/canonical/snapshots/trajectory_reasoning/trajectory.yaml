@@ -19,6 +19,7 @@ messages:
   content_blocks: null
   tool_calls: null
   tool_call_id: null
+  tool_status: null
   reasoning: null
   openrouter_generation_id: null
   ts: '2026-01-01T12:00:00Z'
@@ -27,6 +28,7 @@ messages:
   content_blocks: null
   tool_calls: null
   tool_call_id: null
+  tool_status: null
   reasoning:
     blocks:
     - type: thinking
