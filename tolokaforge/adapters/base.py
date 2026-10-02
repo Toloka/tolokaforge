@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.adapters._task_loader import GradingSource, GradingSourceKind
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
@@ -595,6 +596,21 @@ class BaseAdapter(ABC):
     Adapters whose environment holds runtime facts the runner reads back into
     ``TrialState`` (Tau-family) flip this to ``True``; adapters whose runner
     owns the state end-to-end leave it ``False``.
+    """
+
+    supported_execution_modes: ClassVar[frozenset[ExecutionMode]] = frozenset(
+        {ExecutionMode.ENGINE_LOOP}
+    )
+    """The :class:`~tolokaforge.core.execution_mode.ExecutionMode` set this adapter runs.
+
+    Every adapter runs the engine's own turn loop, so the default is
+    ``{ENGINE_LOOP}``. An adapter that can also hand the trial to a
+    task-provided agent (a coding-harness CLI) overrides this to add
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`; the
+    orchestrator's capability gate reads it before any container work. Legacy
+    adapters that declare only ``supports_coding_harness = True`` are honoured
+    for one release — see
+    :func:`~tolokaforge.core.orchestrator.adapter_supported_modes`.
     """
 
     def emit_runner_grading_payload(self, task_id: str) -> dict[str, Any]:

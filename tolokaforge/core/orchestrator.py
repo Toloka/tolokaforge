@@ -46,6 +46,7 @@ from tolokaforge.core.engine_run_state import (
     write_engine_run_state,
 )
 from tolokaforge.core.env_var import parse_env_positive_float
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     attribute_failure,
@@ -305,9 +306,13 @@ def _configured_harness(config: Any) -> str | None:
     and the legacy param is what this repo's own matrix workflow and the
     terminal-bench recipes still write. A guard reading only the canonical
     field silently never runs on the shipped configuration.
+
+    The ``engine-loop`` sentinel is "no harness" on both addresses: it names
+    the engine's own turn loop, not a delegated coding-harness CLI, so it
+    returns ``None`` and never trips the delegated-mode gate.
     """
     agent = config.models.get("agent") if getattr(config, "models", None) else None
-    if agent is not None and getattr(agent, "harness", None):
+    if agent is not None and getattr(agent, "harness", None) and agent.harness != ENGINE_LOOP:
         return str(agent.harness)
     adapter = getattr(config.evaluation, "harness_adapter", None)
     params = getattr(adapter, "params", None) or {}
@@ -315,6 +320,30 @@ def _configured_harness(config: Any) -> str | None:
     if selected and selected != ENGINE_LOOP:
         return str(selected)
     return None
+
+
+def adapter_supported_modes(adapter: Any) -> frozenset[ExecutionMode]:
+    """The execution modes *adapter* runs, honouring the legacy flag one release.
+
+    Reads the adapter's ``supported_execution_modes`` capability. An adapter
+    that has not overridden it (it inherits :class:`BaseAdapter`'s default, or
+    carries no such attribute at all) but sets the legacy
+    ``supports_coding_harness = True`` — an external or private adapter from
+    before the capability shipped — is treated as also running
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`, so the
+    gate stays back-compatible for the deprecation window. Every adapter runs
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.ENGINE_LOOP`.
+    """
+    overrides_capability = any(
+        "supported_execution_modes" in klass.__dict__
+        for klass in type(adapter).__mro__
+        if klass is not BaseAdapter and issubclass(klass, BaseAdapter)
+    )
+    if overrides_capability:
+        return frozenset(adapter.supported_execution_modes)
+    if getattr(adapter, "supports_coding_harness", False):
+        return frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})
+    return frozenset({ExecutionMode.ENGINE_LOOP})
 
 
 def _harness_provider_probe(
@@ -2308,15 +2337,19 @@ class Orchestrator:
         if self.adapter is None:
             self.adapter = self._create_adapter()
 
-        # Coding-harness capability gate: refuse a run declaring
-        # ``models.agent.harness`` on an adapter that has not opted into the
-        # harness surface (``supports_coding_harness`` class attr from
-        # ``CodingHarnessAdapterMixin``). Fail here — before any container
-        # work — with a message that names the adapter and the harness slug
-        # so the operator sees which side of the pair does not match.
-        agent_model_config = self.config.models.get("agent") if self.config.models else None
-        if agent_model_config is not None and agent_model_config.harness is not None:
-            if not getattr(self.adapter, "supports_coding_harness", False):
+        # Execution-mode capability gate: a run that names a coding harness
+        # (anything but the engine-loop sentinel, from either config address)
+        # selects the delegated execution mode. Refuse it here — before
+        # ``get_task_ids()`` or any container work — against an adapter that
+        # does not run that mode, with a message naming both sides of the
+        # pair and the modes the adapter does run.
+        # This gate classifies delegation from the config harness slug, while
+        # the conductor classifies from emitted command metadata — two seams
+        # that can diverge; unifying them is tracked in #1758.
+        selected_harness = _configured_harness(self.config)
+        if selected_harness is not None:
+            supported = adapter_supported_modes(self.adapter)
+            if ExecutionMode.DELEGATED not in supported:
                 adapter_type_name = (
                     getattr(
                         self.config.evaluation.harness_adapter,
@@ -2327,15 +2360,18 @@ class Orchestrator:
                     else "native"
                 )
                 raise RuntimeError(
-                    f"models.agent.harness={agent_model_config.harness!r} but "
-                    f"adapter {adapter_type_name!r} does not opt into coding-"
-                    "harness mode. An adapter opts in by inheriting "
-                    "``tolokaforge_coding_harnesses.adapter_support."
-                    "CodingHarnessAdapterMixin`` (which sets "
-                    "``supports_coding_harness = True``). Either drop "
-                    "``models.agent.harness`` to run the engine's LLM loop, "
-                    "or switch to an adapter that supports the harness "
-                    "surface (currently: terminal_bench, native)."
+                    f"coding harness {selected_harness!r} selects the "
+                    f"{ExecutionMode.DELEGATED.value!r} execution mode, but "
+                    f"adapter {adapter_type_name!r} runs only "
+                    f"{sorted(mode.value for mode in supported)}. An adapter "
+                    "declares the delegated mode by overriding "
+                    "``supported_execution_modes`` to include "
+                    "``ExecutionMode.DELEGATED`` (the shipped opt-ins are "
+                    "terminal_bench and native). Either drop the harness "
+                    "(``models.agent.harness`` or "
+                    "``evaluation.harness_adapter.params.agent_harness``) to "
+                    "run the engine's LLM loop, or switch to an adapter that "
+                    "runs the delegated mode."
                 )
 
         self._warn_on_unreliable_pricing()

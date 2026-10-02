@@ -37,6 +37,7 @@ from tolokaforge.adapters.native_harness_synthesis import (
     MaterialisedHarnessEnvironment,
     materialise_harness_environment,
 )
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
@@ -269,6 +270,11 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
     syncs_adapter_env_to_state: ClassVar[bool] = False
     """Native's runner owns TrialState end-to-end; adapter env data is not synced back."""
+
+    supported_execution_modes: ClassVar[frozenset[ExecutionMode]] = frozenset(
+        {ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED}
+    )
+    """Native runs the engine loop and can also delegate to a coding-harness CLI."""
 
     def __init__(self, params: dict[str, Any]):
         """

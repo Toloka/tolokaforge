@@ -13,6 +13,61 @@ flags — is `AdapterGradingContract` in
 
 ---
 
+## Execution modes
+
+Every trial runs in one of two shapes, named by `ExecutionMode` in
+`tolokaforge/core/execution_mode.py`:
+
+- **`ENGINE_LOOP`** — the engine's own LLM turn loop drives the agent. This
+  is the default for every adapter.
+- **`DELEGATED`** — the task brings its own agent (a coding-harness CLI named
+  on `TaskDescription.metadata["agent_harness_command"]`); the engine
+  provisions and grades the trial but does not run the turn loop.
+
+`select_execution_mode(metadata)` classifies a trial at dispatch time: a
+non-blank `agent_harness_command` selects `DELEGATED`, its absence selects
+`ENGINE_LOOP`, and a present-but-blank or non-string command is a broken
+adapter and raises. The mode is classified, never stored — it is written into
+no metadata or wire artefact, so canonical snapshots are unaffected.
+
+An adapter declares which modes it runs through the
+`supported_execution_modes: ClassVar[frozenset[ExecutionMode]]` capability on
+`BaseAdapter` (default `{ENGINE_LOOP}`). Before any container work, the
+orchestrator refuses a run that selects `DELEGATED` against an adapter whose
+capability does not include it, naming both sides and the adapter's accepted
+modes. `supports_coding_harness = True` is retained as a back-compat surface
+for one release: an external adapter that sets only that legacy flag is
+treated as also running `DELEGATED` (see
+`adapter_supported_modes()` in `tolokaforge/core/orchestrator.py`).
+
+### How to add a harness / delegated adapter
+
+1. **Inherit the mixin.** Add `CodingHarnessAdapterMixin`
+   (`tolokaforge_coding_harnesses.adapter_support`) alongside `BaseAdapter`.
+   It supplies the six wire-artefact helpers — registry resolution, command
+   assembly, the four-key metadata handshake, the `bash` tool schema, the
+   `test_execution` grading payload, and the install-script Dockerfile layer —
+   and keeps `supports_coding_harness = True`. The mixin imports no engine
+   module, so the package boundary stays intact.
+2. **Declare the mode.** Override
+   `supported_execution_modes = frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})`
+   on the engine-facing adapter class so the orchestrator gate lets delegated
+   runs through. (`ExecutionMode` lives engine-side only — never import it into
+   the coding-harnesses package.)
+3. **Emit the handshake.** In `to_task_description`, when a harness is
+   selected, emit `agent_harness_command` (and the sibling `agent_harness*`
+   keys) via the mixin helpers, register the single `bash` agent tool, and
+   route grading through `emit_test_execution_grading` (or compose with any
+   grading method — see [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md)
+   § "State-checks composability").
+4. **Lock it.** Subclass `AdapterGradingContractSuite`
+   (`tolokaforge.testing.adapters`) and set
+   `expected_supported_execution_modes` to the set your adapter declares.
+
+The two shipped adopters are `NativeAdapter` and `TerminalBenchAdapter`.
+
+---
+
 ## `frozen_mcp_core` — FrozenMcpCoreAdapter
 
 Entry-point plugin registered by the `tolokaforge-tools` distribution (not

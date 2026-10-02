@@ -638,8 +638,8 @@ class HarnessSpec(BaseModel):
     """How this harness's real provider credential is shielded from the
     trial container, or ``None`` for a harness carrying no such recipe.
 
-    Unlike :attr:`gateway_route`, this field IS read in-repo:
-    ``CodingHarnessDriver`` uses it to configure the
+    Unlike :attr:`gateway_route`, this field IS read in-repo: the
+    coding-harness compose synthesis uses it to configure the
     ``tolokaforge-llm-gateway`` sidecar service it adds to every
     shielded trial's compose stack, and every shipped harness in
     :data:`HARNESSES` declares one — the trial container never sees a

@@ -58,6 +58,7 @@ def _make_spec(
     trial_idx: int = 0,
     attempt_id: int = 0,
     worker_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> TrialSpec:
     return TrialSpec(
         trial_id=f"{task_id}:{trial_idx}",
@@ -71,6 +72,7 @@ def _make_spec(
             description="unit-test stub",
             adapter_type="native",
             system_prompt="",
+            metadata=metadata or {},
         ),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         max_turns=10,
@@ -563,6 +565,30 @@ class TestTrialToolSurfacePartition:
         kwargs = runner_cls.call_args.kwargs
         assert kwargs["user_simulator"].tool_schemas == []
         assert kwargs["user_tool_executor"] is None
+
+    def test_a_broken_harness_command_names_the_trial(self, tmp_path: Path) -> None:
+        """A blank ``agent_harness_command`` is a broken adapter. The classifier
+        raises naming the key; the call site re-raises with the ``trial <id>:``
+        prefix so a multi-trial run says which trial carried the bad metadata."""
+        conductor = self._conductor(tmp_path, _register_result([], []))
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[],
+            user_tool_executor=None,
+        )
+        spec = _make_spec(metadata={"agent_harness_command": "   "})
+
+        with pytest.raises(RuntimeError, match=r"trial t1:0: .*agent_harness_command"):
+            conductor._run_agent_loop(
+                spec, TaskConfig(task_id="t1", description="d"), setup, AGENT_LOOP_IDENTITY
+            )
 
     def test_the_bundle_records_both_slices_in_order(self, tmp_path: Path) -> None:
         """``tools_schemas.yaml`` is the trial's whole declared tool surface.
