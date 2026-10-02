@@ -65,7 +65,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     # compose materialisation, engine run state, backend capabilities,
     # runtime / conductor / trial-grader protocol definitions, the
     # ``run_trial`` library entry, run queue, resume, project loader,
-    # metrics, budgets, ``model_data_fingerprint``, and the remaining
+    # metrics, run-level budgets, ``model_data_fingerprint``, and the remaining
     # utility modules — is orchestrator-only. ``model_data`` is included;
     # its orchestrator-only compute sibling ``model_data_fingerprint`` is
     # not. ``plugin_registry`` is included: the runner reaches it through
@@ -92,6 +92,8 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",
+    # ``core.loop`` imports the shared half-duplex budget at runner boot.
+    "tolokaforge/core/simulation_budget.py",
     "tolokaforge/core/summarize_policy.py",
     "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/tool_message_format.py",
