@@ -52,6 +52,7 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
+from tolokaforge.core.grading.grading_failed import GradingFailedError
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.jsonpath_addressing import (
     addresses_the_database,
@@ -120,7 +121,6 @@ from tolokaforge.core.search.stack_services import (
     declared_stack_service,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
-from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
 from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
