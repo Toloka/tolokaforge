@@ -1396,6 +1396,7 @@ def _orchestrator_with_tasks(config: RunConfig, judge_flags: dict[str, bool]):
     adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
         tid, has_judge=judge_flags[tid]
     )
+    adapter.requires_judge_model.side_effect = judge_flags.__getitem__
     orch.adapter = adapter
     return orch
 
@@ -1464,6 +1465,9 @@ class TestJudgeModelGate:
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=True
         )
+        adapter.requires_judge_model.side_effect = lambda tid: (
+            adapter.to_task_description(tid).grading.llm_judge is not None
+        )
         orch.adapter = adapter
 
         with patch(
@@ -1489,6 +1493,9 @@ class TestJudgeModelGate:
         adapter = MagicMock()
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
+        )
+        adapter.requires_judge_model.side_effect = lambda tid: (
+            adapter.to_task_description(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
 
@@ -1594,6 +1601,9 @@ class TestPrepareRunIdempotency:
         _write_grading_yaml(tmp_path)
         adapter.get_task_dir.return_value = tmp_path
         adapter.fingerprint.return_value = None
+        adapter.requires_judge_model.side_effect = lambda tid: (
+            adapter.to_task_description(tid).grading.llm_judge is not None
+        )
         orch.adapter = adapter
         return orch
 

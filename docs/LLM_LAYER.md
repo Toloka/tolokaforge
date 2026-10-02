@@ -3151,3 +3151,12 @@ so `Orchestrator._build_conductor` and `run_trial` both refuse to start an armed
 run on a conductor that does not declare `supports_rate_limit_probe` — otherwise
 the run would absorb 429s while writing all-default `rate_limit_*` / `probe_*`
 metrics, and nothing in the artifacts would show it.
+
+### Per-call output format and sampling evidence
+
+`LLMClient.generate(response_format={"type": "json_object"})` passes an explicit
+output format to the transport. `GenerationResult.sent_sampling` records only
+the sampling keys actually sent after model policy (an empty dict means none;
+`None` means unobserved). Consumers must not infer sent values from the model
+config. `models.<role>.capabilities.api_call_timeout_s` accepts a finite positive
+number and overrides the call timeout for that model only.
