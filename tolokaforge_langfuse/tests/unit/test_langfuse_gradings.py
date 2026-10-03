@@ -399,8 +399,11 @@ class TestObserverGradings:
         pytest.importorskip("opentelemetry.sdk")
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
         from tolokaforge_langfuse.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
+        from tolokaforge_langfuse.safety import SafetyGate
 
         queue = SpanQueue(InMemorySpanExporter(), max_size=100, batch_size=4, interval_s=0.05)
+        # hermetic: the developer's environment holds no credential this observer knows
+        kwargs.setdefault("gate", SafetyGate())
         return OTelTrialObserver(
             queue=queue,
             label="l",

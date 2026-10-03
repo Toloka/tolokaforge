@@ -57,10 +57,6 @@ CONTENT_TYPES = {
     ".txt": "text/plain",
 }
 ALLOWED_SUFFIXES = frozenset({".yaml", ".yml", ".json", ".md", ".log", ".txt"})
-# the shapes and the minimum length have one home, the safety gate (the offline connector's copy
-# is kept identical by hand)
-MIN_SECRET_VALUE = safety.MIN_SECRET_VALUE
-SECRET_SHAPES = safety.SHAPES
 
 
 @dataclass
@@ -186,10 +182,19 @@ def allowed_attachment(name: str) -> bool:
 class SecretScan:
     """Finds known secret values and key-shaped strings in a payload; names the rule, never the
     value (a masked excerpt of at most four leading characters). A wrapper of the safety gate:
-    one rule set and one scan for the files, the projection and the live spans."""
+    one rule set and one scan for the files, the projection and the live spans. Given the
+    observer's ``gate``, it scans with that one known set."""
 
-    def __init__(self, known_values: Iterable[str] = ()) -> None:
-        self._gate = safety.SafetyGate.from_environment({}, extra=known_values)
+    def __init__(
+        self, known_values: Iterable[str] = (), *, gate: safety.SafetyGate | None = None
+    ) -> None:
+        self._gate = (
+            gate if gate is not None else safety.SafetyGate.from_environment({}, extra=known_values)
+        )
+
+    @property
+    def gate(self) -> safety.SafetyGate:
+        return self._gate
 
     def scan(self, payload: bytes) -> list[str]:
         return [str(finding) for finding in self._gate.scan(payload)]

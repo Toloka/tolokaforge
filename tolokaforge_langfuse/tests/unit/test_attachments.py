@@ -153,6 +153,19 @@ class TestSecretScanOfAStructuredValue:
         )
         assert SecretScan().scan_structured({"body": {"output": code}}) == []
 
+    def test_a_scan_given_a_gate_scans_with_that_known_set(self) -> None:
+        """One known set: what the observer's gate learns or leaves out, the scan follows."""
+        from tolokaforge_langfuse.safety import SafetyGate
+
+        gate = SafetyGate.from_environment({"DB_PASSWORD": "a-db-password-no-shape-matches"})
+        scan = SecretScan(gate=gate)
+        assert scan.gate is gate
+        assert scan.scan(b"a-db-password-no-shape-matches") == [
+            "known-secret-value (**** (30 chars))"
+        ]
+        gate.drop_ambient(["a-db-password-no-shape-matches"])
+        assert scan.scan(b"a-db-password-no-shape-matches") == []
+
     def test_the_scan_prints_no_known_value(self) -> None:
         scan = SecretScan(known_values=[self.AWKWARD, "process-held-secret-value-123"])
         scan.scan_structured({"output": self.AWKWARD})

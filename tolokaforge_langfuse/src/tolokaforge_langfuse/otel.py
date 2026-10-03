@@ -33,7 +33,7 @@ import json
 import logging
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -77,7 +77,7 @@ from tolokaforge_langfuse.projection import (
     ProjectionContext,
     build_projection,
 )
-from tolokaforge_langfuse.safety import SafetyGate
+from tolokaforge_langfuse.safety import Finding, SafetyGate, strings_in
 from tolokaforge_langfuse.vocabulary import (
     ALL_DERIVED_GROUPS,
     NAME_AGENT,
@@ -283,8 +283,9 @@ class TrialAttachments(Protocol):
     """The post-trial step a receiver provides (``media.LangfuseAttachments``): the
     file attachments, the ingestion route the trial-end events take, inline media, and the
     budget and breaker both share. ``attach_with_manifest``, ``register_media``, ``budget``,
-    ``scan_events``, ``note_trial_outcome`` and ``tripped`` are optional capabilities looked up
-    with ``getattr`` (a receiver with the bare ``attach`` / ``ingest`` pair still works)."""
+    ``note_trial_outcome`` and ``tripped`` are optional capabilities looked up with ``getattr``
+    (a receiver with the bare ``attach`` / ``ingest`` pair still works). The observer scans a
+    pass's events with its own gate, so the step needs no scanner of its own."""
 
     @property
     def mode(self) -> str: ...
@@ -360,6 +361,7 @@ class OTelTrialObserver:
         projection: ProjectionSettings | None = None,
         server_api: str = SERVER_V3,
         gate: SafetyGate | None = None,
+        ambient: Sequence[str] = (),
     ) -> None:
         self._queue = queue
         self._attachments = attachments
@@ -378,10 +380,17 @@ class OTelTrialObserver:
         # the trials whose final root has not been written yet, by trace id: one of them gets an
         # error root at run end unless its bundle pass writes the real one
         self._roots_pending: dict[str, _PersistContext] = {}
-        self._grading_counts = {"sent": 0, "failed": 0, "scores": 0, "users": 0}
+        self._grading_counts = {
+            "sent": 0,
+            "failed": 0,
+            "refused_secret": 0,
+            "scores": 0,
+            "users": 0,
+        }
         self._projection_counts = {
             "sent": 0,
             "failed": 0,
+            "refused_secret": 0,
             "observations": 0,
             "events": 0,
             "media_uploaded": 0,
@@ -408,17 +417,26 @@ class OTelTrialObserver:
         self._context_messages = max(1, context_messages)
         self._flush_timeout_s = flush_timeout_s
         self._redaction = SensitiveKeyRedaction()
-        # one gate for the run's spans: the process's own credentials and the outbound shapes
+        # one gate for the run: its spans, its trial-end passes and (when the plugin wires it so)
+        # its file attachments scan with it
         self._gate = gate if gate is not None else SafetyGate.from_environment()
         self._spans_refused_secret = 0
+        # what withheld a span or a pass, by rule and variable name, for the run-end summary
+        self._withheld_by: Counter[str] = Counter()
         self._states: dict[str, _TrialState] = {}
         self._states_lock = threading.Lock()
+        # the strings every span of the run carries by design: a known value one of them
+        # contains would withhold every span, so the gate leaves it out (and says so)
+        self._ambient = self._ambient_strings(ambient)
+        self._left_out: set[str] = set()
+        self._calibrate_gate()
 
     # -- TrialObserver ---------------------------------------------------------------------------
 
     def trial_started(
         self, identity: TrialIdentity, *, models: Mapping[str, ModelRef], started_at: datetime
     ) -> None:
+        self._refresh_gate()
         agent_ref = models.get("agent")
         agent, agent_resolved = (
             self._resolve_read(agent_ref) if agent_ref is not None else (None, False)
@@ -885,9 +903,10 @@ class OTelTrialObserver:
             with self._states_lock:
                 self._projection_counts["failed"] += 1
             return
-        if self._withheld_by_the_gate(projection.events, identity.trace_id, "projection"):
+        verdict = self._withheld_by_the_gate(projection.events, identity.trace_id, "projection")
+        if verdict is not None:
             with self._states_lock:
-                self._projection_counts["failed"] += 1
+                self._projection_counts[verdict] += 1
             return
         note = getattr(step, "note_trial_outcome", None)
         scores_sent = True
@@ -931,26 +950,31 @@ class OTelTrialObserver:
                 self._grading_counts["scores"] += stats.scores
             self._grading_counts["users"] += stats.user_generations
 
-    def _withheld_by_the_gate(self, events: list[dict[str, Any]], trace_id: str, what: str) -> bool:
-        """The outbound data-safety gate over a pass's events: True when they must not be sent,
-        because they would carry a secret or could not be scanned (nothing is rewritten; the
-        warning names the rules, never the value)."""
-        scan = getattr(self._attachments, "scan_events", None)
-        if not callable(scan):
-            return False
+    def _withheld_by_the_gate(
+        self, events: list[dict[str, Any]], trace_id: str, what: str
+    ) -> str | None:
+        """The outbound data-safety gate over a pass's events, with the run's own gate whatever
+        the attachment step offers: ``None`` when they may be sent, else the counter that takes
+        the pass, ``refused_secret`` (they would carry a secret) or ``failed`` (they could not be
+        scanned). Nothing is rewritten; the warning names the rules and the variables, never a
+        value."""
         try:
-            findings = scan(events)
+            findings = self._gate.scan_structured(events)
         except Exception as exc:  # noqa: BLE001 - an unserialisable body is a failed pass
             _log.warning("%s: trace %s not scanned: %s", what, trace_id, type(exc).__name__)
-            return True
-        if findings:
-            _log.warning(
-                "%s: trace %s not sent, the events would carry a secret: %s",
-                what,
-                trace_id,
-                ", ".join(findings),
-            )
-        return bool(findings)
+            return "failed"
+        if not findings:
+            return None
+        causes = _causes(findings)
+        with self._states_lock:
+            self._withheld_by.update(causes)
+        _log.warning(
+            "%s: trace %s not sent, the events would carry a secret: %s",
+            what,
+            trace_id,
+            ", ".join(causes),
+        )
+        return "refused_secret"
 
     def _write_projection_once(
         self,
@@ -1048,9 +1072,10 @@ class OTelTrialObserver:
         if self._projection.environment is not None:
             for event in built.events:
                 event["body"].setdefault("environment", self._projection.environment)
-        if self._withheld_by_the_gate(built.events, identity.trace_id, "gradings"):
+        verdict = self._withheld_by_the_gate(built.events, identity.trace_id, "gradings")
+        if verdict is not None:
             with self._states_lock:
-                self._grading_counts["failed"] += 1
+                self._grading_counts[verdict] += 1
             return
         try:
             self._attachments.ingest(built.events)  # type: ignore[union-attr]
@@ -1073,6 +1098,7 @@ class OTelTrialObserver:
             self._queue.flush(self._flush_timeout_s)
             self._write_error_roots()
         flushed = self._queue.shutdown(self._flush_timeout_s)
+        self._warn_of_what_was_withheld()
         with self._states_lock:
             self._persist.clear()  # trials that were never announced
             self._roots_pending.clear()
@@ -1089,10 +1115,12 @@ class OTelTrialObserver:
                 "langfuse.manifests_failed": counts.manifests_failed,
                 "langfuse.gradings_sent": self._grading_counts["sent"],
                 "langfuse.gradings_failed": self._grading_counts["failed"],
+                "langfuse.gradings_refused_secret": self._grading_counts["refused_secret"],
                 "langfuse.scores_sent": self._grading_counts["scores"],
                 "langfuse.user_generations_sent": self._grading_counts["users"],
                 "langfuse.projections_sent": self._projection_counts["sent"],
                 "langfuse.projections_failed": self._projection_counts["failed"],
+                "langfuse.projections_refused_secret": self._projection_counts["refused_secret"],
                 "langfuse.observations_sent": self._projection_counts["observations"],
                 "langfuse.events_sent": self._projection_counts["events"],
                 "langfuse.media_uploaded": self._projection_counts["media_uploaded"],
@@ -1102,7 +1130,8 @@ class OTelTrialObserver:
                 # a root the exporter posted and could not confirm: no second root is written
                 "langfuse.roots_unconfirmed": self._write_once_counts["roots_unconfirmed"],
                 "langfuse.final_observations_sent": self._write_once_counts["final_observations"],
-                # live spans the data-safety gate withheld (neither queued nor dropped)
+                # live spans the data-safety gate withheld (neither queued nor dropped); a
+                # trial-end pass it withheld is counted as ``*_refused_secret``, not ``*_failed``
                 "langfuse.spans_refused_secret": self._spans_refused_secret,
             },
             details=(
@@ -1360,12 +1389,15 @@ class OTelTrialObserver:
         self, name: str, identity: TrialIdentity, span_id: str, attributes: Mapping[str, Any]
     ) -> bool:
         """The data-safety gate over a span's name and attributes, before it is queued. A hit
-        withholds the span, counts it, and warns with the span and the rules, never the value."""
+        withholds the span, counts it, and warns with the span, the rules and the variables the
+        known values came from, never a value."""
         findings = self._gate.scan_structured({"name": name, "attributes": attributes})
         if not findings:
             return False
+        causes = _causes(findings)
         with self._states_lock:
             self._spans_refused_secret += 1
+            self._withheld_by.update(causes)
         # a tool's name comes from the model: it is named only when it is clean itself
         shown = name if not self._gate.scan(name.encode("utf-8", "replace")) else "(name withheld)"
         _log.warning(
@@ -1373,9 +1405,77 @@ class OTelTrialObserver:
             shown,
             span_id,
             identity.trace_id,
-            ", ".join(dict.fromkeys(finding.rule for finding in findings)),
+            ", ".join(causes),
         )
         return True
+
+    def _ambient_strings(self, extra: Sequence[str]) -> tuple[str, ...]:
+        """What every span of the run carries by design: its session, label and tags, the
+        caller's metadata, the receiver's native fields, and the run's id and tag (``extra``)."""
+        projection = self._projection
+        return tuple(
+            text
+            for text in (
+                self._session_id,
+                self._label,
+                HARNESS_TAG,
+                SOURCE_TAG,
+                *self._tags,
+                *strings_in(self._metadata),
+                projection.environment,
+                projection.release,
+                projection.version,
+                projection.producer,
+                projection.trace_name,
+                *extra,
+            )
+            if text
+        )
+
+    def _calibrate_gate(self) -> None:
+        """Leave out of the gate every known value the run's own values contain: with it the
+        gate would withhold every span."""
+        self._say_left_out(self._gate.drop_ambient(self._ambient))
+
+    def _refresh_gate(self) -> None:
+        """Re-read the gate's known values when what they came from changed (a secret registered
+        after the observer was built), leaving the ambient ones out again."""
+        try:
+            _, left_out = self._gate.refresh(self._ambient)
+        except Exception as exc:  # noqa: BLE001 - the gate keeps the values it has
+            _log.warning(
+                "the data-safety gate's credentials were not re-read: %s", type(exc).__name__
+            )
+            return
+        self._say_left_out(left_out)
+
+    def _say_left_out(self, names: Sequence[str]) -> None:
+        """Warn once per variable, by name, that its value is not scanned for."""
+        for name in names:
+            with self._states_lock:
+                new = name not in self._left_out
+                self._left_out.add(name)
+            if new:
+                _log.warning(
+                    "%s holds a value the run's own tracing values (session, run, label, tags, "
+                    "metadata, environment, release) contain, so the data-safety scan leaves it "
+                    "out: every span would be withheld otherwise",
+                    name,
+                )
+
+    def _warn_of_what_was_withheld(self) -> None:
+        """One warning at run end when the gate withheld anything: the per-span lines say which,
+        this one says that the run's traces are incomplete and why, by rule and variable."""
+        passes = self._projection_counts["refused_secret"], self._grading_counts["refused_secret"]
+        if not (self._spans_refused_secret or any(passes)):
+            return
+        _log.warning(
+            "live tracing withheld %d span(s), %d projection pass(es) and %d gradings pass(es) "
+            "that would have carried a secret (%s); the traces of this run are incomplete",
+            self._spans_refused_secret,
+            *passes,
+            ", ".join(f"{cause} x{count}" for cause, count in self._withheld_by.most_common(5)),
+        )
 
     def _redact(self, mapping: Any) -> Any:
         if isinstance(mapping, Mapping):
@@ -1427,6 +1527,11 @@ class OTelTrialObserver:
         if len(text) <= self._max_chars:
             return text
         return text[: self._max_chars - 16] + f"...[+{len(text) - self._max_chars + 16}]"
+
+
+def _causes(findings: Sequence[Finding]) -> list[str]:
+    """What the gate found, by rule and variable name, once each and never a value."""
+    return list(dict.fromkeys(finding.describe() for finding in findings))
 
 
 def _content(message: Any) -> str:
