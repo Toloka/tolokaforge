@@ -95,7 +95,7 @@ def test_runner_wire_preserves_host_grader_snapshots() -> None:
     from tolokaforge.core.models.grade import GradingStateSnapshots
 
     snapshots = GradingStateSnapshots(
-        source="tau3_env replay",
+        source="environment replay",
         initial={"agent": {}},
         golden={"agent": {"x": 1}},
         final={"agent": {"x": 1}},

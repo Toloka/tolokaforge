@@ -244,7 +244,7 @@ def test_failed_judge_writes_usage_and_replay_snapshots_without_a_grade(
     sample_trajectory.grading_error = "judge malformed"
     sample_trajectory.grading_judge_usage = JudgeUsage(calls=1, cost_usd=0.02)
     sample_trajectory.grading_state_snapshots = GradingStateSnapshots(
-        source="tau3_env replay",
+        source="environment replay",
         initial={"agent": {}},
         golden={"agent": {"x": 1}},
         final={"agent": {"x": 1}},
