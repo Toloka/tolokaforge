@@ -146,7 +146,15 @@ returns to shape the `⏸ Run stopped (<reason>)` end banner (see
 | `value_at_hit` | float | The counter's value at the moment of the hit. May exceed `threshold` on the last increment (e.g. a $0.02 trial pushing spend from $4.99 to $5.01 records `value_at_hit=5.01`). |
 | `timestamp` | ISO 8601 UTC string | When the hit was detected. Formatted `YYYY-MM-DDTHH:MM:SSZ` with an explicit `Z` suffix. |
 
-Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/core/budgets.py); the on-disk shape is locked by the `LimitHitMarker` Pydantic model (`extra="forbid"`). A resumed run that hits a fresh limit overwrites an existing marker — the file always reflects the current run state, not a history.
+Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/core/budgets.py); the on-disk shape is locked by the `LimitHitMarker` Pydantic model (`extra="forbid"`). At scheduling start, resume removes the previous marker; a fresh budget hit writes the current value. A resumed run that completes without a hit has no marker. The file reflects the current invocation, not a history.
+
+Run aggregates include the saved completed trials that resume skips, together
+with the attempts produced by the current invocation. A saved trial contributes
+its separate `metrics.yaml`, `grade.yaml` and `tool_log.yaml` (when available),
+including a grading failure's known judge usage. Unreadable completed bundles
+abort resume before new trials start rather than disappearing from the report.
+The invocation's `Orchestrator.results` and grading-completeness gates still
+describe its newly executed attempts.
 
 ## `trials/{task_id}/{trial_index}/tools_schemas.yaml`
 
