@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.28.2 (2026-10-03)
+
+### Feat
+
+- **llm**: record what each LLM call was billed, and make a Langfuse trace's cost what the trial spent (#1759)
+- **automation**: send the prompt an agent was given as its transcript's trace input (#1743)
+
+### Fix
+
+- **docker**: resolve rag-service wheel lazily on the build path; LFS-free reinstall clone (#1747)
+- **docker**: build rag-service and grader on a wheel install; one build-context source of truth (#1741)
+- **langfuse**: build the single-attempt OTLP request without the SDK's exporter (#1740)
+
 ## v0.28.1 (2026-10-02)
 
 ### Feat
