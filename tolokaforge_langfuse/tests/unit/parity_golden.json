@@ -336,9 +336,9 @@
    "startTime": "2026-09-17T09:00:12.000000Z",
    "traceId": "31500a73337f515f9ee15ea2d06e357d",
    "usageDetails": {
-    "cache_creation_input_tokens": 0,
+    "cache_creation_input_tokens": 200,
     "cache_read_input_tokens": 0,
-    "input": 1100,
+    "input": 900,
     "output": 40,
     "total": 1140
    }
