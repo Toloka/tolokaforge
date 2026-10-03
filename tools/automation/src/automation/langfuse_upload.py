@@ -15,8 +15,9 @@ What it does, in order, per file:
    leaves the runner at all);
 3. **project** it to ingestion bodies and then to OTLP spans, the same two steps the trial path
    takes, so a transcript and a trial read alike in the same UI;
-4. **scan** the serialised payload against the sentinel, which knows the credential shapes *and*
-   the values this very process holds. A hit sends nothing;
+4. **scan** the payload against the sentinel, which knows the credential shapes *and* the values
+   this very process holds: the shapes read the serialised JSON, the values also the raw strings.
+   A hit sends nothing;
 5. **export** one batch per transcript.
 
 Nothing here fails the pipeline on its own: the command reports what it refused, what it blocked
@@ -38,7 +39,7 @@ import re
 import urllib.error
 import urllib.request
 from base64 import b64encode
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -505,34 +506,10 @@ def _sentinel(receiver: Receiver | None) -> Any:
 
 
 def _scan(gate: Any, events: Sequence[Mapping[str, Any]], *, what: str) -> list[Any]:
-    """The sentinel over the events as JSON and as the raw strings the spans carry, one per line:
-    JSON escaping hides a value with a quote, a backslash or a non-ASCII character, and turns a
-    line break into two characters no line-anchored shape matches."""
-    serialised = json.dumps(events, default=str).encode("utf-8")
-    # blank lines go: no shape spans one, and a line-anchored shape's leading \s* would otherwise
-    # cross a whole run of them from every line start (quadratic in a run of newlines)
-    raw = "\n".join(
-        line for text in _strings(events) for line in text.splitlines() if line.strip()
-    ).encode("utf-8", "replace")
-    found, seen = [], set()
-    for finding in gate.scan(serialised, what=what) + gate.scan(raw, what=what):
-        if (finding.rule, finding.excerpt) not in seen:
-            seen.add((finding.rule, finding.excerpt))
-            found.append(finding)
-    return found
-
-
-def _strings(value: Any) -> Iterator[str]:
-    """Every string in ``value``, the keys included, and every other scalar as text."""
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            yield str(key)
-            yield from _strings(item)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from _strings(item)
-    elif value is not None:
-        yield str(value)
+    """The sentinel over the events: the shapes over their JSON, the values the process holds also
+    over every raw string and its JSON-escaped forms. The wheel's one rule, the one every live
+    span and the trial-end pass use (``SafetyGate.scan_structured``)."""
+    return gate.scan_structured(events, what=what)
 
 
 def _project_verified(receiver: Receiver | None, project: str | None) -> bool:
