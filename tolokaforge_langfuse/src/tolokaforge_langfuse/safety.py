@@ -7,13 +7,17 @@ keys. So every payload a producer sends, ingestion events and media alike, is sc
 **serialised bytes** before the send, fail-closed:
 
 - **known secret values**: every credential the process itself holds (environment variables whose
-  name looks like a secret) and, when the caller names one, the values of a ``.env`` file under
-  secret-like keys;
+  name looks like a secret; the caller may add the values it resolved another way) and, when the
+  caller names one, the values of a ``.env`` file under secret-like keys;
 - **shape patterns**: dotenv lines with secret-like keys, ``Authorization`` headers, PEM blocks,
   URL credentials (a redacted ``***`` password is not a hit), well-known key prefixes
   (``pk-lf-``, ``sk-lf-``, ``sk-or-``, ``sk-ant-``, ``ghp_``, ``github_pat_``, ``xox?-``,
   ``AKIA``, ``AIza``, ``glpat-``), JWTs, and secret-named JSON / YAML fields holding a long
   opaque value;
+
+A structured value (a span's attributes, a list of events) is scanned as its JSON, shapes and
+known values, and its raw strings are scanned for the known values too, which JSON escaping hides
+(:meth:`SafetyGate.scan_structured`).
 
 On a hit the bytes are **never rewritten** (an attachment must stay byte-exact): the caller skips
 the file and names it in its receipt, or stops; a hit in the structured events blocks the send
@@ -25,28 +29,37 @@ What an ATTACHMENT may be is a different question and lives with the attachments
 one package is how they drift apart.
 
 Engine-free by construction, so the two transcript uploaders (``automation langfuse-upload`` in the
-engine repository and the offline connector) scan with one implementation and one set of fixtures.
-The live observer's attachment step still scans with its own copy of the shapes
-(:class:`tolokaforge_langfuse.attachments.SecretScan`).
+engine repository and the offline connector), the live observer's spans and the attachment step
+(:class:`tolokaforge_langfuse.attachments.SecretScan` wraps this gate) scan with one
+implementation and one set of fixtures.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
+from typing import Any
 
 SECRET_NAME = re.compile(
     r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
 )
 # names that look secret-like but never hold a secret value; PWD and OLDPWD are the shell's
-# working directories, which an agent's own text names all the time
+# working directories, which an agent's own text names all the time, and the tracing launcher's
+# session id rides on every span by design
 _NOT_SECRET_NAMES = re.compile(
-    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_NAME$|_HEADER$|^(?:OLD)?PWD$)", re.I
+    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_NAME$|_HEADER$|^(?:OLD)?PWD$"
+    r"|^TOLOKAFORGE_TRACING_SESSION_ID$)",
+    re.I,
 )
 MIN_SECRET_VALUE = 8
+# how deep JSON may be nested in a string a value is found in (an attribute holding JSON text
+# whose strings hold JSON text)
+JSON_NESTING = 3
 
 SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
@@ -123,9 +136,14 @@ class SafetyGate:
 
     @classmethod
     def from_environment(
-        cls, env: Mapping[str, str] | None = None, dotenv: Path | None = None
+        cls,
+        env: Mapping[str, str] | None = None,
+        dotenv: Path | None = None,
+        *,
+        extra: Iterable[str] = (),
     ) -> SafetyGate:
-        """Known secret values from the process environment and, when given, a ``.env`` file."""
+        """Known secret values from the process environment, a ``.env`` file when given, and
+        ``extra``: credential values the caller holds by another route (a secret manager)."""
         values: set[bytes] = set()
         for name, value in (env if env is not None else os.environ).items():
             if _looks_secret(name) and len(value) >= MIN_SECRET_VALUE:
@@ -139,6 +157,11 @@ class SafetyGate:
                 value = value.strip().strip("'\"")
                 if _looks_secret(name.strip()) and len(value) >= MIN_SECRET_VALUE:
                     values.add(value.encode("utf-8"))
+        values.update(
+            value.encode("utf-8", "surrogateescape")
+            for value in extra
+            if value and len(value) >= MIN_SECRET_VALUE
+        )
         return cls(known_values=tuple(sorted(values, key=len, reverse=True)))
 
     def scan(self, payload: bytes, *, what: str = "payload") -> list[Finding]:
@@ -157,6 +180,47 @@ class SafetyGate:
             self.hits[finding.rule] = self.hits.get(finding.rule, 0) + 1
         return findings
 
+    def scan_structured(self, value: Any, *, what: str = "payload") -> list[Finding]:
+        """Every finding in a JSON-like ``value`` (a span's attributes, a list of events).
+
+        The shapes and the known values run over the value serialised as JSON, which is what a
+        receiver is sent. The known values also run over every raw string the value holds, in
+        the forms JSON gives them: JSON escaping hides a credential with a quote or a backslash,
+        and an attribute that is itself JSON text escapes it once more. The shapes do not run
+        over raw strings: a line-anchored one would stop ordinary code (``api_key = os.environ...``)
+        and is quadratic on a long line."""
+        serialised = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8", "replace")
+        found = self.scan(serialised, what=what)
+        if not self.known_values:
+            return found
+        raw = "\x00".join(_strings(value)).encode("utf-8", "replace")
+        seen = {(finding.rule, finding.excerpt) for finding in found}
+        for known, forms in self._forms:
+            if any(form in raw for form in forms):
+                finding = Finding("known-secret-value", f"**** ({len(known)} chars)")
+                if (finding.rule, finding.excerpt) not in seen:
+                    seen.add((finding.rule, finding.excerpt))
+                    found.append(finding)
+                    self.hits[finding.rule] = self.hits.get(finding.rule, 0) + 1
+        return found
+
+    @cached_property
+    def _forms(self) -> tuple[tuple[bytes, tuple[bytes, ...]], ...]:
+        """Each known value with the forms JSON gives it, escaped up to ``JSON_NESTING`` times."""
+        pairs = []
+        for known in self.known_values:
+            if not known:
+                continue
+            forms, text = [known], known.decode("utf-8", "surrogateescape")
+            for _ in range(JSON_NESTING):
+                text = json.dumps(text, ensure_ascii=False)[1:-1]
+                form = text.encode("utf-8", "surrogateescape")
+                if form == forms[-1]:
+                    break
+                forms.append(form)
+            pairs.append((known, tuple(forms)))
+        return tuple(pairs)
+
     def check(self, payload: bytes, *, what: str) -> None:
         """Raise ``SafetyError`` naming the rules when ``payload`` is not clean."""
         findings = self.scan(payload, what=what)
@@ -174,3 +238,16 @@ def _mask(value: bytes) -> str:
     text = value.decode("utf-8", "replace").strip()
     head = text[:4] if len(text) > 12 else ""
     return f"{head}**** ({len(text)} chars)"
+
+
+def _strings(value: Any) -> Iterator[str]:
+    """Every string in ``value``, the keys included, and every other scalar as text."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield str(key)
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+    elif value is not None:
+        yield str(value)

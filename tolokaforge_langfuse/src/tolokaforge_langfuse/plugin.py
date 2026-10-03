@@ -65,6 +65,7 @@ from tolokaforge_langfuse.preflight import (
     resolve_plan,
 )
 from tolokaforge_langfuse.projection import PROJECTION_FULL
+from tolokaforge_langfuse.safety import SafetyGate
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import TracingConfig
@@ -209,6 +210,7 @@ def build(
             trace_user=plan.profile.trace_user,
         ),
         server_api=server_api,
+        gate=live_gate(),
     )
 
 
@@ -419,7 +421,9 @@ _SECRET_NAME = re.compile(
     r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
 )
 _NOT_SECRET_NAME = re.compile(
-    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_BASE$|_NAME$|_HEADER$)", re.I
+    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_BASE$|_NAME$|_HEADER$"
+    r"|^TOLOKAFORGE_TRACING_SESSION_ID$)",
+    re.I,
 )
 
 
@@ -460,6 +464,12 @@ def build_attachments(
         environment=environment,
         send_manifest_event=send_manifest_event,
     )
+
+
+def live_gate() -> SafetyGate:
+    """The data-safety gate every live span passes: the credentials this process holds, in its
+    environment and in the ``SecretManager``, and the outbound shape rules."""
+    return SafetyGate.from_environment(extra=secret_values())
 
 
 def secret_values() -> list[str]:

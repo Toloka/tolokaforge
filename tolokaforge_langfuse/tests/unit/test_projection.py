@@ -548,6 +548,54 @@ class TestObserverProjection:
         receipt = observer.run_finished()
         assert step.batches == [] and receipt.extra["langfuse.projections_failed"] == 1
 
+    def test_a_secret_json_would_escape_blocks_the_pass_too(self, tmp_path: Path) -> None:
+        """A known value with a quote and a backslash in a projected event's output hides from
+        the serialised events; the pass is scanned like a live span, in the raw strings too."""
+        from tolokaforge_langfuse.attachments import SecretScan
+
+        awkward = 'tok"en\\8f3a91c2b7d04e56'
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        assistant = next(m for m in trajectory["messages"] if m["role"] == "assistant")
+        assistant["content"] = f"the token is {awkward}"
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        resolver = RawModelNameResolver()
+        events = build_projection(
+            IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
+        ).events
+        scan = SecretScan([awkward])
+        assert scan.scan(json.dumps(events, ensure_ascii=False).encode()) == []  # the old gate
+        step = _Step()
+        step.scan_events = scan.scan_structured  # type: ignore[method-assign]
+        observer = self._observer(step)
+        observer.trial_persisted(IDENTITY, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+        assert step.batches == [] and receipt.extra["langfuse.projections_failed"] == 1
+
+    def test_the_gradings_pass_is_scanned_before_it_is_sent(self, tmp_path: Path) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        step = _Step()
+        observer = self._observer(step, projection=ProjectionSettings(mode="gradings"))
+        observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+        receipt = observer.run_finished()
+        assert step.scanned == 1 and len(step.batches) == 1
+        assert receipt.extra["langfuse.gradings_sent"] == 1
+
+    def test_a_data_safety_hit_blocks_the_gradings_pass(self, tmp_path: Path) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        step = _Step()
+        step.scan_events = lambda events: ["openrouter-key (sk-o**** (40 chars))"]  # type: ignore[method-assign]
+        observer = self._observer(step, projection=ProjectionSettings(mode="gradings"))
+        observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+        receipt = observer.run_finished()
+        assert step.batches == []
+        assert (
+            receipt.extra["langfuse.gradings_failed"],
+            receipt.extra["langfuse.gradings_sent"],
+        ) == (1, 0)
+
     def test_projection_none_sends_only_the_attachments(self, tmp_path: Path) -> None:
         from tolokaforge_langfuse.otel import ProjectionSettings
 

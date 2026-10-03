@@ -205,8 +205,8 @@ of the fixed schema explicit (the receiver merges metadata and an omitted key wo
 | the attachment step | manifest v2, complete, in the same trace body |
 
 `projection: gradings` sends only the grading, its scores and the user turns; `none` sends the attachments alone. The pass runs under the attachment
-step's budget and breaker, the serialised events go through the same data-safety scan as the
-files (a hit sends nothing and counts), and nothing raises into the trial. The receipt reports
+step's budget and breaker, the events go through the same data-safety scan as the live spans
+(§ Delivery: a hit sends nothing and counts), and nothing raises into the trial. The receipt reports
 the following counters under `extra`, each prefixed with `langfuse.`:
 `projections_sent`, `projections_failed`, `observations_sent`, `events_sent`, `scores_sent`,
 `gradings_sent`, `user_generations_sent`, `media_uploaded`, `media_failed`.
@@ -582,10 +582,24 @@ loop never waits. At run end the queue is flushed within `flush_timeout_s` and
 `spans_dropped`, `export_failures`, `flushed`; the same counts go to the log (a warning when
 anything was dropped). If the receiver is unreachable the flush gives up after `flush_timeout_s`
 and counts the rest as dropped, so a run never waits on its traces. Tool-call **arguments** (a
-mapping) pass through the engine's `SensitiveKeyRedaction`; tool outputs and message text are free
-text, which key-based redaction cannot cover, so they are capped at `attribute_max_chars` but not
-redacted; base64 image blocks never leave through spans. The receiver's headers are read through
-the `SecretManager` (`OTEL_EXPORTER_OTLP_HEADERS`) so their value is redacted from the engine's logs.
+mapping) pass through the engine's `SensitiveKeyRedaction`, which reads key names only; tool
+outputs and message text are free text it cannot cover, so they are capped at
+`attribute_max_chars`, and **every live span is scanned before it is queued**: its name and
+attributes go through the data-safety gate. The key-shaped patterns of § Attachments run over the
+span serialised as JSON, as they do over the bundle's events; the credential values the process
+holds when the run starts (its environment and the `SecretManager`, so not one registered later)
+run over the serialised span and over every raw string in it, in the forms JSON gives them,
+because JSON escaping hides a credential that holds a quote or a backslash, and an attribute that
+is itself JSON text (a generation's input and output, a tool's input) escapes it once more. The
+patterns do not run over raw strings, where a line-anchored one would stop ordinary code such as
+`api_key = os.environ.get(...)`. A hit withholds that span, whatever it is (a generation, a tool
+row, a preview, a root, an error root): nothing is rewritten, the warning names the span and the
+rules, never the value, and the receipt counts it as `langfuse.spans_refused_secret` under
+`extra`. A withheld span is neither queued nor dropped. A text longer than `attribute_max_chars`
+is scanned as capped, so a credential the cap cuts is not recognised. The trial-end pass (§ The
+trial-end pass) scans its events the same way and a hit there blocks the pass. Base64 image blocks
+never leave through spans. The receiver's headers are read through the `SecretManager`
+(`OTEL_EXPORTER_OTLP_HEADERS`) so their value is redacted from the engine's logs.
 
 
 The receipt is a strict Pydantic `ExportReceipt`: its common fields are `spans_queued`,

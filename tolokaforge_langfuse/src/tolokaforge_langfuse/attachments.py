@@ -30,11 +30,12 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from tolokaforge_langfuse import safety
 
 ATTACHMENTS_SCHEMA = 2
 ATTACH_ALL = "all"
@@ -56,57 +57,10 @@ CONTENT_TYPES = {
     ".txt": "text/plain",
 }
 ALLOWED_SUFFIXES = frozenset({".yaml", ".yml", ".json", ".md", ".log", ".txt"})
-MIN_SECRET_VALUE = 8
-
-# the key-shaped patterns of the connector's safety gate (tolokaforge-tools,
-# langfuse_connector/safety.py); kept identical by hand, the engine cannot import a private tool
-SECRET_SHAPES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
-    (
-        "dotenv-secret",
-        re.compile(
-            rb"(?im)^\s*(?:export\s+)?[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)"
-            rb"[A-Z0-9_]*\s*=\s*['\"]?[^\s'\"#]{8,}"
-        ),
-    ),
-    (
-        "authorization-header",
-        re.compile(rb"(?i)authorization\W{0,3}\s*(?:bearer|basic)\s+[A-Za-z0-9+/=_\-.]{16,}"),
-    ),
-    ("pem-private-key", re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    (
-        # the scheme is anchored and bounded: a free `[a-z][a-z0-9+.-]*` before `://` scans a
-        # long lowercase run quadratically (tool outputs can be hundreds of kilobytes)
-        "url-credentials",
-        re.compile(
-            rb"(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,15}://[^/\s:@]+:(?![*]+@)[^@\s/]{3,}@[^\s/]+"
-        ),
-    ),
-    (
-        "langfuse-key",
-        re.compile(rb"\b[ps]k-lf-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"),
-    ),
-    ("openrouter-key", re.compile(rb"\bsk-or-v1-[0-9a-f]{20,}")),
-    ("anthropic-key", re.compile(rb"\bsk-ant-[A-Za-z0-9_\-]{20,}")),
-    ("openai-key", re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_\-]{32,}")),
-    (
-        "github-token",
-        re.compile(rb"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{40,}"),
-    ),
-    ("slack-token", re.compile(rb"\bxox[abprs]-[A-Za-z0-9\-]{10,}")),
-    ("aws-access-key", re.compile(rb"\bAKIA[0-9A-Z]{16}\b")),
-    ("google-api-key", re.compile(rb"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("gitlab-token", re.compile(rb"\bglpat-[A-Za-z0-9_\-]{20}")),
-    ("jwt", re.compile(rb"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
-    (
-        "secret-field",
-        re.compile(
-            rb"(?i)[\"']?(?:api[_\-]?key|secret(?:[_\-]?key)?|access[_\-]?token|auth[_\-]?token|"
-            rb"refresh[_\-]?token|client[_\-]?secret|private[_\-]?key|password|passwd)[\"']?\s*[:=]\s*"
-            rb"[\"']?(?![\"']?(?:null|none|true|false|\*+|redacted|<[^>]*>|\$\{[^}]*\}|\[REDACTED\])[\"'\s,}]?)"
-            rb"[A-Za-z0-9+/=_\-.]{16,}"
-        ),
-    ),
-)
+# the shapes and the minimum length have one home, the safety gate (the offline connector's copy
+# is kept identical by hand)
+MIN_SECRET_VALUE = safety.MIN_SECRET_VALUE
+SECRET_SHAPES = safety.SHAPES
 
 
 @dataclass
@@ -229,41 +183,21 @@ def allowed_attachment(name: str) -> bool:
     return Path(name).suffix.lower() in ALLOWED_SUFFIXES
 
 
-def _mask(value: bytes) -> str:
-    text = value.decode("utf-8", "replace").strip()
-    head = text[:4] if len(text) > 12 else ""
-    return f"{head}**** ({len(text)} chars)"
-
-
 class SecretScan:
     """Finds known secret values and key-shaped strings in a payload; names the rule, never the
-    value (a masked excerpt of at most four leading characters)."""
+    value (a masked excerpt of at most four leading characters). A wrapper of the safety gate:
+    one rule set and one scan for the files, the projection and the live spans."""
 
     def __init__(self, known_values: Iterable[str] = ()) -> None:
-        self._known = tuple(
-            sorted(
-                {
-                    v.encode("utf-8", "surrogateescape")
-                    for v in known_values
-                    if v and len(v) >= MIN_SECRET_VALUE
-                },
-                key=len,
-                reverse=True,
-            )
-        )
+        self._gate = safety.SafetyGate.from_environment({}, extra=known_values)
 
     def scan(self, payload: bytes) -> list[str]:
-        findings: list[str] = []
-        for value in self._known:
-            if value in payload:
-                # no leading characters for a credential the process holds: the head of an
-                # arbitrary password is secret material, unlike a provider key prefix
-                findings.append(f"known-secret-value (**** ({len(value)} chars))")
-        for rule, pattern in SECRET_SHAPES:
-            match = pattern.search(payload)
-            if match:
-                findings.append(f"{rule} ({_mask(match.group(0))})")
-        return findings
+        return [str(finding) for finding in self._gate.scan(payload)]
+
+    def scan_structured(self, value: Any) -> list[str]:
+        """:meth:`safety.SafetyGate.scan_structured`: the JSON-like ``value`` as the receiver is
+        sent it, and its raw strings for the known values."""
+        return [str(finding) for finding in self._gate.scan_structured(value)]
 
 
 def build_manifest(
