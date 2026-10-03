@@ -30,10 +30,13 @@ The golden side is viewed first. A view that cannot be computed for it raises
 :class:`~tolokaforge.core.grading.comparison_view.ComparisonViewError`, which each
 substrate reports as a grading error: the declaration does not fit the state the task's
 own golden path builds. Once the golden's view succeeded, the declaration is shown
-sound, so any :class:`~tolokaforge.core.grading.comparison_view.ComparisonViewError` on
+valid for that golden state. A
+:class:`~tolokaforge.core.grading.comparison_view.ComparisonViewError` on
 the trial side — a re-keying that is not bijective, a record without its key field, a
 value no rule can read — is the trial's own state that cannot be viewed:
 :func:`view_the_pair` returns it as a :class:`TrialViewError`, which fails the trial.
+Unexpected implementation exceptions on either side propagate as grading errors;
+a successful golden view does not prove that a rule has no trial-dependent bug.
 
 A task without a ``comparison_view`` never reaches this module: each substrate keeps
 its own path, so no existing digest moves.
@@ -163,7 +166,8 @@ def view_the_pair(
 
     Raises:
         ComparisonViewError: the golden's view cannot be computed — a grading error.
-            Any error viewing the trial's state is returned as a :class:`TrialViewError`.
+            A declared trial-state error is returned as a :class:`TrialViewError`.
+        Exception: an unexpected rule implementation failure, on either side.
     """
     golden_result = apply_comparison_view(
         golden, initial=initial, view=declaration.view, id_fields=declaration.id_fields
