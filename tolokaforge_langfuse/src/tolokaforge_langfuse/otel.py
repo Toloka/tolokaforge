@@ -74,7 +74,16 @@ from tolokaforge_langfuse.projection import (
     ProjectionContext,
     build_projection,
 )
-from tolokaforge_langfuse.vocabulary import ALL_DERIVED_GROUPS, SOURCE_TRIAL
+from tolokaforge_langfuse.vocabulary import (
+    ALL_DERIVED_GROUPS,
+    NAME_AGENT,
+    NAME_JUDGE,
+    NAME_TRIAL,
+    SOURCE_TRIAL,
+    TRACE_USER_NONE,
+    trace_name,
+    trace_user,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -101,6 +110,9 @@ class ProjectionSettings:
     producer: str = "tolokaforge"  # the ``uploader_version`` metadata value
     # the groups of bundle-derived tags the trial-end pass adds (vocabulary.DERIVED_GROUPS)
     derived_groups: frozenset[str] = ALL_DERIVED_GROUPS
+    # the profile's ``[trace]``: the name template and the source of the trace's user
+    trace_name: str | None = None
+    trace_user: str = TRACE_USER_NONE
 
 
 def _scope() -> InstrumentationScope:
@@ -297,6 +309,8 @@ class _PersistContext:
     judge_model: str | None = None
     user_model: str | None = None
     tags: tuple[str, ...] = ()
+    # the trace's user (the agent's model identity), which an error root carries too
+    user_id: str | None = None
     identity: TrialIdentity | None = None
     error: str | None = None
     root_sent: bool = False
@@ -415,21 +429,24 @@ class OTelTrialObserver:
             self._states[identity.trace_id] = state
             if self._write_once:
                 self._roots_pending[identity.trace_id] = _PersistContext(
-                    started_at=started_at, identity=identity, tags=state.tags
+                    started_at=started_at,
+                    identity=identity,
+                    tags=state.tags,
+                    user_id=self._user_id(state),
                 )
         if self._write_once:
             # (C) in shape R: the preview root names the final root as its parent, so the trace
             # has no root row until the bundle's root arrives and exactly one afterwards. The
             # trial is reachable meanwhile by its (deterministic) trace id and by session.
             self._emit(
-                name=f"{PREVIEW_NAME_PREFIX}trial {identity.task_id}/{identity.trial_index}",
+                name=f"{PREVIEW_NAME_PREFIX}{NAME_TRIAL}",
                 identity=identity,
                 span_id=self._preview_root_id(identity),
                 parent_id=identity.root_id,
                 attributes={
                     **self._trace_attributes(state),
                     **self._identity_attributes(identity),
-                    "langfuse.observation.type": "span",
+                    "langfuse.observation.type": "agent",
                     f"{OBSERVATION_METADATA_PREFIX}kind": "root",
                     f"{OBSERVATION_METADATA_PREFIX}status": "running",
                     f"{OBSERVATION_METADATA_PREFIX}trace_time_source": TRACE_TIME_SOURCE,
@@ -445,7 +462,7 @@ class OTelTrialObserver:
         # sees, which would otherwise be the first generation, seconds after the trial started.
         attributes = {
             **self._trace_attributes(state),
-            "langfuse.observation.type": "span",
+            "langfuse.observation.type": "agent",
             "langfuse.trace.metadata.task_id": identity.task_id,
             "langfuse.trace.metadata.trial_index": identity.trial_index,
             "langfuse.trace.metadata.attempt": identity.attempt_id,
@@ -455,7 +472,7 @@ class OTelTrialObserver:
             "langfuse.trace.metadata.trace_time_source": TRACE_TIME_SOURCE,
         }
         self._emit(
-            name=f"trial {identity.task_id}/{identity.trial_index}",
+            name=NAME_TRIAL,
             identity=identity,
             span_id=identity.root_id,
             parent_id=None,
@@ -481,7 +498,7 @@ class OTelTrialObserver:
         # a non-agent generation is a judge turn of the run's own grading (contract v2: kind
         # ``jgen`` under the grading id ``live:<run_id>``)
         agent_role = role == "agent"
-        name = f"assistant turn {index}" if agent_role else f"judge turn {index}"
+        name = NAME_AGENT if agent_role else NAME_JUDGE
         usage = getattr(result, "usage", None)
         model_name = (
             state.agent.canonical
@@ -611,7 +628,7 @@ class OTelTrialObserver:
         )
         attributes: dict[str, Any] = {
             **self._trace_attributes(state),
-            "langfuse.observation.type": "span",
+            "langfuse.observation.type": "tool",
             "langfuse.observation.level": "DEFAULT" if success else "ERROR",
             "langfuse.observation.input": self._json(
                 self._redact(getattr(call, "arguments", None) or {})
@@ -669,6 +686,7 @@ class OTelTrialObserver:
             judge_model=self._model_name_of(state, "judge"),
             user_model=self._model_name_of(state, "user"),
             tags=state.tags,
+            user_id=self._user_id(state),
             identity=identity,
             error=error,
             finished_at=_as_utc(getattr(trajectory, "end_ts", None))
@@ -726,7 +744,7 @@ class OTelTrialObserver:
         )
         attributes: dict[str, Any] = {
             **self._trace_attributes(state),
-            "langfuse.observation.type": "span",
+            "langfuse.observation.type": "agent",
             "langfuse.trace.input": self._cap(_content(first_user)),
             "langfuse.trace.output": self._cap(_content(last_assistant)),
         }
@@ -734,7 +752,7 @@ class OTelTrialObserver:
             attributes[f"langfuse.trace.metadata.{key}"] = _attribute_value(value)
         end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=timezone.utc)
         self._emit(
-            name=f"trial {identity.task_id}/{identity.trial_index}",
+            name=NAME_TRIAL,
             identity=identity,
             span_id=identity.root_id,
             parent_id=None,
@@ -830,6 +848,8 @@ class OTelTrialObserver:
             attach_mode=str(getattr(step, "mode", "all")),
             grades=self._gradings,
             derived_groups=settings.derived_groups,
+            trace_name=settings.trace_name,
+            trace_user=settings.trace_user,
         )
         media = getattr(step, "register_media", None)
         try:
@@ -1119,14 +1139,14 @@ class OTelTrialObserver:
             # in the fifth minute of a four-hour run must not be dated as a four-hour trace
             ended = context.finished_at or started
             written = self._emit(
-                name=f"trial {identity.task_id}/{identity.trial_index}",
+                name=NAME_TRIAL,
                 identity=identity,
                 span_id=identity.root_id,
                 parent_id=None,
                 attributes={
-                    **self._native_attributes(identity.task_id, context.tags),
+                    **self._native_attributes(identity.task_id, context.tags, context.user_id),
                     **self._identity_attributes(identity),
-                    "langfuse.observation.type": "span",
+                    "langfuse.observation.type": "agent",
                     "langfuse.observation.status_message": self._cap(reason),
                     f"{TRACE_METADATA_PREFIX}status": "error",
                     f"{TRACE_METADATA_PREFIX}error": self._cap(reason),
@@ -1172,6 +1192,13 @@ class OTelTrialObserver:
                     )
             return state
 
+    def _user_id(self, state: _TrialState) -> str | None:
+        """The trace's user under the profile's ``[trace] user`` (the agent's model identity, or
+        nobody)."""
+        return trace_user(
+            self._projection.trace_user, state.agent.canonical if state.agent else None
+        )
+
     def _model_name_of(self, state: _TrialState, role: str) -> str | None:
         ref = state.models.get(role)
         if ref is None:
@@ -1179,17 +1206,24 @@ class OTelTrialObserver:
         return self._resolve(ref).canonical
 
     def _trace_attributes(self, state: _TrialState) -> dict[str, Any]:
-        return self._native_attributes(state.identity.task_id, state.tags)
+        return self._native_attributes(state.identity.task_id, state.tags, self._user_id(state))
 
-    def _native_attributes(self, task_id: str, tags: Sequence[str]) -> dict[str, Any]:
+    def _native_attributes(
+        self, task_id: str, tags: Sequence[str], user_id: str | None = None
+    ) -> dict[str, Any]:
         # the receiver's native fields ride on every span: Langfuse fixes a trace's environment
         # at the first write it sees (verified on the instance 2026-09-17), and on v4 they are
-        # stored and filtered per observation, so every row carries them
+        # stored and filtered per observation, so every row carries them. The name and the user
+        # follow the profile's ``[trace]``, as the projection's do
         attributes: dict[str, Any] = {
-            "langfuse.trace.name": f"{self._label}/{task_id}",
+            "langfuse.trace.name": trace_name(
+                self._projection.trace_name, (*tags, f"task:{task_id}"), label=self._label
+            ),
             "langfuse.session.id": self._session_id,
             "langfuse.trace.tags": list(tags),
         }
+        if user_id:
+            attributes["langfuse.user.id"] = user_id
         settings = self._projection
         if settings.environment is not None:
             attributes["langfuse.environment"] = settings.environment

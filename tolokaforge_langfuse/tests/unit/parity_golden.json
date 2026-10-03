@@ -1,6 +1,100 @@
 [
  {
   "body": {
+   "endTime": "2026-09-17T09:00:40.500000+00:00",
+   "environment": "development",
+   "id": "dbde3e88597d5682",
+   "level": "DEFAULT",
+   "metadata": {
+    "kind": "root",
+    "message_count": 7,
+    "status": "completed",
+    "task_id": "T-001",
+    "termination_reason": "user_stop",
+    "trial_index": 0
+   },
+   "name": "trial",
+   "startTime": "2026-09-17T09:00:00.000000+00:00",
+   "statusMessage": "user_stop",
+   "traceId": "31500a73337f515f9ee15ea2d06e357d"
+  },
+  "type": "agent-create"
+ },
+ {
+  "body": {
+   "endTime": "2026-09-17T09:00:40.500000+00:00",
+   "environment": "development",
+   "id": "897dabce4b9a5f59",
+   "input": {
+    "combine_method": "weighted",
+    "grading_id": "live:acme/pilot/parity/20260917T000000Z",
+    "grading_kinds": [
+     "llm_judge",
+     "state_checks"
+    ],
+    "pass_threshold": 0.7,
+    "source": "live",
+    "weights": {
+     "llm_judge": 1,
+     "state_checks": 1
+    }
+   },
+   "level": "DEFAULT",
+   "metadata": {
+    "attachments": {},
+    "components": "{\"llm_judge\": 0.5, \"notes\": \"n/a\", \"state_checks\": 1.0}",
+    "content_fingerprint": "a79eedac439e30e59a46e6d1ee219a819c7f1b126562da0ea77c5ed506a22ca7",
+    "criteria_met": 1,
+    "criteria_total": 2,
+    "env_sha256": "d6c47dbcfa8d8713f18f02bef2e6cc80708779d75df609eb4ff1eb7b445c973a",
+    "grade_source": "live",
+    "grading_id": "live:acme/pilot/parity/20260917T000000Z",
+    "judge_calls": 1,
+    "judge_completion_tokens": 60,
+    "judge_consistency_rejections": 0,
+    "judge_cost_usd": 0.0015,
+    "judge_model": "acme/judge-3",
+    "judge_observation_count": 1,
+    "judge_prompt_tokens": 500,
+    "judge_reasoning_tokens": 20,
+    "judge_status": "ok",
+    "judge_tool_calls": 0,
+    "kind": "grading",
+    "pass": true,
+    "provenance_command": "unknown",
+    "provenance_config_sha256": "unknown",
+    "provenance_created_at": "2026-09-17T09:00:40.500000+00:00",
+    "provenance_engine_version": "unknown",
+    "provenance_grader_version": "unknown",
+    "provenance_grading_run_id": "live:acme/pilot/parity/20260917T000000Z",
+    "provenance_judge_model": "unknown",
+    "provenance_rubric_sha256": "unknown",
+    "provenance_source_bundles": "unknown",
+    "score": 0.75,
+    "score_count": 8,
+    "source": "live",
+    "supersedes": "none",
+    "synthesized_by_termination_reason": "none",
+    "trace_checks_failed": 0,
+    "trace_checks_failed_gate_ids": [],
+    "trace_checks_gate_failed": false,
+    "trace_checks_passed": 1,
+    "trace_checks_total": 2,
+    "trace_checks_undecided": 0,
+    "trace_checks_winning_path": "main",
+    "trace_checks_withheld": 1
+   },
+   "name": "grading",
+   "output": "Seat assigned; the confirmation lacked the fee note.",
+   "parentObservationId": "dbde3e88597d5682",
+   "startTime": "2026-09-17T09:00:40.500000+00:00",
+   "statusMessage": "ok",
+   "traceId": "31500a73337f515f9ee15ea2d06e357d"
+  },
+  "type": "evaluator-create"
+ },
+ {
+  "body": {
    "environment": "development",
    "id": "206afc80486e5b9a",
    "input": null,
@@ -98,7 +192,7 @@
    "costDetails": {
     "total": 0.001
    },
-   "endTime": "2026-09-17T09:00:06.000000Z",
+   "endTime": "2026-09-17T09:00:05.000000Z",
    "environment": "development",
    "id": "01a41f4c6a1d5064",
    "input": [
@@ -123,7 +217,7 @@
     "usage_match": "generation_id"
    },
    "model": "acme/pilot-1",
-   "name": "assistant turn 1",
+   "name": "agent",
    "output": {
     "content": "",
     "tool_calls": [
@@ -137,7 +231,7 @@
     ]
    },
    "parentObservationId": "dbde3e88597d5682",
-   "startTime": "2026-09-17T09:00:05.000000Z",
+   "startTime": "2026-09-17T09:00:01.000000Z",
    "traceId": "31500a73337f515f9ee15ea2d06e357d",
    "usageDetails": {
     "cache_creation_input_tokens": 0,
@@ -154,7 +248,7 @@
    "costDetails": {
     "total": 0.0002
    },
-   "endTime": "2026-09-17T09:00:05.000000Z",
+   "endTime": "2026-09-17T09:00:01.000000Z",
    "environment": "development",
    "id": "12dee17179e55c6c",
    "input": [],
@@ -172,12 +266,12 @@
     "usage_match": "generation_id"
    },
    "model": "acme/sim-2",
-   "name": "user turn 0",
+   "name": "user simulator",
    "output": {
     "content": "Hello, my seat 12A is missing from booking PLT001."
    },
    "parentObservationId": "dbde3e88597d5682",
-   "startTime": "2026-09-17T09:00:01.000000Z",
+   "startTime": "2026-09-17T09:00:00.000000+00:00",
    "traceId": "31500a73337f515f9ee15ea2d06e357d",
    "usageDetails": {
     "cache_creation_input_tokens": 0,
@@ -194,7 +288,7 @@
    "costDetails": {
     "total": 0.003
    },
-   "endTime": "2026-09-17T09:00:30.000000Z",
+   "endTime": "2026-09-17T09:00:20.000000Z",
    "environment": "development",
    "id": "2880bf0d9cbb5a29",
    "input": [
@@ -233,13 +327,13 @@
     "usage_match": "generation_id"
    },
    "model": "acme/pilot-1",
-   "name": "assistant turn 5",
+   "name": "agent",
    "output": {
     "content": "I have re-requested the seat map; 12A is now assigned to you.",
     "tool_calls": null
    },
    "parentObservationId": "dbde3e88597d5682",
-   "startTime": "2026-09-17T09:00:20.000000Z",
+   "startTime": "2026-09-17T09:00:12.000000Z",
    "traceId": "31500a73337f515f9ee15ea2d06e357d",
    "usageDetails": {
     "cache_creation_input_tokens": 0,
@@ -280,7 +374,7 @@
     "usage_source": "exact"
    },
    "model": "acme/judge-3",
-   "name": "judge turn 2",
+   "name": "judge",
    "output": {
     "content": "{\"c1\": 1.0, \"c2\": 0.0}",
     "tool_calls": null
@@ -301,7 +395,7 @@
    "costDetails": {
     "total": 0.0025
    },
-   "endTime": "2026-09-17T09:00:12.000000Z",
+   "endTime": "2026-09-17T09:00:10.000000Z",
    "environment": "development",
    "id": "d64a0b659e725da3",
    "input": [
@@ -332,7 +426,7 @@
     "usage_match": "generation_id"
    },
    "model": "acme/pilot-1",
-   "name": "assistant turn 3",
+   "name": "agent",
    "output": {
     "content": "",
     "tool_calls": [
@@ -347,7 +441,7 @@
     ]
    },
    "parentObservationId": "dbde3e88597d5682",
-   "startTime": "2026-09-17T09:00:10.000000Z",
+   "startTime": "2026-09-17T09:00:06.000000Z",
    "traceId": "31500a73337f515f9ee15ea2d06e357d",
    "usageDetails": {
     "cache_creation_input_tokens": 0,
@@ -364,7 +458,7 @@
    "costDetails": {
     "total": 0.0003
    },
-   "endTime": "2026-09-17T09:00:40.500000+00:00",
+   "endTime": "2026-09-17T09:00:30.000000Z",
    "environment": "development",
    "id": "f1274c91f5185d6a",
    "input": [
@@ -407,12 +501,12 @@
     "usage_match": "generation_id"
    },
    "model": "acme/sim-2",
-   "name": "user turn 6",
+   "name": "user simulator",
    "output": {
     "content": "Thank you. ###STOP###"
    },
    "parentObservationId": "dbde3e88597d5682",
-   "startTime": "2026-09-17T09:00:30.000000Z",
+   "startTime": "2026-09-17T09:00:20.000000Z",
    "traceId": "31500a73337f515f9ee15ea2d06e357d",
    "usageDetails": {
     "cache_creation_input_tokens": 0,
@@ -807,7 +901,7 @@
    "statusMessage": "tool error",
    "traceId": "31500a73337f515f9ee15ea2d06e357d"
   },
-  "type": "span-create"
+  "type": "tool-create"
  },
  {
   "body": {
@@ -839,80 +933,7 @@
    "statusMessage": "",
    "traceId": "31500a73337f515f9ee15ea2d06e357d"
   },
-  "type": "span-create"
- },
- {
-  "body": {
-   "endTime": "2026-09-17T09:00:40.500000+00:00",
-   "environment": "development",
-   "id": "897dabce4b9a5f59",
-   "input": {
-    "combine_method": "weighted",
-    "grading_id": "live:acme/pilot/parity/20260917T000000Z",
-    "grading_kinds": [
-     "llm_judge",
-     "state_checks"
-    ],
-    "pass_threshold": 0.7,
-    "source": "live",
-    "weights": {
-     "llm_judge": 1,
-     "state_checks": 1
-    }
-   },
-   "level": "DEFAULT",
-   "metadata": {
-    "attachments": {},
-    "components": "{\"llm_judge\": 0.5, \"notes\": \"n/a\", \"state_checks\": 1.0}",
-    "content_fingerprint": "a79eedac439e30e59a46e6d1ee219a819c7f1b126562da0ea77c5ed506a22ca7",
-    "criteria_met": 1,
-    "criteria_total": 2,
-    "env_sha256": "d6c47dbcfa8d8713f18f02bef2e6cc80708779d75df609eb4ff1eb7b445c973a",
-    "grade_source": "live",
-    "grading_id": "live:acme/pilot/parity/20260917T000000Z",
-    "judge_calls": 1,
-    "judge_completion_tokens": 60,
-    "judge_consistency_rejections": 0,
-    "judge_cost_usd": 0.0015,
-    "judge_model": "acme/judge-3",
-    "judge_observation_count": 1,
-    "judge_prompt_tokens": 500,
-    "judge_reasoning_tokens": 20,
-    "judge_status": "ok",
-    "judge_tool_calls": 0,
-    "kind": "grading",
-    "pass": true,
-    "provenance_command": "unknown",
-    "provenance_config_sha256": "unknown",
-    "provenance_created_at": "2026-09-17T09:00:40.500000+00:00",
-    "provenance_engine_version": "unknown",
-    "provenance_grader_version": "unknown",
-    "provenance_grading_run_id": "live:acme/pilot/parity/20260917T000000Z",
-    "provenance_judge_model": "unknown",
-    "provenance_rubric_sha256": "unknown",
-    "provenance_source_bundles": "unknown",
-    "score": 0.75,
-    "score_count": 8,
-    "source": "live",
-    "supersedes": "none",
-    "synthesized_by_termination_reason": "none",
-    "trace_checks_failed": 0,
-    "trace_checks_failed_gate_ids": [],
-    "trace_checks_gate_failed": false,
-    "trace_checks_passed": 1,
-    "trace_checks_total": 2,
-    "trace_checks_undecided": 0,
-    "trace_checks_winning_path": "main",
-    "trace_checks_withheld": 1
-   },
-   "name": "grading:live:acme/pilot/parity/20260917T000000Z",
-   "output": "Seat assigned; the confirmation lacked the fee note.",
-   "parentObservationId": "dbde3e88597d5682",
-   "startTime": "2026-09-17T09:00:40.500000+00:00",
-   "statusMessage": "ok",
-   "traceId": "31500a73337f515f9ee15ea2d06e357d"
-  },
-  "type": "span-create"
+  "type": "tool-create"
  },
  {
   "body": {
@@ -943,28 +964,7 @@
    "statusMessage": "",
    "traceId": "31500a73337f515f9ee15ea2d06e357d"
   },
-  "type": "span-create"
- },
- {
-  "body": {
-   "endTime": "2026-09-17T09:00:40.500000+00:00",
-   "environment": "development",
-   "id": "dbde3e88597d5682",
-   "level": "DEFAULT",
-   "metadata": {
-    "kind": "root",
-    "message_count": 7,
-    "status": "completed",
-    "task_id": "T-001",
-    "termination_reason": "user_stop",
-    "trial_index": 0
-   },
-   "name": "trial T-001/0",
-   "startTime": "2026-09-17T09:00:00.000000+00:00",
-   "statusMessage": "user_stop",
-   "traceId": "31500a73337f515f9ee15ea2d06e357d"
-  },
-  "type": "span-create"
+  "type": "tool-create"
  },
  {
   "body": {
@@ -1009,7 +1009,7 @@
     "uploader_version": "<producer>",
     "user_model": "acme/sim-2"
    },
-   "name": "pilot_agent/T-001",
+   "name": "pilot/pilot-domain",
    "output": "I have re-requested the seat map; 12A is now assigned to you.",
    "release": "<producer>",
    "sessionId": "acme/pilot/pilot_agent/parity/20260917T000000Z",
@@ -1033,6 +1033,7 @@
     "task:T-001"
    ],
    "timestamp": "2026-09-17T09:00:00.000000+00:00",
+   "userId": "acme/pilot-1",
    "version": "<producer>"
   },
   "type": "trace-create"

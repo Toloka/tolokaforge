@@ -52,6 +52,7 @@ from tolokaforge_langfuse.gradings import (
     _text,
     build_grading_observations,
     grade_summary,
+    message_window,
 )
 from tolokaforge_langfuse.model_names import (
     ModelIdentity,
@@ -60,9 +61,18 @@ from tolokaforge_langfuse.model_names import (
 )
 from tolokaforge_langfuse.vocabulary import (
     ALL_DERIVED_GROUPS,
+    EVENT_AGENT,
+    EVENT_TOOL,
+    NAME_AGENT,
+    NAME_TRIAL,
+    NAME_USER_SIMULATOR,
     SOURCE_TRIAL,
+    TRACE_USER_NONE,
     derived_tags,
+    generation_name,
     order_tags,
+    trace_name,
+    trace_user,
 )
 
 _log = logging.getLogger(__name__)
@@ -119,6 +129,9 @@ class ProjectionContext:
     grades: bool = True  # send the run's own grading (grade.yaml) with its scores
     # the groups of bundle-derived tags (vocabulary.DERIVED_GROUPS; a profile may switch one off)
     derived_groups: frozenset[str] = ALL_DERIVED_GROUPS
+    # the profile's ``[trace]``: the trace's name template and the source of its user
+    trace_name: str | None = None
+    trace_user: str = TRACE_USER_NONE
 
 
 @dataclass
@@ -512,7 +525,7 @@ def root_observation(
     return {
         "id": root_id,
         "traceId": trace_id,
-        "name": f"trial {task_id}/{trial_index}",
+        "name": NAME_TRIAL,
         "startTime": start,
         "endTime": end,
         "level": "ERROR" if status in ("error", "failed", "timeout") else "DEFAULT",
@@ -634,7 +647,7 @@ def _user_generation(
         "id": ids.observation_id(trace_id, "ugen", index),
         "traceId": trace_id,
         "parentObservationId": root_id,
-        "name": f"user turn {index}",
+        "name": NAME_USER_SIMULATOR,
         "startTime": started,
         "endTime": ended or started,
         "input": context[-CONTEXT_MESSAGES:],
@@ -683,7 +696,7 @@ def _assistant_generation(
         "id": observation_id,
         "traceId": trace_id,
         "parentObservationId": root_id,
-        "name": f"assistant turn {index}",
+        "name": NAME_AGENT,
         "startTime": started,
         "endTime": ended or started,
         "input": context[-CONTEXT_MESSAGES:],
@@ -775,7 +788,7 @@ def _unrecorded_tools(
             continue
         out.append(
             (
-                "span-create",
+                EVENT_TOOL,
                 _tool_body_from_log(
                     trace_id,
                     root_id,
@@ -830,7 +843,7 @@ def _unpaired_call_generations(
             ),
             "traceId": trace_id,
             "parentObservationId": root_id,
-            "name": f"{role} call {position} (no message)",
+            "name": f"{generation_name(role)} call (no message)",
             "startTime": at,
             "endTime": at,
             "metadata": {
@@ -882,11 +895,10 @@ def _agent_observations(
     first_user = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
     for index, message in enumerate(messages):
         role = message.get("role")
-        started = _normalize_ts(message.get("ts")) or start
-        ended = _normalize_ts(messages[index + 1].get("ts")) if index + 1 < len(messages) else end
+        started, ended = message_window(messages, index, start=start)
         if index == opening:
             out.append(
-                ("event-create", _opening_line_event(trace_id, root_id, index, message, at=started))
+                ("event-create", _opening_line_event(trace_id, root_id, index, message, at=ended))
             )
         elif role == "user" and _is_simulated_user(
             message, index == first_user, bundle.trajectory, bundle.task
@@ -940,7 +952,7 @@ def _agent_observations(
                 stats=stats,
                 user_step_result=index in steps,
             )
-            out.append(("span-create", body))
+            out.append((EVENT_TOOL, body))
         context.append({"role": role, "content": str(message.get("content") or "")[:CONTEXT_CHARS]})
     out.extend(
         _unrecorded_tools(
@@ -1356,11 +1368,27 @@ def _trace_body(
     # The agent's last word; its opening line (``first_agent_message``) is not one it
     # generated.
     opening_line = _opening_line_position(messages, bundle.task)
+    # the run's tags, the model identity's (the resolver's tags, facets included) and the
+    # bundle-derived ones (vocabulary.derived_tags), deduplicated in core order: the same set the
+    # offline uploader writes, whatever the live spans started with
+    tags = order_tags(
+        [
+            f"harness:{HARNESS}",
+            f"source:{SOURCE_TRIAL}",
+            f"task:{task_id}",
+            *ctx.tags,
+            *(agent.tags if agent is not None else ()),
+            *derived_tags(bundle.task, bundle.metrics, groups=ctx.derived_groups),
+        ]
+    )
     return {
         "id": trace_id,
-        "name": f"{ctx.label}/{task_id}",
+        # the profile's name template and user (``[trace]``; by default the run's label and the
+        # task, and no user)
+        "name": trace_name(ctx.trace_name, tags, label=ctx.label),
         "timestamp": start,
         "sessionId": ctx.session_id,
+        "userId": trace_user(ctx.trace_user, agent.canonical if agent is not None else None),
         "input": opening,
         "output": next(
             (
@@ -1370,19 +1398,7 @@ def _trace_body(
             ),
             None,
         ),
-        # the run's tags, the model identity's (the resolver's tags, facets included) and the
-        # bundle-derived ones (vocabulary.derived_tags), deduplicated in core order: the same set
-        # the offline uploader writes, whatever the live spans started with
-        "tags": order_tags(
-            [
-                f"harness:{HARNESS}",
-                f"source:{SOURCE_TRIAL}",
-                f"task:{task_id}",
-                *ctx.tags,
-                *(agent.tags if agent is not None else ()),
-                *derived_tags(bundle.task, bundle.metrics, groups=ctx.derived_groups),
-            ]
-        ),
+        "tags": tags,
         "metadata": metadata,
         "environment": ctx.environment,
         "release": ctx.release,
@@ -1527,7 +1543,7 @@ def build_projection(
     typed: list[tuple[str, dict[str, Any]]] = []
     typed.append(
         (
-            "span-create",
+            EVENT_AGENT,
             root_observation(
                 trace_id, root_id, trajectory, task_id=task_id, trial_index=trial_index
             ),

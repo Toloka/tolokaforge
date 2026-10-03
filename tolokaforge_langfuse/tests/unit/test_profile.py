@@ -139,6 +139,9 @@ class TestLoading:
             ),
             ("schema = 1\nversion = 'p'\n[metadata.fixed]\nk = [1]\n", "string, number or boolean"),
             ("schema = 1\nversion = 'p'\n[models]\nrules = 3\n", "non-empty path"),
+            ("schema = 2\nversion = 'p'\n[trace]\nname = '{expert}'\n", "neither tag prefixes"),
+            ("schema = 2\nversion = 'p'\n[trace]\nuser = 'expert'\n", "must be one of"),
+            ("schema = 2\nversion = 'p'\n[trace]\nid = 'x'\n", "unknown keys"),
             ("not toml [[[", "not valid TOML"),
         ],
     )
@@ -147,6 +150,18 @@ class TestLoading:
     ) -> None:
         with pytest.raises(TracingProfileError, match=match):
             load_tracing_profile(write_profile(tmp_path, text))
+
+    def test_the_trace_block_names_the_trace_and_its_user(self) -> None:
+        profile = profile_from_mapping(
+            {
+                "schema": 2,
+                "version": "p",
+                "trace": {"name": "{dataset}/{domain}", "user": "model"},
+            }
+        )
+        assert (profile.trace_name, profile.trace_user) == ("{dataset}/{domain}", "model")
+        bare = profile_from_mapping({"schema": 2, "version": "p"})
+        assert (bare.trace_name, bare.trace_user) == (None, "none")
 
     def test_the_module_entry_validates_a_file(self, tmp_path: Path, capsys) -> None:
         assert main([str(write_profile(tmp_path))]) == 0
@@ -262,6 +277,8 @@ class TestFactory:
         try:
             settings = observer._projection
             assert settings.environment == "production"
+            # no [trace]: the run and the task name the trace, and it has no user
+            assert (settings.trace_name, settings.trace_user) == (None, "none")
             assert settings.release.startswith("tolokaforge-")
             assert settings.version.endswith("+acme-2026.09.17.1")
             # the producer is this package, the release the engine (the native fields differ)
@@ -403,6 +420,21 @@ class TestFactory:
         try:
             assert observer._resolver.rules_version == "acme-rules"
             assert observer._projection.version.endswith("+acme-rules+p")
+        finally:
+            observer.run_finished()
+
+    def test_the_profiles_trace_block_reaches_the_observer(self, clean_env, tmp_path: Path) -> None:
+        path = write_profile(
+            tmp_path,
+            'schema = 2\nversion = "p"\n[trace]\nname = "{dataset}/{scope}"\nuser = "model"\n',
+        )
+        clean_env.setenv(
+            "TOLOKAFORGE_TRACING_TAGS", "team:pilot,run_kind:eval,dataset:pilot,scope:sample"
+        )
+        observer, _ = self._build(tmp_path, profile=str(path))
+        try:
+            settings = observer._projection
+            assert (settings.trace_name, settings.trace_user) == ("{dataset}/{scope}", "model")
         finally:
             observer.run_finished()
 
