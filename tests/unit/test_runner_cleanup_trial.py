@@ -7,6 +7,7 @@ orchestrator's retry path can re-issue ``RegisterTrial`` for the same
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -16,8 +17,10 @@ pytestmark = pytest.mark.unit
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.db_client import DBServiceError
 from tolokaforge.runner.models import TaskDescription
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
+from tolokaforge.runner.tool_factory import ToolFactory
 
 
 @pytest.fixture
@@ -123,6 +126,79 @@ class TestCleanupTrialRPC:
 
         assert response.success is True
         assert response.error == ""
+
+    def test_cleanup_reports_db_deletion_failure(
+        self, runner_service, mock_grpc_context, task_description, monkeypatch
+    ):
+        trial_id = "cleanup_db_failure:0"
+        assert _register(runner_service, mock_grpc_context, trial_id, task_description).success
+
+        async def refuse_deletion(identifier):
+            raise DBServiceError("injected deletion failure")
+
+        monkeypatch.setattr(runner_service.db_client, "delete_trial", refuse_deletion)
+        response = runner_service.CleanupTrial(
+            pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+        assert response.success is False
+        assert "injected deletion failure" in response.error
+        assert trial_id in runner_service.trials
+
+    def test_concurrent_cleanup_is_idempotent_and_allows_reregistration(
+        self, runner_service, mock_grpc_context, task_description
+    ):
+        trial_id = "cleanup_concurrent:0"
+        assert _register(runner_service, mock_grpc_context, trial_id, task_description).success
+
+        async def overlapping_cleanup():
+            await asyncio.gather(*(runner_service.cleanup_trial(trial_id) for _ in range(8)))
+
+        runner_service._run_async(overlapping_cleanup())
+        assert trial_id not in runner_service.trials
+        assert _register(runner_service, mock_grpc_context, trial_id, task_description).success
+
+    def test_failed_lifecycle_start_retires_every_resource(
+        self, runner_service, mock_grpc_context, task_description, monkeypatch
+    ):
+        events = []
+
+        class Resource:
+            has_lifecycle = True
+
+            def __init__(self, name):
+                self.name = name
+
+            def start(self, context):
+                events.append((self.name, "start"))
+                if self.name == "bad":
+                    raise RuntimeError("injected startup failure")
+
+            def stop(self):
+                events.append((self.name, "stop"))
+
+            def cleanup(self):
+                events.append((self.name, "cleanup"))
+
+        monkeypatch.setattr(
+            ToolFactory, "_create_wrapper", lambda factory, schema: Resource(schema.name)
+        )
+        task_description["agent_tools"] = [
+            {"name": name, "description": name, "parameters": {"type": "object", "properties": {}}}
+            for name in ("good", "bad")
+        ]
+        trial_id = "cleanup_failed_start:0"
+        response = _register(runner_service, mock_grpc_context, trial_id, task_description)
+        assert response.success is False
+        assert "injected startup failure" in response.error
+        assert trial_id not in runner_service.trials
+        assert events == [
+            ("good", "start"),
+            ("bad", "start"),
+            ("good", "stop"),
+            ("good", "cleanup"),
+            ("bad", "stop"),
+            ("bad", "cleanup"),
+        ]
 
     def test_cleanup_enables_reregistration_with_same_trial_id(
         self, runner_service, mock_grpc_context, task_description
