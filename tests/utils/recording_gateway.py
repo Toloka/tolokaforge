@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ class RecordedRequest:
 class GatewayReply:
     status: int
     payload: dict[str, Any]
+    delay_seconds: float = 0.0
 
 
 def _completion(message: dict[str, Any], finish_reason: str) -> GatewayReply:
@@ -147,12 +149,18 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         self._reply(queue.pop(0) if queue else text_reply("done"))
 
     def _reply(self, reply: GatewayReply) -> None:
+        if reply.delay_seconds:
+            time.sleep(reply.delay_seconds)
         data = json.dumps(reply.payload).encode()
         self.send_response(reply.status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            if not reply.delay_seconds:
+                raise
 
 
 @contextmanager
