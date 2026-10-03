@@ -514,7 +514,8 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   `analysis/<dimension>/<n>`; from a directory only those names are read, so the stage's
   `decision.json` and reprobe findings are listed as not read, not refused), through `tolokaforge_langfuse.transcripts`: a file with a shape the reader does
   not know is refused, tool inputs and outputs are dropped unless `--tool-io scrub`, the serialised
-  payload is scanned by the outbound sentinel, keys that open another project than `--project`
+  payload is scanned by the outbound sentinel (the credential shapes over the JSON, the values the
+  process holds also over the raw strings), keys that open another project than `--project`
   refuse the upload, and a trace the receiver already holds in another environment is not
   re-sent. The model is the first name the transcript reports, unless `--model <name>` names the
   one that served the run: a CLI pointed at an alias reports the alias, whatever a gateway routes

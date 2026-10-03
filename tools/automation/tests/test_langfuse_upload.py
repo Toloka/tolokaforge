@@ -458,20 +458,58 @@ class TestTheUpload:
         # the value itself is never in the report
         assert value not in json.dumps(report.as_dict())
 
-    def test_a_dotenv_line_in_the_agents_own_words_is_blocked(self, tmp_path: Path) -> None:
-        """No policy redacts what the agent says, so the sentinel is its only guard, and a
-        dotenv line matches only with its line break intact."""
-        line = "NPM_" + "TOKEN=" + "q" * 16
+    def test_a_key_in_the_agents_own_words_is_blocked(self, tmp_path: Path) -> None:
+        """No policy redacts what the agent says, so the sentinel is its only guard, and the key
+        shapes still read the serialised transcript."""
+        key = "sk-or-v1-" + "0123456789abcdef" * 4
         events = json.loads(json.dumps(CLEAN_EVENTS))
-        events[1]["message"]["content"][0]["text"] = f"found this in .env:\n{line}\n"
+        text = f"found this in .env:\nOPENROUTER_API_KEY={key}\n"
+        events[1]["message"]["content"][0]["text"] = text
         write(tmp_path, "agent_iter_1.jsonl", events)
         report = upload(tmp_path)
         assert report.sent == []
-        assert "dotenv-secret" in report.blocked[0]["reason"]
+        assert "openrouter-key" in report.blocked[0]["reason"]
+        assert key not in json.dumps(report.as_dict())
+
+    @pytest.mark.parametrize("policy", ["drop", "scrub"])
+    def test_code_an_agent_read_is_not_a_credential(self, tmp_path: Path, policy: str) -> None:
+        """Analysis agents read code. Only the serialised transcript meets the shapes: a line that
+        names a key or a token count, or an env listing's key id, in the agent's own words (which
+        no policy redacts) or in a tool result does not block the whole transcript."""
+        code = (
+            "api_key = os.environ.get('X')\n"
+            "total_tokens = response.usage.total_tokens\n"
+            "GPG_KEY=0123456789ABCDEF0123456789ABCDEF01234567\n"
+        )
+        events = json.loads(json.dumps(CLEAN_EVENTS))
+        events[1]["message"]["content"][0]["text"] = f"the settings say:\n{code}"
+        events[2]["message"]["content"][0]["content"] = code
+        write(tmp_path, "agent_iter_1.jsonl", events)
+        report = upload(tmp_path, tool_io=policy)
+        assert report.blocked == [] and len(report.sent) == 1
+
+    def test_a_clean_transcript_is_sent_whatever_the_process_holds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ACME_UPLOAD_TOKEN", "a-password-that-matches-no-shape")
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        assert upload(tmp_path).ok
+
+    def test_the_scan_is_the_shared_one(self) -> None:
+        """One implementation: the wheel's gate reads the events, this module only calls it."""
+        from tolokaforge_langfuse import safety
+
+        value = 'Zq"8!mK-p2wX-9'
+        gate = safety.SafetyGate.from_environment({"ACME_UPLOAD_TOKEN": value})
+        output = f"api_key = os.environ.get('X')\nit said {value}"
+        events = [{"type": "trace-create", "body": {"output": output}}]
+        assert lu._scan(gate, events, what="t") == gate.scan_structured(events)
+        assert [f.rule for f in lu._scan(gate, events, what="t")] == ["known-secret-value"]
 
     def test_a_run_of_blank_lines_does_not_stall_the_scan(self) -> None:
         """An agent turn that degenerates into newlines is a known failure mode; a line-anchored
-        shape made the raw scan quadratic in them (50k lines took tens of seconds)."""
+        shape over the raw lines was quadratic in them (50k lines took tens of seconds), and the
+        shapes no longer read raw lines."""
         import time
 
         from tolokaforge_langfuse import safety
@@ -480,15 +518,6 @@ class TestTheUpload:
         started = time.monotonic()
         assert lu._scan(safety.SafetyGate(), events, what="t") == []
         assert time.monotonic() - started < 5.0
-
-    def test_a_dotenv_line_after_blank_lines_is_still_found(self) -> None:
-        from tolokaforge_langfuse import safety
-
-        line = "NPM_" + "TOKEN=" + "q" * 16
-        events = [{"type": "trace-create", "body": {"output": "see:\n\n\n" + line}}]
-        assert [f.rule for f in lu._scan(safety.SafetyGate(), events, what="t")] == [
-            "dotenv-secret"
-        ]
 
     @pytest.mark.parametrize(
         "value",
@@ -503,6 +532,21 @@ class TestTheUpload:
         events[-1]["result"] = f"the password is {value}"
         write(tmp_path, "agent_iter_1.jsonl", events)
         report = upload(tmp_path)
+        assert report.sent == []
+        assert "known-secret-value" in report.blocked[0]["reason"]
+        assert value not in json.dumps(report.as_dict(), ensure_ascii=False)
+
+    @pytest.mark.parametrize(
+        "value", ['Zq"8!mK-p2wX-9', "back\\slash-12345"], ids=["quote", "backslash"]
+    )
+    def test_a_known_value_json_would_escape_in_a_scrubbed_tool_result_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("ACME_DB_PASSWORD", value)
+        events = json.loads(json.dumps(CLEAN_EVENTS))
+        events[2]["message"]["content"][0]["content"] = f"the password is {value}"
+        write(tmp_path, "agent_iter_1.jsonl", events)
+        report = upload(tmp_path, tool_io="scrub")
         assert report.sent == []
         assert "known-secret-value" in report.blocked[0]["reason"]
         assert value not in json.dumps(report.as_dict(), ensure_ascii=False)
