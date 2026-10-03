@@ -574,7 +574,8 @@ class OTelTrialObserver:
         cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
         cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
         details: dict[str, int] = {
-            "input": max(0, prompt - cache_read),
+            # the prompt total holds the cache reads and the cache writes: each leaves it once
+            "input": max(0, prompt - cache_read - cache_creation),
             "output": completion,
             "total": prompt + completion,
         }

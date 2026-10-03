@@ -924,6 +924,34 @@ class TestLiveCost:
         assert attrs["langfuse.observation.metadata.cost"] == 0.027022
         assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
 
+    def _live_usage(self, prompt: int) -> dict:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(
+                prompt_tokens=prompt,
+                completion_tokens=20,
+                cache_read_input_tokens=100,
+                cache_creation_input_tokens=200,
+            ),
+        )
+        return json.loads(self._generation_attrs(result)["langfuse.observation.usage_details"])
+
+    def test_a_live_generation_counts_cache_writes_once(self) -> None:
+        """The engine's prompt total holds the cache reads and the cache writes, so each leaves
+        ``input`` once and the components add up to ``total``."""
+        details = self._live_usage(prompt=1000)
+        assert details == {
+            "input": 700,
+            "output": 20,
+            "total": 1020,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 200,
+        }
+        assert sum(value for key, value in details.items() if key != "total") == details["total"]
+
+    def test_counters_larger_than_the_prompt_floor_a_live_input_at_zero(self) -> None:
+        assert self._live_usage(prompt=250)["input"] == 0
+
     def test_a_live_row_on_a_v3_receiver_is_the_final_row(self) -> None:
         result = GenerationResult(
             text="ok",
