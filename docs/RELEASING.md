@@ -212,18 +212,40 @@ PyPI setup above comes before the first tag.
 
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
-The four first-party images —
-`tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web}` — are published
-by [`publish-images.yml`](../.github/workflows/publish-images.yml), which fires on
-any pushed `image-v*` tag. The release workflow cuts the release-candidate tag
-`image-vX.Y.Z-rc.1` for you; the stable tag `image-vX.Y.Z` is pushed by hand once
-the rc is verified. The workflow builds the wheel once; only the images that ship
-it — `runner` and `rag-service` — are layered from that artifact, while
-`db-service` and `mock-web` build without it.
+The first-party images —
+`tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web,grader,standalone}`
+— are published by [`publish-images.yml`](../.github/workflows/publish-images.yml),
+which fires on any pushed `image-v*` tag. The first five are the per-component
+distributed stack; `standalone` is the all-in-one single-container image (see
+[ADR-0056](adr/0056-all-in-one-image.md)). The release workflow cuts the
+release-candidate tag `image-vX.Y.Z-rc.1` for you; the stable tag `image-vX.Y.Z`
+is pushed by hand once the rc is verified.
 
-Images are `linux/amd64` only. The standalone compose recipe pins
-`platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}`, so Apple-Silicon hosts run the
-published images under emulation.
+**Standalone publish cadence.** The five scale-out images publish on **every**
+`image-v*` tag. The heavier, multi-arch `standalone` image publishes **only on
+MINOR and MAJOR releases** (`image-vX.Y.0`), and is **skipped on patch
+releases** (`image-vX.Y.Z` with `Z > 0`) to keep its slow cross-arch build off
+every patch. A `setup` job in the workflow computes this gate (`patch == 0`) and
+emits both the build matrix and the name list every retag/move/digest loop reads,
+so the matrix and the loops always agree on whether `standalone` is in. **To
+publish `standalone` (and all images) off-cycle at any version** — e.g. for a
+patch, or ad-hoc — run the workflow manually from the Actions tab
+(`workflow_dispatch`) with the **`publish`** input set to `true`: it logs in and
+pushes the immutable `:X.Y.Z` tags for the **current `pyproject` version**,
+always including `standalone`. (It pushes immutable tags only — it does not run
+the rc-smoke gate or move `:latest`/`:X.Y`.)
+
+The workflow builds the wheel once;
+`runner` and `rag-service` are layered from that artifact, `grader` and
+`standalone` build their own wheel in-container from the source slice, and
+`db-service` and `mock-web` need no wheel.
+
+The five scale-out images are `linux/amd64` only; the standalone compose recipe
+pins `platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}`, so Apple-Silicon hosts run
+those under emulation. The all-in-one `standalone` image is the exception — it is
+published **multi-arch** (`linux/amd64` + `linux/arm64`) so it runs natively on
+Apple Silicon, ARM servers (Graviton), and Intel/Windows alike. arm64 is
+cross-built on the amd64 runner via the workflow's QEMU step.
 
 ### Version guard
 
@@ -258,9 +280,12 @@ Every image release goes through a release candidate first.
 
 ### Dry run
 
-Running `publish-images.yml` from the Actions tab as a `workflow_dispatch` builds
-all four images **without** logging in or pushing — a safe pre-check that the
-Dockerfiles and wheel still build.
+Running `publish-images.yml` from the Actions tab as a `workflow_dispatch` with
+`publish` left `false` (the default) builds every image — including the
+multi-arch `standalone` — **without** logging in or pushing: a safe pre-check
+that the Dockerfiles and wheel still build. Set `publish: true` on that same
+dispatch to turn it into the off-cycle real publish described under *Standalone
+publish cadence* above.
 
 ## Typical order
 
