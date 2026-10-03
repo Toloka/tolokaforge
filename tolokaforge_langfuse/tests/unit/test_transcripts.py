@@ -870,6 +870,90 @@ class TestTheSentinel:
         text = repr(gate) + str(gate.__dict__.get("hits"))
         assert "8f3a91c2" not in text and "tok" not in text
 
+    def test_a_known_value_carries_the_name_of_its_variable_but_only_in_describe(self) -> None:
+        value = "not-a-shape-just-a-password"
+        gate = safety.SafetyGate.from_environment(
+            {"DB_PASSWORD": value}, extra={"header X-Runner-Key": "runner-key-value-1234"}
+        )
+        (finding,) = gate.scan(f"it said {value}".encode())
+        assert finding.describe() == "known-secret-value from DB_PASSWORD"
+        # the string form travels to the receiver in a manifest: no variable name in it
+        assert str(finding) == "known-secret-value (**** (27 chars))"
+        (header,) = gate.scan_structured({"k": "runner-key-value-1234"})
+        assert header.describe() == "known-secret-value from header X-Runner-Key"
+
+    def test_a_value_two_variables_hold_names_both_and_a_plain_one_names_none(self) -> None:
+        gate = safety.SafetyGate.from_environment(
+            {"A_API_KEY": "same-value-in-two-places", "B_API_KEY": "same-value-in-two-places"},
+            extra=["a-plain-value-without-a-name"],
+        )
+        found = gate.scan(b"same-value-in-two-places a-plain-value-without-a-name")
+        assert sorted(f.describe() for f in found) == [
+            "known-secret-value",
+            "known-secret-value from A_API_KEY, B_API_KEY",
+        ]
+
+    def test_the_values_a_run_carries_by_design_are_left_out_by_name(self) -> None:
+        gate = safety.SafetyGate.from_environment(
+            {"ACME_TOKEN": "tolokaforge", "DB_PASSWORD": "not-a-shape-just-a-password"}
+        )
+        dropped = gate.drop_ambient(["harness:tolokaforge", "task:T-1", ""])
+        assert dropped == ["ACME_TOKEN"]
+        assert gate.known_values == (b"not-a-shape-just-a-password",)
+        assert gate.scan(b"harness:tolokaforge") == []
+        assert [f.describe() for f in gate.scan(b"not-a-shape-just-a-password")] == [
+            "known-secret-value from DB_PASSWORD"
+        ]
+        assert gate.drop_ambient(["harness:tolokaforge"]) == []  # nothing left to leave out
+
+    def test_a_gate_refreshes_when_its_source_offers_new_values_and_not_otherwise(self) -> None:
+        gate = safety.SafetyGate.from_environment({"DB_PASSWORD": "not-a-shape-just-a-password"})
+        assert gate.refresh() == (False, [])  # a fixed set has no source
+        offers = [
+            safety.SafetyGate.from_environment(
+                {"TYPESENSE_API_KEY": "late-registered-key", "ACME_TOKEN": "tolokaforge"}
+            )
+        ]
+        gate.reload = lambda: offers.pop() if offers else None
+        # the run's own values are left out of what it takes, before any scan can see it
+        assert gate.refresh(["harness:tolokaforge"]) == (True, ["ACME_TOKEN"])
+        assert [f.describe() for f in gate.scan(b"late-registered-key")] == [
+            "known-secret-value from TYPESENSE_API_KEY"
+        ]
+        assert gate.scan(b"harness:tolokaforge") == []
+        assert gate.scan(b"not-a-shape-just-a-password") == []  # the new set replaces the old
+        assert gate.refresh() == (False, [])  # the source offers nothing new
+
+    def test_a_non_ascii_value_is_found_in_json_text_that_escapes_it_as_ascii(self) -> None:
+        """Python's ``json.dumps`` writes ``\\u00e4`` by default; a tool that returns such JSON
+        text holds the value in a form neither the raw nor the UTF-8 escape matches."""
+        value = "p\u00e4ssw\u00f6rd-12345"
+        gate = safety.SafetyGate.from_environment({"ACME_DB_PASSWORD": value})
+        tool_output = json.dumps({"password": value})  # ASCII-escaped
+        assert value not in tool_output
+        assert [f.rule for f in gate.scan_structured({"output": tool_output})] == [
+            "known-secret-value"
+        ]
+
+    def test_one_name_filter_decides_what_holds_a_credential(self) -> None:
+        for name in (
+            "OPENROUTER_API_KEY",
+            "DB_PASSWORD",
+            "ARENA_LANGFUSE_MCP_TOKEN",
+            "SESSION_COOKIE",
+        ):
+            assert safety.looks_secret(name), name
+        for name in (
+            "AZURE_API_BASE",  # an endpoint
+            "LANGFUSE_BASE_URL",
+            "GOOGLE_APPLICATION_CREDENTIALS_FILE",
+            "PWD",
+            "OLDPWD",
+            "TOLOKAFORGE_TRACING_SESSION_ID",
+            "HOME",
+        ):
+            assert not safety.looks_secret(name), name
+
     def test_the_clean_transcript_passes_the_sentinel(self) -> None:
         payload = json.dumps(bodies(built(tr.redact(read())))).encode()
         assert safety.SafetyGate().scan(payload) == []

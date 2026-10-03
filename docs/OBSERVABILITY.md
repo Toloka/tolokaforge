@@ -91,7 +91,7 @@ the engine's environment, printing nothing. A config that names its own `endpoin
 | Engine event | Span | Ids (contract v1, shared with the uploader) |
 |---|---|---|
 | trial (opened by the conductor, closed after grading) | root observation `trial` (an `agent` observation), the trace's name and user (§ The trace's name and user), session, tags, `langfuse.trace.metadata.*` (task, trial, attempt, run id, status, termination, pass, score, tokens, cost, model facets), input = first user message, output = last assistant message | `trace_id = uuid5(NS, "trace\|<run_tag>\|<run_id>\|<task_id>\|<trial_index>\|<attempt>")`, root span `uuid5(NS, "obs\|<trace>\|root\|0")[:16]` |
-| assistant turn (after the message is recorded) | generation `agent` (a judge's: `judge`), its position as `message_index` metadata, model name, usage details (`input` = the prompt without its cache reads and cache writes, `output`, `cache_read_input_tokens` and `cache_creation_input_tokens` when the call states them, `total` = prompt + completion, so the components add up to it), cost (§ Cost on a trace), last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
+| assistant turn (after the message is recorded) | generation `agent` (a judge's: `judge`), its position as `message_index` metadata, model name, usage details (`input` = the prompt without its cache reads and cache writes, `output`, `cache_read_input_tokens` and `cache_creation_input_tokens` when the call states them, `total` = prompt + completion, so the components add up to it, except when the cache counters exceed the prompt: `input` then floors at 0, and the projection's `usage_clamped` says so), cost (§ Cost on a trace), last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
 | tool result (after the message is recorded) | `tool` observation `tool: <name>` (a judge's: `judge tool: <name>`), redacted arguments as input, output or error, `ERROR` level on failure | `obs\|<trace>\|tool\|<i>` |
 
 **Names and kinds.** An observation's name says what it is, never where: `trial`, `agent`, `user
@@ -172,9 +172,9 @@ attachments_complete: true | false
 attachments_skipped: [{name, rule}]
 ```
 
-Before a file leaves, its bytes are scanned against the `SecretManager`'s credential values
-(keys with secret-like names) and the key-shaped patterns of the connector's data-safety gate
-(dotenv secrets, `Authorization` headers, PEM blocks, URL credentials, provider key prefixes,
+Before a file leaves, its bytes are scanned with the run's data-safety gate (§ Delivery): the
+credential values the process holds and the key-shaped patterns of the connector's data-safety
+gate (dotenv secrets, `Authorization` headers, PEM blocks, URL credentials, provider key prefixes,
 JWTs, secret-named fields); a hit skips the file, names it in `attachments_skipped` and leaves
 `attachments_complete: false`. Bytes are never rewritten. The REST base URL derives from the OTLP
 endpoint (`attach_api_base` overrides it), the headers are `OTEL_EXPORTER_OTLP_HEADERS`, each
@@ -206,10 +206,11 @@ of the fixed schema explicit (the receiver merges metadata and an omitted key wo
 
 `projection: gradings` sends only the grading, its scores and the user turns; `none` sends the attachments alone. The pass runs under the attachment
 step's budget and breaker, the events go through the same data-safety scan as the live spans
-(§ Delivery: a hit sends nothing and counts), and nothing raises into the trial. The receipt reports
-the following counters under `extra`, each prefixed with `langfuse.`:
-`projections_sent`, `projections_failed`, `observations_sent`, `events_sent`, `scores_sent`,
-`gradings_sent`, `user_generations_sent`, `media_uploaded`, `media_failed`.
+(§ Delivery: a hit sends nothing and counts), and nothing raises into the trial. The receipt
+counts the pass under `extra` (§ Delivery lists every counter): `projections_sent`,
+`projections_failed`, `projections_refused_secret`, `observations_sent`, `events_sent`,
+`scores_sent`, `gradings_sent`, `gradings_failed`, `gradings_refused_secret`,
+`user_generations_sent`, `media_uploaded`, `media_failed`.
 
 Parity with the offline uploader is guarded by a golden test that lives in both repositories: a
 synthetic bundle (`tolokaforge_langfuse/tests/unit/parity_bundle.py`, byte-identical in the connector)
@@ -581,25 +582,46 @@ loop never waits. At run end the queue is flushed within `flush_timeout_s` and
 `tracing_receipt.json` in the run directory reports `spans_queued`, `spans_exported`,
 `spans_dropped`, `export_failures`, `flushed`; the same counts go to the log (a warning when
 anything was dropped). If the receiver is unreachable the flush gives up after `flush_timeout_s`
-and counts the rest as dropped, so a run never waits on its traces. Tool-call **arguments** (a
-mapping) pass through the engine's `SensitiveKeyRedaction`, which reads key names only; tool
-outputs and message text are free text it cannot cover, so they are capped at
-`attribute_max_chars`, and **every live span is scanned before it is queued**: its name and
-attributes go through the data-safety gate. The key-shaped patterns of § Attachments run over the
-span serialised as JSON, as they do over the bundle's events; the credential values the process
-holds when the run starts (its environment and the `SecretManager`, so not one registered later)
-run over the serialised span and over every raw string in it, in the forms JSON gives them,
-because JSON escaping hides a credential that holds a quote or a backslash, and an attribute that
-is itself JSON text (a generation's input and output, a tool's input) escapes it once more. The
-patterns do not run over raw strings, where a line-anchored one would stop ordinary code such as
-`api_key = os.environ.get(...)`. A hit withholds that span, whatever it is (a generation, a tool
-row, a preview, a root, an error root): nothing is rewritten, the warning names the span and the
-rules, never the value, and the receipt counts it as `langfuse.spans_refused_secret` under
-`extra`. A withheld span is neither queued nor dropped. A text longer than `attribute_max_chars`
-is scanned as capped, so a credential the cap cuts is not recognised. The trial-end pass (§ The
-trial-end pass) scans its events the same way and a hit there blocks the pass. Base64 image blocks
-never leave through spans. The receiver's headers are read through the `SecretManager`
-(`OTEL_EXPORTER_OTLP_HEADERS`) so their value is redacted from the engine's logs.
+and counts the rest as dropped, so a run never waits on its traces.
+
+**What leaves is scanned, by one gate per run.** Tool-call **arguments** (a mapping) pass through
+the engine's `SensitiveKeyRedaction`, which reads key names only; tool outputs and message text are
+free text it cannot cover, so they are capped at `attribute_max_chars` and scanned: every live span
+(its name and attributes) before it is queued, each trial-end pass (the bundle projection and the
+gradings) before it is sent, and the attachments' files before they are uploaded. A pass is scanned
+with the observer's gate whatever the attachment step offers, so a step with no scanner of its own
+sends nothing unscanned.
+
+- **What the gate knows.** The credentials the process holds: its environment (names that look
+  secret-like), the `SecretManager`'s keys and the receiver's header values, each by the name of the
+  variable it came from. The `SecretManager` is read again at a trial's start when it was replaced
+  meanwhile (`register_runtime_secret`: the engine's generated TypeSense key), so a secret registered
+  after the observer was built is known from the next trial on.
+- **What it leaves out.** A value the run's own tracing values contain (the session, run id and tag,
+  label, tags, metadata, environment, release) rides on every span by design: `ACME_TOKEN=tolokaforge`
+  against the tag `harness:tolokaforge`. One such variable would withhold the whole run, so the gate
+  leaves the value out and logs a warning naming the variable, never the value.
+- **What is looked for, and where.** The key-shaped patterns of § Attachments run over the span (or
+  the events) serialised as JSON, as they always did over the bundle's events. The credential values
+  run over the serialised JSON and over every raw string in it, in the forms JSON gives them: JSON
+  escaping hides a credential that holds a quote or a backslash, an attribute that is itself JSON
+  text (a generation's input and output, a tool's input) escapes it once more, and a tool's own JSON
+  may write non-ASCII characters as `\uXXXX`. The patterns do not run over raw strings, where a
+  line-anchored one would stop ordinary code such as `api_key = os.environ.get(...)`. The
+  trade-off: a credential whose value the gate does not know, inside JSON text and with no provider
+  shape, can pass; one it knows is matched in every form.
+- **What a hit does.** It withholds what would have carried it, whatever it is (a generation, a tool
+  row, a preview, a root, an error root, a pass, a file): nothing is rewritten, the warning names the
+  span or trace, the rules and the variables, never a value, and the receipt counts it. A withheld
+  span is neither queued nor dropped; a withheld pass is `projections_refused_secret` or
+  `gradings_refused_secret`, not `*_failed` (a scan that could not run, a malformed bundle and a
+  refused batch are); a withheld file is `attachments_skipped`. At run end one warning sums up what
+  was withheld, by rule and variable.
+- **Limits.** A text longer than `attribute_max_chars` is scanned as capped, so a credential the cap
+  cuts is not recognised. Base64 image blocks never leave through spans.
+
+The receiver's headers are read through the `SecretManager` (`OTEL_EXPORTER_OTLP_HEADERS`) so their
+value is redacted from the engine's logs.
 
 
 The receipt is a strict Pydantic `ExportReceipt`: its common fields are `spans_queued`,
@@ -616,6 +638,20 @@ receiver facts live in `details`, for example:
 `CompositeTrialObserver` sums common and plugin counters, ANDs `flushed`, and concatenates
 `details` without interpreting receiver keys. A missing receipt counts as an export failure
 and leaves `flushed: false`.
+
+Every counter the Langfuse plugin reports under `extra` (each key has the `langfuse.` prefix):
+
+| Counter | Counts |
+|---|---|
+| `attachments_registered`, `attachments_uploaded`, `attachments_deduplicated` | files registered with the receiver, uploaded, and found already stored |
+| `attachments_skipped`, `attachments_failed` | files kept back (a data-safety hit, a file type) and files that could not be sent |
+| `manifests_sent`, `manifests_failed` | manifest v2 sent (on v4, carried by the root) and not |
+| `projections_sent`, `projections_failed`, `projections_refused_secret` | bundle projections sent; failed (a bundle that could not be projected or scanned, a tripped breaker, a refused batch); withheld by the gate |
+| `observations_sent`, `events_sent`, `media_uploaded`, `media_failed` | what the sent projections held |
+| `gradings_sent`, `gradings_failed`, `gradings_refused_secret` | the grading pass, counted like a projection (a grading whose scores did not reach the receiver is a failure) |
+| `scores_sent`, `user_generations_sent` | the scores and simulated user turns the grading passes sent |
+| `previews_sent`, `final_observations_sent`, `error_roots_sent`, `roots_unconfirmed` | the v4 layout (§ The write-once producer layout) |
+| `spans_refused_secret` | live spans the gate withheld |
 
 A receipt covers one process. `ExportReceipt.merge` applies the same reduction to receipts
 collected from distinct workers; the caller must deduplicate workers and retain partial/final

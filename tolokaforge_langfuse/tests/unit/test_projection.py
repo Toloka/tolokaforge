@@ -28,6 +28,7 @@ from tolokaforge_langfuse.projection import (
     schema_keys,
     usage_fields,
 )
+from tolokaforge_langfuse.safety import SafetyGate
 
 from tolokaforge.observability import ids
 from tolokaforge.observability.observer import ModelRef, TrialIdentity
@@ -366,7 +367,6 @@ class _Step:
         self.budgets = 0
         self.fail_ingest = fail_ingest
         self.tripped = tripped
-        self.scanned = 0
 
     def budget(self):
         from contextlib import contextmanager
@@ -394,14 +394,22 @@ class _Step:
         self.media.append(observation_id)
         return f"@@@langfuseMedia:type={content_type}|id=m-inline|source=bytes@@@"
 
-    def scan_events(self, events):
-        self.scanned += 1
-        return []
-
     def ingest(self, events, *, batch_size=40):
         if self.fail_ingest:
             raise LangfuseApiError("POST /api/public/ingestion: HTTP 500", status=500)
         self.batches.append(events)
+
+
+class _CountingGate(SafetyGate):
+    """A gate that counts the structured scans it was asked for."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scans = 0
+
+    def scan_structured(self, value, *, what="payload"):
+        self.scans += 1
+        return super().scan_structured(value, what=what)
 
 
 class TestObserverProjection:
@@ -411,6 +419,8 @@ class TestObserverProjection:
         from tolokaforge_langfuse.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
 
         queue = SpanQueue(InMemorySpanExporter(), max_size=100, batch_size=4, interval_s=0.05)
+        # hermetic: the developer's environment holds no credential this observer knows
+        kwargs.setdefault("gate", SafetyGate())
         settings = kwargs.pop(
             "projection",
             ProjectionSettings(
@@ -436,7 +446,8 @@ class TestObserverProjection:
 
     def test_the_trial_end_pass_completes_the_trace_from_the_bundle(self, tmp_path: Path) -> None:
         step = _Step()
-        observer = self._observer(step)
+        gate = _CountingGate()
+        observer = self._observer(step, gate=gate)
         trial_dir = pb.write_parity_bundle(tmp_path / "run")
         observer.trial_started(
             IDENTITY,
@@ -446,7 +457,9 @@ class TestObserverProjection:
         observer.trial_finished(IDENTITY, trajectory=None)
         observer.trial_persisted(IDENTITY, trial_dir=trial_dir)
         receipt = observer.run_finished()
-        assert step.attached == [IDENTITY.trace_id] and step.budgets == 1 and step.scanned == 1
+        assert step.attached == [IDENTITY.trace_id] and step.budgets == 1
+        # the pass was scanned once, with the observer's gate (the step has no scanner)
+        assert gate.scans >= 1 and receipt.extra["langfuse.projections_refused_secret"] == 0
         (batch,) = step.batches
         trace = next(e["body"] for e in batch if e["type"] == "trace-create")
         assert trace["environment"] == pb.ENVIRONMENT and trace["release"] == "tolokaforge-0.0.0"
@@ -541,61 +554,100 @@ class TestObserverProjection:
         receipt = observer.run_finished()
         assert step.batches == [] and receipt.extra["langfuse.projections_failed"] == 1
 
-    def test_a_data_safety_hit_blocks_the_pass(self, tmp_path: Path) -> None:
+    @staticmethod
+    def _bundle_carrying(tmp_path: Path, secret: str) -> Path:
+        """The parity bundle with ``secret`` in the agent's words and in the grader's reasons."""
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        assistant = next(m for m in trajectory["messages"] if m["role"] == "assistant")
+        assistant["content"] = f"the token is {secret}"
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        grade = pb.grade()
+        grade["reasons"] = f"the agent leaked {secret}"
+        (trial_dir / "grade.yaml").write_text(yaml.safe_dump(grade), encoding="utf-8")
+        return trial_dir
+
+    def test_a_secret_only_the_observers_gate_knows_withholds_the_pass(
+        self, tmp_path: Path
+    ) -> None:
+        """``DB_PASSWORD`` is no name the SecretManager's list holds, so the attachment step's own
+        scan never knew it and the pass was sent. The step here has no scanner at all: the pass
+        scans with the observer's gate, and a missing scanner never means send."""
+        value = "a-db-password-no-shape-matches"
         step = _Step()
-        step.scan_events = lambda events: ["openrouter-key (sk-o**** (40 chars))"]  # type: ignore[method-assign]
-        observer = self._observer(step)
-        observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+        observer = self._observer(step, gate=SafetyGate.from_environment({"DB_PASSWORD": value}))
+        observer.trial_persisted(IDENTITY, trial_dir=self._bundle_carrying(tmp_path, value))
         receipt = observer.run_finished()
-        assert step.batches == [] and receipt.extra["langfuse.projections_failed"] == 1
+        assert step.batches == []
+        assert (
+            receipt.extra["langfuse.projections_refused_secret"],
+            receipt.extra["langfuse.projections_failed"],
+            receipt.extra["langfuse.projections_sent"],
+        ) == (1, 0, 0)
 
     def test_a_secret_json_would_escape_blocks_the_pass_too(self, tmp_path: Path) -> None:
         """A known value with a quote and a backslash in a projected event's output hides from
         the serialised events; the pass is scanned like a live span, in the raw strings too."""
-        from tolokaforge_langfuse.attachments import SecretScan
-
         awkward = 'tok"en\\8f3a91c2b7d04e56'
-        trial_dir = pb.write_parity_bundle(tmp_path / "run")
-        trajectory = pb.trajectory()
-        assistant = next(m for m in trajectory["messages"] if m["role"] == "assistant")
-        assistant["content"] = f"the token is {awkward}"
-        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        gate = SafetyGate.from_environment({"DB_PASSWORD": awkward})
+        trial_dir = self._bundle_carrying(tmp_path, awkward)
         resolver = RawModelNameResolver()
         events = build_projection(
             IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
         ).events
-        scan = SecretScan([awkward])
-        assert scan.scan(json.dumps(events, ensure_ascii=False).encode()) == []  # the old gate
+        assert gate.scan(json.dumps(events, ensure_ascii=False).encode()) == []  # the old gate
         step = _Step()
-        step.scan_events = scan.scan_structured  # type: ignore[method-assign]
-        observer = self._observer(step)
+        observer = self._observer(step, gate=gate)
         observer.trial_persisted(IDENTITY, trial_dir=trial_dir)
         receipt = observer.run_finished()
-        assert step.batches == [] and receipt.extra["langfuse.projections_failed"] == 1
+        assert step.batches == [] and receipt.extra["langfuse.projections_refused_secret"] == 1
 
-    def test_the_gradings_pass_is_scanned_before_it_is_sent(self, tmp_path: Path) -> None:
-        from tolokaforge_langfuse.otel import ProjectionSettings
-
-        step = _Step()
-        observer = self._observer(step, projection=ProjectionSettings(mode="gradings"))
-        observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
-        receipt = observer.run_finished()
-        assert step.scanned == 1 and len(step.batches) == 1
-        assert receipt.extra["langfuse.gradings_sent"] == 1
-
-    def test_a_data_safety_hit_blocks_the_gradings_pass(self, tmp_path: Path) -> None:
-        from tolokaforge_langfuse.otel import ProjectionSettings
+    def test_a_pass_the_gate_cannot_scan_is_a_failure_not_a_refusal(self, tmp_path: Path) -> None:
+        class Broken(SafetyGate):
+            def scan_structured(self, value, *, what="payload"):
+                raise ValueError("boom")
 
         step = _Step()
-        step.scan_events = lambda events: ["openrouter-key (sk-o**** (40 chars))"]  # type: ignore[method-assign]
-        observer = self._observer(step, projection=ProjectionSettings(mode="gradings"))
+        observer = self._observer(step, gate=Broken())
         observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
         receipt = observer.run_finished()
         assert step.batches == []
         assert (
+            receipt.extra["langfuse.projections_failed"],
+            receipt.extra["langfuse.projections_refused_secret"],
+        ) == (1, 0)
+
+    def test_the_gradings_pass_is_scanned_with_the_observers_gate_before_it_is_sent(
+        self, tmp_path: Path
+    ) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        step = _Step()
+        gate = _CountingGate()
+        observer = self._observer(step, gate=gate, projection=ProjectionSettings(mode="gradings"))
+        observer.trial_persisted(IDENTITY, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
+        receipt = observer.run_finished()
+        assert gate.scans == 1 and len(step.batches) == 1
+        assert receipt.extra["langfuse.gradings_sent"] == 1
+
+    def test_a_secret_withholds_the_gradings_pass_and_is_no_failure(self, tmp_path: Path) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        value = "a-db-password-no-shape-matches"
+        step = _Step()
+        observer = self._observer(
+            step,
+            gate=SafetyGate.from_environment({"DB_PASSWORD": value}),
+            projection=ProjectionSettings(mode="gradings"),
+        )
+        observer.trial_persisted(IDENTITY, trial_dir=self._bundle_carrying(tmp_path, value))
+        receipt = observer.run_finished()
+        assert step.batches == []
+        assert (
+            receipt.extra["langfuse.gradings_refused_secret"],
             receipt.extra["langfuse.gradings_failed"],
             receipt.extra["langfuse.gradings_sent"],
-        ) == (1, 0)
+        ) == (1, 0, 0)
 
     def test_projection_none_sends_only_the_attachments(self, tmp_path: Path) -> None:
         from tolokaforge_langfuse.otel import ProjectionSettings

@@ -493,23 +493,17 @@ def _sentinel(receiver: Receiver | None) -> Any:
     a secret's."""
     from tolokaforge_langfuse import safety
 
-    gate = safety.SafetyGate.from_environment()
-    if receiver is None:
-        return gate
     held = {
-        value.encode("utf-8")
-        for value in receiver.headers.values()
-        if len(value) >= safety.MIN_SECRET_VALUE
+        f"header {name}": value for name, value in (receiver.headers if receiver else {}).items()
     }
-    known = sorted(set(gate.known_values) | held, key=len, reverse=True)
-    return safety.SafetyGate(known_values=tuple(known))
+    return safety.SafetyGate.from_environment(extra=held)
 
 
 def _scan(gate: Any, events: Sequence[Mapping[str, Any]], *, what: str) -> list[Any]:
     """The sentinel over the events: the shapes over their JSON, the values the process holds also
     over every raw string and its JSON-escaped forms. The wheel's one rule, the one every live
     span and the trial-end pass use (``SafetyGate.scan_structured``)."""
-    return gate.scan_structured(events, what=what)
+    return list(gate.scan_structured(events, what=what))
 
 
 def _project_verified(receiver: Receiver | None, project: str | None) -> bool:

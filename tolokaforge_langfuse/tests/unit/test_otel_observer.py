@@ -31,6 +31,8 @@ IDENTITY = TrialIdentity(run_id="acme/pilot/v1/123/1", task_id="T-1", trial_inde
 
 def _observer(exporter: InMemorySpanExporter, **kwargs) -> tuple[OTelTrialObserver, SpanQueue]:
     queue = SpanQueue(exporter, max_size=kwargs.pop("max_size", 100), batch_size=4, interval_s=0.05)
+    # hermetic: the developer's environment holds no credential this observer knows
+    kwargs.setdefault("gate", SafetyGate())
     observer = OTelTrialObserver(
         queue=queue,
         label="pilot_agent",
@@ -1029,10 +1031,13 @@ class TestEverySpanIsScannedBeforeItLeaves:
         final_text="done",
         error=None,
         gate=None,
+        projection=None,
         **trial,
     ):
         exporter = InMemorySpanExporter()
-        observer, _ = _observer(exporter, server_api=server_api, gate=gate)
+        gate = gate if gate is not None else SafetyGate.from_environment()
+        extra = {"projection": projection} if projection is not None else {}
+        observer, _ = _observer(exporter, server_api=server_api, gate=gate, **extra)
         self._trial(observer, **trial)
         if tool_error is not None:
             observer.tool_call(
@@ -1151,7 +1156,7 @@ class TestEverySpanIsScannedBeforeItLeaves:
 
     def test_the_observer_and_its_gate_print_no_known_value(self, monkeypatch) -> None:
         monkeypatch.setenv("FOO_TOKEN", self.AWKWARD_SECRET)
-        observer, _ = _observer(InMemorySpanExporter())
+        observer, _ = _observer(InMemorySpanExporter(), gate=SafetyGate.from_environment())
         self._trial(observer, assistant_text=self.AWKWARD_SECRET)
         observer.run_finished()
         text = repr(observer) + repr(observer._gate)
@@ -1225,3 +1230,113 @@ class TestEverySpanIsScannedBeforeItLeaves:
         )
         assert self._kinds(spans) == ["agent", "trial", "trial"]
         assert receipt.extra["langfuse.spans_refused_secret"] == 1
+
+    # -- the gate of a run: what it leaves out, what it names, what it refreshes -------------------
+
+    @staticmethod
+    def _warnings(caplog) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+    @FAMILIES
+    def test_a_value_the_runs_own_tags_carry_is_left_out_and_named(
+        self, server_api, caplog
+    ) -> None:
+        """``ACME_TOKEN=tolokaforge`` is also the harness tag's value, written on every span by
+        design: a gate that knew it would withhold the whole run, silently."""
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        gate = SafetyGate.from_environment({"ACME_TOKEN": "tolokaforge"})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            # the harness tag alone carries the value: the producer is another name
+            spans, receipt = self._run(
+                server_api, gate=gate, projection=ProjectionSettings(producer="pilot-producer")
+            )
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        warnings = self._warnings(caplog)
+        assert [w for w in warnings if "ACME_TOKEN" in w] and not [
+            w for w in warnings if "tolokaforge" in w
+        ]
+        assert gate.known_values == ()
+
+    @FAMILIES
+    def test_a_real_secret_is_still_withheld_and_its_warning_names_its_variable(
+        self, server_api, caplog
+    ) -> None:
+        value = "a-db-password-no-shape-matches"
+        gate = SafetyGate.from_environment({"ACME_TOKEN": "tolokaforge", "DB_PASSWORD": value})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, gate=gate, tool_output=f"it said {value}")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        span_warning = next(w for w in self._warnings(caplog) if "would carry a secret" in w)
+        assert "known-secret-value from DB_PASSWORD" in span_warning
+        assert value not in span_warning and "ACME_TOKEN" not in span_warning
+
+    def test_the_runs_id_and_tag_are_ambient_too(self, caplog) -> None:
+        gate = SafetyGate.from_environment({"RUN_SECRET": "acme/pilot/v1/123"})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            queue = SpanQueue(InMemorySpanExporter(), max_size=10, batch_size=4, interval_s=0.05)
+            OTelTrialObserver(
+                queue=queue,
+                label="l",
+                session_id="s",
+                gate=gate,
+                ambient=("acme/pilot/v1/123/1", "v1"),
+            ).run_finished()
+        assert any("RUN_SECRET" in w for w in self._warnings(caplog))
+        assert gate.known_values == ()
+
+    def test_one_warning_at_run_end_says_what_was_withheld_and_why(self, caplog) -> None:
+        value = "a-db-password-no-shape-matches"
+        gate = SafetyGate.from_environment({"DB_PASSWORD": value})
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            self._run("v3", gate=gate, tool_output=f"it said {value}")
+        summary = [w for w in self._warnings(caplog) if w.startswith("live tracing withheld")]
+        assert len(summary) == 1
+        assert "1 span(s)" in summary[0] and "known-secret-value from DB_PASSWORD x1" in summary[0]
+        assert value not in summary[0]
+
+    def test_a_run_that_withheld_nothing_says_nothing_at_run_end(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            self._run("v3", gate=SafetyGate())
+        assert not [w for w in self._warnings(caplog) if w.startswith("live tracing withheld")]
+
+    def test_a_secret_registered_after_the_gate_was_built_is_known_at_the_next_trial(
+        self, caplog
+    ) -> None:
+        """The engine registers a generated key (``register_runtime_secret``) after the observer
+        is built; the gate is told to re-read at a trial's start."""
+        late = "late-registered-key-value"
+        gate = SafetyGate()
+        offers = [SafetyGate.from_environment({"TYPESENSE_API_KEY": late})]
+        gate.reload = lambda: offers.pop() if offers else None
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run("v3", gate=gate, tool_output=f"the key is {late}")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert any("known-secret-value from TYPESENSE_API_KEY" in w for w in self._warnings(caplog))
+
+    def test_a_refreshed_value_the_run_carries_is_left_out_again(self, caplog) -> None:
+        gate = SafetyGate()
+        offers = [SafetyGate.from_environment({"ACME_TOKEN": "tolokaforge"})]
+        gate.reload = lambda: offers.pop() if offers else None
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run("v3", gate=gate)
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        assert [w for w in self._warnings(caplog) if "ACME_TOKEN" in w]
+
+    def test_a_gate_that_cannot_refresh_keeps_the_values_it_has(self, caplog) -> None:
+        value = "a-db-password-no-shape-matches"
+        gate = SafetyGate.from_environment({"DB_PASSWORD": value})
+
+        def broken():
+            raise ValueError("the manager is gone")
+
+        gate.reload = broken
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run("v3", gate=gate, tool_output=f"it said {value}")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert any("were not re-read: ValueError" in w for w in self._warnings(caplog))
