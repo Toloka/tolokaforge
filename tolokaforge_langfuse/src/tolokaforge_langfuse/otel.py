@@ -324,6 +324,9 @@ class _TrialState:
     started_at: datetime
     models: dict[str, ModelRef] = field(default_factory=dict)
     agent: ModelIdentity | None = None
+    # whether the deployment's rules read the agent's model; a raw identity stands in for its tags
+    # when they cannot, and names no user (the bundle pass has no identity for it either)
+    agent_resolved: bool = False
     tags: tuple[str, ...] = ()
     generations: int = 0
     tool_calls: int = 0
@@ -409,7 +412,9 @@ class OTelTrialObserver:
         self, identity: TrialIdentity, *, models: Mapping[str, ModelRef], started_at: datetime
     ) -> None:
         agent_ref = models.get("agent")
-        agent = self._resolve(agent_ref) if agent_ref is not None else None
+        agent, agent_resolved = (
+            self._resolve_read(agent_ref) if agent_ref is not None else (None, False)
+        )
         tags: list[str] = [HARNESS_TAG, SOURCE_TAG]
         if agent is not None:
             tags.extend(agent.tags)
@@ -423,6 +428,7 @@ class OTelTrialObserver:
             started_at=started_at,
             models=dict(models),
             agent=agent,
+            agent_resolved=agent_resolved,
             tags=tuple(tags),
         )
         with self._states_lock:
@@ -1166,11 +1172,16 @@ class OTelTrialObserver:
     # -- helpers ------------------------------------------------------------------------------------
 
     def _resolve(self, ref: ModelRef) -> ModelIdentity:
+        return self._resolve_read(ref)[0]
+
+    def _resolve_read(self, ref: ModelRef) -> tuple[ModelIdentity, bool]:
+        """The model's identity, and whether the deployment's rules read it (the raw identity
+        stands in when they cannot)."""
         try:
-            return self._resolver.resolve(ref.provider, ref.name)
+            return self._resolver.resolve(ref.provider, ref.name), True
         except ModelNameResolverError as exc:
             _log.warning("model name not resolved, raw identity used: %s", exc)
-            return RawModelNameResolver().resolve(ref.provider, ref.name)
+            return RawModelNameResolver().resolve(ref.provider, ref.name), False
 
     def _state(self, identity: TrialIdentity) -> _TrialState:
         with self._states_lock:
@@ -1193,11 +1204,10 @@ class OTelTrialObserver:
             return state
 
     def _user_id(self, state: _TrialState) -> str | None:
-        """The trace's user under the profile's ``[trace] user`` (the agent's model identity, or
-        nobody)."""
-        return trace_user(
-            self._projection.trace_user, state.agent.canonical if state.agent else None
-        )
+        """The trace's user under the profile's ``[trace] user``: the agent's model identity when
+        the deployment's rules read it (the bundle pass's rule), else nobody."""
+        identity = state.agent.canonical if state.agent and state.agent_resolved else None
+        return trace_user(self._projection.trace_user, identity)
 
     def _model_name_of(self, state: _TrialState, role: str) -> str | None:
         ref = state.models.get(role)

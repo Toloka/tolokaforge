@@ -113,7 +113,11 @@ profile): `name` is a template over the trace's tag values and the run's label (
 names a trial after what it is a case of), `user` is `none` or `model`, the agent's model identity
 under the deployment's model-name rules, so the receiver's views by user are views by model.
 Without a profile a trace is named `<label>/<task_id>` and has no user. Both producers and every
-row (previews and error roots included) follow the same rule.
+row (previews and error roots included) follow the same rule, which is why a template may name only
+what a trial's rows carry from its start: the caller's and the launcher's tags, the task and the
+model identity with its facets, never the tags only the bundle gives (`reasoning_*`, `route`: the
+profile refuses them). A model the deployment's rules cannot read gives a trace no user, on the live
+rows as in the bundle pass.
 
 The same `trace_id` names the trial's conversation to a model's session header
 (`<trace_id>-agent` / `<trace_id>-user`, [LLM_LAYER.md § Session header](LLM_LAYER.md#session-header)),
@@ -343,6 +347,7 @@ connector):
 | `litellm` | litellm's figure: a charge the response stated (OpenRouter's `usage.cost` in a bundle from before the charge was recorded, a LiteLLM gateway's response-cost header) or litellm's own price map; the bundle does not say which |
 | `list` | the engine's pricing table |
 | `eval` | the eval's figure, its source not recorded (the judge's aggregate, or a `cost_source` value this producer does not recognise) |
+| `cli` | an agent transcript's turn: its share of what the agent's CLI reported the run cost (Claude Code's `total_cost_usd`), shared out by the turns' tokens at Claude's relative list prices |
 | `none` | no figure at all: no call is paired, or the call states neither a charge nor an eval figure (`cost_source: unknown`, a route nothing could price); the cost is an explicit zero, so the receiver prices nothing from its own model table, and a paired call keeps its usage |
 
 The judge generation that holds `grade.judge_usage` follows the same rule with the judge's

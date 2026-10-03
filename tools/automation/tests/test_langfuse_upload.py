@@ -982,6 +982,16 @@ why = "a config stem"
         assert "model_vendor:anthropic" in root.attributes["langfuse.trace.tags"]
         assert model_facts(exporter.batches[0])["generation_models"] == {SERVED}
 
+    def test_a_misspelt_normalizer_is_an_error_not_raw_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = TestTheModelOption._run(
+            tmp_path, monkeypatch, "--model-name-normalizer", "tolkoa"
+        )
+        assert result.exit_code == 1
+        assert "is not one of none, toloka" in result.output
+        assert exporter.batches == []
+
     def test_rules_without_the_normalizer_are_an_error_that_sends_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

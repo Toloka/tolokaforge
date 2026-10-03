@@ -940,6 +940,19 @@ class TestTheClocks:
             "2026-09-20T10:00:07Z",
         )
 
+    def test_a_neighbour_without_a_clock_collapses_the_window_never_stretches_it(self) -> None:
+        """The tool's result carries no timestamp: the next turn's call began then, unknown, so
+        its window collapses onto its own clock instead of reaching back over the tool."""
+        events = split_response()
+        result = next(e for e in events if e["type"] == "user")
+        result.pop("timestamp")
+        build = built(tr.redact(tr.read_claude_text(stream(events), transcript_id="t")))
+        second = one(build, "generation-create")[1]
+        assert (second["startTime"], second["endTime"]) == (
+            "2026-09-20T10:00:10Z",
+            "2026-09-20T10:00:10Z",
+        )
+
     def test_a_transcript_without_clocks_collapses_no_window_open(self) -> None:
         events = [
             {k: v for k, v in event.items() if k != "timestamp"} for event in split_response()
@@ -1015,9 +1028,15 @@ class TestTheNameAndTheUser:
         named = one(built(tr.redact(transcript), name="{label}: {transcript}"), "trace-create")
         assert named[0]["name"] == "pilot: analysis/x/2"
 
-    def test_a_template_with_an_unknown_placeholder_refuses_the_transcript(self) -> None:
+    @pytest.mark.parametrize(
+        "template", ["{dimension}", "{label}/{run_id}", "{ci_run}-{step}", "{step", "step}", ""]
+    )
+    def test_a_template_with_an_unknown_placeholder_or_a_stray_brace_refuses_the_transcript(
+        self, template: str
+    ) -> None:
+        """Never a trace named with a literal brace."""
         with pytest.raises(tr.TranscriptError, match="placeholders"):
-            built(tr.redact(read()), name="{dimension}")
+            built(tr.redact(read()), name=template)
 
     def test_without_a_user_the_trace_has_none(self) -> None:
         assert one(built(tr.redact(read())), "trace-create")[0]["userId"] is None

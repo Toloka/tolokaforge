@@ -577,6 +577,30 @@ class TestTheProfilesTrace:
         assert {_attrs(s)["langfuse.trace.name"] for s in spans} == {"pilot-domain/pilot_agent"}
         assert {_attrs(s)["langfuse.user.id"] for s in spans} == {"openai/gpt-6-astra"}
 
+    def test_an_agent_the_rules_cannot_read_names_no_user(self) -> None:
+        """The bundle pass has no identity for such a model, so no live row may claim one: the
+        raw name stands in for the tags only."""
+        from tolokaforge_langfuse.model_names import ModelNameResolverError
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        class Refusing:
+            description = "refusing"
+            rules_version = "r-1"
+
+            def resolve(self, provider, name):
+                raise ModelNameResolverError(f"{name}: unresolved tokens")
+
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(
+            exporter, resolver=Refusing(), projection=ProjectionSettings(**self.SETTINGS)
+        )
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
+        observer.run_finished()
+        spans = exporter.get_finished_spans()
+        assert spans and not any("langfuse.user.id" in _attrs(s) for s in spans)
+        assert {_attrs(s)["langfuse.trace.name"] for s in spans} == {"pilot-domain/pilot_agent"}
+
     def test_a_template_the_trace_cannot_fill_falls_back_to_the_run_and_the_task(self) -> None:
         from tolokaforge_langfuse.otel import ProjectionSettings
 

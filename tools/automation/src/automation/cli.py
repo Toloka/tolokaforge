@@ -349,9 +349,10 @@ def langfuse_upload_cmd(
         "reads under --model-rules); not with --user",
     ),
     model_name_normalizer: str = typer.Option(
-        "raw",
+        "none",
         "--model-name-normalizer",
-        help="how model names are read: raw, or toloka (toloka-model-name-normalizer)",
+        help="how model names are read: none (as spelled), or toloka "
+        "(toloka-model-name-normalizer)",
     ),
     model_rules: str | None = typer.Option(
         None, "--model-rules", help="the deployment's normalizer rules file (needs toloka)"

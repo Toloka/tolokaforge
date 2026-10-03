@@ -169,6 +169,15 @@ class TestTraceName:
         with pytest.raises(v.VocabularyError):
             v.check_trace_name(template)
 
+    @pytest.mark.parametrize(
+        "template", ["{route}/{domain}", "{model}/{reasoning_effort}", "{reasoning_budget}"]
+    )
+    def test_a_tag_only_the_bundle_gives_names_no_trace(self, template: str) -> None:
+        """The rows written while the trial runs never carry them: a trace named by them would
+        sit in two series, its live rows under the default name."""
+        with pytest.raises(v.VocabularyError, match="bundle alone"):
+            v.check_trace_name(template)
+
 
 class TestTraceUser:
     def test_by_default_a_trace_has_no_user(self) -> None:

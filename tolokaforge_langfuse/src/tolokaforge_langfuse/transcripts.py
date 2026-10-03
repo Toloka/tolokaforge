@@ -145,7 +145,7 @@ _ORDINAL_SEGMENT = re.compile(r"(?:/\d+)+$")
 # a transcript trace's name: a template over the run's ``{label}``, the ``{transcript}`` id and
 # the ``{step}`` (the transcript id without the ordinal of a later run)
 DEFAULT_TRACE_NAME = "{label}/{transcript}"
-_NAME_PLACEHOLDER = re.compile(r"\{([a-z]+)\}")
+_NAME_PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 NAME_PLACEHOLDERS = frozenset({"label", "transcript", "step"})
 
 # Claude's list prices relative to a model's input price, the same for every Claude model: output
@@ -379,6 +379,9 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
     cli_version: str | None = None
     session_id: str | None = None
     stamps: list[str] = []
+    # the clock of the event right before this one (None when that event has none): where a model
+    # call this event ends began; never an earlier clock, which would stretch the call
+    before: str | None = None
     for position, event in enumerate(events):
         if not isinstance(event, Mapping):
             raise TranscriptRefused(f"{origin}: event {position} is not a mapping")
@@ -386,11 +389,10 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
         if not isinstance(kind, str) or kind not in EVENT_TYPES:
             raise TranscriptRefused(f"{origin}: event {position} has unknown type {_shown(kind)}")
         session_id = session_id or _str(event.get("session_id"))
-        # the clock of the event before this one: where a model call this event ends began
-        before = stamps[-1] if stamps else None
         stamp = _normalize_ts(event.get("timestamp"))
         if stamp:
             stamps.append(stamp)
+        prior, before = before, stamp
         if kind == "system":
             # everything else a system event says describes the machine the agent ran on
             if event.get("subtype") == SYSTEM_INIT:
@@ -402,7 +404,7 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
             if joined is None:
                 if part.message_id:
                     by_message[part.message_id] = len(turns)
-                turns.append(replace(part, started_at=before))
+                turns.append(replace(part, started_at=prior))
             else:
                 turns[joined] = _joined(turns[joined], part)
             continue
@@ -893,11 +895,14 @@ def step_of(transcript_id: str) -> str:
 
 
 def check_trace_name(template: str) -> str:
+    """A transcript trace-name template: text with the placeholders ``NAME_PLACEHOLDERS`` and no
+    other brace; anything else refuses the transcript rather than name it with a literal ``{``."""
     unknown = sorted(set(_NAME_PLACEHOLDER.findall(template)) - NAME_PLACEHOLDERS)
-    if not template.strip() or unknown:
+    rest = _NAME_PLACEHOLDER.sub("", template)
+    if not template.strip() or unknown or "{" in rest or "}" in rest:
         raise TranscriptError(
             f"trace-name template {template!r}: the placeholders are "
-            f"{', '.join('{' + p + '}' for p in sorted(NAME_PLACEHOLDERS))}"
+            f"{', '.join('{' + p + '}' for p in sorted(NAME_PLACEHOLDERS))}, and no other brace"
         )
     return template
 
@@ -907,7 +912,8 @@ def trace_name(template: str | None, transcript_id: str, *, label: str) -> str:
     label, the transcript id and its step (``{step}`` groups the runs of one kind of work)."""
     values = {"label": label, "transcript": transcript_id, "step": step_of(transcript_id)}
     return _NAME_PLACEHOLDER.sub(
-        lambda match: values[match.group(1)], check_trace_name(template or DEFAULT_TRACE_NAME)
+        lambda match: values[match.group(1)],
+        check_trace_name(DEFAULT_TRACE_NAME if template is None else template),
     )
 
 

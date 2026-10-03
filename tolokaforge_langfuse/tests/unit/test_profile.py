@@ -140,6 +140,7 @@ class TestLoading:
             ("schema = 1\nversion = 'p'\n[metadata.fixed]\nk = [1]\n", "string, number or boolean"),
             ("schema = 1\nversion = 'p'\n[models]\nrules = 3\n", "non-empty path"),
             ("schema = 2\nversion = 'p'\n[trace]\nname = '{expert}'\n", "neither tag prefixes"),
+            ("schema = 2\nversion = 'p'\n[trace]\nname = '{route}/{domain}'\n", "bundle alone"),
             ("schema = 2\nversion = 'p'\n[trace]\nuser = 'expert'\n", "must be one of"),
             ("schema = 2\nversion = 'p'\n[trace]\nid = 'x'\n", "unknown keys"),
             ("not toml [[[", "not valid TOML"),

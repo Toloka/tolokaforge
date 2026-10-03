@@ -57,6 +57,9 @@ MAX_PAGES = 50
 # a row the receiver filed under no environment of its own sits in its default
 DEFAULT_ENVIRONMENT = "default"
 DEFAULT_RUN_TAG = "v1"
+# the model-name resolvers the engine's tracing configuration knows: the raw names, or the
+# toloka-model-name-normalizer under a deployment's rules
+MODEL_NAME_NORMALIZERS = ("none", "toloka")
 READ_TIMEOUT_S = 10.0
 
 # ``agent_iter_3.jsonl`` is the third resolve iteration; ``agent_finalize.jsonl`` is the finalize
@@ -339,7 +342,7 @@ def upload(
     trace_name: str | None = None,
     user: str | None = None,
     user_model: str | None = None,
-    model_name_normalizer: str = "raw",
+    model_name_normalizer: str = "none",
     model_rules: str | None = None,
     producer_version: str = "automation",
     receiver: Receiver | None = None,
@@ -352,7 +355,7 @@ def upload(
     ``trace_name`` is the traces' name template (``{label}``, ``{transcript}``, ``{step}``; default
     ``{label}/{transcript}``). The traces' user is ``user`` as given, or the identity of
     ``user_model``, the model the agents worked on. Model names are read through the resolver
-    ``model_name_normalizer`` selects (``raw``, or ``toloka`` with the deployment's
+    ``model_name_normalizer`` selects (``none``, the raw names, or ``toloka`` with the deployment's
     ``model_rules``), the trial traces' rule, so a model has one name across both.
     """
     from tolokaforge_langfuse.model_names import (
@@ -364,6 +367,12 @@ def upload(
     from tolokaforge_langfuse import otlp_spans, otlp_transport
     from tolokaforge_langfuse import transcripts as tr
 
+    if model_name_normalizer not in MODEL_NAME_NORMALIZERS:
+        # a misspelt choice would read every name raw and silently differ from the trial traces
+        raise UploadError(
+            f"--model-name-normalizer {model_name_normalizer!r} is not one of "
+            f"{', '.join(MODEL_NAME_NORMALIZERS)}"
+        )
     try:
         resolver = build_model_name_resolver(model_name_normalizer, model_rules)
     except ModelNameResolverError as exc:
