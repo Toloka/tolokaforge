@@ -119,6 +119,10 @@ copying an unbounded tool name or argument blob into the trial log.
 """
 
 
+class _BootstrapUserStop(Exception):
+    """An opening user reply ended the dialogue under the explicit end rule."""
+
+
 def _call_names(calls: list[ToolCall]) -> str:
     """The names of *calls*, in order, for a log line or a system message."""
     return ", ".join(call.name for call in calls)
@@ -589,6 +593,13 @@ class TrialRunner:
                     self._effective_system_prompt = outcome.captured_effective_system_prompt
                     self._effective_system_prompt_captured = True
 
+            except _BootstrapUserStop as exc:
+                termination_reason = TerminationReason.USER_STOP
+                self.messages.append(
+                    Message(
+                        role=MessageRole.SYSTEM, content=str(exc), ts=datetime.now(tz=timezone.utc)
+                    )
+                )
             except SimulationBudgetReached as exc:
                 termination_reason = exc.reason
                 self.messages.append(
@@ -1558,6 +1569,10 @@ class TrialRunner:
             reason = self._simulation_budget.participant(calls_environment=bool(first_user_calls))
             if reason is not None:
                 raise SimulationBudgetReached(reason)
+        if not first_user_calls and self._user_stop.with_text == "end":
+            stop = self._user_stop.find(first_user_text)
+            if stop is not None:
+                raise _BootstrapUserStop(f"User signaled stop ({stop.token}). Dialogue ended.")
 
     def _record_user_reply_guard(
         self,
