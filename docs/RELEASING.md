@@ -212,14 +212,17 @@ PyPI setup above comes before the first tag.
 
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
-The four first-party images —
-`tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web}` — are published
-by [`publish-images.yml`](../.github/workflows/publish-images.yml), which fires on
-any pushed `image-v*` tag. The release workflow cuts the release-candidate tag
-`image-vX.Y.Z-rc.1` for you; the stable tag `image-vX.Y.Z` is pushed by hand once
-the rc is verified. The workflow builds the wheel once; only the images that ship
-it — `runner` and `rag-service` — are layered from that artifact, while
-`db-service` and `mock-web` build without it.
+The first-party images —
+`tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web,grader,standalone}`
+— are published by [`publish-images.yml`](../.github/workflows/publish-images.yml),
+which fires on any pushed `image-v*` tag. The first five are the per-component
+distributed stack; `standalone` is the all-in-one single-container image (see
+[ADR-0053](adr/0053-all-in-one-image.md)). The release workflow cuts the
+release-candidate tag `image-vX.Y.Z-rc.1` for you; the stable tag `image-vX.Y.Z`
+is pushed by hand once the rc is verified. The workflow builds the wheel once;
+`runner` and `rag-service` are layered from that artifact, `grader` and
+`standalone` build their own wheel in-container from the source slice, and
+`db-service` and `mock-web` need no wheel.
 
 Images are `linux/amd64` only. The standalone compose recipe pins
 `platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}`, so Apple-Silicon hosts run the
@@ -259,7 +262,7 @@ Every image release goes through a release candidate first.
 ### Dry run
 
 Running `publish-images.yml` from the Actions tab as a `workflow_dispatch` builds
-all four images **without** logging in or pushing — a safe pre-check that the
+every image **without** logging in or pushing — a safe pre-check that the
 Dockerfiles and wheel still build.
 
 ## Typical order

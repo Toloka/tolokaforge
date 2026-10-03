@@ -13,10 +13,10 @@ concurrency:
 # Single source of truth for the first-party image set. The matrix below
 # carries per-image metadata (Dockerfile path, whether the image bundles
 # the wheel) and must stay in sync with this list, but every bash loop that
-# only needs the names reads from here — kept in one place so adding a
-# fifth image is one env edit + one matrix row, not six sites.
+# only needs the names reads from here — kept in one place so adding another
+# image is one env edit + one matrix row, not six sites.
 env:
-  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web grader"
+  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web grader standalone"
 
 jobs:
   build-wheel:
@@ -96,6 +96,12 @@ jobs:
           - image: grader
             dockerfile: tolokaforge/docker/dockerfiles/grader.Dockerfile
             needs_wheel: true
+          # All-in-one image. Self-contained like the grader — its Dockerfile
+          # builds the base + sibling wheels in-container from the source slice,
+          # so it needs no staged wheel (needs_wheel: false, no WHEEL_FILENAME).
+          - image: standalone
+            dockerfile: tolokaforge/docker/dockerfiles/standalone.Dockerfile
+            needs_wheel: false
     steps:
       - uses: actions/checkout@v5
 
@@ -230,6 +236,17 @@ jobs:
           version="${GITHUB_REF_NAME#image-v}"
           TOLOKAFORGE_SMOKE_IMAGE_TAG="$version" \
             uv run pytest tests/integration/deploy/test_rc_smoke_parity_reference.py \
+            -v --tb=short -m "integration and requires_docker"
+
+      # All-in-one image gate: runs the single container, waits for the runner's
+      # healthcheck, and asserts all four services answer on loopback plus one
+      # keyless in-container wiring trial. A red gate blocks move-tags, so
+      # :latest never moves onto a broken all-in-one image.
+      - name: Run all-in-one image smoke
+        run: |
+          version="${GITHUB_REF_NAME#image-v}"
+          TOLOKAFORGE_SMOKE_IMAGE_TAG="$version" \
+            uv run pytest tests/integration/deploy/test_standalone_image_smoke.py \
             -v --tb=short -m "integration and requires_docker"
 
   auto-promote-rc-to-stable:

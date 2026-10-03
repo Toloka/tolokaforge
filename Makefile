@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help cbm-onboard cbm-offboard
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-build-standalone docker-up docker-down docker-status help cbm-onboard cbm-offboard
 
 # =============================================================================
 # Installation (using uv)
@@ -68,6 +68,11 @@ docker-build:
 
 docker-build-core:
 	uv run tolokaforge docker build --core
+
+# All-in-one (single-image, multi-service) image. Built on demand — it bundles
+# every service, so it is not part of the default `docker-build` sweep.
+docker-build-standalone:
+	uv run tolokaforge docker build --service standalone
 
 docker-up:
 	uv run tolokaforge docker up --profile core
@@ -152,6 +157,7 @@ help:
 	@echo "Docker:"
 	@echo "  make docker-build       - Build all Docker images"
 	@echo "  make docker-build-core  - Build core images only (db-service + runner)"
+	@echo "  make docker-build-standalone - Build the all-in-one single-container image"
 	@echo "  make docker-up          - Start Docker services (core stack)"
 	@echo "  make docker-down        - Stop and remove Docker services"
 	@echo "  make docker-status      - Show Docker service status"

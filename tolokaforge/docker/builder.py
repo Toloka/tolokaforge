@@ -219,6 +219,21 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
+    # All-in-one (single-image, multi-service) image — db-service, rag-service,
+    # mock-web, and the runner in one container under supervisord. Its
+    # Dockerfile compiles the same full source set as the grader (base +
+    # tolokaforge_models + tolokaforge_coding_harnesses wheels in-container),
+    # plus the env-service apps and supervisor config that already live under
+    # the copied ``tolokaforge/`` tree — so it shares the runner/grader
+    # packaged-copy mapping via ``_standalone_definition()``. See
+    # ``docs/adr/0053-all-in-one-image.md``.
+    "standalone": {
+        "name": "tolokaforge-standalone",
+        "dockerfile": "tolokaforge/docker/dockerfiles/standalone.Dockerfile",
+        "context": ".",
+        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
+        "build_args": dict(_PYTHON_BUILD_ARGS),
+    },
 }
 
 # Factories that augment a static base entry with wheel-resolver-dependent
@@ -229,6 +244,11 @@ _DYNAMIC_DEFINITIONS: dict[str, Callable[[], dict[str, Any]]] = {}
 # Service groups for selective building
 CORE_IMAGES: list[str] = ["db-service", "runner"]
 EXTENDED_IMAGES: list[str] = ["rag-service", "mock-web"]
+# The all-in-one image is built on demand (``tolokaforge docker build --service
+# standalone`` / ``make docker-build-standalone``), never as part of
+# ``build_all_images`` — it bundles every service and is the heaviest build, so
+# it stays out of the default ``make docker-build`` sweep.
+STANDALONE_IMAGES: list[str] = ["standalone"]
 
 _ALL_KNOWN_SERVICES = frozenset(IMAGE_DEFINITIONS)
 
@@ -423,8 +443,27 @@ def _grader_definition() -> dict[str, Any]:
     }
 
 
+def _standalone_definition() -> dict[str, Any]:
+    """Resolve the all-in-one build context for source-checkout OR wheel install.
+
+    The standalone Dockerfile compiles the same full source set as the grader
+    (base + ``tolokaforge_models`` + ``tolokaforge_coding_harnesses`` wheels
+    in-container) and additionally COPYs the three env-service ``app.py`` files
+    and the supervisor config — all of which live under the ``tolokaforge/``
+    tree the full source slice already carries — so it reuses the runner/grader
+    packaged-copy mapping on a wheel install.
+    """
+    if not _is_wheel_install():
+        return dict(IMAGE_DEFINITIONS["standalone"])
+    return {
+        **IMAGE_DEFINITIONS["standalone"],
+        "context_files": _context_files_from_entries(_packaged_full_source_entries("standalone")),
+    }
+
+
 _DYNAMIC_DEFINITIONS["runner"] = _runner_definition
 _DYNAMIC_DEFINITIONS["grader"] = _grader_definition
+_DYNAMIC_DEFINITIONS["standalone"] = _standalone_definition
 
 
 def get_image_definition(service_name: str) -> dict[str, Any]:
