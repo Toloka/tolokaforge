@@ -379,9 +379,8 @@ class TestShopOrders02McpTools:
 
         assert result["status"] == "paid"
         customer = next(c for c in data["customers"] if c["id"] == "C-101")
-        assert (
-            abs(customer["balance"] - 141.01) < 0.001
-        ), f"Expected balance 141.01 (300.00 − 158.99), got {customer['balance']}"
+        message = f"Expected balance 141.01 (300.00 − 158.99), got {customer['balance']}"
+        assert abs(customer["balance"] - 141.01) < 0.001, message
 
     def test_confirm_payment_already_paid_returns_error(self, mcp_tools, shop_orders_02_task_dir):
         """confirm_payment returns {\"error\": ...} if the order is already paid."""
@@ -418,9 +417,8 @@ class TestShopOrders02StateAfterGoldenActions:
         data = _fresh_data(shop_orders_02_task_dir)
         for action in actions:
             result = mcp_tools[action["name"]].invoke(data=data, **action["kwargs"])
-            assert (
-                "error" not in result
-            ), f"Golden action '{action['name']}' returned an error: {result}"
+            message = f"Golden action '{action['name']}' returned an error: {result}"
+            assert "error" not in result, message
 
         order = data["orders"][0]
         customer = data["customers"][0]
@@ -609,16 +607,13 @@ class TestShopOrders02GradingPipeline:
             self._passing_trajectory(),
             self._expected_final_env_state(mcp_tools, shop_orders_02_task_dir),
         )
-        assert grade.score == pytest.approx(
-            1.0
-        ), f"Expected score=1.0, got {grade.score}. Reasons: {grade.reasons}"
+        message = f"Expected score=1.0, got {grade.score}. Reasons: {grade.reasons}"
+        assert grade.score == pytest.approx(1.0), message
         assert grade.binary_pass is True
-        assert grade.components.state_checks == pytest.approx(
-            1.0
-        ), f"state_checks={grade.components.state_checks}"
-        assert grade.components.transcript_rules == pytest.approx(
-            1.0
-        ), f"transcript_rules={grade.components.transcript_rules}"
+        message = f"state_checks={grade.components.state_checks}"
+        assert grade.components.state_checks == pytest.approx(1.0), message
+        message = f"transcript_rules={grade.components.transcript_rules}"
+        assert grade.components.transcript_rules == pytest.approx(1.0), message
 
     def test_failing_trajectory_does_not_pass_threshold(self, mcp_tools, shop_orders_02_task_dir):
         """No tool calls + unchanged DB → score < pass_threshold (0.75) → binary_pass=False."""
@@ -627,9 +622,8 @@ class TestShopOrders02GradingPipeline:
             self._no_tool_calls_trajectory(),
             {"db": _fresh_data(shop_orders_02_task_dir)},  # unchanged state
         )
-        assert (
-            grade.score < 0.75
-        ), f"Failing trajectory must score below pass_threshold=0.75, got {grade.score}"
+        message = f"Failing trajectory must score below pass_threshold=0.75, got {grade.score}"
+        assert grade.score < 0.75, message
         assert grade.binary_pass is False
 
     def test_correct_transcript_wrong_db_state_still_fails(
@@ -645,12 +639,12 @@ class TestShopOrders02GradingPipeline:
             self._passing_trajectory(),
             {"db": _fresh_data(shop_orders_02_task_dir)},  # ← unchanged DB, but perfect transcript
         )
-        assert grade.components.state_checks == pytest.approx(
-            0.0
-        ), f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
-        assert (
-            grade.binary_pass is False
-        ), "state_checks weight (0.70) means even a perfect transcript cannot save a 0 state score"
+        message = f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
+        assert grade.components.state_checks == pytest.approx(0.0), message
+        message = (
+            "state_checks weight (0.70) means even a perfect transcript cannot save a 0 state score"
+        )
+        assert grade.binary_pass is False, message
 
     def test_correct_db_state_missing_communicate_info_reduces_score(
         self, mcp_tools, shop_orders_02_task_dir
@@ -704,10 +698,8 @@ class TestShopOrders02GradingPipeline:
             traj, self._expected_final_env_state(mcp_tools, shop_orders_02_task_dir)
         )
 
-        assert grade.components.transcript_rules < 1.0, (
-            "transcript_rules should be < 1.0 when communicate_info items are missing "
-            f"(got {grade.components.transcript_rules})"
-        )
+        message = f"transcript_rules should be < 1.0 when communicate_info items are missing (got {grade.components.transcript_rules})"
+        assert grade.components.transcript_rules < 1.0, message
 
 
 # ---------------------------------------------------------------------------
@@ -800,9 +792,8 @@ class TestShopOrders02McpTransport:
         request, confirm_payment would return 'order not found'.
         """
         result = mcp_server.call_tool("confirm_payment", {"order_id": "O-001"})
-        assert (
-            "error" not in result
-        ), f"confirm_payment failed — state not persisted across JSON-RPC calls: {result}"
+        message = f"confirm_payment failed — state not persisted across JSON-RPC calls: {result}"
+        assert "error" not in result, message
         assert result["status"] == "paid"
 
     def test_get_state_shows_correct_mutations_after_full_workflow(
@@ -902,9 +893,8 @@ class TestShopOrders02AdapterGradingIntegration:
             env,
         )
         assert grade.binary_pass is False
-        assert grade.components.state_checks == pytest.approx(
-            0.0
-        ), f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
+        message = f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
+        assert grade.components.state_checks == pytest.approx(0.0), message
 
     def test_adapter_task_dir_points_to_functional_mcp_server(
         self, real_adapter, shop_orders_02_task_dir
@@ -917,12 +907,10 @@ class TestShopOrders02AdapterGradingIntegration:
         mcp_path = task_dir / "mcp_server.py"
         assert mcp_path.exists(), f"mcp_server.py not found at {mcp_path}"
         content = mcp_path.read_text()
-        assert (
-            "TOOLS" in content
-        ), f"mcp_server.py at {mcp_path} has no TOOLS — golden_action execution will fail"
-        assert (
-            "create_server" in content
-        ), f"mcp_server.py at {mcp_path} does not use create_server — may not register tools"
+        message = f"mcp_server.py at {mcp_path} has no TOOLS — golden_action execution will fail"
+        assert "TOOLS" in content, message
+        message = f"mcp_server.py at {mcp_path} does not use create_server — may not register tools"
+        assert "create_server" in content, message
 
 
 # ---------------------------------------------------------------------------
@@ -955,9 +943,8 @@ class TestShopOrders02TrajectoryRoundTrip:
             tc["name"] for msg in raw["messages"] for tc in (msg.get("tool_calls") or [])
         ]
         for expected_name in ("list_products", "get_customer", "place_order", "confirm_payment"):
-            assert (
-                expected_name in all_tool_names
-            ), f"'{expected_name}' not found in reloaded tool_calls: {all_tool_names}"
+            message = f"'{expected_name}' not found in reloaded tool_calls: {all_tool_names}"
+            assert expected_name in all_tool_names, message
 
     def test_nested_place_order_arguments_survive_yaml_round_trip(self, tmp_path):
         """place_order nested items list survives YAML serialization with correct types.
@@ -1005,10 +992,8 @@ class TestShopOrders02TrajectoryRoundTrip:
             msg.get("content", "") for msg in raw["messages"] if msg.get("role") == "assistant"
         )
         for info in ("O-001", "paid", "141.01"):
-            assert info in assistant_texts, (
-                f"'{info}' not found in reloaded assistant messages — "
-                "communicate_info would mis-score the replayed trajectory"
-            )
+            message = f"'{info}' not found in reloaded assistant messages — communicate_info would mis-score the replayed trajectory"
+            assert info in assistant_texts, message
 
     def test_trajectory_metadata_fields_survive_yaml_round_trip(self, tmp_path):
         """task_id, trial_index, status, start_ts, end_ts are preserved."""
@@ -1046,10 +1031,8 @@ class TestShopOrders02McpWrapperContract:
     def wrapper_for(cls, shop_orders_02_task_dir):
         """Build wrappers for one shared ``mcp_server.py`` subprocess.
 
-        ``MCPServerToolWrapper._servers`` caches subprocesses on the class keyed
-        by script path and the instance ``cleanup()`` is a no-op, so the
-        classmethod is the only teardown there is — without it the subprocess
-        outlives the session. The cases below share the one server deliberately:
+        The fixture owns a pool shared by its wrappers. The cases below share
+        the one server deliberately:
         an argument-validation failure and two reads, none depending on what the
         others left behind.
 
@@ -1058,6 +1041,9 @@ class TestShopOrders02McpWrapperContract:
         instead of being absorbed by a mock.
         """
         script = str(shop_orders_02_task_dir / "mcp_server.py")
+        from tolokaforge.runner.tool_factory import MCPServerPool
+
+        pool = MCPServerPool()
 
         def build(tool_name: str) -> MCPServerToolWrapper:
             return MCPServerToolWrapper(
@@ -1069,10 +1055,11 @@ class TestShopOrders02McpWrapperContract:
                 server_script=script,
                 db_client=DBServiceClient("http://db-service.invalid"),
                 trial_id="shop_orders_02:0",
+                server_pool=pool,
             )
 
         yield build
-        MCPServerToolWrapper.cleanup_all_servers()
+        pool.cleanup()
 
     # ------------------------------------------------------------------
 

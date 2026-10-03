@@ -378,7 +378,7 @@ class TestRunnerRPCBranch:
         evidence = {
             "judge_usage": {"calls": 1, "prompt_tokens": 12, "cost_usd": 0.03},
             "state_snapshots": {
-                "source": "tau3_env replay",
+                "source": "environment replay",
                 "initial": {"agent": {}},
                 "golden": {"agent": {"x": 1}},
                 "final": {"agent": {"x": 1}},
