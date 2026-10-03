@@ -329,6 +329,34 @@ presets:
               budget so it often declines to think at all. "high" is the
               nearest level that reliably engages it.
 
+  anthropic_claude_sonnet_5_5:
+    match:
+      - "anthropic/claude-sonnet-5.5*"
+      - "*claude-sonnet-5.5*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    params:
+      supports_seed: false
+      param_value_rules:
+        reasoning_effort:
+          medium:
+            action: override
+            with: high
+            evidence: >-
+              2026-09-29, openrouter/anthropic/claude-sonnet-5.5, engine
+              019ca16, observe 15 reps/probe:
+              extra_body.reasoning={"effort":"medium","enabled":true} surfaced
+              no StructuredReasoning on 15/15 runs
+              (test_thinking_emits_blocks 0/15), while the same anthropic
+              reasoning codec on the same OpenRouter transport passed 15/15 at
+              effort="high" (test_unsigned_thinking_replay) and 15/15 at
+              budget_tokens=4000 with SIGNED turn-1 blocks
+              (test_thinking_replay_roundtrip). The model emits structured
+              signed blocks; "medium" under-allocates the adaptive thinking
+              budget so it declines to think. "high" is the nearest level that
+              reliably engages it.
+
   anthropic:
     match:
       - "anthropic/*"
