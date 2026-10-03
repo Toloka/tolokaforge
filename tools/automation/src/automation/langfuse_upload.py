@@ -336,6 +336,11 @@ def upload(
     metadata: Mapping[str, Any] | None = None,
     tool_io: str | None = None,
     model: str | None = None,
+    trace_name: str | None = None,
+    user: str | None = None,
+    user_model: str | None = None,
+    model_name_normalizer: str = "raw",
+    model_rules: str | None = None,
     producer_version: str = "automation",
     receiver: Receiver | None = None,
     dry_run: bool = False,
@@ -344,10 +349,25 @@ def upload(
 
     ``model`` is the model that served the runs when the CLI was pointed at an alias: the CLI
     reports the alias, and a gateway routes it to whatever it is configured to serve.
+    ``trace_name`` is the traces' name template (``{label}``, ``{transcript}``, ``{step}``; default
+    ``{label}/{transcript}``). The traces' user is ``user`` as given, or the identity of
+    ``user_model``, the model the agents worked on. Model names are read through the resolver
+    ``model_name_normalizer`` selects (``raw``, or ``toloka`` with the deployment's
+    ``model_rules``), the trial traces' rule, so a model has one name across both.
     """
+    from tolokaforge_langfuse.model_names import (
+        ModelNameResolverError,
+        build_model_name_resolver,
+    )
+
     from tolokaforge.observability import ids as engine_ids
     from tolokaforge_langfuse import otlp_spans, otlp_transport
     from tolokaforge_langfuse import transcripts as tr
+
+    try:
+        resolver = build_model_name_resolver(model_name_normalizer, model_rules)
+    except ModelNameResolverError as exc:
+        raise UploadError(f"the model-name resolver cannot be built: {exc}") from exc
 
     # surrounding whitespace goes, as from a --tag or --metadata value: a trailing newline read
     # from a file would otherwise end up inside the model tag
@@ -399,6 +419,10 @@ def upload(
                 metadata=dict(metadata or {}),
                 model=served_model,
                 input=prompt,
+                name=trace_name,
+                user=user,
+                user_model=user_model,
+                resolver=resolver,
             )
             built = tr.build_events(gated, options, ids=contract)
         except tr.TranscriptError as exc:
