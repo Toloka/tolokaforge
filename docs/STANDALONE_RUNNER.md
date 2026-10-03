@@ -75,7 +75,7 @@ in how *you* reach them, not in what the runner does underneath.
 
 ## Published images
 
-The four first-party images are published to Docker Hub, so a host with only
+The first-party images are published to Docker Hub, so a host with only
 Docker installed can `docker pull` them instead of building from a repo
 checkout:
 
@@ -85,8 +85,13 @@ checkout:
 | db-service | `docker.io/tolokasoft1/tolokaforge-db-service` | JSON state store the runner and tasks read/write |
 | rag-service | `docker.io/tolokasoft1/tolokaforge-rag-service` | retrieval service backing the `search_kb` judge tool |
 | mock-web | `docker.io/tolokasoft1/tolokaforge-mock-web` | deterministic web fixtures for browser tasks |
+| grader | `docker.io/tolokasoft1/tolokaforge-grader` | standalone detached grader service ([ADR-0038](adr/0038-grader-detachment.md)) |
+| standalone | `docker.io/tolokasoft1/tolokaforge-standalone` | all-in-one single container running the whole stack ([ADR-0053](adr/0053-all-in-one-image.md)) |
 
-All four share one coordinated semver tag axis:
+The five per-component images are the distributed/scale-out shape; `standalone`
+collapses them into one container for "runs anywhere Docker does" use — see
+[`deploy/single-container/`](../deploy/single-container/README.md). They share
+one coordinated semver tag axis:
 
 | Tag | Kind | Points at |
 |---|---|---|
