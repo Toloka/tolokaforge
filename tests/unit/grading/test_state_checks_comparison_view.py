@@ -123,6 +123,23 @@ def test_a_golden_view_error_propagates_instead_of_scoring_zero() -> None:
         _check(_filed("D3"), golden)
 
 
+@pytest.mark.parametrize("side", ["golden", "trial"])
+def test_rule_implementation_failure_is_not_scored_as_an_agent_failure(monkeypatch, side):
+    from tolokaforge.core.grading.comparison_view import NormalizeIds
+
+    original = NormalizeIds.apply
+    faulty_id = "D2" if side == "golden" else "D3"
+
+    def broken(self, state, **kwargs):
+        if any(row["id"] == faulty_id for row in state["documents"]):
+            raise TypeError("rule implementation defect")
+        return original(self, state, **kwargs)
+
+    monkeypatch.setattr(NormalizeIds, "apply", broken)
+    with pytest.raises(TypeError, match="rule implementation defect"):
+        _check(_filed("D3"), _filed("D2"))
+
+
 def test_every_other_hashing_error_scores_zero() -> None:
     """A hashing error outside the view folds into ``0.0``, the error as the reason."""
     result = StateChecker().check_hash(

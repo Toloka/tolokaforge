@@ -661,6 +661,10 @@ class StateChecker:
             # a grading error, as the runner leaves it, never a 0.0 read as the agent's.
             raise
         except Exception as e:
+            if comparison_view is not None:
+                # A declared evaluator failed, rather than finding a mismatch.
+                # Only TrialViewError above represents an invalid trial state.
+                raise
             return HashGradingResult(
                 hash_match=False, reason=f"Error computing hash: {str(e)}", basis=basis
             )
