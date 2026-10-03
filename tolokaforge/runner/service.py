@@ -2148,6 +2148,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     completion_tokens=judge_result.usage.completion_tokens,
                     reasoning_tokens=judge_result.usage.reasoning_tokens,
                     cost_usd=judge_result.usage.cost_usd,
+                    # optional: None leaves the field absent, which the host
+                    # reads back as "not every judge call stated one"
+                    billed_cost_usd=judge_result.usage.billed_cost_usd,
                     tool_calls=judge_result.usage.tool_calls,
                     consistency_rejections=judge_result.usage.consistency_rejections,
                     transcript_json=json.dumps(list(judge_result.transcript)),

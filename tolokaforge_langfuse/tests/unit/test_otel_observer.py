@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from tolokaforge_langfuse.otel import HARNESS_TAG, OTelTrialObserver, SpanQueue  # noqa: E402
 
 from tolokaforge.core.llm.client import GenerationResult  # noqa: E402
-from tolokaforge.core.llm.usage import Usage  # noqa: E402
+from tolokaforge.core.llm.usage import ProviderRawCall, Usage  # noqa: E402
 from tolokaforge.core.models import Message, MessageRole, ToolCall  # noqa: E402
 from tolokaforge.observability.observer import ModelRef, TrialIdentity  # noqa: E402
 from tolokaforge.tools.registry import ToolResult  # noqa: E402
@@ -749,3 +749,129 @@ class TestHowManyTimesABatchIsPosted:
             "http://127.0.0.1:9/v1/traces", {"Authorization": "Basic x"}
         )
         assert type(exporter).__name__ == "OTLPSpanExporter"
+
+
+class TestLiveCost:
+    """A live generation shows the charge its call record states, else the eval's figure, and
+    names which."""
+
+    BILLED = ProviderRawCall(
+        prompt_tokens=100,
+        completion_tokens=20,
+        cost_usd=0.0266895,
+        cost_source="litellm",
+        billed_cost_usd=0.027022,
+    )
+
+    def _generation_attrs(self, result, *, role: str = "agent", server_api: str = "v3") -> dict:
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, server_api=server_api)
+        observer.trial_started(
+            IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
+        )
+        observer.generation(
+            IDENTITY,
+            role=role,
+            index=1,
+            turn=0,
+            request=[Message(role=MessageRole.USER, content="hello", ts=T0)],
+            result=result,
+            started_at=T0,
+            ended_at=T0 + timedelta(seconds=1),
+        )
+        observer.run_finished()
+        name = "assistant turn 1" if role == "agent" else "judge turn 1"
+        if server_api == "v4":
+            name = f"preview: {name}"
+        (span,) = [s for s in exporter.get_finished_spans() if s.name == name]
+        return _attrs(span)
+
+    def test_the_stated_charge_is_the_generations_cost(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.027022}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def test_a_live_judge_turn_is_priced_by_the_same_rule(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result, role="judge")
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.027022}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def test_a_call_that_stated_no_charge_shows_the_eval_figure(self) -> None:
+        call = ProviderRawCall(prompt_tokens=100, cost_usd=0.01, cost_source="local")
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, calls=(call,)), cost_usd=0.01
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "list"
+
+    def test_a_result_without_a_call_record_shows_the_eval_figure(self) -> None:
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, completion_tokens=20), cost_usd=0.01
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "eval"
+
+    def test_a_call_without_any_figure_states_a_zero_cost(self) -> None:
+        """No stated charge and no eval figure: an explicit zero, so the receiver prices
+        nothing from its own model table."""
+        call = ProviderRawCall(prompt_tokens=100, completion_tokens=20, cost_source="unknown")
+        result = GenerationResult(
+            text="ok", usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(call,))
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0}
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "none"
+        assert json.loads(attrs["langfuse.observation.usage_details"])["total"] == 120
+
+    @pytest.mark.parametrize("role", ["agent", "judge"])
+    def test_a_preview_counts_nothing_toward_the_trace(self, role: str) -> None:
+        """A preview stays beside the final row the bundle writes, and the receiver adds up the
+        usage and cost of every row: the preview states zero usage and cost, explicitly so the
+        receiver infers none from its model, and its figures as metadata, so each call counts
+        once."""
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result, role=role, server_api="v4")
+        assert attrs["langfuse.observation.metadata.preview"] is True
+        assert json.loads(attrs["langfuse.observation.usage_details"]) == {
+            "input": 0,
+            "output": 0,
+            "total": 0,
+        }
+        assert json.loads(attrs["langfuse.observation.cost_details"]) == {"total": 0}
+        assert not [key for key in attrs if key.startswith("gen_ai.usage")]
+        assert attrs["langfuse.observation.metadata.prompt_tokens"] == 100
+        assert attrs["langfuse.observation.metadata.completion_tokens"] == 20
+        assert attrs["langfuse.observation.metadata.cost"] == 0.027022
+        assert attrs["langfuse.observation.metadata.cost_basis"] == "billed"
+
+    def test_a_live_row_on_a_v3_receiver_is_the_final_row(self) -> None:
+        result = GenerationResult(
+            text="ok",
+            usage=Usage(prompt_tokens=100, completion_tokens=20, calls=(self.BILLED,)),
+            cost_usd=0.0266895,
+        )
+        attrs = self._generation_attrs(result)
+        assert json.loads(attrs["langfuse.observation.usage_details"]) == {
+            "input": 100,
+            "output": 20,
+            "total": 120,
+        }
+        assert attrs["gen_ai.usage.input_tokens"] == 100
+        assert attrs["gen_ai.usage.output_tokens"] == 20
+        assert "langfuse.observation.metadata.cost" not in attrs

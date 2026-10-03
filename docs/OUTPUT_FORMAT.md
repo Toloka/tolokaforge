@@ -666,7 +666,12 @@ per-call tokens, `cost_usd`, `cost_source` (`"litellm"` / `"local"` /
 `"unknown"`), `latency_s`, `gateway_route` + `gateway_route_kind`
 (`"exact"` / `"wildcard"`, the serving-path provenance when the call went
 through an LLM gateway, else null), and `openrouter_generation_id` — the
-trial-level `cost_usd` is the sum of those entries.
+trial-level `cost_usd` is the sum of those entries. `billed_cost_usd` rides
+beside `cost_usd` and feeds nothing in the bundle: what the response's usage
+block states the call was charged (OpenRouter's `usage.cost`, plus the
+upstream's bill on a BYOK call), null on a route that states none. A bundle
+written before it existed has no such key and loads it as null. See
+[LLM_LAYER.md](LLM_LAYER.md) § "Billed cost".
 
 The trial-level `cost_usd`, `usage`, `openrouter_generation_ids`, and
 `api_calls` sum across **every in-trial actor role**, not the agent alone: an
@@ -790,7 +795,7 @@ row's `input` rate, so `cost_usd` is an **overestimate of unknown size**
 (the size depends on the trial's cache-read share, which for a coding-harness
 trial is routinely 75 % of the prompt). Consumers comparing spend across
 models must exclude or re-price such trials rather than averaging them in.
-`false` for every litellm-priced call (provider-authoritative, already
+`false` for every litellm-priced call (litellm's figure, already
 cache-aware) and for every model whose row carries its cache rates. The
 same-model-two-spellings inventory behind this is recorded in
 [`tests/unit/test_pricing_known_duplicate_spellings.py`](../tests/unit/test_pricing_known_duplicate_spellings.py);
@@ -870,6 +875,7 @@ usage:
       gateway_route: openrouter/anthropic/claude-sonnet-4.6
       gateway_route_kind: exact
       openrouter_generation_id: gen-1787132417-e6DthuPJjrFMFf46ae5F
+      billed_cost_usd: 0.00912    # what the response stated it was charged; null when it states none
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
@@ -1444,6 +1450,7 @@ judge_usage:                    # the judge's OWN token spend; null unless an LL
   completion_tokens: 318
   reasoning_tokens: 0
   cost_usd: 0.0142
+  billed_cost_usd: 0.0142      # what the providers stated they charged; null unless every call stated it
   tool_calls: 4
   consistency_rejections: 0    # submit_report attempts rejected for a verdict/justification mismatch
 judge_kb_gating:                # the judge's knowledge-search gating; null unless an LLM judge ran
@@ -1565,6 +1572,11 @@ layers.
   was rejected for a verdict/justification mismatch (marker missing or
   marker/verdict conflict) on this trial — distinct from generic schema
   rejections, and `0` when every verdict matched its justification.
+  `billed_cost_usd` sums the charge each of the judge's own calls stated (those
+  calls are recorded inside the runner, not in `metrics.yaml`) and is `null`
+  unless every call stated one (or the runner image predates the field);
+  `cost_usd` stays the eval's own figure. A `grade.yaml` written before it existed has no such key and loads it
+  as `null`.
 * `judge_kb_gating` — the judge's knowledge-search gating for this trial,
   kept separate from `judge_usage` (which stays strictly token/cost).
   `knowledge_search_disabled` is the **authoritative signal**:

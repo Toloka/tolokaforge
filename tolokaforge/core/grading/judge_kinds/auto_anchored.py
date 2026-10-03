@@ -41,7 +41,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from tolokaforge.core.grading.judge_kinds._shared import billed_sum
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeUsage
+from tolokaforge.core.llm.usage import sum_known
 from tolokaforge.core.models.trajectory import Message, MessageRole
 from tolokaforge.runner.models import Criterion, Rubric
 
@@ -250,7 +252,10 @@ def _load_or_generate_anchors(
         cached = _ANCHOR_CACHE.get(key)
         if cached is not None:
             _ANCHOR_CACHE.move_to_end(key)
-            return cached
+            # A hit makes no call, so nothing is charged for the warm-up this time; calls and
+            # cost_usd still count the cached warm-up on every hit, as they always have.
+            anchor_map, warmup_usage = cached
+            return anchor_map, dataclasses.replace(warmup_usage, billed_cost_usd=0.0)
 
         anchor_map, warmup_usage = _generate_anchors(
             rubric=rubric,
@@ -291,6 +296,9 @@ def _generate_anchors(
         completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
         reasoning_tokens=getattr(usage, "reasoning_tokens", 0) or 0,
         cost_usd=result.cost_usd or 0.0,
+        billed_cost_usd=sum_known(
+            call.billed_cost_usd for call in getattr(usage, "calls", None) or ()
+        ),
     )
     return anchor_map, warmup_usage
 
@@ -438,6 +446,7 @@ def _dispatch_wrapped(
         cost_usd=warmup_usage.cost_usd + inner.usage.cost_usd,
         tool_calls=inner.usage.tool_calls,
         consistency_rejections=inner.usage.consistency_rejections,
+        billed_cost_usd=billed_sum((warmup_usage, inner.usage)),
     )
 
     audit_prefix = _render_anchor_audit(anchor_map)

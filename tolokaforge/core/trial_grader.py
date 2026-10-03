@@ -483,6 +483,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             completion_tokens=raw_report.get("completion_tokens", 0),
             reasoning_tokens=raw_report.get("reasoning_tokens", 0),
             cost_usd=raw_report.get("cost_usd", 0.0),
+            billed_cost_usd=raw_report.get("billed_cost_usd"),
             tool_calls=raw_report.get("tool_calls", 0),
             consistency_rejections=raw_report.get("consistency_rejections", 0),
         )

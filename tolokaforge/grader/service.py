@@ -162,6 +162,8 @@ def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
         report.completion_tokens = usage.completion_tokens
         report.reasoning_tokens = usage.reasoning_tokens
         report.cost_usd = usage.cost_usd
+        if usage.billed_cost_usd is not None:
+            report.billed_cost_usd = usage.billed_cost_usd
         report.tool_calls = usage.tool_calls
         report.consistency_rejections = usage.consistency_rejections
     if transcript is not None:

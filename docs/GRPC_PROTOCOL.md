@@ -476,9 +476,12 @@ message JudgeReport {
   int32 prompt_tokens = 2;
   int32 completion_tokens = 3;
   int32 reasoning_tokens = 4;
-  double cost_usd = 5;         // the judge's own spend
+  double cost_usd = 5;         // the judge's own spend, as the eval prices it
   int32 tool_calls = 6;        // read-only tool calls the judge made
   string transcript_json = 7;  // judge message transcript (audit channel), JSON
+  // fields 8-15: verdict-consistency rejections, the knowledge-search gating, the
+  // replay inputs and the prompt customisation (see runner.proto); 16 is reserved
+  optional double billed_cost_usd = 17;  // what the providers stated they charged; absent unless every call stated one
 }
 
 message GradeComponents {
@@ -906,7 +909,9 @@ it omits the field, and proto3 would decode that omission as `0.0` — recording
 scored zero for a runner that cannot evaluate trace checks at all. The
 `RegisterTrial` version lock does not cover this direction, because a newer
 engine registers happily against an older runner. `include_agent_system_prompt`
-on `JudgeReport` and `Grade.trace_checks_summary` carry the same reasoning: the
+and `billed_cost_usd` on `JudgeReport` and `Grade.trace_checks_summary` carry the
+same reasoning (an absent `billed_cost_usd` reads back as "no complete charge
+stated", never as a bill of `0.0`): the
 summary is a *message* so that an absent one is distinguishable from one
 reporting that no gate failed, which is the difference between "this runner
 cannot evaluate a gate" and "the gate held".

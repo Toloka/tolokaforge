@@ -2547,7 +2547,8 @@ class LLMClient:
 
         # Cost ladder (also pinned by tests/canonical/test_cost_extraction_canon.py):
         #   1. litellm `_hidden_params['response_cost']` / completion_cost
-        #      → cache-aware, provider-authoritative (cost_source="litellm").
+        #      → cache-aware (cost_source="litellm"); what the response states it
+        #      charged rides beside it as ProviderRawCall.billed_cost_usd.
         #   2. bundled pricing table fallback (cost_source="local").
         #   3. neither — cost_usd is None, cost_source="unknown".
         # The local fallback needs token counts, so we extract once just to

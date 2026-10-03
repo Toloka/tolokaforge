@@ -7,7 +7,9 @@ The same trial maps to the same trace and observation ids whether it is exported
 package) or replayed from its bundle, so a re-send from either side updates instead of
 duplicating. Every observation kind has a **stable key** that is a fact of the trial, never a
 position in a filtered list: ``root`` uses the literal ``-``; ``gen`` (agent turn) and ``ugen``
-(simulated user turn) the message index in the recorded trajectory; ``tool`` the episode-unique
+(simulated user turn) the message index in the recorded trajectory, or ``call:<i>`` for an LLM call
+of the agent or the user simulator that no message is paired with (its position in the bundle's
+``usage.calls``, which the bundle fixes once written); ``tool`` the episode-unique
 tool-call id the loop assigned (``msg:<index>`` when there is none); ``grading`` a grading id;
 ``jgen`` / ``jtool`` the grading id plus the judge message index or call id; ``event`` a
 source-qualified key (``log:<i>``, ``guard:<i>``, ...). No component may be empty, carry

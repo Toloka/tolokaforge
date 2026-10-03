@@ -236,8 +236,8 @@ _OVERLAY_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
 
 #: Keys one ``litellm_models:`` entry may carry: the wire capabilities it
 #: DECLARES (``litellm_params.DECLARABLE_FLAGS``) plus the ``evidence`` for them.
-#: No prices - a registered price would relabel our own table as
-#: provider-authoritative; see ``litellm_params`` for why.
+#: No prices - a registered price would relabel our own table as litellm's
+#: figure (``cost_source="litellm"``); see ``litellm_params`` for why.
 _LITELLM_MODEL_KEYS: frozenset[str] = frozenset({"evidence", *DECLARABLE_FLAGS})
 
 

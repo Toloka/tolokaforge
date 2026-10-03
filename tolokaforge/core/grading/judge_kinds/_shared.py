@@ -4,10 +4,11 @@ judge clients per ``evaluate`` call (``voted_rubric``).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from tolokaforge.core.grading.judge_result import JudgeStatus, JudgeUsage
+from tolokaforge.core.llm.usage import sum_known
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge_result import JudgeResult
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CONSTRUCTION_FIELDS",
     "assert_construction_fields_match",
+    "billed_sum",
     "member_failure_reason",
     "sum_usage",
 ]
@@ -43,7 +45,15 @@ def sum_usage(results: list[JudgeResult]) -> JudgeUsage:
         cost_usd=sum(r.usage.cost_usd for r in results),
         tool_calls=sum(r.usage.tool_calls for r in results),
         consistency_rejections=sum(r.usage.consistency_rejections for r in results),
+        billed_cost_usd=billed_sum(r.usage for r in results),
     )
+
+
+def billed_sum(usages: Iterable[JudgeUsage]) -> float | None:
+    """The charge stated for the calls of several judge runs: the sum over the runs that made
+    a call, ``None`` when one of those stated no charge or when none made a call. A run that made
+    no call was charged nothing, so it neither adds to nor voids the sum."""
+    return sum_known(usage.billed_cost_usd for usage in usages if usage.calls)
 
 
 def member_failure_reason(result: JudgeResult, criterion_ids: tuple[str, ...]) -> str | None:

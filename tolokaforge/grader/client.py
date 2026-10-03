@@ -210,4 +210,7 @@ def _judge_report_from_wire(report: grader_pb2.JudgeReport) -> dict:
     # not-set-by-a-legacy-sender).
     if report.HasField("include_agent_system_prompt"):
         out["include_agent_system_prompt"] = report.include_agent_system_prompt
+    # Presence-gated too: absent means not every judge call stated a charge.
+    if report.HasField("billed_cost_usd"):
+        out["billed_cost_usd"] = report.billed_cost_usd
     return out

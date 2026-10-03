@@ -91,7 +91,7 @@ the engine's environment, printing nothing. A config that names its own `endpoin
 | Engine event | Span | Ids (contract v1, shared with the uploader) |
 |---|---|---|
 | trial (opened by the conductor, closed after grading) | root span `trial <task>/<trial>`, trace name `<label>/<task_id>`, session, tags, `langfuse.trace.metadata.*` (task, trial, attempt, run id, status, termination, pass, score, tokens, cost, model facets), input = first user message, output = last assistant message | `trace_id = uuid5(NS, "trace\|<run_tag>\|<run_id>\|<task_id>\|<trial_index>\|<attempt>")`, root span `uuid5(NS, "obs\|<trace>\|root\|0")[:16]` |
-| assistant turn (after the message is recorded) | generation `assistant turn <i>`, model name, usage details (`input` = prompt minus cache reads, `output`, `total`), cost, last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
+| assistant turn (after the message is recorded) | generation `assistant turn <i>`, model name, usage details (`input` = prompt minus cache reads, `output`, `total`), cost (§ Cost on a trace), last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
 | tool result (after the message is recorded) | span `tool: <name>`, redacted arguments as input, output or error, `ERROR` level on failure | `obs\|<trace>\|tool\|<i>` |
 
 The same `trace_id` names the trial's conversation to a model's session header
@@ -171,7 +171,7 @@ of the fixed schema explicit (the receiver merges metadata and an omitted key wo
 
 | From the bundle | Records |
 |---|---|
-| `trajectory.yaml`, `metrics.yaml` | the root observation, one generation per agent turn with its paired usage and cost (by generation id, else positionally), one generation per simulated user turn (the user model, no usage), the trace's input, output, timestamp, status and totals. Under `actors.user.tool_turns: isolated` each user tool step is a user generation whose output carries its calls, its results are `user_tool` spans even without a `tool_log.yaml`, and the trace's input is the first user turn of the dialogue, not a step taken before it. The agent's opening line, declared in `task.yaml`'s `user_actor.first_agent_message`, is an `agent opening line` event, not a generation, and takes no usage; the pinned opener after it is still no user generation |
+| `trajectory.yaml`, `metrics.yaml` | the root observation, one generation per agent turn and one per simulated user turn (the user model), each with the usage and cost of the call it pairs with (§ Cost on a trace), one generation for every recorded call no message pairs with, the trace's input, output, timestamp, status and totals. Under `actors.user.tool_turns: isolated` each user tool step is a user generation whose output carries its calls, its results are `user_tool` spans even without a `tool_log.yaml`, and the trace's input is the first user turn of the dialogue, not a step taken before it. The agent's opening line, declared in `task.yaml`'s `user_actor.first_agent_message`, is an `agent opening line` event, not a generation, and takes no usage; the pinned opener after it is still no user generation |
 | `tool_log.yaml` | one tool span per recorded call, the grader's view (status, executor, latency, sequence, untruncated output) with the transcript's agent-facing text beside it when it differs; the user simulator's own tool calls too |
 | `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` | the `grading:live:<run_id>` observation with the judge turns beneath, its scores and the trace-level mirror (`gradings: false` leaves the grading out, like the offline `--grades none`) |
 | `logs.yaml`, `trajectory.user_reply_guard_events`, `provision_stage`, the run's `LIMIT_HIT.json`, `services/_capture.yaml` | events (WARNING and ERROR always, INFO under `attach: all`) |
@@ -219,7 +219,7 @@ lands in the tracing receipt (`details[0].server_api`).
 | When | What | Ids |
 |---|---|---|
 | trial start | the **preview root** `preview: trial <task>/<trial>`, whose parent is the final root's id, with the trace name, session, the tags known then, the native fields and the identity metadata | `obs\|<trace>\|proot\|-` |
-| every call end | the same live bodies as on a v3 receiver, under the **preview kinds** and under the preview root, named `preview: ...`, with `preview: true` in their metadata | `pgen`, `pjgen`, `ptool`, `pjtool` |
+| every call end | the same live bodies as on a v3 receiver, under the **preview kinds** and under the preview root, named `preview: ...`, with `preview: true` in their metadata; a preview generation states zero usage and cost (explicitly, so the receiver infers none from its model) and its own figures in metadata (`prompt_tokens`, `completion_tokens`, `cost`, `cost_basis`), so it adds nothing to the trace's cost (§ Cost on a trace) | `pgen`, `pjgen`, `ptool`, `pjtool` |
 | trial persisted | the whole bundle projection converted to spans by `tolokaforge_langfuse.otlp_spans`, written **once**, the **root last**, after the media upload, with the complete manifest in the root's metadata as a JSON string the receiver parses back; the scores through the ingestion route, each with the grading's own timestamp | the final kinds, unchanged |
 | run end | one minimal **error root** for every trace whose real root can no longer come (the trial never persisted, the bundle pass wrote none, or the root never reached the exporter): name, session, tags, native fields, identity, start, `status: error` and the reason, no manifest and no verdict | `root` |
 
@@ -305,6 +305,55 @@ The bound is the receiver's: Langfuse's trace page renders its metadata table on
 top-level keys and shows nothing above that (3.205.1, verified 2026-09-17), so the schema stays
 well under it with room for the caller's keys, and a caller key that names a schema key is a
 configuration error.
+
+## Cost on a trace
+
+A generation's cost (`costDetails.total`) is what was actually spent where the bundle says so:
+the charge the provider's response stated for the call (`metrics.yaml`
+`usage.calls[*].billed_cost_usd`, see
+[LLM_LAYER.md § Billed cost](LLM_LAYER.md#billed-cost)), and the eval's own `cost_usd` where
+no charge was stated. The generation's metadata names which (`cost_basis`), so a reader tells
+an actual charge from an estimate (`tolokaforge_langfuse.costs`, the same rules in the offline
+connector):
+
+| `cost_basis` | `costDetails.total` is |
+|---|---|
+| `billed` | the charge the response stated |
+| `litellm` | litellm's figure: a charge the response stated (OpenRouter's `usage.cost` in a bundle from before the charge was recorded, a LiteLLM gateway's response-cost header) or litellm's own price map; the bundle does not say which |
+| `list` | the engine's pricing table |
+| `eval` | the eval's figure, its source not recorded (the judge's aggregate, or a `cost_source` value this producer does not recognise) |
+| `none` | no figure at all: no call is paired, or the call states neither a charge nor an eval figure (`cost_source: unknown`, a route nothing could price); the cost is an explicit zero, so the receiver prices nothing from its own model table, and a paired call keeps its usage |
+
+The judge generation that holds `grade.judge_usage` follows the same rule with the judge's
+`billed_cost_usd`, the sum over its calls. Every other call in `usage.calls` counts on exactly
+one generation:
+
+- an agent turn pairs with one of the agent's calls and a simulated user turn with one of the
+  user simulator's (`role: user`), by generation id, else positionally within the role when the
+  turn and call counts agree (the engine stamps no generation id on a user message, so a user
+  turn pairs positionally); a dialogue the simulator ended with the stop token alone
+  (`stop_with_text: deliver`) has one simulator call more than turns, its last, so there the
+  leading calls pair;
+- a call no message pairs with (a resample the loop discarded, a call the pairing cannot place)
+  gets a generation of its own at the trial's end, `<role> call <i> (no message)`, with the key
+  `call:<i>` under `gen` or `ugen` (`<i>` is the call's position in `usage.calls`);
+- a turn without a call states zero usage and cost with `cost_basis: none`, so a receiver that
+  merges an update into a live row keeps no figure of its own.
+
+Langfuse adds a trace's generation costs into the trace's cost, so with `projection: full` the
+trace's cost is the cost of every call the bundle records: the agent's, the user simulator's and
+the judge's (`gradings: false` writes no judge generation, so then the judge's cost is not on the
+trace). A call the bundle never records is not on the trace either: a user reply the reply guard
+rejected, an auto-anchored warm-up that failed, possibly an attempt that timed out after the
+provider billed it. On the v4 write-once layout a preview generation states zero usage and cost,
+its own figures in metadata, so each call counts once, on its final row; a trace whose final rows
+never arrive (the trial never persisted, or every final batch was lost) therefore shows 0 USD (a lost
+batch among several leaves the cost short), and
+an offline upload restores its cost only where a bundle exists. The trace carries no total of its
+own; its metadata `cost_usd` stays the eval's figure (the agent's and the user simulator's calls,
+priced as the eval priced them). `projection: gradings` sends no call records, so there the
+trace's cost covers the live agent turns and the judge. A bundle written before the engine
+recorded the charge keeps its eval cost on every generation, with the basis it names.
 
 ## The trace vocabulary
 

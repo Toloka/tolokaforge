@@ -21,6 +21,8 @@ SHARED = (
     "tolokaforge_langfuse.preflight",
     # the converter both producers write v4 observations through: bodies in, spans out
     "tolokaforge_langfuse.otlp_spans",
+    # the cost rules: which figure a generation shows
+    "tolokaforge_langfuse.costs",
     # the single-attempt transport shared by the v4 producers
     "tolokaforge_langfuse.otlp_transport",
     # the outbound sentinel and the coding-agent transcript path: read, gate and project agent

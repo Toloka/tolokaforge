@@ -61,6 +61,11 @@ class JudgeUsage(BaseModel):
     counters are judge-specific accounting. Field set mirrors the runner's
     :class:`tolokaforge.core.grading.judge.JudgeUsage` dataclass 1:1 and the
     proto ``JudgeReport`` usage fields.
+
+    ``cost_usd`` is the eval's own figure for the judge; ``billed_cost_usd`` is
+    what the providers stated they charged, the sum over the judge's calls and
+    ``None`` unless every call stated one (a ``grade.yaml`` written before the
+    field existed reads ``None``). See docs/OUTPUT_FORMAT.md.
     """
 
     calls: int = 0
@@ -70,6 +75,7 @@ class JudgeUsage(BaseModel):
     cost_usd: float = 0.0
     tool_calls: int = 0
     consistency_rejections: int = 0
+    billed_cost_usd: float | None = None
 
     model_config = {"extra": "forbid"}
 

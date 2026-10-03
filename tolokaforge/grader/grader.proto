@@ -201,6 +201,7 @@ message JudgeReport {
   optional bool include_agent_system_prompt = 15;
   reserved 16;
   reserved "chunk_boundaries_json";
+  optional double billed_cost_usd = 17;
 }
 
 // TraceConstraintResult — mirrors runner.TraceConstraintResult including

@@ -215,6 +215,9 @@ class TestBuildGradingEvents:
         ]
         assert users[1]["model"] == "anthropic/claude-sonnet-4.6"
         assert users[1]["startTime"] == "2026-09-16T19:50:03+00:00"
+        # this pass reads no call records: the turns state they carry no figure
+        assert all(b["metadata"]["cost_basis"] == "none" for b in users)
+        assert all(b["costDetails"] == {"total": 0} for b in users)
         assert users[1]["input"] == [
             {"role": "user", "content": "Hi, I need a refund"},
             {"role": "assistant", "content": "Sure"},

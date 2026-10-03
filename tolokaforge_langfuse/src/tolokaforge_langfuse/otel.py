@@ -48,6 +48,7 @@ from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
 from tolokaforge_langfuse.attachments import AttachCounts
+from tolokaforge_langfuse.costs import call_cost, call_record
 
 # the receiver families this observer writes for: `media` owns the names because the capability
 # probe lives there, and a run resolves its family there once, never from the version a receiver
@@ -482,19 +483,6 @@ class OTelTrialObserver:
         agent_role = role == "agent"
         name = f"assistant turn {index}" if agent_role else f"judge turn {index}"
         usage = getattr(result, "usage", None)
-        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-        completion = int(getattr(usage, "completion_tokens", 0) or 0)
-        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-        details: dict[str, int] = {
-            "input": max(0, prompt - cache_read),
-            "output": completion,
-            "total": prompt + completion,
-        }
-        if cache_read:
-            details["cache_read_input_tokens"] = cache_read
-        if cache_creation:
-            details["cache_creation_input_tokens"] = cache_creation
         model_name = (
             state.agent.canonical
             if (role == "agent" and state.agent)
@@ -508,9 +496,6 @@ class OTelTrialObserver:
                 [self._message_dict(m) for m in list(request)[-self._context_messages :]]
             ),
             "langfuse.observation.output": self._json(self._result_dict(result)),
-            "langfuse.observation.usage_details": self._json(details),
-            "gen_ai.usage.input_tokens": prompt,
-            "gen_ai.usage.output_tokens": completion,
             "langfuse.observation.metadata.turn": turn,
             "langfuse.observation.metadata.role": role,
             "langfuse.observation.metadata.message_index": index,
@@ -534,9 +519,7 @@ class OTelTrialObserver:
         if model_name:
             attributes["langfuse.observation.model.name"] = model_name
             attributes["gen_ai.request.model"] = model_name
-        cost = getattr(result, "cost_usd", None)
-        if cost is not None:
-            attributes["langfuse.observation.cost_details"] = self._json({"total": float(cost)})
+        attributes.update(self._usage_cost_attributes(usage, result))
         kind, key = (
             ("gen", (index,)) if agent_role else ("jgen", (f"live:{identity.run_id}", index))
         )
@@ -550,6 +533,54 @@ class OTelTrialObserver:
             end=ended_at,
             preview=self._write_once,
         )
+
+    def _usage_cost_attributes(self, usage: Any, result: Any) -> dict[str, Any]:
+        """A live generation's usage and cost attributes and its ``cost_basis``: the final
+        figures on a receiver that updates rows in place, zeros (the figures as metadata) on a
+        v4 preview, which stays in the trace beside the final row."""
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        details: dict[str, int] = {
+            "input": max(0, prompt - cache_read),
+            "output": completion,
+            "total": prompt + completion,
+        }
+        if cache_read:
+            details["cache_read_input_tokens"] = cache_read
+        if cache_creation:
+            details["cache_creation_input_tokens"] = cache_creation
+        attributes: dict[str, Any] = {}
+        # the call's own record carries the charge the provider stated; a result without one
+        # (no usage block) has only the eval's figure, if any
+        calls = getattr(usage, "calls", None) or ()
+        cost, basis = call_cost(
+            call_record(calls[-1]) if calls else {"cost_usd": getattr(result, "cost_usd", None)}
+        )
+        attributes["langfuse.observation.metadata.cost_basis"] = basis
+        if self._write_once:
+            # A preview row stays in the trace beside the final row the bundle writes, and the
+            # receiver adds up the usage and cost of every row: a preview states zero usage and
+            # cost (explicitly, so the receiver infers none from its model) and its figures as
+            # metadata, so each call counts once, on its final row.
+            attributes["langfuse.observation.usage_details"] = self._json(
+                {"input": 0, "output": 0, "total": 0}
+            )
+            attributes["langfuse.observation.cost_details"] = self._json({"total": 0})
+            attributes["langfuse.observation.metadata.prompt_tokens"] = prompt
+            attributes["langfuse.observation.metadata.completion_tokens"] = completion
+            attributes["langfuse.observation.metadata.cost"] = _attribute_value(cost)
+        else:
+            # on a receiver that updates rows in place the live row is the final row; a call
+            # without any figure states an explicit zero, so the receiver prices nothing itself
+            attributes["langfuse.observation.usage_details"] = self._json(details)
+            attributes["gen_ai.usage.input_tokens"] = prompt
+            attributes["gen_ai.usage.output_tokens"] = completion
+            attributes["langfuse.observation.cost_details"] = self._json(
+                {"total": cost if cost is not None else 0}
+            )
+        return attributes
 
     def tool_call(
         self,

@@ -66,6 +66,7 @@ from tolokaforge.core.judge_prompt import (
     effective_judge_system_prompt,
 )
 from tolokaforge.core.llm.client import GenerationResult, LLMClient
+from tolokaforge.core.llm.usage import sum_known
 from tolokaforge.core.logging import StructuredLogger, get_logger
 from tolokaforge.core.loop import (
     LoopConfig,
@@ -127,7 +128,13 @@ class DBReader(Protocol):
 
 @dataclass
 class _JudgeMetricsSink(MetricsSink):
-    """Loop :class:`MetricsSink` that tallies the judge's token usage / cost."""
+    """Loop :class:`MetricsSink` that tallies the judge's token usage / cost.
+
+    ``billed_cost_usd`` sums the charge each call's
+    :class:`~tolokaforge.core.llm.usage.ProviderRawCall` states and turns
+    ``None`` for good at the first call that states none (no usage block, a
+    route that states no charge).
+    """
 
     calls: int = 0
     prompt_tokens: int = 0
@@ -136,6 +143,7 @@ class _JudgeMetricsSink(MetricsSink):
     cost_usd: float = 0.0
     tool_calls: int = 0
     consistency_rejections: int = 0
+    billed_cost_usd: float | None = 0.0
 
     def record_generation(self, result: GenerationResult) -> None:
         self.calls += 1
@@ -144,6 +152,9 @@ class _JudgeMetricsSink(MetricsSink):
         self.reasoning_tokens += result.usage.reasoning_tokens
         if result.cost_usd is not None:
             self.cost_usd += result.cost_usd
+        self.billed_cost_usd = sum_known(
+            (self.billed_cost_usd, sum_known(call.billed_cost_usd for call in result.usage.calls))
+        )
 
     def record_tool_call(self) -> None:
         self.tool_calls += 1
@@ -157,6 +168,8 @@ class _JudgeMetricsSink(MetricsSink):
             cost_usd=self.cost_usd,
             tool_calls=self.tool_calls,
             consistency_rejections=self.consistency_rejections,
+            # a judge that made no call has no call stating a charge
+            billed_cost_usd=self.billed_cost_usd if self.calls else None,
         )
 
 

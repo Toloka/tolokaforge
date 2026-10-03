@@ -362,6 +362,11 @@ message JudgeReport {
   optional bool include_agent_system_prompt = 15;
   reserved 16;
   reserved "chunk_boundaries_json";
+  // What the providers stated they charged for the judge's calls, in USD: the
+  // sum of each call's billed amount (OpenRouter's usage.cost, plus the
+  // upstream's bill on a BYOK call). Absent unless every call stated one;
+  // cost_usd stays the eval's own figure either way.
+  optional double billed_cost_usd = 17;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a
