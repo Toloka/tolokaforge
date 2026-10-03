@@ -223,10 +223,12 @@ def test_full_stack_mock_web_pins_build_context():
 
 
 def test_full_stack_rag_service_pins_build_context():
-    """``rag-service`` declares ``context_files`` so its image-content-hash
+    """``rag-service`` pins its build-context files so its image-content-hash
     only depends on service-owned source (same rationale as
     :func:`test_full_stack_mock_web_pins_build_context` — a whole-repo
-    fallback re-fires the cache on every unrelated edit).
+    fallback re-fires the cache on every unrelated edit). These files resolve
+    lazily through ``build_context_provider`` (a pull run resolves no wheel),
+    so the pin is asserted on the provider's output.
 
     Checked by set-equality against every path the rag Dockerfile COPYs:
     the resolved tolokaforge wheel (absolute host path, so only its
@@ -239,7 +241,8 @@ def test_full_stack_rag_service_pins_build_context():
     stack = full_stack()
     rag_service = stack.services.get("rag-service")
     assert rag_service is not None
-    ctx = list(rag_service.context_files)
+    assert rag_service.build_context_provider is not None
+    ctx = list(rag_service.build_context_provider().context_files)
     wheel_entries = [e for e in ctx if e.endswith(".whl")]
     non_wheel_entries = sorted(e for e in ctx if not e.endswith(".whl"))
     assert len(wheel_entries) == 1, f"expected exactly one wheel entry, got {wheel_entries}"

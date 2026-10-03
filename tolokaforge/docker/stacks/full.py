@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Literal
 
 from tolokaforge.core.models.docker_config import DockerConfig
-from tolokaforge.docker.builder import get_image_definition
+from tolokaforge.docker.builder import get_image_definition, static_image_definition
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.ports import PortConfig
-from tolokaforge.docker.stack import EngineStack, ServiceDefinition
+from tolokaforge.docker.stack import BuildContextSpec, EngineStack, ServiceDefinition
 from tolokaforge.docker.stacks.core import TypeSenseAddress, core_stack
 
 
@@ -90,20 +90,31 @@ def full_stack(
         rag_service_url="http://tolokaforge-rag-service:8001",
     )
 
-    # RAG Service — hybrid BM25 + FAISS search. Build-context fields come from
-    # get_image_definition (see builder.py): its ``_rag_definition`` factory
-    # resolves the base wheel, sets ``WHEEL_FILENAME``, and remaps the sibling
-    # source trees to the packaged ``_subset_build/`` copies on a wheel install,
-    # so the stack and ``make docker-build`` hash the same inputs.
-    rag_defn = get_image_definition("rag-service")
+    # RAG Service — hybrid BM25 + FAISS search. The wheel-free fields
+    # (dockerfile, context) read from the static base; the wheel-dependent
+    # fields (context_files carrying the resolved wheel, the WHEEL_FILENAME
+    # build arg) resolve lazily via build_context_provider, so a run that
+    # pulls the published image never resolves a wheel. On the build path the
+    # provider calls get_image_definition — its ``_rag_definition`` factory
+    # resolves the base wheel, sets WHEEL_FILENAME, and remaps the sibling
+    # source trees to the packaged ``_subset_build/`` copies on a wheel
+    # install, so the stack and ``make docker-build`` hash the same inputs.
+    rag_static = static_image_definition("rag-service")
+
+    def rag_build_context() -> BuildContextSpec:
+        defn = get_image_definition("rag-service")
+        return BuildContextSpec(
+            context_files=defn["context_files"],
+            build_args=defn["build_args"],
+        )
+
     rag_service = ServiceDefinition(
         name="rag-service",
         image_name="tolokaforge-rag-service",
         published_image_repo="tolokasoft1/tolokaforge-rag-service",
-        dockerfile=rag_defn["dockerfile"],
-        context=rag_defn["context"],
-        context_files=rag_defn["context_files"],
-        build_args=rag_defn["build_args"],
+        dockerfile=rag_static["dockerfile"],
+        context=rag_static["context"],
+        build_context_provider=rag_build_context,
         ports=[PortConfig(container_port=8001, host_port=rag_port)],
         mounts=[Mount.volume("rag_data", "/env/rag")],
         environment={

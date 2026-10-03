@@ -1153,6 +1153,40 @@ class TestReinstallWheelProvider:
         assert not ok
         assert "git not on PATH" in err
 
+    def test_materialize_git_skips_lfs_and_filters_blobs(self, cache_dir: Path, monkeypatch):
+        """Every git subprocess carries GIT_LFS_SKIP_SMUDGE=1; each clone filters blobs.
+
+        Covers both ref shapes: a hex SHA (full clone + explicit checkout)
+        and a tag/branch (shallow clone).
+        """
+        calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+        def fake_run(argv, *, timeout=300, env=None):
+            calls.append((argv, env))
+            return True, ""
+
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver.shutil.which",
+            lambda name: f"/usr/bin/{name}",
+        )
+        monkeypatch.setattr("tolokaforge.docker.wheel_resolver._run", fake_run)
+
+        for ref in ("a" * 40, "v1.2.3"):
+            calls.clear()
+            ok, err = ReinstallWheelProvider._materialize_git(
+                "https://example.com/repo.git", ref, cache_dir
+            )
+            assert ok, err
+            git_calls = [(argv, env) for argv, env in calls if argv[0] == "git"]
+            assert git_calls, f"no git subprocess ran for ref {ref!r}"
+            for _argv, env in git_calls:
+                assert env is not None
+                assert env["GIT_LFS_SKIP_SMUDGE"] == "1"
+            clone_calls = [argv for argv, _ in git_calls if "clone" in argv]
+            assert clone_calls, f"no git clone ran for ref {ref!r}"
+            for argv in clone_calls:
+                assert "--filter=blob:none" in argv
+
     def test_materialize_archive_rejects_non_archive_url(self, cache_dir: Path):
         ok, err = ReinstallWheelProvider._materialize_archive(
             "https://example.com/some/dir/", cache_dir
