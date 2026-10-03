@@ -383,14 +383,14 @@ class OTelTrialObserver:
         self._grading_counts = {
             "sent": 0,
             "failed": 0,
-            "refused_secret": 0,
+            "withheld": 0,
             "scores": 0,
             "users": 0,
         }
         self._projection_counts = {
             "sent": 0,
             "failed": 0,
-            "refused_secret": 0,
+            "withheld": 0,
             "observations": 0,
             "events": 0,
             "media_uploaded": 0,
@@ -420,7 +420,7 @@ class OTelTrialObserver:
         # one gate for the run: its spans, its trial-end passes and (when the plugin wires it so)
         # its file attachments scan with it
         self._gate = gate if gate is not None else SafetyGate.from_environment()
-        self._spans_refused_secret = 0
+        self._spans_withheld = 0
         # what withheld a span or a pass, by rule and variable name, for the run-end summary
         self._withheld_by: Counter[str] = Counter()
         self._states: dict[str, _TrialState] = {}
@@ -955,7 +955,7 @@ class OTelTrialObserver:
     ) -> str | None:
         """The outbound data-safety gate over a pass's events, with the run's own gate whatever
         the attachment step offers: ``None`` when they may be sent, else the counter that takes
-        the pass, ``refused_secret`` (they would carry a secret) or ``failed`` (they could not be
+        the pass, ``withheld`` (they would carry a secret) or ``failed`` (they could not be
         scanned). Nothing is rewritten; the warning names the rules and the variables, never a
         value."""
         try:
@@ -974,7 +974,7 @@ class OTelTrialObserver:
             trace_id,
             ", ".join(causes),
         )
-        return "refused_secret"
+        return "withheld"
 
     def _write_projection_once(
         self,
@@ -1115,12 +1115,12 @@ class OTelTrialObserver:
                 "langfuse.manifests_failed": counts.manifests_failed,
                 "langfuse.gradings_sent": self._grading_counts["sent"],
                 "langfuse.gradings_failed": self._grading_counts["failed"],
-                "langfuse.gradings_refused_secret": self._grading_counts["refused_secret"],
+                "langfuse.gradings_refused_secret": self._grading_counts["withheld"],
                 "langfuse.scores_sent": self._grading_counts["scores"],
                 "langfuse.user_generations_sent": self._grading_counts["users"],
                 "langfuse.projections_sent": self._projection_counts["sent"],
                 "langfuse.projections_failed": self._projection_counts["failed"],
-                "langfuse.projections_refused_secret": self._projection_counts["refused_secret"],
+                "langfuse.projections_refused_secret": self._projection_counts["withheld"],
                 "langfuse.observations_sent": self._projection_counts["observations"],
                 "langfuse.events_sent": self._projection_counts["events"],
                 "langfuse.media_uploaded": self._projection_counts["media_uploaded"],
@@ -1132,7 +1132,7 @@ class OTelTrialObserver:
                 "langfuse.final_observations_sent": self._write_once_counts["final_observations"],
                 # live spans the data-safety gate withheld (neither queued nor dropped); a
                 # trial-end pass it withheld is counted as ``*_refused_secret``, not ``*_failed``
-                "langfuse.spans_refused_secret": self._spans_refused_secret,
+                "langfuse.spans_refused_secret": self._spans_withheld,
             },
             details=(
                 {
@@ -1396,7 +1396,7 @@ class OTelTrialObserver:
             return False
         causes = _causes(findings)
         with self._states_lock:
-            self._spans_refused_secret += 1
+            self._spans_withheld += 1
             self._withheld_by.update(causes)
         # a tool's name comes from the model: it is named only when it is clean itself
         shown = name if not self._gate.scan(name.encode("utf-8", "replace")) else "(name withheld)"
@@ -1466,13 +1466,13 @@ class OTelTrialObserver:
     def _warn_of_what_was_withheld(self) -> None:
         """One warning at run end when the gate withheld anything: the per-span lines say which,
         this one says that the run's traces are incomplete and why, by rule and variable."""
-        passes = self._projection_counts["refused_secret"], self._grading_counts["refused_secret"]
-        if not (self._spans_refused_secret or any(passes)):
+        passes = self._projection_counts["withheld"], self._grading_counts["withheld"]
+        if not (self._spans_withheld or any(passes)):
             return
         _log.warning(
             "live tracing withheld %d span(s), %d projection pass(es) and %d gradings pass(es) "
             "that would have carried a secret (%s); the traces of this run are incomplete",
-            self._spans_refused_secret,
+            self._spans_withheld,
             *passes,
             ", ".join(f"{cause} x{count}" for cause, count in self._withheld_by.most_common(5)),
         )
