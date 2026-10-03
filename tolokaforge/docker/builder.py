@@ -439,9 +439,7 @@ def get_image_definition(service_name: str) -> dict[str, Any]:
     """
     if service_name in _DYNAMIC_DEFINITIONS:
         return _DYNAMIC_DEFINITIONS[service_name]()
-    if service_name in IMAGE_DEFINITIONS:
-        return IMAGE_DEFINITIONS[service_name]
-    raise KeyError(f"Unknown service '{service_name}'. Available: {sorted(_ALL_KNOWN_SERVICES)}")
+    return static_image_definition(service_name)
 
 
 def static_image_definition(service_name: str) -> dict[str, Any]:
