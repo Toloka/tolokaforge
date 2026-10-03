@@ -26,6 +26,7 @@ from tolokaforge_langfuse.projection import (
     ProjectionContext,
     build_projection,
     schema_keys,
+    usage_fields,
 )
 
 from tolokaforge.observability import ids
@@ -775,6 +776,58 @@ class TestUserToolSteps:
         assert roles["call_1"] == "agent_tool"
 
 
+class TestTheUsageBreakdown:
+    """A generation's usage is a breakdown that adds up: the engine's prompt total holds the cache
+    reads and the cache writes (``pricing.estimate_cost``), so each leaves ``input`` once."""
+
+    CALL = {
+        "prompt_tokens": 1000,
+        "completion_tokens": 20,
+        "cache_read_input_tokens": 100,
+        "cache_creation_input_tokens": 200,
+    }
+
+    @staticmethod
+    def _components(details: dict) -> int:
+        return sum(value for key, value in details.items() if key != "total")
+
+    def test_cache_reads_and_writes_leave_the_input_once(self) -> None:
+        details, metadata = usage_fields(self.CALL)
+        assert details == {
+            "input": 700,
+            "output": 20,
+            "total": 1020,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 200,
+        }
+        assert self._components(details) == details["total"]
+        assert metadata["usage_clamped"] is False
+
+    @pytest.mark.parametrize(
+        ("counters", "input_tokens"),
+        [
+            ({}, 1000),
+            ({"cache_read_input_tokens": 100}, 900),
+            ({"cache_creation_input_tokens": 200}, 800),
+            ({"cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}, 1000),
+        ],
+    )
+    def test_a_call_with_fewer_counters_takes_out_only_what_it_states(
+        self, counters: dict, input_tokens: int
+    ) -> None:
+        details, metadata = usage_fields(
+            {"prompt_tokens": 1000, "completion_tokens": 20, **counters}
+        )
+        assert details["input"] == input_tokens and details["total"] == 1020
+        assert self._components(details) == details["total"]
+        assert metadata["usage_clamped"] is False
+
+    def test_counters_larger_than_the_prompt_floor_the_input_and_say_so(self) -> None:
+        details, metadata = usage_fields({**self.CALL, "prompt_tokens": 250})
+        assert details["input"] == 0 and details["total"] == 270
+        assert metadata["usage_clamped"] is True
+
+
 class TestCostOnTheTrace:
     """A generation's cost is the charge the provider stated, else the eval's own figure, and
     ``cost_basis`` says which; every LLM call of the bundle is counted on exactly one
@@ -860,6 +913,32 @@ class TestCostOnTheTrace:
             ({"total": 0.0003}, "billed"),
         ]
         assert [b["usageDetails"]["total"] for b in users] == [325, 432]
+
+    def test_a_calls_cache_reads_and_writes_leave_its_input_once(self, tmp_path: Path) -> None:
+        """The engine's prompt total holds both, so the generation's ``input`` is what is left
+        and its components add up to its ``total``."""
+        calls = pb.metrics()["usage"]["calls"]
+        cached = next(c for c in calls if c["openrouter_generation_id"] == "gen-agent-2")
+        cached.update(
+            prompt_tokens=1000,
+            completion_tokens=20,
+            cache_read_input_tokens=100,
+            cache_creation_input_tokens=200,
+        )
+        projection = self._projection(tmp_path, calls=calls)
+        (body,) = [
+            b
+            for b in self._generations(projection, "agent")
+            if b["metadata"]["openrouter_generation_id"] == "gen-agent-2"
+        ]
+        assert body["usageDetails"] == {
+            "input": 700,
+            "output": 20,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 200,
+            "total": 1020,
+        }
+        assert body["metadata"]["usage_clamped"] is False
 
     def test_a_recorded_trial_pairs_the_user_turns_positionally(self, tmp_path: Path) -> None:
         """The engine stamps no generation id on a message: the agent's calls pair with the

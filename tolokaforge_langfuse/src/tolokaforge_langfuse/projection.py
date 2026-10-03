@@ -432,7 +432,8 @@ def usage_fields(call: Mapping[str, Any]) -> tuple[dict[str, int], dict[str, Any
     completion = int(call.get("completion_tokens") or 0)
     cache_read = call.get("cache_read_input_tokens")
     cache_creation = call.get("cache_creation_input_tokens")
-    uncached_input = prompt - int(cache_read or 0)
+    # the engine's prompt total holds the cache reads and the cache writes (pricing.estimate_cost)
+    uncached_input = prompt - int(cache_read or 0) - int(cache_creation or 0)
     details: dict[str, int] = {
         "input": max(uncached_input, 0),
         "output": completion,
