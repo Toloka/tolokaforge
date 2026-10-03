@@ -1,4 +1,4 @@
-"""The τ³ half-duplex step and environment-error boundaries."""
+"""Half-duplex step and environment-error boundaries."""
 
 import pytest
 
