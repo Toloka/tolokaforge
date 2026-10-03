@@ -120,6 +120,12 @@ ALL_DERIVED_GROUPS: frozenset[str] = frozenset(DERIVED_GROUPS)
 # views by trace name group traces by it); without one a trace is named after the run and the task.
 DEFAULT_TRACE_NAME = "{label}/{task}"
 TRACE_NAME_LABEL = "label"
+# the prefixes only a trial's bundle gives a trace (``derived_tags``): a live row is written before
+# the bundle exists, so a name template may not use them, or the live rows and the bundle's would
+# name one trace two ways
+BUNDLE_DERIVED_PREFIXES: frozenset[str] = frozenset(
+    {"reasoning_mode", "reasoning_effort", "reasoning_budget", "route"}
+)
 # A trial trace's user, as a deployment's profile chooses it: none (the default), or the agent's
 # model identity under the deployment's model-name rules (the receiver's views by user are then
 # views by model)
@@ -249,6 +255,12 @@ def check_trace_name(template: object) -> str:
         raise VocabularyError(
             f"trace-name template {template!r}: {unknown} are neither tag prefixes nor "
             f"{{{TRACE_NAME_LABEL}}}"
+        )
+    derived = sorted(set(_PLACEHOLDER.findall(template)) & BUNDLE_DERIVED_PREFIXES)
+    if derived:
+        raise VocabularyError(
+            f"trace-name template {template!r}: {derived} come from the trial's bundle alone, so "
+            "the rows written while the trial runs could not be named alike"
         )
     if re.sub(r"[{}]", "", _PLACEHOLDER.sub("", template)) != _PLACEHOLDER.sub("", template):
         raise VocabularyError(f"trace-name template {template!r}: a brace outside a placeholder")

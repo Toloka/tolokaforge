@@ -13,7 +13,11 @@ import pytest
 import yaml
 from tolokaforge_langfuse.gradings import message_window
 from tolokaforge_langfuse.media import LangfuseApiError, iter_batches
-from tolokaforge_langfuse.model_names import RawModelNameResolver, build_model_name_resolver
+from tolokaforge_langfuse.model_names import (
+    ModelNameResolverError,
+    RawModelNameResolver,
+    build_model_name_resolver,
+)
 from tolokaforge_langfuse.projection import (
     LIVE_ONLY_KEYS,
     PRODUCER_KEYS,
@@ -309,6 +313,24 @@ class TestTheNameAndTheUser:
         trace = self._trace(tmp_path, trace_name=None, trace_user="none")
         assert trace["name"] == f"{pb.LABEL}/{pb.TASK_ID}"
         assert trace["userId"] is None
+
+    def test_an_agent_the_rules_cannot_read_names_no_user(self, tmp_path: Path) -> None:
+        """No identity, no user: the live rows follow the same rule."""
+
+        class Refusing:
+            description = "refusing"
+            rules_version = "r-1"
+
+            def resolve(self, provider, name):
+                raise ModelNameResolverError(f"{name}: unresolved tokens")
+
+        trace = build_projection(
+            IDENTITY,
+            pb.write_parity_bundle(tmp_path / "run"),
+            _context(tags=_tags(RawModelNameResolver())),
+            resolver=Refusing(),
+        ).trace_body
+        assert trace["userId"] is None and trace["metadata"]["model_name"] == "none"
 
     def test_a_template_naming_a_value_the_trace_lacks_falls_back_to_the_default(
         self, tmp_path: Path

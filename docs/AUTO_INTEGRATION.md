@@ -537,8 +537,11 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   to its last event, a tool from the turn that called it to its result. Each generation states its
   share of what the CLI reported the run cost (`total_cost_usd`, shared out by the turns' tokens at
   Claude's relative list prices, `cost_basis: cli`), so the trace's cost is the CLI's figure; a run
-  that reported none states zero (`cost_basis: none`). The root is an `agent` observation named
-  `transcript`, each tool result a `tool` observation. The output does not repeat the prompt the agent was given: a
+  that reported none states zero (`cost_basis: none`). Output with no turn at all (the result
+  object alone, `--output-format json`) has no generation to carry it: its trace's cost is zero,
+  and `total_cost_usd` stays in the trace metadata. The root is an `agent` observation named
+  `transcript`, each tool result a `tool` observation. `--model-name-normalizer` is `none` (the
+  names as spelled, the default) or `toloka`; any other value is an error, not raw names. The output does not repeat the prompt the agent was given: a
   caller that keeps it beside the file as `<stem>.prompt.txt` (`analysis_four_bucket.2.json` ->
   `analysis_four_bucket.2.prompt.txt`) gets it as the trace's input, the root observation's, with
   no option. It is cut at 65,536 characters with a visible marker and scrubbed of every shape the

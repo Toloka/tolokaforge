@@ -538,7 +538,9 @@ Decision.
 - **The trace's name and user are the deployment's.** The profile gains `[trace]`: `name`, a
   template over the trace's tag values and the run's `{label}`, and `user`, `none` or `model` (the
   agent's model identity under the deployment's model-name rules). Without it nothing changes: the
-  name stays `<label>/<task_id>` and a trace has no user.
+  name stays `<label>/<task_id>` and a trace has no user. Every row of a trace must agree, so a
+  template names only tags a trial's rows carry from its start (not `reasoning_*` or `route`, which
+  only the bundle gives), and a model the rules cannot read gives no user on any row.
 
 Consequences. The views by type, name and user work for any deployment that sets `[trace]`; one
 that does not keeps its names. Traces written before the change keep their shape: a receiver that
