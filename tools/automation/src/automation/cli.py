@@ -335,6 +335,27 @@ def langfuse_upload_cmd(
         help="the model that served the run, when the CLI was pointed at an alias "
         "(default: the first name the transcript reports)",
     ),
+    trace_name: str | None = typer.Option(
+        None,
+        "--trace-name",
+        help="the traces' name: a template over {label}, {transcript} (the transcript id) and "
+        "{step} (the id without a later run's ordinal); default {label}/{transcript}",
+    ),
+    user: str | None = typer.Option(None, "--user", help="the traces' user, as given"),
+    user_model: str | None = typer.Option(
+        None,
+        "--user-model",
+        help="the model the agents worked on, whose identity is the traces' user (a config stem "
+        "reads under --model-rules); not with --user",
+    ),
+    model_name_normalizer: str = typer.Option(
+        "raw",
+        "--model-name-normalizer",
+        help="how model names are read: raw, or toloka (toloka-model-name-normalizer)",
+    ),
+    model_rules: str | None = typer.Option(
+        None, "--model-rules", help="the deployment's normalizer rules file (needs toloka)"
+    ),
     receipt: str | None = typer.Option(None, "--receipt", help="write the report JSON here"),
     summary: str | None = typer.Option(
         None, "--summary", help="append the report here (default: GITHUB_STEP_SUMMARY)"
@@ -357,6 +378,11 @@ def langfuse_upload_cmd(
             metadata=langfuse_upload.parse_pairs(metadata, "=", "--metadata"),
             tool_io=tool_io,
             model=model,
+            trace_name=trace_name,
+            user=user,
+            user_model=user_model,
+            model_name_normalizer=model_name_normalizer,
+            model_rules=model_rules,
             dry_run=dry_run,
         )
     except langfuse_upload.UploadError as exc:

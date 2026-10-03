@@ -914,6 +914,85 @@ class TestTheModelOption:
         assert facts["cli_model"] is None
 
 
+class TestTheUserAndTheRules:
+    """``--user`` is the traces' user as given, ``--user-model`` the model the agents worked on,
+    whose identity the user is; ``--model-name-normalizer toloka`` with the deployment's
+    ``--model-rules`` reads it and the served model the way the trial traces read theirs.
+    ``--trace-name`` is the traces' name template."""
+
+    RULES = """schema_version = 1
+version = "pilot-1"
+
+[lookup."pilot_flash"]
+vendor = "deepseek"
+model = "deepseek-v4-flash"
+why = "a config stem"
+"""
+
+    def test_the_user_and_the_template_name_the_trace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = TestTheModelOption._run(
+            tmp_path, monkeypatch, "--user", "expert-17", "--trace-name", "{step}"
+        )
+        assert result.exit_code == 0, result.output
+        batch = exporter.batches[0]
+        assert {span.attributes["langfuse.user.id"] for span in batch} == {"expert-17"}
+        # named after the step the agent ran, not the run
+        assert {span.attributes["langfuse.trace.name"] for span in batch} == {
+            "analysis/four_bucket"
+        }
+        assert root_of(batch).attributes["langfuse.observation.type"] == "agent"
+
+    def test_by_default_the_label_and_the_transcript_name_it_and_it_has_no_user(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = TestTheModelOption._run(tmp_path, monkeypatch)
+        assert result.exit_code == 0, result.output
+        batch = exporter.batches[0]
+        assert {span.attributes["langfuse.trace.name"] for span in batch} == {
+            "pilot/analysis/four_bucket"
+        }
+        assert not any("langfuse.user.id" in span.attributes for span in batch)
+
+    def test_the_deployments_rules_read_a_config_stem(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pytest.importorskip("toloka_model_name_normalizer")
+        rules = tmp_path / "rules.toml"
+        rules.write_text(self.RULES, encoding="utf-8")
+        result, exporter = TestTheModelOption._run(
+            tmp_path,
+            monkeypatch,
+            "--model",
+            SERVED,
+            "--user-model",
+            "pilot_flash",
+            "--model-name-normalizer",
+            "toloka",
+            "--model-rules",
+            str(rules),
+        )
+        assert result.exit_code == 0, result.output
+        root = root_of(exporter.batches[0])
+        assert root.attributes["langfuse.user.id"] == "deepseek/deepseek-v4-flash"
+        # the served model through the same rules: its facets are tags, the rules version is
+        # the trace's
+        assert root.attributes["langfuse.trace.metadata.model_rules"] == "pilot-1"
+        assert "model_vendor:anthropic" in root.attributes["langfuse.trace.tags"]
+        assert model_facts(exporter.batches[0])["generation_models"] == {SERVED}
+
+    def test_rules_without_the_normalizer_are_an_error_that_sends_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, exporter = TestTheModelOption._run(
+            tmp_path, monkeypatch, "--model-rules", str(tmp_path / "rules.toml")
+        )
+        assert result.exit_code == 1
+        assert "the model-name resolver cannot be built" in result.output
+        assert exporter.batches == []
+
+
 class TestThePromptThroughTheCommand:
     """The command pairs a prompt with its transcript by itself: the step needs no option."""
 

@@ -25,6 +25,9 @@ COST_BASIS_BILLED = "billed"  # the provider stated the charge
 COST_BASIS_LITELLM = "litellm"  # the eval's figure, from litellm (``cost_source: litellm``)
 COST_BASIS_LIST = "list"  # the eval's figure, from the engine's pricing table (``local``)
 COST_BASIS_EVAL = "eval"  # the eval's figure, its source not recorded (the judge's aggregate)
+# an agent CLI's own report of what its run cost (Claude Code's ``total_cost_usd``), shared out
+# over the run's turns (an agent transcript)
+COST_BASIS_CLI = "cli"
 _BASIS_BY_SOURCE = {"litellm": COST_BASIS_LITELLM, "local": COST_BASIS_LIST}
 
 
