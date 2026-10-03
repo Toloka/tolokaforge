@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -13,6 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,  # noqa: E402
 )
 from tolokaforge_langfuse.otel import HARNESS_TAG, OTelTrialObserver, SpanQueue  # noqa: E402
+from tolokaforge_langfuse.safety import SECRET_NAME, SafetyGate  # noqa: E402
 
 from tolokaforge.core.llm.client import GenerationResult  # noqa: E402
 from tolokaforge.core.llm.usage import ProviderRawCall, Usage  # noqa: E402
@@ -936,3 +939,261 @@ class TestLiveCost:
         assert attrs["gen_ai.usage.input_tokens"] == 100
         assert attrs["gen_ai.usage.output_tokens"] == 20
         assert "langfuse.observation.metadata.cost" not in attrs
+
+
+class TestEverySpanIsScannedBeforeItLeaves:
+    """A live span leaves before the bundle's own scan runs, so each one is scanned itself, free
+    text (model input and output, tool output and errors) included. A span that would carry a
+    secret is withheld and counted (docs/OBSERVABILITY.md, "Delivery")."""
+
+    # the shape of an OpenRouter key: 64 hex characters after the prefix
+    PROVIDER_KEY = "sk-or-v1-" + "0123456789abcdef" * 4
+    # no shape, only the environment knows it; JSON escapes its quote and its backslash
+    AWKWARD_SECRET = 'tok"en\\8f3a91c2b7d04e56'
+    FAMILIES = pytest.mark.parametrize("server_api", ["v3", "v4"])
+
+    @pytest.fixture(autouse=True)
+    def only_the_tests_own_credentials(self, monkeypatch) -> None:
+        """The gate's known values come from the environment: only the test's own are in it."""
+        for name in [name for name in os.environ if SECRET_NAME.search(name)]:
+            monkeypatch.delenv(name)
+
+    @staticmethod
+    def _trial(
+        observer,
+        *,
+        assistant_text="done",
+        request_text="hello",
+        tool_name="shell",
+        tool_arguments=None,
+        tool_output="file.txt",
+    ):
+        observer.trial_started(
+            IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
+        )
+        observer.generation(
+            IDENTITY,
+            role="agent",
+            index=1,
+            turn=0,
+            request=[Message(role=MessageRole.USER, content=request_text, ts=T0)],
+            result=GenerationResult(
+                text=assistant_text, usage=Usage(prompt_tokens=10, completion_tokens=2)
+            ),
+            started_at=T0,
+            ended_at=T0 + timedelta(seconds=1),
+        )
+        observer.tool_call(
+            IDENTITY,
+            role="agent",
+            index=2,
+            call=ToolCall(id="c1", name=tool_name, arguments=tool_arguments or {"cmd": "ls"}),
+            result=ToolResult(success=True, output=tool_output),
+            started_at=T0 + timedelta(seconds=2),
+            ended_at=T0 + timedelta(seconds=2.2),
+        )
+
+    def _run(
+        self,
+        server_api,
+        *,
+        tool_error=None,
+        final_text="done",
+        error=None,
+        gate=None,
+        **trial,
+    ):
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, server_api=server_api, gate=gate)
+        self._trial(observer, **trial)
+        if tool_error is not None:
+            observer.tool_call(
+                IDENTITY,
+                role="agent",
+                index=3,
+                call=ToolCall(id="c2", name="shell", arguments={}),
+                result=ToolResult(success=False, output="", error=tool_error),
+                started_at=T0 + timedelta(seconds=3),
+                ended_at=T0 + timedelta(seconds=3.2),
+            )
+        messages = [
+            Message(role=MessageRole.USER, content="hello", ts=T0),
+            Message(role=MessageRole.ASSISTANT, content=final_text, ts=T0),
+        ]
+        if error is None:
+            observer.trial_finished(IDENTITY, trajectory=_Trajectory(messages, grade=_Grade()))
+        else:
+            observer.trial_finished(IDENTITY, trajectory=None, error=error)
+        receipt = observer.run_finished()
+        return exporter.get_finished_spans(), receipt
+
+    @staticmethod
+    def _kinds(spans) -> list[str]:
+        """What went out, a preview's prefix dropped: both families write the same rows (on v4
+        the last ``trial`` is the error root, written when the run ends)."""
+        return sorted(span.name.removeprefix("preview: ") for span in spans)
+
+    @staticmethod
+    def _carried(spans, value: str) -> bool:
+        return any(value in json.dumps(dict(span.attributes), default=str) for span in spans)
+
+    @FAMILIES
+    def test_clean_spans_are_exported_and_nothing_is_counted(self, server_api, monkeypatch) -> None:
+        monkeypatch.setenv("FOO_TOKEN", "tok_8f3a91c2b7d04e56")  # held, and in no span
+        spans, receipt = self._run(server_api)
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+        assert (receipt.spans_queued, receipt.spans_exported) == (4, 4)
+
+    @FAMILIES
+    def test_a_provider_key_in_a_tool_result_withholds_that_span(self, server_api, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, tool_output=f"found {self.PROVIDER_KEY} in it")
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        # neither queued nor dropped: it never got that far
+        assert (receipt.spans_queued, receipt.spans_dropped) == (3, 0)
+        assert not self._carried(spans, self.PROVIDER_KEY)
+        # the warning names the span and the rule, never the value or a part of it
+        assert "tool: shell" in caplog.text and "openrouter-key" in caplog.text
+        assert "sk-or" not in caplog.text and "0123456789" not in caplog.text
+
+    @FAMILIES
+    def test_a_credential_the_process_holds_in_the_assistants_text_withholds_that_span(
+        self, server_api, monkeypatch, caplog
+    ) -> None:
+        value = "tok_8f3a91c2b7d04e56"
+        monkeypatch.setenv("FOO_TOKEN", value)
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, assistant_text=f"the token is {value}")
+        assert self._kinds(spans) == ["tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert not self._carried(spans, value)
+        assert "known-secret-value" in caplog.text and value not in caplog.text
+
+    @FAMILIES
+    def test_a_credential_with_a_quote_and_a_backslash_is_found_in_the_raw_strings(
+        self, server_api, monkeypatch, caplog
+    ) -> None:
+        monkeypatch.setenv("FOO_TOKEN", self.AWKWARD_SECRET)
+        # the serialised attributes hold it escaped, so only the raw strings give it away
+        assert self.AWKWARD_SECRET not in json.dumps(self.AWKWARD_SECRET)
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            spans, receipt = self._run(server_api, tool_error=f"401 for {self.AWKWARD_SECRET}")
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert "known-secret-value" in caplog.text and "8f3a91c2" not in caplog.text
+
+    @FAMILIES
+    @pytest.mark.parametrize(
+        ("field", "kinds"),
+        [
+            ("assistant_text", ["tool: shell", "trial", "trial"]),
+            ("request_text", ["tool: shell", "trial", "trial"]),
+            ("tool_arguments", ["agent", "trial", "trial"]),
+        ],
+    )
+    def test_a_credential_json_escapes_is_found_in_an_attribute_that_is_json_text(
+        self, server_api, field, kinds, monkeypatch
+    ) -> None:
+        """A generation's input and output and a tool's input are JSON text: the credential is
+        escaped once more there, and withheld all the same."""
+        monkeypatch.setenv("FOO_TOKEN", self.AWKWARD_SECRET)
+        value = {"cmd": f"echo {self.AWKWARD_SECRET}"}
+        if field != "tool_arguments":
+            value = f"the token is {self.AWKWARD_SECRET}"
+        spans, receipt = self._run(server_api, **{field: value})
+        assert self._kinds(spans) == kinds
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+
+    @FAMILIES
+    def test_code_that_names_a_key_or_a_token_count_is_not_withheld(self, server_api) -> None:
+        """Only the serialised span meets the shapes: a line-anchored one would stop the ordinary
+        code a coding benchmark's tools and models print."""
+        code = (
+            "api_key = os.environ.get('X')\n"
+            "total_tokens = response.usage.total_tokens\n"
+            "GPG_KEY=0123456789ABCDEF0123456789ABCDEF01234567\n"
+        )
+        spans, receipt = self._run(
+            server_api, assistant_text=code, request_text=code, tool_output=code
+        )
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+
+    def test_the_observer_and_its_gate_print_no_known_value(self, monkeypatch) -> None:
+        monkeypatch.setenv("FOO_TOKEN", self.AWKWARD_SECRET)
+        observer, _ = _observer(InMemorySpanExporter())
+        self._trial(observer, assistant_text=self.AWKWARD_SECRET)
+        observer.run_finished()
+        text = repr(observer) + repr(observer._gate)
+        assert "8f3a91c2" not in text
+
+    @FAMILIES
+    def test_a_trials_error_that_would_carry_a_secret_withholds_the_root(self, server_api) -> None:
+        """The root (on v4 the error root) is scanned like every other span; the trial's own
+        rows went out before and stay."""
+        spans, receipt = self._run(server_api, error=f"RuntimeError: key {self.PROVIDER_KEY}")
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert receipt.extra["langfuse.error_roots_sent"] == 0
+        assert not self._carried(spans, self.PROVIDER_KEY)
+
+    def test_a_final_root_that_would_carry_a_secret_is_withheld(self) -> None:
+        spans, receipt = self._run("v3", final_text=f"done, the key was {self.PROVIDER_KEY}")
+        # the provisional root left at the trial's start, the final one is withheld
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+
+    @FAMILIES
+    def test_a_secret_in_the_traces_own_identity_withholds_every_row_roots_included(
+        self, server_api
+    ) -> None:
+        exporter = InMemorySpanExporter()
+        queue = SpanQueue(exporter, max_size=100, batch_size=4, interval_s=0.05)
+        observer = OTelTrialObserver(
+            queue=queue,
+            label="l",
+            session_id="s",
+            tags=(f"note:{self.PROVIDER_KEY}",),
+            server_api=server_api,
+        )
+        self._trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+        receipt = observer.run_finished()
+        assert exporter.get_finished_spans() == ()
+        # every row of the trial: the (preview) root, the generation, the tool, the final or
+        # error root
+        assert receipt.extra["langfuse.spans_refused_secret"] == 4
+        assert receipt.spans_queued == 0
+
+    def test_a_tool_the_model_named_after_a_secret_is_not_named_in_the_warning(
+        self, caplog
+    ) -> None:
+        observer, _ = _observer(InMemorySpanExporter())
+        with caplog.at_level(logging.WARNING, logger="tolokaforge_langfuse.otel"):
+            self._trial(observer, tool_name=self.PROVIDER_KEY)
+        observer.run_finished()
+        assert "not exported" in caplog.text
+        assert self.PROVIDER_KEY not in caplog.text and "sk-or" not in caplog.text
+
+    def test_the_launchers_session_id_is_not_a_secret(self, monkeypatch) -> None:
+        """Its name says SESSION, its value rides on every span by design: it must not stop them."""
+        monkeypatch.setenv(
+            "TOLOKAFORGE_TRACING_SESSION_ID", "acme/pilot/v1/pilot_agent/pilot_agent/123"
+        )
+        spans, receipt = self._run("v3")
+        assert self._kinds(spans) == ["agent", "tool: shell", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 0
+
+    def test_an_injected_gate_replaces_the_environments(self, monkeypatch) -> None:
+        monkeypatch.setenv("FOO_TOKEN", "tok_8f3a91c2b7d04e56")
+        gate = SafetyGate(known_values=(b"injected-credential",))
+        spans, receipt = self._run(
+            "v3",
+            gate=gate,
+            assistant_text="tok_8f3a91c2b7d04e56",
+            tool_output="injected-credential",
+        )
+        assert self._kinds(spans) == ["agent", "trial", "trial"]
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1

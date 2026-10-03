@@ -8,6 +8,9 @@ rides ambient context, and a full queue drops (counted) rather than blocking the
 Attribute names follow the Langfuse OpenTelemetry conventions so a Langfuse receiver renders the
 same trace the offline uploader produces; any OTLP collector still receives valid spans.
 
+Every live span is scanned by the data-safety gate before it is queued: one that would carry a
+secret is withheld and counted, never rewritten (docs/OBSERVABILITY.md, "Delivery").
+
 **Two write shapes, chosen by the receiver's family** (detected once per run and passed in as
 ``server_api``):
 
@@ -74,6 +77,7 @@ from tolokaforge_langfuse.projection import (
     ProjectionContext,
     build_projection,
 )
+from tolokaforge_langfuse.safety import SafetyGate
 from tolokaforge_langfuse.vocabulary import (
     ALL_DERIVED_GROUPS,
     NAME_AGENT,
@@ -355,6 +359,7 @@ class OTelTrialObserver:
         profile_version: str | None = None,
         projection: ProjectionSettings | None = None,
         server_api: str = SERVER_V3,
+        gate: SafetyGate | None = None,
     ) -> None:
         self._queue = queue
         self._attachments = attachments
@@ -403,6 +408,9 @@ class OTelTrialObserver:
         self._context_messages = max(1, context_messages)
         self._flush_timeout_s = flush_timeout_s
         self._redaction = SensitiveKeyRedaction()
+        # one gate for the run's spans: the process's own credentials and the outbound shapes
+        self._gate = gate if gate is not None else SafetyGate.from_environment()
+        self._spans_refused_secret = 0
         self._states: dict[str, _TrialState] = {}
         self._states_lock = threading.Lock()
 
@@ -876,23 +884,7 @@ class OTelTrialObserver:
             with self._states_lock:
                 self._projection_counts["failed"] += 1
             return
-        scan = getattr(step, "scan_events", None)
-        try:
-            findings = scan(projection.events) if callable(scan) else []
-        except Exception as exc:  # noqa: BLE001 - an unserialisable body is a failed pass
-            _log.warning(
-                "projection: trace %s not scanned: %s", identity.trace_id, type(exc).__name__
-            )
-            with self._states_lock:
-                self._projection_counts["failed"] += 1
-            return
-        if findings:
-            # the outbound data-safety gate: nothing is rewritten, the pass is not sent
-            _log.warning(
-                "projection: trace %s not sent, the events would carry a secret: %s",
-                identity.trace_id,
-                ", ".join(findings),
-            )
+        if self._withheld_by_the_gate(projection.events, identity.trace_id, "projection"):
             with self._states_lock:
                 self._projection_counts["failed"] += 1
             return
@@ -937,6 +929,27 @@ class OTelTrialObserver:
             if scores_sent:
                 self._grading_counts["scores"] += stats.scores
             self._grading_counts["users"] += stats.user_generations
+
+    def _withheld_by_the_gate(self, events: list[dict[str, Any]], trace_id: str, what: str) -> bool:
+        """The outbound data-safety gate over a pass's events: True when they must not be sent,
+        because they would carry a secret or could not be scanned (nothing is rewritten; the
+        warning names the rules, never the value)."""
+        scan = getattr(self._attachments, "scan_events", None)
+        if not callable(scan):
+            return False
+        try:
+            findings = scan(events)
+        except Exception as exc:  # noqa: BLE001 - an unserialisable body is a failed pass
+            _log.warning("%s: trace %s not scanned: %s", what, trace_id, type(exc).__name__)
+            return True
+        if findings:
+            _log.warning(
+                "%s: trace %s not sent, the events would carry a secret: %s",
+                what,
+                trace_id,
+                ", ".join(findings),
+            )
+        return bool(findings)
 
     def _write_projection_once(
         self,
@@ -1034,6 +1047,10 @@ class OTelTrialObserver:
         if self._projection.environment is not None:
             for event in built.events:
                 event["body"].setdefault("environment", self._projection.environment)
+        if self._withheld_by_the_gate(built.events, identity.trace_id, "gradings"):
+            with self._states_lock:
+                self._grading_counts["failed"] += 1
+            return
         try:
             self._attachments.ingest(built.events)  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001 - the observability layer only warns
@@ -1084,6 +1101,8 @@ class OTelTrialObserver:
                 # a root the exporter posted and could not confirm: no second root is written
                 "langfuse.roots_unconfirmed": self._write_once_counts["roots_unconfirmed"],
                 "langfuse.final_observations_sent": self._write_once_counts["final_observations"],
+                # live spans the data-safety gate withheld (neither queued nor dropped)
+                "langfuse.spans_refused_secret": self._spans_refused_secret,
             },
             details=(
                 {
@@ -1290,6 +1309,11 @@ class OTelTrialObserver:
         error: bool = False,
         preview: bool = False,
     ) -> bool:
+        """Queue one span; False when it was withheld (a secret) or the queue was full. Every live
+        span of every kind leaves through here."""
+        attrs = {k: v for k, v in attributes.items() if v is not None}
+        if self._carries_secret(name, identity, span_id, attrs):
+            return False
         trace_int = int(identity.trace_id, 16)
         context = SpanContext(
             trace_id=trace_int,
@@ -1316,7 +1340,7 @@ class OTelTrialObserver:
             context=context,
             parent=parent,
             resource=self._resource,
-            attributes={k: v for k, v in attributes.items() if v is not None},
+            attributes=attrs,
             events=(),
             links=(),
             kind=SpanKind.INTERNAL,
@@ -1330,6 +1354,27 @@ class OTelTrialObserver:
             with self._states_lock:
                 self._write_once_counts["previews"] += 1
         return queued
+
+    def _carries_secret(
+        self, name: str, identity: TrialIdentity, span_id: str, attributes: Mapping[str, Any]
+    ) -> bool:
+        """The data-safety gate over a span's name and attributes, before it is queued. A hit
+        withholds the span, counts it, and warns with the span and the rules, never the value."""
+        findings = self._gate.scan_structured({"name": name, "attributes": attributes})
+        if not findings:
+            return False
+        with self._states_lock:
+            self._spans_refused_secret += 1
+        # a tool's name comes from the model: it is named only when it is clean itself
+        shown = name if not self._gate.scan(name.encode("utf-8", "replace")) else "(name withheld)"
+        _log.warning(
+            "span %r (%s) of trace %s not exported, it would carry a secret: %s",
+            shown,
+            span_id,
+            identity.trace_id,
+            ", ".join(dict.fromkeys(finding.rule for finding in findings)),
+        )
+        return True
 
     def _redact(self, mapping: Any) -> Any:
         if isinstance(mapping, Mapping):

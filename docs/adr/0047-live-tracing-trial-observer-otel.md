@@ -147,10 +147,11 @@ We will adopt **Option 1**.
   tracing on writes `run_identity.json` (`run_id`, `run_tag`) into the run directory, so the
   offline uploader derives the same trace ids from the bundle.
 - Redaction: tool-call arguments go through `SensitiveKeyRedaction`; tool outputs and message
-  text are free text (key-based redaction does not apply) and are capped, not redacted; base64
-  image blocks are dropped from span attributes (media stays a receiver-specific step outside the
-  engine). The receiver's headers are read through the `SecretManager`, so their value is in the
-  log-redaction set.
+  text are free text (key-based redaction does not apply) and are capped, and every live span
+  is scanned by the data-safety gate before it is queued: one that would carry a secret is
+  withheld and counted, never rewritten; base64 image blocks are dropped from span attributes
+  (media stays a receiver-specific step outside the engine). The receiver's headers are read
+  through the `SecretManager`, so their value is in the log-redaction set.
 - Scores stay outside the engine: the grade rides as root-span attributes (`pass`, `score`,
   component values in metadata); Langfuse scores are posted by the uploader's `attach-grades`
   or a receiver-side step.
@@ -286,8 +287,9 @@ the grading with its judge transcript, its scores and the trace-level mirror, th
 trial logs, guard records, provisioning failures, budget hits and service captures, and media for
 base64 image blocks with the token in the observation output; everything through the ingestion
 API under the shared id contract, so the live spans are the preview and the bundle projection is
-the truth (an upsert over the OTLP-created observations). The serialised events pass the same
-data-safety scan as the files; a hit sends nothing and counts. `observability.tracing.options.langfuse.projection`
+the truth (an upsert over the OTLP-created observations). The events pass the same data-safety
+scan as the live spans (the serialised events, and the raw strings for the credential values); a
+hit sends nothing and counts. `observability.tracing.options.langfuse.projection`
 selects `full` (default), `gradings` (the previous amendment's behaviour) or `none`;
 `tracing_receipt.json` counts projections, observations, events, scores and media. Drift between
 the two implementations is caught by a golden parity test committed in both repositories over a

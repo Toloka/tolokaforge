@@ -204,6 +204,84 @@ class TestAttachmentStep:
         monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
         assert sorted(plugin.secret_values()) == ["sk-lf-xyz", "sk-or-v1-abc"]
 
+    def test_secret_values_skip_the_tracing_launchers_own_variables(self, monkeypatch) -> None:
+        """A ``.env`` file may carry the launcher's session id, whose name says SESSION: it is
+        written on every span by design, so it is no credential."""
+        from tolokaforge_langfuse import plugin
+
+        class _Manager:
+            def list_all_keys(self):
+                return ["TOLOKAFORGE_TRACING_SESSION_ID", "OPENROUTER_API_KEY"]
+
+            def get_secret(self, key):
+                return {
+                    "TOLOKAFORGE_TRACING_SESSION_ID": "acme/pilot/v1/pilot_agent/123",
+                    "OPENROUTER_API_KEY": "sk-or-v1-abc",
+                }[key]
+
+        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
+        assert plugin.secret_values() == ["sk-or-v1-abc"]
+
+
+class TestTheLiveGate:
+    """Every live span passes one gate: the credentials the process holds, in its environment and
+    in the ``SecretManager`` (a ``.env`` file never reaches ``os.environ``), and the shapes."""
+
+    MANAGED = "managed-credential-value"
+
+    @pytest.fixture(autouse=True)
+    def managed_credential(self, monkeypatch) -> None:
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager",
+            SecretManager([DictProvider({"ACME_API_KEY": self.MANAGED})]),
+        )
+
+    def test_the_gate_knows_the_environment_and_the_secret_manager(self, monkeypatch) -> None:
+        from tolokaforge_langfuse.plugin import live_gate
+
+        monkeypatch.setenv("FOO_TOKEN", "environment-credential-value")
+        gate = live_gate()
+        assert gate.scan(self.MANAGED.encode())
+        assert gate.scan(b"environment-credential-value")
+        assert gate.scan(b"nothing to see") == []
+
+    def test_the_observer_the_plugin_builds_withholds_a_managed_credential(
+        self, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from datetime import datetime, timezone
+
+        from tolokaforge.core.models import ToolCall
+        from tolokaforge.observability.observer import TrialIdentity
+        from tolokaforge.tools.registry import ToolResult
+
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/v1/traces",
+                options={"langfuse": {"attach": "none"}},
+            )
+        )
+        observer, run = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        trial = TrialIdentity(
+            run_id=run.run_id, task_id="T-1", trial_index=0, attempt_id=0, run_tag=run.run_tag
+        )
+        observer.tool_call(
+            trial,
+            role="agent",
+            index=1,
+            call=ToolCall(id="c1", name="shell", arguments={}),
+            result=ToolResult(success=True, output=f"the config says {self.MANAGED}"),
+            started_at=now,
+            ended_at=now,
+        )
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert receipt.spans_queued == 0
+
 
 class TestReceiverFromTheEnvironment:
     """A launcher (the connector's with-environment) injects the receiver; the config may stay

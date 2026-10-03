@@ -805,6 +805,71 @@ class TestTheSentinel:
         rules = [f.rule for f in gate.scan(b"the db said not-a-shape-just-a-password")]
         assert rules == ["known-secret-value"]
 
+    def test_the_tracing_launchers_own_variables_are_not_known_secrets(self) -> None:
+        """The session id the launcher exports has SESSION in its name, but it is the value
+        every span carries by design: taking it for a credential would stop every span."""
+        session = "acme/pilot/v1/pilot_agent/pilot_agent/123"
+        gate = safety.SafetyGate.from_environment(
+            {"TOLOKAFORGE_TRACING_SESSION_ID": session, "ACME_SESSION_TOKEN": "not-a-shape-token"}
+        )
+        assert gate.scan(f'{{"langfuse.session.id": "{session}"}}'.encode()) == []
+        assert [f.rule for f in gate.scan(b"leaked not-a-shape-token")] == ["known-secret-value"]
+
+    def test_values_the_caller_holds_by_another_route_join_the_known_ones(self) -> None:
+        gate = safety.SafetyGate.from_environment(
+            {"ACME_UPLOAD_TOKEN": "not-a-shape-just-a-password"},
+            extra=["managed-credential-value", "short"],
+        )
+        assert gate.scan(b"managed-credential-value")
+        assert gate.scan(b"not-a-shape-just-a-password")
+        assert gate.scan(b"short") == []  # too short to be told from text, like the environment's
+
+    def test_a_known_value_json_would_escape_is_found_in_the_raw_strings(self) -> None:
+        """JSON escapes a quote and a backslash, so a credential holding them hides from the
+        serialised scan; the raw strings give it away, in the forms JSON gives it (an attribute
+        that is JSON text escapes it once more, JSON text inside it twice)."""
+        awkward = 'tok"en\\8f3a91c2b7d04e56'
+        gate = safety.SafetyGate.from_environment({"ACME_UPLOAD_TOKEN": awkward})
+        value = {"output": f"the config said {awkward}"}
+        assert gate.scan(json.dumps(value, ensure_ascii=False).encode()) == []
+        assert [f.rule for f in gate.scan_structured(value)] == ["known-secret-value"]
+        once = json.dumps({"content": f"said {awkward}"}, ensure_ascii=False)
+        twice = json.dumps({"content": once}, ensure_ascii=False)
+        for text in (once, twice):
+            assert [f.rule for f in gate.scan_structured({"input": text})] == ["known-secret-value"]
+        assert gate.scan_structured({"output": "all clear", "tags": ["a:b"], "n": 3}) == []
+
+    def test_the_shapes_do_not_run_over_raw_strings(self) -> None:
+        """Only the serialised JSON meets the shapes: a line-anchored one would stop code that
+        names a key or a token count, and an env listing's key id."""
+        code = (
+            "api_key = os.environ.get('X')\n"
+            "total_tokens = response.usage.total_tokens\n"
+            "GPG_KEY=0123456789ABCDEF0123456789ABCDEF01234567\n"
+        )
+        gate = safety.SafetyGate()
+        assert gate.scan(code.encode())  # a raw line is what the dotenv shape reads
+        assert gate.scan_structured({"output": code, "messages": [{"content": code}]}) == []
+
+    def test_a_shape_in_a_structured_value_is_still_found_in_its_json(self) -> None:
+        key = "sk-or-v1-" + "0123456789abcdef" * 4
+        found = safety.SafetyGate().scan_structured({"output": f"it said {key}"})
+        assert "openrouter-key" in [f.rule for f in found]
+
+    def test_a_long_run_of_key_like_words_is_scanned_in_linear_time(self) -> None:
+        import time
+
+        started = time.perf_counter()
+        assert safety.SafetyGate().scan_structured({"output": "KEY" * 20_000}) == []
+        assert time.perf_counter() - started < 0.5
+
+    def test_the_gate_prints_no_known_value_in_any_form(self) -> None:
+        awkward = 'tok"en\\8f3a91c2b7d04e56'
+        gate = safety.SafetyGate.from_environment({"ACME_UPLOAD_TOKEN": awkward})
+        gate.scan_structured({"output": awkward})  # the forms JSON gives it are built here
+        text = repr(gate) + str(gate.__dict__.get("hits"))
+        assert "8f3a91c2" not in text and "tok" not in text
+
     def test_the_clean_transcript_passes_the_sentinel(self) -> None:
         payload = json.dumps(bodies(built(tr.redact(read())))).encode()
         assert safety.SafetyGate().scan(payload) == []
