@@ -38,6 +38,10 @@ CALLER_TAGS = (
     "ci_run:100",
 )
 CALLER_METADATA = {"model_stem": "pilot_agent", "campaign": "parity"}
+# the deployment profile's [trace] both producers apply: a trace named after its dataset and
+# domain, its user the agent's model identity
+TRACE_NAME = "{dataset}/{domain}"
+TRACE_USER = "model"
 AGENT_MODEL = ("openrouter", "acme/pilot-1")
 USER_MODEL = ("openrouter", "acme/sim-2")
 JUDGE_MODEL = ("openrouter", "acme/judge-3")

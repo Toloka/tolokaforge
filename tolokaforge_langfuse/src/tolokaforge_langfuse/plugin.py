@@ -205,6 +205,8 @@ def build(
             version=version,
             producer=producer,
             derived_groups=plan.profile.derived_groups,
+            trace_name=plan.profile.trace_name,
+            trace_user=plan.profile.trace_user,
         ),
         server_api=server_api,
     )
