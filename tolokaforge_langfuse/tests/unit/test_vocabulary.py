@@ -141,3 +141,60 @@ class TestEnvironmentRule:
         assert v.environment_for(["run_kind:smoke"]) == "development"
         assert v.environment_for([]) == "development"
         assert v.DEFAULT_ENVIRONMENT_RULE.resolve(["team:x"]) == "development"
+
+
+class TestTraceName:
+    TAGS = ["team:delivery", "domain:ots_19_airlines", "dataset:v1", "task:ANC-001"]
+
+    def test_a_template_names_the_trace_from_its_tags(self) -> None:
+        assert v.trace_name("{dataset}/{domain}", self.TAGS, label="x") == "v1/ots_19_airlines"
+
+    def test_without_a_template_the_run_and_the_task_name_it(self) -> None:
+        assert v.trace_name(None, self.TAGS, label="opus_48") == "opus_48/ANC-001"
+
+    def test_the_first_value_of_each_prefix_counts(self) -> None:
+        tags = ["dataset:v3", "dataset:v1", "domain:a", "domain:b", "task:t"]
+        assert v.trace_name("{dataset}/{domain}", tags, label="x") == "v3/a"
+
+    def test_a_value_the_trace_lacks_gives_the_default_name(self) -> None:
+        assert v.trace_name("{dataset}/{domain}", ["dataset:v1", "task:t"], label="l") == "l/t"
+        assert v.trace_name(None, [], label="l") == "l"
+
+    @pytest.mark.parametrize("template", ["{dataset}/{domain}", "{label}", "arena {scope}"])
+    def test_a_template_over_prefixes_and_the_label_is_valid(self, template: str) -> None:
+        assert v.check_trace_name(template) == template
+
+    @pytest.mark.parametrize("template", ["", "{expert}", "{dataset", "{Domain}"])
+    def test_anything_else_is_refused(self, template: str) -> None:
+        with pytest.raises(v.VocabularyError):
+            v.check_trace_name(template)
+
+    @pytest.mark.parametrize(
+        "template", ["{route}/{domain}", "{model}/{reasoning_effort}", "{reasoning_budget}"]
+    )
+    def test_a_tag_only_the_bundle_gives_names_no_trace(self, template: str) -> None:
+        """The rows written while the trial runs never carry them: a trace named by them would
+        sit in two series, its live rows under the default name."""
+        with pytest.raises(v.VocabularyError, match="bundle alone"):
+            v.check_trace_name(template)
+
+
+class TestTraceUser:
+    def test_by_default_a_trace_has_no_user(self) -> None:
+        assert v.trace_user(v.TRACE_USER_NONE, "acme/pilot-1") is None
+
+    def test_the_model_source_makes_the_agents_identity_the_user(self) -> None:
+        assert v.trace_user(v.TRACE_USER_MODEL, "acme/pilot-1") == "acme/pilot-1"
+
+    def test_an_unknown_source_is_refused(self) -> None:
+        with pytest.raises(v.VocabularyError):
+            v.check_trace_user("expert")
+
+
+class TestGenerationName:
+    @pytest.mark.parametrize(
+        ("role", "name"),
+        [("agent", "agent"), ("user", "user simulator"), ("summarizer", "summarizer")],
+    )
+    def test_a_generation_is_named_after_its_actor(self, role: str, name: str) -> None:
+        assert v.generation_name(role) == name

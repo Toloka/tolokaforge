@@ -107,9 +107,9 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     receipt = observer.run_finished()
 
     finished = exporter.get_finished_spans()
-    assert [s.name for s in finished][:1] == ["trial T-1/0"]  # the provisional root goes first
+    assert [s.name for s in finished][:1] == ["trial"]  # the provisional root goes first
     spans = {s.name: s for s in finished}  # the final root replaces the provisional one by name
-    assert set(spans) == {"assistant turn 1", "tool: shell", "trial T-1/0"}
+    assert set(spans) == {"agent", "tool: shell", "trial"}
     assert receipt.spans_exported == 4 and receipt.spans_dropped == 0 and receipt.flushed
     provisional = finished[0]
     assert format(provisional.context.span_id, "016x") == IDENTITY.root_id
@@ -117,10 +117,10 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert provisional.start_time == provisional.end_time == int(T0.timestamp() * 1e9)
 
     trace_int = int(IDENTITY.trace_id, 16)
-    root = spans["trial T-1/0"]
+    root = spans["trial"]
     assert root.context.trace_id == trace_int and root.parent is None
     assert format(root.context.span_id, "016x") == IDENTITY.root_id
-    gen = spans["assistant turn 1"]
+    gen = spans["agent"]
     assert format(gen.context.span_id, "016x") == IDENTITY.observation_id("gen", 1)
     assert format(gen.parent.span_id, "016x") == IDENTITY.root_id
     tool = spans["tool: shell"]
@@ -136,7 +136,9 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
         "total": 120,
     }
     assert json.loads(gen_attrs["langfuse.observation.cost_details"]) == {"total": 0.01}
+    # without a profile's [trace] the run and the task name the trace, and it has no user
     assert gen_attrs["langfuse.trace.name"] == "pilot_agent/T-1"
+    assert "langfuse.user.id" not in gen_attrs
     assert gen_attrs["langfuse.session.id"] == "acme/pilot/v1/pilot_agent/pilot_agent/123"
     assert list(gen_attrs["langfuse.trace.tags"]) == [
         HARNESS_TAG,
@@ -149,11 +151,12 @@ def test_one_trial_produces_root_generation_and_tool_spans_with_contract_ids() -
     assert "sk-secret" not in gen_attrs["langfuse.observation.output"]  # redacted tool arguments
 
     tool_attrs = _attrs(tool)
-    assert tool_attrs["langfuse.observation.type"] == "span"
+    assert tool_attrs["langfuse.observation.type"] == "tool"
     assert "sk-secret" not in tool_attrs["langfuse.observation.input"]
     assert tool_attrs["langfuse.observation.output"] == "file.txt"
 
     root_attrs = _attrs(root)
+    assert root_attrs["langfuse.observation.type"] == "agent"
     assert root_attrs["langfuse.trace.metadata.pass"] is True
     assert root_attrs["langfuse.trace.metadata.score"] == 1.0
     assert root_attrs["langfuse.trace.metadata.trace_time_source"] == "live"
@@ -250,7 +253,7 @@ def test_trial_that_dies_before_a_trajectory_still_closes_its_trace() -> None:
     provisional, root = exporter.get_finished_spans()
     assert _attrs(provisional)["langfuse.trace.metadata.status"] == "running"
     attrs = _attrs(root)
-    assert root.name == "trial T-1/0" and root.status.status_code.name == "ERROR"
+    assert root.name == "trial" and root.status.status_code.name == "ERROR"
     assert attrs["langfuse.trace.metadata.error"] == "RuntimeError: boom"
     assert attrs["langfuse.trace.metadata.status"] == "error"
     assert attrs["langfuse.trace.metadata.pass"] == "none"
@@ -343,7 +346,7 @@ def test_trial_persisted_attaches_the_bundle_with_the_trial_start_and_counts_in_
     ) == (8, 3, 5, 1, 1)
     assert receipt.model_dump(mode="json")["extra"]["langfuse.attachments_registered"] == 8
     # the root span was not re-emitted: the trace's end time stays the trial end
-    assert [s.name for s in exporter.get_finished_spans()].count("trial T-1/0") == 2
+    assert [s.name for s in exporter.get_finished_spans()].count("trial") == 2
 
 
 def test_without_an_attachment_step_trial_persisted_is_a_no_op(tmp_path) -> None:
@@ -437,15 +440,15 @@ class TestPreviewRows:
         preview_root = IDENTITY.observation_id("proot", "-")
         by_name = {s.name: s for s in spans}
         assert set(by_name) >= {
-            "preview: trial T-1/0",
-            "preview: assistant turn 1",
+            "preview: trial",
+            "preview: agent",
             "preview: tool: shell",
         }
-        assert format(by_name["preview: trial T-1/0"].context.span_id, "016x") == preview_root
+        assert format(by_name["preview: trial"].context.span_id, "016x") == preview_root
         # shape R: the preview root names the final root as its parent, so the trace has one root
-        assert format(by_name["preview: trial T-1/0"].parent.span_id, "016x") == IDENTITY.root_id
+        assert format(by_name["preview: trial"].parent.span_id, "016x") == IDENTITY.root_id
         for name, kind, key in (
-            ("preview: assistant turn 1", "pgen", (1,)),
+            ("preview: agent", "pgen", (1,)),
             ("preview: tool: shell", "ptool", ("c1",)),
         ):
             span = by_name[name]
@@ -553,6 +556,64 @@ class TestTheFinalLayout:
         assert any(s.parent is None for s in spans)  # the observations still went out
         assert receipt.extra["langfuse.scores_sent"] == 0
         assert receipt.extra["langfuse.gradings_failed"] == 1
+
+
+class TestTheProfilesTrace:
+    """A deployment's ``[trace]`` names every live row's trace and gives it its user, preview,
+    final and error root alike, as the projection does."""
+
+    SETTINGS = {"trace_name": "{domain}/{config}", "trace_user": "model"}
+
+    def test_every_live_row_carries_the_profiles_name_and_user(self) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(exporter, projection=ProjectionSettings(**self.SETTINGS))
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
+        observer.run_finished()
+        spans = exporter.get_finished_spans()
+        assert {s.name for s in spans} >= {"preview: trial", "preview: agent", "trial"}
+        assert {_attrs(s)["langfuse.trace.name"] for s in spans} == {"pilot-domain/pilot_agent"}
+        assert {_attrs(s)["langfuse.user.id"] for s in spans} == {"openai/gpt-6-astra"}
+
+    def test_an_agent_the_rules_cannot_read_names_no_user(self) -> None:
+        """The bundle pass has no identity for such a model, so no live row may claim one: the
+        raw name stands in for the tags only."""
+        from tolokaforge_langfuse.model_names import ModelNameResolverError
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        class Refusing:
+            description = "refusing"
+            rules_version = "r-1"
+
+            def resolve(self, provider, name):
+                raise ModelNameResolverError(f"{name}: unresolved tokens")
+
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(
+            exporter, resolver=Refusing(), projection=ProjectionSettings(**self.SETTINGS)
+        )
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
+        observer.run_finished()
+        spans = exporter.get_finished_spans()
+        assert spans and not any("langfuse.user.id" in _attrs(s) for s in spans)
+        assert {_attrs(s)["langfuse.trace.name"] for s in spans} == {"pilot-domain/pilot_agent"}
+
+    def test_a_template_the_trace_cannot_fill_falls_back_to_the_run_and_the_task(self) -> None:
+        from tolokaforge_langfuse.otel import ProjectionSettings
+
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(
+            exporter, projection=ProjectionSettings(trace_name="{dataset}/{domain}")
+        )
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=None)
+        observer.run_finished()
+        assert {_attrs(s)["langfuse.trace.name"] for s in exporter.get_finished_spans()} == {
+            "pilot_agent/T-1"
+        }
 
 
 class TestErrorRoots:
@@ -780,7 +841,7 @@ class TestLiveCost:
             ended_at=T0 + timedelta(seconds=1),
         )
         observer.run_finished()
-        name = "assistant turn 1" if role == "agent" else "judge turn 1"
+        name = "agent" if role == "agent" else "judge"
         if server_api == "v4":
             name = f"preview: {name}"
         (span,) = [s for s in exporter.get_finished_spans() if s.name == name]

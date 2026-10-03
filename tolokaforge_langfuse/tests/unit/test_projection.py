@@ -11,8 +11,13 @@ from pathlib import Path
 import parity_bundle as pb
 import pytest
 import yaml
+from tolokaforge_langfuse.gradings import message_window
 from tolokaforge_langfuse.media import LangfuseApiError, iter_batches
-from tolokaforge_langfuse.model_names import RawModelNameResolver, build_model_name_resolver
+from tolokaforge_langfuse.model_names import (
+    ModelNameResolverError,
+    RawModelNameResolver,
+    build_model_name_resolver,
+)
 from tolokaforge_langfuse.projection import (
     LIVE_ONLY_KEYS,
     PRODUCER_KEYS,
@@ -49,6 +54,8 @@ def _context(**overrides) -> ProjectionContext:
         "version": "tolokaforge-0.0.0+parity",
         "producer": "tolokaforge-0.0.0",
         "attach_mode": "all",
+        "trace_name": pb.TRACE_NAME,
+        "trace_user": pb.TRACE_USER,
     }
     params.update(overrides)
     return ProjectionContext(**params)
@@ -141,26 +148,42 @@ class TestGoldenParity:
         projection = _project(tmp_path, RawModelNameResolver())
         names = sorted(e["body"]["name"] for e in projection.events if e["type"] != "score-create")
         trace = IDENTITY.trace_id
+
+        def positions(name: str) -> list[int]:
+            return sorted(
+                e["body"]["metadata"]["message_index"]
+                for e in projection.events
+                if e["type"] == "generation-create" and e["body"]["name"] == name
+            )
+
         # root, 3 agent turns, 2 tool spans from the log, the simulator's own tool, 2 user turns,
-        # 1 INFO + 1 WARNING log event, the guard event, the limit hit, the grading + its judge
-        assert names.count("trial T-001/0") == 1
-        assert [n for n in names if n.startswith("assistant turn")] == [
-            "assistant turn 1",
-            "assistant turn 3",
-            "assistant turn 5",
-        ]
+        # 1 INFO + 1 WARNING log event, the guard event, the limit hit, the grading + its judge;
+        # a name says what an observation is, its position is metadata
+        assert names.count("trial") == 1
+        assert positions("agent") == [1, 3, 5]
         assert [n for n in names if n.startswith("tool:")] == [
             "tool: assign_seat",
             "tool: search_booking",
             "tool: sim_lookup_ticket",
         ]
-        assert [n for n in names if n.startswith("user turn")] == ["user turn 0", "user turn 6"]
+        assert positions("user simulator") == [0, 6]
         assert [n for n in names if n.startswith("log:")] == [
             "log: Starting trial execution",
             "log: Tool execution failed",
         ]
         assert "user reply guard: accepted" in names and "run budget hit: cost" in names
-        assert f"grading:live:{pb.RUN_ID}" in names and "judge turn 2" in names
+        assert "grading" in names and "judge" in names
+        # the root is the agent, a tool execution a tool, the grading an evaluator
+        kinds = {e["type"] for e in projection.events}
+        assert {"agent-create", "tool-create", "evaluator-create"} <= kinds
+        assert "span-create" not in kinds
+        (root,) = [e["body"] for e in projection.events if e["type"] == "agent-create"]
+        assert root["name"] == "trial" and "parentObservationId" not in root
+        assert all(
+            e["body"]["name"].startswith(("tool:", "judge tool:"))
+            for e in projection.events
+            if e["type"] == "tool-create"
+        )
         tool = next(
             e["body"]
             for e in projection.events
@@ -199,9 +222,7 @@ class TestGoldenParity:
     def test_grades_off_leaves_the_grading_and_scores_out(self, tmp_path: Path) -> None:
         projection = _project(tmp_path, RawModelNameResolver(), grades=False)
         assert not [e for e in projection.events if e["type"] == "score-create"]
-        assert not [
-            e for e in projection.events if e["body"].get("name", "").startswith("grading:")
-        ]
+        assert not [e for e in projection.events if e["type"] == "evaluator-create"]
         metadata = projection.trace_body["metadata"]
         assert metadata["primary_grading"] == "none" and metadata["grading_count"] == 0
         assert metadata["pass"] == "none"
@@ -210,6 +231,113 @@ class TestGoldenParity:
         keys = schema_keys()
         assert {"task_id", "attachments", "pass", "judge_status", "user_model", "error"} <= keys
         assert "model_stem" not in keys and "team" not in keys
+
+
+class TestTheClocks:
+    """A message's clock is when it was recorded, so what produced it (the model call of a
+    generation, a tool's execution) ran from the message before it to its own clock."""
+
+    @staticmethod
+    def _windows(projection, kind: str, name: str | None = None) -> dict[int, tuple[str, str]]:
+        return {
+            e["body"]["metadata"]["message_index"]: (e["body"]["startTime"], e["body"]["endTime"])
+            for e in projection.events
+            if e["type"] == kind and name in (None, e["body"]["name"])
+        }
+
+    def test_a_generation_spans_its_call(self, tmp_path: Path) -> None:
+        projection = _project(tmp_path, RawModelNameResolver())
+        assert self._windows(projection, "generation-create", "agent") == {
+            1: ("2026-09-17T09:00:01.000000Z", "2026-09-17T09:00:05.000000Z"),
+            3: ("2026-09-17T09:00:06.000000Z", "2026-09-17T09:00:10.000000Z"),
+            5: ("2026-09-17T09:00:12.000000Z", "2026-09-17T09:00:20.000000Z"),
+        }
+        # the simulator's turns alike; its opening turn's call started with the trial
+        assert self._windows(projection, "generation-create", "user simulator") == {
+            0: ("2026-09-17T09:00:00.000000+00:00", "2026-09-17T09:00:01.000000Z"),
+            6: ("2026-09-17T09:00:20.000000Z", "2026-09-17T09:00:30.000000Z"),
+        }
+
+    def test_a_tool_without_a_log_spans_its_execution(self, tmp_path: Path) -> None:
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        (trial_dir / "tool_log.yaml").unlink()
+        resolver = RawModelNameResolver()
+        projection = build_projection(
+            IDENTITY, trial_dir, _context(tags=_tags(resolver)), resolver=resolver
+        )
+        assert self._windows(projection, "tool-create") == {
+            2: ("2026-09-17T09:00:05.000000Z", "2026-09-17T09:00:06.000000Z"),
+            4: ("2026-09-17T09:00:10.000000Z", "2026-09-17T09:00:12.000000Z"),
+        }
+
+    def test_a_missing_clock_collapses_the_window_never_stretches_it(self) -> None:
+        messages = [
+            {"role": "user", "ts": "2026-09-17T09:00:01Z"},
+            {"role": "assistant"},
+            {"role": "user", "ts": "2026-09-17T09:00:09Z"},
+        ]
+        start = "2026-09-17T09:00:00Z"
+        assert message_window(messages, 0, start=start) == (start, "2026-09-17T09:00:01Z")
+        assert message_window(messages, 1, start=start) == (
+            "2026-09-17T09:00:01Z",
+            "2026-09-17T09:00:01Z",
+        )
+        assert message_window(messages, 2, start=start) == (
+            "2026-09-17T09:00:09Z",
+            "2026-09-17T09:00:09Z",
+        )
+
+
+class TestTheNameAndTheUser:
+    """The deployment's profile names a trace and says who its user is (``[trace]``)."""
+
+    def _trace(self, tmp_path: Path, **overrides) -> dict:
+        resolver = RawModelNameResolver()
+        return build_projection(
+            IDENTITY,
+            pb.write_parity_bundle(tmp_path / "run"),
+            _context(tags=overrides.pop("tags", _tags(resolver)), **overrides),
+            resolver=resolver,
+        ).trace_body
+
+    def test_the_profiles_template_names_the_trace_and_the_model_is_its_user(
+        self, tmp_path: Path
+    ) -> None:
+        trace = self._trace(tmp_path)
+        assert trace["name"] == "pilot/pilot-domain"
+        assert trace["userId"] == pb.AGENT_MODEL[1] == trace["metadata"]["model_name"]
+
+    def test_without_a_profile_the_run_and_the_task_name_it_and_it_has_no_user(
+        self, tmp_path: Path
+    ) -> None:
+        trace = self._trace(tmp_path, trace_name=None, trace_user="none")
+        assert trace["name"] == f"{pb.LABEL}/{pb.TASK_ID}"
+        assert trace["userId"] is None
+
+    def test_an_agent_the_rules_cannot_read_names_no_user(self, tmp_path: Path) -> None:
+        """No identity, no user: the live rows follow the same rule."""
+
+        class Refusing:
+            description = "refusing"
+            rules_version = "r-1"
+
+            def resolve(self, provider, name):
+                raise ModelNameResolverError(f"{name}: unresolved tokens")
+
+        trace = build_projection(
+            IDENTITY,
+            pb.write_parity_bundle(tmp_path / "run"),
+            _context(tags=_tags(RawModelNameResolver())),
+            resolver=Refusing(),
+        ).trace_body
+        assert trace["userId"] is None and trace["metadata"]["model_name"] == "none"
+
+    def test_a_template_naming_a_value_the_trace_lacks_falls_back_to_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        resolver = RawModelNameResolver()
+        tags = tuple(t for t in _tags(resolver) if not t.startswith("domain:"))
+        assert self._trace(tmp_path, tags=tags)["name"] == f"{pb.LABEL}/{pb.TASK_ID}"
 
 
 class TestBatches:
@@ -290,6 +418,8 @@ class TestObserverProjection:
                 release="tolokaforge-0.0.0",
                 version="tolokaforge-0.0.0+parity",
                 producer="tolokaforge-0.0.0",
+                trace_name=pb.TRACE_NAME,
+                trace_user=pb.TRACE_USER,
             ),
         )
         return OTelTrialObserver(
@@ -320,7 +450,9 @@ class TestObserverProjection:
         trace = next(e["body"] for e in batch if e["type"] == "trace-create")
         assert trace["environment"] == pb.ENVIRONMENT and trace["release"] == "tolokaforge-0.0.0"
         assert trace["version"] == "tolokaforge-0.0.0+parity"
-        assert trace["sessionId"] == pb.SESSION_ID and trace["name"] == f"{pb.LABEL}/{pb.TASK_ID}"
+        # named after the trial's dataset and domain; the agent's model is the trace's user
+        assert trace["sessionId"] == pb.SESSION_ID and trace["name"] == "pilot/pilot-domain"
+        assert trace["userId"] == pb.AGENT_MODEL[1]
         # the tags of the trial's start (harness, model, task, launcher) travel with the pass
         assert set(trace["tags"]) >= {"harness:tolokaforge", f"task:{pb.TASK_ID}", *pb.CALLER_TAGS}
         assert f"model:{pb.AGENT_MODEL[1]}" in trace["tags"]
@@ -334,7 +466,9 @@ class TestObserverProjection:
         kinds = {e["type"] for e in batch}
         assert kinds == {
             "trace-create",
-            "span-create",
+            "agent-create",
+            "tool-create",
+            "evaluator-create",
             "generation-create",
             "event-create",
             "score-create",
@@ -490,8 +624,12 @@ class TestAgentOpeningLine:
         )
 
     @staticmethod
-    def _generations(projection) -> list[str]:
-        return [e["body"]["name"] for e in projection.events if e["type"] == "generation-create"]
+    def _generations(projection) -> list[tuple[str, int]]:
+        return [
+            (e["body"]["name"], e["body"]["metadata"].get("message_index"))
+            for e in projection.events
+            if e["type"] == "generation-create"
+        ]
 
     def test_the_line_is_an_event_and_no_generation(self, tmp_path: Path) -> None:
         projection = self._projection(tmp_path)
@@ -501,7 +639,7 @@ class TestAgentOpeningLine:
             if e["type"] == "event-create" and e["body"]["name"] == "agent opening line"
         ]
         assert [event["output"] for event in line] == [self.LINE]
-        assert "assistant turn 0" not in self._generations(projection)
+        assert ("agent", 0) not in self._generations(projection)
 
     @pytest.mark.parametrize(
         ("generation_ids", "match"),
@@ -515,7 +653,7 @@ class TestAgentOpeningLine:
         costs = [
             e["body"].get("costDetails")
             for e in projection.events
-            if e["type"] == "generation-create" and e["body"]["name"].startswith("assistant")
+            if e["type"] == "generation-create" and e["body"]["name"] == "agent"
         ]
         # each generation is priced off its own call: the second call's stated charge (0.0025)
         # rather than its eval figure (0.002) shows the pairing reached the right record
@@ -524,13 +662,13 @@ class TestAgentOpeningLine:
     def test_an_undeclared_leading_agent_turn_stays_a_generation(self, tmp_path: Path) -> None:
         """The line is read from ``task.yaml``, not guessed from the transcript's shape."""
         projection = self._projection(tmp_path, declared=False)
-        assert "assistant turn 0" in self._generations(projection)
+        assert ("agent", 0) in self._generations(projection)
         assert not any(e["body"]["name"] == "agent opening line" for e in projection.events)
 
     def test_a_pinned_opener_after_the_line_is_no_user_generation(self, tmp_path: Path) -> None:
         projection = self._projection(tmp_path, pinned=True)
-        assert "user turn 1" not in self._generations(projection)
-        assert "user turn 7" in self._generations(projection)
+        assert ("user simulator", 1) not in self._generations(projection)
+        assert ("user simulator", 7) in self._generations(projection)
 
 
 class TestUserToolSteps:
@@ -572,7 +710,9 @@ class TestUserToolSteps:
         step = next(
             e["body"]
             for e in projection.events
-            if e["type"] == "generation-create" and e["body"]["name"] == "user turn 0"
+            if e["type"] == "generation-create"
+            and e["body"]["name"] == "user simulator"
+            and e["body"]["metadata"]["message_index"] == 0
         )
         assert step["output"]["tool_calls"][0]["name"] == "check_booking_app"
 
@@ -641,11 +781,11 @@ class TestCostOnTheTrace:
         return {**legacy, "cost_source": source}
 
     @staticmethod
-    def _generations(projection, prefix: str = "") -> list[dict]:
+    def _generations(projection, name: str | None = None) -> list[dict]:
         return [
             e["body"]
             for e in projection.events
-            if e["type"] == "generation-create" and e["body"]["name"].startswith(prefix)
+            if e["type"] == "generation-create" and name in (None, e["body"]["name"])
         ]
 
     @staticmethod
@@ -666,7 +806,7 @@ class TestCostOnTheTrace:
         assert self._total(projection) == pytest.approx(
             self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
         )
-        users = self._generations(projection, "user turn")
+        users = self._generations(projection, "user simulator")
         assert [(b["costDetails"], b["metadata"]["cost_basis"]) for b in users] == [
             ({"total": 0.0002}, "billed"),
             ({"total": 0.0003}, "billed"),
@@ -680,10 +820,10 @@ class TestCostOnTheTrace:
         projection = self._projection(tmp_path, calls=calls, generation_ids=False)
 
         assert projection.stats.usage_match == "positional"
-        users = self._generations(projection, "user turn")
+        users = self._generations(projection, "user simulator")
         assert [b["metadata"]["usage_match"] for b in users] == ["positional"] * 2
         assert [b["costDetails"] for b in users] == [{"total": 0.0002}, {"total": 0.0003}]
-        assert [b["costDetails"] for b in self._generations(projection, "assistant")] == [
+        assert [b["costDetails"] for b in self._generations(projection, "agent")] == [
             {"total": 0.001},
             {"total": 0.0025},
             {"total": 0.003},
@@ -705,8 +845,8 @@ class TestCostOnTheTrace:
         calls.insert(2, discarded)
         projection = self._projection(tmp_path, calls=calls)
 
-        (extra,) = self._generations(projection, "agent call")
-        assert extra["name"] == "agent call 2 (no message)"
+        (extra,) = self._generations(projection, "agent call (no message)")
+        assert extra["metadata"]["call_index"] == 2
         assert extra["id"] == ids.observation_id(IDENTITY.trace_id, "gen", "call:2")
         assert extra["costDetails"] == {"total": 0.0007}
         assert extra["metadata"]["usage_match"] == "unpaired"
@@ -725,18 +865,14 @@ class TestCostOnTheTrace:
         calls.append({**calls[-1], "openrouter_generation_id": "gen-user-x"})
         projection = self._projection(tmp_path, calls=calls, generation_ids=False)
 
-        users = self._generations(projection, "user turn")
+        users = self._generations(projection, "user simulator")
         assert [(b["costDetails"], b["metadata"]["cost_basis"]) for b in users] == [
             ({"total": 0}, "none"),
             ({"total": 0}, "none"),
         ]
         assert [b["usageDetails"] for b in users] == [{"input": 0, "output": 0, "total": 0}] * 2
-        extra = self._generations(projection, "user call")
-        assert [b["name"] for b in extra] == [
-            "user call 0 (no message)",
-            "user call 4 (no message)",
-            "user call 5 (no message)",
-        ]
+        extra = self._generations(projection, "user simulator call (no message)")
+        assert [b["metadata"]["call_index"] for b in extra] == [0, 4, 5]
         assert all(b["model"] == "acme/sim-2" for b in extra)
         assert self._total(projection) == pytest.approx(
             self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
@@ -750,13 +886,13 @@ class TestCostOnTheTrace:
             tmp_path, calls=calls, generation_ids=False, ending="user_stop"
         )
 
-        (user,) = self._generations(projection, "user turn")
+        (user,) = self._generations(projection, "user simulator")
         assert (user["costDetails"], user["metadata"]["usage_match"]) == (
             {"total": 0.0002},
             "positional",
         )
-        (stop,) = self._generations(projection, "user call")
-        assert stop["name"] == "user call 4 (no message)"
+        (stop,) = self._generations(projection, "user simulator call (no message)")
+        assert stop["metadata"]["call_index"] == 4
         assert stop["costDetails"] == {"total": 0.0003}
         assert self._total(projection) == pytest.approx(
             self._spent(calls, pb.grade()["judge_usage"]["billed_cost_usd"])
@@ -777,7 +913,7 @@ class TestCostOnTheTrace:
                 tmp_path, calls=calls, generation_ids=False, ending=ending
             )
 
-        users = self._generations(projection, "user turn")
+        users = self._generations(projection, "user simulator")
         assert {b["metadata"]["usage_match"] for b in users} == {"unmatched"}
         assert all(b["costDetails"] == {"total": 0} for b in users)
         assert self._total(projection) == pytest.approx(
@@ -793,7 +929,7 @@ class TestCostOnTheTrace:
         }
         projection = self._projection(tmp_path, calls=calls, judge_usage=legacy_judge)
 
-        bodies = self._generations(projection, "assistant")
+        bodies = self._generations(projection, "agent")
         assert [b["costDetails"] for b in bodies] == [
             {"total": 0.001},
             {"total": 0.002},
@@ -802,7 +938,7 @@ class TestCostOnTheTrace:
         assert [b["metadata"]["cost_basis"] for b in bodies] == ["litellm"] * 3
         judge = next(
             b
-            for b in self._generations(projection, "judge turn")
+            for b in self._generations(projection, "judge")
             if b.get("usageDetails", {}).get("total")
         )
         assert judge["costDetails"] == {"total": 0.0015}
@@ -814,7 +950,7 @@ class TestCostOnTheTrace:
     def test_a_call_whose_route_stated_no_charge_keeps_its_eval_cost(self, tmp_path: Path) -> None:
         calls = pb.metrics()["usage"]["calls"]
         calls[2] = self._without_the_charge(calls[2], source="local")
-        bodies = self._generations(self._projection(tmp_path, calls=calls), "assistant")
+        bodies = self._generations(self._projection(tmp_path, calls=calls), "agent")
 
         assert [(b["costDetails"], b["metadata"]["cost_basis"]) for b in bodies] == [
             ({"total": 0.001}, "billed"),
@@ -828,7 +964,7 @@ class TestCostOnTheTrace:
         calls = pb.metrics()["usage"]["calls"]
         unpriced = {**self._without_the_charge(calls[2], source="unknown"), "cost_usd": None}
         calls[2] = unpriced
-        bodies = self._generations(self._projection(tmp_path, calls=calls), "assistant")
+        bodies = self._generations(self._projection(tmp_path, calls=calls), "agent")
 
         assert (bodies[1]["costDetails"], bodies[1]["metadata"]["cost_basis"]) == (
             {"total": 0},
@@ -842,7 +978,7 @@ class TestCostOnTheTrace:
         """No agent call is recorded (a mock run): the turns carry explicit zeros, so a
         receiver that merges an update cannot keep a live row's figures."""
         calls = [c for c in pb.metrics()["usage"]["calls"] if c["role"] == "user"]
-        bodies = self._generations(self._projection(tmp_path, calls=calls), "assistant")
+        bodies = self._generations(self._projection(tmp_path, calls=calls), "agent")
 
         assert {b["metadata"]["usage_match"] for b in bodies} == {"unmatched"}
         assert all(b["costDetails"] == {"total": 0} for b in bodies)

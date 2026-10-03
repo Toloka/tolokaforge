@@ -9,13 +9,15 @@ producers and the v4 write path is a translation rather than a second projection
 
 What it does, and nothing else:
 
-- the ``trace-create`` body becomes the trace's facts: name, session, tags, the native
+- the ``trace-create`` body becomes the trace's facts: name, session, user, tags, the native
   ``environment`` / ``release`` / ``version``, the trace metadata, and the input and output,
   which become the **root observation's** own (the trace is that observation);
 - every observation body becomes one span under its own id, with its parent, clocks, level,
   status message, input, output, model, usage and cost, and its own metadata;
-- the trace's name, session, tags, native fields and **identity** metadata keys ride on every
-  span, because a v4 receiver stores and filters them per observation;
+- the trace's name, session, user, tags, native fields and **identity** metadata keys ride on
+  every span, because a v4 receiver stores and filters them per observation;
+- an observation's ingestion event type names its kind: ``span``, ``generation`` and ``event``,
+  and the typed ``agent`` (a root), ``tool`` and ``evaluator`` (a grading);
 - the **root span is last**: a child may arrive before its root, and until the root lands
   the trace has no root row at all, so nothing can read a half-written trace as finished;
 - ``score-create`` events are not spans. Scores keep the ingestion route on v4 and are returned
@@ -43,6 +45,8 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.util.instrumentation import InstrumentationScope
 from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, TraceFlags
 
+from tolokaforge_langfuse.vocabulary import EVENT_AGENT, EVENT_EVALUATOR, EVENT_TOOL
+
 NONE = "none"
 TRACE_EVENT = "trace-create"
 SCORE_EVENT = "score-create"
@@ -51,6 +55,9 @@ OBSERVATION_EVENTS: Mapping[str, str] = {
     "span-create": "span",
     "generation-create": "generation",
     "event-create": "event",
+    EVENT_AGENT: "agent",
+    EVENT_TOOL: "tool",
+    EVENT_EVALUATOR: "evaluator",
 }
 # the trace metadata keys that ride on every span so a child row can be found by them alone
 IDENTITY_METADATA_KEYS: tuple[str, ...] = (
@@ -72,6 +79,7 @@ class TraceFacts:
 
     name: str | None = None
     session_id: str | None = None
+    user_id: str | None = None
     tags: tuple[str, ...] = ()
     environment: str | None = None
     release: str | None = None
@@ -102,6 +110,7 @@ def trace_facts(
     return TraceFacts(
         name=body.get("name"),
         session_id=body.get("sessionId"),
+        user_id=body.get("userId"),
         tags=tuple(body.get("tags") or ()),
         environment=environment if environment is not None else body.get("environment"),
         release=release if release is not None else body.get("release"),
@@ -145,6 +154,7 @@ def span_attributes(
     }
     _set(attributes, "langfuse.trace.name", facts.name)
     _set(attributes, "langfuse.session.id", facts.session_id)
+    _set(attributes, "langfuse.user.id", facts.user_id)
     if facts.tags:
         attributes["langfuse.trace.tags"] = list(facts.tags)
     _set(attributes, "langfuse.environment", facts.environment)

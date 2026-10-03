@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tolokaforge_langfuse.model_names import ModelIdentity
+from tolokaforge_langfuse.model_names import ModelIdentity, ModelNameResolverError
 
 from tolokaforge.observability import ids as engine_ids
 from tolokaforge_langfuse import safety
@@ -388,19 +388,22 @@ class TestTheProjection:
     def test_the_kinds_and_their_parents(self) -> None:
         build = built(tr.redact(read()))
         assert len(one(build, "trace-create")) == 1
-        spans = one(build, "span-create")
+        assert not one(build, "span-create")
+        (root,) = one(build, "agent-create")
+        tools = one(build, "tool-create")
         generations = one(build, "generation-create")
-        assert [s["name"] for s in spans] == ["transcript clean", "tool: Bash"]
-        assert [g["name"] for g in generations] == ["assistant turn 0", "assistant turn 1"]
-        root = spans[0]["id"]
-        assert all(o["parentObservationId"] == root for o in spans[1:] + generations)
-        assert all(o["traceId"] == build.trace_id for o in spans + generations)
+        assert root["name"] == "transcript" and [t["name"] for t in tools] == ["tool: Bash"]
+        # a name says what an observation is; the turn's position is metadata
+        assert [g["name"] for g in generations] == ["agent", "agent"]
+        assert [g["metadata"]["message_index"] for g in generations] == [0, 1]
+        assert all(o["parentObservationId"] == root["id"] for o in tools + generations)
+        assert all(o["traceId"] == build.trace_id for o in [root, *tools, *generations])
 
     def test_the_native_model_rides_on_the_generations(self) -> None:
         """The UI's model breakdown reads the native field, and only a generation carries it."""
         build = built(tr.redact(read()))
         assert all(g["model"] == "claude-opus-4-8" for g in one(build, "generation-create"))
-        assert all("model" not in s for s in one(build, "span-create"))
+        assert all("model" not in s for s in one(build, "agent-create") + one(build, "tool-create"))
 
     def test_usage_is_a_non_overlapping_breakdown_with_a_total(self) -> None:
         usage = one(built(tr.redact(read())), "generation-create")[0]["usageDetails"]
@@ -448,7 +451,11 @@ class TestTheProjection:
 
     def test_every_observation_carries_the_traces_environment(self) -> None:
         build = built(tr.redact(read()))
-        observations = one(build, "span-create") + one(build, "generation-create")
+        observations = [
+            body
+            for kind in ("agent-create", "tool-create", "generation-create")
+            for body in one(build, kind)
+        ]
         assert {o["environment"] for o in observations} == {"production-automation"}
 
     def test_an_error_run_marks_its_root(self) -> None:
@@ -457,7 +464,7 @@ class TestTheProjection:
             {"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 40},
         ]
         transcript = tr.read_claude_text(stream(events), transcript_id="t")
-        root = one(built(tr.redact(transcript)), "span-create")[0]
+        root = one(built(tr.redact(transcript)), "agent-create")[0]
         assert root["level"] == "ERROR"
         assert root["statusMessage"] == "error_max_turns"
 
@@ -465,8 +472,8 @@ class TestTheProjection:
         """Two calls of the same tool must not collide, and a re-read must land on the same id."""
         first = tr.redact(tr.read_claude_text(stream(tool_event("a")), transcript_id="t"))
         again = tr.redact(tr.read_claude_text(stream(tool_event("b")), transcript_id="t"))
-        span = one(built(first), "span-create")[1]
-        assert span["id"] == one(built(again), "span-create")[1]["id"]
+        span = one(built(first), "tool-create")[0]
+        assert span["id"] == one(built(again), "tool-create")[0]["id"]
         assert span["metadata"]["key_source"] == "call_id"
 
 
@@ -484,6 +491,20 @@ class VendorResolver:
         return ModelIdentity(
             canonical=name, tags=(f"model:{name}", f"model_vendor:{name.partition('/')[0]}")
         )
+
+
+class StemResolver:
+    """Rules that know one config stem and refuse another; every other name reads as given."""
+
+    description = "stems"
+    rules_version = "stems-1"
+
+    def resolve(self, provider: str | None, name: str) -> ModelIdentity:
+        if name == "deepseek_v4_flash":
+            return ModelIdentity(canonical="deepseek/deepseek-v4-flash", tags=())
+        if name == "retired_stem":
+            raise ModelNameResolverError(f"{name}: unresolved tokens")
+        return ModelIdentity(canonical=name, tags=(f"model:{name}",))
 
 
 def gateway_events(turn_event: int = 3) -> list[dict[str, Any]]:
@@ -787,6 +808,282 @@ class TestTheSentinel:
     def test_the_clean_transcript_passes_the_sentinel(self) -> None:
         payload = json.dumps(bodies(built(tr.redact(read())))).encode()
         assert safety.SafetyGate().scan(payload) == []
+
+
+def split_response(*, message_id: str = "msg_1") -> list[dict[str, Any]]:
+    """One model response the CLI wrote as three stream events, one per content block, each
+    repeating the response's usage; then the tool's result and a second response."""
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "cache_read_input_tokens": 1000,
+        "cache_creation_input_tokens": 0,
+    }
+
+    def block(content: dict[str, Any], at: str) -> dict[str, Any]:
+        return {
+            "type": "assistant",
+            "session_id": "s",
+            "timestamp": at,
+            "message": {
+                "id": message_id,
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "content": [content],
+                "usage": usage,
+            },
+        }
+
+    return [
+        {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:00Z",
+        },
+        block({"type": "thinking", "thinking": "look first"}, "2026-09-20T10:00:04Z"),
+        block({"type": "text", "text": "Listing."}, "2026-09-20T10:00:04Z"),
+        block(
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}},
+            "2026-09-20T10:00:05Z",
+        ),
+        {
+            "type": "user",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:07Z",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "a b"}],
+            },
+        },
+        {
+            "type": "assistant",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:10Z",
+            "message": {
+                "id": "msg_2",
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "content": [{"type": "text", "text": "Done."}],
+                "usage": {"input_tokens": 300, "output_tokens": 20},
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:11Z",
+            "total_cost_usd": 0.5,
+            "num_turns": 2,
+        },
+    ]
+
+
+class TestOneTurnPerResponse:
+    """Claude Code writes a response with several content blocks as one stream event per block,
+    each repeating the response's usage: counting every event counted that usage two or three
+    times, and the receiver priced the copies."""
+
+    def test_the_events_of_one_message_are_one_turn(self) -> None:
+        transcript = tr.read_claude_text(stream(split_response()), transcript_id="t")
+        first, second = transcript.turns
+        assert (first.index, second.index) == (0, 1)
+        assert first.events == 3 and second.events == 1
+        assert first.reasoning == "look first" and first.text == "Listing."
+        assert [call.call_id for call in first.tool_calls] == ["toolu_1"]
+        # the usage once, not three times
+        assert first.usage["input_tokens"] == 100 and first.usage["output_tokens"] == 40
+
+    def test_one_generation_per_response_with_its_usage_once(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        generations = one(build, "generation-create")
+        assert len(generations) == 2
+        assert generations[0]["usageDetails"] == {
+            "input": 100,
+            "output": 40,
+            "total": 100 + 40 + 1000,
+            "cache_read_input_tokens": 1000,
+            "cache_creation_input_tokens": 0,
+        }
+        assert generations[0]["metadata"]["stream_events"] == 3
+        assert generations[0]["metadata"]["message_id"] == "msg_1"
+
+    def test_events_without_a_message_id_stay_turns_of_their_own(self) -> None:
+        events = split_response()
+        for event in events:
+            if event["type"] == "assistant":
+                event["message"].pop("id")
+        transcript = tr.read_claude_text(stream(events), transcript_id="t")
+        assert [turn.events for turn in transcript.turns] == [1, 1, 1, 1]
+
+
+class TestTheClocks:
+    def test_a_turn_runs_from_the_event_before_it_to_its_last_event(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        first, second = one(build, "generation-create")
+        # the first call started after the CLI's init and ended with its last block
+        assert (first["startTime"], first["endTime"]) == (
+            "2026-09-20T10:00:00Z",
+            "2026-09-20T10:00:05Z",
+        )
+        # the second call started when the tool's result came back
+        assert (second["startTime"], second["endTime"]) == (
+            "2026-09-20T10:00:07Z",
+            "2026-09-20T10:00:10Z",
+        )
+
+    def test_a_tool_runs_from_the_turn_that_called_it_to_its_result(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        (tool,) = one(build, "tool-create")
+        assert (tool["startTime"], tool["endTime"]) == (
+            "2026-09-20T10:00:05Z",
+            "2026-09-20T10:00:07Z",
+        )
+
+    def test_a_neighbour_without_a_clock_collapses_the_window_never_stretches_it(self) -> None:
+        """The tool's result carries no timestamp: the next turn's call began then, unknown, so
+        its window collapses onto its own clock instead of reaching back over the tool."""
+        events = split_response()
+        result = next(e for e in events if e["type"] == "user")
+        result.pop("timestamp")
+        build = built(tr.redact(tr.read_claude_text(stream(events), transcript_id="t")))
+        second = one(build, "generation-create")[1]
+        assert (second["startTime"], second["endTime"]) == (
+            "2026-09-20T10:00:10Z",
+            "2026-09-20T10:00:10Z",
+        )
+
+    def test_a_transcript_without_clocks_collapses_no_window_open(self) -> None:
+        events = [
+            {k: v for k, v in event.items() if k != "timestamp"} for event in split_response()
+        ]
+        build = built(tr.redact(tr.read_claude_text(stream(events), transcript_id="t")))
+        assert all(
+            g["startTime"] is None and g["endTime"] is None for g in one(build, "generation-create")
+        )
+
+
+class TestTheCost:
+    def test_the_turns_add_up_to_what_the_cli_reported(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        generations = one(build, "generation-create")
+        assert sum(g["costDetails"]["total"] for g in generations) == pytest.approx(0.5)
+        assert {g["metadata"]["cost_basis"] for g in generations} == {"cli"}
+        # shared by the turns' tokens at Claude's relative list prices
+        first = 100 + 5 * 40 + 0.1 * 1000
+        second = 300 + 5 * 20
+        assert generations[0]["costDetails"]["total"] == pytest.approx(
+            0.5 * first / (first + second)
+        )
+
+    def test_the_weights_follow_the_cache_writes_ttl(self) -> None:
+        five_minutes = {"input_tokens": 0, "cache_creation_input_tokens": 100}
+        split = {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 100,
+            "cache_creation": {"ephemeral_5m_input_tokens": 40, "ephemeral_1h_input_tokens": 60},
+        }
+        assert tr._weight(five_minutes) == pytest.approx(125)
+        assert tr._weight(split) == pytest.approx(40 * 1.25 + 60 * 2)
+
+    def test_a_run_the_cli_reported_no_cost_for_states_zero(self) -> None:
+        events = [e for e in split_response() if e["type"] != "result"]
+        build = built(tr.redact(tr.read_claude_text(stream(events), transcript_id="t")))
+        generations = one(build, "generation-create")
+        assert all(g["costDetails"] == {"total": 0} for g in generations)
+        assert {g["metadata"]["cost_basis"] for g in generations} == {"none"}
+
+    def test_turns_without_tokens_share_the_cost_evenly(self) -> None:
+        events = split_response()
+        for event in events:
+            if event["type"] == "assistant":
+                event["message"]["usage"] = {}
+        transcript = tr.read_claude_text(stream(events), transcript_id="t")
+        assert tr.turn_costs(transcript) == [0.25, 0.25]
+
+
+class TestTheNameAndTheUser:
+    @pytest.mark.parametrize(
+        ("transcript_id", "step"),
+        [
+            ("analysis/four_bucket", "analysis/four_bucket"),
+            ("analysis/four_bucket/2", "analysis/four_bucket"),
+            ("resolve/3", "resolve"),
+            ("finalize", "finalize"),
+            ("7", "7"),
+        ],
+    )
+    def test_the_step_is_the_transcript_without_a_later_runs_ordinal(
+        self, transcript_id: str, step: str
+    ) -> None:
+        assert tr.step_of(transcript_id) == step
+
+    def test_by_default_the_label_and_the_transcript_name_the_trace(self) -> None:
+        assert one(built(tr.redact(read())), "trace-create")[0]["name"] == "pilot/clean"
+
+    def test_the_callers_template_names_the_trace(self) -> None:
+        transcript = tr.read_claude_text(stream(split_response()), transcript_id="analysis/x/2")
+        trace = one(built(tr.redact(transcript), name="{step}"), "trace-create")[0]
+        assert trace["name"] == "analysis/x"
+        named = one(built(tr.redact(transcript), name="{label}: {transcript}"), "trace-create")
+        assert named[0]["name"] == "pilot: analysis/x/2"
+
+    @pytest.mark.parametrize(
+        "template", ["{dimension}", "{label}/{run_id}", "{ci_run}-{step}", "{step", "step}", ""]
+    )
+    def test_a_template_with_an_unknown_placeholder_or_a_stray_brace_refuses_the_transcript(
+        self, template: str
+    ) -> None:
+        """Never a trace named with a literal brace."""
+        with pytest.raises(tr.TranscriptError, match="placeholders"):
+            built(tr.redact(read()), name=template)
+
+    def test_without_a_user_the_trace_has_none(self) -> None:
+        assert one(built(tr.redact(read())), "trace-create")[0]["userId"] is None
+
+    def test_a_given_user_is_the_user_as_given(self) -> None:
+        """An expert's id, say: nothing reads it as a model."""
+        trace = one(
+            built(tr.redact(read()), user=" expert-17 ", resolver=StemResolver()), "trace-create"
+        )[0]
+        assert trace["userId"] == "expert-17"
+
+    def test_a_user_model_is_the_user_by_its_identity(self) -> None:
+        """Under a deployment's rules an arena config stem reads as the model its config names."""
+        trace = one(
+            built(tr.redact(read()), user_model="deepseek_v4_flash", resolver=StemResolver()),
+            "trace-create",
+        )[0]
+        assert trace["userId"] == "deepseek/deepseek-v4-flash"
+
+    def test_a_user_model_the_resolver_cannot_read_is_the_user_as_given(self) -> None:
+        trace = one(
+            built(tr.redact(read()), user_model=" retired_stem ", resolver=StemResolver()),
+            "trace-create",
+        )[0]
+        assert trace["userId"] == "retired_stem"
+
+    def test_a_user_is_either_given_or_a_model(self) -> None:
+        with pytest.raises(tr.TranscriptError, match="not both"):
+            built(tr.redact(read()), user="expert-17", user_model="deepseek_v4_flash")
+
+    def test_a_model_the_rules_cannot_read_stands_as_spelled(self) -> None:
+        """A bare CLI alias names no vendor, so a normalizer's rules cannot read it: the trace
+        keeps the alias and says so, rather than lose the transcript."""
+
+        class Refusing(StemResolver):
+            def resolve(self, provider: str | None, name: str) -> ModelIdentity:
+                if name == ALIAS:
+                    raise ModelNameResolverError(f"bare name {name!r} and no resolver")
+                return super().resolve(provider, name)
+
+        build = built(tr.redact(read()), resolver=Refusing())
+        trace = one(build, "trace-create")[0]
+        assert trace["metadata"]["model_unresolved"] == ALIAS
+        assert trace["metadata"]["model_name"] == ALIAS
+        assert {g["model"] for g in one(build, "generation-create")} == {ALIAS}
+        served = one(built(tr.redact(read()), resolver=Refusing(), model=SERVED), "trace-create")
+        assert served[0]["metadata"]["model_unresolved"] == "none"
 
 
 class TestTheGolden:

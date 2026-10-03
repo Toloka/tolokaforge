@@ -14,7 +14,7 @@ observability:
     run_id: acme/pilot/34390073272/1         # default: engine run id
     run_tag: v1                            # id namespace
     session_id: acme/pilot/pilot_agent/34390073272  # default: run_id
-    label: pilot_agent                     # trace name <label>/<task_id>
+    label: pilot_agent                     # the run's label; trace name <label>/<task_id> unless the profile's [trace] names it
     tags: [team:pilot, dataset:v1, run_kind:eval, scope:full, config:pilot_agent]
     metadata: {model_stem: pilot_agent}
     options:
@@ -90,9 +90,34 @@ the engine's environment, printing nothing. A config that names its own `endpoin
 
 | Engine event | Span | Ids (contract v1, shared with the uploader) |
 |---|---|---|
-| trial (opened by the conductor, closed after grading) | root span `trial <task>/<trial>`, trace name `<label>/<task_id>`, session, tags, `langfuse.trace.metadata.*` (task, trial, attempt, run id, status, termination, pass, score, tokens, cost, model facets), input = first user message, output = last assistant message | `trace_id = uuid5(NS, "trace\|<run_tag>\|<run_id>\|<task_id>\|<trial_index>\|<attempt>")`, root span `uuid5(NS, "obs\|<trace>\|root\|0")[:16]` |
-| assistant turn (after the message is recorded) | generation `assistant turn <i>`, model name, usage details (`input` = prompt minus cache reads, `output`, `total`), cost (§ Cost on a trace), last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
-| tool result (after the message is recorded) | span `tool: <name>`, redacted arguments as input, output or error, `ERROR` level on failure | `obs\|<trace>\|tool\|<i>` |
+| trial (opened by the conductor, closed after grading) | root observation `trial` (an `agent` observation), the trace's name and user (§ The trace's name and user), session, tags, `langfuse.trace.metadata.*` (task, trial, attempt, run id, status, termination, pass, score, tokens, cost, model facets), input = first user message, output = last assistant message | `trace_id = uuid5(NS, "trace\|<run_tag>\|<run_id>\|<task_id>\|<trial_index>\|<attempt>")`, root span `uuid5(NS, "obs\|<trace>\|root\|0")[:16]` |
+| assistant turn (after the message is recorded) | generation `agent` (a judge's: `judge`), its position as `message_index` metadata, model name, usage details (`input` = prompt minus cache reads, `output`, `total`), cost (§ Cost on a trace), last 6 request messages as input, text + tool calls as output | `obs\|<trace>\|gen\|<i>` |
+| tool result (after the message is recorded) | `tool` observation `tool: <name>` (a judge's: `judge tool: <name>`), redacted arguments as input, output or error, `ERROR` level on failure | `obs\|<trace>\|tool\|<i>` |
+
+**Names and kinds.** An observation's name says what it is, never where: `trial`, `agent`, `user
+simulator`, `judge`, `tool: <name>`, `grading`, and the position rides in its metadata
+(`message_index`, `call_index`), so the receiver's views by observation name group one kind of
+observation. Every observation is typed: the root is an `agent`, a tool execution a `tool`, a
+grading an `evaluator`, a model call a `generation`, a log line or a guard an `event`; each travels
+as its own ingestion event type (`agent-create`, `tool-create`, `evaluator-create`) or OTLP
+`langfuse.observation.type`.
+
+**Clocks.** A message's `ts` is when it was recorded, so a generation runs from the message before
+it to its own (the model call that produced it) and a tool without a log record from the message
+before its result to the result; the first message's work starts with the trial. A missing clock
+collapses a window onto the clock there is, never stretches it. The live spans carry the loop's
+own call timing.
+
+**The trace's name and user** are the deployment's (the profile's `[trace]`, § The deployment
+profile): `name` is a template over the trace's tag values and the run's label (`{dataset}/{domain}`
+names a trial after what it is a case of), `user` is `none` or `model`, the agent's model identity
+under the deployment's model-name rules, so the receiver's views by user are views by model.
+Without a profile a trace is named `<label>/<task_id>` and has no user. Both producers and every
+row (previews and error roots included) follow the same rule, which is why a template may name only
+what a trial's rows carry from its start: the caller's and the launcher's tags, the task and the
+model identity with its facets, never the tags only the bundle gives (`reasoning_*`, `route`: the
+profile refuses them). A model the deployment's rules cannot read gives a trace no user, on the live
+rows as in the bundle pass.
 
 The same `trace_id` names the trial's conversation to a model's session header
 (`<trace_id>-agent` / `<trace_id>-user`, [LLM_LAYER.md § Session header](LLM_LAYER.md#session-header)),
@@ -173,7 +198,7 @@ of the fixed schema explicit (the receiver merges metadata and an omitted key wo
 |---|---|
 | `trajectory.yaml`, `metrics.yaml` | the root observation, one generation per agent turn and one per simulated user turn (the user model), each with the usage and cost of the call it pairs with (§ Cost on a trace), one generation for every recorded call no message pairs with, the trace's input, output, timestamp, status and totals. Under `actors.user.tool_turns: isolated` each user tool step is a user generation whose output carries its calls, its results are `user_tool` spans even without a `tool_log.yaml`, and the trace's input is the first user turn of the dialogue, not a step taken before it. The agent's opening line, declared in `task.yaml`'s `user_actor.first_agent_message`, is an `agent opening line` event, not a generation, and takes no usage; the pinned opener after it is still no user generation |
 | `tool_log.yaml` | one tool span per recorded call, the grader's view (status, executor, latency, sequence, untruncated output) with the transcript's agent-facing text beside it when it differs; the user simulator's own tool calls too |
-| `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` | the `grading:live:<run_id>` observation with the judge turns beneath, its scores and the trace-level mirror (`gradings: false` leaves the grading out, like the offline `--grades none`) |
+| `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` | the `grading` observation (an evaluator, `grading_id: live:<run_id>` in its metadata) with the judge turns beneath, its scores and the trace-level mirror (`gradings: false` leaves the grading out, like the offline `--grades none`) |
 | `logs.yaml`, `trajectory.user_reply_guard_events`, `provision_stage`, the run's `LIMIT_HIT.json`, `services/_capture.yaml` | events (WARNING and ERROR always, INFO under `attach: all`) |
 | `task.yaml`, `env.yaml`, `engine_run_state.json` | the metadata groups: task facts, the three model configurations with their presets and policies, the environment identity, the redaction stamp, the models fingerprint |
 | base64 image blocks in messages | media registered on the observation, the token in its output (raw base64 never enters an ingestion body) |
@@ -218,7 +243,7 @@ lands in the tracing receipt (`details[0].server_api`).
 
 | When | What | Ids |
 |---|---|---|
-| trial start | the **preview root** `preview: trial <task>/<trial>`, whose parent is the final root's id, with the trace name, session, the tags known then, the native fields and the identity metadata | `obs\|<trace>\|proot\|-` |
+| trial start | the **preview root** `preview: trial`, whose parent is the final root's id, with the trace name, session, the tags known then, the native fields and the identity metadata | `obs\|<trace>\|proot\|-` |
 | every call end | the same live bodies as on a v3 receiver, under the **preview kinds** and under the preview root, named `preview: ...`, with `preview: true` in their metadata; a preview generation states zero usage and cost (explicitly, so the receiver infers none from its model) and its own figures in metadata (`prompt_tokens`, `completion_tokens`, `cost`, `cost_basis`), so it adds nothing to the trace's cost (§ Cost on a trace) | `pgen`, `pjgen`, `ptool`, `pjtool` |
 | trial persisted | the whole bundle projection converted to spans by `tolokaforge_langfuse.otlp_spans`, written **once**, the **root last**, after the media upload, with the complete manifest in the root's metadata as a JSON string the receiver parses back; the scores through the ingestion route, each with the grading's own timestamp | the final kinds, unchanged |
 | run end | one minimal **error root** for every trace whose real root can no longer come (the trial never persisted, the bundle pass wrote none, or the root never reached the exporter): name, session, tags, native fields, identity, start, `status: error` and the reason, no manifest and no verdict | `root` |
@@ -322,6 +347,7 @@ connector):
 | `litellm` | litellm's figure: a charge the response stated (OpenRouter's `usage.cost` in a bundle from before the charge was recorded, a LiteLLM gateway's response-cost header) or litellm's own price map; the bundle does not say which |
 | `list` | the engine's pricing table |
 | `eval` | the eval's figure, its source not recorded (the judge's aggregate, or a `cost_source` value this producer does not recognise) |
+| `cli` | an agent transcript's turn: its share of what the agent's CLI reported the run cost (Claude Code's `total_cost_usd`), shared out by the turns' tokens at Claude's relative list prices |
 | `none` | no figure at all: no call is paired, or the call states neither a charge nor an eval figure (`cost_source: unknown`, a route nothing could price); the cost is an explicit zero, so the receiver prices nothing from its own model table, and a paired call keeps its usage |
 
 The judge generation that holds `grade.judge_usage` follows the same rule with the judge's
@@ -335,7 +361,8 @@ one generation:
   (`stop_with_text: deliver`) has one simulator call more than turns, its last, so there the
   leading calls pair;
 - a call no message pairs with (a resample the loop discarded, a call the pairing cannot place)
-  gets a generation of its own at the trial's end, `<role> call <i> (no message)`, with the key
+  gets a generation of its own at the trial's end, `<actor> call (no message)` (`agent call ...`, `user simulator call ...`; the position as
+  `call_index`), with the key
   `call:<i>` under `gen` or `ugen` (`<i>` is the call's position in `usage.calls`);
 - a turn without a call states zero usage and cost with `cost_basis: none`, so a receiver that
   merges an update into a live row keeps no figure of its own.
@@ -415,6 +442,9 @@ run_defaults:
               # fixed: {deployment: pilot}        # metadata every trace carries
             models:
               rules: deploy/model_name_rules.toml  # selects the toloka normalizer with these rules
+            trace:
+              name: "{dataset}/{domain}"         # a trial trace's name over its tag values and {label}
+              user: model                        # none (default) | model: the agent's model identity
           project: pilot                         # the one receiver project the credentials must open
           project_id: pilot-project-id           # its id, where a launcher can compare it
           environments:                          # the project's native environments

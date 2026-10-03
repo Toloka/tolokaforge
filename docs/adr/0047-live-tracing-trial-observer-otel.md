@@ -515,6 +515,39 @@ forbid it. A profile path (TOML included) and `TOLOKAFORGE_TRACING_PROFILE` keep
 deployment without `environments` keeps the previous environment precedence. `TracingConfig`,
 the receipt model, the seam and the plugin API version (**4**) do not change.
 
+## Amendment 2026-10-03: typed observations, positionless names, call clocks, a profiled name and user
+
+Context. The receiver's dashboards group by observation type, observation name, trace name and
+user. Every root, tool and grading was a `span`, so the tool views stayed empty; every generation
+carried its position in its name, and every trace its run label and task, so the views by name
+split into one series per position or task; nothing set a user; and a generation's clocks were its
+own message's and the next one's, which is the work that followed it, not its model call.
+
+Decision.
+
+- **Typed observations.** The root is an `agent` observation, a tool execution a `tool`, a grading
+  an `evaluator`, in both producers and on every row (previews and error roots included): the
+  ingestion events `agent-create`, `tool-create`, `evaluator-create`, the OTLP
+  `langfuse.observation.type` values `agent`, `tool`, `evaluator`. Generations and events are
+  unchanged.
+- **Names without positions.** `trial`, `agent`, `user simulator`, `judge`, `grading`,
+  `<actor> call (no message)`; the position stays in the metadata (`message_index`, `call_index`)
+  and in the id contract, which does not change.
+- **Call clocks.** A message's `ts` is when it was recorded, so what produced it ran from the
+  message before it to its own clock; a missing clock collapses the window, never stretches it.
+- **The trace's name and user are the deployment's.** The profile gains `[trace]`: `name`, a
+  template over the trace's tag values and the run's `{label}`, and `user`, `none` or `model` (the
+  agent's model identity under the deployment's model-name rules). Without it nothing changes: the
+  name stays `<label>/<task_id>` and a trace has no user. Every row of a trace must agree, so a
+  template names only tags a trial's rows carry from its start (not `reasoning_*` or `route`, which
+  only the bundle gives), and a model the rules cannot read gives no user on any row.
+
+Consequences. The views by type, name and user work for any deployment that sets `[trace]`; one
+that does not keeps its names. Traces written before the change keep their shape: a receiver that
+writes once never rewrites them, so a backfill that should look like the new traces runs after the
+change. A profile with `[trace]` needs a wheel that knows it (the profile reader refuses an unknown
+block), so a deployment adopts it together with the wheel. The plugin API version does not change.
+
 ## Links
 
 - Related ADRs: [ADR-0019](0019-front-end-plugin-namespace.md) (the optional-extra pattern),
