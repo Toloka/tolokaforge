@@ -89,6 +89,17 @@ class TrialSpec(BaseModel):
     """Identifier of the worker process that owns this attempt, or ``None``
     in single-process orchestrator mode."""
 
+    entry: str = ""
+    """The harness entry this trial belongs to, in a multi-harness run.
+
+    The conductor resolves the owning adapter once per trial via
+    ``adapter.for_entry(entry)``. Empty (the default) is the single-adapter
+    case: ``BaseAdapter.for_entry`` ignores the name and returns the one
+    adapter, so the single-adapter path is unchanged. Carried on the spec
+    (not yet in ``trial_id`` / the output path — that migration is #1768;
+    task ids are distinct across entries in this slice, so there is no
+    collision)."""
+
     # ---- The task itself -------------------------------------------------
     task: TaskDescription
     """The task pack the trial executes."""

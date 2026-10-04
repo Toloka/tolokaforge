@@ -150,6 +150,7 @@ class TestTrialSpecContract:
             "run_id",
             "attempt_id",
             "worker_id",
+            "entry",
             "task",
             "agent_model_config",
             "user_model_config",

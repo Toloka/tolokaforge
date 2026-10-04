@@ -934,6 +934,14 @@ class Trajectory(BaseModel):
     # runs. Stays on Trajectory because it's metadata about the
     # message-trace shape, not the prompt itself.
     simulator_schema_version: int = 4
+    # Multi-harness identity. ``harness_entry`` is the ``harnesses`` entry this
+    # trial ran under, or ``None`` for a single-adapter run (and for bundles
+    # written before the field existed). ``adapter_type`` is the resolved
+    # adapter's registered type (e.g. ``"native"``). Both are metadata the
+    # conductor stamps at trial end; neither affects ``trial_id`` or the output
+    # path in this slice (that migration is #1768).
+    harness_entry: str | None = None
+    adapter_type: str | None = None
 
     @model_validator(mode="after")
     def _reject_graded_and_ungradeable(self) -> Self:

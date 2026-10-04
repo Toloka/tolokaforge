@@ -436,6 +436,9 @@ def _names(schemas: list[dict[str, Any]]) -> list[str]:
 def _conductor_registering(tmp_path: Path, register_result: dict[str, Any]) -> InProcessConductor:
     """A conductor whose runtime backend answers ``register_trial`` with *register_result*."""
     adapter = MagicMock()
+    # Single-adapter double: for_entry returns the configured adapter so the
+    # conductor's per-trial _adapter_for resolution reaches the seams below.
+    adapter.for_entry.return_value = adapter
     adapter.get_task_dir.return_value = tmp_path / "task"
     adapter.create_environment.return_value = MagicMock(data={})
     adapter.get_grading_config.return_value = None

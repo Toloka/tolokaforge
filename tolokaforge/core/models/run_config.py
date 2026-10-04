@@ -6,6 +6,7 @@ storage / observability blocks, and the ``run_defaults`` inheritance
 base — plus the rate-limit probe budget invariant.
 """
 
+import re
 import warnings
 from collections.abc import Iterator, Mapping
 from enum import Enum
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tolokaforge.core.deprecations import coerce_task_packs_alias, drop_retired_max_idle_turns
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.model_config import ModelConfig
 
@@ -38,6 +40,8 @@ __all__ = [
     "EvaluationConfig",
     "GraderConfig",
     "HarnessAdapterConfig",
+    "HarnessEntryConfig",
+    "HarnessesConfig",
     "JudgeGraderConfig",
     "LEGACY_DOCKER_RUNTIME_ALIAS",
     "LocalDiskBundleStoreConfig",
@@ -755,6 +759,149 @@ class EvaluationConfig(BaseModel):
         return coerce_task_packs_alias(values)
 
 
+#: Entry names become path segments (``trials/<entry>/...`` is the #1768
+#: migration target) and config keys, so a name must be a single safe
+#: segment: it starts with an alphanumeric and carries only alphanumerics,
+#: dot, dash and underscore. ``.`` / ``..`` are additionally refused as
+#: whole names so a derived or authored value can never escape a directory.
+_ENTRY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _derive_entry_slug(adapter: str, mode: ExecutionMode | None) -> str:
+    """Deterministic base name for an entry that did not author its own.
+
+    ``<adapter>`` when the entry pins no mode, ``<adapter>-<mode>`` when it
+    does — the two facts that distinguish entries sharing one config block.
+    De-duplication (a numeric suffix) is applied by the enclosing
+    :class:`HarnessesConfig` once every entry's base is known.
+    """
+    if mode is None:
+        return adapter
+    return f"{adapter}-{mode.value}"
+
+
+class HarnessEntryConfig(BaseModel):
+    """One harness leg of a multi-harness run.
+
+    An entry names an adapter, the tasks it pulls (``projects`` /
+    ``tasks_glob`` / ``task_ids``), and optional per-entry overrides
+    (``mode``, ``model``, ``params``). ``name`` identifies the entry
+    everywhere downstream; when omitted it is derived deterministically
+    from ``adapter`` (+ ``mode``) at parse time and de-duplicated across
+    the run's entries.
+
+    ``extra="forbid"``: stricter than the surrounding run-config blocks on
+    purpose — an entry is small and hand-written, so a typo'd key must fail
+    loud rather than be dropped.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str | None = None
+    """Stable identifier for this entry. Derived from ``adapter`` (+ ``mode``)
+    and de-duplicated when omitted; validated unique and filesystem-safe."""
+
+    adapter: str = "native"
+    """Registered adapter type this entry loads tasks through."""
+
+    mode: ExecutionMode | None = None
+    """Execution mode override. ``None`` defers to the mode inferred from the
+    entry's harness; a set value is gated against the adapter's supported
+    modes before any container work."""
+
+    model: dict[str, ModelConfig] | None = None
+    """Per-entry model map, merged role-wise over the run-level ``models``
+    (this entry wins per role). ``None`` uses the run-level map verbatim.
+
+    The override reaches this entry's adapter params and its execution-mode
+    inference, and — for a delegated entry — the agent model the harness
+    command receives. A per-entry ``agent`` model on an engine-loop entry is
+    **not** honored yet (the engine loop uses the single run-level
+    ``models.agent`` client); it is refused at gate time rather than silently
+    ignored, pending follow-up #1769."""
+
+    projects: list[str] = Field(default_factory=list)
+    """Project roots this entry pulls tasks from. Empty inherits
+    ``evaluation.projects`` (filled at parse time)."""
+
+    task_packs: list[str] = Field(default_factory=list)
+    """Deprecated alias for ``projects`` — coerced with a ``DeprecationWarning``
+    exactly as on :class:`EvaluationConfig`."""
+
+    tasks_glob: str | None = None
+    """Glob selecting this entry's task files. ``None`` inherits
+    ``evaluation.tasks_glob`` (filled at parse time)."""
+
+    task_ids: list[str] = Field(default_factory=list)
+    """Optional explicit task-id allow-list for this entry."""
+
+    params: dict[str, Any] = Field(default_factory=dict)
+    """Adapter-specific parameters for this entry's adapter."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_task_packs_alias(cls, values: Any) -> Any:
+        return coerce_task_packs_alias(values)
+
+
+class HarnessesConfig(BaseModel):
+    """Multi-harness run surface: one or more :class:`HarnessEntryConfig` legs.
+
+    Mutually exclusive with ``evaluation.harness_adapter`` (enforced on
+    :class:`RunConfig`). Each entry is dispatched independently; entry names
+    are made unique and filesystem-safe here, deriving any omitted name from
+    the entry's adapter and mode.
+
+    ``extra="forbid"`` for the same reason the entries are: a small,
+    hand-written block must fail loud on a typo.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    entries: list[HarnessEntryConfig] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _derive_and_validate_names(self) -> Self:
+        """Fill omitted entry names, then validate every name unique + safe.
+
+        Explicit names are reserved first so a derived name never shadows an
+        authored one; omitted names take ``<adapter>[-<mode>]`` with a numeric
+        suffix on collision. The result is deterministic for a given config.
+        """
+        used: set[str] = set()
+        for entry in self.entries:
+            if entry.name is not None:
+                if entry.name in used:
+                    raise ValueError(
+                        f"harnesses.entries: duplicate entry name {entry.name!r}; "
+                        "entry names must be unique."
+                    )
+                used.add(entry.name)
+
+        for entry in self.entries:
+            if entry.name is not None:
+                continue
+            base = _derive_entry_slug(entry.adapter, entry.mode)
+            candidate = base
+            suffix = 2
+            while candidate in used:
+                candidate = f"{base}-{suffix}"
+                suffix += 1
+            entry.name = candidate
+            used.add(candidate)
+
+        for entry in self.entries:
+            name = entry.name
+            assert name is not None  # every name is filled above
+            if name in {".", ".."} or not _ENTRY_NAME_RE.match(name):
+                raise ValueError(
+                    f"harnesses.entries: entry name {name!r} is not filesystem-safe; "
+                    "use letters, digits, '.', '-' and '_' only, starting with a "
+                    "letter or digit (it becomes a path segment and a config key)."
+                )
+        return self
+
+
 class EngineConfig(BaseModel):
     """Engine-wide configuration that lives outside per-trial/per-model surface.
 
@@ -1306,6 +1453,7 @@ class RunConfig(BaseModel):
     models: dict[str, ModelConfig]
     orchestrator: OrchestratorConfig
     evaluation: EvaluationConfig
+    harnesses: HarnessesConfig | None = None
     engine: EngineConfig | None = None
     compute: ComputeConfig | None = None
     storage: StorageConfig | None = None
@@ -1506,6 +1654,36 @@ class RunConfig(BaseModel):
             values["storage"] = storage
 
         return values
+
+    @model_validator(mode="after")
+    def _finalize_harnesses(self) -> Self:
+        """Enforce the ``harnesses`` / ``harness_adapter`` split and fill entry defaults.
+
+        ``harnesses`` and ``evaluation.harness_adapter`` are mutually exclusive:
+        the first dispatches one adapter per entry, the second names a single
+        run-wide adapter, and a config naming both has not decided which shape it
+        is. Fail loud rather than silently preferring one.
+
+        When ``harnesses`` is set, each entry inherits the run's
+        ``evaluation`` task-selection defaults for any field it left blank, so an
+        entry can declare only what differs from the run-level surface.
+        """
+        if self.harnesses is None:
+            return self
+        if self.evaluation.harness_adapter is not None:
+            raise ValueError(
+                "`harnesses` and `evaluation.harness_adapter` are mutually "
+                "exclusive: `harnesses` dispatches one adapter per entry, while "
+                "`evaluation.harness_adapter` names a single run-wide adapter. "
+                "Declare one or the other — move the single adapter into a "
+                "`harnesses.entries` entry, or drop `harnesses`."
+            )
+        for entry in self.harnesses.entries:
+            if not entry.projects:
+                entry.projects = list(self.evaluation.projects)
+            if entry.tasks_glob is None:
+                entry.tasks_glob = self.evaluation.tasks_glob
+        return self
 
 
 def _lift_alias(

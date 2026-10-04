@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -28,6 +28,7 @@ from tolokaforge.adapters._task_loader import (
     tool_inventory_under_adapter,
     validate_grading_yaml,
 )
+from tolokaforge.core.adapter_registry import CompositeAdapter, build_composite_adapter
 from tolokaforge.core.budgets import (
     BudgetHit,
     CompositeBudget,
@@ -811,6 +812,15 @@ class Orchestrator:
         # enclosing ``project.yaml``.
         self.project = project
         self.tasks: list[TaskConfig] = []
+        # Multi-harness dispatch state, empty for single-adapter runs. A run
+        # declaring a ``harnesses:`` block builds a CompositeAdapter and fills
+        # these: ``task_units`` carries the (entry name, entry adapter, task)
+        # tuples the run dispatches, and ``_entry_of_task`` maps each task id to
+        # its owning entry so per-task calls route through the right adapter.
+        # Task ids are distinct across entries (the builder's overlap guard), so
+        # this map is total and unambiguous within the A slice.
+        self.task_units: list[tuple[str, BaseAdapter, TaskConfig]] = []
+        self._entry_of_task: dict[str, str] = {}
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
@@ -865,8 +875,11 @@ class Orchestrator:
         # — repeating that K times for ``repeats=K`` trials of the same
         # task is wasted work. Populated by whichever resolver runs first
         # (the pre-run grading gate, backend selection, or trial-spec
-        # building) and held for the life of the run.
-        self._task_desc_cache: dict[str, TaskDescription] = {}
+        # building) and held for the life of the run. Keyed by
+        # ``(entry name | None, task_id)``: a multi-harness run resolves the
+        # owning adapter per entry, so the entry name is part of the identity;
+        # a single-adapter run uses ``None`` for the entry.
+        self._task_desc_cache: dict[tuple[str | None, str], TaskDescription] = {}
         # Run-wide trial ordering: ``(task_id, trial_index) → total_index``
         # (0..total-1). Populated by :meth:`_build_pending_trials` and
         # read at the ``trial_started`` emission site so the panel can
@@ -898,6 +911,10 @@ class Orchestrator:
         """
         if self.adapter is None:
             return {}
+        if self.config.harnesses is not None:
+            # One fingerprint per distinct adapter type across entries — the
+            # explicit union, never a single entry's answer.
+            return cast(CompositeAdapter, self.adapter).fingerprints_by_type()
         payload = self.adapter.fingerprint()
         if payload is None:
             return {}
@@ -905,36 +922,39 @@ class Orchestrator:
         adapter_type = adapter_config.type if adapter_config else AdapterType.NATIVE.value
         return {adapter_type: payload}
 
-    def _create_adapter(self) -> BaseAdapter:
-        """Create adapter based on configuration"""
-        adapter_config = self.config.evaluation.harness_adapter
+    def _assemble_adapter_params(
+        self,
+        *,
+        base_params: dict[str, Any],
+        agent_model: ModelConfig | None,
+        tasks_glob: str,
+        projects: list[str],
+    ) -> dict[str, Any]:
+        """Assemble one adapter's construction params from the run's context.
 
-        if adapter_config:
-            adapter_type = adapter_config.type
-            params = adapter_config.params.copy()
-        else:
-            adapter_type = AdapterType.NATIVE
-            params = {}
+        Shared by the single-adapter path (:meth:`_create_adapter`) and the
+        per-entry path (:meth:`_create_composite_adapter`), so a multi-harness
+        entry resolves tasks, task-pack roots, TypeSense, and project defaults
+        the same way a single run does — scoped to that entry's ``base_params``,
+        ``agent_model``, ``tasks_glob`` and ``projects``.
+        """
+        params = dict(base_params)
 
         # Coding-harness selector: canonical home is ``models.agent.harness``
         # (adapter-agnostic). Inject it into adapter params here so adapters
-        # that already read ``params["agent_harness"]`` keep working; the
-        # legacy ``harness_adapter.params.agent_harness`` shape is lifted to
-        # ``models.agent`` at parse time, so nothing else in this method sees
-        # the old location. ``models.agent.name`` doubles as the model the
-        # CLI receives — the same field the engine loop reads.
-        agent_model_config = self.config.models.get("agent") if self.config.models else None
-        if agent_model_config is not None and agent_model_config.harness is not None:
-            params.setdefault("agent_harness", agent_model_config.harness)
-            params.setdefault("agent_model", agent_model_config.name)
+        # that already read ``params["agent_harness"]`` keep working.
+        # ``models.agent.name`` doubles as the model the CLI receives — the
+        # same field the engine loop reads.
+        if agent_model is not None and agent_model.harness is not None:
+            params.setdefault("agent_harness", agent_model.harness)
+            params.setdefault("agent_model", agent_model.name)
 
         # Add tasks_glob to params for both native and other adapters
-        params["tasks_glob"] = self.config.evaluation.tasks_glob
-        # ``evaluation.projects`` is the canonical field; the deprecated
-        # ``evaluation.task_packs`` alias is coerced by
-        # ``EvaluationConfig`` so ``projects`` always carries the
+        params["tasks_glob"] = tasks_glob
+        # ``projects`` is the canonical field; the deprecated ``task_packs``
+        # alias is coerced upstream so ``projects`` always carries the
         # effective list here.
-        task_packs = list(self.config.evaluation.projects)
+        task_packs = list(projects)
 
         # In Docker flows, TASK_PACKS_DIRS can override config paths to container-visible mounts.
         env_task_packs = os.environ.get("TASK_PACKS_DIRS", "").strip()
@@ -961,13 +981,206 @@ class Orchestrator:
             if self.project.default_environment is not None:
                 params["project_default_environment"] = self.project.default_environment
 
+        return params
+
+    def _merge_entry_models(
+        self, entry_models: dict[str, ModelConfig] | None
+    ) -> dict[str, ModelConfig]:
+        """Merge an entry's per-role model overrides over the run-level map.
+
+        The entry wins per role; roles it does not name fall back to
+        ``config.models``. ``None`` (no entry map) returns the run-level map
+        verbatim.
+        """
+        if not entry_models:
+            return dict(self.config.models)
+        merged = dict(self.config.models)
+        merged.update(entry_models)
+        return merged
+
+    def _entry_agent_model(self, entry_config: Any) -> ModelConfig | None:
+        """The effective agent model for a harness entry (entry merged over run)."""
+        return self._merge_entry_models(entry_config.model).get("agent")
+
+    def _create_adapter(self) -> BaseAdapter:
+        """Create adapter based on configuration"""
+        adapter_config = self.config.evaluation.harness_adapter
+
+        if adapter_config:
+            adapter_type = adapter_config.type
+            base_params = adapter_config.params.copy()
+        else:
+            adapter_type = AdapterType.NATIVE
+            base_params = {}
+
+        agent_model_config = self.config.models.get("agent") if self.config.models else None
+        params = self._assemble_adapter_params(
+            base_params=base_params,
+            agent_model=agent_model_config,
+            tasks_glob=self.config.evaluation.tasks_glob,
+            projects=list(self.config.evaluation.projects),
+        )
+
         # The record factory scrubs message text, not extras, so a key in
         # this dump would render verbatim regardless of the redaction set.
         log_params = params
-        if typesense_config is not None:
-            log_params = {**params, "typesense": typesense_config.model_dump(exclude={"api_key"})}
+        if "typesense" in params:
+            typesense_config = self.config.orchestrator.effective_typesense()
+            if typesense_config is not None:
+                log_params = {
+                    **params,
+                    "typesense": typesense_config.model_dump(exclude={"api_key"}),
+                }
         self.logger.info("Creating adapter", type=adapter_type, params=log_params)
         return get_adapter(adapter_type, params)
+
+    def _create_composite_adapter(self) -> CompositeAdapter:
+        """Build the multi-harness :class:`CompositeAdapter` from ``harnesses``.
+
+        One adapter per entry, each assembled with the same per-adapter param
+        logic a single run uses, scoped to the entry's selection and its
+        effective (entry-over-run) agent model. The builder enumerates each
+        entry's tasks and enforces the overlap guard.
+        """
+        harnesses = self.config.harnesses
+        assert harnesses is not None  # guarded by the caller
+
+        def params_for_entry(entry_config: Any) -> dict[str, Any]:
+            return self._assemble_adapter_params(
+                base_params=dict(entry_config.params),
+                agent_model=self._entry_agent_model(entry_config),
+                tasks_glob=entry_config.tasks_glob,
+                projects=list(entry_config.projects),
+            )
+
+        self.logger.info(
+            "Creating composite adapter",
+            entries=[entry.name for entry in harnesses.entries],
+        )
+        return build_composite_adapter(
+            harnesses.entries,
+            params_for_entry,
+            validate_entry=self._gate_entry_execution_mode,
+        )
+
+    def _resolve_entry_mode(self, entry_config: Any) -> ExecutionMode:
+        """The execution mode a harness entry runs in.
+
+        An explicit ``entry.mode`` wins; otherwise it is inferred from the
+        entry's effective (entry-over-run) agent model — a coding-harness
+        selection (a ``harness`` that is not the ``engine-loop`` sentinel)
+        means :attr:`ExecutionMode.DELEGATED`, and anything else the engine's
+        own loop (:attr:`ExecutionMode.ENGINE_LOOP`).
+        """
+        if entry_config.mode is not None:
+            return entry_config.mode
+        agent = self._entry_agent_model(entry_config)
+        if agent is not None and agent.harness is not None and agent.harness != ENGINE_LOOP:
+            return ExecutionMode.DELEGATED
+        return ExecutionMode.ENGINE_LOOP
+
+    def _gate_entry_execution_mode(self, entry_config: Any, adapter: BaseAdapter) -> None:
+        """Refuse a harness entry whose adapter cannot run its execution mode.
+
+        Runs per entry during composite build — after the entry's adapter is
+        constructed but before any ``get_task_ids()`` or container work (see
+        :func:`~tolokaforge.core.adapter_registry.build_composite_adapter`), so
+        a mismatched entry fails loud before a run is paid for. The message
+        names the offending entry, its adapter, the requested mode, and the
+        modes the adapter runs. The single-adapter path keeps the run-level
+        gate in :meth:`load_tasks`.
+
+        This gate classifies an entry's mode from its config (explicit
+        ``mode`` or its harness selection); the conductor classifies from
+        emitted command metadata — two seams that can diverge, unified under
+        #1758.
+
+        An engine-loop entry that also sets a per-entry ``model.agent`` is
+        refused here: the engine loop uses the single run-level ``models.agent``
+        client, so a per-entry agent model would be a silent no-op. Honouring it
+        is follow-up #1769; until then the entry must omit it (use the run-level
+        agent) or be a delegated entry, where the per-entry agent model flows
+        through the harness command.
+        """
+        resolved_mode = self._resolve_entry_mode(entry_config)
+        supported = adapter_supported_modes(adapter)
+        if resolved_mode not in supported:
+            raise RuntimeError(
+                f"harness entry {entry_config.name!r} selects execution mode "
+                f"{resolved_mode.value!r}, but adapter {entry_config.adapter!r} "
+                f"runs only {sorted(mode.value for mode in supported)}. An adapter "
+                "declares the delegated mode by overriding "
+                "``supported_execution_modes`` to include "
+                "``ExecutionMode.DELEGATED``. Either change the entry's mode / "
+                "harness, or switch it to an adapter that runs that mode."
+            )
+        if resolved_mode is ExecutionMode.ENGINE_LOOP and self._entry_sets_agent_model(
+            entry_config
+        ):
+            raise RuntimeError(
+                f"harness entry {entry_config.name!r}: a per-entry model.agent is "
+                "not honored for engine-loop entries yet (see #1769); omit it to "
+                "use the run-level models.agent, or use a delegated entry."
+            )
+
+    @staticmethod
+    def _entry_sets_agent_model(entry_config: Any) -> bool:
+        """Whether this entry declares its own ``model.agent`` override."""
+        return entry_config.model is not None and "agent" in entry_config.model
+
+    def _adapter_for_task(self, task_id: str) -> BaseAdapter:
+        """The adapter that owns *task_id*.
+
+        Single-adapter runs return ``self.adapter`` verbatim; a multi-harness
+        run routes through the task's entry. ``BaseAdapter.for_entry`` on a
+        single adapter returns self, so both paths share this one accessor.
+        """
+        if self.adapter is None:
+            raise RuntimeError("Adapter is not loaded; call load_tasks() first.")
+        entry_name = self._entry_of_task.get(task_id)
+        if entry_name is None:
+            return self.adapter
+        return self.adapter.for_entry(entry_name)
+
+    def _run_selects_coding_harness(self) -> bool:
+        """Whether the run selects a coding-harness CLI on any adapter it runs.
+
+        Single-adapter: the run-level ``models.agent.harness``. Multi-harness:
+        any entry whose effective (entry-over-run) agent model declares a
+        ``harness``. Read from the config, so it needs no adapter-identity
+        branch.
+        """
+        if self.config.harnesses is not None:
+            return any(
+                (agent := self._entry_agent_model(entry)) is not None and agent.harness is not None
+                for entry in self.config.harnesses.entries
+            )
+        return _run_uses_coding_harness(self.config)
+
+    def _run_needs_docker_cli_effective(self) -> bool:
+        """Whether the runner needs the host Docker CLI, across every adapter.
+
+        Single-adapter: today's predicate unchanged — the adapter's class flag
+        (resolved from its config type via :func:`adapter_class`) or a
+        compose-variant tool, OR the run's coding-harness selection.
+        Multi-harness: the same predicate OR'd across entries — each entry's
+        adapter-type class flag, the shared compose-variant check, and a
+        coding-harness selection on any entry.
+        """
+        if self.config.harnesses is not None:
+            return (
+                cast(CompositeAdapter, self.adapter).any_requires_docker_cli()
+                or _tasks_use_compose_variant_tools(self.tasks)
+                or self._run_selects_coding_harness()
+            )
+        adapter_type = (
+            self.config.evaluation.harness_adapter.type
+            if self.config.evaluation.harness_adapter
+            else None
+        )
+        return _run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
+            self.config
+        )
 
     def _resolve_budget(self, *, initial_cost_usd: float) -> CompositeBudget | None:
         """Return the budget composite driving graceful shutdown.
@@ -1160,9 +1373,16 @@ class Orchestrator:
         # without a second config lookup. Absent block keeps every existing
         # run's behaviour.
         grader_config = self.config.grader
-        grader_name = (
-            grader_config.name if grader_config and grader_config.name else None
-        ) or self.adapter.trial_grader_name
+        if grader_config and grader_config.name:
+            grader_name = grader_config.name
+        elif self.config.harnesses is not None:
+            # A mixed run has one grading transport: with no explicit
+            # ``grader.name`` the entries must agree on their adapter-default
+            # ``trial_grader_name``; a disagreement is refused naming the
+            # entries.
+            grader_name = cast(CompositeAdapter, self.adapter).agreed_trial_grader_name()
+        else:
+            grader_name = self.adapter.trial_grader_name
         # In-process routing shim: only populated when the backend has no
         # static runner endpoint (``PerTrialRuntimeBackend`` — each trial
         # owns its own endpoint). Shared-stack keeps its address-only,
@@ -1226,12 +1446,14 @@ class Orchestrator:
         """
         if self.adapter is None:
             raise RuntimeError("Task descriptions cannot be resolved before the adapter is loaded.")
-        cached = self._task_desc_cache.get(task_id)
+        entry_name = self._entry_of_task.get(task_id)
+        cache_key = (entry_name, task_id)
+        cached = self._task_desc_cache.get(cache_key)
         if cached is not None:
             return cached
-        description = self.adapter.to_task_description(task_id)
+        description = self._adapter_for_task(task_id).to_task_description(task_id)
         ensure_registered_adapter(description.adapter_type)
-        self._task_desc_cache[task_id] = description
+        self._task_desc_cache[cache_key] = description
         return description
 
     def _build_trial_spec(
@@ -1259,6 +1481,7 @@ class Orchestrator:
             run_id=run_id,
             attempt_id=attempt_id,
             worker_id=worker_id,
+            entry=self._entry_of_task.get(task.task_id, ""),
             task=task_desc,
             agent_model_config=agent_client.config,
             user_model_config=user_config,
@@ -1600,11 +1823,6 @@ class Orchestrator:
             source = f"override:{override}"
 
         factory = load_runtime_backend(runtime_choice)
-        adapter_type = (
-            self.config.evaluation.harness_adapter.type
-            if self.config.evaluation.harness_adapter
-            else None
-        )
         # No run-scope manifest survives extraction when the plan is fully
         # trial-scoped (automatic short-circuit) or when the operator coerced
         # to ``per_trial``. In that case the composer still owns provisioning
@@ -1627,8 +1845,7 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks)
-                or _run_uses_coding_harness(self.config),
+                mount_docker_socket=self._run_needs_docker_cli_effective(),
                 expose_substrate=(
                     self.config.grader is not None and self.config.grader.expose_substrate
                 ),
@@ -2333,9 +2550,14 @@ class Orchestrator:
         # This allows the adapter to get resolved port/api_key
         self._ensure_typesense_started()
 
-        # Create adapter if not already created
+        # Create adapter if not already created. A ``harnesses:`` block builds a
+        # CompositeAdapter (one adapter per entry); otherwise the single-adapter
+        # path is exactly as before.
         if self.adapter is None:
-            self.adapter = self._create_adapter()
+            if self.config.harnesses is not None:
+                self.adapter = self._create_composite_adapter()
+            else:
+                self.adapter = self._create_adapter()
 
         # Execution-mode capability gate: a run that names a coding harness
         # (anything but the engine-loop sentinel, from either config address)
@@ -2346,33 +2568,37 @@ class Orchestrator:
         # This gate classifies delegation from the config harness slug, while
         # the conductor classifies from emitted command metadata — two seams
         # that can diverge; unifying them is tracked in #1758.
-        selected_harness = _configured_harness(self.config)
-        if selected_harness is not None:
-            supported = adapter_supported_modes(self.adapter)
-            if ExecutionMode.DELEGATED not in supported:
-                adapter_type_name = (
-                    getattr(
-                        self.config.evaluation.harness_adapter,
-                        "type",
-                        "native",
+        # A multi-harness run gates each entry's mode during composite build
+        # (``_gate_entry_execution_mode``, above), per entry rather than once at
+        # the run level, so this run-level gate is skipped for it.
+        if self.config.harnesses is None:
+            selected_harness = _configured_harness(self.config)
+            if selected_harness is not None:
+                supported = adapter_supported_modes(self.adapter)
+                if ExecutionMode.DELEGATED not in supported:
+                    adapter_type_name = (
+                        getattr(
+                            self.config.evaluation.harness_adapter,
+                            "type",
+                            "native",
+                        )
+                        if self.config.evaluation.harness_adapter
+                        else "native"
                     )
-                    if self.config.evaluation.harness_adapter
-                    else "native"
-                )
-                raise RuntimeError(
-                    f"coding harness {selected_harness!r} selects the "
-                    f"{ExecutionMode.DELEGATED.value!r} execution mode, but "
-                    f"adapter {adapter_type_name!r} runs only "
-                    f"{sorted(mode.value for mode in supported)}. An adapter "
-                    "declares the delegated mode by overriding "
-                    "``supported_execution_modes`` to include "
-                    "``ExecutionMode.DELEGATED`` (the shipped opt-ins are "
-                    "terminal_bench and native). Either drop the harness "
-                    "(``models.agent.harness`` or "
-                    "``evaluation.harness_adapter.params.agent_harness``) to "
-                    "run the engine's LLM loop, or switch to an adapter that "
-                    "runs the delegated mode."
-                )
+                    raise RuntimeError(
+                        f"coding harness {selected_harness!r} selects the "
+                        f"{ExecutionMode.DELEGATED.value!r} execution mode, but "
+                        f"adapter {adapter_type_name!r} runs only "
+                        f"{sorted(mode.value for mode in supported)}. An adapter "
+                        "declares the delegated mode by overriding "
+                        "``supported_execution_modes`` to include "
+                        "``ExecutionMode.DELEGATED`` (the shipped opt-ins are "
+                        "terminal_bench and native). Either drop the harness "
+                        "(``models.agent.harness`` or "
+                        "``evaluation.harness_adapter.params.agent_harness``) to "
+                        "run the engine's LLM loop, or switch to an adapter that "
+                        "runs the delegated mode."
+                    )
 
         self._warn_on_unreliable_pricing()
         self._refuse_an_unregistered_agent_loop()
@@ -2380,23 +2606,48 @@ class Orchestrator:
         self._refuse_prices_it_cannot_vouch_for()
         self._refuse_an_unenforceable_cost_limit()
 
-        # Get task IDs from adapter
-        task_ids = self.adapter.get_task_ids()
-
-        # Load each task
         strict = self.config.orchestrator.strict_task_load
         loaded: list[TaskConfig] = []
-        for task_id in task_ids:
-            try:
-                loaded.append(self.adapter.get_task(task_id))
-            except Exception as e:
-                if strict:
-                    raise RuntimeError(
-                        f"Failed to load task {task_id!r}: {e} "
-                        "(orchestrator.strict_task_load=true — the run refuses "
-                        "to start with a silently shorter task list)"
-                    ) from e
-                self.logger.error("Failed to load task", task_id=task_id, error=str(e))
+        if self.config.harnesses is not None:
+            # Multi-harness: load each entry's tasks through its own adapter and
+            # build the dispatch matrix. The builder already enumerated and
+            # overlap-guarded the ids, so ``_entry_of_task`` is total here.
+            composite = cast(CompositeAdapter, self.adapter)
+            for entry in composite.entries.values():
+                for task_id in entry.task_ids:
+                    try:
+                        task = entry.adapter.get_task(task_id)
+                    except Exception as e:
+                        if strict:
+                            raise RuntimeError(
+                                f"Failed to load task {task_id!r} (entry "
+                                f"{entry.name!r}): {e} "
+                                "(orchestrator.strict_task_load=true — the run "
+                                "refuses to start with a silently shorter task list)"
+                            ) from e
+                        self.logger.error(
+                            "Failed to load task",
+                            task_id=task_id,
+                            entry=entry.name,
+                            error=str(e),
+                        )
+                        continue
+                    loaded.append(task)
+                    self._entry_of_task[task_id] = entry.name
+                    self.task_units.append((entry.name, entry.adapter, task))
+        else:
+            # Single adapter: load every discovered task exactly as before.
+            for task_id in self.adapter.get_task_ids():
+                try:
+                    loaded.append(self.adapter.get_task(task_id))
+                except Exception as e:
+                    if strict:
+                        raise RuntimeError(
+                            f"Failed to load task {task_id!r}: {e} "
+                            "(orchestrator.strict_task_load=true — the run refuses "
+                            "to start with a silently shorter task list)"
+                        ) from e
+                    self.logger.error("Failed to load task", task_id=task_id, error=str(e))
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
@@ -2713,7 +2964,7 @@ class Orchestrator:
         offending = [
             task.task_id
             for task in self.tasks
-            if self.adapter.to_task_description(task.task_id).grading.llm_judge is not None
+            if self._task_description(task.task_id).grading.llm_judge is not None
         ]
         if offending:
             raise ValueError(
@@ -2793,7 +3044,8 @@ class Orchestrator:
         token already spent.
         """
         adapter_type = self._task_description(task.task_id).adapter_type
-        task_dir = self.adapter.get_task_dir(task.task_id)
+        task_adapter = self._adapter_for_task(task.task_id)
+        task_dir = task_adapter.get_task_dir(task.task_id)
         source = grading_source_under_adapter(task, task_dir, adapter_type)
         if source.kind is GradingSourceKind.WITHHELD:
             return f"* {task.task_id} — {source.reason}"
@@ -2805,9 +3057,9 @@ class Orchestrator:
                 source.path,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
                 replay_world=replay_world_under_adapter(task, task_dir, adapter_type),
-                hash_sources=self.adapter.grading_hash_source_layer(task, task_dir),
+                hash_sources=task_adapter.grading_hash_source_layer(task, task_dir),
                 seeded_tables=seeded_tables_under_adapter(task, task_dir, adapter_type),
-                combine_layer=self.adapter.grading_combine_layer(),
+                combine_layer=task_adapter.grading_combine_layer(),
                 fail_on=fail_on,
             )
         except (ValueError, RuntimeError, OSError) as exc:
@@ -3011,9 +3263,16 @@ class Orchestrator:
                 from tolokaforge.docker.stacks import core_stack, full_stack
 
                 self.logger.info("Auto-starting Docker services via EngineStack")
-                stack_requirements = (
-                    self.adapter.docker_stack_requirements() if self.adapter is not None else None
-                )
+                if self.config.harnesses is not None:
+                    # Merged union across entries, failing loud on an
+                    # irreconcilable conflict — never one entry's answer.
+                    stack_requirements = cast(
+                        CompositeAdapter, self.adapter
+                    ).union_docker_stack_requirements()
+                elif self.adapter is not None:
+                    stack_requirements = self.adapter.docker_stack_requirements()
+                else:
+                    stack_requirements = None
                 core_stack_kwargs = (
                     stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
                 )
@@ -3033,14 +3292,7 @@ class Orchestrator:
                 # The runner container is created knowing where TypeSense is,
                 # so nothing has to rewrite a task's address after the fact.
                 core_stack_kwargs.update(self._typesense_stack_kwargs())
-                adapter_type = (
-                    self.config.evaluation.harness_adapter.type
-                    if self.config.evaluation.harness_adapter
-                    else None
-                )
-                if _run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
-                    self.config
-                ):
+                if self._run_needs_docker_cli_effective():
                     self.logger.info(
                         "Docker CLI required in runner image "
                         "(terminal-bench adapter, compose-variant tools, "

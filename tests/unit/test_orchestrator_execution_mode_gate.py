@@ -228,3 +228,153 @@ class TestDelegatedGate:
         assert "claude-code" in message
         assert ExecutionMode.DELEGATED.value in message
         assert ExecutionMode.ENGINE_LOOP.value in message
+
+
+# ---------------------------------------------------------------------------
+# Multi-harness per-entry gate (issue #1750, slice A5)
+# ---------------------------------------------------------------------------
+
+
+class _DelegatedCapableAdapter(_EngineLoopOnlyAdapter):
+    """A fake adapter that runs both the engine loop and the delegated mode."""
+
+    supported_execution_modes = frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})
+
+
+@pytest.fixture(autouse=True)
+def _register_a5_fake() -> None:
+    from tolokaforge.adapters import register_adapter
+
+    register_adapter("fake_a5_engine", _EngineLoopOnlyAdapter)
+    register_adapter("fake_a5_delegated", _DelegatedCapableAdapter)
+
+
+def _multi_harness_config(entries: list[dict[str, Any]]) -> RunConfig:
+    return RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir="/tmp/execution_mode_gate"),
+        harnesses={"entries": entries},
+    )
+
+
+class TestMultiHarnessEntryGate:
+    def test_one_bad_entry_fails_loud(self) -> None:
+        orch = Orchestrator(
+            _multi_harness_config(
+                [{"name": "bad", "adapter": "fake_a5_engine", "mode": "delegated"}]
+            )
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            orch.load_tasks()
+
+        message = str(excinfo.value)
+        assert "bad" in message
+        assert "fake_a5_engine" in message
+        assert ExecutionMode.DELEGATED.value in message
+        assert ExecutionMode.ENGINE_LOOP.value in message
+
+    def test_valid_sibling_does_not_mask_a_bad_entry(self) -> None:
+        # The valid entry is listed first; the gate must still refuse the bad
+        # sibling rather than passing because a good entry cleared.
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {"name": "good", "adapter": "fake_a5_engine", "mode": "engine_loop"},
+                    {"name": "bad", "adapter": "fake_a5_engine", "mode": "delegated"},
+                ]
+            )
+        )
+        with pytest.raises(RuntimeError, match="bad"):
+            orch.load_tasks()
+
+    def test_all_valid_entries_load_cleanly(self) -> None:
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {"name": "a", "adapter": "fake_a5_engine"},
+                    {"name": "b", "adapter": "fake_a5_engine", "mode": "engine_loop"},
+                ]
+            )
+        )
+        # Engine-loop-only adapters serve no tasks here; the run loads with no
+        # gate refusal.
+        assert orch.load_tasks() is None
+
+
+class TestEngineLoopPerEntryAgentModel:
+    """An engine-loop entry may not carry a per-entry ``model.agent`` (#1769)."""
+
+    _AGENT_OVERRIDE = {"agent": {"provider": "openai", "name": "gpt-4o"}}
+
+    def test_engine_loop_entry_with_per_entry_agent_model_is_refused(self) -> None:
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {
+                        "name": "engine-leg",
+                        "adapter": "fake_a5_engine",
+                        "mode": "engine_loop",
+                        "model": self._AGENT_OVERRIDE,
+                    }
+                ]
+            )
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            orch.load_tasks()
+
+        message = str(excinfo.value)
+        assert "engine-leg" in message
+        assert "#1769" in message
+
+    def test_inferred_engine_loop_entry_with_agent_model_is_refused(self) -> None:
+        # No explicit mode: the agent model carries no harness, so the entry
+        # infers engine-loop — and still trips the per-entry-agent refusal.
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {
+                        "name": "inferred-leg",
+                        "adapter": "fake_a5_engine",
+                        "model": self._AGENT_OVERRIDE,
+                    }
+                ]
+            )
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            orch.load_tasks()
+
+        message = str(excinfo.value)
+        assert "inferred-leg" in message
+        assert "#1769" in message
+
+    def test_delegated_entry_with_per_entry_agent_model_is_allowed(self) -> None:
+        # A delegated entry honours its per-entry agent model (it flows through
+        # the harness command), so the refusal must not fire.
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {
+                        "name": "delegated-leg",
+                        "adapter": "fake_a5_delegated",
+                        "mode": "delegated",
+                        "model": self._AGENT_OVERRIDE,
+                    }
+                ]
+            )
+        )
+        assert orch.load_tasks() is None
+
+    def test_engine_loop_entry_without_agent_model_is_allowed(self) -> None:
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {
+                        "name": "engine-leg",
+                        "adapter": "fake_a5_engine",
+                        "mode": "engine_loop",
+                    }
+                ]
+            )
+        )
+        assert orch.load_tasks() is None
