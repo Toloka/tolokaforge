@@ -2,6 +2,11 @@
 
 Runs Harbor (Terminal-Bench 2.0) tasks on the tolokaforge runner.
 
+**Opt-in install — not part of the default.** `pip install tolokaforge` is the
+engine loop only and pulls in nothing Harbor. Add this adapter with
+`pip install "tolokaforge[harbor]"` (or `tolokaforge[adapters]` for all shipped
+adapters).
+
 Harbor tasks *are* Terminal-Bench 2.0 tasks: a `task.toml` beside an
 `environment/` build context, with a `tests/test.sh` that writes a reward to
 `/logs/verifier/reward.txt`. This adapter loads a local pack of such tasks,

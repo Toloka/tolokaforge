@@ -13,6 +13,31 @@ flags — is `AdapterGradingContract` in
 
 ---
 
+## Installing adapters — opt-in, never by default
+
+The default install is the engine loop only:
+
+```bash
+pip install tolokaforge          # engine loop; no other-harness dependencies
+```
+
+Adapters for other harnesses ship as separate out-of-tree packages, installed
+only through extras. Installing one never changes the engine; it just makes that
+adapter discoverable (via the `tolokaforge.adapters` entry point):
+
+```bash
+pip install "tolokaforge[terminal_bench]"   # Terminal-Bench tasks
+pip install "tolokaforge[harbor]"           # Harbor (Terminal-Bench 2.0) tasks
+pip install "tolokaforge[adapters]"         # all shipped adapters
+```
+
+`pip install tolokaforge` must never pull in an adapter package or a third-party
+harness distribution — that boundary is enforced by
+`tests/canonical/test_default_install_opt_in_boundary.py`. We do not overflow the
+engine's dependencies with other harnesses by default.
+
+---
+
 ## Execution modes
 
 Every trial runs in one of two shapes, named by `ExecutionMode` in
