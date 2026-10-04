@@ -119,7 +119,10 @@ class TestErrorReasonPropagation:
             logger=StructuredLogger("test-provision-failure-bundle"),
         )
 
-        executor.execute(make_trial_spec(trial_id="task-9:3"), make_task_config(task_id="task-9"))
+        executor.execute(
+            make_trial_spec(trial_id="task-9:3", task_id="task-9"),
+            make_task_config(task_id="task-9"),
+        )
 
         metrics = yaml.safe_load((_trial_dir(tmp_path, "task-9", 3) / "metrics.yaml").read_text())
         assert metrics["error_reason"] == "compose pull failed: image not found"
@@ -189,7 +192,8 @@ class TestStageSurvivesToMetricsAndTrajectory:
         )
 
         result = executor.execute(
-            make_trial_spec(trial_id="task-7:0"), make_task_config(task_id="task-7")
+            make_trial_spec(trial_id="task-7:0", task_id="task-7"),
+            make_task_config(task_id="task-7"),
         )
 
         assert isinstance(result, TrialResult)
