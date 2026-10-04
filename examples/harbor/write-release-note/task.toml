@@ -1,0 +1,16 @@
+[metadata]
+author_name = "tolokaforge"
+difficulty = "easy"
+category = "software_engineering"
+tags = ["shell", "files"]
+
+[agent]
+timeout_sec = 120.0
+
+[verifier]
+timeout_sec = 60.0
+
+[environment]
+cpus = 1
+memory_mb = 512
+storage_mb = 1024
