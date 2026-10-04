@@ -652,6 +652,17 @@ class BaseAdapter(ABC):
         """
         return None
 
+    def for_entry(self, name: str) -> "BaseAdapter":
+        """The adapter that runs harness entry *name*.
+
+        A single-adapter run has no harness entries, so the default returns
+        ``self`` and the conductor's per-trial resolution is a no-op — the
+        single-adapter path is byte-for-byte unchanged.
+        :class:`~tolokaforge.core.adapter_registry.CompositeAdapter` overrides
+        this to route each entry to its own adapter instance.
+        """
+        return self
+
     def convert_to_native(self, task_id: str) -> NativeTaskBundle:
         """Convert an external task to native TolokaForge format.
 
