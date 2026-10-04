@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -911,10 +911,10 @@ class Orchestrator:
         """
         if self.adapter is None:
             return {}
-        if isinstance(self.adapter, CompositeAdapter):
+        if self.config.harnesses is not None:
             # One fingerprint per distinct adapter type across entries — the
             # explicit union, never a single entry's answer.
-            return self.adapter.fingerprints_by_type()
+            return cast(CompositeAdapter, self.adapter).fingerprints_by_type()
         payload = self.adapter.fingerprint()
         if payload is None:
             return {}
@@ -1122,32 +1122,36 @@ class Orchestrator:
             return self.adapter
         return self.adapter.for_entry(entry_name)
 
-    def _any_entry_uses_coding_harness(self) -> bool:
-        """Whether any harness entry selects a coding-harness CLI (its merged
-        agent model declares a ``harness``). ``False`` for a single-adapter run.
+    def _run_selects_coding_harness(self) -> bool:
+        """Whether the run selects a coding-harness CLI on any adapter it runs.
+
+        Single-adapter: the run-level ``models.agent.harness``. Multi-harness:
+        any entry whose effective (entry-over-run) agent model declares a
+        ``harness``. Read from the config, so it needs no adapter-identity
+        branch.
         """
-        if not isinstance(self.adapter, CompositeAdapter):
-            return False
-        return any(
-            (agent := self._entry_agent_model(entry.config)) is not None
-            and agent.harness is not None
-            for entry in self.adapter.entries.values()
-        )
+        if self.config.harnesses is not None:
+            return any(
+                (agent := self._entry_agent_model(entry)) is not None and agent.harness is not None
+                for entry in self.config.harnesses.entries
+            )
+        return _run_uses_coding_harness(self.config)
 
     def _run_needs_docker_cli_effective(self) -> bool:
         """Whether the runner needs the host Docker CLI, across every adapter.
 
-        Single-adapter: today's predicate — the adapter class flag or a
+        Single-adapter: today's predicate unchanged — the adapter's class flag
+        (resolved from its config type via :func:`adapter_class`) or a
         compose-variant tool, OR the run's coding-harness selection.
-        Multi-harness: the explicit OR across entries
-        (:meth:`CompositeAdapter.any_requires_docker_cli`), the same
-        compose-variant check, and a coding-harness selection on any entry.
+        Multi-harness: the same predicate OR'd across entries — each entry's
+        adapter-type class flag, the shared compose-variant check, and a
+        coding-harness selection on any entry.
         """
-        if isinstance(self.adapter, CompositeAdapter):
+        if self.config.harnesses is not None:
             return (
-                self.adapter.any_requires_docker_cli()
+                cast(CompositeAdapter, self.adapter).any_requires_docker_cli()
                 or _tasks_use_compose_variant_tools(self.tasks)
-                or self._any_entry_uses_coding_harness()
+                or self._run_selects_coding_harness()
             )
         adapter_type = (
             self.config.evaluation.harness_adapter.type
@@ -1351,12 +1355,12 @@ class Orchestrator:
         grader_config = self.config.grader
         if grader_config and grader_config.name:
             grader_name = grader_config.name
-        elif isinstance(self.adapter, CompositeAdapter):
+        elif self.config.harnesses is not None:
             # A mixed run has one grading transport: with no explicit
-            # ``grader.name``, the entries must agree on their adapter-default
+            # ``grader.name`` the entries must agree on their adapter-default
             # ``trial_grader_name``; a disagreement is refused naming the
-            # entries. The composite's bare ``trial_grader_name`` would raise.
-            grader_name = self.adapter.agreed_trial_grader_name()
+            # entries.
+            grader_name = cast(CompositeAdapter, self.adapter).agreed_trial_grader_name()
         else:
             grader_name = self.adapter.trial_grader_name
         # In-process routing shim: only populated when the backend has no
@@ -2584,11 +2588,12 @@ class Orchestrator:
 
         strict = self.config.orchestrator.strict_task_load
         loaded: list[TaskConfig] = []
-        if isinstance(self.adapter, CompositeAdapter):
+        if self.config.harnesses is not None:
             # Multi-harness: load each entry's tasks through its own adapter and
             # build the dispatch matrix. The builder already enumerated and
             # overlap-guarded the ids, so ``_entry_of_task`` is total here.
-            for entry in self.adapter.entries.values():
+            composite = cast(CompositeAdapter, self.adapter)
+            for entry in composite.entries.values():
                 for task_id in entry.task_ids:
                     try:
                         task = entry.adapter.get_task(task_id)
@@ -3238,10 +3243,12 @@ class Orchestrator:
                 from tolokaforge.docker.stacks import core_stack, full_stack
 
                 self.logger.info("Auto-starting Docker services via EngineStack")
-                if isinstance(self.adapter, CompositeAdapter):
+                if self.config.harnesses is not None:
                     # Merged union across entries, failing loud on an
                     # irreconcilable conflict — never one entry's answer.
-                    stack_requirements = self.adapter.union_docker_stack_requirements()
+                    stack_requirements = cast(
+                        CompositeAdapter, self.adapter
+                    ).union_docker_stack_requirements()
                 elif self.adapter is not None:
                     stack_requirements = self.adapter.docker_stack_requirements()
                 else:
