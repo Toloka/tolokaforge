@@ -186,6 +186,47 @@ harnesses:
   the entry, its adapter, the mode, and the supported set. (The config-side and
   conductor-side mode classification are unified under #1758.)
 
+#### Worked example — one task across two harnesses
+
+Run the same task under two harness entries in one run: one entry runs the task
+under the engine's own loop, the other runs it under `terminal_bench` (further
+harnesses plug in as additional entries the same way). The shared `task_id`
+appears under both entries, so each leg is an independent trial.
+
+```yaml
+harnesses:
+  entries:
+    - name: engine
+      adapter: native
+      projects: ["/abs/path/pack"]
+      task_ids: ["fix-order-sync"]
+    - name: terminal_bench
+      adapter: terminal_bench
+      task_ids: ["fix-order-sync"]
+      params:
+        terminal_bench_dir: "examples/terminal_bench"
+```
+
+With `repeats: 1` this run writes two independent bundles for the one task —
+one per entry, under the `trials/<entry>/<task>/<idx>/` layout:
+
+```
+results/<run>/trials/
+├── engine/fix-order-sync/0/          # the engine-loop leg
+│   ├── trajectory.yaml               # harness_entry: engine
+│   └── grade.yaml
+└── terminal_bench/fix-order-sync/0/  # the terminal_bench leg
+    ├── trajectory.yaml               # harness_entry: terminal_bench
+    └── grade.yaml
+```
+
+The durable queue and the resume state are keyed by the same
+`(entry, task_id, trial_index)` triple, so `--resume` replays only the legs that
+did not finish: a resume after `engine/fix-order-sync/0` completed re-runs
+`terminal_bench/fix-order-sync/0` alone and leaves the completed leg untouched.
+
+A shipped multi-harness run config lives at `examples/harbor/run_harbor_multi.yaml`.
+
 ### `rate_limit_probe:` — measure a provider's served throughput
 
 Off by default. When enabled, 429s retry at a **fixed** interval until a
