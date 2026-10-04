@@ -124,6 +124,8 @@ def _spec(trial_index: int, attempt_id: int) -> TrialSpec:
         trial_id=f"refund:{trial_index}",
         run_id="session-run_20261001",
         attempt_id=attempt_id,
+        task_id="refund",
+        trial_index=trial_index,
         task=TaskDescription(
             task_id="refund",
             name="refund",

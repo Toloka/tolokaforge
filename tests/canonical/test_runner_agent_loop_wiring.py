@@ -366,6 +366,8 @@ def _conductor_spec() -> TrialSpec:
     return TrialSpec(
         trial_id=f"{_CONDUCTOR_TASK_ID}:0",
         run_id="agent-loop-wiring",
+        task_id=_CONDUCTOR_TASK_ID,
+        trial_index=0,
         task=TaskDescription(
             task_id=_CONDUCTOR_TASK_ID,
             name=_CONDUCTOR_TASK_ID,

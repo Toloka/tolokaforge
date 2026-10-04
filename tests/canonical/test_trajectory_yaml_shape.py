@@ -31,6 +31,8 @@ _EXPECTED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
     {
         "task_id",
         "trial_index",
+        "harness_entry",  # owning harnesses entry (None for a single-adapter run)
+        "adapter_type",  # resolved adapter's registered type for this bundle
         "attempt_id",  # the final attempt the trial ran as (live tracing, ADR-0047)
         "simulator_schema_version",
         "start_ts",
