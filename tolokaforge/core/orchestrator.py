@@ -1094,6 +1094,13 @@ class Orchestrator:
         ``mode`` or its harness selection); the conductor classifies from
         emitted command metadata — two seams that can diverge, unified under
         #1758.
+
+        An engine-loop entry that also sets a per-entry ``model.agent`` is
+        refused here: the engine loop uses the single run-level ``models.agent``
+        client, so a per-entry agent model would be a silent no-op. Honouring it
+        is follow-up #1769; until then the entry must omit it (use the run-level
+        agent) or be a delegated entry, where the per-entry agent model flows
+        through the harness command.
         """
         resolved_mode = self._resolve_entry_mode(entry_config)
         supported = adapter_supported_modes(adapter)
@@ -1107,6 +1114,19 @@ class Orchestrator:
                 "``ExecutionMode.DELEGATED``. Either change the entry's mode / "
                 "harness, or switch it to an adapter that runs that mode."
             )
+        if resolved_mode is ExecutionMode.ENGINE_LOOP and self._entry_sets_agent_model(
+            entry_config
+        ):
+            raise RuntimeError(
+                f"harness entry {entry_config.name!r}: a per-entry model.agent is "
+                "not honored for engine-loop entries yet (see #1769); omit it to "
+                "use the run-level models.agent, or use a delegated entry."
+            )
+
+    @staticmethod
+    def _entry_sets_agent_model(entry_config: Any) -> bool:
+        """Whether this entry declares its own ``model.agent`` override."""
+        return entry_config.model is not None and "agent" in entry_config.model
 
     def _adapter_for_task(self, task_id: str) -> BaseAdapter:
         """The adapter that owns *task_id*.

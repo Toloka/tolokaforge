@@ -197,6 +197,37 @@ class TestUnionAccessors:
         # native reports nothing (omitted); the delegated type reports a payload.
         assert fps == {"fake_delegated": {"kind": "delegated", "rev": "abc"}}
 
+    def test_fingerprints_by_type_agreeing_same_type_returns_one(self) -> None:
+        # Two entries of the same adapter type reporting the identical
+        # fingerprint collapse to the single payload.
+        a = _DelegatedAdapter({})
+        b = _DelegatedAdapter({})
+        composite = CompositeAdapter(
+            [
+                _entry("a", a, "fake_delegated", ["d1"]),
+                _entry("b", b, "fake_delegated", ["d2"]),
+            ]
+        )
+        assert composite.fingerprints_by_type() == {
+            "fake_delegated": {"kind": "delegated", "rev": "abc"}
+        }
+
+    def test_fingerprints_by_type_disagreement_raises(self) -> None:
+        a = _DelegatedAdapter({})
+        b = _DelegatedAdapter({})
+        b._fingerprint = {"kind": "delegated", "rev": "xyz"}
+        composite = CompositeAdapter(
+            [
+                _entry("a", a, "fake_delegated", ["d1"]),
+                _entry("b", b, "fake_delegated", ["d2"]),
+            ]
+        )
+        with pytest.raises(ValueError, match="disagree on their fingerprint") as excinfo:
+            composite.fingerprints_by_type()
+        message = str(excinfo.value)
+        assert "'a'" in message
+        assert "'b'" in message
+
     def test_agreed_trial_grader_name_agrees(self) -> None:
         # Both fakes inherit BaseAdapter.trial_grader_name = "runner_rpc".
         assert self._composite().agreed_trial_grader_name() == "runner_rpc"

@@ -138,9 +138,9 @@ harnesses:
       task_ids: []               # optional explicit allow-list
     - name: tau-leg              # optional; derived from adapter (+ mode) if omitted
       adapter: tau
-      mode: engine_loop          # optional execution-mode override
+      mode: delegated            # optional execution-mode override
       model:                     # optional per-entry model map, merged over `models`
-        agent:
+        agent:                   # honored for delegated entries (flows via harness)
           provider: openrouter
           name: "anthropic/claude-sonnet-4.6"
       params: {}                 # adapter-specific params for this entry
@@ -166,7 +166,12 @@ harnesses:
   run-level `evaluation.projects` / `evaluation.tasks_glob`; set them on the
   entry to override. A per-entry `model` map is merged role-wise over the
   run-level `models` (the entry wins per role; roles it does not name fall back
-  to `models`).
+  to `models`). This override currently applies to delegated entries (and to
+  adapter-param and execution-mode resolution); a per-entry `agent` model on an
+  **engine-loop** entry is not honored yet (the engine loop uses the single
+  run-level `models.agent` client) and is refused at gate time rather than
+  silently ignored — see #1769. Omit it to use the run-level agent, or make the
+  entry delegated.
 - **`task_packs`** on an entry is the deprecated alias for `projects`, coerced
   with a `DeprecationWarning` exactly as on `evaluation`.
 - Within this slice, a `task_id` must not appear under two entries; such a

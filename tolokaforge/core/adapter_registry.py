@@ -174,18 +174,33 @@ class CompositeAdapter(BaseAdapter):
         """One fingerprint per distinct adapter type across entries.
 
         Keyed by the entry's configured adapter type, matching the single-
-        adapter ``adapter_fingerprints[<type>]`` shape. The first entry of each
-        type that reports a non-``None`` fingerprint wins; types that report
-        nothing are omitted.
+        adapter ``adapter_fingerprints[<type>]`` shape. Entries of the same
+        adapter type must agree on their fingerprint; a within-type
+        disagreement is refused here — naming the type and the disagreeing
+        entries — rather than silently keeping one, mirroring
+        :meth:`agreed_trial_grader_name`. Types whose entries all report
+        ``None`` are omitted.
         """
-        fingerprints: dict[str, Any] = {}
-        for entry in self._entries.values():
-            adapter_type = entry.config.adapter
-            if adapter_type in fingerprints:
-                continue
+        by_type: dict[str, dict[str, Any]] = {}
+        for name, entry in self._entries.items():
             payload = entry.adapter.fingerprint()
-            if payload is not None:
-                fingerprints[adapter_type] = payload
+            if payload is None:
+                continue
+            by_type.setdefault(entry.config.adapter, {})[name] = payload
+
+        fingerprints: dict[str, Any] = {}
+        for adapter_type, by_entry in by_type.items():
+            distinct = {repr(payload) for payload in by_entry.values()}
+            if len(distinct) > 1:
+                disagreement = ", ".join(
+                    f"{name!r} ({payload!r})" for name, payload in sorted(by_entry.items())
+                )
+                raise ValueError(
+                    f"Entries of adapter type {adapter_type!r} disagree on their "
+                    f"fingerprint: {disagreement}. Same-type entries must produce "
+                    "the same fingerprint for the composite to record one."
+                )
+            fingerprints[adapter_type] = next(iter(by_entry.values()))
         return fingerprints
 
     def agreed_trial_grader_name(self) -> str:
