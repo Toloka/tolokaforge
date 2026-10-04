@@ -164,8 +164,11 @@ office = [
 terminal_bench = [
     "tolokaforge-adapter-terminal-bench",
 ]
+harbor = [
+    "tolokaforge-adapter-harbor",
+]
 adapters = [
-    "tolokaforge[terminal_bench]",
+    "tolokaforge[terminal_bench,harbor]",
 ]
 all = [
     "tolokaforge[dx,browser,server,rag,office,adapters,runner]",
@@ -559,6 +562,7 @@ extend-exclude = '''
   | tests/data/projects
   | external_adapters
   | examples/terminal_bench
+  | examples/harbor
 )
 '''
 
@@ -569,9 +573,10 @@ extend-exclude = [
     "**/node_modules",
     "**/__pycache__", 
     "contrib",
-    "tests/data/projects", 
+    "tests/data/projects",
     "external_adapters",
     "examples/terminal_bench",
+    "examples/harbor",
 ]
 
 [tool.ruff.lint]
@@ -765,6 +770,7 @@ dev = [
     "hatchling>=1.31.0",
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
+    "tolokaforge-adapter-harbor",
     "dev-mcp",
     "automation",
     # boto3 pulled in for the S3BundleStore stubber tests
@@ -804,6 +810,7 @@ members = [
     "tools/rubric-calibrator",
     "tools/judge-kind-ab",
     "external_adapters/tolokaforge-adapter-terminal-bench",
+    "external_adapters/tolokaforge-adapter-harbor",
 ]
 
 [tool.uv.sources]
@@ -812,6 +819,7 @@ dev-mcp = { workspace = true }
 judge-kind-ab = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
+tolokaforge-adapter-harbor = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
 tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }
