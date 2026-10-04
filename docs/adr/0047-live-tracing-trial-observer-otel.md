@@ -147,10 +147,11 @@ We will adopt **Option 1**.
   tracing on writes `run_identity.json` (`run_id`, `run_tag`) into the run directory, so the
   offline uploader derives the same trace ids from the bundle.
 - Redaction: tool-call arguments go through `SensitiveKeyRedaction`; tool outputs and message
-  text are free text (key-based redaction does not apply) and are capped, not redacted; base64
-  image blocks are dropped from span attributes (media stays a receiver-specific step outside the
-  engine). The receiver's headers are read through the `SecretManager`, so their value is in the
-  log-redaction set.
+  text are free text (key-based redaction does not apply) and are capped, and every live span
+  is scanned by the data-safety gate before it is queued: one that would carry a secret is
+  withheld and counted, never rewritten; base64 image blocks are dropped from span attributes
+  (media stays a receiver-specific step outside the engine). The receiver's headers are read
+  through the `SecretManager`, so their value is in the log-redaction set.
 - Scores stay outside the engine: the grade rides as root-span attributes (`pass`, `score`,
   component values in metadata); Langfuse scores are posted by the uploader's `attach-grades`
   or a receiver-side step.
@@ -286,8 +287,9 @@ the grading with its judge transcript, its scores and the trace-level mirror, th
 trial logs, guard records, provisioning failures, budget hits and service captures, and media for
 base64 image blocks with the token in the observation output; everything through the ingestion
 API under the shared id contract, so the live spans are the preview and the bundle projection is
-the truth (an upsert over the OTLP-created observations). The serialised events pass the same
-data-safety scan as the files; a hit sends nothing and counts. `observability.tracing.options.langfuse.projection`
+the truth (an upsert over the OTLP-created observations). The events pass the same data-safety
+scan as the live spans (the serialised events, and the raw strings for the credential values); a
+hit sends nothing and counts. `observability.tracing.options.langfuse.projection`
 selects `full` (default), `gradings` (the previous amendment's behaviour) or `none`;
 `tracing_receipt.json` counts projections, observations, events, scores and media. Drift between
 the two implementations is caught by a golden parity test committed in both repositories over a
@@ -514,6 +516,39 @@ producers read different documents; the preflight warns, and only a deployment-s
 forbid it. A profile path (TOML included) and `TOLOKAFORGE_TRACING_PROFILE` keep working, and a
 deployment without `environments` keeps the previous environment precedence. `TracingConfig`,
 the receipt model, the seam and the plugin API version (**4**) do not change.
+
+## Amendment 2026-10-03: typed observations, positionless names, call clocks, a profiled name and user
+
+Context. The receiver's dashboards group by observation type, observation name, trace name and
+user. Every root, tool and grading was a `span`, so the tool views stayed empty; every generation
+carried its position in its name, and every trace its run label and task, so the views by name
+split into one series per position or task; nothing set a user; and a generation's clocks were its
+own message's and the next one's, which is the work that followed it, not its model call.
+
+Decision.
+
+- **Typed observations.** The root is an `agent` observation, a tool execution a `tool`, a grading
+  an `evaluator`, in both producers and on every row (previews and error roots included): the
+  ingestion events `agent-create`, `tool-create`, `evaluator-create`, the OTLP
+  `langfuse.observation.type` values `agent`, `tool`, `evaluator`. Generations and events are
+  unchanged.
+- **Names without positions.** `trial`, `agent`, `user simulator`, `judge`, `grading`,
+  `<actor> call (no message)`; the position stays in the metadata (`message_index`, `call_index`)
+  and in the id contract, which does not change.
+- **Call clocks.** A message's `ts` is when it was recorded, so what produced it ran from the
+  message before it to its own clock; a missing clock collapses the window, never stretches it.
+- **The trace's name and user are the deployment's.** The profile gains `[trace]`: `name`, a
+  template over the trace's tag values and the run's `{label}`, and `user`, `none` or `model` (the
+  agent's model identity under the deployment's model-name rules). Without it nothing changes: the
+  name stays `<label>/<task_id>` and a trace has no user. Every row of a trace must agree, so a
+  template names only tags a trial's rows carry from its start (not `reasoning_*` or `route`, which
+  only the bundle gives), and a model the rules cannot read gives no user on any row.
+
+Consequences. The views by type, name and user work for any deployment that sets `[trace]`; one
+that does not keeps its names. Traces written before the change keep their shape: a receiver that
+writes once never rewrites them, so a backfill that should look like the new traces runs after the
+change. A profile with `[trace]` needs a wheel that knows it (the profile reader refuses an unknown
+block), so a deployment adopts it together with the wheel. The plugin API version does not change.
 
 ## Links
 

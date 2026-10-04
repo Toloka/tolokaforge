@@ -137,6 +137,42 @@ class TestSecretScan:
         )
 
 
+class TestSecretScanOfAStructuredValue:
+    AWKWARD = 'tok"en\\8f3a91c2b7d04e56'
+
+    def test_a_known_value_json_would_escape_is_found_in_the_raw_strings(self) -> None:
+        scan = SecretScan(known_values=[self.AWKWARD])
+        value = {"body": {"output": f"the config says {self.AWKWARD}"}}
+        assert scan.scan(json.dumps(value, ensure_ascii=False).encode()) == []
+        assert scan.scan_structured(value) == ["known-secret-value (**** (23 chars))"]
+
+    def test_code_that_names_a_key_or_a_token_count_is_clean(self) -> None:
+        code = (
+            "api_key = os.environ.get('X')\ntotal_tokens = response.usage.total_tokens\n"
+            "GPG_KEY=0123456789ABCDEF0123456789ABCDEF01234567\n"
+        )
+        assert SecretScan().scan_structured({"body": {"output": code}}) == []
+
+    def test_a_scan_given_a_gate_scans_with_that_known_set(self) -> None:
+        """One known set: what the observer's gate learns or leaves out, the scan follows."""
+        from tolokaforge_langfuse.safety import SafetyGate
+
+        gate = SafetyGate.from_environment({"DB_PASSWORD": "a-db-password-no-shape-matches"})
+        scan = SecretScan(gate=gate)
+        assert scan.gate is gate
+        assert scan.scan(b"a-db-password-no-shape-matches") == [
+            "known-secret-value (**** (30 chars))"
+        ]
+        gate.drop_ambient(["a-db-password-no-shape-matches"])
+        assert scan.scan(b"a-db-password-no-shape-matches") == []
+
+    def test_the_scan_prints_no_known_value(self) -> None:
+        scan = SecretScan(known_values=[self.AWKWARD, "process-held-secret-value-123"])
+        scan.scan_structured({"output": self.AWKWARD})
+        text = repr(scan) + repr(scan._gate)
+        assert "8f3a91c2" not in text and "process-held" not in text
+
+
 class TestManifest:
     def test_manifest_v2_shape_and_completeness(self, tmp_path: Path) -> None:
         trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
@@ -477,6 +513,17 @@ class TestTrialEndStepExtras:
             )
             is None
         )
+
+    def test_scan_events_finds_a_known_value_json_would_escape(self) -> None:
+        awkward = 'tok"en\\8f3a91c2b7d04e56'
+        step = _attachments(_FakeLangfuse(), scan=SecretScan([awkward]))
+        events = [{"type": "tool-create", "body": {"output": f"it printed {awkward}"}}]
+        assert step.scan_events(events) == ["known-secret-value (**** (23 chars))"]
+        assert step.scan_events([{"body": {"output": "it printed nothing"}}]) == []
+
+    def test_scan_events_lets_code_that_names_a_key_pass(self) -> None:
+        code = "api_key = os.environ.get('X')\ntotal_tokens = response.usage.total_tokens\n"
+        assert _attachments(_FakeLangfuse()).scan_events([{"body": {"output": code}}]) == []
 
     def test_scan_events_serialises_foreign_values(self) -> None:
         import datetime

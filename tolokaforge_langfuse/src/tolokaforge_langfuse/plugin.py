@@ -44,7 +44,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-import re
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -65,6 +65,7 @@ from tolokaforge_langfuse.preflight import (
     resolve_plan,
 )
 from tolokaforge_langfuse.projection import PROJECTION_FULL
+from tolokaforge_langfuse.safety import SafetyGate, looks_secret
 
 if TYPE_CHECKING:
     from tolokaforge.core.models import TracingConfig
@@ -152,6 +153,7 @@ def build(
     release = engine_release()
     producer = producer_identity()
     version = producer_version(producer, plan.resolver.rules_version, plan.profile)
+    gate = live_gate(headers)
     attachments = build_attachments(
         settings,
         endpoint=endpoint,
@@ -160,6 +162,7 @@ def build(
         # in the v4 layout the manifest is part of the root observation, and a legacy
         # trace-create update would be refused anyway
         send_manifest_event=server_api == SERVER_V3,
+        gate=gate,
     )
     try:
         exporter = make_otlp_exporter(
@@ -205,8 +208,12 @@ def build(
             version=version,
             producer=producer,
             derived_groups=plan.profile.derived_groups,
+            trace_name=plan.profile.trace_name,
+            trace_user=plan.profile.trace_user,
         ),
         server_api=server_api,
+        gate=gate,
+        ambient=(run_id, identity.run_tag),
     )
 
 
@@ -413,12 +420,6 @@ def check_expected_project(
 
 
 OTLP_HEADERS_SECRET = "OTEL_EXPORTER_OTLP_HEADERS"
-_SECRET_NAME = re.compile(
-    r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|PRIVATE|SIGNING|COOKIE|SESSION)", re.I
-)
-_NOT_SECRET_NAME = re.compile(
-    r"(PUBLIC_KEY_ID|_FILE$|_PATH$|_DIR$|_URL$|_BASE$|_NAME$|_HEADER$)", re.I
-)
 
 
 def build_attachments(
@@ -428,16 +429,18 @@ def build_attachments(
     headers: dict[str, str] | None = None,
     environment: str | None = None,
     send_manifest_event: bool = True,
+    gate: SafetyGate | None = None,
 ) -> Any:
     """The post-trial step (the attachments and the ingestion route of the trial-end pass) for
     ``observability.tracing.options.langfuse.attach`` / ``projection``; ``None`` only when nothing
     runs at trial end (``attach: none`` and ``projection: none``, or ``projection: gradings`` with
     ``gradings: false``). The receiver's REST base derives from the OTLP endpoint unless given,
-    the headers are the OTLP exporter's, the data-safety scan knows the ``SecretManager``'s
-    credential values (keys with secret-like names; URL, path and name values are not
-    credentials and a bundle may legitimately quote them), and ``environment`` rides on the
-    manifest update too. ``send_manifest_event`` is false in the v4 layout, where the
-    manifest is part of the root observation instead of a ``trace-create`` update."""
+    the headers are the OTLP exporter's, the data-safety scan is the run's ``gate`` (the observer's
+    own, so one known set; without one, the ``SecretManager``'s credential values: keys with
+    secret-like names, where URL, path and name values are not credentials and a bundle may
+    legitimately quote them), and ``environment`` rides on the manifest update too.
+    ``send_manifest_event`` is false in the v4 layout, where the manifest is part of the root
+    observation instead of a ``trace-create`` update."""
     from tolokaforge_langfuse.attachments import ATTACH_NONE, SecretScan
     from tolokaforge_langfuse.media import (
         LangfuseAttachments,
@@ -452,7 +455,7 @@ def build_attachments(
         api_base=settings.attach_api_base or api_base_from_endpoint(endpoint),
         headers=(headers if headers is not None else otlp_headers()) or {},
         mode=settings.attach,
-        scan=SecretScan(secret_values()),
+        scan=SecretScan(gate=gate) if gate is not None else SecretScan(secret_values()),
         timeout_s=settings.attach_timeout_s,
         budget_s=settings.attach_budget_s,
         environment=environment,
@@ -460,23 +463,64 @@ def build_attachments(
     )
 
 
-def secret_values() -> list[str]:
-    """The credential values the ``SecretManager`` resolves under secret-like key names."""
+def live_gate(headers: Mapping[str, str] | None = None) -> SafetyGate:
+    """The data-safety gate of a run: every live span, the trial-end passes and the file
+    attachments scan with it, one known set. It knows the credentials this process holds (its
+    environment and the ``SecretManager``'s keys) and the receiver's header values, by name, and
+    re-reads them when the default ``SecretManager`` is replaced (a secret registered at run
+    time, ``register_runtime_secret``)."""
+    gate = _read_gate(headers)
+    gate.reload = _reloader(headers)
+    return gate
+
+
+def _read_gate(headers: Mapping[str, str] | None) -> SafetyGate:
+    held = {f"header {name}": value for name, value in (headers or {}).items()}
+    return SafetyGate.from_environment(extra={**secret_items(), **held})
+
+
+def _reloader(headers: Mapping[str, str] | None) -> Callable[[], SafetyGate | None]:
+    """A reload for the gate: a fresh gate once the default ``SecretManager`` is another one than
+    the last seen (the engine's log redactor watches it the same way), else ``None``."""
+    seen = [_default_manager()]
+
+    def reload() -> SafetyGate | None:
+        manager = _default_manager()
+        if manager is seen[0]:
+            return None
+        seen[0] = manager
+        return _read_gate(headers)
+
+    return reload
+
+
+def _default_manager() -> Any:
+    """The default ``SecretManager`` if one is installed, else ``None``."""
     try:
         from tolokaforge.secrets import get_default_or_none
     except ImportError:  # pragma: no cover - the secrets package is part of core
-        return []
-    manager = get_default_or_none()
+        return None
+    return get_default_or_none()
+
+
+def secret_items() -> dict[str, str]:
+    """The credentials the ``SecretManager`` resolves under secret-like key names, by name."""
+    manager = _default_manager()
     if manager is None:
-        return []
-    values: list[str] = []
+        return {}
+    items: dict[str, str] = {}
     for key in manager.list_all_keys():
-        if not _SECRET_NAME.search(key) or _NOT_SECRET_NAME.search(key):
+        if not looks_secret(key):
             continue
         value = manager.get_secret(key)
         if value:
-            values.append(value)
-    return values
+            items[key] = value
+    return items
+
+
+def secret_values() -> list[str]:
+    """The credential values the ``SecretManager`` resolves under secret-like key names."""
+    return list(secret_items().values())
 
 
 def otlp_headers() -> dict[str, str] | None:

@@ -38,6 +38,10 @@ CALLER_TAGS = (
     "ci_run:100",
 )
 CALLER_METADATA = {"model_stem": "pilot_agent", "campaign": "parity"}
+# the deployment profile's [trace] both producers apply: a trace named after its dataset and
+# domain, its user the agent's model identity
+TRACE_NAME = "{dataset}/{domain}"
+TRACE_USER = "model"
 AGENT_MODEL = ("openrouter", "acme/pilot-1")
 USER_MODEL = ("openrouter", "acme/sim-2")
 JUDGE_MODEL = ("openrouter", "acme/judge-3")
@@ -178,7 +182,7 @@ def metrics() -> dict[str, Any]:
             "completion_tokens": 127,
             "reasoning_tokens": 30,
             "cached_tokens": 0,
-            "cache_creation_input_tokens": 0,
+            "cache_creation_input_tokens": 200,
             "cache_read_input_tokens": 100,
             "calls": [
                 # the user simulator's opener (turn 0); a call of the agent and one of the user
@@ -232,7 +236,8 @@ def metrics() -> dict[str, Any]:
                     "completion_tokens": 40,
                     "cached_tokens": 0,
                     "reasoning_tokens": 10,
-                    "cache_creation_input_tokens": 0,
+                    # a cache write: the prompt total holds it, the input counts it once
+                    "cache_creation_input_tokens": 200,
                     "cache_read_input_tokens": 0,
                     "cost_usd": 0.003,
                     "cost_source": "provider",

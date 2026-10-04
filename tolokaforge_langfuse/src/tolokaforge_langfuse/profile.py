@@ -21,7 +21,11 @@ closed lists, the default environment rule) a profile says:
   every trace carries;
 - the profile ``version`` that joins the native ``version`` field;
 - ``[models] rules``: the model-name rules file the ``toloka`` normalizer runs under (relative to
-  the profile file, or for an inline profile to the directory of the file that supplied it).
+  the profile file, or for an inline profile to the directory of the file that supplied it);
+- ``[trace] name``: a trial trace's name, a template over the trace's tag values (``{<prefix>}``)
+  and the run's ``{label}`` (default ``{label}/{task}``; a template naming a value the trace does
+  not carry falls back to it); ``[trace] user``: a trial trace's user, ``none`` (the default) or
+  ``model``, the agent's model identity under the model-name rules.
 
 A profile adds no prefix of its own. The producers validate the shape and apply the profile
 mechanically: a profile that does not load, an environment outside the receiver's alphabet, a
@@ -57,6 +61,10 @@ Example (neutral values; a deployment's file lives in its own repository)::
     [models]
     rules = "model_name_rules.toml"
 
+    [trace]
+    name = "{dataset}/{domain}"
+    user = "model"
+
 ``python -m tolokaforge_langfuse.profile <file> [--tags a:b,c:d] [--metadata k=v,...]``
 validates a file, and optionally a launcher's tags and metadata against it (exit 2 on the first
 error); ``python -m tolokaforge_langfuse.preflight`` does the same for a run config's block.
@@ -81,9 +89,12 @@ from tolokaforge_langfuse.vocabulary import (
     REQUIRED_ALWAYS,
     REQUIRED_FOR_TRIAL,
     SOURCE_TRIAL,
+    TRACE_USER_NONE,
     EnvironmentRule,
     VocabularyError,
     check_caller_prefix,
+    check_trace_name,
+    check_trace_user,
     check_value,
     split_tag,
     validate_caller_tag,
@@ -119,11 +130,14 @@ METADATA_ENV = "TOLOKAFORGE_TRACING_METADATA"
 # ``-`` and ``_``, at most 40 characters, never starting with ``langfuse``)
 _ENVIRONMENT_SHAPE = re.compile(r"^(?!langfuse)[a-z0-9_-]{1,40}$")
 _PREFIX_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
-_TOP_KEYS = frozenset({"schema", "version", "environment", "tags", "derive", "metadata", "models"})
+_TOP_KEYS = frozenset(
+    {"schema", "version", "environment", "tags", "derive", "metadata", "models", "trace"}
+)
 _ENVIRONMENT_KEYS = frozenset({"literal", "from_tag", "default", "values"})
 _TAGS_KEYS = frozenset({"fixed", "derived", "values", "required"})
 _METADATA_KEYS = frozenset({"fixed", "keys"})
 _MODELS_KEYS = frozenset({"rules"})
+_TRACE_KEYS = frozenset({"name", "user"})
 _SCALARS = (str, int, float, bool)
 
 
@@ -145,6 +159,10 @@ class TracingProfile:
     metadata_keys: tuple[str, ...] = ()
     fixed_metadata: Mapping[str, Any] = field(default_factory=dict)
     model_name_rules: str | None = None
+    # a trial trace's name template and the source of its user (``[trace]``); None and
+    # ``none``: the vocabulary's defaults (``{label}/{task}``, no user)
+    trace_name: str | None = None
+    trace_user: str = TRACE_USER_NONE
     path: str | None = None
     # whether a deployment's profile is in force, a file or inline (``NO_PROFILE``: the
     # vocabulary alone); the required-tag check follows it
@@ -541,6 +559,15 @@ def profile_from_mapping(
         if check_files and not rules_path.is_file():
             raise TracingProfileError(f"{where}: [models] rules: no such file {rules_path}")
         rules = str(rules_path)
+
+    trace_table = _table(data.get("trace"), where=f"{where}: [trace]", allowed=_TRACE_KEYS)
+    try:
+        trace_name = (
+            check_trace_name(trace_table["name"]) if trace_table.get("name") is not None else None
+        )
+        trace_user = check_trace_user(trace_table.get("user", TRACE_USER_NONE))
+    except VocabularyError as exc:
+        raise TracingProfileError(f"{where}: [trace] {exc}") from exc
     return TracingProfile(
         version=version,
         schema=int(schema),
@@ -553,6 +580,8 @@ def profile_from_mapping(
         metadata_keys=metadata_keys,
         fixed_metadata=fixed_metadata,
         model_name_rules=rules,
+        trace_name=trace_name,
+        trace_user=trace_user,
         path=path,
     )
 
@@ -591,6 +620,11 @@ def describe(profile: TracingProfile) -> str:
         f"{sorted(profile.values)}, required {dict(profile.required)}, derivations for "
         f"{sorted(profile.derive)}, metadata keys {list(profile.metadata_keys)}, fixed metadata "
         f"{dict(profile.fixed_metadata)}, model rules {profile.model_name_rules or 'none'}"
+        + (
+            f", trace name {profile.trace_name or 'default'}, trace user {profile.trace_user}"
+            if profile.trace_name is not None or profile.trace_user != TRACE_USER_NONE
+            else ""
+        )
     )
 
 
