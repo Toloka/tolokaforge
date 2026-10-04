@@ -20,8 +20,9 @@ a new contract version.
 not an update) cannot take a live row and a final row under one id, so every kind a running trial can report
 has a preview twin named ``p`` + the kind: ``proot`` (key ``-``), ``pgen``, ``pugen``, ``ptool``,
 ``pjgen``, ``pjtool``. The formula is the same, so no existing id moves; a preview id can never
-collide with a final one because the kind is part of the name. What the loop reports while the
-trial runs goes out under the preview kinds, under a preview root whose parent is the final root;
+collide with a final one because the kind is part of the name. When the run asks for previews,
+what the loop reports while the trial runs goes out under the preview kinds, under a preview root
+whose parent is the final root;
 the record that counts is written once from the persisted bundle under the final kinds. ``grading``
 and ``event`` have no twin: nothing reports them before the bundle exists.
 """

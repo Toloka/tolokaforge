@@ -140,7 +140,8 @@ the family in `details`. The first three count what was queued; what left is the
   ids and its write-once mode refuses root rewrites; those are uploader policies, not storage
   limitations.
 - A trace list shows one row per finished trial and nothing for a trial in flight. Tooling that
-  polls the trace list for progress has to poll the session or the known trace id instead.
+  polls the trace list for progress has to poll the session or the known trace id instead, and
+  finds rows there only with previews on (amendment 2026-10-04).
 - Anything that reads "the current verdict" from the trace metadata is wrong on this family and has
   to read the `scope = primary` scores. This is a reporting change, not a storage change.
 - The v3 family keeps ADR-0047's path, so a deployment on either receiver runs the same build. The
@@ -148,6 +149,32 @@ the family in `details`. The first three count what was queued; what left is the
   which was the open question, was measured to work on 3.205.1 as well.
 - Two producers now share one converter module in the plugin wheel, pinned by a span-attribute
   golden on both sides. The converter may not import the engine, which is enforced by test.
+
+## Amendment 2026-10-04: previews are opt-in
+
+**Context.** The first CI round with previews on a v4 receiver (Langfuse 4.35) showed the cost of
+decision 3: a preview is an observation like any other, so the receiver's built-in dashboards
+count it. A sample of 115 traces showed every tool call twice in the Agent dashboard's call counts
+(466 rows for 233 executions), and the preview rows joined the observation counts and latency
+distributions. Usage and cost were right, since a preview states zero. A preview cannot be removed
+once its final row arrives, because a single observation cannot be deleted. Langfuse's own guidance
+for an OTLP producer on v4 is one complete span per unit of work, exported once after it ends.
+
+**Decision.** The v4 family writes no live rows unless the run asks for them:
+`LANGFUSE_TRACING_PREVIEWS=true` (`1` / `yes` / `on`), read by the plugin at run start, sends the
+preview root and the per-call previews exactly as decision 3 describes. Without it a trial is
+written once, at `trial_persisted`, as decision 4 describes, and a trial that never persists still
+gets its error root (decision 6). A v3 receiver ignores the switch, since its live rows are its
+record. The receipt's `details` entry says whether previews went out (`previews: on | off`;
+always `off` on a v3 receiver).
+
+**Consequences.** By default a trial in flight has no rows at all; it appears, complete, when it
+is persisted, which is minutes after it ends rather than after the run, and a trial that never
+persists appears at run end, as its error root. This reverses, for the default, the weighing of
+the driver "a trial in flight must stay reachable": reaching it is now opt-in, because its price
+is paid in every count-based view of the receiver. A deployment that wants to watch a long trial
+turns previews on and accepts the double counts in the receiver's own views, or reads the views
+through a filter on the `preview` metadata marker.
 
 ## Links
 
@@ -159,4 +186,6 @@ the family in `details`. The first three count what was queued; what left is the
   `otel.py` (the preview rows, the single write, the error roots), `gradings.py` (the score
   timestamps and the primary pointer), `docs/OBSERVABILITY.md`
 - External references: Langfuse v4 write modes and the OpenTelemetry ingestion attribute
-  conventions
+  conventions;
+  [Migrate custom ingestion to Langfuse v4](https://langfuse.com/integrations/native/opentelemetry/migration-to-v4)
+  (one complete span per unit of work, exported once)

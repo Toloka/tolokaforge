@@ -556,6 +556,7 @@ class TestLangfuseSwitch:
             "TOLOKAFORGE_TRACING_SESSION_ID",
             "TOLOKAFORGE_TRACING_LABEL",
             "LANGFUSE_TRACING_ENABLED",
+            "LANGFUSE_TRACING_PREVIEWS",
             "LANGFUSE_BASE_URL",
             "LANGFUSE_PUBLIC_KEY",
             "LANGFUSE_SECRET_KEY",
@@ -635,6 +636,33 @@ class TestLangfuseSwitch:
             and receipt.details[0]["project_verified"] == "verified"
         )
         assert (tmp_path / "run_identity.json").exists()
+
+    @pytest.mark.parametrize(
+        ("value", "previews"),
+        [(None, "off"), ("false", "off"), ("maybe", "off"), ("true", "on"), ("ON", "on")],
+    )
+    def test_previews_go_out_only_when_the_switch_asks(self, clean_env, value, previews) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from tolokaforge.core.models import ObservabilityConfig
+        from tolokaforge.observability.factory import build_trial_observer
+        from tolokaforge_langfuse import media
+
+        def v4_receiver(method, url, headers, body, timeout):
+            if media.V2_OBSERVATIONS_PATH in url:
+                return (200, json.dumps({"data": [], "meta": {}}).encode())
+            return (200, json.dumps({"data": [{"id": "p0", "name": "pilot-dev"}]}).encode())
+
+        clean_env.setattr(media, "urllib_opener", v4_receiver)
+        clean_env.setenv("LANGFUSE_TRACING_ENABLED", "true")
+        clean_env.setenv("LANGFUSE_BASE_URL", "https://lf.example")
+        clean_env.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        clean_env.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+        if value is not None:
+            clean_env.setenv("LANGFUSE_TRACING_PREVIEWS", value)
+        observer, _ = build_trial_observer(ObservabilityConfig(), engine_run_id="run-1")
+        receipt = observer.run_finished()
+        assert receipt.details[0]["server_api"] == "v4"
+        assert receipt.details[0]["previews"] == previews
 
     def test_the_switch_without_credentials_or_with_half_a_pair_refuses(self, clean_env) -> None:
         pytest.importorskip("opentelemetry.sdk")

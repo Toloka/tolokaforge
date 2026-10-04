@@ -1,7 +1,8 @@
 # tolokaforge-langfuse
 
 Langfuse live tracing for [tolokaforge](../README.md): the OpenTelemetry trial observer that
-exports every generation and tool call of a trial as a span while the trial runs, and the
+exports every generation and tool call of a trial as a span while the trial runs (on a Langfuse
+v4 receiver only as opt-in previews, `LANGFUSE_TRACING_PREVIEWS`), and the
 trial-end pass that completes the trace from the persisted bundle (metadata, observations,
 gradings, scores, media, the attached files) under the id contract the offline
 `langfuse-connector` shares. The engine's own documentation of the behaviour is
@@ -60,8 +61,9 @@ run would trace under and exits 2 on a missing block, an undeclared environment 
 conflict (`docs/OBSERVABILITY.md`, "The deployment profile").
 
 `server_api` says which receiver family to write for: `auto` (the default) asks the receiver once
-at run start, by capability, and a Langfuse v4 receiver gets the **write-once layout** (declared
-preview rows while the trial runs, the record written once from the bundle, the root last); see
+at run start, by capability, and a Langfuse v4 receiver gets the **write-once layout** (the record
+written once from the bundle, the root last; declared preview rows while the trial runs only with
+`LANGFUSE_TRACING_PREVIEWS`); see
 `docs/OBSERVABILITY.md`, "The write-once layout", and ADR-0048. Two consequences worth knowing
 before configuring a run on that family: `projection` must be `full`, because the trace's root
 observation comes from the bundle, and the current verdict lives in the `scope: primary` scores
@@ -78,6 +80,7 @@ A launcher can also supply settings through these variables:
 | Variable | Meaning |
 |---|---|
 | `LANGFUSE_TRACING_ENABLED` | the one switch: trace this run even without a tracing block |
+| `LANGFUSE_TRACING_PREVIEWS` | on a v4 receiver, also send the live rows as declared previews while a trial runs; off by default |
 | `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_EXTRA_HEADERS`, `LANGFUSE_PROJECT` | the receiver, its credentials (read through the engine's `SecretManager`) and the project the keys must open |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | the standard OpenTelemetry receiver variables, when a launcher owns the receiver |
 | `TOLOKAFORGE_TRACING_TAGS`, `TOLOKAFORGE_TRACING_EXPECT_PROJECT`, `TOLOKAFORGE_TRACING_SESSION_ID`, `TOLOKAFORGE_TRACING_LABEL` | the launcher's tags, project expectation, session and label |
