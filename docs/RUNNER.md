@@ -713,4 +713,7 @@ by `(entry, task_id, trial_index)`. A `run_state.json` or `run_queue.sqlite`
 written before this keying cannot be matched to those triples, so `--resume` on a
 harnesses run against such a directory is **refused** with an actionable message
 naming the run dir (start a fresh run directory, or resume with the engine
-version that wrote it). Single-adapter runs resume older state unchanged.
+version that wrote it). Single-adapter runs resume an older `run_state.json`
+unchanged, but the sqlite queue's schema-version guard is unconditional, so an
+old-format `run_queue.sqlite` (its table lacks the `entry` column) is refused
+for a single-adapter run too — start a fresh run directory.

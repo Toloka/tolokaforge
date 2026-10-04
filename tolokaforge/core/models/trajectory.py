@@ -937,9 +937,10 @@ class Trajectory(BaseModel):
     # Multi-harness identity. ``harness_entry`` is the ``harnesses`` entry this
     # trial ran under, or ``None`` for a single-adapter run (and for bundles
     # written before the field existed). ``adapter_type`` is the resolved
-    # adapter's registered type (e.g. ``"native"``). Both are metadata the
-    # conductor stamps at trial end; neither affects ``trial_id`` or the output
-    # path in this slice (that migration is #1768).
+    # adapter's registered type (e.g. ``"native"``). Both are stamped by the
+    # conductor at trial end. ``harness_entry`` prefixes the ``trial_id`` label
+    # and is a segment of the per-trial output path; ``None`` collapses both to
+    # the single-adapter forms.
     harness_entry: str | None = None
     adapter_type: str | None = None
 

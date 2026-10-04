@@ -82,7 +82,7 @@ def write_provision_failure_bundle(
         FileArtifactWriter(),
         logger=logger,
     )
-    spec = make_trial_spec(trial_id=f"{task_id}:{trial_index}", task_id=task_id)
+    spec = make_trial_spec(task_id=task_id, trial_index=trial_index)
 
     executor.execute(spec, make_task_config())
 

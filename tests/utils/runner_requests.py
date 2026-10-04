@@ -11,6 +11,7 @@ from typing import Any
 
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.core.trial_identity import format_trial_id
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import TaskDescription
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
@@ -18,8 +19,10 @@ from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 
 def trial_spec_json(
     task_dict: dict[str, Any],
-    trial_id: str = "test:0",
+    trial_id: str | None = None,
     judge_model_config: ModelConfig | None = None,
+    task_id: str = "test",
+    trial_index: int = 0,
 ) -> str:
     """Build a valid ``TrialSpec`` JSON wrapping ``task_dict``.
 
@@ -33,10 +36,10 @@ def trial_spec_json(
     which is what the runner expects.
     """
     return TrialSpec(
-        trial_id=trial_id,
+        trial_id=trial_id if trial_id is not None else format_trial_id("", task_id, trial_index),
         run_id="test_run",
-        task_id=trial_id.rsplit(":", 1)[0],
-        trial_index=int(trial_id.rsplit(":", 1)[1]),
+        task_id=task_id,
+        trial_index=trial_index,
         task=TaskDescription.model_validate(task_dict),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         judge_model_config=judge_model_config,

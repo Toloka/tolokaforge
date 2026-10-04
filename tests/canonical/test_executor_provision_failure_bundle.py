@@ -120,7 +120,7 @@ class TestErrorReasonPropagation:
         )
 
         executor.execute(
-            make_trial_spec(trial_id="task-9:3", task_id="task-9"),
+            make_trial_spec(task_id="task-9", trial_index=3),
             make_task_config(task_id="task-9"),
         )
 
