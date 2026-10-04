@@ -1057,7 +1057,56 @@ class Orchestrator:
             "Creating composite adapter",
             entries=[entry.name for entry in harnesses.entries],
         )
-        return build_composite_adapter(harnesses.entries, params_for_entry)
+        return build_composite_adapter(
+            harnesses.entries,
+            params_for_entry,
+            validate_entry=self._gate_entry_execution_mode,
+        )
+
+    def _resolve_entry_mode(self, entry_config: Any) -> ExecutionMode:
+        """The execution mode a harness entry runs in.
+
+        An explicit ``entry.mode`` wins; otherwise it is inferred from the
+        entry's effective (entry-over-run) agent model — a coding-harness
+        selection (a ``harness`` that is not the ``engine-loop`` sentinel)
+        means :attr:`ExecutionMode.DELEGATED`, and anything else the engine's
+        own loop (:attr:`ExecutionMode.ENGINE_LOOP`).
+        """
+        if entry_config.mode is not None:
+            return entry_config.mode
+        agent = self._entry_agent_model(entry_config)
+        if agent is not None and agent.harness is not None and agent.harness != ENGINE_LOOP:
+            return ExecutionMode.DELEGATED
+        return ExecutionMode.ENGINE_LOOP
+
+    def _gate_entry_execution_mode(self, entry_config: Any, adapter: BaseAdapter) -> None:
+        """Refuse a harness entry whose adapter cannot run its execution mode.
+
+        Runs per entry during composite build — after the entry's adapter is
+        constructed but before any ``get_task_ids()`` or container work (see
+        :func:`~tolokaforge.core.adapter_registry.build_composite_adapter`), so
+        a mismatched entry fails loud before a run is paid for. The message
+        names the offending entry, its adapter, the requested mode, and the
+        modes the adapter runs. The single-adapter path keeps the run-level
+        gate in :meth:`load_tasks`.
+
+        This gate classifies an entry's mode from its config (explicit
+        ``mode`` or its harness selection); the conductor classifies from
+        emitted command metadata — two seams that can diverge, unified under
+        #1758.
+        """
+        resolved_mode = self._resolve_entry_mode(entry_config)
+        supported = adapter_supported_modes(adapter)
+        if resolved_mode not in supported:
+            raise RuntimeError(
+                f"harness entry {entry_config.name!r} selects execution mode "
+                f"{resolved_mode.value!r}, but adapter {entry_config.adapter!r} "
+                f"runs only {sorted(mode.value for mode in supported)}. An adapter "
+                "declares the delegated mode by overriding "
+                "``supported_execution_modes`` to include "
+                "``ExecutionMode.DELEGATED``. Either change the entry's mode / "
+                "harness, or switch it to an adapter that runs that mode."
+            )
 
     def _adapter_for_task(self, task_id: str) -> BaseAdapter:
         """The adapter that owns *task_id*.
@@ -2495,7 +2544,9 @@ class Orchestrator:
         # This gate classifies delegation from the config harness slug, while
         # the conductor classifies from emitted command metadata — two seams
         # that can diverge; unifying them is tracked in #1758.
-        # The multi-harness per-entry gate is applied separately (see below).
+        # A multi-harness run gates each entry's mode during composite build
+        # (``_gate_entry_execution_mode``, above), per entry rather than once at
+        # the run level, so this run-level gate is skipped for it.
         if self.config.harnesses is None:
             selected_harness = _configured_harness(self.config)
             if selected_harness is not None:

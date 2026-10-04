@@ -228,3 +228,68 @@ class TestDelegatedGate:
         assert "claude-code" in message
         assert ExecutionMode.DELEGATED.value in message
         assert ExecutionMode.ENGINE_LOOP.value in message
+
+
+# ---------------------------------------------------------------------------
+# Multi-harness per-entry gate (issue #1750, slice A5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _register_a5_fake() -> None:
+    from tolokaforge.adapters import register_adapter
+
+    register_adapter("fake_a5_engine", _EngineLoopOnlyAdapter)
+
+
+def _multi_harness_config(entries: list[dict[str, Any]]) -> RunConfig:
+    return RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir="/tmp/execution_mode_gate"),
+        harnesses={"entries": entries},
+    )
+
+
+class TestMultiHarnessEntryGate:
+    def test_one_bad_entry_fails_loud(self) -> None:
+        orch = Orchestrator(
+            _multi_harness_config(
+                [{"name": "bad", "adapter": "fake_a5_engine", "mode": "delegated"}]
+            )
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            orch.load_tasks()
+
+        message = str(excinfo.value)
+        assert "bad" in message
+        assert "fake_a5_engine" in message
+        assert ExecutionMode.DELEGATED.value in message
+        assert ExecutionMode.ENGINE_LOOP.value in message
+
+    def test_valid_sibling_does_not_mask_a_bad_entry(self) -> None:
+        # The valid entry is listed first; the gate must still refuse the bad
+        # sibling rather than passing because a good entry cleared.
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {"name": "good", "adapter": "fake_a5_engine", "mode": "engine_loop"},
+                    {"name": "bad", "adapter": "fake_a5_engine", "mode": "delegated"},
+                ]
+            )
+        )
+        with pytest.raises(RuntimeError, match="bad"):
+            orch.load_tasks()
+
+    def test_all_valid_entries_load_cleanly(self) -> None:
+        orch = Orchestrator(
+            _multi_harness_config(
+                [
+                    {"name": "a", "adapter": "fake_a5_engine"},
+                    {"name": "b", "adapter": "fake_a5_engine", "mode": "engine_loop"},
+                ]
+            )
+        )
+        # Engine-loop-only adapters serve no tasks here; the run loads with no
+        # gate refusal.
+        assert orch.load_tasks() is None

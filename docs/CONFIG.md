@@ -172,6 +172,11 @@ harnesses:
 - Within this slice, a `task_id` must not appear under two entries; such a
   config is refused with a pointer to the matrix-identity follow-up. Resolution
   is by entry, and today's `trials/<task_id>/<idx>` layout is kept.
+- Each entry's execution mode is gated per entry before any task enumeration or
+  container work: the mode (the entry's `mode`, or inferred from its harness) is
+  checked against the modes its adapter runs, and a mismatch is refused naming
+  the entry, its adapter, the mode, and the supported set. (The config-side and
+  conductor-side mode classification are unified under #1758.)
 
 ### `rate_limit_probe:` — measure a provider's served throughput
 

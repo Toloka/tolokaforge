@@ -290,6 +290,7 @@ class CompositeAdapter(BaseAdapter):
 def build_composite_adapter(
     entries: Sequence[HarnessEntryConfig],
     params_for_entry: Callable[[HarnessEntryConfig], dict[str, Any]],
+    validate_entry: Callable[[HarnessEntryConfig, BaseAdapter], None] | None = None,
 ) -> CompositeAdapter:
     """Build one adapter per entry, enumerate its tasks, and assemble the matrix.
 
@@ -298,6 +299,11 @@ def build_composite_adapter(
     run uses, scoped to the entry. Each entry's adapter is built via
     :func:`~tolokaforge.adapters.get_adapter`, its task ids enumerated (and
     filtered to the entry's explicit ``task_ids`` allow-list when one is set).
+
+    *validate_entry*, when given, is called with each entry's config and freshly
+    built adapter **after construction but before ``get_task_ids``** — the seam
+    the orchestrator's per-entry execution-mode gate hangs on, so a bad entry is
+    refused before any task enumeration or container work.
 
     Overlap guard: within this slice a task id may belong to only one entry.
     The guard refuses a config where one id appears under two entries, naming
@@ -309,6 +315,8 @@ def build_composite_adapter(
     owner_of: dict[str, str] = {}
     for config in entries:
         adapter = get_adapter(config.adapter, params_for_entry(config))
+        if validate_entry is not None:
+            validate_entry(config, adapter)
         task_ids = list(adapter.get_task_ids())
         if config.task_ids:
             allow = set(config.task_ids)
