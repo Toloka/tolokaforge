@@ -69,6 +69,8 @@ def _make_spec(
         run_id="test-run",
         attempt_id=attempt_id,
         worker_id=worker_id,
+        task_id=task_id,
+        trial_index=trial_idx,
         task=_make_task_description(task_id),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         user_model_config=None,

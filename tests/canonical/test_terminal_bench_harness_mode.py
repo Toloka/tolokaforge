@@ -133,6 +133,8 @@ def _spec(metadata: dict[str, Any], tools: list[ToolSchema]) -> TrialSpec:
     return TrialSpec(
         trial_id=f"{_TASK_ID}:0",
         run_id="harness-canon",
+        task_id=_TASK_ID,
+        trial_index=0,
         task=TaskDescription(
             task_id=_TASK_ID,
             name=_TASK_ID,

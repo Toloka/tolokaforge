@@ -199,7 +199,7 @@ class DefaultSubstrateComposer:
             # The stacks came up healthy; a reset-recipe failure leaves real
             # service logs worth capturing for diagnosis before teardown.
             _capture_provision_failure_logs(
-                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec.trial_id
+                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec
             )
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise
@@ -228,7 +228,7 @@ class DefaultSubstrateComposer:
                 stripped_container_secrets=manifest.stripped_container_secrets,
                 mount_docker_socket=run_sub.mount_docker_socket,
                 expose_substrate=run_sub.expose_substrate,
-                log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
+                log_capture=_trial_scope_log_capture(run_sub.log_capture, spec),
                 write_compose_env=None,
                 events=run_sub.events,
                 component_id_prefix=f"task/{spec.task.task_id}",
@@ -257,7 +257,7 @@ class DefaultSubstrateComposer:
                 stripped_container_secrets=manifest.stripped_container_secrets,
                 mount_docker_socket=run_sub.mount_docker_socket,
                 expose_substrate=run_sub.expose_substrate,
-                log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
+                log_capture=_trial_scope_log_capture(run_sub.log_capture, spec),
                 write_compose_env=WriteComposeEnv(
                     trial_id=spec.trial_id,
                     stack_inputs=decl.inputs,
@@ -288,6 +288,9 @@ class DefaultSubstrateComposer:
                 trial_stack_handles=tuple(trial_handles),
                 trial_endpoints=None,
                 trial_runner_client=None,
+                entry=spec.entry,
+                task_id=spec.task_id,
+                trial_index=spec.trial_index,
             )
         assert runner_decl is not None
         runner_endpoint = self.materialiser.resolve_endpoint(
@@ -295,7 +298,7 @@ class DefaultSubstrateComposer:
         )
         if runner_endpoint is None:
             _capture_provision_failure_logs(
-                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec.trial_id
+                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec
             )
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise ProvisionError(
@@ -325,7 +328,7 @@ class DefaultSubstrateComposer:
             )
         except ProvisionError:
             _capture_provision_failure_logs(
-                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec.trial_id
+                self.materialiser, [h for _, h in newly], run_sub.log_capture, spec
             )
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise
@@ -338,6 +341,9 @@ class DefaultSubstrateComposer:
             trial_stack_handles=tuple(trial_handles),
             trial_endpoints=endpoints,
             trial_runner_client=client,
+            entry=spec.entry,
+            task_id=spec.task_id,
+            trial_index=spec.trial_index,
         )
 
     # ------------------------------------------------------------------
@@ -804,17 +810,20 @@ def _run_scope_log_capture(
 
 def _trial_scope_log_capture(
     log_capture: LogCaptureConfig | None,
-    trial_id: str,
+    spec: TrialSpec,
 ) -> MaterialiseLogCapture | None:
-    """Adapt to a per-trial :class:`MaterialiseLogCapture` writing under
-    ``<output_root>/trials/<task_id>/<index>/services/``.
+    """Adapt to a per-trial :class:`MaterialiseLogCapture` writing under the
+    trial's bundle dir (``<output_root>/trials/<entry>/<task_id>/<index>/services/``,
+    or the two-level path for a single-adapter run).
 
     Returns ``None`` when capture is disabled at the run level.
     """
     if log_capture is None:
         return None
     return MaterialiseLogCapture(
-        dest_dir=trial_services_dir(log_capture.output_root, trial_id),
+        dest_dir=trial_services_dir(
+            log_capture.output_root, spec.entry, spec.task_id, spec.trial_index
+        ),
         tail=log_capture.tail,
     )
 
@@ -840,7 +849,7 @@ def _capture_provision_failure_logs(
     materialiser: ComposeMaterialiser,
     handles: list[StackHandle],
     log_capture: LogCaptureConfig | None,
-    trial_id: str,
+    spec: TrialSpec,
 ) -> None:
     """Best-effort per-service log capture on a provision-stage failure that
     happens *after* the trial stacks are up (reset-recipe, readiness gate,
@@ -857,7 +866,9 @@ def _capture_provision_failure_logs(
     """
     if log_capture is None:
         return
-    dest_dir = trial_services_dir(log_capture.output_root, trial_id)
+    dest_dir = trial_services_dir(
+        log_capture.output_root, spec.entry, spec.task_id, spec.trial_index
+    )
     totals: dict[str, int] = {}
     for handle in handles:
         service_names = tuple(getattr(handle, "service_names", ()))
@@ -874,7 +885,7 @@ def _capture_provision_failure_logs(
         logger.exception(
             "DefaultSubstrateComposer: provision-failure capture manifest write "
             "failed for trial %r",
-            trial_id,
+            spec.trial_id,
         )
 
 

@@ -78,6 +78,7 @@ from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, TrialGrader
+from tolokaforge.core.trial_identity import format_trial_id, trial_output_subpath
 from tolokaforge.observability.factory import RunIdentity
 from tolokaforge.observability.observer import (
     LoopObserverBinding,
@@ -420,10 +421,7 @@ class InMemoryConductor:
         self._factory = trajectory_factory or _default_success_trajectory
 
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
-        # ``spec.trial_id`` is canonical (``"{task_id}:{trial_idx}"``); derive
-        # ``trial_idx`` from it so the call log entry shape matches what tests
-        # established under the pre-reshape signature.
-        trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
+        trial_idx = spec.trial_index
         self.call_log.runs.append(
             {
                 "trial_id": spec.trial_id,
@@ -599,8 +597,8 @@ class InProcessConductor:
         everything downstream phases need.
         """
         task = task_config
-        trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
-        trial_id = f"{task.task_id}:{trial_idx}"
+        trial_idx = spec.trial_index
+        trial_id = format_trial_id(spec.entry, task.task_id, trial_idx)
 
         # Resolve the owning adapter once for this trial's per-task calls. For a
         # single-adapter run this is the one adapter; for a multi-harness run it
@@ -666,7 +664,9 @@ class InProcessConductor:
                                 self.logger.debug("Retrieved updated state after initialization")
 
         # Create trial directory early for video recording
-        trial_dir = self.output_dir / "trials" / task.task_id / str(trial_idx)
+        trial_dir = (
+            self.output_dir / "trials" / trial_output_subpath(spec.entry, task.task_id, trial_idx)
+        )
         trial_dir.mkdir(parents=True, exist_ok=True)
 
         adapter_env = adapter.create_environment(task.task_id)
@@ -790,23 +790,29 @@ class InProcessConductor:
         safely(self._announce_persisted, spec)
 
     def _announce_persisted(self, spec: TrialSpec) -> None:
-        task_id, _, index = spec.trial_id.rpartition(":")
-        trial_dir = self.output_dir / "trials" / task_id / index
+        trial_dir = (
+            self.output_dir
+            / "trials"
+            / trial_output_subpath(spec.entry, spec.task_id, spec.trial_index)
+        )
         if not (trial_dir / "trajectory.yaml").exists():
             return
         hook = getattr(self.trial_observer, "trial_persisted", None)
         if not callable(hook):
             return
         run = self.run_identity or RunIdentity(run_id=spec.run_id)
-        identity = run.trial(task_id=task_id, trial_index=int(index), attempt_id=spec.attempt_id)
+        identity = run.trial(
+            task_id=spec.task_id, trial_index=spec.trial_index, attempt_id=spec.attempt_id
+        )
         hook(identity, trial_dir=trial_dir)
 
     def _trial_identity(self, spec: TrialSpec, setup: _TrialSetup) -> TrialIdentity:
         """The id-contract identity of this trial: the run's tracing identity (or the engine run
         id when tracing is off) plus task, trial index and the attempt being executed."""
         run = self.run_identity or RunIdentity(run_id=spec.run_id)
-        task_id = setup.trial_id.rsplit(":", 1)[0]
-        return run.trial(task_id=task_id, trial_index=setup.trial_idx, attempt_id=spec.attempt_id)
+        return run.trial(
+            task_id=spec.task_id, trial_index=spec.trial_index, attempt_id=spec.attempt_id
+        )
 
     @staticmethod
     def _model_refs(spec: TrialSpec) -> dict[str, ModelRef]:

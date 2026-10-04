@@ -11,6 +11,19 @@ from pydantic import BaseModel
 from tolokaforge.core.engine_run_state import read_persisted_run_id
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.output_writer import TRAJECTORY_FILENAME
+from tolokaforge.core.trial_identity import format_trial_id, trial_output_subpath
+
+#: Format marker for the ``(entry, task_id, trial_index)`` resume keying.
+#: Written on every state file this build creates. A harnesses run whose
+#: ``run_state.json`` predates the marker is refused on resume (see
+#: :meth:`RunStateManager.load_state`); single-adapter state files load
+#: unchanged whether or not they carry it.
+IDENTITY_FORMAT = 1
+
+
+class ResumeIdentityFormatError(RuntimeError):
+    """Raised when a harnesses run resumes a state file that predates
+    ``(entry, task_id, trial_index)`` resume keying."""
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,9 @@ def resolve_resume_run_directory(run_dir: Path) -> tuple[str, Path]:
 class TrialState(BaseModel):
     """State of a single trial"""
 
+    entry: str = ""
+    """The harness entry that owns this trial; empty for a single-adapter run.
+    Defaulted so state files written before harness keying load unchanged."""
     task_id: str
     trial_index: int
     status: str  # "pending", "running", "completed", "failed"
@@ -95,7 +111,16 @@ class RunState(BaseModel):
     completed_trials: int
     failed_trials: int
 
-    trials: dict[str, TrialState]  # key: "{task_id}:{trial_index}"
+    trials: dict[str, TrialState]
+    """Keyed by the trial's :func:`format_trial_id` label:
+    ``"{entry}:{task_id}:{trial_index}"`` under a harness entry,
+    ``"{task_id}:{trial_index}"`` for a single-adapter run."""
+
+    identity_format: int = IDENTITY_FORMAT
+    """Marker for the ``(entry, task_id, trial_index)`` keying. Present on every
+    state file this build writes; its *absence* in a loaded harnesses run's file
+    is what trips the resume guard. Defaulted so a single-adapter state file
+    written before the marker still loads."""
 
     zero_coverage: bool = False
     """Set at completion: ``measured_trials == 0`` on a run with
@@ -121,13 +146,14 @@ class RunState(BaseModel):
         trial_index: int,
         binary_pass: bool | None,
         score: float | None,
+        entry: str = "",
     ):
         """Mark trial as completed.
 
         ``binary_pass`` / ``score`` are ``None`` for a trial that produced no
         grade: the attempt is over, but there is no verdict to record.
         """
-        key = f"{task_id}:{trial_index}"
+        key = format_trial_id(entry, task_id, trial_index)
         if key in self.trials:
             self.trials[key].status = "completed"
             self.trials[key].end_ts = datetime.now(tz=timezone.utc)
@@ -135,18 +161,18 @@ class RunState(BaseModel):
             self.trials[key].score = score
             self.completed_trials += 1
 
-    def mark_failed(self, task_id: str, trial_index: int, error: str):
+    def mark_failed(self, task_id: str, trial_index: int, error: str, entry: str = ""):
         """Mark trial as failed"""
-        key = f"{task_id}:{trial_index}"
+        key = format_trial_id(entry, task_id, trial_index)
         if key in self.trials:
             self.trials[key].status = "failed"
             self.trials[key].end_ts = datetime.now(tz=timezone.utc)
             self.trials[key].error = error
             self.failed_trials += 1
 
-    def mark_running(self, task_id: str, trial_index: int):
+    def mark_running(self, task_id: str, trial_index: int, entry: str = ""):
         """Mark trial as currently running"""
-        key = f"{task_id}:{trial_index}"
+        key = format_trial_id(entry, task_id, trial_index)
         if key in self.trials:
             self.trials[key].status = "running"
             self.trials[key].start_ts = datetime.now(tz=timezone.utc)
@@ -180,16 +206,28 @@ class RunStateManager:
         return path_str
 
     def initialize_run(
-        self, run_id: str, config_path: str, task_ids: list[str], repeats: int
+        self,
+        run_id: str,
+        config_path: str,
+        units: list[tuple[str, str]],
+        repeats: int,
     ) -> RunState:
-        """Initialize a new run state"""
+        """Initialize a new run state.
+
+        ``units`` are ``(entry, task_id)`` pairs — one per task the run
+        dispatches, carrying its owning harness entry (empty for a
+        single-adapter run). The same ``task_id`` under two entries yields two
+        independent trial keys, so a matrix run does not collide.
+        """
 
         # Create trial list
         trials = {}
-        for task_id in task_ids:
+        for entry, task_id in units:
             for trial_idx in range(repeats):
-                key = f"{task_id}:{trial_idx}"
-                trials[key] = TrialState(task_id=task_id, trial_index=trial_idx, status="pending")
+                key = format_trial_id(entry, task_id, trial_idx)
+                trials[key] = TrialState(
+                    entry=entry, task_id=task_id, trial_index=trial_idx, status="pending"
+                )
 
         run_state = RunState(
             run_id=run_id,
@@ -207,15 +245,37 @@ class RunStateManager:
         self.save_state(run_state)
         return run_state
 
-    def load_state(self) -> RunState | None:
-        """Load run state from disk"""
+    def load_state(self, *, require_identity_marker: bool = False) -> RunState | None:
+        """Load run state from disk.
+
+        ``require_identity_marker`` is set by a harnesses run: its trials are
+        keyed ``(entry, task_id, trial_index)``, so a state file written before
+        that keying (no ``identity_format`` key) cannot be resumed safely and is
+        refused with :class:`ResumeIdentityFormatError`. A single-adapter run
+        leaves it ``False`` and loads such a file unchanged.
+        """
         if not self.state_file.exists():
             return None
 
         try:
             with open(self.state_file) as f:
                 data = json.load(f)
-                return RunState(**data)
+        except Exception as e:
+            logger = get_logger("resume")
+            logger.warning("Failed to load run state", error=str(e))
+            return None
+
+        if require_identity_marker and "identity_format" not in data:
+            raise ResumeIdentityFormatError(
+                f"Cannot resume harnesses run at {self.output_dir}: its "
+                "run_state.json predates harness-aware trial keying (no "
+                "identity_format marker), so its trial keys cannot be matched to "
+                "(entry, task_id, trial_index). Start a fresh run directory, or "
+                "resume with the engine version that wrote this state."
+            )
+
+        try:
+            return RunState(**data)
         except Exception as e:
             logger = get_logger("resume")
             logger.warning("Failed to load run state", error=str(e))
@@ -228,9 +288,9 @@ class RunStateManager:
         with open(self.state_file, "w") as f:
             json.dump(run_state.model_dump(mode="json"), f, indent=2, default=str)
 
-    def _has_infrastructure_error(self, task_id: str, trial_index: int) -> bool:
+    def _has_infrastructure_error(self, task_id: str, trial_index: int, entry: str = "") -> bool:
         """Check if trial has infrastructure errors (429, status=error)"""
-        trial_dir = self.output_dir / "trials" / task_id / str(trial_index)
+        trial_dir = self.output_dir / "trials" / trial_output_subpath(entry, task_id, trial_index)
 
         if not trial_dir.exists():
             return False
@@ -256,7 +316,7 @@ class RunStateManager:
 
         return False
 
-    def is_completed(self, task_id: str, trial_index: int) -> bool:
+    def is_completed(self, task_id: str, trial_index: int, entry: str = "") -> bool:
         """Check if trial is completed and should be skipped.
 
         Returns True if:
@@ -272,7 +332,7 @@ class RunStateManager:
         if not run_state:
             return False
 
-        key = f"{task_id}:{trial_index}"
+        key = format_trial_id(entry, task_id, trial_index)
         if key not in run_state.trials:
             return False
 
@@ -287,7 +347,7 @@ class RunStateManager:
             return True
 
         # Trial failed - check if due to infrastructure or behavioral
-        has_infra_error = self._has_infrastructure_error(task_id, trial_index)
+        has_infra_error = self._has_infrastructure_error(task_id, trial_index, entry)
 
         if has_infra_error:
             # Infrastructure failure - needs retry
@@ -335,7 +395,7 @@ class RunStateManager:
         for trial in run_state.trials.values():
             if trial.status == "completed":
                 completed += 1
-            if self.is_completed(trial.task_id, trial.trial_index):
+            if self.is_completed(trial.task_id, trial.trial_index, trial.entry):
                 already_done += 1
 
         to_retry = run_state.total_trials - already_done

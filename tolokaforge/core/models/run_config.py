@@ -759,11 +759,11 @@ class EvaluationConfig(BaseModel):
         return coerce_task_packs_alias(values)
 
 
-#: Entry names become path segments (``trials/<entry>/...`` is the #1768
-#: migration target) and config keys, so a name must be a single safe
-#: segment: it starts with an alphanumeric and carries only alphanumerics,
-#: dot, dash and underscore. ``.`` / ``..`` are additionally refused as
-#: whole names so a derived or authored value can never escape a directory.
+#: Entry names become path segments (``trials/<entry>/…``) and config keys, so
+#: a name must be a single safe segment: it starts with an alphanumeric and
+#: carries only alphanumerics, dot, dash and underscore. ``.`` / ``..`` are
+#: additionally refused as whole names so a derived or authored value can never
+#: escape a directory.
 _ENTRY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 

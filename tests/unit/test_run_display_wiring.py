@@ -539,22 +539,25 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
         )
         for task_id in task_ids
     ]
+    # _build_pending_trials reads the run's dispatch spine (self.tasks for a
+    # single-adapter run), so seed it here.
+    orch.tasks = tasks
     return orch, tasks
 
 
 def test_build_pending_trials_populates_total_index_by_key_with_distinct_values() -> None:
-    """The dict must map every ``(task_id, trial_idx)`` pair to a unique
+    """The dict must map every ``(entry, task_id, trial_idx)`` triple to a unique
     run-wide index 0..N-1. This is the guardrail against the
     ``trial_started`` emission's ``.get(..., 0)`` fallback silently
     reporting every trial as ``total_index=0``."""
     orch, tasks = _make_orchestrator_with_tasks(["A", "B", "C"], repeats=1)
 
-    orch._build_pending_trials(tasks, repeats=1)
+    orch._build_pending_trials(repeats=1)
 
     assert orch._total_index_by_key == {
-        ("A", 0): 0,
-        ("B", 0): 1,
-        ("C", 0): 2,
+        ("", "A", 0): 0,
+        ("", "B", 0): 1,
+        ("", "C", 0): 2,
     }
 
 
@@ -564,17 +567,17 @@ def test_build_pending_trials_indices_span_full_range_for_multi_repeat() -> None
     fans a task out into ``repeats`` per-trial entries."""
     orch, tasks = _make_orchestrator_with_tasks(["A", "B", "C"], repeats=2)
 
-    orch._build_pending_trials(tasks, repeats=2)
+    orch._build_pending_trials(repeats=2)
 
     values = sorted(orch._total_index_by_key.values())
     assert values == [0, 1, 2, 3, 4, 5]
     assert set(orch._total_index_by_key.keys()) == {
-        ("A", 0),
-        ("A", 1),
-        ("B", 0),
-        ("B", 1),
-        ("C", 0),
-        ("C", 1),
+        ("", "A", 0),
+        ("", "A", 1),
+        ("", "B", 0),
+        ("", "B", 1),
+        ("", "C", 0),
+        ("", "C", 1),
     }
 
 
@@ -589,7 +592,7 @@ def test_build_pending_trials_indices_are_distinct_under_shuffle() -> None:
     )
     random.seed(0)
 
-    orch._build_pending_trials(tasks, repeats=1)
+    orch._build_pending_trials(repeats=1)
 
     values = sorted(orch._total_index_by_key.values())
     assert values == [0, 1, 2, 3, 4]

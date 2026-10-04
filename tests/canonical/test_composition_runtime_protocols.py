@@ -230,6 +230,9 @@ class TestCompanionDataclassFields:
             "trial_stack_handles",
             "trial_endpoints",
             "trial_runner_client",
+            "entry",
+            "task_id",
+            "trial_index",
         ]
 
 

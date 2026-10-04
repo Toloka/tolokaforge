@@ -44,6 +44,7 @@ from tolokaforge.core.run_display_events import (
 )
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
+from tolokaforge.core.trial_identity import trial_output_subpath
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -121,7 +122,7 @@ class ProvisioningTrialExecutor:
         self.events = events
 
     def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
-        task_id, trial_idx = _split_trial_id(spec.trial_id)
+        task_id, trial_idx, entry = spec.task_id, spec.trial_index, spec.entry
 
         self.logger.info(
             "Provisioning trial env",
@@ -199,9 +200,10 @@ class ProvisioningTrialExecutor:
                 task_id,
                 trial_idx,
                 {"provisioning_duration_s": round(provisioning_duration_s, 3)},
+                entry=entry,
             )
-            self._maybe_flag_missing_judge_verdict(result.trajectory, task_id, trial_idx)
-            self._capture_service_logs(handle, result, task_id, trial_idx)
+            self._maybe_flag_missing_judge_verdict(result.trajectory, task_id, trial_idx, entry)
+            self._capture_service_logs(handle, result, task_id, trial_idx, entry)
             # Nothing writes into the trial directory after this point: the bundle is what a
             # live-tracing observer may attach to the trace (ADR-0047 amendment). Announced
             # after the teardown below, not from conductor.run, whose bundle the two writes
@@ -229,7 +231,7 @@ class ProvisioningTrialExecutor:
             )
 
     def _capture_service_logs(
-        self, handle: EnvHandle, result: TrialResult, task_id: str, trial_idx: int
+        self, handle: EnvHandle, result: TrialResult, task_id: str, trial_idx: int, entry: str = ""
     ) -> None:
         """Capture per-service logs for a diagnostics-worthy trial, before teardown.
 
@@ -258,14 +260,17 @@ class ProvisioningTrialExecutor:
             trial_index=trial_idx,
             services=byte_map,
         )
-        self._amend_trial_metrics(task_id, trial_idx, {"captured_service_logs": dict(byte_map)})
+        self._amend_trial_metrics(
+            task_id, trial_idx, {"captured_service_logs": dict(byte_map)}, entry=entry
+        )
 
     def _write_provision_failure_bundle(
         self, trajectory: Trajectory, error: ProvisionError
     ) -> None:
         """Persist a minimal trial bundle for a trial whose environment never
         came up: ``trajectory.yaml`` / ``metrics.yaml`` / ``grade.yaml`` under
-        ``output_dir/trials/{task_id}/{trial_index}/``.
+        the trial's bundle dir ``output_dir/trials/<entry>/<task_id>/<trial_index>/``
+        (empty entry → the two-level ``trials/<task_id>/<trial_index>/``).
 
         The conductor never ran, so nothing else writes this trial's directory.
         Reuses the run's ``artifact_writer`` (no schema duplication), then amends
@@ -277,7 +282,8 @@ class ProvisioningTrialExecutor:
         """
         task_id = trajectory.task_id
         trial_idx = trajectory.trial_index
-        trial_dir = self.output_dir / "trials" / task_id / str(trial_idx)
+        entry = trajectory.harness_entry or ""
+        trial_dir = self.output_dir / "trials" / trial_output_subpath(entry, task_id, trial_idx)
         try:
             self.artifact_writer.write_trajectory(trial_dir, trajectory)
             self.artifact_writer.write_metrics(trial_dir, trajectory)
@@ -299,10 +305,11 @@ class ProvisioningTrialExecutor:
                 "error_reason": error.reason,
                 "error_stage": error.stage,
             },
+            entry=entry,
         )
 
     def _maybe_flag_missing_judge_verdict(
-        self, trajectory: Trajectory, task_id: str, trial_idx: int
+        self, trajectory: Trajectory, task_id: str, trial_idx: int, entry: str = ""
     ) -> None:
         """Amend ``metrics.yaml`` with ``error_stage=judge_missing_verdict`` when
         the grading pipeline finished without a usable judge verdict.
@@ -331,9 +338,12 @@ class ProvisioningTrialExecutor:
             task_id,
             trial_idx,
             {"error_stage": "judge_missing_verdict"},
+            entry=entry,
         )
 
-    def _amend_trial_metrics(self, task_id: str, trial_idx: int, updates: dict[str, Any]) -> None:
+    def _amend_trial_metrics(
+        self, task_id: str, trial_idx: int, updates: dict[str, Any], entry: str = ""
+    ) -> None:
         """Merge ``updates`` into the trial's ``metrics.yaml`` as top-level keys.
 
         Read-add-write of the plain YAML mapping the conductor already wrote —
@@ -342,7 +352,12 @@ class ProvisioningTrialExecutor:
         file is absent. Logs and continues on I/O failure so a diagnostic write
         never masks the trial result.
         """
-        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / METRICS_FILENAME
+        metrics_path = (
+            self.output_dir
+            / "trials"
+            / trial_output_subpath(entry, task_id, trial_idx)
+            / METRICS_FILENAME
+        )
         if not metrics_path.exists():
             return
         try:
@@ -384,12 +399,6 @@ class ProvisioningTrialExecutor:
         )
 
 
-def _split_trial_id(trial_id: str) -> tuple[str, int]:
-    """Return ``(task_id, trial_index)`` from a canonical ``"{task_id}:{idx}"`` id."""
-    task_id, idx_s = trial_id.rsplit(":", 1)
-    return task_id, int(idx_s)
-
-
 def _endpoints_to_map(endpoints: EnvEndpoints) -> dict[str, str]:
     """Reshape :class:`EnvEndpoints` into the ``{role → url}`` map the
     display carries in ``trial_provisioned``. ``None`` values are skipped
@@ -420,12 +429,12 @@ def _synthesize_provision_failure_result(spec: TrialSpec, error: ProvisionError)
     classifies ``PROVISION_ERROR`` as non-retryable and fails fast rather
     than burning a fresh ``provision()`` on each attempt.
     """
-    task_id, trial_idx = _split_trial_id(spec.trial_id)
     now = datetime.now(UTC)
     trajectory = Trajectory(
-        task_id=task_id,
-        trial_index=trial_idx,
+        task_id=spec.task_id,
+        trial_index=spec.trial_index,
         attempt_id=spec.attempt_id,
+        harness_entry=spec.entry or None,
         start_ts=now,
         end_ts=now,
         status=TrialStatus.ERROR,
