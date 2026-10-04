@@ -74,6 +74,10 @@ def make_conductor(
     agent_client.capabilities.schema_sanitizer.sanitize.return_value = []
     adapter = MagicMock()
     adapter.get_grading_config.return_value = None
+    # Single-adapter double: ``for_entry`` returns the same configured adapter,
+    # mirroring ``BaseAdapter.for_entry``'s no-op default so the conductor's
+    # per-trial ``_adapter_for`` resolution reaches the configured seams.
+    adapter.for_entry.return_value = adapter
     return InProcessConductor(
         adapter=adapter,
         artifact_writer=artifact_writer or FileArtifactWriter(),

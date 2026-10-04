@@ -517,6 +517,16 @@ class InProcessConductor:
         self.trial_observer: TrialObserver = trial_observer or NullTrialObserver()
         self.run_identity = run_identity
 
+    def _adapter_for(self, spec: TrialSpec) -> BaseAdapter:
+        """The adapter that owns this trial's entry.
+
+        Multi-harness: routes to the entry's adapter via
+        ``adapter.for_entry(spec.entry)``. Single-adapter:
+        :meth:`BaseAdapter.for_entry` ignores the (empty) name and returns the
+        one adapter, so the single path is unchanged.
+        """
+        return self.adapter.for_entry(spec.entry)
+
     def run(
         self,
         spec: TrialSpec,
@@ -550,6 +560,10 @@ class InProcessConductor:
             )
             # Every bundle, including the snapshot grader's, records the traced attempt.
             trajectory.attempt_id = spec.attempt_id
+            # Stamp multi-harness identity: the entry (``None`` for a single
+            # adapter) and the resolved adapter's registered type.
+            trajectory.harness_entry = spec.entry or None
+            trajectory.adapter_type = spec.task.adapter_type
             self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
@@ -588,7 +602,11 @@ class InProcessConductor:
         trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
         trial_id = f"{task.task_id}:{trial_idx}"
 
-        task_dir = self.adapter.get_task_dir(task.task_id)
+        # Resolve the owning adapter once for this trial's per-task calls. For a
+        # single-adapter run this is the one adapter; for a multi-harness run it
+        # is the trial's entry's adapter.
+        adapter = self._adapter_for(spec)
+        task_dir = adapter.get_task_dir(task.task_id)
 
         env_state = EnvironmentState(task_dir, task.initial_state)
         env_state.hydrate()
@@ -651,13 +669,13 @@ class InProcessConductor:
         trial_dir = self.output_dir / "trials" / task.task_id / str(trial_idx)
         trial_dir.mkdir(parents=True, exist_ok=True)
 
-        adapter_env = self.adapter.create_environment(task.task_id)
+        adapter_env = adapter.create_environment(task.task_id)
 
         # Adapters that opt in via ``syncs_adapter_env_to_state`` publish their
         # ``AdapterEnvironment.data`` into the runner's ``TrialState`` so the
         # runner can read it back during grading. Tau-family adapters flip the
         # flag; Native and Terminal-bench leave it at the default False.
-        if adapter_env.data and self.adapter.syncs_adapter_env_to_state:
+        if adapter_env.data and adapter.syncs_adapter_env_to_state:
             env_state.db_state = adapter_env.data
             env_state._normalize_db_state()
             self.logger.debug(
@@ -1341,7 +1359,7 @@ class InProcessConductor:
         """
         task = task_config
         writer = self._artifact_writer
-        grading_config = self.adapter.get_grading_config(task.task_id)
+        grading_config = self._adapter_for(spec).get_grading_config(task.task_id)
 
         # Persist the post-policy tool list inside the trial bundle as
         # ``tools_schemas.yaml`` — the trial's declared tool surface, agent

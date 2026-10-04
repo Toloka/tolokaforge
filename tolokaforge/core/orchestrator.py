@@ -1408,6 +1408,7 @@ class Orchestrator:
             run_id=run_id,
             attempt_id=attempt_id,
             worker_id=worker_id,
+            entry=self._entry_of_task.get(task.task_id, ""),
             task=task_desc,
             agent_model_config=agent_client.config,
             user_model_config=user_config,
