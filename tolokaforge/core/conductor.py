@@ -55,6 +55,7 @@ from tolokaforge.core.models import (
     GradeComponents,
     Metrics,
     ModelConfig,
+    OutputFormat,
     RateLimitProbeConfig,
     RunConfig,
     SnapshotStatus,
@@ -1433,13 +1434,24 @@ class InProcessConductor:
             ),
         }
 
-        writer.write_trial_bundle(
-            setup.trial_dir,
-            trajectory,
-            task_config_dict,
-            trajectory.final_env_state,
-            runner.logger,
-        )
+        # The tolokaforge bundle is the whole output under ``tolokaforge`` and
+        # the engine-side half under ``native`` / ``both`` — so every format
+        # writes it. Native-artifact preservation attaches to the latter two.
+        output_format = self.config.effective_output_format()
+        if output_format in (
+            OutputFormat.TOLOKAFORGE,
+            OutputFormat.NATIVE,
+            OutputFormat.BOTH,
+        ):
+            writer.write_trial_bundle(
+                setup.trial_dir,
+                trajectory,
+                task_config_dict,
+                trajectory.final_env_state,
+                runner.logger,
+            )
+        else:
+            raise ValueError(f"Unsupported output format: {output_format!r}")
 
         self.logger.info(
             "Trial output saved",

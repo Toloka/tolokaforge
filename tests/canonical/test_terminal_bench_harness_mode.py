@@ -34,6 +34,7 @@ from tolokaforge.core.models import (
     GradeComponents,
     InitialStateConfig,
     ModelConfig,
+    OutputFormat,
     RateLimitProbeConfig,
     TaskConfig,
     TerminationReason,
@@ -196,6 +197,9 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # the trial-end producer seam on a stub runtime backend that lacks
         # ``remember_trial_inputs`` / ``build_grade_bundle``.
         config.grader = None
+        # The artifact-write phase fails loud on an unknown output format; a
+        # MagicMock is not a member, so return the default the enum resolves to.
+        config.effective_output_format.return_value = OutputFormat.TOLOKAFORGE
 
         runtime = _RecordingRuntime(tools)
         # Exposed on the fixture callable so a case whose conductor call raises
