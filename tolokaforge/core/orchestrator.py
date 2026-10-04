@@ -880,11 +880,11 @@ class Orchestrator:
         # owning adapter per entry, so the entry name is part of the identity;
         # a single-adapter run uses ``None`` for the entry.
         self._task_desc_cache: dict[tuple[str | None, str], TaskDescription] = {}
-        # Run-wide trial ordering: ``(task_id, trial_index) → total_index``
+        # Run-wide trial ordering: ``(entry, task_id, trial_index) → total_index``
         # (0..total-1). Populated by :meth:`_build_pending_trials` and
         # read at the ``trial_started`` emission site so the panel can
         # render a global ``[N/M]`` prefix.
-        self._total_index_by_key: dict[tuple[str, int], int] = {}
+        self._total_index_by_key: dict[tuple[str, str, int], int] = {}
         # Handle on the TypeSense server this process started for the run —
         # ``None`` for a remote plane, no plane, or a run handed pre-loaded
         # tasks so ``load_tasks()`` never ran. A server of ours is also a
@@ -2207,23 +2207,27 @@ class Orchestrator:
         tasks: list[TaskConfig],
         repeats: int,
         skip_completed: Callable[[str, int], bool] | None = None,
-    ) -> list[tuple[str, int]]:
-        """Build pending (task_id, trial_index) pairs in enqueue order.
+    ) -> list[tuple[str, str, int]]:
+        """Build pending (entry, task_id, trial_index) triples in enqueue order.
 
-        Order is (task, trial_index) lexicographic. With
-        ``orchestrator.shuffle_trials`` set, the order is randomized —
-        diagnostic only, does not eliminate state leakage between trials.
+        The entry is the harness entry that owns the task, drawn from the
+        entry-aware ``task_units`` spine; a single-adapter run has no entry and
+        resolves to the empty-string sentinel. Order is (task, trial_index)
+        lexicographic. With ``orchestrator.shuffle_trials`` set, the order is
+        randomized — diagnostic only, does not eliminate state leakage between
+        trials.
 
         Populates :attr:`_total_index_by_key` as a side effect so the
         ``trial_started`` emission site can render a run-wide
         ``[N/M]`` prefix without recomputing.
         """
-        pending_trials: list[tuple[str, int]] = []
+        pending_trials: list[tuple[str, str, int]] = []
         for task in tasks:
+            entry = self._entry_of_task.get(task.task_id, "")
             for trial_idx in range(repeats):
                 if skip_completed and skip_completed(task.task_id, trial_idx):
                     continue
-                pending_trials.append((task.task_id, trial_idx))
+                pending_trials.append((entry, task.task_id, trial_idx))
 
         if self.config.orchestrator.shuffle_trials:
             random.shuffle(pending_trials)
@@ -3605,7 +3609,7 @@ class Orchestrator:
                         task_id=lease.task_id,
                         trial_index=lease.trial_index,
                         total_index=self._total_index_by_key.get(
-                            (lease.task_id, lease.trial_index), 0
+                            (lease.entry, lease.task_id, lease.trial_index), 0
                         ),
                         agent_model=f"{agent_config.provider}/{agent_config.name}",
                         user_model=f"{user_config.provider}/{user_config.name}",

@@ -20,7 +20,7 @@ Tolokaforge supports two queue backends:
 
 ## Lifecycle
 
-1. `prepare`: discovers tasks and enqueues `(task_id, trial_index)` attempts.
+1. `prepare`: discovers tasks and enqueues `(entry, task_id, trial_index)` attempts, where `entry` is the owning harness entry (empty for a single-adapter run).
 2. `worker`: leases attempts, executes them, and marks `completed`/`failed`/`requeued`.
 3. `status`: shows queue counts, ETA, estimated cost, and token totals from artifacts.
 

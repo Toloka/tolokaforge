@@ -8,12 +8,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+# Identity of the on-disk/on-server queue format. Attempts are keyed by
+# (entry, task_id, trial_index); a queue written by a build that keyed them by
+# (task_id, trial_index) carries an older/absent stamp and is refused on open.
+# Single source of truth for both backends — bump on any attempts-key change.
+QUEUE_SCHEMA_VERSION = 2
+
+
+class QueueSchemaVersionError(RuntimeError):
+    """Raised when a queue backend opens a store written in an incompatible format."""
+
+
+def _schema_mismatch_message(location: str, found: str) -> str:
+    return (
+        f"Run queue at {location} carries schema version {found}, but this build "
+        f"requires version {QUEUE_SCHEMA_VERSION}. Attempts are now keyed by "
+        f"(entry, task_id, trial_index); a queue written by an engine that keyed "
+        f"attempts as (task_id, trial_index) cannot be resumed by this build. "
+        f"Start a fresh run dir, or resume with the engine version that wrote it."
+    )
+
 
 @dataclass(frozen=True)
 class AttemptLease:
     """Leased queue item for execution."""
 
     id: int
+    entry: str
     task_id: str
     trial_index: int
     retry_count: int
@@ -22,8 +43,9 @@ class AttemptLease:
 class SqliteRunQueue:
     """SQLite-backed durable attempt queue.
 
-    The queue tracks a single logical attempt per (task_id, trial_index) and
-    increments `retry_count` when an attempt is requeued.
+    The queue tracks a single logical attempt per (entry, task_id, trial_index)
+    and increments `retry_count` when an attempt is requeued. The empty string
+    is the entry sentinel for a single-adapter run.
     """
 
     def __init__(self, db_path: Path, max_retries: int = 0):
@@ -42,9 +64,11 @@ class SqliteRunQueue:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            self._guard_schema_version(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry TEXT NOT NULL DEFAULT '',
                     task_id TEXT NOT NULL,
                     trial_index INTEGER NOT NULL,
                     status TEXT NOT NULL,
@@ -58,7 +82,7 @@ class SqliteRunQueue:
                     last_cost_usd REAL NOT NULL DEFAULT 0.0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    UNIQUE(task_id, trial_index)
+                    UNIQUE(entry, task_id, trial_index)
                 )
                 """)
             conn.execute("""
@@ -71,32 +95,56 @@ class SqliteRunQueue:
                     FOREIGN KEY(attempt_id) REFERENCES attempts(id)
                 )
                 """)
+            conn.execute(f"PRAGMA user_version = {QUEUE_SCHEMA_VERSION}")
 
-    def enqueue(self, task_id: str, trial_index: int) -> None:
+    def _guard_schema_version(self, conn: sqlite3.Connection) -> None:
+        """Refuse a pre-existing queue DB written in an incompatible format.
+
+        A fresh DB file reports ``user_version == 0`` and has no ``attempts``
+        table yet — that is stamped, not refused. An older build left the same
+        ``user_version == 0`` but an ``attempts`` table keyed by the old
+        2-column UNIQUE; that combination is detected here and refused.
+        """
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version == QUEUE_SCHEMA_VERSION:
+            return
+        has_attempts = (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='attempts'"
+            ).fetchone()
+            is not None
+        )
+        if has_attempts:
+            raise QueueSchemaVersionError(_schema_mismatch_message(str(self.db_path), str(version)))
+
+    def enqueue(self, entry: str, task_id: str, trial_index: int) -> None:
         now = time.time()
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO attempts (
-                    task_id, trial_index, status, retry_count, max_retries, created_at, updated_at
-                ) VALUES (?, ?, 'pending', 0, ?, ?, ?)
+                    entry, task_id, trial_index, status, retry_count, max_retries,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
                 """,
-                (task_id, trial_index, self.max_retries, now, now),
+                (entry, task_id, trial_index, self.max_retries, now, now),
             )
 
-    def enqueue_many(self, items: list[tuple[str, int]]) -> None:
+    def enqueue_many(self, items: list[tuple[str, str, int]]) -> None:
         if not items:
             return
         now = time.time()
         rows = [
-            (task_id, trial_index, self.max_retries, now, now) for task_id, trial_index in items
+            (entry, task_id, trial_index, self.max_retries, now, now)
+            for entry, task_id, trial_index in items
         ]
         with self._connect() as conn:
             conn.executemany(
                 """
                 INSERT OR IGNORE INTO attempts (
-                    task_id, trial_index, status, retry_count, max_retries, created_at, updated_at
-                ) VALUES (?, ?, 'pending', 0, ?, ?, ?)
+                    entry, task_id, trial_index, status, retry_count, max_retries,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
                 """,
                 rows,
             )
@@ -130,7 +178,7 @@ class SqliteRunQueue:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("""
-                SELECT id, task_id, trial_index, retry_count
+                SELECT id, entry, task_id, trial_index, retry_count
                 FROM attempts
                 WHERE status='pending'
                 ORDER BY updated_at ASC, id ASC
@@ -154,6 +202,7 @@ class SqliteRunQueue:
             conn.execute("COMMIT")
             return AttemptLease(
                 id=int(row["id"]),
+                entry=str(row["entry"]),
                 task_id=str(row["task_id"]),
                 trial_index=int(row["trial_index"]),
                 retry_count=int(row["retry_count"]),
@@ -292,8 +341,8 @@ class SqliteRunQueue:
 class RunQueue(Protocol):
     """Queue protocol used by orchestrator."""
 
-    def enqueue(self, task_id: str, trial_index: int) -> None: ...
-    def enqueue_many(self, items: list[tuple[str, int]]) -> None: ...
+    def enqueue(self, entry: str, task_id: str, trial_index: int) -> None: ...
+    def enqueue_many(self, items: list[tuple[str, str, int]]) -> None: ...
     def recover_inflight(self, max_lease_age_s: int = 3600) -> int: ...
     def lease_next(self, worker_id: str, lease_seconds: int) -> AttemptLease | None: ...
     def mark_running(self, attempt_id: int, worker_id: str) -> None: ...
@@ -329,9 +378,11 @@ class PostgresRunQueue:
     def _init_db(self) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
+                self._guard_schema_version(cur)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS attempts (
                         id BIGSERIAL PRIMARY KEY,
+                        entry TEXT NOT NULL DEFAULT '',
                         task_id TEXT NOT NULL,
                         trial_index INTEGER NOT NULL,
                         status TEXT NOT NULL,
@@ -345,7 +396,7 @@ class PostgresRunQueue:
                         last_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
                         created_at DOUBLE PRECISION NOT NULL,
                         updated_at DOUBLE PRECISION NOT NULL,
-                        UNIQUE(task_id, trial_index)
+                        UNIQUE(entry, task_id, trial_index)
                     )
                     """)
                 cur.execute("""
@@ -358,21 +409,49 @@ class PostgresRunQueue:
                     )
                     """)
 
-    def enqueue(self, task_id: str, trial_index: int) -> None:
+    def _guard_schema_version(self, cur) -> None:
+        """Refuse a pre-existing queue written in an incompatible format.
+
+        Runs before any ``CREATE TABLE IF NOT EXISTS`` so a pre-change
+        ``attempts`` table (which ``_init_db`` would otherwise keep, unaltered,
+        with its old 2-column UNIQUE) is detected rather than silently reused.
+        The ``queue_meta`` version row is absent on an old DB; present on a new
+        one. The DSN is not echoed in the error to keep credentials out of logs.
+        """
+        cur.execute("CREATE TABLE IF NOT EXISTS queue_meta (version INTEGER NOT NULL)")
+        cur.execute("SELECT version FROM queue_meta LIMIT 1")
+        row = cur.fetchone()
+        if row is None:
+            cur.execute("SELECT to_regclass('public.attempts')")
+            attempts_exists = cur.fetchone()[0] is not None
+            if attempts_exists:
+                raise QueueSchemaVersionError(
+                    _schema_mismatch_message("the configured Postgres queue", "absent")
+                )
+            cur.execute("INSERT INTO queue_meta (version) VALUES (%s)", (QUEUE_SCHEMA_VERSION,))
+            return
+        version = int(row[0])
+        if version != QUEUE_SCHEMA_VERSION:
+            raise QueueSchemaVersionError(
+                _schema_mismatch_message("the configured Postgres queue", str(version))
+            )
+
+    def enqueue(self, entry: str, task_id: str, trial_index: int) -> None:
         now = time.time()
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO attempts (
-                        task_id, trial_index, status, retry_count, max_retries, created_at, updated_at
-                    ) VALUES (%s, %s, 'pending', 0, %s, %s, %s)
-                    ON CONFLICT (task_id, trial_index) DO NOTHING
+                        entry, task_id, trial_index, status, retry_count, max_retries,
+                        created_at, updated_at
+                    ) VALUES (%s, %s, %s, 'pending', 0, %s, %s, %s)
+                    ON CONFLICT (entry, task_id, trial_index) DO NOTHING
                     """,
-                    (task_id, trial_index, self.max_retries, now, now),
+                    (entry, task_id, trial_index, self.max_retries, now, now),
                 )
 
-    def enqueue_many(self, items: list[tuple[str, int]]) -> None:
+    def enqueue_many(self, items: list[tuple[str, str, int]]) -> None:
         if not items:
             return
         now = time.time()
@@ -381,16 +460,17 @@ class PostgresRunQueue:
             with conn.cursor() as cur:
                 for idx in range(0, len(items), chunk_size):
                     chunk = items[idx : idx + chunk_size]
-                    values_sql = ", ".join(["(%s, %s, 'pending', 0, %s, %s, %s)"] * len(chunk))
+                    values_sql = ", ".join(["(%s, %s, %s, 'pending', 0, %s, %s, %s)"] * len(chunk))
                     params: list[object] = []
-                    for task_id, trial_index in chunk:
-                        params.extend([task_id, trial_index, self.max_retries, now, now])
+                    for entry, task_id, trial_index in chunk:
+                        params.extend([entry, task_id, trial_index, self.max_retries, now, now])
                     cur.execute(
                         f"""
                         INSERT INTO attempts (
-                            task_id, trial_index, status, retry_count, max_retries, created_at, updated_at
+                            entry, task_id, trial_index, status, retry_count, max_retries,
+                            created_at, updated_at
                         ) VALUES {values_sql}
-                        ON CONFLICT (task_id, trial_index) DO NOTHING
+                        ON CONFLICT (entry, task_id, trial_index) DO NOTHING
                         """,
                         params,
                     )
@@ -436,7 +516,7 @@ class PostgresRunQueue:
                             updated_at=%s
                         FROM cte
                         WHERE a.id=cte.id
-                        RETURNING a.id, a.task_id, a.trial_index, a.retry_count
+                        RETURNING a.id, a.entry, a.task_id, a.trial_index, a.retry_count
                         """,
                         (worker_id, expires, now),
                     )
@@ -445,9 +525,10 @@ class PostgresRunQueue:
                         return None
                     return AttemptLease(
                         id=int(row[0]),
-                        task_id=str(row[1]),
-                        trial_index=int(row[2]),
-                        retry_count=int(row[3]),
+                        entry=str(row[1]),
+                        task_id=str(row[2]),
+                        trial_index=int(row[3]),
+                        retry_count=int(row[4]),
                     )
 
     def mark_running(self, attempt_id: int, worker_id: str) -> None:

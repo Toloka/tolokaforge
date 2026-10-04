@@ -195,12 +195,12 @@ class TestOrchestratorConstruction:
         pending = orch._build_pending_trials(tasks, repeats=3)
 
         assert pending == [
-            ("TASK-1", 0),
-            ("TASK-1", 1),
-            ("TASK-1", 2),
-            ("TASK-2", 0),
-            ("TASK-2", 1),
-            ("TASK-2", 2),
+            ("", "TASK-1", 0),
+            ("", "TASK-1", 1),
+            ("", "TASK-1", 2),
+            ("", "TASK-2", 0),
+            ("", "TASK-2", 1),
+            ("", "TASK-2", 2),
         ]
 
     def test_build_pending_trials_shuffle_changes_order(self) -> None:
@@ -211,7 +211,7 @@ class TestOrchestratorConstruction:
         # Enough items that an accidental identity permutation is implausible
         # (10! = 3.6M).
         tasks = [_make_task_config(f"TASK-{i}") for i in range(5)]
-        lexicographic = [(t.task_id, idx) for t in tasks for idx in range(2)]
+        lexicographic = [("", t.task_id, idx) for t in tasks for idx in range(2)]
 
         random.seed(0)
         pending = orch._build_pending_trials(tasks, repeats=2)
@@ -233,7 +233,7 @@ class TestOrchestratorConstruction:
             skip_completed=lambda task_id, trial_idx: (task_id, trial_idx) in completed,
         )
 
-        assert pending == [("TASK-1", 1), ("TASK-2", 0)]
+        assert pending == [("", "TASK-1", 1), ("", "TASK-2", 0)]
 
     def test_build_pending_trials_skip_completed_all_returns_empty(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator

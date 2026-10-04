@@ -543,7 +543,7 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
 
 
 def test_build_pending_trials_populates_total_index_by_key_with_distinct_values() -> None:
-    """The dict must map every ``(task_id, trial_idx)`` pair to a unique
+    """The dict must map every ``(entry, task_id, trial_idx)`` triple to a unique
     run-wide index 0..N-1. This is the guardrail against the
     ``trial_started`` emission's ``.get(..., 0)`` fallback silently
     reporting every trial as ``total_index=0``."""
@@ -552,9 +552,9 @@ def test_build_pending_trials_populates_total_index_by_key_with_distinct_values(
     orch._build_pending_trials(tasks, repeats=1)
 
     assert orch._total_index_by_key == {
-        ("A", 0): 0,
-        ("B", 0): 1,
-        ("C", 0): 2,
+        ("", "A", 0): 0,
+        ("", "B", 0): 1,
+        ("", "C", 0): 2,
     }
 
 
@@ -569,12 +569,12 @@ def test_build_pending_trials_indices_span_full_range_for_multi_repeat() -> None
     values = sorted(orch._total_index_by_key.values())
     assert values == [0, 1, 2, 3, 4, 5]
     assert set(orch._total_index_by_key.keys()) == {
-        ("A", 0),
-        ("A", 1),
-        ("B", 0),
-        ("B", 1),
-        ("C", 0),
-        ("C", 1),
+        ("", "A", 0),
+        ("", "A", 1),
+        ("", "B", 0),
+        ("", "B", 1),
+        ("", "C", 0),
+        ("", "C", 1),
     }
 
 
