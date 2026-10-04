@@ -143,7 +143,7 @@ def test_a_measured_trial_missing_its_grade_does_not_count_as_scored() -> None:
 def test_run_state_persists_the_two_completion_gate_booleans(tmp_path: Path) -> None:
     state_manager = RunStateManager(output_dir=tmp_path)
     state_manager.initialize_run(
-        run_id="run-0", config_path="config.yaml", task_ids=["t"], repeats=1
+        run_id="run-0", config_path="config.yaml", units=[("", "t")], repeats=1
     )
 
     state_manager.mark_run_completed(zero_coverage=True, zero_judge_graded=False)

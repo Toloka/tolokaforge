@@ -77,7 +77,10 @@ def _seed_run_dir(
     )
     manager = RunStateManager(run_dir)
     state = manager.initialize_run(
-        run_id=run_id, config_path="run.yaml", task_ids=task_ids, repeats=repeats
+        run_id=run_id,
+        config_path="run.yaml",
+        units=[("", task_id) for task_id in task_ids],
+        repeats=repeats,
     )
     for task_id, trial_idx in completed or []:
         state.mark_completed(task_id, trial_idx, binary_pass=True, score=1.0)

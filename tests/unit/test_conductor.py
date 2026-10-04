@@ -65,6 +65,8 @@ def _make_spec(
         run_id="test-run",
         attempt_id=attempt_id,
         worker_id=worker_id,
+        task_id=task_id,
+        trial_index=trial_idx,
         task=TaskDescription(
             task_id=task_id,
             name=task_id,

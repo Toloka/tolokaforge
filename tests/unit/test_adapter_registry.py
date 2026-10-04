@@ -6,7 +6,8 @@ Covers :class:`CompositeAdapter` and :func:`build_composite_adapter`:
 - the union accessors aggregate across entries (docker-CLI OR, docker-stack
   merge, fingerprints per distinct adapter type, grader-name agreement),
 - ``for_entry`` on a plain single adapter returns self,
-- the builder's overlap guard fires when one task id spans two entries.
+- the builder routes a task id shared by two entries to each entry's adapter
+  (a real tasks×harnesses matrix).
 """
 
 from __future__ import annotations
@@ -270,7 +271,7 @@ class TestAmbiguousSurfacesRaise:
             composite.get_task_ids()
 
 
-class TestBuilderOverlapGuard:
+class TestBuilderRouting:
     def test_builder_routes_and_enumerates(self) -> None:
         register_adapter("fake_plain_a2", _PlainAdapter)
         register_adapter("fake_deleg_a2", _DelegatedAdapter)
@@ -293,13 +294,22 @@ class TestBuilderOverlapGuard:
         )
         assert composite.entries["p"].task_ids == ["a2"]
 
-    def test_overlap_guard_fires(self) -> None:
+    def test_same_task_under_two_entries_builds_routable_matrix(self) -> None:
+        # A task id shared by two entries is a real matrix, not an error: each
+        # entry keeps the shared ids and routes to its own adapter instance.
         register_adapter("fake_plain_ov", _PlainAdapter)
-        with pytest.raises(ValueError, match="1768"):
-            build_composite_adapter(
-                [
-                    HarnessEntryConfig(name="p1", adapter="fake_plain_ov"),
-                    HarnessEntryConfig(name="p2", adapter="fake_plain_ov"),
-                ],
-                params_for_entry=lambda cfg: {},
-            )
+        composite = build_composite_adapter(
+            [
+                HarnessEntryConfig(name="p1", adapter="fake_plain_ov"),
+                HarnessEntryConfig(name="p2", adapter="fake_plain_ov"),
+            ],
+            params_for_entry=lambda cfg: {},
+        )
+        assert composite.entries["p1"].task_ids == ["a1", "a2"]
+        assert composite.entries["p2"].task_ids == ["a1", "a2"]
+        p1 = composite.for_entry("p1")
+        p2 = composite.for_entry("p2")
+        assert isinstance(p1, _PlainAdapter)
+        assert isinstance(p2, _PlainAdapter)
+        # Distinct adapter instances so each entry's per-task calls are isolated.
+        assert p1 is not p2

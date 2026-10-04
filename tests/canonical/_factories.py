@@ -113,6 +113,8 @@ def make_trial_spec(
     return TrialSpec(
         trial_id=trial_id,
         run_id=run_id,
+        task_id=task_id,
+        trial_index=int(trial_id.rsplit(":", 1)[1]),
         task=make_task_description(task_id=task_id),
         agent_model_config=agent_model_config or ModelConfig(provider="openai", name="gpt-4"),
         env_endpoints=env_endpoints or make_env_endpoints(),

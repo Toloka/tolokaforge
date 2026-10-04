@@ -174,9 +174,12 @@ harnesses:
   entry delegated.
 - **`task_packs`** on an entry is the deprecated alias for `projects`, coerced
   with a `DeprecationWarning` exactly as on `evaluation`.
-- Within this slice, a `task_id` must not appear under two entries; such a
-  config is refused with a pointer to the matrix-identity follow-up. Resolution
-  is by entry, and today's `trials/<task_id>/<idx>` layout is kept.
+- A `task_id` may appear under more than one entry — a real tasks×harnesses
+  matrix. Resolution is by entry, and trial identity is
+  `(entry, task_id, trial_index)` end to end: the `trial_id` label, the
+  `trials/<entry>/<task_id>/<idx>/` output path (empty entry → the two-level
+  `trials/<task_id>/<idx>/`), the durable queue rows, and the resume state are
+  all keyed by the triple, so two entries sharing a task id never collide.
 - Each entry's execution mode is gated per entry before any task enumeration or
   container work: the mode (the entry's `mode`, or inferred from its harness) is
   checked against the modes its adapter runs, and a mismatch is refused naming

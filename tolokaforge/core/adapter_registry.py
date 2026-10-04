@@ -10,9 +10,10 @@ requirements, adapter fingerprints) as an explicit union across entries.
 Resolution is by ENTRY, not by a globally-unique task id: the conductor carries
 the entry name on each trial and asks :meth:`CompositeAdapter.for_entry` for the
 adapter, so two entries are free to use the same adapter type with different
-parameters. Within this slice a task id must not appear under two entries — the
-builder's overlap guard refuses that, pointing at the matrix-identity follow-up
-(#1768) — which keeps today's ``trials/<task_id>/<idx>`` layout collision-free.
+parameters. The same task id may appear under two entries — a real
+tasks×harnesses matrix — because trial identity, the ``trials/<entry>/<task_id>/
+<idx>`` output layout, and the durable queue/resume state are all keyed by
+``(entry, task_id, trial_index)``.
 """
 
 from __future__ import annotations
@@ -320,14 +321,12 @@ def build_composite_adapter(
     the orchestrator's per-entry execution-mode gate hangs on, so a bad entry is
     refused before any task enumeration or container work.
 
-    Overlap guard: within this slice a task id may belong to only one entry.
-    The guard refuses a config where one id appears under two entries, naming
-    both entries and the id and pointing at the matrix-identity follow-up
-    (#1768) — so the shared ``trials/<task_id>/<idx>`` layout stays
-    collision-free until that migration lands.
+    The same task id may appear under more than one entry: trial identity is
+    ``(entry, task_id, trial_index)`` end to end, so the composite routes each
+    entry's copy of the task to that entry's adapter and their outputs, queue
+    rows, and resume state never collide.
     """
     harness_entries: list[HarnessEntry] = []
-    owner_of: dict[str, str] = {}
     for config in entries:
         adapter = get_adapter(config.adapter, params_for_entry(config))
         if validate_entry is not None:
@@ -336,18 +335,6 @@ def build_composite_adapter(
         if config.task_ids:
             allow = set(config.task_ids)
             task_ids = [task_id for task_id in task_ids if task_id in allow]
-        for task_id in task_ids:
-            prior = owner_of.get(task_id)
-            if prior is not None:
-                raise ValueError(
-                    f"Task id {task_id!r} appears under two harness entries "
-                    f"({prior!r} and {config.name!r}). This slice resolves by "
-                    "entry and keeps the shared trials/<task_id>/<idx> output "
-                    "layout, so task ids must be distinct across entries. "
-                    "Running the same task under multiple harnesses (a true "
-                    "matrix) is the matrix-identity follow-up (#1768)."
-                )
-            owner_of[task_id] = config.name
         harness_entries.append(
             HarnessEntry(
                 name=config.name,  # type: ignore[arg-type]  # filled at parse time

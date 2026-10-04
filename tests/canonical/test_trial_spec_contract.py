@@ -147,6 +147,8 @@ class TestTrialSpecContract:
         # silently — adding a new top-level field requires updating this list.
         assert set(spec.model_dump().keys()) == {
             "trial_id",
+            "task_id",
+            "trial_index",
             "run_id",
             "attempt_id",
             "worker_id",

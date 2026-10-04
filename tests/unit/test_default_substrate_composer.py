@@ -253,6 +253,8 @@ def _trial_spec(
     return TrialSpec(
         trial_id=trial_id,
         run_id="run-a",
+        task_id=task_id,
+        trial_index=int(trial_id.rsplit(":", 1)[1]),
         task=TaskDescription(
             task_id=task_id,
             name=task_id,
@@ -1123,10 +1125,19 @@ class TestLogCaptureAdapters:
 
     def test_trial_scope_capture_writes_under_trials_task_index(self, tmp_path: Path) -> None:
         capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
-        result = _trial_scope_log_capture(capture, "task-1:0")
+        result = _trial_scope_log_capture(capture, _trial_spec(None, trial_id="task-1:0"))
         assert result is not None
         assert result.dest_dir == tmp_path / "trials" / "task-1" / "0" / "services"
         assert result.tail == 100
 
+    def test_trial_scope_capture_writes_under_entry_for_a_harness_run(self, tmp_path: Path) -> None:
+        # A harness-entry trial nests the bundle (and its services dir) under the
+        # entry, so the same task id under two entries never collides.
+        capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
+        spec = _trial_spec(None, trial_id="claude:task-1:0").model_copy(update={"entry": "claude"})
+        result = _trial_scope_log_capture(capture, spec)
+        assert result is not None
+        assert result.dest_dir == tmp_path / "trials" / "claude" / "task-1" / "0" / "services"
+
     def test_trial_scope_capture_returns_none_when_disabled(self, tmp_path: Path) -> None:
-        assert _trial_scope_log_capture(None, "task-1:0") is None
+        assert _trial_scope_log_capture(None, _trial_spec(None, trial_id="task-1:0")) is None

@@ -539,6 +539,9 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
         )
         for task_id in task_ids
     ]
+    # _build_pending_trials reads the run's dispatch spine (self.tasks for a
+    # single-adapter run), so seed it here.
+    orch.tasks = tasks
     return orch, tasks
 
 
@@ -549,7 +552,7 @@ def test_build_pending_trials_populates_total_index_by_key_with_distinct_values(
     reporting every trial as ``total_index=0``."""
     orch, tasks = _make_orchestrator_with_tasks(["A", "B", "C"], repeats=1)
 
-    orch._build_pending_trials(tasks, repeats=1)
+    orch._build_pending_trials(repeats=1)
 
     assert orch._total_index_by_key == {
         ("", "A", 0): 0,
@@ -564,7 +567,7 @@ def test_build_pending_trials_indices_span_full_range_for_multi_repeat() -> None
     fans a task out into ``repeats`` per-trial entries."""
     orch, tasks = _make_orchestrator_with_tasks(["A", "B", "C"], repeats=2)
 
-    orch._build_pending_trials(tasks, repeats=2)
+    orch._build_pending_trials(repeats=2)
 
     values = sorted(orch._total_index_by_key.values())
     assert values == [0, 1, 2, 3, 4, 5]
@@ -589,7 +592,7 @@ def test_build_pending_trials_indices_are_distinct_under_shuffle() -> None:
     )
     random.seed(0)
 
-    orch._build_pending_trials(tasks, repeats=1)
+    orch._build_pending_trials(repeats=1)
 
     values = sorted(orch._total_index_by_key.values())
     assert values == [0, 1, 2, 3, 4]

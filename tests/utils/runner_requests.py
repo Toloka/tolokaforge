@@ -35,6 +35,8 @@ def trial_spec_json(
     return TrialSpec(
         trial_id=trial_id,
         run_id="test_run",
+        task_id=trial_id.rsplit(":", 1)[0],
+        trial_index=int(trial_id.rsplit(":", 1)[1]),
         task=TaskDescription.model_validate(task_dict),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         judge_model_config=judge_model_config,
