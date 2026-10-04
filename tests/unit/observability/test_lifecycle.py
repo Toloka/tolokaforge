@@ -30,6 +30,9 @@ def _spec(attempt: int = 0) -> MagicMock:
     spec.trial_index = 0
     spec.entry = ""  # single-adapter trial: no harness-entry prefix
     spec.task.adapter_type = "native"  # real str: the conductor serializes it onto the trajectory
+    spec.task.metadata = (
+        {}
+    )  # real dict: the conductor classifies execution mode off it (empty = engine loop)
     spec.run_id = "engine-run"
     spec.attempt_id = attempt
     spec.worker_id = "w1"

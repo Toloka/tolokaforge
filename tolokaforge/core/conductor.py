@@ -559,9 +559,12 @@ class InProcessConductor:
             # Every bundle, including the snapshot grader's, records the traced attempt.
             trajectory.attempt_id = spec.attempt_id
             # Stamp multi-harness identity: the entry (``None`` for a single
-            # adapter) and the resolved adapter's registered type.
+            # adapter), the resolved adapter's registered type, and how the
+            # trial was driven. The mode is a record-only stamp; dispatch has
+            # already branched on the same classification.
             trajectory.harness_entry = spec.entry or None
             trajectory.adapter_type = spec.task.adapter_type
+            trajectory.execution_mode = select_execution_mode(spec.task.metadata)
             self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
