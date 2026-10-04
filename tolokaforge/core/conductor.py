@@ -1105,6 +1105,17 @@ class InProcessConductor:
         # absent is the common case and reads as "no wire measurement" — same
         # non-load-bearing treatment as ``agent_harness`` above.
         usage_log = spec.task.metadata.get(HARNESS_USAGE_LOG_METADATA_KEY)
+        # Preserve the harness's own artifacts only when the run's output format
+        # asks for them: the resolved adapter names the in-container paths, the
+        # runner reads them out while the container is up, and the preserve
+        # decision stays here rather than riding into the runner. An adapter with
+        # no native artifacts (the engine-loop default) returns an empty list, so
+        # ``native`` / ``both`` collapse to the normalised bundle.
+        native_paths: list[str] | None = None
+        if self.config.effective_output_format() in (OutputFormat.NATIVE, OutputFormat.BOTH):
+            native_paths = self._adapter_for(spec).native_artifact_container_paths(
+                task_config.task_id
+            )
         trajectory = runner.run_harness(
             tool_name=tool.name,
             command=harness_command,
@@ -1114,6 +1125,7 @@ class InProcessConductor:
             usage_log_container_path=(
                 usage_log if isinstance(usage_log, str) and usage_log else None
             ),
+            native_artifact_container_paths=native_paths,
         )
         return trajectory, runner, system_prompt
 
@@ -1453,12 +1465,49 @@ class InProcessConductor:
         else:
             raise ValueError(f"Unsupported output format: {output_format!r}")
 
+        # ``native`` / ``both`` also preserve the harness's own artifacts, which
+        # the runner read out of the trial container while it was up and staged
+        # on :attr:`TrialRunner.harness_native_artifacts`. A trial with none
+        # staged — an engine-loop trial, or a harness whose adapter named no
+        # native paths — creates no ``native/`` directory.
+        if output_format in (OutputFormat.NATIVE, OutputFormat.BOTH):
+            self._write_native_artifacts(setup.trial_dir, runner)
+
         self.logger.info(
             "Trial output saved",
             task_id=task.task_id,
             trial_index=setup.trial_idx,
             output_dir=str(setup.trial_dir),
         )
+
+    def _write_native_artifacts(self, trial_dir: Path, runner: TrialRunner) -> None:
+        """Write the harness's staged native artifacts under ``trial_dir/native/``.
+
+        Each staged entry is a ``relative path -> bytes`` pair whose relative
+        path keeps the harness's own subtree, so ``logs/verifier/reward.txt``
+        lands at ``native/logs/verifier/reward.txt``. Nothing staged — the
+        common case — writes no ``native/`` directory, so a trial with no native
+        artifacts is byte-for-byte the normalised bundle.
+
+        A write error on one file is logged and skipped: preserving an artifact
+        may not cost a trial its already-graded result.
+        """
+        staged = runner.harness_native_artifacts
+        if not staged:
+            return
+        native_root = trial_dir / "native"
+        for relative_path, data in staged.items():
+            try:
+                destination = native_root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+            except OSError as exc:
+                self.logger.warning(
+                    "Native artifact could not be written",
+                    trial_dir=str(trial_dir),
+                    artifact=relative_path,
+                    error=str(exc),
+                )
 
     def _serialize_model_config(
         self,

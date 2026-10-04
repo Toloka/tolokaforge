@@ -70,6 +70,14 @@ it and the conductor that reads it are in different distributions.
 """
 
 
+_NATIVE_ARTIFACT_CONTAINER_ROOT = "/logs"
+"""Where a Harbor / terminal-bench trial container holds the harness's own
+artifacts (``/logs/verifier/reward.txt``, ``/logs/agent/…``). Preserved under
+the trial's ``native/`` directory when the run's output format keeps native
+artifacts. A constant because the verifier path the grading dispatch reads
+(``/logs/verifier/reward.txt``) is rooted here too."""
+
+
 _HARNESS_INSTALL_CONTAINER_PATH = "/opt/tolokaforge/install-harness.sh"
 """Where the shipped install script lands inside the image the layer builds.
 
@@ -304,6 +312,17 @@ class CodingHarnessAdapterMixin:
         if agent_harness != ENGINE_LOOP:
             return "test_execution"
         return "composite"
+
+    def native_artifact_container_paths(self, task_id: str) -> list[str]:
+        """The in-container root of the harness's own artifacts: ``/logs``.
+
+        Harbor / terminal-bench trials write every native artifact — the
+        verifier's ``reward.txt``, the agent's own logs — under ``/logs`` inside
+        the trial container. A run whose output format is ``native`` or ``both``
+        preserves that subtree verbatim; the engine reads it out while the
+        container is up and writes it under the trial's ``native/`` directory.
+        """
+        return [_NATIVE_ARTIFACT_CONTAINER_ROOT]
 
     def write_install_script_layer(
         self,

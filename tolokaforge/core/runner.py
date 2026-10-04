@@ -1,6 +1,10 @@
 """Trial runner with agent-user loop"""
 
+import base64
+import binascii
+import io
 import shlex
+import tarfile
 import time
 from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
@@ -94,6 +98,13 @@ _HARNESS_USAGE_READ_CALL_ID_PREFIX = "harness-usage:"
 Distinct from the ``harness:`` id the CLI's own exec carries, so the runner-side
 execution record the read unavoidably leaves is attributable to the engine
 rather than readable as a second thing the agent did."""
+
+_HARNESS_ARTIFACT_READ_CALL_ID_PREFIX = "harness-artifacts:"
+"""Call-id prefix for the engine's own read of a harness trial's native artifacts.
+
+Distinct from both the CLI's ``harness:`` exec id and the ``harness-usage:``
+read id, so the runner-side execution record this copy unavoidably leaves is
+attributable to the engine's artifact preservation rather than to the agent."""
 
 _USAGE_READ_DETAIL_CHARS = 200
 """How much of a failed usage read's output the log carries.
@@ -319,6 +330,14 @@ class TrialRunner:
         # nothing, read back out of the trial container while it was still up.
         self._harness_stdout_telemetry: HarnessStdoutTelemetry | None = None
         self._harness_usage_records: str | None = None
+        # Staged by :meth:`run_harness` when the run preserves native artifacts:
+        # a ``relative path -> bytes`` mapping of the harness's own output, read
+        # out of the trial container while it was still up (the runtime deletes
+        # the bind-mounts at teardown). ``None`` on every other way a trial is
+        # driven and whenever no native paths were requested. The conductor
+        # reads it off :attr:`harness_native_artifacts` to write the trial's
+        # ``native/`` directory.
+        self._harness_native_artifacts: dict[str, bytes] | None = None
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
         self._effective_system_prompt: str | None = None
@@ -359,6 +378,17 @@ class TrialRunner:
         returns and persisted to ``prompts.yaml``.
         """
         return self._effective_system_prompt
+
+    @property
+    def harness_native_artifacts(self) -> dict[str, bytes] | None:
+        """The harness's own artifacts, as ``relative path -> bytes``.
+
+        Populated by :meth:`run_harness` only when the caller asked for native
+        artifacts to be preserved and the trial container held some; ``None``
+        otherwise. The conductor reads this after ``run_harness`` returns and
+        writes it under the trial's ``native/`` directory.
+        """
+        return self._harness_native_artifacts
 
     @property
     def user_system_prompt(self) -> str | None:
@@ -623,6 +653,7 @@ class TrialRunner:
         timeout_s: float,
         harness: str = "",
         usage_log_container_path: str | None = None,
+        native_artifact_container_paths: Sequence[str] | None = None,
     ) -> Trajectory:
         """Run the trial as a single invocation of a coding-harness CLI.
 
@@ -656,6 +687,13 @@ class TrialRunner:
                 the container is still up. ``None`` — and a file the proxy
                 never wrote — leave the token accounting to what the CLI
                 printed.
+            native_artifact_container_paths: In-container paths (files or
+                directories) whose bytes are preserved as the harness's native
+                artifacts, read back the moment the CLI's exec returns while the
+                container is still up. ``None`` or empty preserves nothing — the
+                caller passes paths only when the run's output format keeps
+                native artifacts, so staging and the preserve decision stay with
+                the caller and this method just copies what it is handed.
         """
         trial_id = f"{self.task_id}:{self.trial_index}"
         with trial_id_scope(trial_id):
@@ -707,6 +745,10 @@ class TrialRunner:
             if usage_log_container_path is not None:
                 self._harness_usage_records = self._read_container_usage_records(
                     tool_name, usage_log_container_path
+                )
+            if native_artifact_container_paths:
+                self._harness_native_artifacts = self._read_container_artifacts(
+                    tool_name, native_artifact_container_paths
                 )
             self.messages.append(
                 Message(
@@ -1162,6 +1204,98 @@ class TrialRunner:
             )
             return None
         return result.output or None
+
+    def _read_container_artifacts(
+        self, tool_name: str, container_paths: Sequence[str]
+    ) -> dict[str, bytes] | None:
+        """Copy native-artifact paths out of the trial container via *tool_name*.
+
+        Generalises :meth:`_read_container_usage_records` from one text file to a
+        set of files or directories whose bytes are the harness's own artifacts.
+        Each path is archived with ``tar`` rooted at ``/`` so its member names
+        keep the container subtree (``/logs`` → ``logs/verifier/reward.txt``),
+        base64-encoded to survive the text-only exec seam, and expanded into a
+        ``relative path -> bytes`` mapping the conductor writes under the trial's
+        ``native/`` directory.
+
+        The read has to happen while the container is up, for the same reason
+        the usage read does: the runtime deletes the per-trial bind-mounts at
+        teardown, so there is no host path to open afterwards.
+
+        Preserving artifacts may not cost a trial its result, so every failure
+        mode — an absent path, an executor that raised, a container already
+        gone, a corrupt archive — skips that one path and leaves the rest,
+        returning ``None`` when nothing could be read. This is the same
+        blanket-except contract :meth:`_read_container_usage_records` uses, and
+        the reason both arms log what happened.
+        """
+        collected: dict[str, bytes] = {}
+        for container_path in container_paths:
+            archive = self._read_one_container_path(tool_name, container_path)
+            if archive is not None:
+                collected.update(archive)
+        return collected or None
+
+    def _read_one_container_path(
+        self, tool_name: str, container_path: str
+    ) -> dict[str, bytes] | None:
+        """One path's ``tar | base64`` read, expanded to ``member -> bytes``.
+
+        ``None`` on any failure — absence must not cost the trial — with the
+        reason logged so a missing artifact is debuggable rather than silent.
+        """
+        relative = container_path.lstrip("/")
+        if not relative:
+            return None
+        command = f"tar -cf - -C / {shlex.quote(relative)} | base64"
+        try:
+            result = self.tool_executor.execute(
+                tool_name,
+                {"command": command},
+                call_id=f"{_HARNESS_ARTIFACT_READ_CALL_ID_PREFIX}{self.task_id}:{self.trial_index}",
+            )
+        except Exception as exc:  # noqa: BLE001 — artifact copy never fails a trial
+            self.logger.info(
+                "Harness native artifacts could not be read from the container",
+                path=container_path,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        if resolve_tool_status(result) is not ToolExecutionStatus.SUCCESS:
+            self.logger.info(
+                "Harness native artifacts are absent from the container",
+                path=container_path,
+                detail=resolve_tool_output(result)[:_USAGE_READ_DETAIL_CHARS],
+            )
+            return None
+        return self._expand_tar_base64(container_path, result.output or "")
+
+    def _expand_tar_base64(self, container_path: str, encoded: str) -> dict[str, bytes] | None:
+        """Decode a base64 ``tar`` stream into ``member path -> bytes``.
+
+        Only regular-file members are kept; directory members carry no bytes.
+        A decode or archive error returns ``None`` — a truncated copy is worth
+        reporting, never worth failing a trial over.
+        """
+        try:
+            raw = base64.b64decode(encoded)
+            members: dict[str, bytes] = {}
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+                for member in archive.getmembers():
+                    if not member.isfile():
+                        continue
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        continue
+                    members[member.name] = extracted.read()
+        except (binascii.Error, ValueError, tarfile.TarError, OSError) as exc:
+            self.logger.info(
+                "Harness native artifacts could not be unpacked",
+                path=container_path,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return members or None
 
     def _apply_harness_wire_usage(self) -> None:
         """Fold in the token usage a request middleware measured on the wire.

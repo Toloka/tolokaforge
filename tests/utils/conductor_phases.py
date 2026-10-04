@@ -34,11 +34,14 @@ directly, whatever its spec says."""
 
 @dataclass(frozen=True)
 class RunnerStub:
-    """The three ``TrialRunner`` attributes the two phases read."""
+    """The ``TrialRunner`` attributes the two phases read."""
 
     effective_system_prompt: str
     user_system_prompt: str
     logger: StructuredLogger
+    # Staged harness artifacts the ``native`` / ``both`` write phase reads;
+    # ``None`` mirrors a trial that preserved no native artifacts.
+    harness_native_artifacts: dict[str, bytes] | None = None
 
 
 def make_run_config(output_dir: Path, *, repeats: int = 1) -> RunConfig:
@@ -105,9 +108,10 @@ def make_setup(output_dir: Path, task_id: str, trial_idx: int) -> _TrialSetup:
     )
 
 
-def runner_stub() -> RunnerStub:
+def runner_stub(*, harness_native_artifacts: dict[str, bytes] | None = None) -> RunnerStub:
     return RunnerStub(
         effective_system_prompt="You are a test assistant.",
         user_system_prompt="You are a user.",
         logger=StructuredLogger("test-conductor-phases-trial"),
+        harness_native_artifacts=harness_native_artifacts,
     )

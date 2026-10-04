@@ -640,6 +640,23 @@ class BaseAdapter(ABC):
         """
         return DockerStackRequirements()
 
+    def native_artifact_container_paths(self, task_id: str) -> list[str]:
+        """Absolute in-container paths whose contents are the harness's native artifacts.
+
+        Returns the files or directories inside the trial container that hold
+        the underlying harness's own output — the artifacts a run preserves when
+        its output format is ``native`` or ``both``. The engine reads these out
+        of the container while it is still up and writes them under the trial's
+        ``native/`` directory, keeping each path's own subtree.
+
+        The default is empty: nothing to preserve. The engine-loop path and any
+        adapter without native artifacts leave it so, and ``native`` / ``both``
+        then collapse to the normalised bundle with no ``native/`` directory.
+        The engine calls this only on the already-resolved adapter instance, so
+        no harness library is imported in core to answer it.
+        """
+        return []
+
     def fingerprint(self) -> dict[str, Any] | None:
         """What this adapter reports about the resolved inputs it ran on.
 
