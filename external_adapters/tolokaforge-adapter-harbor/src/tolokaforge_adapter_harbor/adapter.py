@@ -23,6 +23,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
+# Reuse the terminal-bench adapter's environment synthesis + task parsing:
+# Harbor tasks are Terminal-Bench 2.0 tasks, so this is a deliberate shared
+# surface across the two external adapter packages (approach b, no `harbor run`).
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     DEFAULT_SKILL_DELIVERY,
     PROJECT_PREFIX,

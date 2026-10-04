@@ -16,18 +16,23 @@ models:
     provider: "anthropic"
     name: "claude-sonnet-4.6"
 
-orchestrator:
+compute:
   workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
   repeats: 1
   max_turns: 40
-  queue_backend: sqlite
   # A Harbor task's environment is synthesised from its task files; a failed
   # task load is a config error the operator must see, not a task silently
   # dropped from the run.
   strict_task_load: true
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/harbor"
   tasks_glob: "write-release-note/task.toml"
   output_dir: "results/harbor/write-release-note"

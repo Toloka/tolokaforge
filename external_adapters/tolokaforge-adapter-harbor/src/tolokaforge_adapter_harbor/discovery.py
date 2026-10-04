@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# Reuse the terminal-bench adapter's environment synthesis + task parsing:
+# Harbor tasks are Terminal-Bench 2.0 tasks, so this is a deliberate shared
+# surface across the two external adapter packages (approach b, no `harbor run`).
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
     discover_tasks,
