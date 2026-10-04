@@ -121,6 +121,58 @@ Notes:
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
 
+### `harnesses:` — run multiple adapters in one run
+
+A single run normally loads one adapter: `evaluation.harness_adapter` (or the
+`native` default). To run several adapters side by side in one run — each
+pulling its own tasks — declare a `harnesses:` block with one entry per
+adapter. Each entry is dispatched independently.
+
+```yaml
+harnesses:
+  entries:
+    - adapter: native            # registered adapter type (default "native")
+      projects:                  # project roots this entry pulls from
+        - "/abs/path/pack-a"
+      tasks_glob: "**/task.yaml" # optional; inherits evaluation.tasks_glob
+      task_ids: []               # optional explicit allow-list
+    - name: tau-leg              # optional; derived from adapter (+ mode) if omitted
+      adapter: tau
+      mode: engine_loop          # optional execution-mode override
+      model:                     # optional per-entry model map, merged over `models`
+        agent:
+          provider: openrouter
+          name: "anthropic/claude-sonnet-4.6"
+      params: {}                 # adapter-specific params for this entry
+```
+
+- **`harnesses` and `evaluation.harness_adapter` are mutually exclusive.** A
+  config naming both fails loud at load — `harnesses` dispatches one adapter per
+  entry, `harness_adapter` names a single run-wide adapter, so naming both has
+  not decided which shape the run is. A single-adapter run keeps using
+  `evaluation.harness_adapter` (or the `native` default) and is unaffected: with
+  no `harnesses` block nothing about today's behaviour changes.
+- **Entry names.** `name` identifies the entry everywhere downstream (and will
+  become an output path segment). Omit it and the name is derived
+  deterministically from `adapter` — and `mode` when set — as `native`,
+  `native-delegated`, …, with a numeric suffix (`native-2`) on collision.
+  Names must be unique and filesystem-safe (letters, digits, `.`, `-`, `_`,
+  starting with a letter or digit); an unsafe or duplicate name is refused.
+- **Entries are strict (`extra="forbid"`).** A typo'd key inside an entry — or a
+  typo'd key on the `harnesses` block itself — fails the load rather than being
+  silently dropped. This is stricter than the surrounding run-config blocks on
+  purpose: an entry is small and hand-written.
+- **Precedence.** A blank `projects` / `tasks_glob` on an entry inherits the
+  run-level `evaluation.projects` / `evaluation.tasks_glob`; set them on the
+  entry to override. A per-entry `model` map is merged role-wise over the
+  run-level `models` (the entry wins per role; roles it does not name fall back
+  to `models`).
+- **`task_packs`** on an entry is the deprecated alias for `projects`, coerced
+  with a `DeprecationWarning` exactly as on `evaluation`.
+- Within this slice, a `task_id` must not appear under two entries; such a
+  config is refused with a pointer to the matrix-identity follow-up. Resolution
+  is by entry, and today's `trials/<task_id>/<idx>` layout is kept.
+
 ### `rate_limit_probe:` — measure a provider's served throughput
 
 Off by default. When enabled, 429s retry at a **fixed** interval until a
