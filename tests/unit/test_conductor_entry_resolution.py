@@ -23,6 +23,11 @@ from tests.canonical._factories import make_env_endpoints, make_task_description
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.adapter_registry import CompositeAdapter, HarnessEntry
 from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.execution_mode import (
+    HARNESS_COMMAND_METADATA_KEY,
+    ExecutionMode,
+    select_execution_mode,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     EvaluationConfig,
@@ -144,20 +149,57 @@ class TestTrajectoryIdentity:
         traj = self._trajectory()
         assert traj.harness_entry is None
         assert traj.adapter_type is None
+        assert traj.execution_mode is None
 
     def test_identity_round_trips(self) -> None:
-        traj = self._trajectory(harness_entry="beta", adapter_type="tau")
+        traj = self._trajectory(
+            harness_entry="beta",
+            adapter_type="tau",
+            execution_mode=ExecutionMode.DELEGATED,
+        )
         restored = Trajectory.model_validate(traj.model_dump())
         assert restored.harness_entry == "beta"
         assert restored.adapter_type == "tau"
+        assert restored.execution_mode is ExecutionMode.DELEGATED
+
+    def test_execution_mode_round_trips_from_string_value(self) -> None:
+        # Serialises as the enum's string value, and loads back from it — the
+        # on-disk form other enums on this model take.
+        traj = self._trajectory(execution_mode=ExecutionMode.ENGINE_LOOP)
+        dumped = traj.model_dump(mode="json")
+        assert dumped["execution_mode"] == "engine_loop"
+        restored = Trajectory.model_validate(dumped)
+        assert restored.execution_mode is ExecutionMode.ENGINE_LOOP
 
     def test_old_bundle_without_fields_deserialises(self) -> None:
         payload = self._trajectory().model_dump()
         payload.pop("harness_entry", None)
         payload.pop("adapter_type", None)
+        payload.pop("execution_mode", None)
         restored = Trajectory.model_validate(payload)
         assert restored.harness_entry is None
         assert restored.adapter_type is None
+        assert restored.execution_mode is None
+
+
+class TestExecutionModeStamp:
+    """The conductor stamps ``trajectory.execution_mode`` from
+    ``select_execution_mode(spec.task.metadata)``. These lock the classification
+    the stamp reads for a delegated vs engine-loop spec, reading the metadata off
+    the same ``TrialSpec.task.metadata`` the conductor does — no runtime/Docker.
+    """
+
+    def _spec_with_metadata(self, metadata: dict[str, Any]) -> TrialSpec:
+        spec = _spec()
+        return spec.model_copy(update={"task": spec.task.model_copy(update={"metadata": metadata})})
+
+    def test_delegated_metadata_stamps_delegated(self) -> None:
+        spec = self._spec_with_metadata({HARNESS_COMMAND_METADATA_KEY: "claude --print"})
+        assert select_execution_mode(spec.task.metadata) is ExecutionMode.DELEGATED
+
+    def test_engine_loop_metadata_stamps_engine_loop(self) -> None:
+        spec = self._spec_with_metadata({})
+        assert select_execution_mode(spec.task.metadata) is ExecutionMode.ENGINE_LOOP
 
 
 class TestConductorAdapterResolution:

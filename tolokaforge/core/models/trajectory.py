@@ -22,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.llm.reasoning import StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 from tolokaforge.core.models.grade import Grade
@@ -943,6 +944,12 @@ class Trajectory(BaseModel):
     # the single-adapter forms.
     harness_entry: str | None = None
     adapter_type: str | None = None
+    # How this trial was driven: ``ENGINE_LOOP`` when the engine's own turn
+    # loop ran the agent, ``DELEGATED`` when a task-provided coding-harness CLI
+    # did. Classified from task metadata and stamped by the conductor at trial
+    # end. ``None`` for a bundle written before the field existed. Serialises as
+    # the enum's string value, matching the other identity enums on this model.
+    execution_mode: ExecutionMode | None = None
 
     @model_validator(mode="after")
     def _reject_graded_and_ungradeable(self) -> Self:

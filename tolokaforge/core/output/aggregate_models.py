@@ -148,6 +148,11 @@ class PerTaskMetrics(BaseModel):
     # Task identity + metadata (added by the orchestrator, not by the
     # metric-calc function).
     task_id: str
+    # The owning ``harnesses`` entry for a multi-harness run, and how the entry's
+    # trials were driven (``engine_loop`` / ``delegated``). Both ``None`` for a
+    # single-adapter run and for rows written before the fields existed.
+    harness_entry: str | None = None
+    execution_mode: str | None = None
     benchmark_type: str | None = None
     complexity: str | None = None
     tags: list[str] = Field(default_factory=list)

@@ -4450,6 +4450,21 @@ class Orchestrator:
             # are byte-unchanged.
             if entry:
                 task_metrics["harness_entry"] = entry
+            # Every trial in one (entry, task_id) group ran in a single mode —
+            # the entry fixes the adapter and the task fixes the metadata the
+            # mode is classified from. A disagreement is a wiring defect, not a
+            # value to average over.
+            modes = {traj.execution_mode for traj in trajectories}
+            if len(modes) > 1:
+                raise RuntimeError(
+                    f"task {task_id!r} (entry {entry!r}) has trajectories with "
+                    f"disagreeing execution modes {sorted(str(mode) for mode in modes)}; "
+                    "all trials in one (entry, task_id) group run in a single mode."
+                )
+            execution_mode = next(iter(modes))
+            task_metrics["execution_mode"] = (
+                execution_mode.value if execution_mode is not None else None
+            )
             task_cfg = task_by_entry_task.get((entry, task_id))
             if task_cfg is not None:
                 task_metrics["benchmark_type"] = task_cfg.category
