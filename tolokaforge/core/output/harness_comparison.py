@@ -125,14 +125,16 @@ def build_harness_comparison_slices(
 
 
 def has_comparable_harnesses(by_harness_entry: dict[str, dict[str, Any]]) -> bool:
-    """Whether the ``by_harness_entry`` slice holds more than one harness to compare.
+    """Whether the ``by_harness_entry`` slice holds more than one bucket to compare.
 
-    True only when at least two distinct non-native buckets are present. A run
-    with one adapter — everything in a single bucket, native or otherwise — has
-    nothing to compare, so the formatter degrades to ``None`` and leaves the
-    single-adapter output unchanged.
+    True when at least two distinct buckets are present — the ``native`` bucket
+    counts, so an engine-loop-vs-one-harness run (``native`` + one named harness)
+    renders, since that is the primary comparison. A run with one adapter —
+    everything in a single bucket, native or otherwise — has nothing to compare,
+    so the formatter degrades to ``None`` and leaves the single-adapter output
+    unchanged.
     """
-    return len([key for key in by_harness_entry if key != NATIVE_BUCKET]) > 1
+    return len(by_harness_entry) >= 2
 
 
 def _fmt_rate(value: Any) -> str:

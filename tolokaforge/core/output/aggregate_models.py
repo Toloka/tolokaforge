@@ -83,7 +83,7 @@ __all__ = [
     "ServiceLogCaptureSource",
 ]
 
-AGGREGATE_SCHEMA_VERSION = 4
+AGGREGATE_SCHEMA_VERSION = 5
 """The ``aggregate.json`` wire generation.
 
 Rates are over ``measured_trials`` — the trials that measured the agent,
@@ -99,6 +99,11 @@ summed from the trials' ``cost_by_role``, plus a synthesized ``judge`` row from
 ``grade.judge_usage``) and the grand total ``total_cost_incl_all_usd``. Only
 agent, user and judge roles exist today, so ``total_cost_incl_all_usd`` equals
 the legacy ``total_cost_incl_judge_usd``.
+
+Version 5 adds the per-harness slices to ``metadata_slices.json``:
+``by_harness_entry``, ``by_execution_mode`` and ``by_harness_and_task_family``.
+A single-adapter run groups into one ``native`` harness bucket and one execution
+mode; a multi-harness run carries one bucket per entry and one per mode.
 """
 
 
@@ -488,11 +493,15 @@ class RunAggregate(AggregateMetrics):
 
 
 class MetadataSlices(BaseModel):
-    """The ``metadata_slices.json`` envelope — four ``by_*`` dictionaries.
+    """The ``metadata_slices.json`` envelope — the ``by_*`` slice dictionaries.
 
-    Each entry maps a slice key (benchmark type, complexity name, tag,
-    or expected failure mode) to the :class:`AggregateMetrics` computed
-    over the tasks in that slice.
+    Each entry maps a slice key to the :class:`AggregateMetrics` computed over
+    the tasks in that slice. The task-metadata dimensions key on benchmark type,
+    complexity name, tag, or expected failure mode. The per-harness dimensions
+    key on the harness bucket (``native`` for the engine loop, a named entry for
+    a delegated harness), the execution mode, and the flat
+    ``"<harness>::<family>"`` composite. The per-harness dimensions carry one
+    bucket on a single-adapter run and more than one on a multi-harness run.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -501,6 +510,9 @@ class MetadataSlices(BaseModel):
     by_complexity: dict[str, AggregateMetrics] = Field(default_factory=dict)
     by_tag: dict[str, AggregateMetrics] = Field(default_factory=dict)
     by_expected_failure_mode: dict[str, AggregateMetrics] = Field(default_factory=dict)
+    by_harness_entry: dict[str, AggregateMetrics] = Field(default_factory=dict)
+    by_execution_mode: dict[str, AggregateMetrics] = Field(default_factory=dict)
+    by_harness_and_task_family: dict[str, AggregateMetrics] = Field(default_factory=dict)
 
 
 class FailureRecord(BaseModel):

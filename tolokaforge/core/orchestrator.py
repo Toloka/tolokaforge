@@ -89,6 +89,10 @@ from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_us
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output.harness_comparison import (
+    build_harness_comparison_slices,
+    format_harness_comparison_table,
+)
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
     RuntimeBackendBuildContext,
@@ -4519,6 +4523,12 @@ class Orchestrator:
                 group, weighted=True
             )
 
+        # Per-harness slices — keyed by harness bucket, execution mode, and the
+        # flat ``"<harness>::<family>"`` composite. The leaf values are the same
+        # raw aggregate dicts the task-metadata slices above carry.
+        harness_comparison = build_harness_comparison_slices(all_task_metrics)
+        metadata_slices.update(harness_comparison)
+
         reasoning_transport = self._reasoning_transport_rollup()
         self._warn_on_reasoning_transport(reasoning_transport)
         aggregate["reasoning_transport"] = reasoning_transport
@@ -4579,3 +4589,10 @@ class Orchestrator:
                 "deterministic_attribution_coverage"
             ),
         )
+
+        # On a multi-harness run, print the labelled comparison beside the
+        # aggregate line. A single-adapter / single-bucket run has nothing to
+        # compare and the formatter returns None, so its output is unchanged.
+        comparison_table = format_harness_comparison_table(harness_comparison)
+        if comparison_table is not None:
+            self.logger.info(comparison_table)

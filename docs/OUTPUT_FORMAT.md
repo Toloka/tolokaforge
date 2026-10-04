@@ -1982,13 +1982,40 @@ refusal never buys a trial out of it, whatever the trial terminated as: it is
 evidence about us, and our own defects stay counted. See
 [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
 
+## `metadata_slices.json`
+
+A mapping of slice dimension to `{slice_key: aggregate}`, where each aggregate
+has the same shape as `aggregate.json`'s body. Dimensions:
+
+| Dimension | Keyed by |
+|---|---|
+| `by_benchmark_type` | the task's benchmark type |
+| `by_complexity` | the task's complexity |
+| `by_tag` | each task tag |
+| `by_expected_failure_mode` | each expected failure mode |
+| `by_harness_entry` | the harness bucket: `native` for the engine loop (and for a single-adapter run), a named entry for a delegated harness such as `terminal_bench` |
+| `by_execution_mode` | how the entry's trials were driven (`engine_loop` / `delegated`) |
+| `by_harness_and_task_family` | the flat `"<harness>::<family>"` composite, pairing each harness bucket with each benchmark type |
+
+The three per-harness dimensions carry one bucket on a single-adapter run and
+one per entry on a [multi-harness run](CONFIG.md#harnesses--run-multiple-adapters-in-one-run).
+
+**Comparing harnesses.** Across harness buckets, `success_rate`, `avg_score`,
+`pass@k` and the wall-time averages are directly comparable. `total_cost_usd` and
+`avg_turns` are **per-harness quantities and not directly comparable**: a
+delegated harness's cost is the engine's price for the tokens its CLI reports,
+and its turn count is the CLI's own, so each is defined against a different
+accounting. A run that mixes the engine loop with at least one other harness also
+logs this comparison as a labelled table beside the run's aggregate-results line,
+with the per-harness columns tagged accordingly.
+
 ## Schema Version Stamps
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
 | `metrics.yaml` | `schema_version` | `7` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `4` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
+| `aggregate.json` | `schema_version` | `5` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, the per-role spend plane, or the set of `metadata_slices.json` dimensions. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |

@@ -68,6 +68,30 @@ def _row(
     }
 
 
+def _native_plus_one_harness_run() -> list[dict[str, Any]]:
+    """The engine loop (``native`` bucket) versus one delegated harness on one task.
+
+    The row with no ``harness_entry`` normalises to the ``native`` bucket, so this
+    is the primary comparison: the engine loop against another harness.
+    """
+    return [
+        _row(
+            task_id="a",
+            harness_entry=None,
+            execution_mode="engine_loop",
+            benchmark_type="db",
+            successful_trials=1,
+        ),
+        _row(
+            task_id="a",
+            harness_entry="claude_code",
+            execution_mode="delegated",
+            benchmark_type="db",
+            successful_trials=2,
+        ),
+    ]
+
+
 def _two_harness_run() -> list[dict[str, Any]]:
     """Two harness entries over overlapping families, one delegated + one engine loop."""
     return [
@@ -195,6 +219,12 @@ class TestComparabilityHelper:
         slices = build_harness_comparison_slices(_two_harness_run())
         assert has_comparable_harnesses(slices["by_harness_entry"]) is True
 
+    def test_native_plus_one_harness_is_comparable(self) -> None:
+        # The primary comparison: the engine loop (native) against one harness.
+        slices = build_harness_comparison_slices(_native_plus_one_harness_run())
+        assert set(slices["by_harness_entry"]) == {NATIVE_BUCKET, "claude_code"}
+        assert has_comparable_harnesses(slices["by_harness_entry"]) is True
+
     def test_single_bucket_is_not_comparable(self) -> None:
         assert has_comparable_harnesses({"claude_code": {}}) is False
 
@@ -235,6 +265,18 @@ class TestFormatter:
             "turns (per-harness basis)", ""
         )
         assert "per-harness basis" not in remainder
+
+    def test_native_plus_one_harness_renders_a_table(self) -> None:
+        # The engine loop vs one harness is the primary comparison and renders.
+        slices = build_harness_comparison_slices(_native_plus_one_harness_run())
+        table = format_harness_comparison_table(slices)
+
+        assert table is not None
+        assert NATIVE_BUCKET in table
+        assert "claude_code" in table
+        assert "cost (per-harness basis)" in table
+        assert "turns (per-harness basis)" in table
+        assert HARNESS_COMPARISON_FOOTNOTE in table
 
     def test_single_entry_input_degrades_to_none(self) -> None:
         rows = [
