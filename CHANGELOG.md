@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.28.3 (2026-10-04)
+
+### Feat
+
+- **langfuse**: type a trial's observations, name them without positions, clock each call (#1764)
+
 ## v0.28.2 (2026-10-03)
 
 ### Feat
