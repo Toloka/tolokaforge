@@ -1196,25 +1196,34 @@ class ReconstructedTools(BaseModel):
         return self.agent_tools.get(name)
 
     def cleanup(self) -> None:
-        """Clean up all tool resources."""
-        errors = []
-        seen = set()
-        for tool in (*self.agent_tools.values(), *self.user_tools.values()):
-            if id(tool) in seen:
-                continue
-            seen.add(id(tool))
-            callbacks = []
-            if getattr(tool, "has_lifecycle", False):
-                callbacks.append(tool.stop)
-            if hasattr(tool, "cleanup"):
-                callbacks.append(tool.cleanup)
-            for callback in callbacks:
-                try:
-                    callback()
-                except Exception as exc:
-                    errors.append(exc)
-        if errors:
-            raise RuntimeError(f"Trial tool cleanup failed: {errors!r}") from errors[0]
+        """Clean up all tool resources (see :func:`cleanup_tools`)."""
+        cleanup_tools(self.agent_tools, self.user_tools)
+
+
+def cleanup_tools(agent_tools: dict[str, Any], user_tools: dict[str, Any]) -> None:
+    """Stop and clean up every tool in both registries, once per instance.
+
+    Every tool is attempted even when an earlier one fails; the failures are
+    raised together afterwards.
+    """
+    errors = []
+    seen = set()
+    for tool in (*agent_tools.values(), *user_tools.values()):
+        if id(tool) in seen:
+            continue
+        seen.add(id(tool))
+        callbacks = []
+        if getattr(tool, "has_lifecycle", False):
+            callbacks.append(tool.stop)
+        if hasattr(tool, "cleanup"):
+            callbacks.append(tool.cleanup)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                errors.append(exc)
+    if errors:
+        raise RuntimeError(f"Trial tool cleanup failed: {errors!r}") from errors[0]
 
 
 # =============================================================================

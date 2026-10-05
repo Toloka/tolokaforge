@@ -176,12 +176,12 @@ from tolokaforge.runner.search_plane import (
 from tolokaforge.runner.tool_factory import (
     MCPServerToolWrapper,
     RAGSearchToolWrapper,
-    ReconstructedTools,
     ToolCallOutcome,
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
     ToolWrapper,
+    cleanup_tools,
 )
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
@@ -496,6 +496,9 @@ class TrialContextRuntime:
         self.tool_call_history: list[RecordedToolCall] = []
         self.default_timeout = default_timeout
         self.cleanup_lock = asyncio.Lock()
+        # Set once the tools are torn down, so a cleanup retried after a DB
+        # failure releases the registration without stopping them twice.
+        self.tools_released = False
         # Run-level LLM config for the read-only rubric judge, carried from the
         # TrialSpec. None when no selected task uses an llm_judge component; the
         # orchestrator validates up front that it is present whenever a rubric is.
@@ -1232,7 +1235,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool.start(trial_context.lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
-                    self._run_async(self.cleanup_trial(trial_id))
+                    try:
+                        self._run_async(self.cleanup_trial(trial_id))
+                    except Exception as cleanup_error:
+                        # The start failure is the answer the caller needs; a
+                        # cleanup that also failed is logged, not returned.
+                        logger.error(
+                            f"RegisterTrial: Cleanup after the failed lifecycle start of "
+                            f"{trial_id} also failed: {cleanup_error}"
+                        )
                     return pb2.RegisterTrialResponse(
                         success=False,
                         error=f"Tool lifecycle start failed: {e}",
@@ -3471,15 +3482,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     async def _cleanup_trial_resources(
         self, trial_id: str, trial_context: TrialContextRuntime | None
     ) -> None:
-        if trial_context is not None:
+        if trial_context is not None and not trial_context.tools_released:
             # Teardown precedes deleting scripts/context. It runs off the
             # shared event loop so reaping one child cannot block other trials.
             await asyncio.to_thread(
-                ReconstructedTools(
-                    agent_tools=trial_context.agent_tools,
-                    user_tools=trial_context.user_tools,
-                ).cleanup
+                cleanup_tools, trial_context.agent_tools, trial_context.user_tools
             )
+            trial_context.tools_released = True
 
         # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's

@@ -154,6 +154,7 @@ def test_failed_cleanup_keeps_child_owned_until_retry(script):
 
     pool = MCPServerPool()
     child = RefuseFirstStop(script_path=script)
+    # Seeded directly: the pool has no public seam for injecting a process class.
     pool._servers[script] = child
     pool.get_server(script)
     process = child.process

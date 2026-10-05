@@ -46,7 +46,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output_writer import OutputWriter
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.models import ToolSchema as RunnerToolSchema
-from tolokaforge.runner.tool_factory import MCPServerToolWrapper
+from tolokaforge.runner.tool_factory import MCPServerPool, MCPServerToolWrapper
 
 pytestmark = pytest.mark.canonical
 
@@ -1041,8 +1041,6 @@ class TestShopOrders02McpWrapperContract:
         instead of being absorbed by a mock.
         """
         script = str(shop_orders_02_task_dir / "mcp_server.py")
-        from tolokaforge.runner.tool_factory import MCPServerPool
-
         pool = MCPServerPool()
 
         def build(tool_name: str) -> MCPServerToolWrapper:

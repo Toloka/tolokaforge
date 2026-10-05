@@ -130,12 +130,33 @@ class TestCleanupTrialRPC:
     def test_cleanup_reports_db_deletion_failure(
         self, runner_service, mock_grpc_context, task_description, monkeypatch
     ):
+        events = []
+
+        class Resource:
+            has_lifecycle = True
+
+            def __init__(self, name):
+                self.name = name
+
+            def start(self, context):
+                events.append((self.name, "start"))
+
+            def stop(self):
+                events.append((self.name, "stop"))
+
+        monkeypatch.setattr(
+            ToolFactory, "_create_wrapper", lambda factory, schema: Resource(schema.name)
+        )
+        task_description["agent_tools"] = [
+            {"name": "owned", "description": "owned", "parameters": {"type": "object"}}
+        ]
         trial_id = "cleanup_db_failure:0"
         assert _register(runner_service, mock_grpc_context, trial_id, task_description).success
 
         async def refuse_deletion(identifier):
             raise DBServiceError("injected deletion failure")
 
+        working_deletion = runner_service.db_client.delete_trial
         monkeypatch.setattr(runner_service.db_client, "delete_trial", refuse_deletion)
         response = runner_service.CleanupTrial(
             pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context
@@ -143,6 +164,18 @@ class TestCleanupTrialRPC:
         assert response.success is False
         assert "injected deletion failure" in response.error
         assert trial_id in runner_service.trials
+        assert events == [("owned", "start"), ("owned", "stop")]
+
+        # The retry the failure invites: the DB answers now, the registration is
+        # released, and the resource the first attempt already stopped is not
+        # stopped again.
+        monkeypatch.setattr(runner_service.db_client, "delete_trial", working_deletion)
+        retry = runner_service.CleanupTrial(
+            pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+        assert retry.success is True, retry.error
+        assert trial_id not in runner_service.trials
+        assert events == [("owned", "start"), ("owned", "stop")]
 
     def test_concurrent_cleanup_is_idempotent_and_allows_reregistration(
         self, runner_service, mock_grpc_context, task_description
@@ -199,6 +232,37 @@ class TestCleanupTrialRPC:
             ("bad", "stop"),
             ("bad", "cleanup"),
         ]
+
+    def test_failed_lifecycle_start_answers_even_when_its_cleanup_fails(
+        self, runner_service, mock_grpc_context, task_description, monkeypatch
+    ):
+        class Resource:
+            has_lifecycle = True
+
+            def __init__(self, name):
+                self.name = name
+
+            def start(self, context):
+                if self.name == "bad":
+                    raise RuntimeError("injected startup failure")
+
+            def stop(self):
+                if self.name == "good":
+                    raise RuntimeError("injected stop failure")
+
+        monkeypatch.setattr(
+            ToolFactory, "_create_wrapper", lambda factory, schema: Resource(schema.name)
+        )
+        task_description["agent_tools"] = [
+            {"name": name, "description": name, "parameters": {"type": "object", "properties": {}}}
+            for name in ("good", "bad")
+        ]
+        trial_id = "cleanup_failed_start_and_cleanup:0"
+        response = _register(runner_service, mock_grpc_context, trial_id, task_description)
+        assert response.success is False
+        assert response.error == "Tool lifecycle start failed: injected startup failure"
+        # The failed cleanup keeps the registration, so a later CleanupTrial can retry it.
+        assert trial_id in runner_service.trials
 
     def test_cleanup_enables_reregistration_with_same_trial_id(
         self, runner_service, mock_grpc_context, task_description
