@@ -3,6 +3,11 @@
 A tolokaforge adapter for [Inspect AI](https://inspect.aisi.org.uk/) tasks. Runs under
 `tolokaforge run` via a run config, the same way the terminal-bench adapter does.
 
+**Opt-in install — not part of the default.** `pip install tolokaforge` is the engine
+loop only and pulls in nothing Inspect. Add this adapter with
+`pip install "tolokaforge[inspect_ai]"` (or `tolokaforge[adapters]` for all shipped
+adapters).
+
 ## How it works
 
 Inspect tasks have no portable, static format — a task is Python that runs on Inspect's
@@ -57,6 +62,6 @@ litellm-proxy providers); set `extra_pip_packages` for others (e.g. `anthropic`)
 ## Development
 
 ```bash
-uv sync
+uv sync --extra inspect_ai
 uv run pytest external_adapters/tolokaforge-adapter-inspect-ai/tests -v
 ```

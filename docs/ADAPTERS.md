@@ -28,6 +28,7 @@ adapter discoverable (via the `tolokaforge.adapters` entry point):
 ```bash
 pip install "tolokaforge[terminal_bench]"   # Terminal-Bench tasks
 pip install "tolokaforge[harbor]"           # Harbor (Terminal-Bench 2.0) tasks
+pip install "tolokaforge[inspect_ai]"       # Inspect AI tasks
 pip install "tolokaforge[adapters]"         # all shipped adapters
 ```
 
