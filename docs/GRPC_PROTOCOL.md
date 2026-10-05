@@ -663,6 +663,8 @@ Version 2 is the first that omits `user_simulator.first_message` and `user_simul
 
 Version 3 is the first that reports completed MCP `isError` replies as `EXECUTION_STATUS_ENVIRONMENT_ERROR` and returns `runner_protocol_version` at registration. The host refuses an older image before a trial starts, because the older runner would otherwise accept the newer request but silently record an environment error as success.
 
+Version 4 is the first whose grading regexes run on RE2 by default and whose grading config carries `regex_engine` (on `trace_checks`, `transcript_rules`, and an authored matcher predicate or bound value). An engine below it sends a config with no `regex_engine`, which this runner would read as `linear`: a lookahead the older engine's gate passed would spend the trial's tokens and then raise at grade time, and a `\d`, `\w` or `$` pattern would silently change verdict. An image below it would refuse every pack carrying `trace_checks` or `transcript_rules` at the wire model instead of at the gate. Both pairings are refused at registration, for every pack.
+
 The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload

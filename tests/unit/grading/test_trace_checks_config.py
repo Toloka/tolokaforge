@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import itertools
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, get_args
@@ -1042,6 +1043,38 @@ def test_a_block_declaring_no_alternatives_loads_and_dumps_as_a_flat_block():
     assert set(dumped) == {"constraints", "alternatives", "regex_engine"}
     assert dumped["alternatives"] is None
     assert "alternatives" not in config.model_dump(exclude_defaults=True)
+
+
+def test_a_site_regex_engine_is_on_the_wire_only_where_it_is_authored():
+    """An undeclared per-site engine is left out of the dump rather than written as
+    ``null``, so a predicate or bound value naming none crosses with no new key."""
+    authored = TraceChecksConfig(
+        **_block(
+            _constraint(_references_the_case(), id="inheriting", bind=_binder()),
+            _constraint(
+                _references_the_case(
+                    equals_binding="case", regex=r"^C-\d+$", regex_engine="backtracking"
+                ),
+                id="overriding",
+                bind=_binder(
+                    values={
+                        "case": {**_BOUND_CASE, "pattern": r"(C-\d+)", "regex_engine": "linear"}
+                    }
+                ),
+            ),
+        )
+    )
+
+    inheriting, overriding = json.loads(authored.model_dump_json())["constraints"]
+
+    assert "regex_engine" not in inheriting["bind"]["values"]["case"]
+    assert "regex_engine" not in inheriting["require"]["present"]["match"]["args"]["case_id"]
+    assert "regex_engine" not in overriding["bind"]["match"]["tool"]
+    assert overriding["bind"]["values"]["case"]["regex_engine"] == "linear"
+    assert overriding["require"]["present"]["match"]["args"]["case_id"]["regex_engine"] == (
+        "backtracking"
+    )
+    assert TraceChecksConfig.model_validate_json(authored.model_dump_json()) == authored
 
 
 def test_a_purely_multi_path_block_omits_the_shared_constraints_entirely():

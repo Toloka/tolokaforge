@@ -1538,7 +1538,7 @@ reject it.
 | `trace_checks` nullness operators (`is_null`, `omitted`) | a pack declaring one under a matcher's `args` or `text` predicate | `unreleased` | new engine → old image |
 | `trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
 | `trace_checks.regex_engine` | a pack declaring `trace_checks` | `unreleased` | new engine → old image |
-| `trace_checks` `regex_engine` on a predicate or bound value | a pack declaring a matcher predicate or a bound value | `unreleased` | new engine → old image |
+| `trace_checks` `regex_engine` on a predicate or bound value | a pack declaring `regex_engine` on a matcher predicate or a bound value | `unreleased` | new engine → old image |
 | `trace_checks` `regex` / `not_regex` written as a list | a pack declaring a list of patterns under a matcher predicate | `unreleased` | new engine → old image |
 | `transcript_rules.regex_engine` | a pack declaring `transcript_rules` | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
@@ -1589,12 +1589,16 @@ Three rows need more than a cell:
   field, so the rejection is an old engine against a new image — the one row here whose
   direction runs that way.
 
-**`regex_engine` is defaulted, not rejected, in the other direction.** An engine
-predating `trace_checks.regex_engine` and `transcript_rules.regex_engine` sends
-neither, and a current image reads their absence as the default `linear`: a
-`trace_checks` pattern RE2 refuses raises at grade time, a `disallow_regex` entry RE2
-refuses fails its sub-check, and a pattern that hits a row of
-[§ Regex engines](#regex-engines)' differences table grades by RE2's reading.
+**`regex_engine` is refused at registration in both directions.** Its rows above are
+the wire model's lock, which runs new engine → old image only: an engine predating
+`trace_checks.regex_engine` and `transcript_rules.regex_engine` sends neither, and a
+current image's model would read their absence as the default `linear` — grading a
+pattern the older engine's gate passed by RE2, or raising on one RE2 refuses after the
+trial's tokens are spent. The wire-protocol version the `linear` default arrived in
+([`GRPC_PROTOCOL.md` § Version lock](GRPC_PROTOCOL.md#version-lock), version 4) closes
+both directions before any token is spent, for every pack: the runner refuses an engine
+below it; an image below it refuses a pack carrying either key at the wire model, and the
+engine refuses it for every other pack.
 
 `combine_method` is locked by its value domain the same way `id_fields` is: the runner
 validates it against the closed set in [§ Score Combination](#score-combination), so a
@@ -2458,6 +2462,7 @@ the `linear` default; a pattern that relies on the `backtracking` reading declar
 | `a$` | `a` + newline | match | no match | RE2 `$` without `(?m)` is end of text only |
 | `[[:alpha:]]+` | `ab:` | no match | match | a POSIX class in RE2, a character set in `re` |
 | `a{,3}` | `aaaa` | match | no match | `re` reads `{0,3}`; RE2 reads the literal text `{,3}` |
+| `(?i)İ` (U+0130) | `i` | match | no match | `re` case-folds `İ` to `i`; RE2 does not. `disallow_regex` always runs ignore-case, so a bare `İ` entry reads this way |
 | U+FFFD | `abc ` + lone surrogate U+D800 + ` def` | no match | match | `linear` searches every lone surrogate as U+FFFD |
 
 The last row is how `linear` reads text that is not valid UTF-8. `json.loads` turns an
