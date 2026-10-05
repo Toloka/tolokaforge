@@ -16,8 +16,11 @@ pinning:
   (``requires_docker_cli_in_runner``, ``grades_from_task_grading_file``,
   ``syncs_adapter_env_to_state``).
 - ``supported_execution_modes`` matching the subclass's declared expectation
-  (a ``frozenset`` of :class:`~tolokaforge.core.execution_mode.ExecutionMode`
-  always containing ``ENGINE_LOOP``).
+  (a non-empty ``frozenset`` of
+  :class:`~tolokaforge.core.execution_mode.ExecutionMode`): the suite pins
+  whichever set the adapter declares — ``{ENGINE_LOOP}``,
+  ``{ENGINE_LOOP, DELEGATED}``, or ``{DELEGATED}`` for a delegated-only
+  adapter — without assuming the engine loop is universal.
 - ``grading_source`` classmethod-dispatch parity: the class-level call
   (``type(adapter).grading_source(task, task_dir)``) returns the same
   :class:`~tolokaforge.adapters._task_loader.GradingSource` the instance
@@ -120,10 +123,14 @@ class AdapterGradingContractSuite:
     ) -> None:
         modes = adapter.supported_execution_modes
         assert isinstance(modes, frozenset)
+        assert modes, "an adapter must declare at least one execution mode"
         assert all(isinstance(mode, ExecutionMode) for mode in modes)
-        # By default an adapter runs the engine's own loop; a delegated-only
-        # adapter overrides this method to assert its own mode set.
-        assert ExecutionMode.ENGINE_LOOP in modes
+        # The suite asserts each adapter's DECLARED mode set, whatever it is:
+        # an engine-loop adapter pins ``{ENGINE_LOOP}`` (optionally also
+        # ``DELEGATED``), a delegated-only adapter pins ``{DELEGATED}``. The
+        # engine loop is the default, not a universal requirement — the
+        # orchestrator gate dispatches on the per-task classified mode against
+        # this set, so a delegated-only adapter needs no override here.
         assert modes == self.expected_supported_execution_modes
 
     def test_grading_source_returns_a_grading_source(

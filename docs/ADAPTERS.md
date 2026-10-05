@@ -45,7 +45,8 @@ Every trial runs in one of two shapes, named by `ExecutionMode` in
 `tolokaforge/core/execution_mode.py`:
 
 - **`ENGINE_LOOP`** — the engine's own LLM turn loop drives the agent. This
-  is the default for every adapter.
+  is the default mode an adapter declares, not one every adapter runs: a
+  delegated-only adapter replaces it.
 - **`DELEGATED`** — the task brings its own agent (a coding-harness CLI named
   on `TaskDescription.metadata["agent_harness_command"]`); the engine
   provisions and grades the trial but does not run the turn loop.
