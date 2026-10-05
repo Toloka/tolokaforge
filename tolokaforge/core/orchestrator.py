@@ -1070,58 +1070,7 @@ class Orchestrator:
             "Creating composite adapter",
             entries=[entry.name for entry in harnesses.entries],
         )
-        return build_composite_adapter(
-            harnesses.entries,
-            params_for_entry,
-            validate_entry=self._gate_entry_execution_mode,
-        )
-
-    def _resolve_entry_mode(self, entry_config: Any) -> ExecutionMode:
-        """The execution mode a harness entry runs in.
-
-        An explicit ``entry.mode`` wins; otherwise it is inferred from the
-        entry's effective (entry-over-run) agent model — a coding-harness
-        selection (a ``harness`` that is not the ``engine-loop`` sentinel)
-        means :attr:`ExecutionMode.DELEGATED`, and anything else the engine's
-        own loop (:attr:`ExecutionMode.ENGINE_LOOP`).
-        """
-        if entry_config.mode is not None:
-            return entry_config.mode
-        agent = self._entry_agent_model(entry_config)
-        if agent is not None and agent.harness is not None and agent.harness != ENGINE_LOOP:
-            return ExecutionMode.DELEGATED
-        return ExecutionMode.ENGINE_LOOP
-
-    def _gate_entry_execution_mode(self, entry_config: Any, adapter: BaseAdapter) -> None:
-        """Refuse an engine-loop entry that carries a per-entry ``model.agent``.
-
-        Runs per entry during composite build — after the entry's adapter is
-        constructed but before any ``get_task_ids()`` or container work (see
-        :func:`~tolokaforge.core.adapter_registry.build_composite_adapter`).
-        The entry's execution-mode capability is checked separately, per
-        ``(entry, task)``, by :meth:`_gate_execution_mode_capability`.
-
-        An engine-loop entry that also sets a per-entry ``model.agent`` is
-        refused here: the engine loop uses the single run-level ``models.agent``
-        client, so a per-entry agent model would be a silent no-op. Honouring it
-        is follow-up #1769; until then the entry must omit it (use the run-level
-        agent) or be a delegated entry, where the per-entry agent model flows
-        through the harness command.
-        """
-        resolved_mode = self._resolve_entry_mode(entry_config)
-        if resolved_mode is ExecutionMode.ENGINE_LOOP and self._entry_sets_agent_model(
-            entry_config
-        ):
-            raise RuntimeError(
-                f"harness entry {entry_config.name!r}: a per-entry model.agent is "
-                "not honored for engine-loop entries yet (see #1769); omit it to "
-                "use the run-level models.agent, or use a delegated entry."
-            )
-
-    @staticmethod
-    def _entry_sets_agent_model(entry_config: Any) -> bool:
-        """Whether this entry declares its own ``model.agent`` override."""
-        return entry_config.model is not None and "agent" in entry_config.model
+        return build_composite_adapter(harnesses.entries, params_for_entry)
 
     def _entry_task_units(self) -> list[tuple[str, TaskConfig]]:
         """The run's ``(entry, task)`` dispatch spine.

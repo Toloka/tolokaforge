@@ -847,11 +847,9 @@ class HarnessEntryConfig(BaseModel):
     (this entry wins per role). ``None`` uses the run-level map verbatim.
 
     The override reaches this entry's adapter params and its execution-mode
-    inference, and — for a delegated entry — the agent model the harness
-    command receives. A per-entry ``agent`` model on an engine-loop entry is
-    **not** honored yet (the engine loop uses the single run-level
-    ``models.agent`` client); it is refused at gate time rather than silently
-    ignored, pending follow-up #1769."""
+    inference. A per-entry ``agent`` model is honored in every execution mode:
+    a delegated entry carries it through the harness command, and an engine-loop
+    entry drives the engine's own loop against its own declared agent client."""
 
     projects: list[str] = Field(default_factory=list)
     """Project roots this entry pulls tasks from. Empty inherits
