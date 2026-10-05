@@ -71,6 +71,7 @@ from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
+from tolokaforge.core.grading.regex_engine import RegexEngineKind as RegexEngineKind
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,

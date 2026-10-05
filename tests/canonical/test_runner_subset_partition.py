@@ -789,6 +789,7 @@ EXPECTED_SUBSET_REQUIREMENT_KEYS: frozenset[RequirementKey] = frozenset(
         RequirementKey("grpcio-health-checking", frozenset()),
         RequirementKey("protobuf", frozenset()),
         RequirementKey("mcp", frozenset()),
+        RequirementKey("google-re2", frozenset()),
         RequirementKey("asyncpg", frozenset()),
         RequirementKey("psycopg2-binary", frozenset()),
         RequirementKey("alembic", frozenset()),
