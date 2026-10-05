@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["format_trial_id", "trial_output_subpath"]
+__all__ = [
+    "format_trial_id",
+    "trial_identity_from_subpath",
+    "trial_output_subpath",
+]
 
 
 def format_trial_id(entry: str, task_id: str, trial_index: int) -> str:
@@ -38,3 +42,23 @@ def trial_output_subpath(entry: str, task_id: str, trial_index: int) -> Path:
     if entry:
         return Path(entry) / task_id / str(trial_index)
     return Path(task_id) / str(trial_index)
+
+
+def trial_identity_from_subpath(subpath: Path) -> tuple[str, str, str]:
+    """Recover ``(entry, task_id, trial_index)`` from a bundle subpath.
+
+    Inverse of :func:`trial_output_subpath`, taking a path relative to the run's
+    ``trials/`` root. A two-segment ``<task_id>/<trial_index>`` is the
+    single-adapter layout (empty entry); a three-segment
+    ``<entry>/<task_id>/<trial_index>`` is the harness layout. The trial index is
+    returned as its directory string. Any other depth is not a bundle location
+    and raises — the caller must not have matched it as one.
+    """
+    parts = subpath.parts
+    if len(parts) == 2:
+        return "", parts[0], parts[1]
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    raise ValueError(
+        f"not a trial bundle subpath (expected 2 or 3 segments, got {len(parts)}): {subpath}"
+    )
