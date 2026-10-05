@@ -2119,6 +2119,15 @@ class TrialRunner:
                 )
             except Exception as exc:
                 self._answer_a_failed_step(messages, calls[position:], exc)
+                if self._simulation_budget is not None:
+                    # The step is answered in full, so it is still the one environment
+                    # batch that closes this participant step; left pending, the loop's
+                    # API-error retry would hit the budget's "participant replied before
+                    # the pending environment batch" refusal and mask *exc*. Counted with
+                    # the errors the completed calls returned (the raised call's answer
+                    # carries no environment-error status); a limit it reaches is
+                    # enforced at the budget's next check rather than over *exc*.
+                    self._simulation_budget.environment(errors=environment_errors)
                 raise
             tool_duration = time.time() - tool_start
             if resolve_tool_status(tool_result) is ToolExecutionStatus.ENVIRONMENT_ERROR:

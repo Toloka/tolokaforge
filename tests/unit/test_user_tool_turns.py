@@ -613,6 +613,40 @@ class TestIsolatedTurns:
         assert answers[1].content == "Error: not run, an earlier call of this step raised."
         assert tools.calls == ["check_balance"]
 
+    def test_an_api_error_retry_after_a_raising_step_keeps_the_original_error(self) -> None:
+        class ApiErrorTools(_UserTools):
+            def execute(
+                self,
+                tool_name: str,
+                arguments: dict | None = None,
+                *,
+                call_id: str,
+                validation_schema: dict | None = None,
+            ) -> ToolResult:
+                self.calls.append(tool_name)
+                if tool_name == "list_cards":
+                    raise RuntimeError("card API unreachable")
+                return ToolResult(success=True, output=f"{tool_name}: ok")
+
+        agent = _RecordingAgent("How can I help?")
+        user = _QueuedUser(
+            _tool_step(_call("u1"), _call("u2", "list_cards")),
+            _tool_step(_call("u3"), _call("u4", "list_cards")),
+        )
+        tools = ApiErrorTools()
+        runner = _isolated_trial(agent, user, tools=tools, simulation_max_steps=50)
+
+        trajectory = runner.run("System", "Hi")
+
+        assert trajectory.termination_reason is TerminationReason.API_ERROR
+        assert "card API unreachable" in trajectory.messages[-1].content
+        assert "pending environment batch" not in trajectory.messages[-1].content
+        # Both attempts ran their step, and each raising batch is still one
+        # environment step: opening, then (agent, user step, batch) per attempt.
+        assert tools.calls == ["check_balance", "list_cards"] * 2
+        assert trajectory.simulation_steps == 1 + 3 * 2
+        assert trajectory.environment_errors == 0
+
     def test_each_ask_records_its_guard_event_at_its_own_position(self) -> None:
         rejected = [MagicMock(name="defect")]
         agent = _RecordingAgent("How can I help?")
