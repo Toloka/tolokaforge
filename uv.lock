@@ -4995,7 +4995,7 @@ wheels = [
 
 [[package]]
 name = "tolokaforge"
-version = "0.28.3"
+version = "0.29.0"
 source = { editable = "." }
 dependencies = [
     { name = "addict" },
