@@ -85,3 +85,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0050](0050-agent-loop-protocol-and-registry.md) | The `AgentLoop` Protocol and entry-point registry — the in-process agent loop as an adapter-selectable plugin | Accepted |
 | [0051](0051-user-simulator-protocol-and-registry.md) | The `UserSimulator` Protocol and entry-point registry — the user simulator as a per-task-selectable plugin with an opaque config passthrough | Accepted |
 | [0052](0052-agent-reply-contract.md) | The agent reply contract — a named, composable prompt preamble telling a solo agent how to answer, selectable per task and per model preset | Accepted |
+| [0053](0053-comparison-view-before-the-state-hash.md) | A one-sided comparison view before the state hash — `exclude_records` / `exclude_tables` and `normalize_ids` as the first slice of one pre-hash vocabulary, resolved through the `tolokaforge.comparison_view_rules` entry-point group | Accepted |

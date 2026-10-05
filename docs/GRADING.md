@@ -37,7 +37,7 @@ selects the `JudgeKind` — the typed evaluator that drives LLM-judge
 dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
-[GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
+[GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-plug-in-groups)).
 Three user-facing kinds ship: `single_shot_rubric` (the shipping
 reference impl wrapping today's `LLMJudge` in one shot),
 `multi_turn_rubric` (a baked-in `voted → auto_anchored → single_shot`
