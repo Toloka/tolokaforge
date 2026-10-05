@@ -17,12 +17,13 @@
 #
 # The default install is the engine plus the ``[dx]`` extra — the CLI shim
 # (``tolokaforge._entry:main``) prints an install hint and exits non-zero
-# without it. Adapter extras are opt-in via ``--build-arg EXTRAS=dx,adapters``;
-# the native and terminal_bench backends need no extra beyond ``[dx]``.
+# without it. The default ``[dx]`` image runs the native backend; terminal_bench
+# and the other adapters ship as separate distributions and are opt-in via
+# ``--build-arg EXTRAS=dx,adapters``.
 #
 # Secrets never enter the image. They reach a running container only through a
-# mounted read-only ``.env`` (consumed by ``DotEnvProvider``) or a runtime
-# ``-e TOLOKAFORGE_SECRETS_JSON`` — never a build-arg, never baked into a layer.
+# mounted read-only ``.env`` (consumed by ``DotEnvProvider``) — never a
+# build-arg, never baked into a layer.
 
 ARG PYTHON_VERSION=3.12
 

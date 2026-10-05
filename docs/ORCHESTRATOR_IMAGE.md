@@ -26,9 +26,10 @@ so the orchestrator talks to the **host** Docker daemon over a mounted
 `/var/run/docker.sock` (Docker-out-of-Docker). The image therefore ships the
 Docker CLI and Compose plugin but **no** Docker daemon of its own.
 
-The default install is the engine plus the `[dx]` extra (the CLI front-end).
-The native and terminal_bench backends need nothing beyond that. Other adapters
-are opt-in at build time (see [Adapter variants](#adapter-variants)).
+The default install is the engine plus the `[dx]` extra (the CLI front-end),
+which runs the native backend. terminal_bench and the other adapters ship as
+separate distributions and are opt-in at build time (see
+[Adapter variants](#adapter-variants)).
 
 ## 1. Build the image
 
@@ -110,8 +111,8 @@ simply omits it. If a run fails to reach the daemon, check this first.
 
 ## Adapter variants
 
-The default image installs `tolokaforge[dx]` — engine plus CLI. The native and
-terminal_bench backends run on that. Other adapters are opt-in:
+The default image installs `tolokaforge[dx]` — engine plus CLI — which runs the
+native backend. terminal_bench and the other adapters are opt-in:
 
 ```bash
 scripts/docker/build-orchestrator.sh -e dx,adapters
@@ -121,8 +122,7 @@ scripts/docker/build-orchestrator.sh -e dx,adapters
 The `adapters` extra pulls the adapter packages from their own distributions.
 In an environment where those are not resolvable (offline, or before they are
 published), build the adapters you need from source into the context instead,
-or stay on the default `[dx]` image, which is fully functional for native and
-terminal_bench runs.
+or stay on the default `[dx]` image for native runs.
 
 ## Status
 

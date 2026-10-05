@@ -15,8 +15,8 @@
 # and runs ``tolokaforge run --config /work/config/<config>``.
 #
 # Secrets: this wrapper forwards NOTHING secret itself. Credentials come only
-# from the mounted read-only .env (or a ``-e TOLOKAFORGE_SECRETS_JSON`` you add
-# via EXTRA_DOCKER_ARGS). Point your run config's ``evaluation.output_dir`` at
+# from the mounted read-only .env, which the engine's SecretManager reads via
+# DotEnvProvider. Point your run config's ``evaluation.output_dir`` at
 # ``/work/out`` and its project paths under ``/work/tasks`` so reports land in
 # the mounted output directory and tasks resolve inside the container.
 #
@@ -113,8 +113,8 @@ if [[ -f "${ENV_FILE}" ]]; then
     DOCKER_ARGS+=(-v "${ENV_FILE_ABS}:/work/.env:ro")
 fi
 
-# Anything the operator appends in EXTRA_DOCKER_ARGS (e.g. -e
-# TOLOKAFORGE_SECRETS_JSON=..., --network host) is spliced in before the image.
+# Anything the operator appends in EXTRA_DOCKER_ARGS (e.g. --network host, an
+# extra -v mount) is spliced in before the image.
 if [[ -n "${EXTRA_DOCKER_ARGS:-}" ]]; then
     # shellcheck disable=SC2206  # intentional word-splitting of operator-supplied flags
     EXTRA=(${EXTRA_DOCKER_ARGS})
