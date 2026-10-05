@@ -174,11 +174,11 @@ def _under_engine(grading: dict[str, Any], engine: str) -> dict[str, Any]:
     return {**grading, "trace_checks": {**grading["trace_checks"], "regex_engine": engine}}
 
 
-def _captured_figure(pattern: str, **bound: Any) -> dict[str, Any]:
+def _captured_figure(pattern: str) -> dict[str, Any]:
     """A binder capturing ``figure`` out of an assistant turn by *pattern*."""
     return _bound_block(
         {"kind": "assistant_message"},
-        {"figure": {"field": "text", "pattern": pattern, **bound}},
+        {"figure": {"field": "text", "pattern": pattern}},
         {"present": {"match": _tool_call("write_file", content={"contains_binding": "figure"})}},
     )
 
@@ -569,47 +569,52 @@ _RULES: tuple[_Rule, ...] = (
         message="Correlate two arguments the tools type the same way",
     ),
     _Rule(
-        label="matcher_regex_that_does_not_compile",
-        task=_HELPDESK,
-        grading=_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
-        checker="_check_regex_compiles",
-        channel="errors",
-        message="does not compile",
-    ),
-    _Rule(
-        label="matcher_not_regex_that_does_not_compile",
-        task=_HELPDESK,
-        grading=_trace_block({"kind": "tool_call", "tool": {"not_regex": "http_(request"}}),
-        checker="_check_regex_compiles",
-        channel="errors",
-        message="does not compile",
-    ),
-    _Rule(
-        label="transcript_regex_that_does_not_compile",
-        task=_HELPDESK,
-        grading={"transcript_rules": {"disallow_regex": ["unterminated(["]}},
-        checker="_check_regex_compiles",
-        channel="errors",
-        message="does not compile",
-    ),
-    _Rule(
-        label="matcher_lookahead_under_a_linear_block",
+        label="matcher_regex_the_backtracking_engine_does_not_compile",
         task=_HELPDESK,
         grading=_under_engine(
-            _trace_block({"kind": "tool_call", "tool": {"regex": "(?=http)http_request"}}),
-            "linear",
+            _trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
+            "backtracking",
         ),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="does not compile under the backtracking regex engine",
+    ),
+    _Rule(
+        label="matcher_not_regex_the_backtracking_engine_does_not_compile",
+        task=_HELPDESK,
+        grading=_under_engine(
+            _trace_block({"kind": "tool_call", "tool": {"not_regex": "http_(request"}}),
+            "backtracking",
+        ),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="does not compile under the backtracking regex engine",
+    ),
+    _Rule(
+        label="transcript_regex_the_backtracking_engine_does_not_compile",
+        task=_HELPDESK,
+        grading={
+            "transcript_rules": {
+                "disallow_regex": ["unterminated(["],
+                "regex_engine": "backtracking",
+            }
+        },
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="does not compile under the backtracking regex engine",
+    ),
+    _Rule(
+        label="matcher_lookahead_under_the_default_engine",
+        task=_HELPDESK,
+        grading=_trace_block({"kind": "tool_call", "tool": {"regex": "(?=http)http_request"}}),
         checker="_check_regex_compiles",
         channel="advisories",
         message="declares regex_engine: backtracking on the predicate or on the trace_checks block",
     ),
     _Rule(
-        label="matcher_lookahead_list_item_under_a_linear_block",
+        label="matcher_lookahead_list_item_under_the_default_engine",
         task=_HELPDESK,
-        grading=_under_engine(
-            _trace_block({"kind": "tool_call", "tool": {"regex": ["^http", "(?=http)http_"]}}),
-            "linear",
-        ),
+        grading=_trace_block({"kind": "tool_call", "tool": {"regex": ["^http", "(?=http)http_"]}}),
         checker="_check_regex_compiles",
         channel="advisories",
         message="A lookahead conjunction (?=…a)(?=…b) is the list form regex: [a, b]",
@@ -631,16 +636,13 @@ _RULES: tuple[_Rule, ...] = (
         message="does not compile under the linear regex engine: invalid perl operator",
     ),
     _Rule(
-        label="unterminated_matcher_regex_under_a_backtracking_predicate_in_a_linear_block",
+        label="unterminated_matcher_regex_under_a_backtracking_predicate",
         task=_HELPDESK,
-        grading=_under_engine(
-            _trace_block(
-                {
-                    "kind": "tool_call",
-                    "tool": {"regex": "http_(request", "regex_engine": "backtracking"},
-                }
-            ),
-            "linear",
+        grading=_trace_block(
+            {
+                "kind": "tool_call",
+                "tool": {"regex": "http_(request", "regex_engine": "backtracking"},
+            }
         ),
         checker="_check_regex_compiles",
         channel="errors",
@@ -649,7 +651,7 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="capture_pattern_only_linear_compiles_with_no_group",
         task=_CODING,
-        grading=_under_engine(_captured_figure(r"\pL+"), "linear"),
+        grading=_captured_figure(r"\pL+"),
         checker="_check_regex_compiles",
         channel="errors",
         message="captures 0 groups, and a binding reads exactly one",
@@ -657,25 +659,23 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="capture_pattern_only_linear_compiles_with_two_groups",
         task=_CODING,
-        grading=_captured_figure(r"(?<n>\d+)-(\d+)", regex_engine="linear"),
+        grading=_captured_figure(r"(?<n>\d+)-(\d+)"),
         checker="_check_regex_compiles",
         channel="errors",
         message="captures 2 groups, and a binding reads exactly one",
     ),
     _Rule(
-        label="capture_lookahead_under_a_linear_block",
+        label="capture_lookahead_under_the_default_engine",
         task=_CODING,
-        grading=_under_engine(_captured_figure("(?=[0-9])([0-9]+)"), "linear"),
+        grading=_captured_figure("(?=[0-9])([0-9]+)"),
         checker="_check_regex_compiles",
         channel="advisories",
         message="on the bound value or on the trace_checks block",
     ),
     _Rule(
-        label="transcript_lookahead_under_a_linear_block",
+        label="transcript_lookahead_under_the_default_engine",
         task=_HELPDESK,
-        grading={
-            "transcript_rules": {"disallow_regex": ["(?=pass)password"], "regex_engine": "linear"}
-        },
+        grading={"transcript_rules": {"disallow_regex": ["(?=pass)password"]}},
         checker="_check_regex_compiles",
         channel="advisories",
         message="declares regex_engine: backtracking on the transcript_rules block",
@@ -1093,7 +1093,9 @@ def test_an_uncompilable_regex_is_caught_before_the_tokens_are_spent(tmp_path: P
     """
     grading = _trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}})
 
-    with pytest.raises(ValueError, match="unterminated subpattern"):
+    with pytest.raises(
+        ValueError, match=r"does not compile under the linear regex engine: missing \)"
+    ):
         validate_grading_yaml(_write_grading(tmp_path, grading), inventory=_inventory(_HELPDESK))
 
 
@@ -3816,16 +3818,10 @@ _LOOKAHEAD = "(?=http)http_request"
             id="backtracking-block",
         ),
         pytest.param(
-            _under_engine(
-                _trace_block(
-                    {
-                        "kind": "tool_call",
-                        "tool": {"regex": _LOOKAHEAD, "regex_engine": "backtracking"},
-                    }
-                ),
-                "linear",
+            _trace_block(
+                {"kind": "tool_call", "tool": {"regex": _LOOKAHEAD, "regex_engine": "backtracking"}}
             ),
-            id="backtracking-predicate-in-a-linear-block",
+            id="backtracking-predicate",
         ),
         pytest.param(
             {"transcript_rules": {"disallow_regex": [_LOOKAHEAD], "regex_engine": "backtracking"}},
@@ -3859,23 +3855,20 @@ def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> Non
 
     report = inspect_grading_authoring(grading, _inventory(_CODING))
 
-    assert [finding.where for finding in report.errors] == [
+    assert [finding.where for finding in report.advisories] == [
         "trace_checks.probe.bind.values.figure.pattern"
     ]
-    assert "does not compile" in report.errors[0].message
+    assert "does not compile" in report.advisories[0].message
 
 
 def test_each_pattern_of_a_list_is_reported_at_its_own_item() -> None:
     """A list item's address carries its index; a single string keeps the operator's."""
-    grading = _under_engine(
-        _trace_block(
-            {
-                "kind": "tool_call",
-                "tool": {"regex": ["^http", "(?=http)http_"], "not_regex": "(?!ftp)"},
-                "args": {"url": {"not_regex": ["(", "^ftp"], "regex_engine": "backtracking"}},
-            }
-        ),
-        "linear",
+    grading = _trace_block(
+        {
+            "kind": "tool_call",
+            "tool": {"regex": ["^http", "(?=http)http_"], "not_regex": "(?!ftp)"},
+            "args": {"url": {"not_regex": ["(", "^ftp"], "regex_engine": "backtracking"}},
+        }
     )
 
     report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
@@ -3899,13 +3892,7 @@ def test_each_pattern_of_a_list_is_reported_at_its_own_item() -> None:
 def test_the_list_form_is_named_only_where_a_list_is_accepted(grading: dict[str, Any]) -> None:
     """A binder's capture and a ``disallow_regex`` entry are one pattern each, so the
     remedy a matcher's refusal names would not load there."""
-    linear = (
-        _under_engine(grading, "linear")
-        if "trace_checks" in grading
-        else {"transcript_rules": {**grading["transcript_rules"], "regex_engine": "linear"}}
-    )
-
-    report = inspect_grading_authoring(linear, _inventory(_CODING))
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
 
     [finding] = report.advisories
     assert "does not compile under the linear regex engine" in finding.message
@@ -4122,9 +4109,10 @@ def test_an_uncompilable_pattern_over_a_non_string_argument_names_both_repairs()
 
     report = inspect_grading_authoring(grading, _inventory(_CODING))
 
-    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS, _PATTERN_ADDRESS]
-    assert "does not compile" in report.errors[0].message
-    assert "type 'integer'" in report.errors[1].message
+    assert [finding.where for finding in report.advisories] == [_PATTERN_ADDRESS]
+    assert "does not compile" in report.advisories[0].message
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS]
+    assert "type 'integer'" in report.errors[0].message
 
 
 def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> None:

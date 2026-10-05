@@ -23,11 +23,19 @@ BACKTRACKING = RegexEngineKind.BACKTRACKING
 
 LINEAR_REFUSALS = [
     pytest.param("(?=a)", "invalid perl operator", id="lookahead"),
+    pytest.param("(?!a)b", "invalid perl operator", id="negative-lookahead"),
     pytest.param(r"(a)\1", "invalid escape sequence", id="backreference"),
+    pytest.param("(?P<x>a)(?P=x)", "invalid perl operator", id="named-backreference"),
     pytest.param("(?<=a)b", "invalid perl operator", id="lookbehind"),
+    pytest.param("(?<!a)b", "invalid perl operator", id="negative-lookbehind"),
     pytest.param("a*+", "bad repetition operator", id="possessive"),
     pytest.param(r"a\Z", "invalid escape sequence", id="backslash-Z"),
     pytest.param("(?x) a", "invalid perl operator", id="verbose-mode"),
+    pytest.param("a{1001}", "invalid repetition size", id="repeat-count-over-1000"),
+    pytest.param(r"(\w{1,1000}){1,1000}", "invalid repetition size", id="nested-repetition"),
+    pytest.param(r"\pL{1000}" * 5, "pattern too large", id="over-the-memory-budget"),
+    pytest.param(r"\N{DIGIT ONE}", "invalid escape sequence", id="named-character"),
+    pytest.param("(?a)x", "invalid perl operator", id="ascii-flag"),
 ]
 
 
@@ -122,8 +130,8 @@ def test_linear_search_over_a_large_non_matching_value_is_fast(patterns: list[st
     assert elapsed < 1.0, f"linear search of {len(value)} chars took {elapsed:.3f}s"
 
 
-# Patterns both engines accept but read differently. ADR-0055 quotes this table as
-# the semantics a pack moving from ``backtracking`` to ``linear`` changes.
+# Patterns both engines accept but read differently. docs/GRADING.md § Regex engines
+# quotes this table as the semantics of the ``linear`` default.
 VERDICT_DIFFERENCES = [
     pytest.param(r"\d", "\u0663", True, False, id="digit-is-ascii-only"),
     pytest.param(r"\w", "\u00e9", True, False, id="word-is-ascii-only"),
@@ -132,6 +140,7 @@ VERDICT_DIFFERENCES = [
     pytest.param("a$", "a\n", True, False, id="dollar-is-end-of-text"),
     pytest.param("[[:alpha:]]+", "ab:", False, True, id="posix-class"),
     pytest.param("a{,3}", "aaaa", True, False, id="empty-lower-bound-is-literal"),
+    pytest.param("\ufffd", "abc \ud800 def", False, True, id="lone-surrogate-reads-as-u-fffd"),
 ]
 
 

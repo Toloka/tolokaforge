@@ -1,6 +1,6 @@
 # 0055. A closed, selectable engine for grading regexes, linear by default
 
-- **Status:** Accepted (change 1 of 4 implemented)
+- **Status:** Accepted
 - **Date:** 2026-10-05
 - **Deciders:** @azorej
 - **Supersedes:** none
@@ -128,12 +128,15 @@ refused by the authoring gate: under `linear` as an advisory (fatal under the
 default `fail_on`) that names the list form and the `backtracking` opt-in, under
 `backtracking` as an error.
 
-RE2 refuses `(?=…)`, `(?!…)`, `(?<=…)`, backreferences, possessive
-quantifiers, `\Z` (RE2 spells it `\z`), repeat counts over 1000, `(?x)` and
-`\N{NAME}`.
+RE2 refuses lookaround, backreferences, possessive quantifiers, `\Z` (RE2
+spells it `\z`), repeat counts over 1000 and nested counted repetition whose
+product is too large ("invalid repetition size"), patterns over its memory budget
+("pattern too large"), `(?x)`, `(?a)` and `\N{NAME}`.
 
 These patterns both engines accept get a different verdict
-(`tests/unit/grading/test_regex_engine.py` pins each row under both engines):
+(`tests/unit/grading/test_regex_engine.py` pins each row under both engines, and
+[`docs/GRADING.md` § Regex engines](../GRADING.md#regex-engines) quotes the table
+with the lone-surrogate row):
 
 | pattern | text | `backtracking` | `linear` | why |
 |---|---|---|---|---|
@@ -154,7 +157,7 @@ These patterns both engines accept get a different verdict
    compiled through the seam, eagerly, on its effective engine. **Implemented.**
 3. The list form of `regex` and `not_regex`. **Implemented.**
 4. `linear` becomes the default; the gate's advisory for patterns `linear`
-   cannot compile.
+   cannot compile. **Implemented.**
 
 ## Consequences
 

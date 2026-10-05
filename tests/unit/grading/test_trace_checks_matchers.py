@@ -773,6 +773,8 @@ _BACKTRACKING = RegexEngineKind.BACKTRACKING
 _ARABIC_INDIC_THREE = "٣"
 
 _EFFECTIVE_ENGINES = [
+    pytest.param(None, None, _LINEAR, id="block-undeclared"),
+    pytest.param(None, _BACKTRACKING, _BACKTRACKING, id="override-backtracking-in-undeclared"),
     pytest.param(_LINEAR, None, _LINEAR, id="block-linear"),
     pytest.param(_BACKTRACKING, None, _BACKTRACKING, id="block-backtracking"),
     pytest.param(_LINEAR, _BACKTRACKING, _BACKTRACKING, id="override-backtracking-in-linear"),
@@ -783,12 +785,14 @@ _EFFECTIVE_ENGINES = [
 def _graded(
     turns: Sequence[tuple[str, str]],
     constraint: dict[str, Any],
-    block_engine: RegexEngineKind,
+    block_engine: RegexEngineKind | None,
     recorded: Sequence[RecordedToolCall] = (),
 ) -> TraceChecksResult:
+    """Graded under a block declaring ``block_engine``, or declaring none for ``None``."""
+    declared = {} if block_engine is None else {"regex_engine": block_engine}
     config = TraceChecksConfig(
         constraints=[{"id": "probe", "description": "the engine probe", **constraint}],
-        regex_engine=block_engine,
+        **declared,
     )
     return evaluate_trace_checks(build_timeline(turns=turns, recorded=recorded), config)
 
@@ -797,7 +801,7 @@ def _graded(
 @pytest.mark.parametrize(("block_engine", "override", "effective"), _EFFECTIVE_ENGINES)
 def test_a_matcher_pattern_runs_on_its_effective_engine(
     operator: str,
-    block_engine: RegexEngineKind,
+    block_engine: RegexEngineKind | None,
     override: RegexEngineKind | None,
     effective: RegexEngineKind,
 ) -> None:
@@ -818,7 +822,7 @@ def test_a_matcher_pattern_runs_on_its_effective_engine(
 
 @pytest.mark.parametrize(("block_engine", "override", "effective"), _EFFECTIVE_ENGINES)
 def test_a_capture_pattern_runs_on_its_effective_engine(
-    block_engine: RegexEngineKind,
+    block_engine: RegexEngineKind | None,
     override: RegexEngineKind | None,
     effective: RegexEngineKind,
 ) -> None:
@@ -1057,8 +1061,10 @@ def _policy_result(size: int) -> str:
     return '{"policies": "' + "refunds within thirty days " * (size // 27) + '"}'
 
 
-def _account_lookup_after_policy_searches(size: int) -> list[RecordedToolCall]:
-    """Six large ``search_policies`` results, then the ``get_account`` call naming both."""
+def _account_lookup_after_policy_searches(
+    size: int, account: str = _BOTH
+) -> list[RecordedToolCall]:
+    """Six large ``search_policies`` results, then the ``get_account`` call returning ``account``."""
     return [
         *(
             recorded_call("search_policies", sequence=index, output=_policy_result(size))
@@ -1068,7 +1074,7 @@ def _account_lookup_after_policy_searches(size: int) -> list[RecordedToolCall]:
             "get_account",
             sequence=_OTHER_TOOL_CALLS,
             arguments={"account_id": "ACC-00000006"},
-            output=_BOTH,
+            output=account,
         ),
     ]
 
@@ -1127,13 +1133,12 @@ def test_a_result_pattern_runs_only_on_the_call_a_cheaper_predicate_admits(
     assert searched == [_BOTH]
 
 
-def test_a_lookahead_under_backtracking_grades_large_results_in_bounded_time() -> None:
-    """Through the real engine, over results a lookahead would take minutes to search."""
-    lookup = _account_lookup_after_policy_searches(100_000)
+def _account_lookup_trajectory(lookup: Sequence[RecordedToolCall]) -> Trajectory:
+    """A trajectory whose one assistant turn declares every call ``lookup`` records."""
     declared = [
         ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments) for call in lookup
     ]
-    trajectory = Trajectory(
+    return Trajectory(
         task_id="account-lookup",
         trial_index=0,
         start_ts=_TRAJECTORY_TIMESTAMP,
@@ -1145,28 +1150,48 @@ def test_a_lookahead_under_backtracking_grades_large_results_in_bounded_time() -
         ],
         tool_log=lookup,
     )
-    named = {"kind": "tool_call", "tool": {"equals": "get_account"}}
-    other_account = r'(?=[\s\S]*"account_id":\s*"ACC-00000007")(?=[\s\S]*"email")'
-    config = GradingConfig(
+
+
+_NAMED_ACCOUNT_LOOKUP = {"kind": "tool_call", "tool": {"equals": "get_account"}}
+
+
+def _account_lookup_grading(
+    looked_up: str | list[str], other_account: str | list[str], **block: Any
+) -> GradingConfig:
+    """``get_account`` returned the account ``looked_up`` names and none ``other_account`` does."""
+    return GradingConfig(
         combine={"method": "weighted", "weights": {"trace_checks": 1.0}},
         trace_checks=TraceChecksConfig(
-            regex_engine=_BACKTRACKING,
+            **block,
             constraints=[
                 {
                     "id": "looked-up",
                     "description": "the account was looked up",
                     "require": {
-                        "present": {"match": named | {"result": {"regex": _ACCOUNT_LOOKAHEADS}}}
+                        "present": {
+                            "match": _NAMED_ACCOUNT_LOOKUP | {"result": {"regex": looked_up}}
+                        }
                     },
                 },
                 {
                     "id": "not-another",
                     "description": "no other account was looked up",
-                    "require": {"absent": {"match": named | {"result": {"regex": other_account}}}},
+                    "require": {
+                        "absent": {
+                            "match": _NAMED_ACCOUNT_LOOKUP | {"result": {"regex": other_account}}
+                        }
+                    },
                 },
             ],
         ),
     )
+
+
+def test_a_lookahead_under_backtracking_grades_large_results_in_bounded_time() -> None:
+    """Through the real engine, over results a lookahead would take minutes to search."""
+    trajectory = _account_lookup_trajectory(_account_lookup_after_policy_searches(100_000))
+    other_account = r'(?=[\s\S]*"account_id":\s*"ACC-00000007")(?=[\s\S]*"email")'
+    config = _account_lookup_grading(_ACCOUNT_LOOKAHEADS, other_account, regex_engine=_BACKTRACKING)
 
     started = time.perf_counter()
     grade = GradingEngine(config).grade_trajectory(trajectory, {})
@@ -1177,4 +1202,33 @@ def test_a_lookahead_under_backtracking_grades_large_results_in_bounded_time() -
         ("not-another", True),
     ]
     assert grade.components.trace_checks == 1.0
+    assert elapsed < 2.0
+
+
+def test_the_list_form_under_the_default_engine_grades_large_results_in_bounded_time() -> None:
+    """The issue's scenario as an author now writes it, declaring no engine: every
+    result is large, the named call's own result included, and none of them matches."""
+    size = 100_000
+    unmatched_account = (
+        '{"account_id": "ACC-00000006", "email": "a@b.c", "history": "'
+        + "renewed the annual plan " * (size // 24)
+        + '"}'
+    )
+    trajectory = _account_lookup_trajectory(
+        _account_lookup_after_policy_searches(size, account=unmatched_account)
+    )
+    config = _account_lookup_grading(
+        [_ACCOUNT_ID, _EMAIL], [r'"account_id":\s*"ACC-00000007"', r'"email"']
+    )
+    assert config.trace_checks.regex_engine is _LINEAR
+    assert len(unmatched_account) >= size
+
+    started = time.perf_counter()
+    grade = GradingEngine(config).grade_trajectory(trajectory, {})
+    elapsed = time.perf_counter() - started
+
+    assert [(item.id, item.passed) for item in grade.trace_check_results] == [
+        ("looked-up", False),
+        ("not-another", True),
+    ]
     assert elapsed < 2.0

@@ -182,6 +182,40 @@ an empty one — every schema-dependent rule for it lands in the `unchecked` cha
 the console says so per bundle and once in full. A gate that could not run must never
 read as a clean bill of health.
 
+### Which regex engine a re-check runs
+
+A block re-checks under the [regex engine](GRADING.md#regex-engines) it names, and a
+block naming none — a bundle recorded by an engine predating `regex_engine` among
+them — re-checks under the default `linear` (RE2). A pattern the effective engine
+refuses stops the batch with that refusal, whether it came from a recorded block or a
+supplied one: the gate reports a supplied block's `linear` refusal as an advisory,
+which does not stop the batch, and the re-check then raises on it.
+
+To re-check a bundle under Python `re` — for a pattern RE2 refuses, or one RE2 reads
+differently — copy the bundle's block (`grading_config.trace_checks` in its
+`task.yaml`) into a file, add `regex_engine: backtracking` to it, and pass that file
+as `--constraints`. The supplied block replaces the recorded one wholesale, so the
+copy has to carry every constraint:
+
+```yaml
+# backtracking.yaml — the bundle's own block, plus the engine
+trace_checks:
+  regex_engine: backtracking
+  constraints:
+    - id: the_account_was_looked_up
+      description: "the agent looked up the account the customer named"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: get_account }
+            result: { regex: '(?=[\s\S]*"account_id":\s*"ACC-6")(?=[\s\S]*"email")' }
+```
+
+```bash
+uv run tolokaforge retrace --source <run-dir> --constraints backtracking.yaml
+```
+
 ## Evidence and undecided verdicts
 
 A constraint verdict is `undecided` when the trial does not carry the evidence to

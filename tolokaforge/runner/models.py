@@ -786,7 +786,7 @@ class TranscriptRulesConfig(BaseModel):
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
-    regex_engine: RegexEngineKind = RegexEngineKind.BACKTRACKING
+    regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
     """The engine every ``disallow_regex`` pattern is compiled and searched by."""
     # Both bounds are declarable from 1 up. A ceiling below 1 admits no
     # assistant-turn count at all, and a floor of 0 asserts nothing — and the
@@ -1989,7 +1989,7 @@ class TraceChecksConfig(BaseModel):
 
     constraints: list[TraceConstraint] = Field(default_factory=list)
     alternatives: list[TracePath] | None = None
-    regex_engine: RegexEngineKind = RegexEngineKind.BACKTRACKING
+    regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
     """The engine every ``regex`` / ``not_regex`` / ``bind.values[*].pattern`` in the
     block runs on, unless its predicate or bound value names its own."""
 

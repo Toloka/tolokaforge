@@ -3,7 +3,7 @@ satisfying:
     - role: user
       content: "Did you log my complaint?"
     - role: assistant
-      content: "Yes — your case reference 3 is open."
+      content: "Yes — your case reference ٣ is open."
   state: {}
 
 violating:
@@ -11,5 +11,5 @@ violating:
     - role: user
       content: "Did you log my complaint?"
     - role: assistant
-      content: "Yes — your case reference ٣ is open."
+      content: "Yes — your case reference is open."
   state: {}

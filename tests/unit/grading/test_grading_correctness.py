@@ -683,6 +683,7 @@ class TestTranscriptRulesEvaluation:
     @pytest.mark.parametrize(
         ("engine", "disallowed"),
         [
+            pytest.param(None, False, id="undeclared-is-linear"),
             pytest.param(RegexEngineKind.LINEAR, False, id="linear-reads-ascii-digits"),
             pytest.param(RegexEngineKind.BACKTRACKING, True, id="backtracking-reads-unicode"),
         ],
@@ -690,8 +691,9 @@ class TestTranscriptRulesEvaluation:
     def test_disallow_regex_runs_on_the_blocks_engine(self, engine, disallowed):
         """``\\d`` against an Arabic-Indic digit: the two engines give different verdicts."""
         timeline = self._timeline([("assistant", "Your code is \u0663.")])
+        declared = {} if engine is None else {"regex_engine": engine}
         result = evaluate_transcript_rules(
-            timeline, self._config(disallow_regex=[r"\d"], regex_engine=engine)
+            timeline, self._config(disallow_regex=[r"\d"], **declared)
         )
         assert result.passed is not disallowed
 
