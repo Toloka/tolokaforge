@@ -113,11 +113,13 @@ def _conductor(adapter: BaseAdapter) -> InProcessConductor:
 
 
 def _spec(entry: str = "") -> TrialSpec:
+    task_desc = make_task_description(task_id="t")
     return TrialSpec(
         trial_id="t:0",
         run_id="run-1",
         entry=entry,
-        task=make_task_description(task_id="t"),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="openai", name="gpt-4"),
         env_endpoints=make_env_endpoints(),
     )
@@ -183,23 +185,28 @@ class TestTrajectoryIdentity:
 
 
 class TestExecutionModeStamp:
-    """The conductor stamps ``trajectory.execution_mode`` from
-    ``select_execution_mode(spec.task.metadata)``. These lock the classification
-    the stamp reads for a delegated vs engine-loop spec, reading the metadata off
-    the same ``TrialSpec.task.metadata`` the conductor does — no runtime/Docker.
+    """The producer classifies execution mode once and carries it on the spec;
+    the conductor stamps ``trajectory.execution_mode`` from that carried
+    ``spec.execution_mode``. These lock the carried classification for a
+    delegated vs engine-loop spec — no runtime/Docker.
     """
 
     def _spec_with_metadata(self, metadata: dict[str, Any]) -> TrialSpec:
         spec = _spec()
-        return spec.model_copy(update={"task": spec.task.model_copy(update={"metadata": metadata})})
+        return spec.model_copy(
+            update={
+                "task": spec.task.model_copy(update={"metadata": metadata}),
+                "execution_mode": select_execution_mode(metadata),
+            }
+        )
 
-    def test_delegated_metadata_stamps_delegated(self) -> None:
+    def test_delegated_metadata_carries_delegated(self) -> None:
         spec = self._spec_with_metadata({HARNESS_COMMAND_METADATA_KEY: "claude --print"})
-        assert select_execution_mode(spec.task.metadata) is ExecutionMode.DELEGATED
+        assert spec.execution_mode is ExecutionMode.DELEGATED
 
-    def test_engine_loop_metadata_stamps_engine_loop(self) -> None:
+    def test_engine_loop_metadata_carries_engine_loop(self) -> None:
         spec = self._spec_with_metadata({})
-        assert select_execution_mode(spec.task.metadata) is ExecutionMode.ENGINE_LOOP
+        assert spec.execution_mode is ExecutionMode.ENGINE_LOOP
 
 
 class TestConductorAdapterResolution:

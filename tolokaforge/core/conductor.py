@@ -561,11 +561,12 @@ class InProcessConductor:
             trajectory.attempt_id = spec.attempt_id
             # Stamp multi-harness identity: the entry (``None`` for a single
             # adapter), the resolved adapter's registered type, and how the
-            # trial was driven. The mode is a record-only stamp; dispatch has
-            # already branched on the same classification.
+            # trial was driven. The mode is a record-only stamp read from the
+            # carried spec field — the producer classified it once from the
+            # same metadata that dispatch branched on.
             trajectory.harness_entry = spec.entry or None
             trajectory.adapter_type = spec.task.adapter_type
-            trajectory.execution_mode = select_execution_mode(spec.task.metadata)
+            trajectory.execution_mode = spec.execution_mode
             self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)

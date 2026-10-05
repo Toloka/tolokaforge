@@ -50,6 +50,7 @@ from testcontainers.compose import DockerCompose
 
 from tests.canonical._factories import make_task_description
 from tests.utils.docker_helpers import is_docker_daemon_available
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig, SeedRef
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.project_loader import load_project_config, resolve
@@ -158,16 +159,18 @@ class TestEndpointAddRecipeAndBridge:
     scripted (no LLM)."""
 
     def _trial_spec(self, manifest: EnvironmentManifest) -> TrialSpec:
+        task_desc = make_task_description(
+            task_id=_TASK_ID,
+            name="endpoint-add",
+            category="multi_service",
+            description="endpoint-add recipe + bridge integration test",
+            environment_manifest=manifest,
+        )
         return TrialSpec(
             trial_id=f"{_TASK_ID}:0",
             run_id="endpoint-add-recipe-bridge",
-            task=make_task_description(
-                task_id=_TASK_ID,
-                name="endpoint-add",
-                category="multi_service",
-                description="endpoint-add recipe + bridge integration test",
-                environment_manifest=manifest,
-            ),
+            task=task_desc,
+            execution_mode=select_execution_mode(task_desc.metadata),
             agent_model_config=ModelConfig(name="claude-haiku-4-5", provider="anthropic"),
             env_endpoints=EnvEndpoints(
                 db_url="http://placeholder:5432",

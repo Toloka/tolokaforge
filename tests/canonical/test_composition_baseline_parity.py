@@ -42,6 +42,7 @@ from tolokaforge.core.docker_compose_materialiser import (
     DockerComposeMaterialiser,
     _DockerComposeStackHandle,
 )
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.models.task_config import SeedRef
 from tolokaforge.core.project_loader import _synthesise_composition_plan
@@ -221,10 +222,12 @@ def _make_seed() -> SeedRef:
 
 
 def _make_trial_spec(manifest: EnvironmentManifest) -> TrialSpec:
+    task_desc = make_task_description(task_id="task-1", environment_manifest=manifest)
     return TrialSpec(
         trial_id="task-1:0",
         run_id="run-a",
-        task=make_task_description(task_id="task-1", environment_manifest=manifest),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:5432",

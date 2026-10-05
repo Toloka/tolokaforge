@@ -40,6 +40,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.canonical._factories import make_trajectory
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.models import (
     Grade,
@@ -142,10 +143,12 @@ def _grade_path_a_judge_only(fixed: JudgeResult, monkeypatch: pytest.MonkeyPatch
     ctx = TrialGraderContext(runner_address="ignored:0", logger=MagicMock())
     factory = load_trial_grader("judge_only")
     grader = factory(ctx)
+    task_desc = _task_description()
     spec = TrialSpec(
         trial_id=_TRIAL_ID,
         run_id="parity_run",
-        task=_task_description(),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="openai", name="gpt-4"),
         judge_model_config=_JUDGE_MODEL,
         env_endpoints=EnvEndpoints(

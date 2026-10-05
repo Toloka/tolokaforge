@@ -28,6 +28,7 @@ import pytest
 
 from tests.canonical._factories import make_task_description
 from tests.utils.docker_helpers import is_docker_daemon_available
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.runtime import ProvisionError
@@ -116,16 +117,18 @@ def _write_manifest(compose_dir: Path, compose_text: str, **manifest_kwargs) -> 
 
 
 def _make_spec(manifest: EnvironmentManifest, trial_id: str) -> TrialSpec:
+    task_desc = make_task_description(
+        task_id="readiness-probe",
+        name="readiness-probe",
+        category="general",
+        description="provision-time readiness gate integration lock",
+        environment_manifest=manifest,
+    )
     return TrialSpec(
         trial_id=trial_id,
         run_id="readiness-gate-integration",
-        task=make_task_description(
-            task_id="readiness-probe",
-            name="readiness-probe",
-            category="general",
-            description="provision-time readiness gate integration lock",
-            environment_manifest=manifest,
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:8000",

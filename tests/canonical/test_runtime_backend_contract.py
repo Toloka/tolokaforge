@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from tests.canonical._factories import make_env_endpoints, make_task_description
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.runtime import (
     EnvHandle,
@@ -251,10 +252,12 @@ def _make_trial_spec(
     trial_id: str = "task-1:0",
     manifest: EnvironmentManifest | None = None,
 ) -> TrialSpec:
+    task_desc = _make_task_description(manifest)
     return TrialSpec(
         trial_id=trial_id,
         run_id="run_contract_test",
-        task=_make_task_description(manifest),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
         env_endpoints=make_env_endpoints(),
     )

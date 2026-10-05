@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.core.trial_identity import format_trial_id
@@ -35,12 +36,14 @@ def trial_spec_json(
     the spec carries none. Every other task leaves ``judge_model_config`` unset,
     which is what the runner expects.
     """
+    task = TaskDescription.model_validate(task_dict)
     return TrialSpec(
         trial_id=trial_id if trial_id is not None else format_trial_id("", task_id, trial_index),
         run_id="test_run",
         task_id=task_id,
         trial_index=trial_index,
-        task=TaskDescription.model_validate(task_dict),
+        task=task,
+        execution_mode=select_execution_mode(task.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         judge_model_config=judge_model_config,
         env_endpoints=EnvEndpoints(

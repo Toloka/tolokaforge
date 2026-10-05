@@ -37,6 +37,7 @@ from tests.canonical._factories import make_task_config, make_task_description
 from tests.utils.docker_helpers import is_docker_daemon_available
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
@@ -80,16 +81,18 @@ def _make_trial_spec(trial_id: str, *, manifest: EnvironmentManifest | None = No
                 "db-service": ServiceSpec(isolation="reset", reset=ResetSpec(seed="absent-seed"))
             },
         )
+    task_desc = make_task_description(
+        task_id="task-1",
+        name="probe",
+        category="general",
+        description="per-service log capture integration test",
+        environment_manifest=manifest,
+    )
     return TrialSpec(
         trial_id=trial_id,
         run_id="log-capture-integration",
-        task=make_task_description(
-            task_id="task-1",
-            name="probe",
-            category="general",
-            description="per-service log capture integration test",
-            environment_manifest=manifest,
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:5432",

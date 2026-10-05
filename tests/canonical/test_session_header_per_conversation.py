@@ -33,6 +33,7 @@ from tests.utils.recording_gateway import (
 )
 from tests.utils.secret_state import secret_manager_installed
 from tolokaforge.core.conductor import InProcessConductor, _TrialSetup
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -120,20 +121,22 @@ def _conductor(agent_client: LLMClient, output_dir: Path) -> InProcessConductor:
 
 
 def _spec(trial_index: int, attempt_id: int) -> TrialSpec:
+    task_desc = TaskDescription(
+        task_id="refund",
+        name="refund",
+        category="test",
+        description="Refund an order.",
+        adapter_type="native",
+        system_prompt="",
+    )
     return TrialSpec(
         trial_id=f"refund:{trial_index}",
         run_id="session-run_20261001",
         attempt_id=attempt_id,
         task_id="refund",
         trial_index=trial_index,
-        task=TaskDescription(
-            task_id="refund",
-            name="refund",
-            category="test",
-            description="Refund an order.",
-            adapter_type="native",
-            system_prompt="",
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="openai", name=AGENT_MODEL, session=_SESSION),
         user_model_config=ModelConfig(provider="openai", name=USER_MODEL, session=_SESSION),
         max_turns=10,

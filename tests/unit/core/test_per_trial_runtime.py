@@ -19,6 +19,7 @@ import pytest
 
 from tolokaforge.core.composition_runtime import MaterialiseContext, StackHandle
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.service_readiness import InMemoryServiceReadinessProbe
@@ -112,18 +113,20 @@ def _make_backend(
 
 def _trial_spec(compose_file: Path) -> TrialSpec:
     manifest = EnvironmentManifest(compose_file=compose_file, runner_service="runner")
+    task_desc = TaskDescription(
+        task_id="task-1",
+        name="task-1",
+        category="test",
+        description="unit-test stub",
+        adapter_type="native",
+        system_prompt="",
+        environment_manifest=manifest,
+    )
     return TrialSpec(
         trial_id="task-1:0",
         run_id="run-a",
-        task=TaskDescription(
-            task_id="task-1",
-            name="task-1",
-            category="test",
-            description="unit-test stub",
-            adapter_type="native",
-            system_prompt="",
-            environment_manifest=manifest,
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:5432", runner_url="http://placeholder:50051"

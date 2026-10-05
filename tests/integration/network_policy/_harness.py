@@ -24,6 +24,7 @@ from testcontainers.compose import DockerCompose
 
 from tests.canonical._factories import make_task_description
 from tolokaforge.core.compose_materialisation import RUNNER_PORT_DEFAULT
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.service_readiness import InMemoryServiceReadinessProbe, ServiceReadinessProbe
@@ -189,16 +190,18 @@ def make_spec(manifest: EnvironmentManifest, trial_id: str) -> TrialSpec:
     """Build a :class:`TrialSpec` carrying ``manifest``. The endpoints and
     model config are placeholders — provisioning never connects the runner
     client (connect is lazy) and no LLM is invoked."""
+    task_desc = make_task_description(
+        task_id="netpolicy-probe",
+        name="netpolicy-probe",
+        category="general",
+        description="network_policy egress-enforcement probe",
+        environment_manifest=manifest,
+    )
     return TrialSpec(
         trial_id=trial_id,
         run_id="netpolicy-integration",
-        task=make_task_description(
-            task_id="netpolicy-probe",
-            name="netpolicy-probe",
-            category="general",
-            description="network_policy egress-enforcement probe",
-            environment_manifest=manifest,
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="openai", name="gpt-4"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:8000",

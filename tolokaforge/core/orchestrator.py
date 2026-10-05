@@ -47,7 +47,7 @@ from tolokaforge.core.engine_run_state import (
     write_engine_run_state,
 )
 from tolokaforge.core.env_var import parse_env_positive_float
-from tolokaforge.core.execution_mode import ExecutionMode
+from tolokaforge.core.execution_mode import ExecutionMode, select_execution_mode
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     attribute_failure,
@@ -888,6 +888,10 @@ class Orchestrator:
         # per entry, so the entry name is part of the identity; a single-adapter
         # run uses the empty-string entry sentinel.
         self._task_desc_cache: dict[tuple[str, str], TaskDescription] = {}
+        # Execution mode classified once per ``(entry, task_id)`` from the
+        # task description's ``agent_harness_command`` metadata, carried onto
+        # every trial spec that unit produces. Mirrors ``_task_desc_cache``.
+        self._unit_mode_cache: dict[tuple[str, str], ExecutionMode] = {}
         # Run-wide trial ordering: ``(entry, task_id, trial_index) → total_index``
         # (0..total-1). Populated by :meth:`_build_pending_trials` and
         # read at the ``trial_started`` emission site so the panel can
@@ -1493,6 +1497,30 @@ class Orchestrator:
         self._task_desc_cache[cache_key] = description
         return description
 
+    def _unit_execution_mode(self, entry: str, task_id: str) -> ExecutionMode:
+        """Classify how the ``(entry, task_id)`` unit runs, once, and cache it.
+
+        Calls :func:`select_execution_mode` over the unit's task-description
+        metadata — the authoritative ``agent_harness_command`` signal that
+        drives the container — and memoises the result keyed ``(entry,
+        task_id)`` so the same unit is never reclassified. The carried value
+        flows onto every trial spec that unit produces.
+
+        A broken ``agent_harness_command`` raises from the classifier; the
+        unit coordinates are prepended so a multi-entry run names which unit
+        emitted the bad metadata.
+        """
+        cache_key = (entry, task_id)
+        cached = self._unit_mode_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            mode = select_execution_mode(self._task_description(task_id, entry).metadata)
+        except RuntimeError as exc:
+            raise RuntimeError(f"unit {cache_key}: {exc}") from exc
+        self._unit_mode_cache[cache_key] = mode
+        return mode
+
     def _build_trial_spec(
         self,
         *,
@@ -1526,6 +1554,7 @@ class Orchestrator:
             task_id=task.task_id,
             trial_index=trial_idx,
             task=task_desc,
+            execution_mode=self._unit_execution_mode(entry, task.task_id),
             agent_model_config=agent_client.config,
             user_model_config=user_config,
             judge_model_config=judge_config,

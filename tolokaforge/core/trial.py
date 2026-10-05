@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.models import ModelConfig, Trajectory
 from tolokaforge.runner.models import (
     EnvironmentManifest,
@@ -117,6 +118,12 @@ class TrialSpec(BaseModel):
     # ---- The task itself -------------------------------------------------
     task: TaskDescription
     """The task pack the trial executes."""
+
+    execution_mode: ExecutionMode
+    """How this trial is driven, classified once by the producer from the
+    task's ``agent_harness_command`` metadata. Required: every producer
+    classifies, so no consumer re-derives it. The conductor reads this field
+    to stamp trial identity rather than reclassifying the metadata."""
 
     # ---- Per-trial execution parameters ----------------------------------
     agent_model_config: ModelConfig

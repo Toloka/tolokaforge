@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
@@ -75,10 +76,12 @@ def _task_description() -> dict[str, Any]:
 
 
 def _trial_spec_json(trial_id: str) -> str:
+    task_desc = TaskDescription.model_validate(_task_description())
     return TrialSpec(
         trial_id=trial_id,
         run_id="call_id_e2e_run",
-        task=TaskDescription.model_validate(_task_description()),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(
             db_url="http://db.test:8000",

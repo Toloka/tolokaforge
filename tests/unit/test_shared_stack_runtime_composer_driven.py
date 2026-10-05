@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.composition_runtime import ComposedEnvHandle, RunSubstrate
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
@@ -46,10 +47,12 @@ def _manifest_with_stub_compose(tmp_path: Path) -> EnvironmentManifest:
 def _trial_spec(manifest: EnvironmentManifest, *, trial_id: str = "task-1:0") -> TrialSpec:
     from tests.canonical._factories import make_task_description
 
+    task_desc = make_task_description(task_id="task-1", environment_manifest=manifest)
     return TrialSpec(
         trial_id=trial_id,
         run_id="run-x",
-        task=make_task_description(task_id="task-1", environment_manifest=manifest),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:5432", runner_url="http://placeholder:50051"

@@ -30,6 +30,7 @@ from tolokaforge.core.conductor import (
     _TrialSetup,
     resolve_max_turns,
 )
+from tolokaforge.core.execution_mode import ExecutionMode, select_execution_mode
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     ActorSpec,
@@ -76,6 +77,7 @@ def _make_spec(
             system_prompt="",
             metadata=metadata or {},
         ),
+        execution_mode=select_execution_mode(metadata or {}),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         max_turns=10,
         default_tool_timeout_s=30.0,
@@ -573,8 +575,11 @@ class TestTrialToolSurfacePartition:
 
     def test_a_broken_harness_command_names_the_trial(self, tmp_path: Path) -> None:
         """A blank ``agent_harness_command`` is a broken adapter. The classifier
-        raises naming the key; the call site re-raises with the ``trial <id>:``
-        prefix so a multi-trial run says which trial carried the bad metadata."""
+        raises naming the key; the dispatch call site re-raises with the
+        ``trial <id>:`` prefix so a multi-trial run says which trial carried the
+        bad metadata. The broken metadata is injected onto ``spec.task`` after
+        construction — a producer classifying it up front would refuse to build
+        the spec at all."""
         conductor = self._conductor(tmp_path, _register_result([], []))
         setup = _TrialSetup(
             trial_id="t1:0",
@@ -588,7 +593,12 @@ class TestTrialToolSurfacePartition:
             user_tool_schemas=[],
             user_tool_executor=None,
         )
-        spec = _make_spec(metadata={"agent_harness_command": "   "})
+        base = _make_spec()
+        spec = base.model_copy(
+            update={
+                "task": base.task.model_copy(update={"metadata": {"agent_harness_command": "   "}})
+            }
+        )
 
         with pytest.raises(RuntimeError, match=r"trial t1:0: .*agent_harness_command"):
             conductor._run_agent_loop(
@@ -872,3 +882,65 @@ class TestTrialSetupToolOutputMaxCharsWiring:
 
         kwargs = runner_cls.call_args.kwargs
         assert kwargs["tool_output_max_chars_by_tool"] is None
+
+
+class TestSpecCarriesExecutionMode:
+    """The producer classifies once and carries the result on the spec."""
+
+    def test_engine_loop_spec_carries_engine_loop(self) -> None:
+        assert _make_spec().execution_mode is ExecutionMode.ENGINE_LOOP
+
+    def test_delegated_metadata_spec_carries_delegated(self) -> None:
+        spec = _make_spec(metadata={"agent_harness_command": "claude --print"})
+        assert spec.execution_mode is ExecutionMode.DELEGATED
+
+
+class TestExecutionModeStampReadsCarriedField:
+    """``run`` stamps ``trajectory.execution_mode`` from the carried
+    ``spec.execution_mode`` the producer classified — it does not reclassify
+    ``spec.task.metadata`` at this seam. A spec whose carried mode disagrees
+    with its own (empty) metadata proves which source the stamp reads."""
+
+    def test_stamp_copies_the_carried_mode_not_the_metadata(self, tmp_path: Path) -> None:
+        conductor = _conductor_registering(tmp_path, _register_result([], []))
+        spec = _make_spec().model_copy(update={"execution_mode": ExecutionMode.DELEGATED})
+        # Re-classifying the metadata would answer ENGINE_LOOP; the carried value
+        # is DELEGATED, so the two sources are distinguishable at the stamp.
+        assert select_execution_mode(spec.task.metadata) is ExecutionMode.ENGINE_LOOP
+
+        trajectory = Trajectory(
+            task_id="t1",
+            trial_index=0,
+            start_ts=datetime.now(UTC),
+            end_ts=datetime.now(UTC),
+            status=TrialStatus.COMPLETED,
+            messages=[],
+            metrics=Metrics(),
+        )
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[],
+            user_tool_executor=None,
+        )
+        with (
+            patch.object(InProcessConductor, "_setup_trial", return_value=setup),
+            patch.object(
+                InProcessConductor,
+                "_run_agent_loop",
+                return_value=(trajectory, MagicMock(), "sys"),
+            ),
+            patch.object(InProcessConductor, "_capture_final_state"),
+            patch.object(InProcessConductor, "_grade"),
+            patch.object(InProcessConductor, "_produce_grade_bundle"),
+            patch.object(InProcessConductor, "_write_artifacts"),
+        ):
+            result = conductor.run(spec, TaskConfig(task_id="t1", description="d"))
+
+        assert result.trajectory.execution_mode is ExecutionMode.DELEGATED
