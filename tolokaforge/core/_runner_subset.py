@@ -44,6 +44,7 @@ RUNNER_SUBSET_PACKAGES: tuple[str, ...] = (
     "tolokaforge/core/models",
     "tolokaforge/core/llm",
     "tolokaforge/core/grading",
+    "tolokaforge/core/search",
 )
 """Subpackage directories shipped in the runner subset.
 
@@ -151,6 +152,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
+    "tolokaforge/core/search/typesense_server.py",
 )
 """Files that live under a shared-spine subpackage but are orchestrator-only.
 
@@ -217,6 +219,14 @@ runtime backend's ``build_grade_bundle`` hook delegates to. It composes
 substrate reads plus caller-supplied trajectory and task-description
 inputs into a v1.0 bundle via ``serialize_grade_bundle``; the runner
 never invokes it. Excluded on the same grounds as ``core.grading.bundle``.
+
+``core.search.typesense_server`` starts or adopts the local TypeSense container
+the orchestrator bridges into ``runner-net`` before any trial; the runner only
+registers a client against the address the stack injects, so it never reaches
+the server manager. The rest of ``core.search`` ships: ``backend`` holds the
+``SearchBackend`` Protocols the runner resolves at ``RegisterTrial`` (re-exported
+by ``plugin_registry``), and the package ``__init__`` it is imported through
+re-exports ``domain_state`` and ``typesense``.
 
 ``core.grading.judge_kinds.parity`` is the κ-parity measurement harness
 the canonical ``test_judge_kind_parity`` lane calls to prove every

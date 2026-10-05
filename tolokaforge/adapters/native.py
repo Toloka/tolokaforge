@@ -16,11 +16,14 @@ from tolokaforge.adapters._task_loader import (
     _detect_task_root,
     actor_tool_block,
     build_tool_inventory,
+    declared_search_backend,
     declared_tool_names,
     effective_mcp_server,
     load_task_yaml,
     refuse_malformed_grading_shapes,
     resolve_tool_schemas,
+    search_declaration,
+    search_tool_schema,
     seeded_table_shapes,
     seeded_tables_from_task,
     tool_configs,
@@ -173,9 +176,12 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
 
     A builtin carries no :class:`ToolSource` — the runner's source-less dispatch
     arm routes it by name via the unified builtin registry, and ``tool_config``
-    carries any per-task init kwargs. A block naming an ``mcp_server`` carries the
-    script relative to the task dir, which the runner resolves against its
-    extracted artifacts dir.
+    carries any per-task init kwargs. The task's search tool is source-less too:
+    the runner binds it to the trial's search index by the declared name
+    (``initial_state.rag.tool``), so its schema is the declared name and
+    description over the declared backend's ``tool_parameters()``. A block naming
+    an ``mcp_server`` carries the script relative to the task dir, which the
+    runner resolves against its extracted artifacts dir.
 
     Raises:
         NativeAdapterMisconfigurationError: An enabled tool is not a builtin and
@@ -185,7 +191,6 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
         ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
     """
     from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
-    from tolokaforge.runner.tool_factory import create_search_kb_schema
     from tolokaforge.tools.builtin import registry as builtin_registry
 
     block = actor_tool_block(task, actor)
@@ -196,17 +201,18 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
     configs = tool_configs(task, actor)
     overrides = tool_output_max_chars_overrides(task, actor)
     rich_schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=True)
+    search = search_declaration(task)
 
     schemas: list[ToolSchema] = []
     for tool_name in block.get("enabled", []):
-        if tool_name == "search_kb":
-            # The runner reconstructs search_kb as a RAGSearchToolWrapper
-            # (source-less, RAG dispatch). Carry the canonical schema so
-            # the LLM sees the real {query, top_k, alpha} parameters.
-            # The task-yaml override composes with the schema's existing
+        if tool_name == search.tool_name:
+            # The runner binds the source-less search tool to the trial's
+            # search index by this name. Carry the declared backend's own
+            # parameters so the LLM sees what that backend reads. The
+            # task-yaml override composes with the schema's existing
             # ``output_max_chars`` under the same tighter-wins rule the
             # generic branch below applies to every other tool.
-            base = create_search_kb_schema()
+            base = search_tool_schema(search, declared_search_backend(search))
             cap_candidates = [
                 c for c in (base.output_max_chars, overrides.get(tool_name)) if c is not None
             ]
@@ -1304,36 +1310,39 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """Build the trial's ``SearchConfig`` from ``initial_state.rag``.
 
         A task that declares ``initial_state.rag.corpus_dir`` opts into
-        per-trial RAG indexing: the corpus files travel in ``tool_artifacts``
-        and the runner indexes them so ``search_kb`` returns the corpus's
-        documents. ``documents_path`` is the declared ``corpus_dir`` verbatim,
-        resolved runner-side against the extracted artifacts dir, and the plane
-        serving it is declared ``rag_service`` so a run that also configures
-        TypeSense does not pull the corpus onto the other plane. Tasks that
-        declare no corpus keep search disabled.
+        per-trial search: the corpus files travel in ``tool_artifacts`` and the
+        runner builds the trial's index with the declared backend, so the
+        declared search tool returns the corpus's documents.
+        ``documents_path`` is the declared ``corpus_dir`` verbatim, resolved
+        runner-side against the extracted artifacts dir. The plane serving it is
+        the declared backend (``rag.backend``, default ``rag_service``), so a run
+        that also configures TypeSense does not pull the corpus onto the other
+        plane; ``enabled`` says whether that backend needs rag-service, for an
+        older runner that reads only it. ``backend_config`` and a tool name other
+        than ``search_kb`` ride along, and stay off the wire at their defaults.
+        Tasks that declare no corpus keep search disabled.
 
         Raises:
-            ValueError: if a corpus is declared without ``search_kb`` in either
-                actor's tools (the corpus could never be searched), or the
-                declared ``corpus_dir`` does not resolve to a directory.
+            ValueError: if a corpus is declared without the declared search tool
+                in either actor's tools (the corpus could never be searched), or
+                the declared ``corpus_dir`` does not resolve to a directory.
+            UnknownImplementationError: no backend is registered under
+                ``rag.backend``.
         """
-        from tolokaforge.runner.models import SearchConfig, SearchPlane
+        from tolokaforge.core.search.backend import RAG_SERVICE_STACK_SERVICE
+        from tolokaforge.runner.models import SearchConfig
 
-        rag = task.initial_state.rag
-        corpus_dir = rag.get("corpus_dir") if rag else None
+        search = search_declaration(task)
+        corpus_dir = search.corpus_dir
         if not corpus_dir:
             return SearchConfig(enabled=False)
-        if not isinstance(corpus_dir, str):
-            raise ValueError(
-                f"Task {task_id!r} initial_state.rag.corpus_dir must be a string path, "
-                f"got {type(corpus_dir).__name__}={corpus_dir!r}"
-            )
 
-        if "search_kb" not in declared_tool_names(task):
+        tool_name = search.tool_name
+        if tool_name not in declared_tool_names(task):
             raise ValueError(
                 f"Task {task_id!r} declares initial_state.rag.corpus_dir "
-                f"{corpus_dir!r} but no actor enables the 'search_kb' tool; "
-                f"the corpus would never be searchable. Add 'search_kb' to "
+                f"{corpus_dir!r} but no actor enables the {tool_name!r} tool; "
+                f"the corpus would never be searchable. Add {tool_name!r} to "
                 f"tools.agent.enabled or tools.user.enabled, or drop the rag corpus."
             )
 
@@ -1344,11 +1353,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 f"{corpus_dir!r} but {corpus_path} is not a directory."
             )
 
+        backend = declared_search_backend(search)
         return SearchConfig(
-            enabled=True,
-            plane=SearchPlane.RAG_SERVICE,
+            enabled=backend.stack_service == RAG_SERVICE_STACK_SERVICE,
+            plane=search.backend,
             domain_name=task.category or task_id,
             documents_path=corpus_dir,
+            backend_config=dict(search.backend_config),
+            tool_name=tool_name,
         )
 
     def _bundle_corpus_artifacts(self, task_dir: Path, corpus_dir: str) -> dict[str, str]:

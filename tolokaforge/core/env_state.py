@@ -105,8 +105,8 @@ class EnvironmentState:
             self.mock_web_url = self.config.mock_web["base_url"]
 
         # Load RAG state (store corpus directory for reference)
-        if self.config.rag and self.config.rag.get("corpus_dir"):
-            corpus_dir = self.task_dir / self.config.rag["corpus_dir"]
+        if self.config.rag is not None and self.config.rag.corpus_dir:
+            corpus_dir = self.task_dir / self.config.rag.corpus_dir
             if corpus_dir.exists():
                 self.rag_corpus_dir = corpus_dir
             else:
