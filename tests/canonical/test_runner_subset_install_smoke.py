@@ -99,6 +99,7 @@ _EXPECTED_POSITIVE_IMPORTS: tuple[str, ...] = (
     "tolokaforge.core.llm",
     "tolokaforge.core.grading",
     "tolokaforge.core.pricing",
+    "tolokaforge.core.simulation_budget",
 )
 
 # Base-wheel-only surfaces the subset partition drops. Importing any of these

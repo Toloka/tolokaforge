@@ -321,6 +321,36 @@ timeline events and the step itself is not a `user_message` (see
 judge's transcript labels the step and its results as the user's; a custom check's
 `transcript.user_messages` still lists it, as a user message carrying `tool_calls`.
 
+### Simulation step and environment-error budget
+
+Two optional top-level fields bound a trial by its transitions rather than by its
+turns:
+
+```yaml
+max_simulation_steps: 200     # absent: no step budget
+max_environment_errors: 10    # absent: no error budget
+```
+
+- Both are opt-in. A task that sets neither runs with no budget; `max_turns` applies
+  either way. Each value must be at least 1.
+- Steps are counted half-duplex. Every agent or user message is one step, and the
+  environment's reply to a message's tool calls is one more step, however many calls
+  that batch holds.
+- An environment error is a tool reply the environment completed with an error flag
+  (an MCP `isError: true` reply, recorded as `tool_status: environment_error`). Every
+  such reply in a batch counts, so one step can add several errors.
+- The budget is checked after a message that calls no tools and after each
+  environment batch, never between a message and its tool results: a message's calls
+  always run. The opening turn's steps count too.
+- Reaching the step limit ends the trial with `max_steps`, the error limit with
+  `too_many_errors`; when both are reached at once, `too_many_errors` wins. Like
+  `max_turns`, both endings are graded.
+- The budget needs `actors.user.tool_turns: isolated` and the built-in agent loop. A
+  trial that sets either field without them fails with an error before the dialogue
+  starts.
+- `trajectory.yaml` records the final counts as `simulation_steps` and
+  `environment_errors` (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)).
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in

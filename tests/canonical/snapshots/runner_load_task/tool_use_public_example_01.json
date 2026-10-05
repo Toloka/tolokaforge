@@ -39,6 +39,8 @@
   },
   "initial_user_message": "Use the ticket data to move ticket `T-100` to `in_progress`, assign it to `oncall-platform`, and write a resolution plan to `submissions/tool_use_ticket_plan.md`.",
   "interaction_mode": "conversational",
+  "max_environment_errors": null,
+  "max_simulation_steps": null,
   "max_turns": null,
   "metadata": {
     "complexity": null,

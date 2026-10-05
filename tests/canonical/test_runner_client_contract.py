@@ -13,6 +13,7 @@ drift.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -20,6 +21,8 @@ import pytest
 
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
+from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.canonical
@@ -91,6 +94,23 @@ def test_grpc_runner_client_satisfies_protocol() -> None:
     """The production gRPC client structurally satisfies the Protocol."""
     client = GrpcRunnerClient.__new__(GrpcRunnerClient)  # no gRPC channel needed
     assert isinstance(client, RunnerClient)
+
+
+def test_new_host_refuses_an_old_runner_before_the_trial_starts() -> None:
+    client = GrpcRunnerClient()
+    requests = []
+    client.stub = SimpleNamespace(
+        RegisterTrial=lambda request: (
+            requests.append(request)
+            or pb2.RegisterTrialResponse(success=True, runner_protocol_version=2)
+        )
+    )
+
+    result = client.register_trial("case:0", "{}")
+
+    assert requests[0].engine_protocol_version == ENGINE_PROTOCOL_VERSION
+    assert result["success"] is False
+    assert "runner image declares wire-protocol version 2" in result["error"]
 
 
 def test_stub_runner_client_satisfies_protocol() -> None:

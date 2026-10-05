@@ -76,3 +76,17 @@ def test_write_trajectory_top_level_keys(tmp_path: Path) -> None:
 
     raw = yaml.safe_load((trial_dir / "trajectory.yaml").read_text(encoding="utf-8"))
     assert set(raw.keys()) == _EXPECTED_TOP_LEVEL_KEYS
+
+
+def test_opt_in_simulation_counters_are_persisted_without_changing_legacy_shape(
+    tmp_path: Path,
+) -> None:
+    trial_dir = tmp_path / "trial"
+    trajectory = _full_trajectory().model_copy(
+        update={"simulation_steps": 200, "environment_errors": 10}
+    )
+    FileArtifactWriter().write_trajectory(trial_dir, trajectory)
+
+    raw = yaml.safe_load((trial_dir / "trajectory.yaml").read_text(encoding="utf-8"))
+    assert raw["simulation_steps"] == 200
+    assert raw["environment_errors"] == 10

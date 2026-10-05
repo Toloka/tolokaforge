@@ -36,6 +36,7 @@ from tolokaforge.core.actors.tool_turns import (
     simulator_view,
     user_tool_step_call_ids,
 )
+from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import evaluate_transcript_rules
@@ -56,9 +57,10 @@ from tolokaforge.core.models import (
     TrialStatus,
     UserSimulatorConfig,
 )
+from tolokaforge.core.models.task_config import UserStopWithText
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.runner.models import RequiredAction, TranscriptRulesConfig
-from tolokaforge.tools.registry import ToolResult
+from tolokaforge.tools.registry import ToolExecutionStatus, ToolResult
 
 pytestmark = pytest.mark.unit
 
@@ -337,6 +339,11 @@ def _isolated_trial(
     tools: _UserTools | None = None,
     agent_tools: _UserTools | None = None,
     max_steps: int = 10,
+    max_turns: int = 50,
+    stop_with_text: UserStopWithText = "deliver",
+    simulation_max_steps: int | None = None,
+    simulation_max_errors: int | None = None,
+    user_tool_turns: UserToolTurnRule | None = None,
     episode_timeout_s: int = 600,
 ) -> TrialRunner:
     return TrialRunner(
@@ -346,9 +353,13 @@ def _isolated_trial(
         user_simulator=user,  # type: ignore[arg-type]
         tool_executor=agent_tools or MagicMock(),
         tool_schemas=[],
+        max_turns=max_turns,
         user_tool_executor=tools or _UserTools(),
         episode_timeout_s=episode_timeout_s,
-        user_tool_turns=UserToolTurnRule("isolated", max_steps),
+        user_tool_turns=user_tool_turns or UserToolTurnRule("isolated", max_steps),
+        user_stop=UserStopRule(with_text=stop_with_text),
+        max_simulation_steps=simulation_max_steps,
+        max_environment_errors=simulation_max_errors,
     )
 
 
@@ -361,6 +372,117 @@ def _roles(messages: list[Message]) -> list[str]:
 
 
 class TestIsolatedTurns:
+    @pytest.mark.parametrize("limit", ["steps", "errors"])
+    def test_simulation_budget_refuses_shared_user_tool_turns(self, limit: str) -> None:
+        agent = _RecordingAgent("Unreached.")
+        user = _QueuedUser(_say("Unreached."))
+
+        with pytest.raises(ValueError, match="require isolated user-tool turns"):
+            _isolated_trial(
+                agent,
+                user,
+                user_tool_turns=UserToolTurnRule("shared"),
+                simulation_max_steps=200 if limit == "steps" else None,
+                simulation_max_errors=10 if limit == "errors" else None,
+            )
+
+    def test_two_hundredth_message_precedes_max_turns_safety_cap(self) -> None:
+        agent = _RecordingAgent("Still here.")
+        user = _QueuedUser(*(_say("Again.") for _ in range(99)))
+
+        trajectory = _isolated_trial(agent, user, max_turns=100, simulation_max_steps=200).run(
+            "System", "Hi"
+        )
+
+        assert trajectory.termination_reason is TerminationReason.MAX_STEPS
+        assert trajectory.simulation_steps == 200
+        assert len(agent.requests) == 100
+        assert len(user.contexts) == 99
+
+    def test_stop_token_on_step_boundary_is_overridden_by_native_limit(self) -> None:
+        agent = _RecordingAgent("Thanks.")
+        user = _QueuedUser(_say("###STOP###"))
+
+        trajectory = _isolated_trial(agent, user, simulation_max_steps=3, stop_with_text="end").run(
+            "System", "Hi"
+        )
+
+        assert trajectory.termination_reason is TerminationReason.MAX_STEPS
+        assert trajectory.simulation_steps == 3
+        assert trajectory.messages[-2].content == "###STOP###"
+
+    def test_agent_tool_batch_finishes_before_simulation_step_limit(self) -> None:
+        agent = _RecordingAgent(_tool_step(_call("a1"), _call("a2", "list_cards")))
+        user = _QueuedUser(_say("unreached"))
+        tools = _UserTools()
+
+        trajectory = _isolated_trial(agent, user, agent_tools=tools, simulation_max_steps=3).run(
+            "System", "Hi"
+        )
+
+        assert trajectory.termination_reason is TerminationReason.MAX_STEPS
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.simulation_steps == 3
+        assert trajectory.environment_errors == 0
+        assert tools.calls == ["check_balance", "list_cards"]
+        assert (
+            len([message for message in trajectory.messages if message.role is MessageRole.TOOL])
+            == 2
+        )
+        assert user.contexts == []
+
+    def test_user_tool_batch_finishes_before_simulation_step_limit(self) -> None:
+        agent = _RecordingAgent("How can I help?")
+        user = _QueuedUser(_tool_step(_call("u1"), _call("u2", "list_cards")))
+        tools = _UserTools()
+
+        trajectory = _isolated_trial(agent, user, tools=tools, simulation_max_steps=4).run(
+            "System", "Hi"
+        )
+
+        assert trajectory.termination_reason is TerminationReason.MAX_STEPS
+        assert trajectory.simulation_steps == 4
+        assert tools.calls == ["check_balance", "list_cards"]
+        assert len(user.contexts) == 1
+
+    def test_environment_errors_count_each_failed_result_in_a_single_batch(self) -> None:
+        class ErrorTools(_UserTools):
+            def execute(
+                self,
+                tool_name: str,
+                arguments: dict | None = None,
+                *,
+                call_id: str,
+                validation_schema: dict | None = None,
+            ) -> ToolResult:
+                self.calls.append(tool_name)
+                return ToolResult(
+                    success=True,
+                    output="Error: declared by the environment",
+                    status=ToolExecutionStatus.ENVIRONMENT_ERROR,
+                )
+
+        tools = ErrorTools()
+        agent = _RecordingAgent(_tool_step(_call("a1"), _call("a2", "list_cards")))
+        user = _QueuedUser(_say("unreached"))
+
+        trajectory = _isolated_trial(agent, user, agent_tools=tools, simulation_max_errors=2).run(
+            "System", "Hi"
+        )
+
+        assert trajectory.termination_reason is TerminationReason.TOO_MANY_ERRORS
+        assert trajectory.environment_errors == 2
+        assert trajectory.simulation_steps == 3
+        assert [
+            message.tool_status
+            for message in trajectory.messages
+            if message.role is MessageRole.TOOL
+        ] == [
+            ToolExecutionStatus.ENVIRONMENT_ERROR,
+            ToolExecutionStatus.ENVIRONMENT_ERROR,
+        ]
+        assert user.contexts == []
+
     def test_the_agent_never_reads_a_user_tool_step(self) -> None:
         agent = _RecordingAgent("How can I help?", "Thanks, one moment.")
         user = _QueuedUser(_tool_step(_call("u1")), _say("It says 12.50."), _say("###STOP###"))
@@ -491,6 +613,67 @@ class TestIsolatedTurns:
         assert answers[1].content == "Error: not run, an earlier call of this step raised."
         assert tools.calls == ["check_balance"]
 
+    def test_an_api_error_retry_after_a_raising_step_keeps_the_original_error(self) -> None:
+        class ApiErrorTools(_UserTools):
+            def execute(
+                self,
+                tool_name: str,
+                arguments: dict | None = None,
+                *,
+                call_id: str,
+                validation_schema: dict | None = None,
+            ) -> ToolResult:
+                self.calls.append(tool_name)
+                if tool_name == "list_cards":
+                    raise RuntimeError("card API unreachable")
+                return ToolResult(success=True, output=f"{tool_name}: ok")
+
+        agent = _RecordingAgent("How can I help?")
+        user = _QueuedUser(
+            _tool_step(_call("u1"), _call("u2", "list_cards")),
+            _tool_step(_call("u3"), _call("u4", "list_cards")),
+        )
+        tools = ApiErrorTools()
+        runner = _isolated_trial(agent, user, tools=tools, simulation_max_steps=50)
+
+        trajectory = runner.run("System", "Hi")
+
+        assert trajectory.termination_reason is TerminationReason.API_ERROR
+        assert "card API unreachable" in trajectory.messages[-1].content
+        assert "pending environment batch" not in trajectory.messages[-1].content
+        # Both attempts ran their step, and each raising batch is still one
+        # environment step: opening, then (agent, user step, batch) per attempt.
+        assert tools.calls == ["check_balance", "list_cards"] * 2
+        assert trajectory.simulation_steps == 1 + 3 * 2
+        assert trajectory.environment_errors == 0
+
+    def test_an_api_error_retry_after_a_raising_agent_batch_keeps_the_original_error(
+        self,
+    ) -> None:
+        class ApiErrorTools(_UserTools):
+            def execute(
+                self, tool_name: str, arguments: dict | None = None, **_: Any
+            ) -> ToolResult:
+                self.calls.append(tool_name)
+                raise RuntimeError("card API unreachable")
+
+        agent = _RecordingAgent(_tool_step(_call("a1", "get_card"), text="Let me look."))
+        agent_tools = ApiErrorTools()
+        runner = _isolated_trial(
+            agent, _QueuedUser(), agent_tools=agent_tools, simulation_max_steps=50
+        )
+
+        trajectory = runner.run("System", "Hi")
+
+        assert trajectory.termination_reason is TerminationReason.API_ERROR
+        assert "card API unreachable" in trajectory.messages[-1].content
+        assert "pending environment batch" not in trajectory.messages[-1].content
+        # Both attempts called the tool, and each raising batch is still one
+        # environment step: opening, then (agent, batch) per attempt.
+        assert agent_tools.calls == ["get_card"] * 2
+        assert trajectory.simulation_steps == 1 + 2 * 2
+        assert trajectory.environment_errors == 0
+
     def test_each_ask_records_its_guard_event_at_its_own_position(self) -> None:
         rejected = [MagicMock(name="defect")]
         agent = _RecordingAgent("How can I help?")
@@ -507,6 +690,22 @@ class TestIsolatedTurns:
 
 
 class TestIsolatedOpening:
+    def test_native_budget_ends_bootstrap_after_one_hundred_tool_steps(self) -> None:
+        agent = _RecordingAgent("unreached")
+        user = _QueuedUser(*(_tool_step(_call(f"u{index}")) for index in range(100)))
+        tools = _UserTools()
+
+        trajectory = _isolated_trial(
+            agent, user, tools=tools, max_steps=100, simulation_max_steps=200
+        ).run("System")
+
+        assert trajectory.status is TrialStatus.COMPLETED
+        assert trajectory.termination_reason is TerminationReason.MAX_STEPS
+        assert trajectory.simulation_steps == 200
+        assert len(tools.calls) == 100
+        assert len(user.contexts) == 100
+        assert agent.requests == []
+
     def test_tool_steps_before_the_opening_are_recorded_ahead_of_it(self) -> None:
         agent = _RecordingAgent("Sure, let me help.")
         user = _QueuedUser(

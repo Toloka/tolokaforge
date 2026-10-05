@@ -661,7 +661,9 @@ Version 1 is the first that sends `ExecuteToolRequest.call_id`. An engine that p
 
 Version 2 is the first that omits `user_simulator.first_message` and `user_simulator.user_context` from the trial spec, so an engine below it emits two keys this runner no longer declares and could not parse.
 
-The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
+Version 3 is the first that reports completed MCP `isError` replies as `EXECUTION_STATUS_ENVIRONMENT_ERROR` and returns `runner_protocol_version` at registration. The host refuses an older image before a trial starts, because the older runner would otherwise accept the newer request but silently record an environment error as success.
+
+The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload
 
