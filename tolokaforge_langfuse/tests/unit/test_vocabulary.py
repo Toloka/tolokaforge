@@ -68,6 +68,8 @@ class TestPrefixes:
             ("  Toloka \t  Arena ", "toloka-arena"),
             ("test-arena", "test-arena"),
             ("pilot", "pilot"),
+            # capitals change the tag even without a space (CHANGELOG: a dashboard split)
+            ("Toloka", "toloka"),
         ],
     )
     def test_a_project_name_is_spelled_as_a_tag_value(self, name: str, value: str) -> None:

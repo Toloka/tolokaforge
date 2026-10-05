@@ -186,8 +186,9 @@ def check_value(prefix: str, value: str) -> str:
 def project_tag_value(name: str) -> str:
     """The ``project:`` tag's value for a Langfuse project name. The receiver's name may hold
     capitals and spaces (``Toloka Arena``), a tag value may not, so the tag spells it lowercased,
-    each run of whitespace one ``-`` (``toloka-arena``); a name already in a tag's spelling keeps
-    it. A name still outside the value rule after that is a VocabularyError."""
+    each run of whitespace one ``-`` (``toloka-arena``); capitals are lowercased even without a
+    space (``Toloka`` gives ``toloka``), and a lowercase name without whitespace keeps its spelling.
+    A name still outside the value rule after that is a VocabularyError."""
     return check_value("project", "-".join(str(name).split()).lower())
 
 

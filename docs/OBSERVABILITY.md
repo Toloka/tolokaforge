@@ -471,7 +471,8 @@ the credentials must open it (checked before the first export, the fail-closed c
 is the default of `expect_project` and it gives the trace its `project:` tag. The check compares
 the name exactly as the receiver shows it; the tag spells it lowercased, each run of whitespace
 one `-`, because a tag value holds no whitespace (`Toloka Arena` gives `project:toloka-arena`, and
-`pilot` stays `project:pilot`). A launcher variable
+`pilot` stays `project:pilot`). Capitals are lowercased even without a space (`Toloka` gives
+`project:toloka`), so one project keeps one tag whatever the case of its name. A launcher variable
 (`TOLOKAFORGE_TRACING_EXPECT_PROJECT`, `LANGFUSE_PROJECT`) naming a different project is a
 configuration error. `environments` declares the project's native environments and what each
 accepts: `trial` (benchmark data), `transcript` (an agent's own transcript) or `any`. With the
