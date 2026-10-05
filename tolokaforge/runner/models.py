@@ -373,6 +373,9 @@ class SearchPlane(str, Enum):
     RAG_SERVICE = "rag_service"
     """The rag-service index built per trial from the bundled corpus."""
 
+    BM25 = "bm25"
+    """Okapi BM25 over the bundled corpus, in the runner process (no stack service)."""
+
 
 DEFAULT_SEARCH_TOOL_NAME = "search_kb"
 """The agent's search tool when a task names none (``initial_state.rag.tool.name``)."""
