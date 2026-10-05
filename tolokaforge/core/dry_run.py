@@ -6,12 +6,15 @@ the first ``generate`` call, plus the resolved agent / judge / runtime
 identifiers. The rendering layer consumes these; the CLI's dry-run
 branch stitches them together.
 
-Two helpers:
+Three helpers:
 
 * :func:`load_tasks_for_dry_run` — build the adapter from a
   :class:`RunConfig` and enumerate every declared :class:`TaskConfig`.
   Deliberately skips the TypeSense preflight ``Orchestrator.load_tasks``
   performs.
+* :func:`load_harness_entry_units_for_dry_run` — resolve each
+  ``harnesses:`` entry's ``(entry, task)`` legs through the orchestrator's
+  composite adapter, the same resolution a real run uses.
 * :func:`materialize_dry_run_sample` — assemble the first-turn payload
   for one task without instantiating :class:`LLMClient` or opening a
   socket.
@@ -214,8 +217,8 @@ def load_harness_entry_units_for_dry_run(
     construction and task enumeration only. An entry whose effective
     ``models.agent`` is unset fails loud rather than rendering a partial unit.
     """
-    # Local import: the orchestrator imports core model/adapter modules at
-    # module load, so importing it at dry-run module top would cycle.
+    # Local import: keeps the orchestrator's heavy import chain (docker, grpc,
+    # the runtime stack) out of this module's load cost.
     from tolokaforge.core.orchestrator import Orchestrator
 
     orchestrator = Orchestrator(run_config, project=project)
