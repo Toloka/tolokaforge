@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
@@ -74,10 +75,12 @@ def _trial_spec_json(trial_id: str, tool_expectations: dict[str, list[str]]) -> 
     ``TranscriptRulesConfig`` is ``extra="forbid"``, so this call is also the
     wire-compatibility check: an older runner image rejects the new key here.
     """
+    task_desc = TaskDescription.model_validate(_task_description(tool_expectations))
     return TrialSpec(
         trial_id=trial_id,
         run_id="tool_expectations_e2e_run",
-        task=TaskDescription.model_validate(_task_description(tool_expectations)),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(
             db_url="http://db.test:8000",

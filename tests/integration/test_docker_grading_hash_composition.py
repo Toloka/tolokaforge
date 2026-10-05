@@ -50,6 +50,7 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
@@ -289,10 +290,12 @@ def _folding_task_description(numeric_string_fields: tuple[str, ...]) -> dict[st
 
 def _trial_spec_json(trial_id: str, task: dict[str, Any]) -> str:
     """A complete ``TrialSpec``, which is what ``RegisterTrial`` validates."""
+    task_desc = TaskDescription.model_validate(task)
     return TrialSpec(
         trial_id=trial_id,
         run_id="hash_composition_wire_run",
-        task=TaskDescription.model_validate(task),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(
             db_url="http://db.test:8000",

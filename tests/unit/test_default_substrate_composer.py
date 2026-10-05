@@ -31,6 +31,7 @@ from tolokaforge.core.default_substrate_composer import (
     _trial_scope_log_capture,
     _validate_plan,
 )
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.models.task_config import SeedRef
 from tolokaforge.core.run_display_events import _NULL_EVENTS, ContainerSnapshot
@@ -250,20 +251,22 @@ def _trial_spec(
     task_id: str = "task-1",
     trial_id: str = "task-1:0",
 ) -> TrialSpec:
+    task_desc = TaskDescription(
+        task_id=task_id,
+        name=task_id,
+        category="test",
+        description="unit-test stub",
+        adapter_type="native",
+        system_prompt="",
+        environment_manifest=manifest,
+    )
     return TrialSpec(
         trial_id=trial_id,
         run_id="run-a",
         task_id=task_id,
         trial_index=int(trial_id.rsplit(":", 1)[1]),
-        task=TaskDescription(
-            task_id=task_id,
-            name=task_id,
-            category="test",
-            description="unit-test stub",
-            adapter_type="native",
-            system_prompt="",
-            environment_manifest=manifest,
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:5432",

@@ -21,6 +21,7 @@ from tolokaforge.core.conductor import (
     InMemoryConductor,
     InProcessConductor,
 )
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner.models import TaskDescription
@@ -64,6 +65,7 @@ def _make_spec(
     worker_id: str | None = None,
 ) -> TrialSpec:
     """Build a minimal :class:`TrialSpec` for contract tests."""
+    task_desc = _make_task_description(task_id)
     return TrialSpec(
         trial_id=f"{task_id}:{trial_idx}",
         run_id="test-run",
@@ -71,7 +73,8 @@ def _make_spec(
         worker_id=worker_id,
         task_id=task_id,
         trial_index=trial_idx,
-        task=_make_task_description(task_id),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         user_model_config=None,
         judge_model_config=None,

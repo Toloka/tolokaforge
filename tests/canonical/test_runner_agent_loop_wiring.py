@@ -31,6 +31,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.logging import StructuredLogger
@@ -363,20 +364,22 @@ def _conductor_task_config() -> TaskConfig:
 
 
 def _conductor_spec() -> TrialSpec:
+    task_desc = TaskDescription(
+        task_id=_CONDUCTOR_TASK_ID,
+        name=_CONDUCTOR_TASK_ID,
+        category="test",
+        description="config → conductor → runner wiring",
+        adapter_type="native",
+        system_prompt="",
+        agent_tools=[],
+    )
     return TrialSpec(
         trial_id=f"{_CONDUCTOR_TASK_ID}:0",
         run_id="agent-loop-wiring",
         task_id=_CONDUCTOR_TASK_ID,
         trial_index=0,
-        task=TaskDescription(
-            task_id=_CONDUCTOR_TASK_ID,
-            name=_CONDUCTOR_TASK_ID,
-            category="test",
-            description="config → conductor → runner wiring",
-            adapter_type="native",
-            system_prompt="",
-            agent_tools=[],
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="openai", name="gpt-4"),
         env_endpoints=EnvEndpoints(db_url="http://db:8000", runner_url="http://runner:50051"),
     )

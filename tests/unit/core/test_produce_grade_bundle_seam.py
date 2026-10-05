@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tolokaforge.core.conductor import InProcessConductor, _TrialSetup
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     EvaluationConfig,
@@ -69,19 +70,21 @@ def _make_setup() -> _TrialSetup:
 
 
 def _make_spec() -> TrialSpec:
+    task_desc = TaskDescription(
+        task_id="t1",
+        name="t1",
+        category="test",
+        description="stub",
+        adapter_type="native",
+        system_prompt="",
+    )
     return TrialSpec(
         trial_id="t1:0",
         run_id="test-run",
         attempt_id=0,
         worker_id=None,
-        task=TaskDescription(
-            task_id="t1",
-            name="t1",
-            category="test",
-            description="stub",
-            adapter_type="native",
-            system_prompt="",
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         max_turns=10,
         default_tool_timeout_s=30.0,

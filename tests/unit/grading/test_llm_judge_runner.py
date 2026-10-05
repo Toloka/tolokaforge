@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.grading.composite_fold import (
     build_grade_reasons,
     combine_grade_components,
@@ -158,17 +159,19 @@ def test_judge_model_rides_on_trial_spec():
     judge_model = ModelConfig(
         provider="openrouter", name="anthropic/claude-sonnet-4.6", temperature=0.0
     )
+    task_desc = TaskDescription(
+        task_id="t",
+        name="t",
+        category="test",
+        description="d",
+        adapter_type="native",
+        system_prompt="sys",
+    )
     spec = TrialSpec(
         trial_id="t:0",
         run_id="r",
-        task=TaskDescription(
-            task_id="t",
-            name="t",
-            category="test",
-            description="d",
-            adapter_type="native",
-            system_prompt="sys",
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(provider="openrouter", name="agent"),
         judge_model_config=judge_model,
         env_endpoints=EnvEndpoints(db_url="http://db", runner_url="http://runner"),

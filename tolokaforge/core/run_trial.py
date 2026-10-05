@@ -25,6 +25,7 @@ from tolokaforge.core.conductor import (
     ConductorContext,
     require_rate_limit_probe_support,
 )
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -200,6 +201,7 @@ def run_trial(
         task_id=task.task_id,
         trial_index=trial_index,
         task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=agent_client.config,
         user_model_config=user_config,
         judge_model_config=judge_config,

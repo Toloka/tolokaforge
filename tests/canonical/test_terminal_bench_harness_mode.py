@@ -28,6 +28,7 @@ import pytest
 
 from tolokaforge.core import plugin_registry
 from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
     Grade,
@@ -146,6 +147,7 @@ def _spec(metadata: dict[str, Any], tools: list[ToolSchema]) -> TrialSpec:
             agent_tools=tools,
             metadata=metadata,
         ),
+        execution_mode=select_execution_mode(metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         env_endpoints=EnvEndpoints(db_url="http://db:8000", runner_url="http://runner:50051"),
     )

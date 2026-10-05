@@ -25,6 +25,7 @@ import pytest
 from testcontainers.compose import DockerCompose
 
 from tests.canonical._factories import make_task_description
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig, SeedRef
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.runtime import ProvisionError
@@ -185,16 +186,18 @@ class TestProvisionTearsDownCleanlyOnRecipeFailure:
                 )
             }
         )
+        task_desc = make_task_description(
+            task_id="task-1",
+            name="probe",
+            category="general",
+            description="reset-recipe failure teardown test",
+            environment_manifest=manifest,
+        )
         spec = TrialSpec(
             trial_id="reset-failure:0",
             run_id="reset-recipe-failure-teardown",
-            task=make_task_description(
-                task_id="task-1",
-                name="probe",
-                category="general",
-                description="reset-recipe failure teardown test",
-                environment_manifest=manifest,
-            ),
+            task=task_desc,
+            execution_mode=select_execution_mode(task_desc.metadata),
             agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
             env_endpoints=EnvEndpoints(
                 db_url="http://placeholder:5432",

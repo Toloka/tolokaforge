@@ -41,7 +41,6 @@ from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.execution_mode import (
     HARNESS_COMMAND_METADATA_KEY,
     ExecutionMode,
-    select_execution_mode,
 )
 from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, build_capabilities
@@ -561,11 +560,12 @@ class InProcessConductor:
             trajectory.attempt_id = spec.attempt_id
             # Stamp multi-harness identity: the entry (``None`` for a single
             # adapter), the resolved adapter's registered type, and how the
-            # trial was driven. The mode is a record-only stamp; dispatch has
-            # already branched on the same classification.
+            # trial was driven. The mode is a record-only stamp read from the
+            # carried spec field — the producer classified it once from the
+            # same metadata that dispatch branched on.
             trajectory.harness_entry = spec.entry or None
             trajectory.adapter_type = spec.task.adapter_type
-            trajectory.execution_mode = select_execution_mode(spec.task.metadata)
+            trajectory.execution_mode = spec.execution_mode
             self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
@@ -850,18 +850,24 @@ class InProcessConductor:
         system prompt string (used by :meth:`_grade` when the runner has
         not yet populated its ``effective_system_prompt``).
 
-        A task whose metadata selects :attr:`ExecutionMode.DELEGATED` brings
-        its own agent and takes the :meth:`_run_harness_trial` branch instead.
+        A trial carrying :attr:`ExecutionMode.DELEGATED` brings its own agent
+        and takes the :meth:`_run_harness_trial` branch instead. The branch
+        reads the carried :attr:`TrialSpec.execution_mode` — the mode the
+        producer classified once and stamped on the spec — so dispatch and the
+        identity stamp read the same field and cannot diverge.
         """
-        try:
-            execution_mode = select_execution_mode(spec.task.metadata)
-        except RuntimeError as exc:
-            # The classifier names the broken metadata key but not which trial
-            # emitted it; prepend the trial id so a multi-trial run stays
-            # diagnosable without changing the classifier's signature.
-            raise RuntimeError(f"trial {setup.trial_id}: {exc}") from exc
-        if execution_mode is ExecutionMode.DELEGATED:
-            harness_command = spec.task.metadata[HARNESS_COMMAND_METADATA_KEY]
+        if spec.execution_mode is ExecutionMode.DELEGATED:
+            # Read the command the delegated agent runs with. A DELEGATED spec
+            # whose metadata carries no non-blank command is an inconsistent
+            # spec, not a request to run the turn loop; fail loud and name the
+            # trial rather than hand a bogus command to the harness branch.
+            harness_command = spec.task.metadata.get(HARNESS_COMMAND_METADATA_KEY)
+            if not isinstance(harness_command, str) or not harness_command.strip():
+                raise RuntimeError(
+                    f"trial {setup.trial_id}: execution mode is DELEGATED but task "
+                    f"metadata {HARNESS_COMMAND_METADATA_KEY!r} is not a non-blank "
+                    f"command string; got {harness_command!r}"
+                )
             return self._run_harness_trial(spec, task_config, setup, harness_command)
 
         task = task_config

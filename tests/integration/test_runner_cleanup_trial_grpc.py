@@ -13,6 +13,7 @@ from typing import Any
 import grpc
 import pytest
 
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
@@ -54,10 +55,12 @@ def _trial_spec_json(trial_id: str) -> str:
     The runner-side ``RegisterTrial`` handler validates the full ``TrialSpec``
     (not just ``spec.task``), so the wire payload must be a complete spec.
     """
+    task_desc = TaskDescription.model_validate(_task_description())
     return TrialSpec(
         trial_id=trial_id,
         run_id="cleanup_e2e_run",
-        task=TaskDescription.model_validate(_task_description()),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(
             db_url="http://db.test:8000",

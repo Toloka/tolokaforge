@@ -36,6 +36,7 @@ import pytest
 from tests.utils.containers import RUNNER_IMAGE
 from tests.utils.grading_parity_packs import load_case
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
@@ -65,6 +66,7 @@ def _trial_spec_json(trial_id: str, task: TaskDescription) -> str:
         trial_id=trial_id,
         run_id="user_executed_action_wire_run",
         task=task,
+        execution_mode=select_execution_mode(task.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(
             db_url="http://db.test:8000",

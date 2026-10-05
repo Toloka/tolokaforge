@@ -1,11 +1,20 @@
 """Unit tests for the orchestrator's execution-mode capability gate.
 
-A run that names a coding harness selects the delegated execution mode. The
-gate in ``Orchestrator.load_tasks`` refuses that run — before any task ids
-are fetched or any container work starts — against an adapter that does not
-run the delegated mode, naming both sides. ``adapter_supported_modes`` is the
-decision function the gate reads; it honours a legacy
-``supports_coding_harness = True`` for one release.
+The gate keys off the single per-``(entry, task)`` mode decision: the mode is
+classified from the task description's ``agent_harness_command`` metadata — the
+same signal the conductor dispatches on — and
+``Orchestrator._gate_execution_mode_capability`` refuses a unit whose owning
+adapter does not run that mode, naming the unit, the adapter, the mode, and the
+modes the adapter does run. It fires in the ``run()`` / ``run_worker()``
+pre-flight window, after task descriptions are materialised and before any
+container is provisioned. ``adapter_supported_modes`` is the decision function
+the gate reads; it honours a legacy ``supports_coding_harness = True`` for one
+release.
+
+One capability gate serves both the single-adapter run (the empty-string
+entry) and the multi-harness matrix (one unit per entry/task). The separate
+per-entry ``_gate_entry_execution_mode`` keeps only the engine-loop +
+per-entry-``model.agent`` refusal (#1769).
 """
 
 from __future__ import annotations
@@ -15,15 +24,16 @@ from typing import Any
 
 import pytest
 
+from tests.canonical._factories import make_task_config, make_task_description
+from tolokaforge.adapters import register_adapter
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
-from tolokaforge.core.execution_mode import ExecutionMode
+from tolokaforge.core.execution_mode import HARNESS_COMMAND_METADATA_KEY, ExecutionMode
 from tolokaforge.core.models import (
     EvaluationConfig,
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
 )
-from tolokaforge.core.models.run_config import HarnessAdapterConfig
 from tolokaforge.core.orchestrator import Orchestrator, adapter_supported_modes
 
 pytestmark = pytest.mark.unit
@@ -35,7 +45,7 @@ class _EngineLoopOnlyAdapter(BaseAdapter):
     def get_task_ids(self) -> list[str]:
         return []
 
-    def get_task(self, task_id: str) -> Any:  # pragma: no cover - gate fires first
+    def get_task(self, task_id: str) -> Any:  # pragma: no cover - no tasks served
         raise NotImplementedError
 
     def get_task_dir(self, task_id: str) -> Path:  # pragma: no cover
@@ -76,60 +86,91 @@ class _LegacyHarnessAdapter(_EngineLoopOnlyAdapter):
     supports_coding_harness = True
 
 
-def _delegated_run_config() -> RunConfig:
-    return RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4", harness="claude-code")},
-        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
-        evaluation=EvaluationConfig(output_dir="/tmp/execution_mode_gate"),
-    )
+# ---------------------------------------------------------------------------
+# Task-serving fakes: the capability gate classifies from description metadata,
+# so the fixtures must materialise tasks whose ``agent_harness_command`` is set
+# (delegated) or absent (engine-loop).
+# ---------------------------------------------------------------------------
 
 
-def _harness_via_params_run_config(agent_harness: str) -> RunConfig:
-    """A run whose harness is spelled ONLY via the legacy params address.
+class _TaskServingAdapter(_EngineLoopOnlyAdapter):
+    """Serves one task; subclass knobs set its metadata and supported modes.
 
-    ``models.agent.harness`` is left unset and the selector rides
-    ``evaluation.harness_adapter.params.agent_harness`` — the shape this repo's
-    matrix workflow and the terminal-bench recipes still write. Passing a built
-    ``EvaluationConfig`` (not a dict) keeps the parse-time alias lift from
-    folding the param into ``models.agent.harness``, so the gate must read the
-    param address on its own.
+    ``_harness_command`` (when set) rides the task description's
+    ``agent_harness_command`` metadata, which classifies the unit delegated.
     """
+
+    _adapter_type = "fake_b3"
+    _ids: list[str] = ["t1"]
+    _harness_command: str | None = None
+
+    def get_task_ids(self) -> list[str]:
+        return list(self._ids)
+
+    def get_task(self, task_id: str) -> Any:
+        return make_task_config(task_id=task_id)
+
+    def get_task_dir(self, task_id: str) -> Path:
+        return Path("/fake") / self._adapter_type / task_id
+
+    def to_task_description(self, task_id: str) -> Any:
+        metadata = (
+            {HARNESS_COMMAND_METADATA_KEY: self._harness_command}
+            if self._harness_command is not None
+            else {}
+        )
+        return make_task_description(
+            task_id=task_id, adapter_type=self._adapter_type, metadata=metadata
+        )
+
+
+class _EngineLoopEmittingAdapter(_TaskServingAdapter):
+    """Emits a harness command but declares only the engine loop — the newly
+    catchable mismatch: delegated metadata on an engine-loop-only adapter."""
+
+    _adapter_type = "fake_b3_engine_emit"
+    _ids = ["engine-emit-1"]
+    _harness_command = "claude --print"
+
+
+class _DelegatedEmittingAdapter(_TaskServingAdapter):
+    """Emits a harness command and declares the delegated mode — classifies
+    delegated, runs delegated: the gate clears it."""
+
+    _adapter_type = "fake_b3_deleg_emit"
+    _ids = ["deleg-emit-1"]
+    _harness_command = "claude --print"
+    supported_execution_modes = frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})
+
+
+class _LegacyEmittingAdapter(_TaskServingAdapter):
+    """Emits a harness command and carries only the legacy ``supports_coding_harness``
+    flag — the back-compat derivation adds delegated, so the gate clears it."""
+
+    _adapter_type = "fake_b3_legacy_emit"
+    _ids = ["legacy-emit-1"]
+    _harness_command = "claude --print"
+    supports_coding_harness = True
+
+
+class _PlainEngineLoopAdapter(_TaskServingAdapter):
+    """Serves a task with no harness command — classifies engine-loop even when
+    the run config names a harness slug: no spurious refusal, no divergence."""
+
+    _adapter_type = "fake_b3_plain"
+    _ids = ["plain-1"]
+    _harness_command = None
+
+
+def _single_adapter_config(adapter_type: str, *, harness: str | None = None) -> RunConfig:
+    agent = ModelConfig(provider="openai", name="gpt-4", harness=harness)
     return RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={"agent": agent},
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(
             output_dir="/tmp/execution_mode_gate",
-            harness_adapter=HarnessAdapterConfig(
-                type="terminal_bench", params={"agent_harness": agent_harness}
-            ),
+            harness_adapter={"type": adapter_type},
         ),
-    )
-
-
-def _parsed_run_config_with_params_harness(agent_harness: str) -> RunConfig:
-    """A run parsed from a dict the normal way, so the parse-time alias lift
-    fires.
-
-    This is the real entry the engine loads through: passing a plain dict runs
-    the ``model_validator(mode="before")`` that folds
-    ``evaluation.harness_adapter.params.agent_harness`` onto
-    ``models.agent.harness`` and drops it from ``params``. A pre-built
-    ``EvaluationConfig`` object skips that lift, so a gate bug that only bites
-    *after* the lift (the sentinel landing on ``models.agent.harness``) is
-    invisible to the object-built fixtures above and needs this path.
-    """
-    return RunConfig.model_validate(
-        {
-            "models": {"agent": {"provider": "openai", "name": "gpt-4"}},
-            "orchestrator": {"workers": 1, "repeats": 1, "auto_start_services": False},
-            "evaluation": {
-                "output_dir": "/tmp/execution_mode_gate",
-                "harness_adapter": {
-                    "type": "terminal_bench",
-                    "params": {"agent_harness": agent_harness},
-                },
-            },
-        }
     )
 
 
@@ -164,89 +205,70 @@ class TestAdapterSupportedModes:
 
 
 class TestDelegatedGate:
-    def test_engine_loop_only_adapter_is_refused(self) -> None:
-        orch = Orchestrator(_delegated_run_config())
-        orch.adapter = _EngineLoopOnlyAdapter({})
+    """The single-adapter capability pass (the empty-string entry).
+
+    The adapter is built from ``evaluation.harness_adapter.type`` the way the
+    real single-adapter path builds it, so the refusal names that config type.
+    """
+
+    def _gated(self, adapter_type: str, *, harness: str | None = None) -> Orchestrator:
+        orch = Orchestrator(_single_adapter_config(adapter_type, harness=harness))
+        orch.load_tasks()
+        return orch
+
+    def test_adapter_emitting_command_but_engine_loop_only_is_refused(self) -> None:
+        # Newly catchable: the task metadata carries ``agent_harness_command``,
+        # so the unit classifies delegated — but the adapter runs only the
+        # engine loop. The config names no harness slug, so the old run-level
+        # slug gate would have let this slip through; the metadata gate refuses.
+        orch = self._gated("fake_b3_engine_emit")
 
         with pytest.raises(RuntimeError) as excinfo:
-            orch.load_tasks()
+            orch._gate_execution_mode_capability()
 
         message = str(excinfo.value)
-        # Both sides of the mismatch are named, plus the accepted mode set.
-        assert "claude-code" in message
+        assert "engine-emit-1" in message
+        assert "fake_b3_engine_emit" in message
         assert ExecutionMode.DELEGATED.value in message
         assert ExecutionMode.ENGINE_LOOP.value in message
 
-    def test_legacy_flag_adapter_clears_the_gate(self) -> None:
-        orch = Orchestrator(_delegated_run_config())
-        orch.adapter = _LegacyHarnessAdapter({})
+    def test_adapter_emitting_command_with_delegated_support_clears_gate(self) -> None:
+        orch = self._gated("fake_b3_deleg_emit")
+        assert orch._gate_execution_mode_capability() is None
 
-        # The gate's condition is what "passes" means; the legacy flag derives
-        # delegated support, so the gate does not refuse this adapter.
-        assert ExecutionMode.DELEGATED in adapter_supported_modes(orch.adapter)
+    def test_legacy_flag_adapter_emitting_command_clears_gate(self) -> None:
+        # The legacy flag derives delegated support, so a delegated-classifying
+        # unit on it is not refused.
+        orch = self._gated("fake_b3_legacy_emit")
+        assert orch._gate_execution_mode_capability() is None
 
-    def test_harness_via_legacy_params_only_is_refused(self) -> None:
-        # The harness is spelled ONLY via
-        # evaluation.harness_adapter.params.agent_harness — not models.agent.harness.
-        # The gate keys on _configured_harness, which reads that address too, so
-        # an engine-loop-only adapter is still refused.
-        orch = Orchestrator(_harness_via_params_run_config("claude-code"))
-        orch.adapter = _EngineLoopOnlyAdapter({})
+    def test_config_harness_slug_but_no_command_is_not_refused(self) -> None:
+        # The run config names a coding harness, but the adapter emits no
+        # command, so the unit classifies engine-loop in both the gate and
+        # dispatch. The gate must not refuse on the slug alone — no divergence.
+        orch = self._gated("fake_b3_plain", harness="claude-code")
+        assert orch._gate_execution_mode_capability() is None
 
-        with pytest.raises(RuntimeError) as excinfo:
-            orch.load_tasks()
-
-        message = str(excinfo.value)
-        # Both sides of the mismatch are named, plus the accepted mode set.
-        assert "claude-code" in message
-        assert ExecutionMode.DELEGATED.value in message
-        assert ExecutionMode.ENGINE_LOOP.value in message
-
-    def test_engine_loop_sentinel_through_real_parse_is_not_refused(self) -> None:
-        # The real correctness case: a dict-parsed config lifts the
-        # ``engine-loop`` param onto ``models.agent.harness`` and drops it from
-        # ``params``. The sentinel is not a coding harness — it selects no
-        # delegated mode on either address — so the gate never fires and the
-        # engine loop runs on this engine-loop-only adapter.
-        orch = Orchestrator(_parsed_run_config_with_params_harness("engine-loop"))
-        orch.adapter = _EngineLoopOnlyAdapter({})
-
-        # No RuntimeError: the gate is skipped and the empty run loads cleanly.
-        assert orch.load_tasks() is None
-
-    def test_delegated_harness_through_real_parse_is_refused(self) -> None:
-        # The post-lift positive: a real coding harness parsed from a dict lands
-        # on ``models.agent.harness`` and must still be refused by an
-        # engine-loop-only adapter, naming both sides of the mismatch.
-        orch = Orchestrator(_parsed_run_config_with_params_harness("claude-code"))
-        orch.adapter = _EngineLoopOnlyAdapter({})
-
-        with pytest.raises(RuntimeError) as excinfo:
-            orch.load_tasks()
-
-        message = str(excinfo.value)
-        assert "claude-code" in message
-        assert ExecutionMode.DELEGATED.value in message
-        assert ExecutionMode.ENGINE_LOOP.value in message
+    def test_plain_engine_loop_adapter_clears_gate(self) -> None:
+        orch = self._gated("fake_b3_plain")
+        assert orch._gate_execution_mode_capability() is None
 
 
 # ---------------------------------------------------------------------------
-# Multi-harness per-entry gate (issue #1750, slice A5)
+# Multi-harness per-(entry, task) capability gate
 # ---------------------------------------------------------------------------
-
-
-class _DelegatedCapableAdapter(_EngineLoopOnlyAdapter):
-    """A fake adapter that runs both the engine loop and the delegated mode."""
-
-    supported_execution_modes = frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})
 
 
 @pytest.fixture(autouse=True)
-def _register_a5_fake() -> None:
-    from tolokaforge.adapters import register_adapter
-
-    register_adapter("fake_a5_engine", _EngineLoopOnlyAdapter)
-    register_adapter("fake_a5_delegated", _DelegatedCapableAdapter)
+def _register_b3_fakes() -> None:
+    register_adapter("fake_b3_engine_emit", _EngineLoopEmittingAdapter)
+    register_adapter("fake_b3_deleg_emit", _DelegatedEmittingAdapter)
+    register_adapter("fake_b3_legacy_emit", _LegacyEmittingAdapter)
+    register_adapter("fake_b3_plain", _PlainEngineLoopAdapter)
+    # Engine-loop-only adapter that serves no tasks: used by the #1769 refusal
+    # tests, which fire during composite build, before any task enumeration.
+    register_adapter("fake_b3_engine", _EngineLoopOnlyAdapter)
+    register_adapter("fake_b3_delegated", _DelegatedEmittingAdapter)
 
 
 def _multi_harness_config(entries: list[dict[str, Any]]) -> RunConfig:
@@ -259,51 +281,54 @@ def _multi_harness_config(entries: list[dict[str, Any]]) -> RunConfig:
 
 
 class TestMultiHarnessEntryGate:
+    def _gated(self, entries: list[dict[str, Any]]) -> Orchestrator:
+        orch = Orchestrator(_multi_harness_config(entries))
+        orch.load_tasks()
+        return orch
+
     def test_one_bad_entry_fails_loud(self) -> None:
-        orch = Orchestrator(
-            _multi_harness_config(
-                [{"name": "bad", "adapter": "fake_a5_engine", "mode": "delegated"}]
-            )
-        )
+        # The entry's adapter emits a harness command but runs only the engine
+        # loop; the unit classifies delegated and is refused, naming the entry,
+        # the adapter, and the modes.
+        orch = self._gated([{"name": "bad", "adapter": "fake_b3_engine_emit"}])
+
         with pytest.raises(RuntimeError) as excinfo:
-            orch.load_tasks()
+            orch._gate_execution_mode_capability()
 
         message = str(excinfo.value)
         assert "bad" in message
-        assert "fake_a5_engine" in message
+        assert "fake_b3_engine_emit" in message
         assert ExecutionMode.DELEGATED.value in message
         assert ExecutionMode.ENGINE_LOOP.value in message
 
     def test_valid_sibling_does_not_mask_a_bad_entry(self) -> None:
-        # The valid entry is listed first; the gate must still refuse the bad
-        # sibling rather than passing because a good entry cleared.
-        orch = Orchestrator(
-            _multi_harness_config(
-                [
-                    {"name": "good", "adapter": "fake_a5_engine", "mode": "engine_loop"},
-                    {"name": "bad", "adapter": "fake_a5_engine", "mode": "delegated"},
-                ]
-            )
+        # The valid delegated-capable entry is listed first; the gate must still
+        # refuse the bad sibling rather than passing because a good unit cleared.
+        orch = self._gated(
+            [
+                {"name": "good", "adapter": "fake_b3_deleg_emit"},
+                {"name": "bad", "adapter": "fake_b3_engine_emit"},
+            ]
         )
         with pytest.raises(RuntimeError, match="bad"):
-            orch.load_tasks()
+            orch._gate_execution_mode_capability()
 
     def test_all_valid_entries_load_cleanly(self) -> None:
-        orch = Orchestrator(
-            _multi_harness_config(
-                [
-                    {"name": "a", "adapter": "fake_a5_engine"},
-                    {"name": "b", "adapter": "fake_a5_engine", "mode": "engine_loop"},
-                ]
-            )
+        orch = self._gated(
+            [
+                {"name": "deleg", "adapter": "fake_b3_deleg_emit"},
+                {"name": "plain", "adapter": "fake_b3_plain"},
+            ]
         )
-        # Engine-loop-only adapters serve no tasks here; the run loads with no
-        # gate refusal.
-        assert orch.load_tasks() is None
+        assert orch._gate_execution_mode_capability() is None
 
 
 class TestEngineLoopPerEntryAgentModel:
-    """An engine-loop entry may not carry a per-entry ``model.agent`` (#1769)."""
+    """An engine-loop entry may not carry a per-entry ``model.agent`` (#1769).
+
+    This refusal is independent of the capability gate: it fires during
+    composite build, from ``_gate_entry_execution_mode``.
+    """
 
     _AGENT_OVERRIDE = {"agent": {"provider": "openai", "name": "gpt-4o"}}
 
@@ -313,7 +338,7 @@ class TestEngineLoopPerEntryAgentModel:
                 [
                     {
                         "name": "engine-leg",
-                        "adapter": "fake_a5_engine",
+                        "adapter": "fake_b3_engine",
                         "mode": "engine_loop",
                         "model": self._AGENT_OVERRIDE,
                     }
@@ -335,7 +360,7 @@ class TestEngineLoopPerEntryAgentModel:
                 [
                     {
                         "name": "inferred-leg",
-                        "adapter": "fake_a5_engine",
+                        "adapter": "fake_b3_engine",
                         "model": self._AGENT_OVERRIDE,
                     }
                 ]
@@ -356,7 +381,7 @@ class TestEngineLoopPerEntryAgentModel:
                 [
                     {
                         "name": "delegated-leg",
-                        "adapter": "fake_a5_delegated",
+                        "adapter": "fake_b3_delegated",
                         "mode": "delegated",
                         "model": self._AGENT_OVERRIDE,
                     }
@@ -371,7 +396,7 @@ class TestEngineLoopPerEntryAgentModel:
                 [
                     {
                         "name": "engine-leg",
-                        "adapter": "fake_a5_engine",
+                        "adapter": "fake_b3_engine",
                         "mode": "engine_loop",
                     }
                 ]

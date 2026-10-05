@@ -35,6 +35,7 @@ from tolokaforge_adapter_harbor.adapter import HarborAdapter
 
 from tolokaforge.core.composition_runtime import ComposedEnvHandle
 from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
@@ -128,6 +129,7 @@ def _make_trial_spec(task_description: Any, trial_id: str) -> TrialSpec:
         trial_id=trial_id,
         run_id=_RUN_ID,
         task=task_description,
+        execution_mode=select_execution_mode(task_description.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:8000",
