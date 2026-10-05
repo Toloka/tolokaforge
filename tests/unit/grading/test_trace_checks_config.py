@@ -46,6 +46,7 @@ from tolokaforge.runner.models import (
     TRACE_PREDICATE_OPERATORS,
     TraceConstraint,
     TraceConstraintExpr,
+    TraceConstraintKind,
     TraceConstraintSeverity,
     ValuePredicate,
 )
@@ -1074,6 +1075,18 @@ def test_a_composite_over_anchored_kinds_still_admits_an_anchor_policy():
     config = TraceChecksConfig(**_block(_constraint(nested_orderings, on_missing="pass")))
 
     assert config.constraints[0].on_missing is OnMissing.PASS
+
+
+@pytest.mark.parametrize("policy", list(OnMissing))
+def test_every_policy_is_refused_beside_an_absent(policy: OnMissing):
+    """Each ``on_missing`` answers the refusal rule, and none decides over ``absent``.
+
+    The rule is table-driven, so a policy added to :class:`OnMissing` without a row
+    fails here instead of inheriting another policy's answer.
+    """
+    absent = TraceConstraintExpr.model_validate(EVERY_CONSTRAINT_KIND["absent"])
+
+    assert absent.kinds_refusing_on_missing(policy) == {TraceConstraintKind.ABSENT}
 
 
 def test_the_matchable_table_answers_for_every_event_kind():

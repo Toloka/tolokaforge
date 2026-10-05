@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 from tests.utils.trace_checks_configs import (
@@ -23,13 +21,7 @@ from tests.utils.trace_checks_configs import (
     EVERY_CONSTRAINT_KIND,
     PAYMENT_BINDER,
 )
-from tolokaforge.adapters._task_loader import (
-    build_tool_inventory,
-    load_task_yaml,
-    validate_grading_yaml,
-)
 from tolokaforge.core.grading.config_validation import (
-    AuthoringReport,
     _check_severity_gate_default_on_missing_is_risky,
 )
 from tolokaforge.runner.models import (
@@ -40,12 +32,6 @@ from tolokaforge.runner.models import (
 )
 
 pytestmark = pytest.mark.unit
-
-_REPO = Path(__file__).resolve().parents[3]
-_HELPDESK = (
-    _REPO / "examples/native/multi_service_helpdesk_workflow/dataset/tasks/helpdesk_01/task.yaml"
-)
-_ADVISORY = "severity: gate with default on_missing: fail"
 
 
 _LEAVES: dict[str, dict[str, Any]] = {
@@ -142,76 +128,3 @@ def test_every_gate_shape_has_a_spelling_both_rules_accept(
     assert fires == admits_fail
     if fires:
         assert _admits(require, leaves, OnMissing.WITHHOLD)
-
-
-def _validate(tmp_path: Path, require: dict[str, Any]) -> AuthoringReport:
-    grading = {
-        "trace_checks": {
-            "constraints": [
-                {
-                    "id": "probe",
-                    "description": "a gate the task cannot pass without",
-                    "severity": "gate",
-                    "require": require,
-                }
-            ]
-        }
-    }
-    grading_path = tmp_path / "grading.yaml"
-    grading_path.write_text(yaml.safe_dump(grading))
-    task, task_dir = load_task_yaml(_HELPDESK)
-    return validate_grading_yaml(grading_path, inventory=build_tool_inventory(task, task_dir))
-
-
-def _tool_call(tool: str) -> dict[str, Any]:
-    return {"kind": "tool_call", "tool": {"equals": tool}}
-
-
-_HTTP_THEN_WRITE = {
-    "before": {
-        "left": {"quantifier": "any", "match": _tool_call("http_request")},
-        "right": {"quantifier": "first", "match": _tool_call("write_file")},
-    }
-}
-_A_REFUND_PROMISE = {
-    "absent": {"match": {"kind": "assistant_message", "text": {"contains": "refund"}}}
-}
-
-
-@pytest.mark.parametrize(
-    "require",
-    [
-        pytest.param(
-            {
-                "all_of": [
-                    {"present": {"match": _tool_call("http_request")}},
-                    {"present": {"match": _tool_call("write_file")}},
-                ]
-            },
-            id="present_only_all_of",
-        ),
-        pytest.param(
-            {
-                "all_of": [
-                    _A_REFUND_PROMISE,
-                    _HTTP_THEN_WRITE,
-                    {"present": {"match": _tool_call("http_request")}},
-                ]
-            },
-            id="absent_before_and_present_under_all_of",
-        ),
-    ],
-)
-def test_a_composite_gate_refusing_on_missing_fail_loads_with_none(
-    tmp_path: Path, require: dict[str, Any]
-) -> None:
-    """A composite gate holding present / absent loads at the default fail_on with no advisory."""
-    report = _validate(tmp_path, require)
-
-    assert report.advisories == ()
-
-
-def test_an_anchored_only_composite_gate_still_draws_the_advisory(tmp_path: Path) -> None:
-    """Composites are not silenced wholesale: one holding only anchors keeps the advice."""
-    with pytest.raises(ValueError, match=_ADVISORY):
-        _validate(tmp_path, {"all_of": [_HTTP_THEN_WRITE, _HTTP_THEN_WRITE]})

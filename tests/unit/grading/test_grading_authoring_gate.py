@@ -352,6 +352,33 @@ _A_DB_QUERY_CARRYING_A_TOOL_CONFIG = dataclasses.replace(
 )
 
 
+# An anchored kind, so a gate over it draws the default-``on_missing`` advisory: its
+# anchor's tool can silently error. The matchers differ so the two-quantifier
+# validator accepts the shape.
+_HTTP_THEN_WRITE: dict[str, Any] = {
+    "before": {
+        "left": {"quantifier": "any", "match": _tool_call("http_request")},
+        "right": {"quantifier": "first", "match": _tool_call("write_file")},
+    }
+}
+
+
+def _a_gate_over(require: dict[str, Any]) -> dict[str, Any]:
+    """One ``severity: gate`` constraint over *require*, leaving ``on_missing`` defaulted."""
+    return {
+        "trace_checks": {
+            "constraints": [
+                {
+                    "id": "probe",
+                    "description": "a probe constraint",
+                    "severity": "gate",
+                    "require": require,
+                }
+            ]
+        }
+    }
+
+
 _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="json_db_builtin_carrying_a_tool_config",
@@ -772,33 +799,15 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="severity_gate_with_defaulted_on_missing_is_risky",
         task=_HELPDESK,
-        grading={
-            "trace_checks": {
-                "constraints": [
-                    {
-                        "id": "probe",
-                        "description": "a probe constraint",
-                        "severity": "gate",
-                        # Anchored kind (``before``) so the advisory fires — the
-                        # advisory is scoped to constraints that read an anchor
-                        # whose tool can silently error. Two different matchers
-                        # so the two-quantifier validator accepts the shape.
-                        "require": {
-                            "before": {
-                                "left": {
-                                    "quantifier": "any",
-                                    "match": _tool_call("http_request"),
-                                },
-                                "right": {
-                                    "quantifier": "first",
-                                    "match": _tool_call("write_file"),
-                                },
-                            }
-                        },
-                    }
-                ]
-            }
-        },
+        grading=_a_gate_over(_HTTP_THEN_WRITE),
+        checker="_check_severity_gate_default_on_missing_is_risky",
+        channel="advisories",
+        message="severity: gate with default on_missing: fail",
+    ),
+    _Rule(
+        label="a_composite_gate_over_anchors_alone_keeps_the_advisory",
+        task=_HELPDESK,
+        grading=_a_gate_over({"all_of": [_HTTP_THEN_WRITE, _HTTP_THEN_WRITE]}),
         checker="_check_severity_gate_default_on_missing_is_risky",
         channel="advisories",
         message="severity: gate with default on_missing: fail",
@@ -879,8 +888,8 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
     Provocation, not naming: each checker is wrapped and the whole table is run, so a
     row that stops reaching the checker it claims — because the dispatcher no longer
     calls it, say — fails here even though the row's own assertion still passes.
-    Two rows share ``_check_argument_paths``, one per severity, so the audit is
-    at-least-one rather than exactly-one.
+    Several checkers answer more than one row, so the audit is at-least-one rather
+    than exactly-one.
     """
     declared = _checker_names_in_source()
     assert {rule.checker for rule in _RULES} == declared
@@ -1066,6 +1075,46 @@ def test_an_anchorless_on_missing_is_refused_before_the_gate_at_any_depth(
     message = str(excinfo.value)
     assert "on_missing has nothing to decide over ['present']" in message, message
     assert "does not compile" not in message, message
+
+
+_A_REFUND_PROMISE = {
+    "absent": {"match": {"kind": "assistant_message", "text": {"contains": "refund"}}}
+}
+
+
+@pytest.mark.parametrize(
+    "require",
+    [
+        pytest.param(
+            {
+                "all_of": [
+                    {"present": {"match": _tool_call("http_request")}},
+                    {"present": {"match": _tool_call("write_file")}},
+                ]
+            },
+            id="present_only_all_of",
+        ),
+        pytest.param(
+            {
+                "all_of": [
+                    _A_REFUND_PROMISE,
+                    _HTTP_THEN_WRITE,
+                    {"present": {"match": _tool_call("http_request")}},
+                ]
+            },
+            id="absent_before_and_present_under_all_of",
+        ),
+    ],
+)
+def test_a_composite_gate_refusing_on_missing_fail_loads_with_none(
+    tmp_path: Path, require: dict[str, Any]
+) -> None:
+    """A composite gate holding present / absent loads at the default fail_on with no advisory."""
+    report = validate_grading_yaml(
+        _write_grading(tmp_path, _a_gate_over(require)), inventory=_inventory(_HELPDESK)
+    )
+
+    assert report.advisories == ()
 
 
 # ---------------------------------------------------------------------------

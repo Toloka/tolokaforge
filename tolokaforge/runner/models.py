@@ -1504,12 +1504,7 @@ class TraceConstraintExpr(BaseModel):
         so it never recommends a policy the model refuses. Composite kinds are never
         returned: a composite passes the policy down rather than deciding over it.
         """
-        refusing = (
-            _KINDS_WITHHOLD_HAS_NOTHING_TO_DECIDE_OVER
-            if policy is OnMissing.WITHHOLD
-            else _KINDS_WITHOUT_AN_ANCHOR
-        )
-        return self.kinds_in_tree() & refusing
+        return self.kinds_in_tree() & _KINDS_REFUSING_EACH_ON_MISSING[policy]
 
     @model_validator(mode="after")
     def _require_exactly_one_kind(self) -> TraceConstraintExpr:
@@ -1599,6 +1594,13 @@ class OnMissing(str, Enum):
     FAIL = "fail"
     PASS = "pass"
     WITHHOLD = "withhold"
+
+
+_KINDS_REFUSING_EACH_ON_MISSING: Mapping[OnMissing, frozenset[TraceConstraintKind]] = {
+    OnMissing.FAIL: _KINDS_WITHOUT_AN_ANCHOR,
+    OnMissing.PASS: _KINDS_WITHOUT_AN_ANCHOR,
+    OnMissing.WITHHOLD: _KINDS_WITHHOLD_HAS_NOTHING_TO_DECIDE_OVER,
+}
 
 
 class TraceConstraintSeverity(str, Enum):
