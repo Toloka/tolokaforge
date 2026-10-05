@@ -86,7 +86,14 @@ AGENT_TOOL_BASH = "bash"
 AGENT_TOOL_BASH_SESSION = "bash_session"
 """One held ``docker exec`` bash session for the trial: state survives every call."""
 
-AGENT_TOOLS: tuple[str, ...] = (AGENT_TOOL_BASH, AGENT_TOOL_BASH_SESSION)
+AGENT_TOOL_BASH_BATCH = "bash_batch"
+"""An array of commands per call, each its own ``docker exec``: no state survives."""
+
+AGENT_TOOLS: tuple[str, ...] = (
+    AGENT_TOOL_BASH,
+    AGENT_TOOL_BASH_SESSION,
+    AGENT_TOOL_BASH_BATCH,
+)
 """Values ``adapter_params.agent_tool`` accepts, default first."""
 
 _INTERACTION_MODES: frozenset[str] = frozenset({"conversational", "agent_only"})
@@ -306,8 +313,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             raise ValueError(
                 f"terminal-bench adapter: agent_tool {self.agent_tool!r} requires "
                 f"agent_harness {ENGINE_LOOP!r} — under a coding-harness CLI the engine "
-                "runs no turn loop and the whole trial is one tool call, so a "
-                "session-lifetime shell has nothing to carry state across."
+                "runs no turn loop and the whole trial is one tool call, so neither a "
+                "session-lifetime shell nor a per-turn command array has anything to act on."
             )
         self.agent_completion_tool: bool = bool(params.get("agent_completion_tool", False))
         if self.agent_completion_tool and self.agent_harness != ENGINE_LOOP:
@@ -561,6 +568,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """
         if self.agent_tool == AGENT_TOOL_BASH:
             block: dict[str, Any] = {"enabled": [AGENT_TOOL_BASH]}
+        elif self.agent_tool == AGENT_TOOL_BASH_BATCH:
+            block = {"enabled": [AGENT_TOOL_BASH_BATCH]}
         else:
             block = {
                 "enabled": [AGENT_TOOL_BASH_SESSION],
@@ -613,6 +622,15 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         tool class rather than a copy, so the schema the model sees cannot
         drift from the one the wrapper implements.
         """
+        if self.agent_tool == AGENT_TOOL_BASH_BATCH:
+            return ToolSchema(
+                **self.emit_harness_batch_tool_schema(
+                    service=self._environment(task_id).agent_service,
+                    compose_project_prefix=PROJECT_PREFIX,
+                    timeout_s=self._agent_tool_timeout_s(task_id),
+                    toolset="terminal_bench",
+                )
+            )
         if self.agent_tool == AGENT_TOOL_BASH:
             return ToolSchema(
                 **self.emit_harness_tool_schema(

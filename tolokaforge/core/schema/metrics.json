@@ -22,6 +22,7 @@
         },
         "cost_usd": {"type": ["number", "null"]},
         "tool_calls": {"type": "integer"},
+        "tool_commands": {"type": "integer"},
         "tool_success_rate": {"type": "number"},
         "stuck_detected": {"type": "boolean"},
         "tool_usage": {"type": "array"},
