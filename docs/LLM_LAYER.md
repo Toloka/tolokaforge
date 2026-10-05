@@ -3160,3 +3160,7 @@ the sampling keys actually sent after model policy (an empty dict means none;
 `None` means unobserved). Consumers must not infer sent values from the model
 config. `models.<role>.capabilities.api_call_timeout_s` accepts a finite positive
 number and overrides the call timeout for that model only.
+`generate(retry_policy="single_attempt")` makes exactly one request: the outer,
+timeout, LiteLLM and key-rotation retries are off for that call, and it refuses to
+run while the process-wide `litellm.num_retries` or `litellm.model_fallbacks` is
+set, since either would send a second request. The default is `"default"`.
