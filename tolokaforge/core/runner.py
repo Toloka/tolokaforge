@@ -1751,6 +1751,7 @@ class TrialRunner:
                 outcome=UserReplyOutcome.DELIVERED,
                 rejected=result.guard_rejections,
             )
+            self._record_actor_spend(result)
             return result
         raise RuntimeError("Failed to generate initial user message")
 

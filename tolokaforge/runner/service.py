@@ -52,6 +52,7 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
+from tolokaforge.core.grading.grading_failed import GradingFailedError
 from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.jsonpath_addressing import (
     addresses_the_database,
@@ -1710,6 +1711,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         try:
             result = self._run_async(self._grade_trial_async(request), timeout=600.0)
             return result
+        except GradingFailedError as e:
+            logger.error(f"GradeTrial: Grader could not produce a verdict: {e}")
+            return pb2.GradeTrialResponse(
+                success=False,
+                error=str(e),
+                failure_evidence_json=json.dumps(e.evidence()),
+            )
         except Exception as e:
             logger.error(f"GradeTrial: Unexpected error: {e}")
             logger.error(traceback.format_exc())

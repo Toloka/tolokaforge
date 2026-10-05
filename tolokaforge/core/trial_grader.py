@@ -54,6 +54,7 @@ from pydantic import ValidationError
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.grading_failed import GradingFailedError
 from tolokaforge.core.grading.judge_only_helpers import run_judge_only_for_trajectory
 from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
@@ -71,6 +72,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.models.grade import GradingStateSnapshots
 from tolokaforge.core.plugin_registry import load_grading_method
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.grader.wire_snapshot import build_grade_request_fields
@@ -97,21 +99,6 @@ __all__ = [
     "judge_backed_trial_grader_factory",
     "queue_trial_grader_factory",
 ]
-
-
-class GradingFailedError(Exception):
-    """Grading ran and could not produce a verdict.
-
-    The trial was measured, so its verdict exists to be computed and only the
-    grading substrate can compute it. A host-side stand-in would land in
-    ``success_rate``, ``avg_score``, ``pass@k`` and ``binary_pass`` as an agent
-    failure that no measurement supports, so the failure is raised instead.
-
-    The conductor's grading phase catches it, records the reason on
-    ``Trajectory.grading_error`` and leaves ``grade`` unset. The trial keeps its
-    own ``termination_reason``, writes its bundle, and counts as an attempt that
-    scored nothing — never as an attempt the agent failed.
-    """
 
 
 @runtime_checkable
@@ -331,7 +318,35 @@ class RunnerRPCTrialGrader:
                 trial_index=trial_idx,
                 error=error_msg,
             )
-            raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {error_msg}")
+            evidence = grade_result.get("failure_evidence") or {}
+            try:
+                judge_usage = (
+                    JudgeUsage.model_validate(evidence["judge_usage"])
+                    if evidence.get("judge_usage") is not None
+                    else None
+                )
+                snapshots = (
+                    GradingStateSnapshots.model_validate(evidence["state_snapshots"])
+                    if evidence.get("state_snapshots") is not None
+                    else None
+                )
+                state_diff = evidence.get("state_diff")
+                comparison_view = evidence.get("comparison_view")
+                if state_diff is not None and not isinstance(state_diff, dict):
+                    raise TypeError("state_diff is not a mapping")
+                if comparison_view is not None and not isinstance(comparison_view, dict):
+                    raise TypeError("comparison_view is not a mapping")
+            except (TypeError, ValidationError) as exc:
+                raise GradingFailedError(
+                    f"Grading failed for trial {spec.trial_id!r}; runner failure evidence is invalid: {exc}"
+                ) from exc
+            raise GradingFailedError(
+                f"Grading failed for trial {spec.trial_id!r}: {error_msg}",
+                judge_usage=judge_usage,
+                state_snapshots=snapshots,
+                state_diff=state_diff,
+                comparison_view=comparison_view,
+            )
 
         grade = _parse_grade_result(grade_result["grade"])
         self.logger.info(
@@ -527,6 +542,24 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             except (json.JSONDecodeError, TypeError):
                 pass
 
+    comparison_view = _parse_comparison_view(raw_grade.get("comparison_view_json"))
+
+    # Parsed last so a refusal over unreadable snapshots still carries the judge
+    # usage, state diff and comparison view the runner already produced — the
+    # evidence a host-side GradingFailedError carries. Malformed evidence
+    # invalidates the verdict; it does not discard the completed work.
+    snapshots = None
+    if raw_grade.get("state_snapshots_json"):
+        try:
+            snapshots = GradingStateSnapshots.model_validate_json(raw_grade["state_snapshots_json"])
+        except ValidationError as exc:
+            raise GradingFailedError(
+                f"the runner's Grade.state_snapshots_json payload is not readable: {exc}",
+                judge_usage=judge_usage,
+                state_diff=state_diff_parsed,
+                comparison_view=comparison_view,
+            ) from exc
+
     return Grade(
         binary_pass=raw_grade["binary_pass"],
         score=raw_grade["score"],
@@ -538,7 +571,8 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         ),
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,
-        comparison_view=_parse_comparison_view(raw_grade.get("comparison_view_json")),
+        state_snapshots=snapshots,
+        comparison_view=comparison_view,
         custom_checks_details=custom_checks_details,
         criterion_results=criterion_results,
         judge_status=JudgeStatus.from_proto(raw_grade.get("judge_status", 0)),

@@ -11,6 +11,7 @@ import yaml
 
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, ToolExecutionStatus, Trajectory
+from tolokaforge.core.models.grade import GradingStateSnapshots
 from tolokaforge.core.redaction import (
     NoRedaction,
     RedactionPolicy,
@@ -87,6 +88,9 @@ a task definition an adapter reads, and shares nothing but the name."""
 
 GRADE_FILENAME = "grade.yaml"
 """The trial's verdict. Absent where nothing graded the trial."""
+
+GRADING_STATE_SNAPSHOTS_FILENAME = "grading_state_snapshots.yaml"
+"""Optional initial/golden/final states reconstructed by a host grader."""
 
 LOGS_FILENAME = "logs.yaml"
 """The trial's structured log records."""
@@ -284,6 +288,21 @@ class OutputWriter:
             ),
             "provision_stage": trajectory.provision_stage,
             "grading_error": trajectory.grading_error,
+            "grading_judge_usage": (
+                trajectory.grading_judge_usage.model_dump(mode="json")
+                if trajectory.grading_judge_usage is not None
+                else None
+            ),
+            "grading_state_diff": (
+                self.redaction.redact_mapping(trajectory.grading_state_diff)
+                if trajectory.grading_state_diff is not None
+                else None
+            ),
+            "grading_comparison_view": (
+                self.redaction.redact_mapping(trajectory.grading_comparison_view)
+                if trajectory.grading_comparison_view is not None
+                else None
+            ),
             "snapshot_status": (
                 trajectory.snapshot_status.model_dump(mode="json")
                 if trajectory.snapshot_status is not None
@@ -430,7 +449,9 @@ class OutputWriter:
         # Keep the transcript and the judge's structured inputs out of grade.yaml;
         # each lands in its own sidecar.
         grade_payload = self.redaction.redact_mapping(
-            grade.model_dump(mode="json", exclude={"judge_transcript", "judge_inputs"})
+            grade.model_dump(
+                mode="json", exclude={"judge_transcript", "judge_inputs", "state_snapshots"}
+            )
         )
         with open(self.output_dir / GRADE_FILENAME, "w") as f:
             yaml.dump(
@@ -441,6 +462,7 @@ class OutputWriter:
                 sort_keys=False,
             )
         self._note_rewritten(GRADE_FILENAME)
+        self._write_grading_state_snapshots(grade.state_snapshots)
 
         # Sidecar: the judge's own message transcript, only when a judge ran and
         # captured a non-empty one. Absent file ⇒ either no judge transcript for
@@ -462,6 +484,34 @@ class OutputWriter:
             self._write_judge_sidecar(
                 JUDGE_INPUTS_FILENAME, grade.judge_inputs.model_dump(mode="json")
             )
+
+    def _write_grading_state_snapshots(self, snapshots: GradingStateSnapshots | None) -> None:
+        """Write the grader's state snapshots sidecar, or take an older one away.
+
+        Regrading the same directory must not leave evidence from an older grade.
+        """
+        if snapshots is None:
+            self._discard_grade_sidecars(GRADING_STATE_SNAPSHOTS_FILENAME)
+            return
+        payload = self.redaction.redact_mapping(snapshots.model_dump(mode="json"))
+        with open(self.output_dir / GRADING_STATE_SNAPSHOTS_FILENAME, "w") as f:
+            yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+        self._note_rewritten(GRADING_STATE_SNAPSHOTS_FILENAME)
+
+    def _discard_grade_sidecars(self, *names: str) -> None:
+        """Remove grade artifacts an earlier write left here, from disk and from the stamp.
+
+        Writers are cached per trial directory for the whole run, so a retried
+        trial reuses the writer that recorded the earlier attempt's grade files;
+        a stamp still naming a file the bundle no longer holds is one a reader
+        cannot check.
+        """
+        for name in names:
+            (self.output_dir / name).unlink(missing_ok=True)
+            self._rewritten.discard(name)
+            self._omitted.discard(name)
+        if self._redacting:
+            self._declare_or_discard()
 
     def _write_judge_sidecar(self, filename: str, payload: dict[str, Any]) -> None:
         """Write a judge sidecar, or withhold it and declare that instead.
@@ -538,5 +588,10 @@ class OutputWriter:
 
         if trajectory.grade:
             self.write_grade(trajectory.grade)
+        else:
+            self._discard_grade_sidecars(
+                GRADE_FILENAME, JUDGE_TRAJECTORY_FILENAME, JUDGE_INPUTS_FILENAME
+            )
+            self._write_grading_state_snapshots(trajectory.grading_state_snapshots)
 
         self.write_logs(logger)

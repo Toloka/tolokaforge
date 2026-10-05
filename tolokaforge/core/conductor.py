@@ -1199,6 +1199,10 @@ class InProcessConductor:
             grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
         except GradingFailedError as e:
             trajectory.grading_error = str(e)
+            trajectory.grading_judge_usage = e.judge_usage
+            trajectory.grading_state_snapshots = e.state_snapshots
+            trajectory.grading_state_diff = e.state_diff
+            trajectory.grading_comparison_view = e.comparison_view
             self.logger.error(
                 "Trial could not be graded",
                 task_id=task_config.task_id,

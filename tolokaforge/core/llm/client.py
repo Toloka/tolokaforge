@@ -20,7 +20,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 if TYPE_CHECKING:
     from tolokaforge.core.loop import TerminationDecision
@@ -143,6 +143,9 @@ _module_logger = get_logger("llm_client_cost")
 
 DEFAULT_API_CALL_TIMEOUT_S = 120.0
 DEFAULT_API_TIMEOUT_RETRIES = 5
+# ``default`` runs every retry layer; ``single_attempt`` makes exactly one request.
+RetryPolicy = Literal["default", "single_attempt"]
+_RETRY_POLICIES: frozenset[str] = frozenset(get_args(RetryPolicy))
 # Hard wall-clock ceiling per upstream call. ``None`` keeps the wall-clock
 # abort disabled by default (backward-compatible); opt in per-model via the
 # preset or the ``TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S`` env var.
@@ -664,6 +667,10 @@ class GenerationResult:
         # :attr:`ModelCapabilities.output_length_retry_count`). ``None`` when
         # the response carries no finish_reason at all.
         self.finish_reason = finish_reason
+        # The sampling subset actually handed to the transport. None means the
+        # producer did not observe a request (e.g. a scripted client); an empty
+        # mapping means model policy omitted all sampling parameters.
+        self.sent_sampling: dict[str, float] | None = None
         # Defects of the attempts discarded before this reply was accepted.
         # Stamped only by ``BuiltinUserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
@@ -1573,6 +1580,8 @@ class LLMClient:
         reasoning: ReasoningConfig | None = None,
         top_p: float | None = None,
         observation: LLMCallObservation | None = None,
+        response_format: dict[str, Any] | None = None,
+        retry_policy: RetryPolicy = "default",
     ) -> GenerationResult:
         """Generate completion from LLM.
 
@@ -1608,7 +1617,13 @@ class LLMClient:
 
         Returns a :class:`GenerationResult` with text, tool-calls, full
         :class:`Usage` counters, latency, cost, and structured reasoning.
+
+        ``retry_policy='single_attempt'`` is for callers such as a benchmark
+        judge whose reference transport makes exactly one request. It disables
+        outer, timeout, LiteLLM and key-rotation retries for this call only.
         """
+        if retry_policy not in _RETRY_POLICIES:
+            raise ValueError(f"Unknown LLM retry policy: {retry_policy}")
         messages = messages or []
 
         if self.provider == "mock":
@@ -1616,7 +1631,11 @@ class LLMClient:
 
         role: LLMCallRole = observation.role if observation is not None else "agent"
         session_id = self._session_id_for_call(observation)
-        retrying = self._build_retrying(observation)
+        retrying = (
+            self._build_retrying(observation)
+            if retry_policy == "default"
+            else Retrying(stop=stop_after_attempt(1), reraise=True)
+        )
         for attempt in retrying:
             with attempt:
                 attempt_num = attempt.retry_state.attempt_number
@@ -1635,6 +1654,8 @@ class LLMClient:
                         max_tokens=max_tokens,
                         role=role,
                         session_id=session_id,
+                        response_format=response_format,
+                        single_attempt=retry_policy == "single_attempt",
                     )
                 except BaseException as exc:
                     self._fire_call_finished(
@@ -1890,6 +1911,8 @@ class LLMClient:
         max_tokens: int | None,
         role: LLMCallRole = "agent",
         session_id: str | None,
+        response_format: dict[str, Any] | None = None,
+        single_attempt: bool = False,
     ) -> GenerationResult:
         """One outer-retry attempt: prepare → build → call → detect → assemble.
 
@@ -1913,8 +1936,10 @@ class LLMClient:
             session_id=session_id,
         )
         reasoning_replay_dropped = self._reasoning_replay_dropped_for(messages)
+        if response_format is not None:
+            kwargs["response_format"] = dict(response_format)
         start_time = time.time()
-        response = self._call_with_key_rotation(kwargs)
+        response = self._call_with_key_rotation(kwargs, single_attempt=single_attempt)
         latency = time.time() - start_time
         synthetic = _detect_synthetic_envelope(response)
         if synthetic is not None:
@@ -1928,7 +1953,7 @@ class LLMClient:
                 f"(native_finish_reason={synthetic!r}). Upstream provider "
                 f"produced an unrecoverable response; retrying."
             )
-        return self._assemble_result(
+        result = self._assemble_result(
             response=response,
             effective_system_prompt=effective_system_prompt,
             latency_s=latency,
@@ -1936,6 +1961,10 @@ class LLMClient:
             role=role,
             reasoning_replay_dropped=reasoning_replay_dropped,
         )
+        result.sent_sampling = {
+            key: kwargs[key] for key in ("temperature", "top_p", "top_k") if key in kwargs
+        }
+        return result
 
     # ------------------------------------------------------------------
     # generate() sub-phases
@@ -2272,7 +2301,9 @@ class LLMClient:
             timeout_s=self._api_call_timeout_s,
         )
 
-    def _call_completion_with_timeout_retry(self, kwargs: dict[str, Any]) -> Any:
+    def _call_completion_with_timeout_retry(
+        self, kwargs: dict[str, Any], *, single_attempt: bool = False
+    ) -> Any:
         """Call litellm ``completion`` with a bounded per-call timeout retry.
 
         Worst-case wait: ``stop_after_attempt(retries + 1)`` × ``timeout``
@@ -2291,7 +2322,7 @@ class LLMClient:
 
         @retry(
             retry=retry_if_exception(self._is_timeout_error),
-            stop=stop_after_attempt(self._api_timeout_retries + 1),
+            stop=stop_after_attempt(1 if single_attempt else self._api_timeout_retries + 1),
             wait=wait_exponential(multiplier=1, min=1, max=5),
             before_sleep=self._log_timeout_retry,
             reraise=True,  # surface the last TimeoutError, not RetryError
@@ -2337,15 +2368,17 @@ class LLMClient:
                 self.logger.warning(
                     "LLM API call timed out; retry limit exhausted",
                     event="api_call_timeout",
-                    attempts=self._api_timeout_retries + 1,
+                    attempts=1 if single_attempt else self._api_timeout_retries + 1,
                     timeout_s=self._api_call_timeout_s,
                 )
                 raise LLMApiTimeoutError(
-                    f"LLM API call timed out after {self._api_timeout_retries + 1} attempts (timeout={self._api_call_timeout_s}s)"
+                    f"LLM API call timed out after {1 if single_attempt else self._api_timeout_retries + 1} attempts (timeout={self._api_call_timeout_s}s)"
                 ) from e
             raise
 
-    def _call_with_key_rotation(self, kwargs: dict[str, Any]) -> Any:
+    def _call_with_key_rotation(
+        self, kwargs: dict[str, Any], *, single_attempt: bool = False
+    ) -> Any:
         """Call litellm ``completion`` with OpenRouter key rotation.
 
         Providers whose binding declares ``kwargs_pin_transport`` read the
@@ -2368,6 +2401,15 @@ class LLMClient:
         """
         kwargs = dict(kwargs)
         kwargs.setdefault("timeout", self._api_call_timeout_s)
+        if single_attempt:
+            # Reads the process-wide litellm.num_retries / model_fallbacks once, on the
+            # assumption they are set at startup and not mutated per call.
+            if litellm.num_retries not in (None, 0) or litellm.model_fallbacks is not None:
+                raise RuntimeError(
+                    "single_attempt cannot run with global LiteLLM retries or model fallbacks"
+                )
+            kwargs["max_retries"] = 0
+            kwargs["num_retries"] = 0
         binding = self._provider_binding
 
         while True:
@@ -2407,7 +2449,9 @@ class LLMClient:
                             model = rewrite.ensure_prefix + model
                         kwargs["model"] = model
 
-                return self._call_completion_with_timeout_retry(kwargs)
+                return self._call_completion_with_timeout_retry(
+                    kwargs, single_attempt=single_attempt
+                )
             except LLMApiTimeoutError:
                 # Pass through unchanged so ``_should_retry_exception`` can
                 # opt the outer ``Retrying`` controller out of re-attempting
@@ -2423,6 +2467,8 @@ class LLMClient:
                     or '"code":403' in error_str
                     or '"code":402' in error_str
                 ):
+                    if single_attempt:
+                        raise RuntimeError(f"LLM API call failed without retry: {e}") from e
                     if self._proxy is not None and self._proxy.api_key:
                         # Rotation cannot help *when a gateway key is pinned*:
                         # ``_rotate_key`` republishes the provider's

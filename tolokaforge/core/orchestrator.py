@@ -981,6 +981,8 @@ class Orchestrator:
         grade = trajectory.grade
         if grade is not None and grade.judge_usage is not None:
             total += grade.judge_usage.cost_usd
+        elif grade is None and trajectory.grading_judge_usage is not None:
+            total += trajectory.grading_judge_usage.cost_usd
         return total
 
     @staticmethod
@@ -1001,6 +1003,17 @@ class Orchestrator:
         from tolokaforge.core.output_writer import GRADE_FILENAME
 
         logger = get_logger("orchestrator")
+
+        def judge_cost(judge_usage: Any, path: Path) -> float:
+            if not isinstance(judge_usage, dict):
+                logger.warning(
+                    "Ignoring non-mapping judge usage during resume cost seed",
+                    path=str(path),
+                    judge_usage_type=type(judge_usage).__name__,
+                )
+                return 0.0
+            return float(judge_usage.get("cost_usd", 0.0) or 0.0)
+
         for metrics_path in trials_root.glob("*/*/metrics.yaml"):
             try:
                 with open(metrics_path) as f:
@@ -1010,8 +1023,15 @@ class Orchestrator:
                 if grade_path.exists():
                     with open(grade_path) as f:
                         grade = yaml.safe_load(f) or {}
-                    judge_usage = grade.get("judge_usage") or {}
-                    total_cost += float(judge_usage.get("cost_usd", 0.0) or 0.0)
+                    total_cost += judge_cost(grade.get("judge_usage") or {}, grade_path)
+                else:
+                    trajectory_path = metrics_path.parent / "trajectory.yaml"
+                    if trajectory_path.exists():
+                        with open(trajectory_path) as f:
+                            trajectory = yaml.safe_load(f) or {}
+                        total_cost += judge_cost(
+                            trajectory.get("grading_judge_usage") or {}, trajectory_path
+                        )
             except Exception as exc:
                 logger.warning(
                     "Skipping unreadable trial bundle during resume cost seed",
@@ -2661,9 +2681,8 @@ class Orchestrator:
         rejected here — before any trial executes — naming the offending tasks
         (AGENTS.md rule 1).
 
-        Assumes every adapter populates ``to_task_description().grading.llm_judge``
-        for rubric tasks; only ``NativeAdapter`` implements rubric grading today,
-        so non-native adapters simply surface no offending tasks here.
+        The adapter declares whether its grader needs a judge, including
+        host-side graders whose briefs are outside the runner rubric block.
         """
         judge_config = self.config.models.get("judge")
         if judge_config is not None:
@@ -2675,13 +2694,11 @@ class Orchestrator:
                 "Ensure load_tasks() has run successfully."
             )
         offending = [
-            task.task_id
-            for task in self.tasks
-            if self.adapter.to_task_description(task.task_id).grading.llm_judge is not None
+            task.task_id for task in self.tasks if self.adapter.requires_judge_model(task.task_id)
         ]
         if offending:
             raise ValueError(
-                "These selected tasks use an llm_judge grading component but the run "
+                "These selected tasks require a judge model but the run "
                 "config has no judge model: "
                 f"{', '.join(sorted(offending))}. Add a judge model to the run config "
                 "under models.judge (provider/name), e.g. "

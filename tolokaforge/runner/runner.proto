@@ -244,6 +244,10 @@ message GradeTrialResponse {
 
   // The computed grade
   Grade grade = 3;
+
+  // Structured spend and DB evidence produced before an ungradeable verdict.
+  // Empty for ordinary failures and successful grades.
+  string failure_evidence_json = 4;
 }
 
 message Grade {
@@ -305,6 +309,9 @@ message Grade {
   // or no hash was computed — `optional` so a grade without one encodes, and prints,
   // byte-identically to a grade that has no field 12.
   optional string comparison_view_json = 12;
+
+  // Host-grader replay snapshots. Kept out of grade.yaml by the host writer.
+  optional string state_snapshots_json = 13;
 }
 
 // The rubric judge's own accounting + audit transcript (see docs/RUBRIC_GRADING_DESIGN.md

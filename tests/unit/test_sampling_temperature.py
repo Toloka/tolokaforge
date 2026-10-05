@@ -267,6 +267,41 @@ def test_thinking_drops_the_config_top_p_too() -> None:
     assert _sampling_sent(model) == {}
 
 
+class TestTheResultRecordsTheSamplingSent:
+    """``GenerationResult.sent_sampling`` is the sampling subset the transport
+    received, after model policy: callers record it instead of what they asked for."""
+
+    @staticmethod
+    def _sent_and_recorded(model: ModelConfig, **call: Any) -> tuple[dict[str, Any], Any]:
+        client = LLMClient(model)
+        results = []
+        sent = _sent(lambda: results.append(client.generate(messages=[_user("hi")], **call)))
+        return {key: sent[key] for key in _SAMPLING_KEYS & sent.keys()}, results[0].sent_sampling
+
+    def test_it_is_what_the_request_carried(self) -> None:
+        sent, recorded = self._sent_and_recorded(_model(0.3, top_p=0.9), temperature=0.7)
+        assert recorded == sent == {"temperature": 0.7, "top_p": 0.9}
+
+    def test_a_policy_that_drops_every_sampling_key_records_an_empty_mapping(
+        self, no_sampling_preset: None
+    ) -> None:
+        sent, recorded = self._sent_and_recorded(_model(name=_NO_SAMPLING), temperature=0.7)
+        assert sent == {}
+        assert recorded == {}
+        assert recorded is not None
+
+    def test_a_fixed_temperature_is_recorded_in_place_of_the_requested_one(
+        self, no_sampling_preset: None
+    ) -> None:
+        model = _model(name=_NO_SAMPLING, capabilities={"fixed_temperature": 1.0})
+        sent, recorded = self._sent_and_recorded(model, temperature=0.0)
+        assert recorded == sent == {"temperature": 1.0}
+
+    def test_a_result_that_made_no_request_records_none(self) -> None:
+        client = LLMClient(ModelConfig(provider="mock", name="mock"))
+        assert client.generate(messages=[_user("hi")]).sent_sampling is None
+
+
 class TestAnIgnoredSamplingValueIsReported:
     @staticmethod
     def _models(**agent: Any) -> dict[str, ModelConfig]:

@@ -4,7 +4,8 @@ A minimal :class:`BaseAdapter` subclass that stubs the abstract lifecycle
 methods and inherits every grading-contract slot from :class:`BaseAdapter`.
 Each test reads one default and locks it: three ``False`` capability flags,
 an :attr:`~GradingSourceKind.UNINTERROGABLE` grading source with a non-empty
-reason, an empty runner payload, and the ``composite`` grader kind.
+reason, an empty runner payload, the ``composite`` grader kind, and a judge requirement
+read from the runner grading declaration.
 
 The stub adapter registers *nothing* — the tests do not go through the
 registry, so no fixture is needed. The adapter's only purpose is to make
@@ -14,6 +15,7 @@ registry, so no fixture is needed. The adapter's only purpose is to make
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -143,3 +145,29 @@ def test_the_preferred_grader_kind_default_is_composite(
 ) -> None:
     """The default kind is ``composite`` — the shipped default grader kind."""
     assert a_stub_adapter.preferred_grader_kind() == "composite"
+
+
+class _AJudgeDeclaringStubAdapter(_AStubAdapter):
+    """A stub whose runner grading declaration carries a judge block or not."""
+
+    def __init__(self, config: dict[str, Any], llm_judge: object) -> None:
+        super().__init__(config)
+        self._llm_judge = llm_judge
+
+    def to_task_description(self, task_id: str) -> Any:
+        return SimpleNamespace(grading=SimpleNamespace(llm_judge=self._llm_judge))
+
+
+@pytest.mark.parametrize(
+    ("llm_judge", "expected"),
+    [
+        pytest.param({"rubric": "r"}, True, id="judge-declared"),
+        pytest.param(None, False, id="none"),
+    ],
+)
+def test_requires_judge_model_reads_the_runner_grading_declaration_by_default(
+    tmp_path: Path, llm_judge: object, expected: bool
+) -> None:
+    """The default answers whether the runner grading block declares an LLM judge."""
+    adapter = _AJudgeDeclaringStubAdapter({"base_dir": str(tmp_path)}, llm_judge)
+    assert adapter.requires_judge_model("some_task_id") is expected

@@ -125,6 +125,7 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
         TraceConstraintResult,
         TracePathResult,
     )
+    from tolokaforge.core.models.grade import GradingStateSnapshots
 
     verdict = Grade(
         binary_pass=False,
@@ -138,6 +139,12 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
         ),
         reasons="rubric partially met | state hash mismatch",
         state_diff={"orders": {"added": ["a"], "removed": []}},
+        state_snapshots=GradingStateSnapshots(
+            source="host_grader",
+            initial={"orders": []},
+            golden={"orders": [{"id": "a"}]},
+            final={"orders": [{"id": "b"}]},
+        ),
         custom_checks_details=[
             CustomCheckDetail(
                 check_name="c1",
@@ -218,6 +225,9 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
 
     # Every field the wire carries must survive.
     assert grade_dict["state_diff_json"] is not None  # state_diff round-tripped
+    assert GradingStateSnapshots.model_validate_json(grade_dict["state_snapshots_json"]) == (
+        verdict.state_snapshots
+    )
     assert grade_dict["components"]["trace_checks"] == pytest.approx(0.5)
     assert grade_dict["custom_checks"][0]["check_name"] == "c1"
     assert grade_dict["criterion_results"][0]["id"] == "crit-a"
