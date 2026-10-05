@@ -846,20 +846,23 @@ _REFUSED_PATTERNS = [
 ]
 
 
+@pytest.mark.parametrize("as_list", [False, True], ids=["string", "second-list-item"])
 @pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
 def test_a_refused_matcher_pattern_raises_on_a_timeline_it_never_reaches(
-    block_engine: RegexEngineKind, pattern: str
+    block_engine: RegexEngineKind, pattern: str, as_list: bool
 ) -> None:
     """Compiled before any event is read, so the timeline carrying no tool call at all
-    does not let it through."""
+    does not let it through — and a list compiles every item, not only the first."""
+    authored: str | list[str] = ["^http", pattern] if as_list else pattern
     constraint = {
-        "require": {"absent": {"match": {"kind": "tool_call", "tool": {"regex": pattern}}}}
+        "require": {"absent": {"match": {"kind": "tool_call", "tool": {"regex": authored}}}}
     }
 
     with pytest.raises(UncompilablePattern) as excinfo:
         _graded([("user", "hi"), ("assistant", "hello")], constraint, block_engine)
 
     assert excinfo.value.engine is block_engine
+    assert excinfo.value.pattern == pattern
 
 
 @pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
@@ -882,3 +885,86 @@ def test_a_refused_capture_pattern_raises_on_a_timeline_it_never_reaches(
         _graded([("user", "hi"), ("assistant", "hello")], constraint, block_engine)
 
     assert excinfo.value.engine is block_engine
+
+
+# --------------------------------------------------------------------------
+# A pattern list: every pattern of a ``regex`` list must search the value and no
+# pattern of a ``not_regex`` list may. The issue's lookahead conjunction, split
+# into its two halves, is the probe.
+
+_ACCOUNT_ID = r'"account_id":\s*"ACC-00000006"'
+_EMAIL = r'"email":\s*"x@y.z"'
+_ACCOUNT_LOOKAHEADS = rf"(?=[\s\S]*{_ACCOUNT_ID})(?=[\s\S]*{_EMAIL})"
+
+_BOTH = '{"account_id": "ACC-00000006", "name": "Ada", "email": "x@y.z"}'
+_ACCOUNT_ID_ONLY = '{"account_id": "ACC-00000006", "name": "Ada", "email": "a@b.c"}'
+_EMAIL_ONLY = '{"account_id": "ACC-00000007", "name": "Ada", "email": "x@y.z"}'
+_NEITHER = '{"account_id": "ACC-00000007", "name": "Ada", "email": "a@b.c"}'
+
+_BOTH_ENGINES = [pytest.param(_LINEAR, id="linear"), pytest.param(_BACKTRACKING, id="backtracking")]
+
+
+def _account_lookup_passes(
+    result: dict[str, Any], output: str, block_engine: RegexEngineKind
+) -> bool:
+    """Whether a ``get_account`` call whose result reads ``result`` is present."""
+    constraint = {
+        "require": {
+            "present": {
+                "match": {"kind": "tool_call", "tool": {"equals": "get_account"}, "result": result}
+            }
+        }
+    }
+    recorded = [recorded_call("get_account", output=output)]
+    return _graded(
+        [("user", "hi"), ("assistant", "done")], constraint, block_engine, recorded
+    ).passed
+
+
+@pytest.mark.parametrize("block_engine", _BOTH_ENGINES)
+@pytest.mark.parametrize(
+    ("output", "every_searches", "none_searches"),
+    [
+        pytest.param(_BOTH, True, False, id="both"),
+        pytest.param(_ACCOUNT_ID_ONLY, False, False, id="account-id-only"),
+        pytest.param(_EMAIL_ONLY, False, False, id="email-only"),
+        pytest.param(_NEITHER, False, True, id="neither"),
+    ],
+)
+def test_a_regex_list_needs_every_pattern_and_a_not_regex_list_refuses_any(
+    block_engine: RegexEngineKind, output: str, every_searches: bool, none_searches: bool
+) -> None:
+    patterns = [_ACCOUNT_ID, _EMAIL]
+
+    assert _account_lookup_passes({"regex": patterns}, output, block_engine) is every_searches
+    assert _account_lookup_passes({"not_regex": patterns}, output, block_engine) is none_searches
+
+
+@pytest.mark.parametrize("block_engine", _BOTH_ENGINES)
+@pytest.mark.parametrize("operator", ["regex", "not_regex"])
+@pytest.mark.parametrize("output", [_BOTH, _NEITHER], ids=["searched", "not-searched"])
+def test_a_one_item_list_reads_as_its_string(
+    block_engine: RegexEngineKind, operator: str, output: str
+) -> None:
+    as_string = _account_lookup_passes({operator: _ACCOUNT_ID}, output, block_engine)
+    as_list = _account_lookup_passes({operator: [_ACCOUNT_ID]}, output, block_engine)
+
+    assert as_list is as_string
+
+
+@pytest.mark.parametrize(
+    ("output", "passes"),
+    [
+        pytest.param(_BOTH, True, id="both"),
+        pytest.param(_ACCOUNT_ID_ONLY, False, id="account-id-only"),
+        pytest.param(_EMAIL_ONLY, False, id="email-only"),
+        pytest.param(_NEITHER, False, id="neither"),
+    ],
+)
+def test_a_lookahead_conjunction_and_its_list_form_grade_alike(output: str, passes: bool) -> None:
+    """The list is the replacement the linear engine's refusal of lookahead names."""
+    lookaheads = _account_lookup_passes({"regex": _ACCOUNT_LOOKAHEADS}, output, _BACKTRACKING)
+    split = _account_lookup_passes({"regex": [_ACCOUNT_ID, _EMAIL]}, output, _BACKTRACKING)
+
+    assert lookaheads is passes
+    assert split is passes

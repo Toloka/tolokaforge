@@ -1504,6 +1504,8 @@ class _PatternSite:
     """Whether the pattern is a binder's capture, which must declare exactly one group."""
     override_at: str
     """Where an author names ``regex_engine: backtracking`` for this pattern."""
+    in_a_pattern_list: bool
+    """Whether the pattern is a matcher's ``regex`` / ``not_regex``, which a list can split."""
 
 
 def _check_regex_compiles(
@@ -1518,7 +1520,8 @@ def _check_regex_compiles(
     the grader and the runner folds it into a failed grade response, so the trial
     is lost rather than the constraint. A refusal under ``backtracking`` is an error,
     since Python ``re`` itself rejects the pattern; one under ``linear`` is an
-    advisory naming the ``backtracking`` opt-in, since the pattern may be one only
+    advisory naming the ``backtracking`` opt-in — and, for a matcher's pattern, the
+    list form a lookahead conjunction splits into — since the pattern may be one only
     a backtracking engine reads. A binder's capture is compiled by the same evaluator
     on the same trial, and must declare exactly one group under its own engine: the
     load validator counts with Python ``re`` alone, so a pattern only RE2 compiles is
@@ -1550,18 +1553,20 @@ def _trace_pattern_sites(
     """Every matcher and capture pattern, under the engine that compiles it at grade time."""
     authored = [
         _PatternSite(
-            where=f"{predicate_site.where}.{name}",
-            pattern=getattr(predicate_site.predicate, name),
+            where=where,
+            pattern=pattern,
             engine=predicate_site.predicate.regex_engine_under(section),
             ignore_case=False,
             captures=False,
             override_at="on the predicate or on the trace_checks block",
+            in_a_pattern_list=True,
         )
         for site in sites
         for predicate_site in _predicate_sites(site)
         for name in sorted(
             predicate_site.predicate.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS
         )
+        for where, pattern in _addressed_patterns(predicate_site, name)
     ]
     authored += [
         _PatternSite(
@@ -1571,12 +1576,25 @@ def _trace_pattern_sites(
             ignore_case=False,
             captures=True,
             override_at="on the bound value or on the trace_checks block",
+            in_a_pattern_list=False,
         )
         for site in binders
         for name, bound in site.binding.values.items()
         if bound.pattern is not None
     ]
     return authored
+
+
+def _addressed_patterns(predicate_site: _PredicateSite, operator: str) -> list[tuple[str, str]]:
+    """Each pattern ``operator`` names, at ``<site>.<operator>`` — ``[i]`` per item of a list."""
+    where = f"{predicate_site.where}.{operator}"
+    authored = getattr(predicate_site.predicate, operator)
+    if isinstance(authored, str):
+        return [(where, authored)]
+    return [
+        (f"{where}[{index}]", pattern)
+        for index, pattern in enumerate(predicate_site.predicate.patterns_of(operator))
+    ]
 
 
 def _transcript_pattern_sites(
@@ -1593,6 +1611,7 @@ def _transcript_pattern_sites(
             ignore_case=True,
             captures=False,
             override_at="on the transcript_rules block",
+            in_a_pattern_list=False,
         )
         for index, pattern in enumerate(transcript_rules.disallow_regex)
     ]
@@ -1609,11 +1628,22 @@ def _uncompilable(site: _PatternSite, refusal: UncompilablePattern) -> Finding:
             f"{refused}. An uncompilable pattern raises out of the evaluator at grade "
             "time, once the trial is already paid for",
         )
+    opt_in = (
+        f"declares regex_engine: backtracking {site.override_at}, which runs Python re at "
+        "its backtracking cost"
+    )
+    remedy = (
+        "A lookahead conjunction (?=…a)(?=…b) is the list form regex: [a, b], every pattern "
+        "of which must search the value, and a negative lookahead (?!…c) is not_regex: [c] "
+        "on the same predicate, no pattern of which may; a pattern that needs other "
+        f"lookaround or backreferences {opt_in}"
+        if site.in_a_pattern_list
+        else f"A pattern that needs them {opt_in}"
+    )
     return Finding(
         site.where,
         f"{refused}. The linear engine searches in time linear in the text and reads no "
-        "lookaround or backreferences; a pattern that needs them declares regex_engine: "
-        f"backtracking {site.override_at}, which runs Python re at its backtracking cost",
+        f"lookaround or backreferences. {remedy}",
     )
 
 

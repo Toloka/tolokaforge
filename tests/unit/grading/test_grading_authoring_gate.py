@@ -604,6 +604,17 @@ _RULES: tuple[_Rule, ...] = (
         message="declares regex_engine: backtracking on the predicate or on the trace_checks block",
     ),
     _Rule(
+        label="matcher_lookahead_list_item_under_a_linear_block",
+        task=_HELPDESK,
+        grading=_under_engine(
+            _trace_block({"kind": "tool_call", "tool": {"regex": ["^http", "(?=http)http_"]}}),
+            "linear",
+        ),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="A lookahead conjunction (?=…a)(?=…b) is the list form regex: [a, b]",
+    ),
+    _Rule(
         label="matcher_lookahead_under_a_linear_predicate_in_a_backtracking_block",
         task=_HELPDESK,
         grading=_under_engine(
@@ -3852,6 +3863,53 @@ def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> Non
         "trace_checks.probe.bind.values.figure.pattern"
     ]
     assert "does not compile" in report.errors[0].message
+
+
+def test_each_pattern_of_a_list_is_reported_at_its_own_item() -> None:
+    """A list item's address carries its index; a single string keeps the operator's."""
+    grading = _under_engine(
+        _trace_block(
+            {
+                "kind": "tool_call",
+                "tool": {"regex": ["^http", "(?=http)http_"], "not_regex": "(?!ftp)"},
+                "args": {"url": {"not_regex": ["(", "^ftp"], "regex_engine": "backtracking"}},
+            }
+        ),
+        "linear",
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.present.match.tool.not_regex",
+        "trace_checks.probe.present.match.tool.regex[1]",
+    ]
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.url.not_regex[0]",
+    ]
+
+
+@pytest.mark.parametrize(
+    "grading",
+    [
+        pytest.param(_captured_figure("(?=[0-9])([0-9]+)"), id="capture-pattern"),
+        pytest.param({"transcript_rules": {"disallow_regex": ["(?=pass)password"]}}, id="disallow"),
+    ],
+)
+def test_the_list_form_is_named_only_where_a_list_is_accepted(grading: dict[str, Any]) -> None:
+    """A binder's capture and a ``disallow_regex`` entry are one pattern each, so the
+    remedy a matcher's refusal names would not load there."""
+    linear = (
+        _under_engine(grading, "linear")
+        if "trace_checks" in grading
+        else {"transcript_rules": {**grading["transcript_rules"], "regex_engine": "linear"}}
+    )
+
+    report = inspect_grading_authoring(linear, _inventory(_CODING))
+
+    [finding] = report.advisories
+    assert "does not compile under the linear regex engine" in finding.message
+    assert "list form" not in finding.message
 
 
 _UNCHECKED_EXTRACTIONS = (

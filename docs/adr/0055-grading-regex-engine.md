@@ -151,8 +151,8 @@ These patterns both engines accept get a different verdict
    `[project].dependencies` and in the runner subset's requirement allowlist.
    **Implemented.**
 2. The section-level keys and per-site overrides; every pack-authored site
-   compiled through the seam, eagerly, on its effective engine.
-3. The list form of `regex` and `not_regex`.
+   compiled through the seam, eagerly, on its effective engine. **Implemented.**
+3. The list form of `regex` and `not_regex`. **Implemented.**
 4. `linear` becomes the default; the gate's advisory for patterns `linear`
    cannot compile.
 

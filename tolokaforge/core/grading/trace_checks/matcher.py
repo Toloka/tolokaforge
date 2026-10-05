@@ -213,7 +213,7 @@ def _regex_operands(matcher: TraceMatcher, section: RegexEngineKind) -> _RegexOp
     """Every pattern the matcher declares, compiled under its predicate's effective engine."""
     return {
         (field, name): CompiledPatterns.compile(
-            [getattr(predicate, name)], predicate.regex_engine_under(section)
+            predicate.patterns_of(name), predicate.regex_engine_under(section)
         )
         for field, predicate in _declared_predicates(matcher)
         for name in sorted(predicate.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS)

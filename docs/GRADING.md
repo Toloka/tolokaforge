@@ -1539,6 +1539,7 @@ reject it.
 | `trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
 | `trace_checks.regex_engine` | a pack declaring `trace_checks` | `unreleased` | new engine → old image |
 | `trace_checks` `regex_engine` on a predicate or bound value | a pack declaring a matcher predicate or a bound value | `unreleased` | new engine → old image |
+| `trace_checks` `regex` / `not_regex` written as a list | a pack declaring a list of patterns under a matcher predicate | `unreleased` | new engine → old image |
 | `transcript_rules.regex_engine` | a pack declaring `transcript_rules` | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
 | `state_checks.compare_columns` | a pack declaring `state_checks` | `unreleased` | new engine → old image |
@@ -2299,8 +2300,8 @@ hold, so `{ gt: 0, lt: 100 }` is a range. The vocabulary:
 | `equals_ci` | a string equal to it, case-insensitively |
 | `contains` / `contains_ci` | the value contains it, case-sensitively or not |
 | `not_contains` | the value does not contain it — over a value the event carries |
-| `regex` | the pattern **searches** the value under the predicate's [regex engine](#regex-engines) — unanchored, and only a string matches |
-| `not_regex` | the pattern finds nothing in the value under the predicate's [regex engine](#regex-engines) — the complement of `regex` within declared events |
+| `regex` | the pattern **searches** the value under the predicate's [regex engine](#regex-engines) — unanchored, and only a string matches; a list: every pattern does |
+| `not_regex` | the pattern finds nothing in the value under the predicate's [regex engine](#regex-engines) — the complement of `regex` within declared events; a list: no pattern does |
 | `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
 | `date_gt` / `date_gte` / `date_lt` / `date_lte` | the value is an ISO-8601 date or datetime and the comparison holds chronologically |
 | `in_` / `not_in` | the value is (is not) a member of the list |
@@ -2360,6 +2361,20 @@ Two rules worth meeting here rather than in a silently ignored predicate:
   "Never another customer's record" over an argument that may be absent stays
   `not_equals`, which does hold over the absent case the way negative-text
   operators do not.
+
+**`regex` and `not_regex` take a list.** `regex: [a, b]` holds when every pattern
+searches the value and `not_regex: [a, b]` when none does; a single string is the
+one-item list, and an empty list is a load error. That is how a conjunction of
+lookaheads is written without lookaround — the two predicates below select the same
+`get_account` results, and only the second compiles under the `linear` engine:
+
+```yaml
+- result: { regex: '(?=[\s\S]*"account_id":\s*"ACC-6")(?=[\s\S]*"email":\s*"x@y\.z")' }
+- result: { regex: ['"account_id":\s*"ACC-6"', '"email":\s*"x@y\.z"'] }
+```
+
+A negative lookahead is the same split onto `not_regex`: `regex: '^(?![\s\S]*refund)[\s\S]*approved'`
+is `{ regex: approved, not_regex: refund }`.
 
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
@@ -3504,8 +3519,8 @@ Findings come in three classes:
 | a reference on an `args` predicate whose declared type and the binding's declared type no value of either can satisfy the operator between — `equals_binding` across `integer` / `number` / `boolean` holds, `contains_binding` finds a scalar inside a container and a container inside nothing | error only where **both** schemas forbid extras, advisory wherever either permits them | the predicate's own `args.<path>` |
 | the same reference where the argument's schema writes no `type`, or writes one outside the six JSON type names | unchecked | as above |
 | a `severity: gate` constraint with no `on_missing` whose `require` tree admits `on_missing: fail` — no `present` / `absent` / `count` anywhere in it — so an anchor that matched nothing trips the gate by default ([§ `severity`](#severity--a-check-that-must-hold)) | advisory | `trace_checks.<id>`, `trace_checks.<path id>.<constraint id>` |
-| a pattern the `backtracking` engine does not compile | error | every predicate's `regex` / `not_regex`, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
-| a pattern the `linear` engine does not compile — the finding names `regex_engine: backtracking` and where to declare it | advisory | as above |
+| a pattern the `backtracking` engine does not compile | error | every predicate's `regex` / `not_regex` — `regex[i]` / `not_regex[i]` for each item of a list — every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex[i]` |
+| a pattern the `linear` engine does not compile — the finding names `regex_engine: backtracking` and where to declare it, and on a predicate's `regex` / `not_regex` also the [pattern list](#operators) a lookahead conjunction splits into | advisory | as above |
 | a `bind.values[*].pattern` declaring other than one capture group under its engine — `\pL+` (none) and `(?<n>\d+)-(\d+)` (two) are patterns only `linear` compiles, so the load-time count, which reads Python `re`, does not reach them | error | `bind.values[*].pattern` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |

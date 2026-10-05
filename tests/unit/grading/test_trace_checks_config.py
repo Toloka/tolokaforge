@@ -349,6 +349,31 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_reject_an_engine_over_no_pattern",
     ),
     _Rejection(
+        label="regex_list_naming_no_pattern",
+        block=_block(
+            _constraint({"present": {"match": {"kind": "tool_call", "tool": {"regex": []}}}})
+        ),
+        message="regex: [] names no pattern, so it would hold vacuously over every string",
+        validator="_reject_an_empty_pattern_list",
+    ),
+    _Rejection(
+        label="not_regex_list_naming_no_pattern",
+        block=_block(
+            _constraint({"present": {"match": {"kind": "tool_call", "tool": {"not_regex": []}}}})
+        ),
+        message="not_regex: [] names no pattern",
+        validator="_reject_an_empty_pattern_list",
+    ),
+    _Rejection(
+        label="regex_list_item_that_is_not_a_string",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_call", "tool": {"regex": ["^write", 7]}}}}
+            )
+        ),
+        message="regex.list[str].1\n  Input should be a valid string",
+    ),
+    _Rejection(
         label="immediately_before_without_among",
         block=_block(
             _constraint(

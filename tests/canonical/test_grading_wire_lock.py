@@ -745,6 +745,12 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 since=_UNRELEASED,
                 breadth="a pack declaring a matcher predicate or a bound value",
             ),
+            _DocLock(
+                doc_key="`trace_checks` `regex` / `not_regex` written as a list",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring a list of patterns under a matcher predicate",
+            ),
         ),
     ),
     _WireKey(

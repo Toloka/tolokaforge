@@ -15,10 +15,11 @@ the seam cannot answer for them; the registered callables are stubs kept
 only to keep the frozenset and the entry-point registry in lockstep, and a
 downstream registration under either name is not reached.
 
-``regex`` and ``not_regex`` receive their pattern compiled rather than as
-the authored string: ``expected`` is a
-:class:`~tolokaforge.core.grading.regex_engine.CompiledPatterns`, built by the
-matcher under the predicate's effective engine.
+``regex`` and ``not_regex`` receive their patterns compiled rather than as
+authored: ``expected`` is a
+:class:`~tolokaforge.core.grading.regex_engine.CompiledPatterns` holding every
+pattern of the predicate's list (a single string is the one-item list), built by
+the matcher under the predicate's effective engine.
 
 Two arities collapse to one Protocol. Non-binding operators ignore
 ``bindings``; the binding operators (identified by the ``_binding``

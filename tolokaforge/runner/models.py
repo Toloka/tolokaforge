@@ -54,6 +54,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    ValidationInfo,
     field_validator,
     model_serializer,
     model_validator,
@@ -889,6 +890,10 @@ class ValuePredicate(BaseModel):
     ``bind`` extracted rather than writing it out, and compare with the same
     ``equals`` / ``contains`` the literal forms use.
 
+    ``regex`` and ``not_regex`` take one pattern or a non-empty list of them: every
+    pattern of a ``regex`` list must search the value, and no pattern of a
+    ``not_regex`` list may — a single string reads as the one-item list.
+
     ``regex_engine`` is a modifier, not an operator (:data:`TRACE_PREDICATE_MODIFIERS`):
     it names the engine this predicate's ``regex`` / ``not_regex`` run on, ``None``
     inheriting ``trace_checks.regex_engine``.
@@ -900,8 +905,8 @@ class ValuePredicate(BaseModel):
     contains_ci: str | None = None
     not_contains: Any = None
     not_equals: Any = None
-    regex: str | None = None
-    not_regex: str | None = None
+    regex: str | list[str] | None = None
+    not_regex: str | list[str] | None = None
     is_null: bool | None = None
     omitted: bool | None = None
     gt: float | None = None
@@ -927,6 +932,11 @@ class ValuePredicate(BaseModel):
         """The engine this predicate's patterns run on inside a block defaulting to ``section``."""
         return section if self.regex_engine is None else self.regex_engine
 
+    def patterns_of(self, operator: str) -> tuple[str, ...]:
+        """The patterns a declared ``regex`` / ``not_regex`` names, in authored order."""
+        authored = getattr(self, operator)
+        return (authored,) if isinstance(authored, str) else tuple(authored)
+
     def declared_operators(self) -> frozenset[str]:
         """The operators this predicate asserts, which it is the conjunction of."""
         return frozenset(
@@ -939,6 +949,18 @@ class ValuePredicate(BaseModel):
             getattr(self, name)
             for name in TRACE_PREDICATE_BINDING_OPERATORS
             if getattr(self, name) is not None
+        )
+
+    @field_validator("regex", "not_regex")
+    @classmethod
+    def _reject_an_empty_pattern_list(
+        cls, patterns: str | list[str] | None, info: ValidationInfo
+    ) -> str | list[str] | None:
+        if patterns != []:
+            return patterns
+        raise ValueError(
+            f"{info.field_name}: [] names no pattern, so it would hold vacuously over every "
+            f"string. List at least one pattern, or drop {info.field_name}"
         )
 
     @model_validator(mode="after")
