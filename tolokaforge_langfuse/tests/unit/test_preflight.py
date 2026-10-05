@@ -225,6 +225,19 @@ class TestPlan:
     def environ(self, **extra: str) -> dict:
         return {"LANGFUSE_ENVIRONMENT": "test", "TOLOKAFORGE_TRACING_TAGS": LAUNCHER_TAGS, **extra}
 
+    def test_a_project_name_with_spaces_tags_the_trace_in_a_tags_spelling(
+        self, tmp_path: Path
+    ) -> None:
+        plan = self.plan(
+            tmp_path,
+            self.environ(),
+            block={**BLOCK, "project": "Pilot Project"},
+            tags=["domain:billing"],
+        )
+        assert plan.expect_project == "Pilot Project"
+        assert plan.tags[-1] == "project:pilot-project"
+        assert plan.origins["project"] == "receiver"
+
     def test_the_plan_of_a_trial(self, tmp_path: Path) -> None:
         plan = self.plan(tmp_path, self.environ(), tags=["domain:billing"])
         assert plan.environment == "test" and plan.expect_project == "pilot"
