@@ -161,10 +161,18 @@ Docker commands are managed through the CLI via Makefile targets:
 ```bash
 make docker-build        # Build all Docker images
 make docker-build-core   # Build core images only (db-service + runner)
+make docker-build-orchestrator  # Build the standalone orchestrator image (full `tolokaforge run`; see docs/ORCHESTRATOR_IMAGE.md)
 make docker-up           # Start Docker services (core stack)
 make docker-down         # Stop and remove Docker services
 make docker-status       # Show Docker service status
 ```
+
+The orchestrator image packages the whole `tolokaforge run` batch flow as a
+standalone container (Docker-out-of-Docker via a mounted host socket). Build it
+with `scripts/docker/build-orchestrator.sh` and run a job with the one-command
+`scripts/docker/run-orchestrator.sh` wrapper. It is distinct from the
+single-trial driver in `deploy/standalone/`; see
+[docs/ORCHESTRATOR_IMAGE.md](docs/ORCHESTRATOR_IMAGE.md).
 
 ### CI / GitHub Actions
 
