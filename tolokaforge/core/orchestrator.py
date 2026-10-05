@@ -337,7 +337,8 @@ def adapter_supported_modes(adapter: Any) -> frozenset[ExecutionMode]:
     ``supports_coding_harness = True`` — an external or private adapter from
     before the capability shipped — is treated as also running
     :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`, so the
-    gate stays back-compatible for the deprecation window. Every adapter runs
+    gate stays back-compatible for the deprecation window. An adapter that
+    declares no capability defaults to
     :attr:`~tolokaforge.core.execution_mode.ExecutionMode.ENGINE_LOOP`.
     """
     overrides_capability = any(

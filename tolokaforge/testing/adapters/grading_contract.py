@@ -121,7 +121,8 @@ class AdapterGradingContractSuite:
         modes = adapter.supported_execution_modes
         assert isinstance(modes, frozenset)
         assert all(isinstance(mode, ExecutionMode) for mode in modes)
-        # Every adapter runs the engine's own loop.
+        # By default an adapter runs the engine's own loop; a delegated-only
+        # adapter overrides this method to assert its own mode set.
         assert ExecutionMode.ENGINE_LOOP in modes
         assert modes == self.expected_supported_execution_modes
 
