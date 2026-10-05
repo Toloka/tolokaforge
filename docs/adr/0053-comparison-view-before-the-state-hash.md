@@ -499,10 +499,10 @@ cannot provide.
     declaration does not fit the state the task's own golden path builds, which
     is the author's to fix. **Any `ComparisonViewError` on the trial side, once
     the golden's view succeeded, fails the trial**: the golden's view succeeding
-    shows the declaration is sound, so what the trial side cannot view — a
+    establishes that this golden state is valid; declared state errors such as a
     re-keying that is not bijective, a new record without its key field, a list
     or dict in a key field, a dict in a reference, a null id
-    `unless_referenced_by` reads, a dict at a nested `path` — is the trial's own
+    `unless_referenced_by` reads, a dict at a nested `path` — are the trial's own
     state, which a hash without a view would score `0.0` too, not a grader
     defect for `tolokaforge run` to report. The record carries `trial_error`
     (the error's type, its message and the ids it names) and the reason names
@@ -513,8 +513,12 @@ cannot provide.
     with a fresh copy of the initial state. The golden replay mutates the loaded
     initial state in place, so the view needs its own copy.
   - A golden-side `ComparisonViewError` propagates out of `check_hash` as a
-    grading error, not a `0.0` verdict; every other hashing error folds into
-    `0.0, "Error computing hash"`. The rule for trial-side errors is the runner's.
+    grading error, not a `0.0` verdict. With a declared comparison view,
+    unexpected implementation exceptions on either side also propagate as
+    grading errors. Successful golden evaluation does not prove that an
+    implementation has no trial-dependent bug. Without a comparison view,
+    legacy hashing errors still fold into `0.0, "Error computing hash"`.
+    The rule for declared trial-side state errors is the runner's.
   - Both checks return the `HashGradingResult` the runner returns, and
     `GradingEngine` puts its record on `Grade.comparison_view`: the same JSON the
     runner puts on the wire.

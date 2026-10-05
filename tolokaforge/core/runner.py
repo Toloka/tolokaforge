@@ -119,6 +119,10 @@ copying an unbounded tool name or argument blob into the trial log.
 """
 
 
+class _BootstrapUserStop(Exception):
+    """An opening user reply ended the dialogue under the explicit end rule."""
+
+
 def _call_names(calls: list[ToolCall]) -> str:
     """The names of *calls*, in order, for a log line or a system message."""
     return ", ".join(call.name for call in calls)
@@ -591,6 +595,13 @@ class TrialRunner:
                     self._effective_system_prompt = outcome.captured_effective_system_prompt
                     self._effective_system_prompt_captured = True
 
+            except _BootstrapUserStop as exc:
+                termination_reason = TerminationReason.USER_STOP
+                self.messages.append(
+                    Message(
+                        role=MessageRole.SYSTEM, content=str(exc), ts=datetime.now(tz=timezone.utc)
+                    )
+                )
             except SimulationBudgetReached as exc:
                 termination_reason = exc.reason
                 self.messages.append(
@@ -1560,6 +1571,10 @@ class TrialRunner:
             reason = self._simulation_budget.participant(calls_environment=bool(first_user_calls))
             if reason is not None:
                 raise SimulationBudgetReached(reason)
+        if not first_user_calls and self._user_stop.with_text == "end":
+            stop = self._user_stop.find(first_user_text)
+            if stop is not None:
+                raise _BootstrapUserStop(f"User signaled stop ({stop.token}). Dialogue ended.")
 
     def _record_user_reply_guard(
         self,
@@ -1610,9 +1625,11 @@ class TrialRunner:
 
         Returns the opening message text with any tool results inlined, and the
         calls that produced them. Only the tool-call half of a user turn is
-        shared with :meth:`_dispatch_user_actor`: turn 0 does not read stop
-        tokens, so a token in the opening is seeded literally rather than
-        terminating the trial before the agent has spoken.
+        shared with :meth:`_dispatch_user_actor`. Under ``stop_with_text:
+        deliver`` turn 0 does not read stop tokens, so a token in the opening is
+        seeded literally rather than terminating the trial before the agent has
+        spoken; under ``end`` the caller ends the trial on a stop token in an
+        opening that called no tools (see :meth:`_seed_first_user_message`).
 
         Probe mode collapses this to one attempt. The retry loop only ever
         catches 429s (see the ``is_rate_limit`` guard below), and under probe

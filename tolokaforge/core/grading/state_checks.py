@@ -527,6 +527,10 @@ class StateChecker:
                 into a ``0.0``: the trial is left with a grading error, as on the runner.
                 Once the expected side's view succeeded, a trial whose own state cannot be
                 viewed scores ``0.0`` with the error as the reason.
+            Exception: under a declared ``comparison_view``, an unexpected rule
+                implementation exception on either side propagates as a grading error
+                instead of scoring ``0.0``; only the view's declared trial-state errors
+                score ``0.0``.
         """
         if expected_hash is None and expected_state is None:
             raise ValueError("check_hash: pass exactly one of expected_hash or expected_state.")
@@ -661,6 +665,10 @@ class StateChecker:
             # a grading error, as the runner leaves it, never a 0.0 read as the agent's.
             raise
         except Exception as e:
+            if comparison_view is not None:
+                # A declared evaluator failed, rather than finding a mismatch.
+                # Only TrialViewError above represents an invalid trial state.
+                raise
             return HashGradingResult(
                 hash_match=False, reason=f"Error computing hash: {str(e)}", basis=basis
             )
