@@ -1,4 +1,4 @@
-# 0053. The `SearchBackend` Protocol and entry-point registry
+# 0054. The `SearchBackend` Protocol and entry-point registry
 
 - **Status:** Accepted (change 1 of 3 implemented)
 - **Date:** 2026-09-30

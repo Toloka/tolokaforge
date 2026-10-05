@@ -382,7 +382,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 | `tolokaforge/core/models/` | Wire types the gRPC surface serialises, plus the run-config blocks `RunConfig` is typed by — `docker_config.py` rides along because `RunConfig` carries it; the runner does not read it. |
 | `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
 | `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Eleven files excluded — see below.) |
-| `tolokaforge/core/search/` | The search-backend seam (ADR-0053): the `SearchBackend` Protocols and the declared stack-service surface (`stack_services.py`), beside the TypeSense client interfaces. (One file excluded — see below.) |
+| `tolokaforge/core/search/` | The search-backend seam (ADR-0054): the `SearchBackend` Protocols and the declared stack-service surface (`stack_services.py`), beside the TypeSense client interfaces. (One file excluded — see below.) |
 
 **Loose files in the subset:**
 

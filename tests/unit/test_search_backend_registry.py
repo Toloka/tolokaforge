@@ -1,4 +1,4 @@
-"""The ``tolokaforge.search_backends`` registry and its ``typesense`` reservation (ADR-0053).
+"""The ``tolokaforge.search_backends`` registry and its ``typesense`` reservation (ADR-0054).
 
 The metadata layer is replaced by injected entry points, so the loader's rules are
 exercised without any installed plug-in:

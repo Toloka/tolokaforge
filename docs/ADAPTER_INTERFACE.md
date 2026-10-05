@@ -306,7 +306,7 @@ Which plane serves the task's `documents_path`:
   it: that flag means "this task needs rag-service", an older runner reads only
   it, and `enabled: false` switches the indexing off.
 - **any other name** — a search backend registered under the
-  `tolokaforge.search_backends` entry-point group (ADR-0053). The runner builds
+  `tolokaforge.search_backends` entry-point group (ADR-0054). The runner builds
   the trial's index with it at `RegisterTrial`, binds the source-less tool named
   `search.tool_name` (default `search_kb`) to that index, and refuses the trial
   when nothing is registered under the name. `search.backend_config` reaches the

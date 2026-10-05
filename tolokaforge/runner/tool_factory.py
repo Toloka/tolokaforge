@@ -10,7 +10,7 @@ It creates callable wrappers for the invocation styles:
 4. docker_compose_exec - a command run in a sibling compose service
 
 and, for a source-less schema, a builtin tool by name — or the task's search
-tool, bound to the trial's search index (``SearchToolWrapper``, ADR-0053).
+tool, bound to the trial's search index (``SearchToolWrapper``, ADR-0054).
 
 Each wrapper produces a callable with the same interface:
     async def execute(arguments: dict[str, Any]) -> str
@@ -1053,7 +1053,7 @@ class JsonDBToolWrapper(ToolWrapper):
 class SearchToolWrapper(ToolWrapper):
     """The task's search tool, answering from the trial's :class:`SearchIndex`.
 
-    The index is what the task's search backend (``search.plane``, ADR-0053)
+    The index is what the task's search backend (``search.plane``, ADR-0054)
     built for this trial at ``RegisterTrial``; this wrapper hands it the call's
     ``query`` and arguments and returns the text the backend rendered, so what
     the agent reads is the backend's own output. A failed search raises out of

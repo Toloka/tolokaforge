@@ -619,7 +619,7 @@ cannot provide.
 - The same entry-point idiom: [0049](0049-judgekind-registry-consolidation.md)
   (judge kinds), [0050](0050-agent-loop-protocol-and-registry.md),
   [0051](0051-user-simulator-protocol-and-registry.md),
-  [0052](0052-search-backend-protocol-and-registry.md) (in review, #1672).
+  [0054](0054-search-backend-protocol-and-registry.md).
 - Related code:
   - `tolokaforge/core/hash.py`: `compute_stable_hash`,
     `apply_compare_columns_pipeline`, `filter_unstable_fields`;

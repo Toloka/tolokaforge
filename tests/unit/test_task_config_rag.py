@@ -1,4 +1,4 @@
-"""``initial_state.rag`` is typed, and its dump carries only what the author wrote (ADR-0053).
+"""``initial_state.rag`` is typed, and its dump carries only what the author wrote (ADR-0054).
 
 ``TaskConfig`` is dumped whole by the canonical snapshots, the round-trip paths and any
 caller of ``model_dump()``. Were the typed block to dump its defaults, a task that

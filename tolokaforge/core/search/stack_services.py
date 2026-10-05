@@ -1,4 +1,4 @@
-"""The runner's declared surface to the stack services a search backend uses (ADR-0053).
+"""The runner's declared surface to the stack services a search backend uses (ADR-0054).
 
 A stack service is a service of the run's stack that the runner reaches over the
 network on a search backend's behalf; rag-service is the one declared. A backend
@@ -21,7 +21,7 @@ This module is that boundary's contract:
 **Versioning.** :data:`STACK_SERVICES_API_VERSION` numbers the surface: the declared
 names and every member of every handle Protocol. Each change to it — a service
 declared or withdrawn, a member added to, changed on or removed from a handle —
-increments the version and is recorded in ADR-0053 § Stack services, and
+increments the version and is recorded in ADR-0054 § Stack services, and
 ``tests/canonical/test_stack_services_contract.py`` pins the surface to the version,
 so a change without the bump fails CI. Adding a service or a member is
 compatible: a backend that needs it compares the version. Changing or removing a

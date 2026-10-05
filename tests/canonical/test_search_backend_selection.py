@@ -1,4 +1,4 @@
-"""Lock ``initial_state.rag.backend`` resolution before any trial (ADR-0053).
+"""Lock ``initial_state.rag.backend`` resolution before any trial (ADR-0054).
 
 ``Orchestrator.load_tasks`` resolves every searching task's backend once, after the
 tasks load and before any stack starts, so an unregistered name is one refusal naming

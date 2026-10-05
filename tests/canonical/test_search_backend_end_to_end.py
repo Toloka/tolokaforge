@@ -1,4 +1,4 @@
-"""A registered search backend, selected by ``search.plane``, end to end (ADR-0053).
+"""A registered search backend, selected by ``search.plane``, end to end (ADR-0054).
 
 One native task declares a corpus served by a backend the engine does not ship
 (the in-memory reference, registered for the test) behind a tool it names itself.

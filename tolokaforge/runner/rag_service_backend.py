@@ -1,4 +1,4 @@
-"""The rag-service search backend, registered as ``rag_service`` (ADR-0053).
+"""The rag-service search backend, registered as ``rag_service`` (ADR-0054).
 
 The engine's built-in retrieval: the hybrid BM25 + dense rag-service
 (``tolokaforge/env/rag_service``), one index per trial. It resolves through the

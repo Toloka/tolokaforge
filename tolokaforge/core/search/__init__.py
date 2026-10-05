@@ -2,7 +2,7 @@
 Search interfaces for TolokaForge.
 
 :mod:`tolokaforge.core.search.backend` holds the ``SearchBackend`` seam a task's
-knowledge-base search resolves through (ADR-0053); it is imported by its own path.
+knowledge-base search resolves through (ADR-0054); it is imported by its own path.
 This package re-exports the TypeSense client interfaces and domain state.
 """
 

@@ -111,7 +111,7 @@ def test_file_tools_route_to_files_dispatch():
 
 def test_the_knowledge_base_search_tool_is_not_a_builtin():
     """``search_kb`` is the task's declared search tool, bound by the runner to the
-    trial's search index (ADR-0053) — not a name this registry dispatches."""
+    trial's search index (ADR-0054) — not a name this registry dispatches."""
     assert not registry.is_builtin("search_kb")
     assert "RAG" not in registry.Dispatch.__members__
 
