@@ -230,6 +230,19 @@ def _enabled_completion_tools(
     )
 
 
+def _commands_in(arguments: dict[str, Any]) -> int:
+    """Shell commands one recorded call carried.
+
+    A batching tool takes an array under ``commands``; every other tool takes
+    one command per call. A malformed ``commands`` argument counts as the one
+    call it was, because nothing ran.
+    """
+    commands = arguments.get("commands")
+    if isinstance(commands, list):
+        return len(commands)
+    return 1
+
+
 class TrialRunner:
     """Runs a single trial of a task"""
 
@@ -1013,6 +1026,7 @@ class TrialRunner:
             )
             self.metrics.tool_success_rate = success_count / len(agent_calls)
             self.metrics.tool_calls = len(agent_calls)
+            self.metrics.tool_commands = sum(_commands_in(call.arguments) for call in agent_calls)
 
         self.logger.info(
             "Trial execution finished",
