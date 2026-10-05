@@ -6,6 +6,7 @@
       "name": "pilot/clean",
       "timestamp": "2026-09-20T10:00:00Z",
       "sessionId": "automation/integrate/local/1",
+      "userId": null,
       "input": null,
       "output": "The package uses a src layout.",
       "tags": [
@@ -54,7 +55,8 @@
         "stop_reason": "end_turn",
         "terminal_reason": "completed",
         "permission_denials": 0,
-        "is_error": false
+        "is_error": false,
+        "model_unresolved": "none"
       },
       "environment": "production-automation",
       "release": null,
@@ -62,11 +64,11 @@
     }
   },
   {
-    "type": "span-create",
+    "type": "agent-create",
     "body": {
       "id": "cdb1c2f21e835547",
       "traceId": "ca2169a027825e0d80337532cab6f80f",
-      "name": "transcript clean",
+      "name": "transcript",
       "startTime": "2026-09-20T10:00:00Z",
       "endTime": "2026-09-20T10:00:04Z",
       "level": "DEFAULT",
@@ -88,8 +90,8 @@
       "id": "622c29ced67f5f8c",
       "traceId": "ca2169a027825e0d80337532cab6f80f",
       "parentObservationId": "cdb1c2f21e835547",
-      "name": "assistant turn 0",
-      "startTime": "2026-09-20T10:00:01Z",
+      "name": "agent",
+      "startTime": "2026-09-20T10:00:00Z",
       "endTime": "2026-09-20T10:00:01Z",
       "input": [],
       "output": {
@@ -111,7 +113,13 @@
         "message_index": 0,
         "reasoning": "none",
         "model_raw": "claude-opus-4-8",
-        "tool_io": "drop"
+        "tool_io": "drop",
+        "message_id": "none",
+        "stream_events": 1,
+        "cost_basis": "cli"
+      },
+      "costDetails": {
+        "total": 0.031835147421743086
       },
       "model": "claude-opus-4-8",
       "usageDetails": {
@@ -130,8 +138,8 @@
       "id": "3fcf98a78a9e54a7",
       "traceId": "ca2169a027825e0d80337532cab6f80f",
       "parentObservationId": "cdb1c2f21e835547",
-      "name": "assistant turn 1",
-      "startTime": "2026-09-20T10:00:03Z",
+      "name": "agent",
+      "startTime": "2026-09-20T10:00:02Z",
       "endTime": "2026-09-20T10:00:03Z",
       "input": [
         {
@@ -149,7 +157,13 @@
         "message_index": 1,
         "reasoning": "A src directory next to tests: a src layout.",
         "model_raw": "claude-opus-4-8",
-        "tool_io": "drop"
+        "tool_io": "drop",
+        "message_id": "none",
+        "stream_events": 1,
+        "cost_basis": "cli"
+      },
+      "costDetails": {
+        "total": 0.009364852578256916
       },
       "model": "claude-opus-4-8",
       "usageDetails": {
@@ -161,13 +175,13 @@
     }
   },
   {
-    "type": "span-create",
+    "type": "tool-create",
     "body": {
       "id": "93fd6c75f7bb5e42",
       "traceId": "ca2169a027825e0d80337532cab6f80f",
       "parentObservationId": "cdb1c2f21e835547",
       "name": "tool: Bash",
-      "startTime": "2026-09-20T10:00:02Z",
+      "startTime": "2026-09-20T10:00:01Z",
       "endTime": "2026-09-20T10:00:02Z",
       "input": {
         "redacted": true,

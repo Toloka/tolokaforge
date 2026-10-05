@@ -26,12 +26,15 @@ Five outcome cells:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.core.grading.substrate import RunTestSuiteResult
+from tolokaforge.core.models import JudgeUsage
+from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.service import RunnerServiceImpl
 
@@ -125,6 +128,23 @@ def test_tool_absent_maps_to_success_false_with_reason(
 
     assert response.success is False
     assert response.error == reason
+
+
+def test_grading_failure_carries_structured_judge_usage_on_runner_wire(
+    service: RunnerServiceImpl, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trial_id = "failed_judge:0"
+    _register_and_return_trial_id(service, mock_grpc_context, trial_id, _task("test_execution"))
+
+    def fail(_awaitable: Any, *, timeout: float) -> Any:
+        _awaitable.close()
+        raise GradingFailedError("judge malformed", judge_usage=JudgeUsage(calls=1, cost_usd=0.03))
+
+    monkeypatch.setattr(service, "_run_async", fail)
+    response = service.GradeTrial(pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context)
+    assert response.success is False
+    assert response.error == "judge malformed"
+    assert json.loads(response.failure_evidence_json)["judge_usage"]["cost_usd"] == 0.03
 
 
 def test_script_exec_error_maps_to_success_true_with_execution_failed_reasons(

@@ -24,11 +24,21 @@ Three steps, in order, each usable on its own:
     projected: :func:`build_events` refuses it.
 
 ``build_events``
-    The transcript as ingestion bodies: the trace, its root span, one generation per assistant
-    turn, one span per tool result. The same bodies the trial projection builds, so
-    :mod:`tolokaforge_langfuse.otlp_spans` turns them into v4 spans unchanged. The prompt the
-    agent was given is not in its output, so it is the caller's to pass
+    The transcript as ingestion bodies: the trace, its root (an ``agent`` observation), one
+    generation per assistant turn, one ``tool`` observation per tool result. The same bodies the
+    trial projection builds, so :mod:`tolokaforge_langfuse.otlp_spans` turns them into v4 spans
+    unchanged. The prompt the agent was given is not in its output, so it is the caller's to pass
     (``TranscriptOptions.input``); it becomes the trace's input.
+
+    **A turn is one model response.** The CLI writes a response with several content blocks
+    (thinking, text, tool calls) as several ``assistant`` events, one per block, and every one of
+    them repeats the response's usage. The reader joins the events of one message id into one turn
+    and counts its usage once. **A turn's clock** runs from the event before it to its last event
+    (the model call), and a tool's from the turn that called it to its result. **A turn's cost** is
+    its share of what the CLI reported the run cost (``total_cost_usd``), shared out by the turns'
+    tokens at Claude's relative list prices, so the trace's cost is the CLI's figure
+    (``cost_basis: cli``); a run the CLI reported no cost for states zero (``cost_basis: none``)
+    rather than leave the receiver to price it from its own table.
 
 **The id contract is injected, not imported.** The engine's ``tolokaforge.observability.ids`` and
 an offline uploader's own module implement the same contract v2 and differ in one keyword;
@@ -58,6 +68,7 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge_langfuse import safety
+from tolokaforge_langfuse.costs import COST_BASIS_CLI
 from tolokaforge_langfuse.model_names import (
     ModelIdentity,
     ModelNameResolver,
@@ -65,11 +76,16 @@ from tolokaforge_langfuse.model_names import (
     RawModelNameResolver,
 )
 from tolokaforge_langfuse.vocabulary import (
+    EVENT_AGENT,
+    EVENT_TOOL,
+    NAME_AGENT,
+    NAME_TRANSCRIPT,
     SOURCE_TRANSCRIPT,
     TRANSCRIPT_CALLER_PREFIXES,
     VocabularyError,
     check_value,
     order_tags,
+    project_tag_value,
 )
 
 NONE = "none"
@@ -125,6 +141,21 @@ RESERVED_KEYS = frozenset(
 )
 
 _ZONE_SUFFIX = re.compile(r"[+-]\d{2}:?\d{2}$")
+# a later run of the same work: ``analysis/four_bucket/2``, ``resolve/3``
+_ORDINAL_SEGMENT = re.compile(r"(?:/\d+)+$")
+# a transcript trace's name: a template over the run's ``{label}``, the ``{transcript}`` id and
+# the ``{step}`` (the transcript id without the ordinal of a later run)
+DEFAULT_TRACE_NAME = "{label}/{transcript}"
+_NAME_PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+NAME_PLACEHOLDERS = frozenset({"label", "transcript", "step"})
+
+# Claude's list prices relative to a model's input price, the same for every Claude model: output
+# five times the input, a cache read a tenth, a five-minute cache write 1.25 and a one-hour write
+# twice the input price. A turn's share of the run's cost is its tokens at these weights.
+WEIGHT_OUTPUT = 5.0
+WEIGHT_CACHE_READ = 0.1
+WEIGHT_CACHE_WRITE_5M = 1.25
+WEIGHT_CACHE_WRITE_1H = 2.0
 
 
 def _scrub_shapes() -> tuple[tuple[str, re.Pattern[str]], ...]:
@@ -168,7 +199,10 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class AssistantTurn:
-    """One turn the agent took: what it said, what it was thinking, what it called."""
+    """One turn the agent took (one model response): what it said, what it was thinking, what it
+    called. ``timestamp`` is the clock of its last event, ``started_at`` the clock of the event
+    before it: the model call ran between the two. ``events`` counts the stream events the CLI
+    split the response into."""
 
     index: int
     model: str | None
@@ -178,6 +212,9 @@ class AssistantTurn:
     usage: Mapping[str, Any]
     timestamp: str | None = None
     is_error: bool = False
+    started_at: str | None = None
+    message_id: str | None = None
+    events: int = 1
 
 
 @dataclass(frozen=True)
@@ -337,11 +374,15 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
         raise TranscriptError(f"{origin}: a transcript id is required")
     shape, events = _events(text, origin)
     turns: list[AssistantTurn] = []
+    by_message: dict[str, int] = {}
     outcomes: list[ToolOutcome] = []
     result: RunResult | None = None
     cli_version: str | None = None
     session_id: str | None = None
     stamps: list[str] = []
+    # the clock of the event right before this one (None when that event has none): where a model
+    # call this event ends began; never an earlier clock, which would stretch the call
+    before: str | None = None
     for position, event in enumerate(events):
         if not isinstance(event, Mapping):
             raise TranscriptRefused(f"{origin}: event {position} is not a mapping")
@@ -352,13 +393,21 @@ def read_claude_text(text: str, *, transcript_id: str, origin: str = "<text>") -
         stamp = _normalize_ts(event.get("timestamp"))
         if stamp:
             stamps.append(stamp)
+        prior, before = before, stamp
         if kind == "system":
             # everything else a system event says describes the machine the agent ran on
             if event.get("subtype") == SYSTEM_INIT:
                 cli_version = cli_version or _str(event.get("claude_code_version"))
             continue
         if kind == "assistant":
-            turns.append(_assistant_turn(event, len(turns), stamp, origin, position))
+            part = _assistant_turn(event, len(turns), stamp, origin, position)
+            joined = by_message.get(part.message_id) if part.message_id else None
+            if joined is None:
+                if part.message_id:
+                    by_message[part.message_id] = len(turns)
+                turns.append(replace(part, started_at=prior))
+            else:
+                turns[joined] = _joined(turns[joined], part)
             continue
         if kind == "user":
             outcomes.extend(_tool_outcomes(event, position, stamp, origin))
@@ -456,6 +505,23 @@ def _assistant_turn(
         usage=dict(usage) if isinstance(usage, Mapping) else {},
         timestamp=stamp,
         is_error=bool(event.get("is_api_error_message") or message.get("is_api_error_message")),
+        message_id=_str(message.get("id")),
+    )
+
+
+def _joined(turn: AssistantTurn, part: AssistantTurn) -> AssistantTurn:
+    """A turn with one more stream event of its message: the blocks in order, the usage once
+    (the event's own, which repeats the message's, unless it carries none) and the event's clock."""
+    return replace(
+        turn,
+        model=turn.model or part.model,
+        text="\n".join(t for t in (turn.text, part.text) if t),
+        reasoning="\n".join(t for t in (turn.reasoning, part.reasoning) if t),
+        tool_calls=turn.tool_calls + part.tool_calls,
+        usage=part.usage or turn.usage,
+        timestamp=part.timestamp or turn.timestamp,
+        is_error=turn.is_error or part.is_error,
+        events=turn.events + 1,
     )
 
 
@@ -648,6 +714,15 @@ class TranscriptOptions:
     # policy, while the trace metadata keeps its full length and what the cap and the scrub did.
     # None: the trace has no input
     input: str | None = None
+    # the trace's name, a template over ``{label}``, ``{transcript}`` and ``{step}``; None:
+    # DEFAULT_TRACE_NAME
+    name: str | None = None
+    # the trace's user, as given (an expert's id, say); None: no user
+    user: str | None = None
+    # or a model the trace's user is: a reference the resolver reads (under a deployment's rules an
+    # arena config stem reads too), its identity the user, so the receiver's views by user are
+    # views by model; a reference the resolver cannot read is the user as given. Never with ``user``
+    user_model: str | None = None
 
 
 def build_events(
@@ -662,7 +737,7 @@ def build_events(
     trace_id = ids.trace(options.run_tag, options.run_id, transcript.transcript_id)
     root_id = ids.root(trace_id)
     served = _tag_value("model", options.model) if options.model else None
-    identity = _identity(transcript, options.resolver, served)
+    identity, unresolved = _identity(transcript, options.resolver, served)
     start = transcript.started_at
     end = transcript.ended_at or start
     result = transcript.result
@@ -670,6 +745,7 @@ def build_events(
 
     prompt, prompt_facts = _input(options.input)
     metadata = _trace_metadata(transcript, options, caller, identity, ids, served)
+    metadata["model_unresolved"] = _text(unresolved)
     metadata.update(prompt_facts)
     # a reserved key is the projection's even on a trace that does not carry it
     clashes = sorted(set(options.metadata) & (set(metadata) | RESERVED_KEYS))
@@ -681,7 +757,7 @@ def build_events(
 
     tags = order_tags(
         [
-            f"project:{_tag_value('project', options.project)}",
+            f"project:{_project_tag_value(options.project)}",
             f"harness:{HARNESS}",
             f"source:{SOURCE}",
             *(identity.tags if identity else ()),
@@ -691,9 +767,10 @@ def build_events(
 
     trace_body: dict[str, Any] = {
         "id": trace_id,
-        "name": f"{options.label}/{transcript.transcript_id}",
+        "name": trace_name(options.name, transcript.transcript_id, label=options.label),
         "timestamp": start,
         "sessionId": options.session,
+        "userId": _user(options),
         "input": prompt,
         "output": result.text if result else None,
         "tags": tags,
@@ -705,11 +782,11 @@ def build_events(
     events = [_envelope("trace-create", trace_body)]
     events.append(
         _envelope(
-            "span-create",
+            EVENT_AGENT,
             {
                 "id": root_id,
                 "traceId": trace_id,
-                "name": f"transcript {transcript.transcript_id}",
+                "name": NAME_TRANSCRIPT,
                 "startTime": start,
                 "endTime": end,
                 "level": "ERROR" if result is not None and result.is_error else "DEFAULT",
@@ -727,14 +804,16 @@ def build_events(
     )
 
     context: list[dict[str, Any]] = []
+    costs = turn_costs(transcript)
     for turn in transcript.turns:
+        started = turn.started_at or turn.timestamp or start
         body: dict[str, Any] = {
             "id": ids.observation(trace_id, "gen", turn.index),
             "traceId": trace_id,
             "parentObservationId": root_id,
-            "name": f"assistant turn {turn.index}",
-            "startTime": turn.timestamp or start,
-            "endTime": turn.timestamp or end,
+            "name": NAME_AGENT,
+            "startTime": started,
+            "endTime": turn.timestamp or started,
             "input": context[-CONTEXT_MESSAGES:],
             "output": {
                 "content": turn.text,
@@ -750,7 +829,13 @@ def build_events(
                 "reasoning": turn.reasoning or NONE,
                 "model_raw": _text(turn.model),
                 "tool_io": transcript.tool_io,
+                "message_id": _text(turn.message_id),
+                "stream_events": turn.events,
+                "cost_basis": COST_BASIS_CLI if costs is not None else NONE,
             },
+            # the cost is stated either way: a generation without one is priced by the receiver
+            # from its own model table
+            "costDetails": {"total": costs[turn.index] if costs is not None else 0},
         }
         if identity is not None:
             body["model"] = identity.canonical
@@ -760,12 +845,17 @@ def build_events(
         events.append(_envelope("generation-create", body))
         context.append({"role": "assistant", "content": turn.text[:CONTEXT_CHARS]})
 
+    called_at = {
+        call.call_id: turn.timestamp for turn in transcript.turns for call in turn.tool_calls
+    }
     for outcome in transcript.outcomes:
         name = tool_names.get(outcome.call_id)
         call = _call_of(transcript, outcome.call_id)
+        # from the turn that called the tool to its result
+        started = called_at.get(outcome.call_id) or outcome.timestamp or start
         events.append(
             _envelope(
-                "span-create",
+                EVENT_TOOL,
                 {
                     "id": ids.observation(
                         trace_id, "tool", ids.tool_key(outcome.call_id, outcome.position)
@@ -773,8 +863,8 @@ def build_events(
                     "traceId": trace_id,
                     "parentObservationId": root_id,
                     "name": f"tool: {name or 'unknown'}",
-                    "startTime": outcome.timestamp or start,
-                    "endTime": outcome.timestamp or end,
+                    "startTime": started,
+                    "endTime": outcome.timestamp or started,
                     "input": call.arguments if call is not None else None,
                     "output": outcome.output,
                     "level": "ERROR" if outcome.is_error else "DEFAULT",
@@ -797,6 +887,88 @@ def build_events(
         if event["type"] != "trace-create" and options.environment:
             event["body"].setdefault("environment", options.environment)
     return BuiltTranscript(trace_id=trace_id, events=events)
+
+
+def step_of(transcript_id: str) -> str:
+    """What the agent worked at: the transcript id without the ordinal of a later run
+    (``analysis/four_bucket/2`` -> ``analysis/four_bucket``, ``resolve/3`` -> ``resolve``)."""
+    return _ORDINAL_SEGMENT.sub("", transcript_id) or transcript_id
+
+
+def check_trace_name(template: str) -> str:
+    """A transcript trace-name template: text with the placeholders ``NAME_PLACEHOLDERS`` and no
+    other brace; anything else refuses the transcript rather than name it with a literal ``{``."""
+    unknown = sorted(set(_NAME_PLACEHOLDER.findall(template)) - NAME_PLACEHOLDERS)
+    rest = _NAME_PLACEHOLDER.sub("", template)
+    if not template.strip() or unknown or "{" in rest or "}" in rest:
+        raise TranscriptError(
+            f"trace-name template {template!r}: the placeholders are "
+            f"{', '.join('{' + p + '}' for p in sorted(NAME_PLACEHOLDERS))}, and no other brace"
+        )
+    return template
+
+
+def trace_name(template: str | None, transcript_id: str, *, label: str) -> str:
+    """A transcript trace's name: ``template`` (default ``{label}/{transcript}``) over the run's
+    label, the transcript id and its step (``{step}`` groups the runs of one kind of work)."""
+    values = {"label": label, "transcript": transcript_id, "step": step_of(transcript_id)}
+    return _NAME_PLACEHOLDER.sub(
+        lambda match: values[match.group(1)],
+        check_trace_name(DEFAULT_TRACE_NAME if template is None else template),
+    )
+
+
+def _user(options: TranscriptOptions) -> str | None:
+    """The trace's user: ``user`` as given, or the identity of ``user_model`` (the reference as
+    given when the resolver cannot read it)."""
+    given = (options.user or "").strip()
+    reference = (options.user_model or "").strip()
+    if given and reference:
+        raise TranscriptError("a transcript's user is either given or a model, not both")
+    if not reference:
+        return given or None
+    try:
+        return options.resolver.resolve(None, reference).canonical
+    except ModelNameResolverError:
+        return reference
+
+
+def turn_costs(transcript: Transcript) -> list[float] | None:
+    """Each turn's share of what the CLI reported the run cost, by turn index; ``None`` when it
+    reported no cost. The CLI states the run's total, never a turn's, so the total is shared out
+    by the turns' tokens at Claude's relative list prices and the turns add up to it exactly;
+    turns without any token share it evenly."""
+    result = transcript.result
+    if result is None or result.total_cost_usd is None:
+        return None
+    turns = transcript.turns
+    weights = [_weight(turn.usage) for turn in turns]
+    whole = sum(weights)
+    if whole <= 0:
+        return [result.total_cost_usd / len(turns) for _ in turns]
+    return [result.total_cost_usd * weight / whole for weight in weights]
+
+
+def _weight(usage: Mapping[str, Any]) -> float:
+    """A turn's tokens at Claude's list prices relative to the model's input price."""
+    creation = usage.get("cache_creation")
+    split = isinstance(creation, Mapping) and any(
+        creation.get(key) is not None
+        for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+    )
+    if split:
+        assert isinstance(creation, Mapping)
+        writes = WEIGHT_CACHE_WRITE_5M * (
+            _int(creation.get("ephemeral_5m_input_tokens")) or 0
+        ) + WEIGHT_CACHE_WRITE_1H * (_int(creation.get("ephemeral_1h_input_tokens")) or 0)
+    else:
+        writes = WEIGHT_CACHE_WRITE_5M * (_int(usage.get("cache_creation_input_tokens")) or 0)
+    return (
+        (_int(usage.get("input_tokens")) or 0)
+        + WEIGHT_OUTPUT * (_int(usage.get("output_tokens")) or 0)
+        + WEIGHT_CACHE_READ * (_int(usage.get("cache_read_input_tokens")) or 0)
+        + writes
+    )
 
 
 def _trace_metadata(
@@ -882,6 +1054,13 @@ def _caller_tags(tags: Mapping[str, str]) -> dict[str, str]:
     return {prefix: _tag_value(prefix, tags[prefix]) for prefix in tags if tags[prefix]}
 
 
+def _project_tag_value(name: str) -> str:
+    try:
+        return project_tag_value(name)
+    except VocabularyError as exc:
+        raise TranscriptError(str(exc)) from exc
+
+
 def _tag_value(prefix: str, value: str) -> str:
     try:
         return check_value(prefix, str(value))
@@ -891,16 +1070,18 @@ def _tag_value(prefix: str, value: str) -> str:
 
 def _identity(
     transcript: Transcript, resolver: ModelNameResolver, served: str | None
-) -> ModelIdentity | None:
+) -> tuple[ModelIdentity | None, str | None]:
     """The agent's model: the one the caller says served the run, else the first the transcript
-    names."""
+    names; and the name, when the resolver's rules cannot read it (a bare CLI alias such as
+    ``claude-opus-4-8`` names no vendor). Such a name stands as it is spelled rather than refuse
+    the transcript."""
     name = served or next(iter(_models(transcript)), None)
     if name is None:
-        return None
+        return None, None
     try:
-        return resolver.resolve(None, name)
-    except ModelNameResolverError as exc:
-        raise TranscriptError(f"{transcript.origin}: {exc}") from exc
+        return resolver.resolve(None, name), None
+    except ModelNameResolverError:
+        return RawModelNameResolver().resolve(None, name), name
 
 
 def _models(transcript: Transcript) -> list[str]:
@@ -1075,5 +1256,8 @@ __all__ = [
     "read_claude_text",
     "redact",
     "scrub",
+    "step_of",
+    "trace_name",
     "transcript_files",
+    "turn_costs",
 ]

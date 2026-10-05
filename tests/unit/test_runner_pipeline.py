@@ -447,14 +447,14 @@ class TestRegisterTrialSearchPlanes:
             response = service.RegisterTrial(request, mock_grpc_context)
 
             assert response.success is True, f"Registration failed: {response.error}"
-            assert "RAG service not configured" not in response.error
+            assert "stack service 'rag_service' is not reachable" not in response.error
             assert trial_id in service.trials
         finally:
             service.shutdown()
 
     def test_enabled_without_rag_client_still_fails_loud(self, mock_grpc_context, db_client):
-        """FAIL-LOUD preserved: enabled=True with rag_client=None still returns the
-        'Search enabled but RAG service not configured' error."""
+        """FAIL-LOUD: enabled=True with rag_client=None refuses the trial, naming the
+        rag-service stack service this runner does not reach."""
         from tolokaforge.runner.service import RunnerServiceImpl
 
         service = RunnerServiceImpl(db_client)  # rag_client defaults to None
@@ -474,7 +474,7 @@ class TestRegisterTrialSearchPlanes:
             response = service.RegisterTrial(request, mock_grpc_context)
 
             assert response.success is False
-            assert "Search enabled but RAG service not configured" in response.error
+            assert "stack service 'rag_service' is not reachable" in response.error
         finally:
             service.shutdown()
 
@@ -789,6 +789,8 @@ class TestRegisterTrialVersionGate:
     def test_engine_below_the_required_version_is_refused(
         self, runner_service, mock_grpc_context, simple_task_description
     ):
+        """A version-3 engine omits ``regex_engine`` from its grading config, which
+        this runner would read as ``linear`` and grade the pack's patterns under RE2."""
         trial_id = "skewed_engine:0"
         response = runner_service.RegisterTrial(
             register_request(

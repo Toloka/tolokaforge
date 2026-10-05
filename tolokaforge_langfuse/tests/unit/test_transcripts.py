@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tolokaforge_langfuse.model_names import ModelIdentity
+from tolokaforge_langfuse.model_names import ModelIdentity, ModelNameResolverError
 
 from tolokaforge.observability import ids as engine_ids
 from tolokaforge_langfuse import safety
@@ -388,19 +388,22 @@ class TestTheProjection:
     def test_the_kinds_and_their_parents(self) -> None:
         build = built(tr.redact(read()))
         assert len(one(build, "trace-create")) == 1
-        spans = one(build, "span-create")
+        assert not one(build, "span-create")
+        (root,) = one(build, "agent-create")
+        tools = one(build, "tool-create")
         generations = one(build, "generation-create")
-        assert [s["name"] for s in spans] == ["transcript clean", "tool: Bash"]
-        assert [g["name"] for g in generations] == ["assistant turn 0", "assistant turn 1"]
-        root = spans[0]["id"]
-        assert all(o["parentObservationId"] == root for o in spans[1:] + generations)
-        assert all(o["traceId"] == build.trace_id for o in spans + generations)
+        assert root["name"] == "transcript" and [t["name"] for t in tools] == ["tool: Bash"]
+        # a name says what an observation is; the turn's position is metadata
+        assert [g["name"] for g in generations] == ["agent", "agent"]
+        assert [g["metadata"]["message_index"] for g in generations] == [0, 1]
+        assert all(o["parentObservationId"] == root["id"] for o in tools + generations)
+        assert all(o["traceId"] == build.trace_id for o in [root, *tools, *generations])
 
     def test_the_native_model_rides_on_the_generations(self) -> None:
         """The UI's model breakdown reads the native field, and only a generation carries it."""
         build = built(tr.redact(read()))
         assert all(g["model"] == "claude-opus-4-8" for g in one(build, "generation-create"))
-        assert all("model" not in s for s in one(build, "span-create"))
+        assert all("model" not in s for s in one(build, "agent-create") + one(build, "tool-create"))
 
     def test_usage_is_a_non_overlapping_breakdown_with_a_total(self) -> None:
         usage = one(built(tr.redact(read())), "generation-create")[0]["usageDetails"]
@@ -427,6 +430,11 @@ class TestTheProjection:
         # a transcript carries no trial facts, whatever the caller thinks
         assert not {t.partition(":")[0] for t in tags} & {"dataset", "scope", "domain", "config"}
 
+    def test_a_project_name_with_spaces_is_tagged_in_a_tags_spelling(self) -> None:
+        body = one(built(tr.redact(read()), project="Acme Traces"), "trace-create")[0]
+        assert "project:acme-traces" in body["tags"]
+        assert body["metadata"]["project"] == "Acme Traces"  # the receiver's own name
+
     def test_the_result_totals_are_queryable_trace_metadata(self) -> None:
         metadata = one(built(tr.redact(read())), "trace-create")[0]["metadata"]
         assert metadata["total_cost_usd"] == pytest.approx(0.0412)
@@ -448,7 +456,11 @@ class TestTheProjection:
 
     def test_every_observation_carries_the_traces_environment(self) -> None:
         build = built(tr.redact(read()))
-        observations = one(build, "span-create") + one(build, "generation-create")
+        observations = [
+            body
+            for kind in ("agent-create", "tool-create", "generation-create")
+            for body in one(build, kind)
+        ]
         assert {o["environment"] for o in observations} == {"production-automation"}
 
     def test_an_error_run_marks_its_root(self) -> None:
@@ -457,7 +469,7 @@ class TestTheProjection:
             {"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 40},
         ]
         transcript = tr.read_claude_text(stream(events), transcript_id="t")
-        root = one(built(tr.redact(transcript)), "span-create")[0]
+        root = one(built(tr.redact(transcript)), "agent-create")[0]
         assert root["level"] == "ERROR"
         assert root["statusMessage"] == "error_max_turns"
 
@@ -465,8 +477,8 @@ class TestTheProjection:
         """Two calls of the same tool must not collide, and a re-read must land on the same id."""
         first = tr.redact(tr.read_claude_text(stream(tool_event("a")), transcript_id="t"))
         again = tr.redact(tr.read_claude_text(stream(tool_event("b")), transcript_id="t"))
-        span = one(built(first), "span-create")[1]
-        assert span["id"] == one(built(again), "span-create")[1]["id"]
+        span = one(built(first), "tool-create")[0]
+        assert span["id"] == one(built(again), "tool-create")[0]["id"]
         assert span["metadata"]["key_source"] == "call_id"
 
 
@@ -484,6 +496,20 @@ class VendorResolver:
         return ModelIdentity(
             canonical=name, tags=(f"model:{name}", f"model_vendor:{name.partition('/')[0]}")
         )
+
+
+class StemResolver:
+    """Rules that know one config stem and refuse another; every other name reads as given."""
+
+    description = "stems"
+    rules_version = "stems-1"
+
+    def resolve(self, provider: str | None, name: str) -> ModelIdentity:
+        if name == "deepseek_v4_flash":
+            return ModelIdentity(canonical="deepseek/deepseek-v4-flash", tags=())
+        if name == "retired_stem":
+            raise ModelNameResolverError(f"{name}: unresolved tokens")
+        return ModelIdentity(canonical=name, tags=(f"model:{name}",))
 
 
 def gateway_events(turn_event: int = 3) -> list[dict[str, Any]]:
@@ -784,9 +810,434 @@ class TestTheSentinel:
         rules = [f.rule for f in gate.scan(b"the db said not-a-shape-just-a-password")]
         assert rules == ["known-secret-value"]
 
+    def test_the_tracing_launchers_own_variables_are_not_known_secrets(self) -> None:
+        """The session id the launcher exports has SESSION in its name, but it is the value
+        every span carries by design: taking it for a credential would stop every span."""
+        session = "acme/pilot/v1/pilot_agent/pilot_agent/123"
+        gate = safety.SafetyGate.from_environment(
+            {"TOLOKAFORGE_TRACING_SESSION_ID": session, "ACME_SESSION_TOKEN": "not-a-shape-token"}
+        )
+        assert gate.scan(f'{{"langfuse.session.id": "{session}"}}'.encode()) == []
+        assert [f.rule for f in gate.scan(b"leaked not-a-shape-token")] == ["known-secret-value"]
+
+    def test_values_the_caller_holds_by_another_route_join_the_known_ones(self) -> None:
+        gate = safety.SafetyGate.from_environment(
+            {"ACME_UPLOAD_TOKEN": "not-a-shape-just-a-password"},
+            extra=["managed-credential-value", "short"],
+        )
+        assert gate.scan(b"managed-credential-value")
+        assert gate.scan(b"not-a-shape-just-a-password")
+        assert gate.scan(b"short") == []  # too short to be told from text, like the environment's
+
+    def test_a_known_value_json_would_escape_is_found_in_the_raw_strings(self) -> None:
+        """JSON escapes a quote and a backslash, so a credential holding them hides from the
+        serialised scan; the raw strings give it away, in the forms JSON gives it (an attribute
+        that is JSON text escapes it once more, JSON text inside it twice)."""
+        awkward = 'tok"en\\8f3a91c2b7d04e56'
+        gate = safety.SafetyGate.from_environment({"ACME_UPLOAD_TOKEN": awkward})
+        value = {"output": f"the config said {awkward}"}
+        assert gate.scan(json.dumps(value, ensure_ascii=False).encode()) == []
+        assert [f.rule for f in gate.scan_structured(value)] == ["known-secret-value"]
+        once = json.dumps({"content": f"said {awkward}"}, ensure_ascii=False)
+        twice = json.dumps({"content": once}, ensure_ascii=False)
+        for text in (once, twice):
+            assert [f.rule for f in gate.scan_structured({"input": text})] == ["known-secret-value"]
+        assert gate.scan_structured({"output": "all clear", "tags": ["a:b"], "n": 3}) == []
+
+    def test_the_shapes_do_not_run_over_raw_strings(self) -> None:
+        """Only the serialised JSON meets the shapes: a line-anchored one would stop code that
+        names a key or a token count, and an env listing's key id."""
+        code = (
+            "api_key = os.environ.get('X')\n"
+            "total_tokens = response.usage.total_tokens\n"
+            "GPG_KEY=0123456789ABCDEF0123456789ABCDEF01234567\n"
+        )
+        gate = safety.SafetyGate()
+        assert gate.scan(code.encode())  # a raw line is what the dotenv shape reads
+        assert gate.scan_structured({"output": code, "messages": [{"content": code}]}) == []
+
+    def test_a_shape_in_a_structured_value_is_still_found_in_its_json(self) -> None:
+        key = "sk-or-v1-" + "0123456789abcdef" * 4
+        found = safety.SafetyGate().scan_structured({"output": f"it said {key}"})
+        assert "openrouter-key" in [f.rule for f in found]
+
+    def test_a_long_run_of_key_like_words_is_scanned_in_linear_time(self) -> None:
+        import time
+
+        started = time.perf_counter()
+        assert safety.SafetyGate().scan_structured({"output": "KEY" * 20_000}) == []
+        assert time.perf_counter() - started < 0.5
+
+    def test_the_gate_prints_no_known_value_in_any_form(self) -> None:
+        awkward = 'tok"en\\8f3a91c2b7d04e56'
+        gate = safety.SafetyGate.from_environment({"ACME_UPLOAD_TOKEN": awkward})
+        gate.scan_structured({"output": awkward})  # the forms JSON gives it are built here
+        text = repr(gate) + str(gate.__dict__.get("hits"))
+        assert "8f3a91c2" not in text and "tok" not in text
+
+    def test_a_known_value_carries_the_name_of_its_variable_but_only_in_describe(self) -> None:
+        value = "not-a-shape-just-a-password"
+        gate = safety.SafetyGate.from_environment(
+            {"DB_PASSWORD": value}, extra={"header X-Runner-Key": "runner-key-value-1234"}
+        )
+        (finding,) = gate.scan(f"it said {value}".encode())
+        assert finding.describe() == "known-secret-value from DB_PASSWORD"
+        # the string form travels to the receiver in a manifest: no variable name in it
+        assert str(finding) == "known-secret-value (**** (27 chars))"
+        (header,) = gate.scan_structured({"k": "runner-key-value-1234"})
+        assert header.describe() == "known-secret-value from header X-Runner-Key"
+
+    def test_a_value_two_variables_hold_names_both_and_a_plain_one_names_none(self) -> None:
+        gate = safety.SafetyGate.from_environment(
+            {"A_API_KEY": "same-value-in-two-places", "B_API_KEY": "same-value-in-two-places"},
+            extra=["a-plain-value-without-a-name"],
+        )
+        found = gate.scan(b"same-value-in-two-places a-plain-value-without-a-name")
+        assert sorted(f.describe() for f in found) == [
+            "known-secret-value",
+            "known-secret-value from A_API_KEY, B_API_KEY",
+        ]
+
+    def test_the_values_a_run_carries_by_design_are_left_out_by_name(self) -> None:
+        gate = safety.SafetyGate.from_environment(
+            {"ACME_TOKEN": "tolokaforge", "DB_PASSWORD": "not-a-shape-just-a-password"}
+        )
+        dropped = gate.drop_ambient(["harness:tolokaforge", "task:T-1", ""])
+        assert dropped == ["ACME_TOKEN"]
+        assert gate.known_values == (b"not-a-shape-just-a-password",)
+        assert gate.scan(b"harness:tolokaforge") == []
+        assert [f.describe() for f in gate.scan(b"not-a-shape-just-a-password")] == [
+            "known-secret-value from DB_PASSWORD"
+        ]
+        assert gate.drop_ambient(["harness:tolokaforge"]) == []  # nothing left to leave out
+
+    def test_a_gate_refreshes_when_its_source_offers_new_values_and_not_otherwise(self) -> None:
+        gate = safety.SafetyGate.from_environment({"DB_PASSWORD": "not-a-shape-just-a-password"})
+        assert gate.refresh() == (False, [])  # a fixed set has no source
+        offers = [
+            safety.SafetyGate.from_environment(
+                {"TYPESENSE_API_KEY": "late-registered-key", "ACME_TOKEN": "tolokaforge"}
+            )
+        ]
+        gate.reload = lambda: offers.pop() if offers else None
+        # the run's own values are left out of what it takes, before any scan can see it
+        assert gate.refresh(["harness:tolokaforge"]) == (True, ["ACME_TOKEN"])
+        assert [f.describe() for f in gate.scan(b"late-registered-key")] == [
+            "known-secret-value from TYPESENSE_API_KEY"
+        ]
+        assert gate.scan(b"harness:tolokaforge") == []
+        assert gate.scan(b"not-a-shape-just-a-password") == []  # the new set replaces the old
+        assert gate.refresh() == (False, [])  # the source offers nothing new
+
+    def test_a_non_ascii_value_is_found_in_json_text_that_escapes_it_as_ascii(self) -> None:
+        """Python's ``json.dumps`` writes ``\\u00e4`` by default; a tool that returns such JSON
+        text holds the value in a form neither the raw nor the UTF-8 escape matches."""
+        value = "p\u00e4ssw\u00f6rd-12345"
+        gate = safety.SafetyGate.from_environment({"ACME_DB_PASSWORD": value})
+        tool_output = json.dumps({"password": value})  # ASCII-escaped
+        assert value not in tool_output
+        assert [f.rule for f in gate.scan_structured({"output": tool_output})] == [
+            "known-secret-value"
+        ]
+
+    def test_one_name_filter_decides_what_holds_a_credential(self) -> None:
+        for name in (
+            "OPENROUTER_API_KEY",
+            "DB_PASSWORD",
+            "ARENA_LANGFUSE_MCP_TOKEN",
+            "SESSION_COOKIE",
+        ):
+            assert safety.looks_secret(name), name
+        for name in (
+            "AZURE_API_BASE",  # an endpoint
+            "LANGFUSE_BASE_URL",
+            "GOOGLE_APPLICATION_CREDENTIALS_FILE",
+            "PWD",
+            "OLDPWD",
+            "TOLOKAFORGE_TRACING_SESSION_ID",
+            "HOME",
+        ):
+            assert not safety.looks_secret(name), name
+
     def test_the_clean_transcript_passes_the_sentinel(self) -> None:
         payload = json.dumps(bodies(built(tr.redact(read())))).encode()
         assert safety.SafetyGate().scan(payload) == []
+
+
+def split_response(*, message_id: str = "msg_1") -> list[dict[str, Any]]:
+    """One model response the CLI wrote as three stream events, one per content block, each
+    repeating the response's usage; then the tool's result and a second response."""
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "cache_read_input_tokens": 1000,
+        "cache_creation_input_tokens": 0,
+    }
+
+    def block(content: dict[str, Any], at: str) -> dict[str, Any]:
+        return {
+            "type": "assistant",
+            "session_id": "s",
+            "timestamp": at,
+            "message": {
+                "id": message_id,
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "content": [content],
+                "usage": usage,
+            },
+        }
+
+    return [
+        {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:00Z",
+        },
+        block({"type": "thinking", "thinking": "look first"}, "2026-09-20T10:00:04Z"),
+        block({"type": "text", "text": "Listing."}, "2026-09-20T10:00:04Z"),
+        block(
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}},
+            "2026-09-20T10:00:05Z",
+        ),
+        {
+            "type": "user",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:07Z",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "a b"}],
+            },
+        },
+        {
+            "type": "assistant",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:10Z",
+            "message": {
+                "id": "msg_2",
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "content": [{"type": "text", "text": "Done."}],
+                "usage": {"input_tokens": 300, "output_tokens": 20},
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "session_id": "s",
+            "timestamp": "2026-09-20T10:00:11Z",
+            "total_cost_usd": 0.5,
+            "num_turns": 2,
+        },
+    ]
+
+
+class TestOneTurnPerResponse:
+    """Claude Code writes a response with several content blocks as one stream event per block,
+    each repeating the response's usage: counting every event counted that usage two or three
+    times, and the receiver priced the copies."""
+
+    def test_the_events_of_one_message_are_one_turn(self) -> None:
+        transcript = tr.read_claude_text(stream(split_response()), transcript_id="t")
+        first, second = transcript.turns
+        assert (first.index, second.index) == (0, 1)
+        assert first.events == 3 and second.events == 1
+        assert first.reasoning == "look first" and first.text == "Listing."
+        assert [call.call_id for call in first.tool_calls] == ["toolu_1"]
+        # the usage once, not three times
+        assert first.usage["input_tokens"] == 100 and first.usage["output_tokens"] == 40
+
+    def test_one_generation_per_response_with_its_usage_once(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        generations = one(build, "generation-create")
+        assert len(generations) == 2
+        assert generations[0]["usageDetails"] == {
+            "input": 100,
+            "output": 40,
+            "total": 100 + 40 + 1000,
+            "cache_read_input_tokens": 1000,
+            "cache_creation_input_tokens": 0,
+        }
+        assert generations[0]["metadata"]["stream_events"] == 3
+        assert generations[0]["metadata"]["message_id"] == "msg_1"
+
+    def test_events_without_a_message_id_stay_turns_of_their_own(self) -> None:
+        events = split_response()
+        for event in events:
+            if event["type"] == "assistant":
+                event["message"].pop("id")
+        transcript = tr.read_claude_text(stream(events), transcript_id="t")
+        assert [turn.events for turn in transcript.turns] == [1, 1, 1, 1]
+
+
+class TestTheClocks:
+    def test_a_turn_runs_from_the_event_before_it_to_its_last_event(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        first, second = one(build, "generation-create")
+        # the first call started after the CLI's init and ended with its last block
+        assert (first["startTime"], first["endTime"]) == (
+            "2026-09-20T10:00:00Z",
+            "2026-09-20T10:00:05Z",
+        )
+        # the second call started when the tool's result came back
+        assert (second["startTime"], second["endTime"]) == (
+            "2026-09-20T10:00:07Z",
+            "2026-09-20T10:00:10Z",
+        )
+
+    def test_a_tool_runs_from_the_turn_that_called_it_to_its_result(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        (tool,) = one(build, "tool-create")
+        assert (tool["startTime"], tool["endTime"]) == (
+            "2026-09-20T10:00:05Z",
+            "2026-09-20T10:00:07Z",
+        )
+
+    def test_a_neighbour_without_a_clock_collapses_the_window_never_stretches_it(self) -> None:
+        """The tool's result carries no timestamp: the next turn's call began then, unknown, so
+        its window collapses onto its own clock instead of reaching back over the tool."""
+        events = split_response()
+        result = next(e for e in events if e["type"] == "user")
+        result.pop("timestamp")
+        build = built(tr.redact(tr.read_claude_text(stream(events), transcript_id="t")))
+        second = one(build, "generation-create")[1]
+        assert (second["startTime"], second["endTime"]) == (
+            "2026-09-20T10:00:10Z",
+            "2026-09-20T10:00:10Z",
+        )
+
+    def test_a_transcript_without_clocks_collapses_no_window_open(self) -> None:
+        events = [
+            {k: v for k, v in event.items() if k != "timestamp"} for event in split_response()
+        ]
+        build = built(tr.redact(tr.read_claude_text(stream(events), transcript_id="t")))
+        assert all(
+            g["startTime"] is None and g["endTime"] is None for g in one(build, "generation-create")
+        )
+
+
+class TestTheCost:
+    def test_the_turns_add_up_to_what_the_cli_reported(self) -> None:
+        build = built(tr.redact(tr.read_claude_text(stream(split_response()), transcript_id="t")))
+        generations = one(build, "generation-create")
+        assert sum(g["costDetails"]["total"] for g in generations) == pytest.approx(0.5)
+        assert {g["metadata"]["cost_basis"] for g in generations} == {"cli"}
+        # shared by the turns' tokens at Claude's relative list prices
+        first = 100 + 5 * 40 + 0.1 * 1000
+        second = 300 + 5 * 20
+        assert generations[0]["costDetails"]["total"] == pytest.approx(
+            0.5 * first / (first + second)
+        )
+
+    def test_the_weights_follow_the_cache_writes_ttl(self) -> None:
+        five_minutes = {"input_tokens": 0, "cache_creation_input_tokens": 100}
+        split = {
+            "input_tokens": 0,
+            "cache_creation_input_tokens": 100,
+            "cache_creation": {"ephemeral_5m_input_tokens": 40, "ephemeral_1h_input_tokens": 60},
+        }
+        assert tr._weight(five_minutes) == pytest.approx(125)
+        assert tr._weight(split) == pytest.approx(40 * 1.25 + 60 * 2)
+
+    def test_a_run_the_cli_reported_no_cost_for_states_zero(self) -> None:
+        events = [e for e in split_response() if e["type"] != "result"]
+        build = built(tr.redact(tr.read_claude_text(stream(events), transcript_id="t")))
+        generations = one(build, "generation-create")
+        assert all(g["costDetails"] == {"total": 0} for g in generations)
+        assert {g["metadata"]["cost_basis"] for g in generations} == {"none"}
+
+    def test_turns_without_tokens_share_the_cost_evenly(self) -> None:
+        events = split_response()
+        for event in events:
+            if event["type"] == "assistant":
+                event["message"]["usage"] = {}
+        transcript = tr.read_claude_text(stream(events), transcript_id="t")
+        assert tr.turn_costs(transcript) == [0.25, 0.25]
+
+
+class TestTheNameAndTheUser:
+    @pytest.mark.parametrize(
+        ("transcript_id", "step"),
+        [
+            ("analysis/four_bucket", "analysis/four_bucket"),
+            ("analysis/four_bucket/2", "analysis/four_bucket"),
+            ("resolve/3", "resolve"),
+            ("finalize", "finalize"),
+            ("7", "7"),
+        ],
+    )
+    def test_the_step_is_the_transcript_without_a_later_runs_ordinal(
+        self, transcript_id: str, step: str
+    ) -> None:
+        assert tr.step_of(transcript_id) == step
+
+    def test_by_default_the_label_and_the_transcript_name_the_trace(self) -> None:
+        assert one(built(tr.redact(read())), "trace-create")[0]["name"] == "pilot/clean"
+
+    def test_the_callers_template_names_the_trace(self) -> None:
+        transcript = tr.read_claude_text(stream(split_response()), transcript_id="analysis/x/2")
+        trace = one(built(tr.redact(transcript), name="{step}"), "trace-create")[0]
+        assert trace["name"] == "analysis/x"
+        named = one(built(tr.redact(transcript), name="{label}: {transcript}"), "trace-create")
+        assert named[0]["name"] == "pilot: analysis/x/2"
+
+    @pytest.mark.parametrize(
+        "template", ["{dimension}", "{label}/{run_id}", "{ci_run}-{step}", "{step", "step}", ""]
+    )
+    def test_a_template_with_an_unknown_placeholder_or_a_stray_brace_refuses_the_transcript(
+        self, template: str
+    ) -> None:
+        """Never a trace named with a literal brace."""
+        with pytest.raises(tr.TranscriptError, match="placeholders"):
+            built(tr.redact(read()), name=template)
+
+    def test_without_a_user_the_trace_has_none(self) -> None:
+        assert one(built(tr.redact(read())), "trace-create")[0]["userId"] is None
+
+    def test_a_given_user_is_the_user_as_given(self) -> None:
+        """An expert's id, say: nothing reads it as a model."""
+        trace = one(
+            built(tr.redact(read()), user=" expert-17 ", resolver=StemResolver()), "trace-create"
+        )[0]
+        assert trace["userId"] == "expert-17"
+
+    def test_a_user_model_is_the_user_by_its_identity(self) -> None:
+        """Under a deployment's rules an arena config stem reads as the model its config names."""
+        trace = one(
+            built(tr.redact(read()), user_model="deepseek_v4_flash", resolver=StemResolver()),
+            "trace-create",
+        )[0]
+        assert trace["userId"] == "deepseek/deepseek-v4-flash"
+
+    def test_a_user_model_the_resolver_cannot_read_is_the_user_as_given(self) -> None:
+        trace = one(
+            built(tr.redact(read()), user_model=" retired_stem ", resolver=StemResolver()),
+            "trace-create",
+        )[0]
+        assert trace["userId"] == "retired_stem"
+
+    def test_a_user_is_either_given_or_a_model(self) -> None:
+        with pytest.raises(tr.TranscriptError, match="not both"):
+            built(tr.redact(read()), user="expert-17", user_model="deepseek_v4_flash")
+
+    def test_a_model_the_rules_cannot_read_stands_as_spelled(self) -> None:
+        """A bare CLI alias names no vendor, so a normalizer's rules cannot read it: the trace
+        keeps the alias and says so, rather than lose the transcript."""
+
+        class Refusing(StemResolver):
+            def resolve(self, provider: str | None, name: str) -> ModelIdentity:
+                if name == ALIAS:
+                    raise ModelNameResolverError(f"bare name {name!r} and no resolver")
+                return super().resolve(provider, name)
+
+        build = built(tr.redact(read()), resolver=Refusing())
+        trace = one(build, "trace-create")[0]
+        assert trace["metadata"]["model_unresolved"] == ALIAS
+        assert trace["metadata"]["model_name"] == ALIAS
+        assert {g["model"] for g in one(build, "generation-create")} == {ALIAS}
+        served = one(built(tr.redact(read()), resolver=Refusing(), model=SERVED), "trace-create")
+        assert served[0]["metadata"]["model_unresolved"] == "none"
 
 
 class TestTheGolden:

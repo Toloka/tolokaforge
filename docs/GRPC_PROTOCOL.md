@@ -384,6 +384,9 @@ message GradeTrialResponse {
 
   // The computed grade
   Grade grade = 3;
+
+  // Structured judge usage and DB evidence when a grader raised before verdict.
+  string failure_evidence_json = 4;
 }
 
 message Grade {
@@ -432,6 +435,17 @@ message Grade {
   // is a gate silently opening. A payload the Host cannot read fails the grade
   // parse, for the reason trace_checks above does.
   TraceChecksSummary trace_checks_summary = 11;
+
+  // What the comparison view did, when the pack declares
+  // state_checks.comparison_view: the golden's and the trial's view records (or the
+  // error that kept the trial's state from being viewed) and, on a mismatch, the
+  // diff of the two views. `optional`, and unset without a view, so a grade without
+  // one encodes byte-identically to a grade that has no field 12. A payload the Host
+  // cannot read fails the grade parse. See docs/GRADING.md § Comparison view.
+  optional string comparison_view_json = 12;
+
+  // Replay states reconstructed by a host grader, persisted as a bundle sidecar.
+  optional string state_snapshots_json = 13;
 }
 
 message TraceConstraintResult {
@@ -476,9 +490,12 @@ message JudgeReport {
   int32 prompt_tokens = 2;
   int32 completion_tokens = 3;
   int32 reasoning_tokens = 4;
-  double cost_usd = 5;         // the judge's own spend
+  double cost_usd = 5;         // the judge's own spend, as the eval prices it
   int32 tool_calls = 6;        // read-only tool calls the judge made
   string transcript_json = 7;  // judge message transcript (audit channel), JSON
+  // fields 8-15: verdict-consistency rejections, the knowledge-search gating, the
+  // replay inputs and the prompt customisation (see runner.proto); 16 is reserved
+  optional double billed_cost_usd = 17;  // what the providers stated they charged; absent unless every call stated one
 }
 
 message GradeComponents {
@@ -644,7 +661,11 @@ Version 1 is the first that sends `ExecuteToolRequest.call_id`. An engine that p
 
 Version 2 is the first that omits `user_simulator.first_message` and `user_simulator.user_context` from the trial spec, so an engine below it emits two keys this runner no longer declares and could not parse.
 
-The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
+Version 3 is the first that reports completed MCP `isError` replies as `EXECUTION_STATUS_ENVIRONMENT_ERROR` and returns `runner_protocol_version` at registration. The host refuses an older image before a trial starts, because the older runner would otherwise accept the newer request but silently record an environment error as success.
+
+Version 4 is the first whose grading regexes run on RE2 by default and whose grading config carries `regex_engine` (on `trace_checks`, `transcript_rules`, and an authored matcher predicate or bound value). An engine below it sends a config with no `regex_engine`, which this runner would read as `linear`: a lookahead the older engine's gate passed would spend the trial's tokens and then raise at grade time, and a `\d`, `\w` or `$` pattern would silently change verdict. An image below it would refuse every pack carrying `trace_checks` or `transcript_rules` at the wire model instead of at the gate. Both pairings are refused at registration, for every pack.
+
+The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload
 
@@ -845,6 +866,14 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     
     # 5. Restore trial state
     db_service.restore(trial_id, "pre_golden")
+
+    # A declared state_checks.comparison_view replaces steps 3 and 4's server-side
+    # hashes: both FULL states are read (db_service.get_state, before the reset and
+    # after the replay), and only after the restore above does the runner run the
+    # view, the unstable filter and compare_columns (pre_hash.view_the_pair) and hash
+    # both sides with compute_stable_hash. A view that cannot be computed fails the
+    # RPC (success=false); a trial whose own state cannot be viewed once the golden's
+    # view succeeded fails (state_score 0.0). See docs/GRADING.md § Comparison view.
     
     # 6. Compare hashes
     if trial_hash == golden_hash:
@@ -906,7 +935,9 @@ it omits the field, and proto3 would decode that omission as `0.0` — recording
 scored zero for a runner that cannot evaluate trace checks at all. The
 `RegisterTrial` version lock does not cover this direction, because a newer
 engine registers happily against an older runner. `include_agent_system_prompt`
-on `JudgeReport` and `Grade.trace_checks_summary` carry the same reasoning: the
+and `billed_cost_usd` on `JudgeReport` and `Grade.trace_checks_summary` carry the
+same reasoning (an absent `billed_cost_usd` reads back as "no complete charge
+stated", never as a bill of `0.0`): the
 summary is a *message* so that an absent one is distinguishable from one
 reporting that no gate failed, which is the difference between "this runner
 cannot evaluate a gate" and "the gate held".
@@ -922,7 +953,9 @@ is declared once in
 ### GradeTrial Error Semantics
 
 `GradeTrialResponse.success = false` leaves `grade` unset — an unusable grade is
-never approximated with a score. The two views of the trial are joined into its
+never approximated with a score. A grader that already reconstructed DB states
+or received judge usage may set `failure_evidence_json`; the Host stores those
+facts without treating them as a verdict. The two views of the trial are joined into its
 [event timeline](GRADING.md#trial-event-timeline) **before** any component runs,
 so an unreadable or self-contradictory payload fails the RPC before golden replay
 touches the trial's state.

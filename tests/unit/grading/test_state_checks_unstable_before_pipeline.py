@@ -35,9 +35,10 @@ _CHANGED = {"rows": [{"id": "R8", "label": "B"}, {"id": "R9", "label": "C"}]}
 
 @pytest.mark.parametrize(("state", "score"), [(_REORDERED, 1.0), (_CHANGED, 0.0)])
 def test_check_hash_against_an_expected_state(state, score) -> None:
-    got, reason = StateChecker().check_hash(
+    result = StateChecker().check_hash(
         state, expected_state=_EXPECTED, compare_columns=_RULES, unstable_fields=_UNSTABLE
     )
+    got, reason = result.hash_score, result.reason
     assert got == score, reason
 
 
@@ -46,13 +47,14 @@ def test_check_hash_against_a_stored_digest(state, score) -> None:
     """The legacy shape: the caller's digest of the expected side, filtered first."""
     filtered = filter_unstable_fields(_EXPECTED, _UNSTABLE)
     _, expected_processed = apply_compare_columns_pipeline(filtered, filtered, _RULES)
-    got, reason = StateChecker().check_hash(
+    result = StateChecker().check_hash(
         state,
         expected_hash=state_digest(expected_processed),
         compare_columns=_RULES,
         expected_state_for_pipeline=_EXPECTED,
         unstable_fields=_UNSTABLE,
     )
+    got, reason = result.hash_score, result.reason
     assert got == score, reason
 
 
@@ -69,7 +71,7 @@ def test_check_hash_against_a_golden_replay(
             GoldenReplayRecord(authored=0),
         ),
     )
-    got, reason, diff, _ = checker.check_hash_against_golden_replay(
+    result = checker.check_hash_against_golden_replay(
         db_state=state,
         golden_actions=[],
         task_dir=tmp_path,
@@ -79,5 +81,6 @@ def test_check_hash_against_a_golden_replay(
         compare_columns=_RULES,
         unstable_fields=_UNSTABLE,
     )
+    got, reason, diff = result.hash_score, result.reason, result.state_diff
     assert got == score, reason
     assert (diff is None) is (score == 1.0)

@@ -47,6 +47,7 @@ from tolokaforge.core.grading.agreement import (
     CriterionObservation,
     build_report,
 )
+from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 
 if TYPE_CHECKING:
@@ -140,7 +141,10 @@ class ParityCorpusEntry:
     ``judge_scripts`` is keyed on ``JudgeKind.NAME`` — the cassette the
     kind draws its LLM turns from in cassette mode. A missing key for
     a kind under test is the loader's responsibility to raise on (loud,
-    not silent skip); this dataclass carries only the shape.
+    not silent skip); this dataclass carries only the shape. ``options``
+    are the :class:`JudgeTrialOptions` both kinds grade the entry under —
+    for an entry built from a recorded trial, its task's customization
+    resolved by :func:`resolve_judge_trial_options`.
     """
 
     entry_id: str
@@ -148,10 +152,8 @@ class ParityCorpusEntry:
     agent_system_prompt: str
     transcript: list[dict[str, Any]]
     state_diff: str | None
-    disable_knowledge_search: bool
-    custom_system_prompt: str | None
-    include_agent_system_prompt: bool
     judge_scripts: Mapping[str, list[Any]]
+    options: JudgeTrialOptions = JudgeTrialOptions()
 
 
 def measure_cross_kind_agreement(
@@ -466,9 +468,7 @@ def _evaluate_kwargs(
         "state_diff": entry.state_diff,
         "judge_model_config": judge_model_config,
         "judge_model_provider": judge_model_provider,
-        "disable_knowledge_search": entry.disable_knowledge_search,
-        "custom_system_prompt": entry.custom_system_prompt,
-        "include_agent_system_prompt": entry.include_agent_system_prompt,
+        "options": entry.options,
         "kind_config": kind_config,
         "logger": logger,
     }

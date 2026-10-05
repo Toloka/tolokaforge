@@ -9,10 +9,11 @@ come in via :class:`CriterionResult`, whose canonical home is
 """
 
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.models.grade_components import GradeComponents
 from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.runner.models import CriterionResult, TraceChecksSummary, TraceConstraintResult
@@ -20,6 +21,7 @@ from tolokaforge.runner.models import CriterionResult, TraceChecksSummary, Trace
 __all__ = [
     "CustomCheckDetail",
     "Grade",
+    "GradingStateSnapshots",
     "JudgeInputs",
     "JudgeKbGating",
     "JudgeStatus",
@@ -61,6 +63,11 @@ class JudgeUsage(BaseModel):
     counters are judge-specific accounting. Field set mirrors the runner's
     :class:`tolokaforge.core.grading.judge.JudgeUsage` dataclass 1:1 and the
     proto ``JudgeReport`` usage fields.
+
+    ``cost_usd`` is the eval's own figure for the judge; ``billed_cost_usd`` is
+    what the providers stated they charged, the sum over the judge's calls and
+    ``None`` unless every call stated one (a ``grade.yaml`` written before the
+    field existed reads ``None``). See docs/OUTPUT_FORMAT.md.
     """
 
     calls: int = 0
@@ -70,6 +77,7 @@ class JudgeUsage(BaseModel):
     cost_usd: float = 0.0
     tool_calls: int = 0
     consistency_rejections: int = 0
+    billed_cost_usd: float | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -123,6 +131,22 @@ class CustomCheckDetail(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class GradingStateSnapshots(BaseModel):
+    """States reconstructed by a host grader, persisted in a separate sidecar.
+
+    These need not be live substrate snapshots: ``source`` names how the grader
+    obtained them. They are evidence, never an implicit grading configuration.
+    """
+
+    schema_version: Literal[1] = 1
+    source: str
+    initial: dict[str, Any]
+    golden: dict[str, Any]
+    final: dict[str, Any]
+
+    model_config = {"extra": "forbid"}
+
+
 class Grade(BaseModel):
     """Grading result"""
 
@@ -131,6 +155,8 @@ class Grade(BaseModel):
     components: GradeComponents = Field(default_factory=GradeComponents)
     reasons: str | dict[str, list[str]] = ""
     state_diff: dict[str, Any] | None = None
+    # Host-grader evidence; written to grading_state_snapshots.yaml, not grade.yaml.
+    state_snapshots: GradingStateSnapshots | None = None
     custom_checks_details: list[CustomCheckDetail] | None = None
     # Per-constraint trace-check verdicts, serialized inline in ``grade.yaml``:
     # small and scannable, so a reviewer reads which constraint failed and which
@@ -197,3 +223,27 @@ class Grade(BaseModel):
     # ``state_checks: 0.0`` verdict. Serialized inline in ``grade.yaml``. See
     # docs/OUTPUT_FORMAT.md.
     synthesized_by_termination_reason: TerminationReason | None = None
+    # What the comparison view did, when the pack declares
+    # ``state_checks.comparison_view``: the golden's and the trial's view records (or the
+    # trial's collision) and, on a mismatch, the diff of the two views — the JSON
+    # ``runner.models.ComparisonViewGradeRecord`` dumps, the same on both substrates.
+    # Absent from ``grade.yaml`` when no view is declared, so a grade without one keeps
+    # its bytes. See docs/GRADING.md § Comparison view.
+    comparison_view: dict[str, Any] | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset(
+        {"comparison_view", "state_snapshots"}
+    )
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a grade that has none.
+
+        Every recorded ``grade.yaml`` and grade snapshot predates the field, so a grade
+        without a view dumps exactly as they do.
+        """
+        return leave_out_absent_fields(self, handler)

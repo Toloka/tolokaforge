@@ -17,9 +17,11 @@ Four providers are tried in priority order:
    re-fetching from the installed distribution's origin using PEP 610
    ``direct_url.json`` metadata: a ``git clone`` at the pinned commit
    for git installs; a direct download for archive-URL installs; a
-   ``pip download --only-binary`` for plain PyPI installs. Refuses
-   ``dir_info`` (local-path) origins so a PyPI wheel is never silently
-   substituted for the user's local checkout.
+   ``pip download --only-binary`` for plain PyPI installs. The git
+   clone runs with ``GIT_LFS_SKIP_SMUDGE=1`` and ``--filter=blob:none``
+   so it never fetches the engine's Git-LFS objects a wheel build does
+   not need. Refuses ``dir_info`` (local-path) origins so a PyPI wheel
+   is never silently substituted for the user's local checkout.
 4. **PipDownloadWheelProvider** (priority 30) — final fallback:
    ``python -m pip download`` for the installed name+version, with
    ``ensurepip`` auto-recovery when pip is not installed. Delegates to
@@ -346,7 +348,12 @@ def _stderr_tail(text: str) -> str:
     return "…" + trimmed[-_STDERR_TAIL:]
 
 
-def _run(argv: list[str], *, timeout: int = 300) -> tuple[bool, str]:
+def _run(
+    argv: list[str],
+    *,
+    timeout: int = 300,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
     """Run *argv* to completion. Return ``(ok, stderr_tail)``.
 
     ``ok`` is ``True`` on exit code 0. On any subprocess error
@@ -354,6 +361,9 @@ def _run(argv: list[str], *, timeout: int = 300) -> tuple[bool, str]:
     non-zero exit, etc.) ``ok`` is ``False`` and ``stderr_tail`` carries
     a short, human-readable reason (with the tail of the child's stderr
     when applicable). Never raises.
+
+    When *env* is ``None`` the child inherits the parent environment;
+    pass a mapping to set the child's environment explicitly.
     """
     try:
         result = subprocess.run(  # noqa: S603
@@ -361,6 +371,7 @@ def _run(argv: list[str], *, timeout: int = 300) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except FileNotFoundError:
         return False, f"{argv[0]!r} not on PATH"
@@ -846,7 +857,7 @@ class ReinstallWheelProvider(WheelProvider):
         whl = _newest_whl_for_version(cache_dir, _ENGINE_PKG, ver)
         if whl is None:
             self.last_failure = (
-                f"materialize completed but no {_ENGINE_PKG}-{ver}-*.whl " f"landed in {cache_dir}"
+                f"materialize completed but no {_ENGINE_PKG}-{ver}-*.whl landed in {cache_dir}"
             )
             return None
         return WheelArtifact(
@@ -865,26 +876,51 @@ class ReinstallWheelProvider(WheelProvider):
         like a tag/branch name; for hex-SHA commit ids (the common PEP
         610 shape) ``--branch`` would be rejected by git, so we go
         straight to full clone + explicit checkout.
+
+        Every git subprocess runs with ``GIT_LFS_SKIP_SMUDGE=1`` (the
+        smudge runs at checkout, so the clone and the explicit checkout
+        both carry it) and ``--filter=blob:none`` on the clone, so the
+        engine's Git-LFS objects — which a wheel build never needs — are
+        not fetched.
         """
         if shutil.which("git") is None:
             return False, "git not on PATH"
 
+        git_env = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1"}
         with tempfile.TemporaryDirectory(prefix="tolokaforge-git-") as tmp:
             src = Path(tmp) / "src"
             if _looks_like_sha(commit):
                 # Full clone then explicit checkout — git clone --branch
                 # does not accept commit SHAs.
-                ok, err = _run(["git", "clone", url, str(src)], timeout=180)
+                ok, err = _run(
+                    ["git", "clone", "--filter=blob:none", url, str(src)],
+                    timeout=180,
+                    env=git_env,
+                )
                 if not ok:
                     return False, f"clone: {err}"
-                ok, err = _run(["git", "-C", str(src), "checkout", commit], timeout=60)
+                ok, err = _run(
+                    ["git", "-C", str(src), "checkout", commit],
+                    timeout=60,
+                    env=git_env,
+                )
                 if not ok:
                     return False, f"checkout {commit[:12]}: {err}"
             else:
                 # Tag/branch — shallow clone is safe and fast.
                 ok, err = _run(
-                    ["git", "clone", "--depth=1", "--branch", commit, url, str(src)],
+                    [
+                        "git",
+                        "clone",
+                        "--depth=1",
+                        "--filter=blob:none",
+                        "--branch",
+                        commit,
+                        url,
+                        str(src),
+                    ],
                     timeout=180,
+                    env=git_env,
                 )
                 if not ok:
                     return False, f"clone --branch {commit}: {err}"

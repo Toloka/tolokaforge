@@ -6,10 +6,11 @@ import importlib.util
 import json
 from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewError
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayError,
@@ -17,6 +18,7 @@ from tolokaforge.core.grading.golden_replay import (
     declared_failure,
     resolve_golden_action_names,
 )
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import (
     ColumnCompareRule,
@@ -28,6 +30,12 @@ from tolokaforge.core.hash import (
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
+
+if TYPE_CHECKING:
+    # The view's composition reaches the runner models, whose package pulls the gRPC
+    # stack core grading otherwise never touches: it is imported where a view is
+    # declared, so a task without one imports nothing more than before.
+    from tolokaforge.core.grading.pre_hash import PreHashDeclaration
 
 # Tau-bench compatible hash types
 ToHashable = Union[str, int, float, dict[str, "ToHashable"], list["ToHashable"], set["ToHashable"]]
@@ -176,6 +184,44 @@ def load_task_unstable_fields(task_dir: Path | None) -> list[str]:
 
     specs = read_unstable_field_specs(Path(task_dir))
     return [f"{spec.table_name}.{spec.field_name}" for spec in specs]
+
+
+def _pre_hash_declaration(
+    view: ComparisonViewConfig,
+    *,
+    id_fields: Mapping[str, str | list[str]] | None,
+    unstable_fields: list[str] | None,
+    compare_columns: dict[str, dict[str, ColumnCompareRule]] | None,
+    numeric_string_fields: list[str] | None,
+    auto_normalize_nullables: bool,
+) -> "PreHashDeclaration":
+    """What steps 1–3 read, out of the keyword arguments core's hash checks take."""
+    from tolokaforge.core.grading.pre_hash import PreHashDeclaration
+
+    return PreHashDeclaration(
+        view=view,
+        id_fields=dict(id_fields or {}),
+        unstable_fields=tuple(unstable_fields or ()),
+        compare_columns=compare_columns or {},
+        numeric_string_fields=tuple(numeric_string_fields or ()),
+        auto_normalize_nullables=auto_normalize_nullables,
+    )
+
+
+_HASH_MATCHES = "State hash matches (tau-bench algorithm)"
+
+
+def _digest_verdict(
+    actual: str, expected: str, basis: HashComparisonBasis | None
+) -> HashGradingResult:
+    """The verdict of two digests, with the reason ``check_hash`` reports it by."""
+    if actual == expected:
+        return HashGradingResult(hash_match=True, reason=_HASH_MATCHES, basis=basis)
+    return HashGradingResult(
+        hash_match=False,
+        reason=f"State hash mismatch: expected {expected[:16]}..., got {actual[:16]}...",
+        basis=basis,
+    )
 
 
 def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
@@ -406,7 +452,11 @@ class StateChecker:
         expected_state: dict[str, Any] | None = None,
         expected_state_for_pipeline: dict[str, Any] | None = None,
         unstable_fields: list[str] | None = None,
-    ) -> tuple[float, str]:
+        comparison_view: ComparisonViewConfig | None = None,
+        initial_state: dict[str, Any] | None = None,
+        id_fields: Mapping[str, str | list[str]] | None = None,
+        basis: HashComparisonBasis | None = None,
+    ) -> HashGradingResult:
         """
         Check state hash against expected using tau-bench algorithm.
 
@@ -454,9 +504,33 @@ class StateChecker:
                 db-service drops them. Both sides of one comparison must pass
                 the same list, and the caller that derived ``expected_hash``
                 from a stored digest also pre-applied this filter on that side.
+            comparison_view: ``state_checks.comparison_view``. Declared, both full
+                states go through :func:`~tolokaforge.core.grading.pre_hash.view_the_pair`
+                — the view, then the unstable filter with table names resolved as the
+                db-service resolves them and re-keyed ids left in, then the pipeline
+                — before this substrate's own masks and digest. Needs
+                ``expected_state``; a stored digest has no state to view.
+            initial_state: The state both sides started from, which the view reads
+                (``scope: new_records``). Passed as a copy nobody else holds.
+            id_fields: ``state_checks.id_fields``, which the view reads.
+            basis: The declared source the expected state comes from, carried onto the
+                result as the runner carries its own; ``None`` for a caller that names
+                none, such as one holding a stored digest.
 
         Returns:
-            (score 0 or 1, reason)
+            The shared :class:`HashGradingResult`: the verdict bit (``hash_score``
+            derives from it), the reason, the basis, and the comparison view's record
+            where one is declared.
+
+        Raises:
+            ComparisonViewError: the expected side's view cannot be computed. Not folded
+                into a ``0.0``: the trial is left with a grading error, as on the runner.
+                Once the expected side's view succeeded, a trial whose own state cannot be
+                viewed scores ``0.0`` with the error as the reason.
+            Exception: under a declared ``comparison_view``, an unexpected rule
+                implementation exception on either side propagates as a grading error
+                instead of scoring ``0.0``; only the view's declared trial-state errors
+                score ``0.0``.
         """
         if expected_hash is None and expected_state is None:
             raise ValueError("check_hash: pass exactly one of expected_hash or expected_state.")
@@ -477,7 +551,64 @@ class StateChecker:
                 "expected_state_for_pipeline (or pass expected_state instead of "
                 "expected_hash to let this method own the pipeline)."
             )
+        if comparison_view is not None and expected_state is None:
+            raise ValueError(
+                "check_hash: a comparison view needs the expected state to view; a stored "
+                "expected_hash has none."
+            )
         try:
+            if comparison_view is not None:
+                from tolokaforge.core.grading.pre_hash import (
+                    TrialViewError,
+                    comparison_view_grade_record,
+                    comparison_view_reason,
+                    view_the_pair,
+                )
+
+                assert expected_state is not None
+                outcome = view_the_pair(
+                    state,
+                    expected_state,
+                    initial=initial_state,
+                    declaration=_pre_hash_declaration(
+                        comparison_view,
+                        id_fields=id_fields,
+                        unstable_fields=unstable_fields,
+                        compare_columns=compare_columns,
+                        numeric_string_fields=numeric_string_fields,
+                        auto_normalize_nullables=auto_normalize_nullables,
+                    ),
+                )
+                if isinstance(outcome, TrialViewError):
+                    unviewed = comparison_view_grade_record(outcome, matched=False)
+                    return HashGradingResult(
+                        hash_match=False,
+                        reason=str(comparison_view_reason(unviewed)),
+                        basis=basis,
+                        comparison_view=unviewed,
+                    )
+                viewed_actual, viewed_expected = (
+                    state_digest(
+                        side,
+                        numeric_string_fields=numeric_string_fields,
+                        auto_mask_clock_columns=auto_mask_clock_columns,
+                        auto_normalize_nullables=auto_normalize_nullables,
+                    )
+                    for side in (outcome.trial, outcome.golden)
+                )
+                matched = viewed_actual == viewed_expected
+                record = comparison_view_grade_record(outcome, matched=matched)
+                return HashGradingResult(
+                    hash_match=matched,
+                    reason=(
+                        _HASH_MATCHES
+                        if matched
+                        else f"State hash mismatch: expected {viewed_expected[:16]}..., "
+                        f"got {viewed_actual[:16]}...; {comparison_view_reason(record)}"
+                    ),
+                    basis=basis,
+                    comparison_view=record,
+                )
             # The unstable columns go first, before the pipeline, as the runner's
             # db-service drops them in ``get_stable_state`` before its pipeline runs:
             # an ``order: unordered`` sort that still saw a generated id would order
@@ -508,13 +639,7 @@ class StateChecker:
                     auto_normalize_nullables=auto_normalize_nullables,
                     unstable_fields=unstable_fields,
                 )
-                if actual_hash == computed_expected_hash:
-                    return 1.0, "State hash matches (tau-bench algorithm)"
-                return (
-                    0.0,
-                    f"State hash mismatch: expected {computed_expected_hash[:16]}..., "
-                    f"got {actual_hash[:16]}...",
-                )
+                return _digest_verdict(actual_hash, computed_expected_hash, basis)
 
             if has_active_rules and expected_state_for_pipeline is not None:
                 state, _ = apply_compare_columns_pipeline(
@@ -533,14 +658,33 @@ class StateChecker:
                 auto_normalize_nullables=auto_normalize_nullables,
                 unstable_fields=unstable_fields,
             )
-            if actual_hash == expected_hash:
-                return 1.0, "State hash matches (tau-bench algorithm)"
-            return (
-                0.0,
-                f"State hash mismatch: expected {expected_hash[:16]}..., got {actual_hash[:16]}...",
-            )
+            assert expected_hash is not None
+            return _digest_verdict(actual_hash, expected_hash, basis)
+        except ComparisonViewError:
+            # A view that cannot be computed is no verdict at all: the trial is left with
+            # a grading error, as the runner leaves it, never a 0.0 read as the agent's.
+            raise
         except Exception as e:
-            return 0.0, f"Error computing hash: {str(e)}"
+            if comparison_view is not None:
+                # A declared evaluator failed, rather than finding a mismatch.
+                # Only TrialViewError above represents an invalid trial state.
+                raise
+            return HashGradingResult(
+                hash_match=False, reason=f"Error computing hash: {str(e)}", basis=basis
+            )
+
+    def _load_initial_state(self, task_dir: Path, initial_state_path: str) -> dict[str, Any]:
+        """A fresh load of the task's initial-state file, which no other reader holds."""
+        initial_state_file = task_dir / initial_state_path
+        if not initial_state_file.exists():
+            self.logger.error("Initial state file not found", path=str(initial_state_file))
+            raise ValueError(f"Initial state file not found: {initial_state_file}")
+
+        with open(initial_state_file) as f:
+            data: dict[str, Any] = json.load(f)
+
+        self.logger.debug("Loaded initial state", path=str(initial_state_file))
+        return data
 
     def _execute_golden_actions(
         self,
@@ -572,15 +716,7 @@ class StateChecker:
                 partial golden world is never built and never hashed against.
         """
         # 1. Load fresh initial state
-        initial_state_file = task_dir / initial_state_path
-        if not initial_state_file.exists():
-            self.logger.error("Initial state file not found", path=str(initial_state_file))
-            raise ValueError(f"Initial state file not found: {initial_state_file}")
-
-        with open(initial_state_file) as f:
-            data = json.load(f)
-
-        self.logger.debug("Loaded initial state", path=str(initial_state_file))
+        data = self._load_initial_state(task_dir, initial_state_path)
 
         # 2. Import MCP server module
         mcp_server_file = task_dir / mcp_server_path
@@ -658,7 +794,9 @@ class StateChecker:
         auto_mask_clock_columns: bool = False,
         auto_normalize_nullables: bool = False,
         unstable_fields: list[str] | None = None,
-    ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
+        comparison_view: ComparisonViewConfig | None = None,
+        id_fields: Mapping[str, str | list[str]] | None = None,
+    ) -> HashGradingResult:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
 
@@ -684,10 +822,18 @@ class StateChecker:
                 unstable (auto-generated ids, timestamps, random values).
                 Applied to both ``db_state`` and the replayed expected state
                 so the mask is symmetric across the comparison.
+            comparison_view: ``state_checks.comparison_view``, applied to both full
+                states first, as :meth:`check_hash` applies it. The view reads the
+                initial state, which the replay mutates in place as it runs, so it
+                reads a load of its own taken before the replay.
+            id_fields: ``state_checks.id_fields``, which the view reads.
 
         Returns:
-            (score 0 or 1, reason, diff_result dict or None, replay record). The verdict
-            stands whether or not every action ran; the record carries what did not, for
+            The shared :class:`HashGradingResult` against
+            :attr:`HashComparisonBasis.GOLDEN_REPLAY`: the verdict bit (``hash_score``
+            derives from it), the reason, the diff on a mismatch, the replay record and
+            the comparison view's record where one is declared. The verdict stands
+            whether or not every action ran; the replay record carries what did not, for
             the caller to report beside the score.
 
         Raises:
@@ -695,8 +841,15 @@ class StateChecker:
                 expected state to compare against and therefore no verdict. An action
                 whose name resolves to no tool raises the ``UnresolvableGoldenAction``
                 subclass, which names every offending action.
+            ComparisonViewError: the replayed state's view cannot be computed — a grading
+                error. A trial whose own state cannot be viewed after it scores ``0.0``.
         """
         try:
+            view_initial = (
+                self._load_initial_state(task_dir, initial_state_path)
+                if comparison_view is not None
+                else None
+            )
             expected_state, replay = self._execute_golden_actions(
                 golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
             )
@@ -707,6 +860,60 @@ class StateChecker:
         except Exception as e:
             self.logger.error("Failed to execute golden actions", error=str(e))
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
+
+        if comparison_view is not None:
+            from tolokaforge.core.grading.pre_hash import (
+                TrialViewError,
+                comparison_view_grade_record,
+                comparison_view_reason,
+                view_the_pair,
+            )
+
+            outcome = view_the_pair(
+                db_state,
+                expected_state,
+                initial=view_initial,
+                declaration=_pre_hash_declaration(
+                    comparison_view,
+                    id_fields=id_fields,
+                    unstable_fields=unstable_fields,
+                    compare_columns=compare_columns,
+                    numeric_string_fields=numeric_string_fields,
+                    auto_normalize_nullables=auto_normalize_nullables,
+                ),
+            )
+            matched = not isinstance(outcome, TrialViewError) and state_digest(
+                outcome.trial,
+                numeric_string_fields=numeric_string_fields,
+                auto_mask_clock_columns=auto_mask_clock_columns,
+                auto_normalize_nullables=auto_normalize_nullables,
+            ) == state_digest(
+                outcome.golden,
+                numeric_string_fields=numeric_string_fields,
+                auto_mask_clock_columns=auto_mask_clock_columns,
+                auto_normalize_nullables=auto_normalize_nullables,
+            )
+            record = comparison_view_grade_record(outcome, matched=matched)
+            if matched:
+                return HashGradingResult(
+                    hash_match=True,
+                    reason="State hash matches",
+                    basis=HashComparisonBasis.GOLDEN_REPLAY,
+                    golden_replay=replay,
+                    comparison_view=record,
+                )
+            diff_result = calculate_state_diff(expected_state, db_state)
+            return HashGradingResult(
+                hash_match=False,
+                reason=(
+                    f"State hash mismatch. {comparison_view_reason(record)}\n"
+                    f"Diff:\n{format_diff_summary(diff_result, max_lines=50)}"
+                ),
+                basis=HashComparisonBasis.GOLDEN_REPLAY,
+                golden_replay=replay,
+                state_diff=diff_result,
+                comparison_view=record,
+            )
 
         # Drop the unstable columns, then run the per-column pipeline
         # (equivalence folds, ordering, extras) symmetrically on both sides —
@@ -738,31 +945,33 @@ class StateChecker:
             unstable_fields=unstable_fields,
         )
 
-        # Calculate diff if states don't match
-        diff_result = None
-        if expected_hash != actual_hash:
-            self.logger.info(
-                "State hash mismatch, calculating diff",
-                expected_hash=expected_hash[:16],
-                actual_hash=actual_hash[:16],
-            )
-            diff_result = calculate_state_diff(expected_state, db_state)
-            diff_summary = format_diff_summary(diff_result, max_lines=50)
-
-            hash_score = 0.0
-            hash_reason = f"State hash mismatch. Diff:\n{diff_summary}"
-
-            self.logger.error(
-                "State mismatch in golden set grading",
-                expected_hash=expected_hash[:16],
-                actual_hash=actual_hash[:16],
-                diff_lines=diff_result["diff_lines"],
-            )
-        else:
-            hash_score = 1.0
-            hash_reason = "State hash matches"
+        if expected_hash == actual_hash:
             self.logger.info(
                 "State hash matches", expected_hash=expected_hash[:16], actual_hash=actual_hash[:16]
             )
+            return HashGradingResult(
+                hash_match=True,
+                reason="State hash matches",
+                basis=HashComparisonBasis.GOLDEN_REPLAY,
+                golden_replay=replay,
+            )
 
-        return hash_score, hash_reason, diff_result, replay
+        self.logger.info(
+            "State hash mismatch, calculating diff",
+            expected_hash=expected_hash[:16],
+            actual_hash=actual_hash[:16],
+        )
+        diff_result = calculate_state_diff(expected_state, db_state)
+        self.logger.error(
+            "State mismatch in golden set grading",
+            expected_hash=expected_hash[:16],
+            actual_hash=actual_hash[:16],
+            diff_lines=diff_result["diff_lines"],
+        )
+        return HashGradingResult(
+            hash_match=False,
+            reason=f"State hash mismatch. Diff:\n{format_diff_summary(diff_result, max_lines=50)}",
+            basis=HashComparisonBasis.GOLDEN_REPLAY,
+            golden_replay=replay,
+            state_diff=diff_result,
+        )

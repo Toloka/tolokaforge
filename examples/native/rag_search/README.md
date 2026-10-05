@@ -1,7 +1,8 @@
 # RAG search — `search_kb` against a first-party service
 
-A single-task native pack that drives the first-party **rag-service** over the
-`search_kb` builtin. The agent retrieves an operations fact from a per-trial
+A single-task native pack that drives the first-party **rag-service** over its
+`search_kb` tool (the default search backend, `rag_service`, behind the default
+tool name). The agent retrieves an operations fact from a per-trial
 knowledge-base index and reports it; grading is deterministic and
 keyless-gradable in shape — it asserts a knowledge-base search happened and that
 a retrieval-only fact appears in the transcript.

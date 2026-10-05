@@ -235,6 +235,31 @@ def test_write_all_without_grade(tmp_path, sample_trajectory):
     assert not (tmp_path / "grade.yaml").exists()
 
 
+def test_failed_judge_writes_usage_and_replay_snapshots_without_a_grade(
+    tmp_path, sample_trajectory
+):
+    from tolokaforge.core.models import JudgeUsage
+    from tolokaforge.core.models.grade import GradingStateSnapshots
+
+    sample_trajectory.grading_error = "judge malformed"
+    sample_trajectory.grading_judge_usage = JudgeUsage(calls=1, cost_usd=0.02)
+    sample_trajectory.grading_state_snapshots = GradingStateSnapshots(
+        source="environment replay",
+        initial={"agent": {}},
+        golden={"agent": {"x": 1}},
+        final={"agent": {"x": 1}},
+    )
+    writer = OutputWriter(tmp_path)
+    (tmp_path / "grade.yaml").write_text("stale verdict")
+    writer.write_all(sample_trajectory, {"task_id": "test-task-123"}, {}, StructuredLogger("test"))
+
+    trace = yaml.safe_load((tmp_path / "trajectory.yaml").read_text())
+    snapshots = yaml.safe_load((tmp_path / "grading_state_snapshots.yaml").read_text())
+    assert trace["grading_judge_usage"]["cost_usd"] == 0.02
+    assert snapshots["final"] == {"agent": {"x": 1}}
+    assert not (tmp_path / "grade.yaml").exists()
+
+
 def test_write_trajectory_does_not_include_system_prompt(tmp_path):
     """write_trajectory() must NOT include the agent system prompt — that
     moved to ``prompts.yaml`` (written separately by

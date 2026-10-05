@@ -520,6 +520,16 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl.GradeTrial",
     ),
     GradingKey(
+        author_key="state_checks.comparison_view",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="StateChecksConfig.comparison_view",
+        runner_field="RunnerStateChecksConfig.comparison_view",
+        core_evaluator=_CORE_HASH_EVALUATOR,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
+    ),
+    GradingKey(
         author_key="state_checks.db_probes",
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.RUNNER_ONLY,
@@ -556,6 +566,20 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TranscriptRulesConfig.disallow_regex",
         core_evaluator=_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_TRANSCRIPT_EVALUATOR,
+    ),
+    GradingKey(
+        author_key="transcript_rules.regex_engine",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="TranscriptRulesConfig.regex_engine",
+        runner_field="TranscriptRulesConfig.regex_engine",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
+        reason=(
+            "the engine every disallow_regex pattern is compiled and searched by, which "
+            "decides what a pattern both engines accept matches."
+        ),
     ),
     GradingKey(
         author_key="transcript_rules.max_turns",
@@ -639,6 +663,21 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_evaluator=_TRACE_CHECKS_EVALUATOR,
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
         reason=_TRACE_CHECKS_ALTERNATIVES_NARROWING,
+    ),
+    GradingKey(
+        author_key="trace_checks.regex_engine",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="TraceChecksConfig.regex_engine",
+        runner_field="TraceChecksConfig.regex_engine",
+        core_evaluator=_TRACE_CHECKS_EVALUATOR,
+        runner_evaluator=_TRACE_CHECKS_EVALUATOR,
+        reason=(
+            "the engine every regex, not_regex and capture pattern in the block is "
+            "compiled and searched by unless its predicate or bound value names its "
+            "own, which decides what a pattern both engines accept matches."
+        ),
     ),
     *(_trace_constraint_kind_key(kind) for kind in _TRACE_CONSTRAINT_MANIFEST_KINDS),
     _trace_constraint_field_key(

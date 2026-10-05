@@ -17,6 +17,7 @@ Usage:
 """
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -41,6 +42,7 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
+from tolokaforge.core.grading.comparison_view_checks import check_wire_comparison_view
 from tolokaforge.core.grading.composite_fold import CompositeFold
 from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
@@ -50,6 +52,8 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
+from tolokaforge.core.grading.grading_failed import GradingFailedError
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.jsonpath_addressing import (
     addresses_the_database,
     block_addresses_the_database,
@@ -58,8 +62,16 @@ from tolokaforge.core.grading.jsonpath_addressing import (
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
-from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
+from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.kinds import GraderKindRefusedError
+from tolokaforge.core.grading.pre_hash import (
+    PreHashDeclaration,
+    TrialViewError,
+    comparison_view_grade_record,
+    comparison_view_reason,
+    resolve_unstable_fields,
+    view_the_pair,
+)
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
@@ -75,6 +87,7 @@ from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatch
 from tolokaforge.core.hash import (
     apply_compare_columns_pipeline,
     compute_stable_hash,
+    filter_unstable_fields,
 )
 from tolokaforge.core.models import (
     CriterionResult,
@@ -83,6 +96,12 @@ from tolokaforge.core.models import (
     TerminationReason,
 )
 from tolokaforge.core.plugin_registry import (
+    RAG_SERVICE_STACK_SERVICE,
+    RegistryError,
+    SearchBackend,
+    SearchBackendContext,
+    SearchIndex,
+    SearchIndexBuildError,
     UnknownImplementationError,
     available_grader_kinds,
     available_grading_methods,
@@ -91,8 +110,15 @@ from tolokaforge.core.plugin_registry import (
     load_grading_method,
     load_judge_kind,
     load_judge_model_provider,
+    load_search_backend,
     load_state_check_backend,
     load_transcript_rule_matcher,
+)
+from tolokaforge.core.search.stack_services import (
+    StackServices,
+    StackServiceUnavailableError,
+    UndeclaredStackServiceError,
+    declared_stack_service,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -128,8 +154,6 @@ from tolokaforge.runner.id_resolution import (
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
-    HashComparisonBasis,
-    HashGradingResult,
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerInitialStateConfig,
@@ -150,11 +174,7 @@ from tolokaforge.runner.protocol import (
     parse_termination_reason,
     recorded_status,
 )
-from tolokaforge.runner.rag_client import (
-    RAGServiceClient,
-    RAGServiceError,
-    load_documents_from_directory,
-)
+from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.search_plane import (
     PartialTypeSenseAddressError,
     ResolvedSearchPlane,
@@ -164,12 +184,13 @@ from tolokaforge.runner.search_plane import (
 )
 from tolokaforge.runner.tool_factory import (
     MCPServerToolWrapper,
-    RAGSearchToolWrapper,
+    SearchToolWrapper,
     ToolCallOutcome,
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
     ToolWrapper,
+    cleanup_tools,
 )
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
@@ -293,7 +314,7 @@ def _search_plane_context(
     """
     domain = search_config.domain_name or "default"
     plane = (
-        f"{resolved_plane.plane.value} ({resolved_plane.basis.value})"
+        f"{resolved_plane.plane} ({resolved_plane.basis.value})"
         if resolved_plane is not None
         else "none declared"
     )
@@ -363,6 +384,80 @@ def _unseeded_json_db_tools_refusal(task: TaskDescription) -> str | None:
         f"Seed the store under initial_state.json_db, or declare an intentionally empty "
         f'one as json_db: {{"<table>": []}}.'
     )
+
+
+def _registry_search_backend_name(search_config: SearchConfig) -> str | None:
+    """The registered search backend serving this trial, or ``None`` for none.
+
+    ``search.plane`` names it. ``typesense`` is the plane the runner serves itself
+    (:meth:`RunnerServiceImpl._register_search_plane`), and ``enabled`` is
+    rag-service's own flag: it predates ``plane`` and an adapter that has not
+    declared a plane sets it alone, so an undeclared or TypeSense plane with
+    ``enabled`` set is served by ``rag_service``, as is a task declaring both
+    planes.
+    """
+    plane = search_config.plane
+    if plane is not None and plane != SearchPlane.TYPESENSE:
+        return plane
+    return SearchPlane.RAG_SERVICE.value if search_config.enabled else None
+
+
+def _refuse_an_unreached_stack_service(
+    trial_id: str, name: str, backend: SearchBackend, stack_services: StackServices
+) -> None:
+    """Refuse the trial unless this runner reaches the stack service its backend declares.
+
+    The declaration is the contract: a backend that names a stack service gets its
+    index built only on a runner holding that service's handle, so no backend words
+    the refusal of its own.
+
+    Raises:
+        SearchIndexBuildError: the declared name is not a declared stack service, or
+            this runner does not reach it.
+    """
+    if backend.stack_service is None:
+        return
+    try:
+        stack_services.get(declared_stack_service(backend.stack_service))
+    except (UndeclaredStackServiceError, StackServiceUnavailableError) as e:
+        raise SearchIndexBuildError(
+            f"Trial {trial_id}: search backend {name!r} cannot build the trial's index: {e}"
+        ) from e
+
+
+def _declared_tool_description(task_description: TaskDescription, tool_name: str) -> str | None:
+    """The description the task's search tool carries on the wire, agent's first."""
+    for schema in (*task_description.agent_tools, *task_description.user_tools):
+        if schema.name == tool_name and schema.source is None:
+            return schema.description
+    return None
+
+
+def _resolve_corpus_dir(
+    trial_id: str, documents_path: str | None, artifacts_dir: Path | None
+) -> Path | None:
+    """Where the trial's corpus landed: ``artifacts_dir / documents_path``, or literal.
+
+    The corpus travels in ``tool_artifacts`` and is extracted to *artifacts_dir*; a
+    relative ``documents_path`` (the pack's declared ``corpus_dir``) is resolved
+    against it, mirroring :meth:`RunnerServiceImpl._resolve_mcp_server_scripts`. An
+    absolute ``documents_path`` is used literally (escape hatch).
+
+    Raises:
+        SearchIndexBuildError: a relative path arrived with no artifacts to resolve
+            it against.
+    """
+    if not documents_path:
+        return None
+    corpus_path = Path(documents_path)
+    if corpus_path.is_absolute():
+        return corpus_path
+    if artifacts_dir is None:
+        raise SearchIndexBuildError(
+            f"Trial {trial_id}: relative documents_path {documents_path!r} cannot be "
+            f"resolved — the task shipped no extracted artifacts directory"
+        )
+    return artifacts_dir / corpus_path
 
 
 def _unreachable_state_checks_refusal(
@@ -483,6 +578,10 @@ class TrialContextRuntime:
         self.user_tools: dict[str, Callable] = {}
         self.tool_call_history: list[RecordedToolCall] = []
         self.default_timeout = default_timeout
+        self.cleanup_lock = asyncio.Lock()
+        # Set once the tools are torn down, so a cleanup retried after a DB
+        # failure releases the registration without stopping them twice.
+        self.tools_released = False
         # Run-level LLM config for the read-only rubric judge, carried from the
         # TrialSpec. None when no selected task uses an llm_judge component; the
         # orchestrator validates up front that it is present whenever a rubric is.
@@ -971,6 +1070,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.error(f"RegisterTrial: {trial_id} - {json_db_error}")
             return pb2.RegisterTrialResponse(success=False, error=json_db_error)
 
+        # A declared comparison view is checked against the description's own initial
+        # state — the belt-and-suspenders for an adapter other than the native one, which
+        # checks at description build. It reads the description alone, so it runs before
+        # anything lands on disk or in the db-service: a refusal has nothing to undo.
+        view_state_checks = task_description.grading.state_checks
+        if view_state_checks is not None:
+            view_error = check_wire_comparison_view(
+                view_state_checks,
+                task_description.initial_state,
+                context=f"RegisterTrial: {trial_id}",
+            )
+            if view_error:
+                logger.error(view_error)
+                return pb2.RegisterTrialResponse(success=False, error=view_error)
+
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None
         if task_description.tool_artifacts:
@@ -1089,36 +1203,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"Provisioned {len(initial_state.filesystem)} filesystem file(s)"
             )
 
-        # Initialize RAG service if search is enabled (FAIL FAST).
-        # ``enabled`` means the task needs rag-service; on the core stack
-        # (no rag-service ⇒ rag_client is None) this hard-fails ON PURPOSE.
+        # Build the trial's search index with the backend ``search.plane`` names
+        # (FAIL FAST). A rag-service task on the core stack (no rag-service ⇒ no
+        # client for the backend) hard-fails here ON PURPOSE.
         search_config = task_description.search
-        rag_client_for_trial = None
-        if search_config and search_config.enabled:
-            if self.rag_client is None:
-                logger.error("RegisterTrial: Search enabled but RAG client not configured")
-                return pb2.RegisterTrialResponse(
-                    success=False,
-                    error="Search enabled but RAG service not configured",
-                )
-
-            # Index documents for this trial
-            try:
-                self._run_async(
-                    self._index_documents_for_trial(
-                        trial_id=trial_id,
-                        search_config=search_config,
-                        artifacts_dir=artifacts_dir,
-                    )
-                )
-                rag_client_for_trial = self.rag_client
-                logger.info(f"RegisterTrial: {trial_id} - RAG documents indexed")
-            except RAGServiceError as e:
-                logger.error(f"RegisterTrial: Failed to index documents: {e}")
-                return pb2.RegisterTrialResponse(
-                    success=False,
-                    error=f"RAG indexing failed: {e}",
-                )
+        try:
+            search_index = self._build_search_index(trial_id, task_description, artifacts_dir)
+        except SearchIndexBuildError as e:
+            logger.error(f"RegisterTrial: {trial_id} - {e}")
+            return pb2.RegisterTrialResponse(success=False, error=str(e))
 
         # Reconstruct tools from ToolSource definitions (FAIL FAST)
         # Pass actual table names and data from initial_state so model registration uses correct names
@@ -1142,10 +1235,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             tool_factory = ToolFactory(
                 self.db_client,
                 trial_id,
-                rag_client_for_trial,
                 db_table_names,
                 initial_state_data,
                 id_fields=id_fields,
+                search_tool_name=search_config.tool_name,
+                search_index=search_index,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve
@@ -1162,7 +1256,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.agent_tools = dict(reconstructed.agent_tools.items())
             trial_context.user_tools = dict(reconstructed.user_tools.items())
 
-            kb_search = self._resolve_judge_kb_search(trial_id, trial_context.agent_tools)
+            kb_search = self._resolve_judge_kb_search(search_index, trial_context.agent_tools)
             if kb_search is not None:
                 trial_context.register_kb_search(kb_search)
 
@@ -1204,6 +1298,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool.start(trial_context.lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
+                    try:
+                        self._run_async(self.cleanup_trial(trial_id))
+                    except Exception as cleanup_error:
+                        # The start failure is the answer the caller needs; a
+                        # cleanup that also failed is logged, not returned.
+                        logger.error(
+                            f"RegisterTrial: Cleanup after the failed lifecycle start of "
+                            f"{trial_id} also failed: {cleanup_error}"
+                        )
                     return pb2.RegisterTrialResponse(
                         success=False,
                         error=f"Tool lifecycle start failed: {e}",
@@ -1246,6 +1349,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             tool_schemas=tool_schemas,
             num_agent_tools=len(task_description.agent_tools),
             num_user_tools=len(task_description.user_tools),
+            runner_protocol_version=ENGINE_PROTOCOL_VERSION,
         )
 
     # =========================================================================
@@ -1483,6 +1587,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         keeps running there, which is why a timed-out lifecycle tool has its
         session rebuilt by :meth:`_reset_backstopped_tool`.
         """
+        if isinstance(tool, MCPServerToolWrapper):
+            return await asyncio.wait_for(tool.execute_call(arguments), timeout=timeout_seconds)
         if hasattr(tool, "execute"):
             return await asyncio.wait_for(tool.execute(arguments), timeout=timeout_seconds)
         if not callable(tool):
@@ -1581,16 +1687,24 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             try:
                 result = await self._invoke_tool(tool, tool_name, arguments, timeout_seconds)
 
-                # Convert result to string
-                if isinstance(result, str):
+                # MCP completed the call and reported its own error flag beside
+                # the response text. This is an environment outcome, not a
+                # transport failure or a string-prefix heuristic.
+                if isinstance(result, ToolCallOutcome):
+                    output = result.output
+                    status = (
+                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
+                        if result.declared_failure
+                        else pb2.EXECUTION_STATUS_SUCCESS
+                    )
+                elif isinstance(result, str):
                     output = result
                 elif result is None:
                     output = "Success"
                 else:
                     output = json.dumps(result, default=str)
 
-                status = pb2.EXECUTION_STATUS_SUCCESS
-                logger.debug(f"ExecuteTool: {tool_name} completed successfully")
+                logger.debug(f"ExecuteTool: {tool_name} completed with status {status}")
 
             except asyncio.TimeoutError:
                 status = pb2.EXECUTION_STATUS_TIMEOUT
@@ -1620,7 +1734,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 call_id=call_id,
                 tool_name=tool_name,
                 arguments=arguments,
-                output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
+                output=(
+                    output
+                    if status
+                    in (
+                        pb2.EXECUTION_STATUS_SUCCESS,
+                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR,
+                    )
+                    else error_message
+                ),
                 status=recorded_status(status),
                 executor=executor,
                 latency_seconds=latency_seconds,
@@ -1633,7 +1755,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             error_message=error_message,
             metrics=pb2.ToolMetrics(
                 latency_seconds=latency_seconds,
-                exit_code=0 if status == pb2.EXECUTION_STATUS_SUCCESS else 1,
+                exit_code=(
+                    0
+                    if status
+                    in (
+                        pb2.EXECUTION_STATUS_SUCCESS,
+                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR,
+                    )
+                    else 1
+                ),
                 state_mutations=0,  # TODO: Track state mutations if needed
             ),
         )
@@ -1685,6 +1815,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         try:
             result = self._run_async(self._grade_trial_async(request), timeout=600.0)
             return result
+        except GradingFailedError as e:
+            logger.error(f"GradeTrial: Grader could not produce a verdict: {e}")
+            return pb2.GradeTrialResponse(
+                success=False,
+                error=str(e),
+                failure_evidence_json=json.dumps(e.evidence()),
+            )
         except Exception as e:
             logger.error(f"GradeTrial: Unexpected error: {e}")
             logger.error(traceback.format_exc())
@@ -1966,7 +2103,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Initialize grading components
         components = CompositeGradeComponents()
-        state_diff: StateDiff | None = None
+        state_diff: dict[str, Any] | None = None
         transcript_result: TranscriptEvaluationResult | None = None
         hash_result: HashGradingResult | None = None
         # Author key -> what became of it, filled in below at the points an
@@ -2148,6 +2285,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     completion_tokens=judge_result.usage.completion_tokens,
                     reasoning_tokens=judge_result.usage.reasoning_tokens,
                     cost_usd=judge_result.usage.cost_usd,
+                    # optional: None leaves the field absent, which the host
+                    # reads back as "not every judge call stated one"
+                    billed_cost_usd=judge_result.usage.billed_cost_usd,
                     tool_calls=judge_result.usage.tool_calls,
                     consistency_rejections=judge_result.usage.consistency_rejections,
                     transcript_json=json.dumps(list(judge_result.transcript)),
@@ -2213,7 +2353,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # reasons string to the shared fold. An undecidable fold fails the RPC
         # naming this trial rather than reaching the outer catch-all as an
         # anonymous grading error.
-        state_diff_dict = state_diff.model_dump() if state_diff else None
+        state_diff_dict = state_diff
         try:
             fold_result = CompositeFold.finalise(
                 components_dict=components.model_dump(),
@@ -2231,6 +2371,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 custom_checks_reasons=custom_checks_reasons,
                 judge_errored=judge_status == pb2.JUDGE_STATUS_ERRORED,
                 ledger_skip_notes=audit.skip_notes,
+                comparison_view_reason=(
+                    comparison_view_reason(hash_result.comparison_view)
+                    if hash_result is not None and hash_result.comparison_view is not None
+                    else None
+                ),
             )
         except ValueError as exc:
             logger.error(f"GradeTrial: {trial_id} - {exc}")
@@ -2307,6 +2452,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         )
                         for path in trace_checks_result.paths
                     ],
+                ),
+                **(
+                    {"comparison_view_json": hash_result.comparison_view.model_dump_json()}
+                    if hash_result is not None and hash_result.comparison_view is not None
+                    else {}
                 ),
             ),
         )
@@ -2390,10 +2540,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Resolves ``load_judge_kind(llm_judge_config.judge_kind)()`` and hands
         the kind together with the run-level :attr:`_judge_model_provider` and
-        the per-trial customization kwargs (``disable_knowledge_search``,
-        ``custom_system_prompt``, ``include_agent_system_prompt``, plus the
-        opaque ``kind_config`` from ``llm_judge_config.kind_config``) to
-        :func:`composite.grade_llm_judge`. This wrapper
+        the opaque ``kind_config`` from ``llm_judge_config.kind_config`` to
+        :func:`composite.grade_llm_judge`, which resolves the trial's
+        :class:`JudgeTrialOptions` from ``llm_judge_config.customization``. This wrapper
         also collects the trial-context passthroughs (judge ``ModelConfig``,
         ``search_policy`` connector reuse) and renders the
         ``initial → final`` state diff for the judge's opening message. The
@@ -2433,14 +2582,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # runner-side; the composite receives the resolved list.
         extra_read_tools = self._build_judge_search_policy_tools(trial_context)
 
-        customization = llm_judge_config.customization
-        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
-        custom_system_prompt = customization.system_prompt if customization else None
-        include_agent_system_prompt = (
-            customization.include_agent_system_prompt
-            if customization and customization.include_agent_system_prompt is not None
-            else True
-        )
         judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
         from tolokaforge.core import logging as _tolokaforge_logging
 
@@ -2461,9 +2602,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 substrate=substrate,
                 judge_kind=judge_kind,
                 judge_model_provider=self._judge_model_provider,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
                 kind_config=llm_judge_config.kind_config,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,
@@ -2523,27 +2661,32 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return score, wire_results, reasons
 
     def _resolve_judge_kb_search(
-        self, trial_id: str, agent_tools: dict[str, Callable]
+        self, search_index: SearchIndex | None, agent_tools: dict[str, Callable]
     ) -> KnowledgeSearch | None:
         """Resolve the judge's per-trial KnowledgeSearch, or None.
 
-        Gated on the SAME signal that gave the AGENT a rag ``search_kb``: a
-        ``RAGSearchToolWrapper`` was reconstructed (dispatch=RAG + a rag client)
-        — NOT ``search_config.enabled`` (the decoupled TypeSense plane;
-        ``native.py`` hardcodes ``search.enabled=False``, so gating there never
-        fires for real rag tasks and wrongly fires for TypeSense ones). Detected
-        by instance, not tool name, so a renamed tool can't fool it.
+        Gated on the SAME signal that gave the AGENT a knowledge-base search: an
+        agent tool is a :class:`SearchToolWrapper` over this trial's index — not
+        ``search.enabled`` (rag-service's flag, false for a backend that needs no
+        rag-service) and not the tool's name. Detected by instance, so a renamed
+        search tool keeps the judge's search and a same-named tool of another kind
+        cannot claim it. A search tool only the user simulator holds gives the
+        judge nothing.
 
-        Binding to the same ``rag_client`` + ``trial_id`` means the judge
-        retrieves from the SAME per-trial index by construction: if the agent's
-        ``search_kb`` works the judge's does too, and if it 404s both do.
-        Per-trial indexing gating is a separate concern.
+        The judge's search is ``search_index.knowledge_search()``: the backend's
+        read over the SAME index the agent searched, by construction — for
+        rag-service the same client and trial id, so if the agent's search works
+        the judge's does too, and if it 404s both do. A backend may return
+        ``None`` to give the judge nothing.
         """
-        if self.rag_client is None:
+        if search_index is None:
             return None
-        if not any(isinstance(t, RAGSearchToolWrapper) for t in agent_tools.values()):
+        if not any(
+            isinstance(tool, SearchToolWrapper) and tool.index is search_index
+            for tool in agent_tools.values()
+        ):
             return None
-        return RagServiceKnowledgeSearch(self.rag_client, trial_id)
+        return search_index.knowledge_search()
 
     def _build_judge_search_policy_tools(
         self, trial_context: TrialContextRuntime
@@ -2680,9 +2823,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 compare against and the fields whose numeric-looking strings fold
 
         Returns:
-            HashGradingResult with hash_match (the model derives hash_score from it),
-            the basis the comparison was run against, an optional state_diff, and the
-            record of how much of the golden path ran
+            The shared :class:`HashGradingResult`: hash_match (the result derives
+            hash_score from it), the basis the comparison was run against, the dumped
+            state diff on a mismatch, the record of how much of the golden path ran,
+            and the comparison view's record where one is declared
 
         Raises:
             UnresolvableGoldenAction: an action names no tool registered for the trial,
@@ -2699,6 +2843,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         compare_columns = state_checks.compare_columns
         auto_mask_clock_columns = state_checks.auto_mask_clock_columns
         auto_normalize_nullables = state_checks.auto_normalize_nullables
+        # A declared comparison view reads each side's FULL state (unstable fields
+        # present) and runs every pre-hash step on the client, after the restore in
+        # step 7. A pack without one takes one of the two paths below.
+        comparison_view = state_checks.comparison_view
         # Client-side hashing is required whenever the state comparator
         # needs both raw states in hand — the pack declared any per-column
         # rule (folds, ordering, or subset extras), the auto clock-column
@@ -2740,7 +2888,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # fetch raw state now and defer hashing until we hold both sides.
         trial_hash: str | None = None
         trial_state_raw: dict[str, Any] | None = None
-        if client_side_hash:
+        trial_full_state: dict[str, Any] | None = None
+        if comparison_view is not None:
+            trial_full_state = (await self.db_client.get_state(trial_id)).data
+            logger.debug("GradeTrial: Trial full state fetched (comparison view declared)")
+        elif client_side_hash:
             trial_state_response = await self.db_client.get_stable_state(trial_id)
             trial_state_raw = trial_state_response.data
             logger.debug("GradeTrial: Trial state fetched (deferred hashing for compare_columns)")
@@ -2848,7 +3000,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # fold tokens. Fast path fetches the server-side digest directly.
         trial_state_processed: dict[str, Any] | None = None
         golden_state_raw: dict[str, Any] | None = None
-        if client_side_hash:
+        golden_full_state: dict[str, Any] | None = None
+        if comparison_view is not None:
+            # Read only: the view runs after the restore below, when both full states
+            # are in memory, so a view that cannot be computed never leaves the golden
+            # state in the trial's database.
+            golden_full_state = (await self.db_client.get_state(trial_id)).data
+            logger.debug("GradeTrial: Golden full state fetched (comparison view declared)")
+        elif client_side_hash:
             golden_state_response = await self.db_client.get_stable_state(trial_id)
             golden_state_raw = golden_state_response.data
             assert trial_state_raw is not None  # set in step 1 slow-path branch
@@ -2887,6 +3046,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.restore_snapshot(trial_id, "pre_golden")
         logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
 
+        golden_replay_record = GoldenReplayRecord(
+            authored=len(golden_actions), failures=tuple(replay_failures)
+        )
+        if comparison_view is not None:
+            assert trial_full_state is not None and golden_full_state is not None
+            return self._compare_through_the_view(
+                trial_context,
+                state_checks,
+                trial_full_state,
+                golden_full_state,
+                basis=basis,
+                golden_replay=golden_replay_record,
+            )
+
         # 8. Compare hashes
         hash_match = trial_hash == golden_hash
 
@@ -2918,10 +3091,86 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return HashGradingResult(
             hash_match=hash_match,
             basis=basis,
-            state_diff=state_diff,
-            golden_replay=GoldenReplayRecord(
-                authored=len(golden_actions), failures=tuple(replay_failures)
+            state_diff=state_diff.model_dump() if state_diff is not None else None,
+            golden_replay=golden_replay_record,
+        )
+
+    @staticmethod
+    def _compare_through_the_view(
+        trial_context: TrialContextRuntime,
+        state_checks: RunnerStateChecksConfig,
+        trial_state: dict[str, Any],
+        golden_state: dict[str, Any],
+        *,
+        basis: HashComparisonBasis,
+        golden_replay: GoldenReplayRecord,
+    ) -> HashGradingResult:
+        """Steps 1–5 of the pre-hash order over two full states, and what the grade records.
+
+        Steps 1–3 are :func:`~tolokaforge.core.grading.pre_hash.view_the_pair`, the
+        composition core runs too; steps 4–5 are this substrate's own
+        :func:`~tolokaforge.core.hash.compute_stable_hash`. A trial whose own state cannot
+        be viewed once the golden's was mismatches, and the record says why. On any
+        mismatch the raw ``state_diff`` is computed as the server-side path computes
+        it — over the stable states, every resolved unstable field dropped — and the
+        record carries the view diff the verdict agrees with.
+
+        Raises:
+            ComparisonViewError: the golden's view cannot be computed — a grading error.
+        """
+        assert state_checks.comparison_view is not None
+        task = trial_context.task_description
+        initial_state = task.initial_state if task is not None else None
+        declaration = PreHashDeclaration(
+            view=state_checks.comparison_view,
+            id_fields=state_checks.id_fields,
+            unstable_fields=tuple(
+                f"{spec.table_name}.{spec.field_name}"
+                for spec in (initial_state.unstable_fields if initial_state else ())
             ),
+            compare_columns=state_checks.compare_columns,
+            numeric_string_fields=tuple(state_checks.numeric_string_fields),
+            auto_normalize_nullables=state_checks.auto_normalize_nullables,
+        )
+        outcome = view_the_pair(
+            trial_state,
+            golden_state,
+            initial=copy.deepcopy(initial_state.tables) if initial_state else None,
+            declaration=declaration,
+        )
+        if isinstance(outcome, TrialViewError):
+            logger.info(f"GradeTrial: the trial's state cannot be viewed: {outcome.error}")
+            hash_match = False
+        else:
+            digests = [
+                compute_stable_hash(
+                    side,
+                    numeric_string_fields=state_checks.numeric_string_fields,
+                    auto_mask_clock_columns=state_checks.auto_mask_clock_columns,
+                    auto_normalize_nullables=state_checks.auto_normalize_nullables,
+                )
+                for side in (outcome.trial, outcome.golden)
+            ]
+            hash_match = digests[0] == digests[1]
+            logger.debug(
+                f"GradeTrial: Hashes of the comparison view — trial={digests[0][:16]}... "
+                f"golden={digests[1][:16]}..."
+            )
+        state_diff: StateDiff | None = None
+        if not hash_match:
+            stable = list(
+                resolve_unstable_fields(declaration.unstable_fields, trial_state, golden_state)
+            )
+            state_diff = compute_state_diff(
+                filter_unstable_fields(trial_state, stable),
+                filter_unstable_fields(golden_state, stable),
+            )
+        return HashGradingResult(
+            hash_match=hash_match,
+            basis=basis,
+            state_diff=state_diff.model_dump() if state_diff is not None else None,
+            golden_replay=golden_replay,
+            comparison_view=comparison_view_grade_record(outcome, matched=hash_match),
         )
 
     # =========================================================================
@@ -3275,14 +3524,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         logger.info(f"Cleaning up trial: {trial_id}")
 
-        # Remove from local context
         trial_context = self.trials.get(trial_id)
-        if trial_context is not None:
-            # Explicit teardown of the per-trial judge KnowledgeSearch. Dropping
-            # the context below already GCs it, but clearing here documents intent
-            # and keeps lifecycle symmetric with register_kb_search at setup.
-            trial_context.clear_kb_search()
-            del self.trials[trial_id]
+        if trial_context is None:
+            await self._cleanup_trial_resources(trial_id, None)
+            return
+        async with trial_context.cleanup_lock:
+            # Another cleanup may have finished while this call waited. Its
+            # context identifies the registration this request must retire.
+            if self.trials.get(trial_id) is not trial_context:
+                return
+            await self._cleanup_trial_resources(trial_id, trial_context)
+
+    async def _cleanup_trial_resources(
+        self, trial_id: str, trial_context: TrialContextRuntime | None
+    ) -> None:
+        if trial_context is not None and not trial_context.tools_released:
+            # Teardown precedes deleting scripts/context. It runs off the
+            # shared event loop so reaping one child cannot block other trials.
+            await asyncio.to_thread(
+                cleanup_tools, trial_context.agent_tools, trial_context.user_tools
+            )
+            trial_context.tools_released = True
 
         # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's
@@ -3296,16 +3558,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # so the practical impact is a bounded handle held for the runner's
         # lifetime, not unbounded growth across trials.
 
-        # Drop extracted tool artifacts (no-op if none were extracted)
-        self._cleanup_trial_artifacts(trial_id)
-
-        # Delete from DB Service
+        # Keep registration reserved until DB deletion completes. Otherwise a
+        # late cleanup could delete a newly registered attempt with this ID.
         try:
             await self.db_client.delete_trial(trial_id)
         except DBTrialNotFoundError:
             pass  # Already deleted
         except DBServiceError as e:
-            logger.warning(f"Failed to delete trial from DB Service: {e}")
+            logger.error(f"Failed to delete trial from DB Service: {e}")
+            raise
+
+        self._cleanup_trial_artifacts(trial_id)
+        if trial_context is not None:
+            trial_context.clear_kb_search()
+            del self.trials[trial_id]
 
     def cleanup_all_trials(self) -> None:
         """Clean up all trials (for shutdown)."""
@@ -3368,8 +3634,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Three conditions decide whether a TypeSense client is registered: the plane
         serving this task's corpus is TypeSense, the task declares a corpus, and an
         address for that plane resolved. None of them is ``enabled`` — that flag
-        means "this task needs rag-service" and gates the RAG indexing block, so a
-        TypeSense-only domain sets ``enabled=False`` and still registers here.
+        means "this task needs rag-service" and gates the ``rag_service`` backend's
+        index build (:meth:`_build_search_index`), so a TypeSense-only domain sets
+        ``enabled=False`` and still registers here.
         """
         try:
             binding = resolve_typesense_binding(search_config)
@@ -3378,7 +3645,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         resolved_plane = resolve_search_plane(search_config)
         served_by_typesense = (
-            resolved_plane is not None and resolved_plane.plane is SearchPlane.TYPESENSE
+            resolved_plane is not None and resolved_plane.plane == SearchPlane.TYPESENSE
         )
         task_declares_kb = search_config.documents_path is not None
         address_resolved = binding is not None
@@ -3484,77 +3751,86 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return None
 
     # =========================================================================
-    # RAG Document Indexing
+    # Search Index (ADR-0054)
     # =========================================================================
 
-    async def _index_documents_for_trial(
-        self,
-        trial_id: str,
-        search_config: SearchConfig,
-        artifacts_dir: Path | None,
-    ) -> None:
-        """
-        Index a trial's search corpus into the RAG service.
+    def _build_search_index(
+        self, trial_id: str, task_description: TaskDescription, artifacts_dir: Path | None
+    ) -> SearchIndex | None:
+        """Build the trial's search index with the backend ``search.plane`` names.
 
-        The corpus travels in ``tool_artifacts`` and is extracted to
-        *artifacts_dir*; a relative ``documents_path`` (the pack's declared
-        ``corpus_dir``) is resolved against it as ``artifacts_dir /
-        documents_path``, mirroring :meth:`_resolve_mcp_server_scripts`. An
-        absolute ``documents_path`` is used literally (escape hatch).
-
-        Args:
-            trial_id: Unique trial identifier
-            search_config: SearchConfig with documents_path and domain_name
-            artifacts_dir: Directory the trial's tool_artifacts were extracted
-                to, or ``None`` when the task shipped none
+        The one construction site for knowledge-base search: the backend resolves
+        through ``tolokaforge.search_backends`` (:func:`_registry_search_backend_name`
+        says which, if any), its factory receives the trial's
+        :class:`SearchBackendContext`, and ``build_index`` runs on the runner's
+        event loop. ``None`` when the trial has no registered backend to build —
+        including a rag-service task that switched its indexing off with
+        ``enabled: false``, the flag an older engine gated rag work on.
 
         Raises:
-            RAGServiceError: if the RAG client is not configured, a relative
-                corpus path cannot be resolved, or the resolved directory
-                holds no documents — a declared corpus that indexes empty is a
-                bundling bug, not an agent failure, so the trial hard-fails
-                here rather than running against an empty index.
+            SearchIndexBuildError: the name is not registered, the backend refused
+                the trial, it declares a stack service that is not declared or that
+                this runner does not reach, or building the index failed — each the
+                refusal ``RegisterTrial`` returns.
         """
-        if self.rag_client is None:
-            raise RAGServiceError("RAG client not configured")
-
-        documents_path = search_config.documents_path
-        domain_name = search_config.domain_name or "default"
-
-        if not documents_path:
-            raise RAGServiceError(
-                f"Trial {trial_id}: search is enabled but documents_path is unset"
-            )
-
-        corpus_path = Path(documents_path)
-        if not corpus_path.is_absolute():
-            if artifacts_dir is None:
-                raise RAGServiceError(
-                    f"Trial {trial_id}: relative documents_path {documents_path!r} cannot be "
-                    f"resolved — the task shipped no extracted artifacts directory"
-                )
-            corpus_path = artifacts_dir / corpus_path
-
-        documents = load_documents_from_directory(str(corpus_path), domain_name)
-
-        if not documents:
-            raise RAGServiceError(
-                f"Trial {trial_id}: no documents in resolved corpus {corpus_path} "
-                f"(documents_path={documents_path!r}) — corpus bundling is broken"
-            )
-
-        logger.info(
-            f"Indexing {len(documents)} documents for trial {trial_id}",
-            extra={
-                "trial_id": trial_id,
-                "domain_name": domain_name,
-                "documents_path": str(corpus_path),
-            },
-        )
-
-        # Index documents in RAG service
-        await self.rag_client.index_documents(
+        search_config = task_description.search
+        name = _registry_search_backend_name(search_config)
+        if name is None:
+            return None
+        try:
+            factory = load_search_backend(name)
+        except RegistryError as e:
+            raise SearchIndexBuildError(f"Trial {trial_id}: search.plane {name!r}: {e}") from e
+        context = SearchBackendContext(
+            backend_config=search_config.backend_config,
+            tool_name=search_config.tool_name,
+            tool_description=_declared_tool_description(task_description, search_config.tool_name),
+            logger=logging.getLogger(f"tolokaforge.search_backends.{name}"),
             trial_id=trial_id,
-            domain_name=domain_name,
-            documents=documents,
+            domain_name=search_config.domain_name,
+            stack_services=self._stack_services(),
         )
+        try:
+            backend = factory(context)
+        except Exception as e:
+            raise SearchIndexBuildError(
+                f"Trial {trial_id}: search backend {name!r} refused the task's declaration: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+        if backend.stack_service == RAG_SERVICE_STACK_SERVICE and not search_config.enabled:
+            return None
+        _refuse_an_unreached_stack_service(trial_id, name, backend, context.stack_services)
+        corpus_dir = _resolve_corpus_dir(trial_id, search_config.documents_path, artifacts_dir)
+        index = self._run_backend_build(trial_id, name, backend, corpus_dir)
+        logger.info(f"RegisterTrial: {trial_id} - search index built by backend {name!r}")
+        return index
+
+    def _run_backend_build(
+        self, trial_id: str, name: str, backend: SearchBackend, corpus_dir: Path | None
+    ) -> SearchIndex:
+        """Await ``backend.build_index`` on the runner's loop; any failure refuses.
+
+        The coroutine is created here, inside the refusal's scope, and closed if it
+        never started (the loop refused to schedule it), so a failure leaves no
+        never-awaited coroutine behind.
+        """
+        build: Any = None
+        try:
+            build = backend.build_index(corpus_dir)
+            return self._run_async(build)
+        except SearchIndexBuildError:
+            raise
+        except Exception as e:
+            if (
+                inspect.iscoroutine(build)
+                and inspect.getcoroutinestate(build) == inspect.CORO_CREATED
+            ):
+                build.close()
+            raise SearchIndexBuildError(
+                f"Trial {trial_id}: search backend {name!r} failed to build the trial's index: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+
+    def _stack_services(self) -> StackServices:
+        """This runner's handle on each declared stack service it reaches."""
+        return StackServices(rag_service=self.rag_client)

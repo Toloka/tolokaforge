@@ -7,7 +7,9 @@ The same trial maps to the same trace and observation ids whether it is exported
 package) or replayed from its bundle, so a re-send from either side updates instead of
 duplicating. Every observation kind has a **stable key** that is a fact of the trial, never a
 position in a filtered list: ``root`` uses the literal ``-``; ``gen`` (agent turn) and ``ugen``
-(simulated user turn) the message index in the recorded trajectory; ``tool`` the episode-unique
+(simulated user turn) the message index in the recorded trajectory, or ``call:<i>`` for an LLM call
+of the agent or the user simulator that no message is paired with (its position in the bundle's
+``usage.calls``, which the bundle fixes once written); ``tool`` the episode-unique
 tool-call id the loop assigned (``msg:<index>`` when there is none); ``grading`` a grading id;
 ``jgen`` / ``jtool`` the grading id plus the judge message index or call id; ``event`` a
 source-qualified key (``log:<i>``, ``guard:<i>``, ...). No component may be empty, carry
@@ -18,8 +20,9 @@ a new contract version.
 not an update) cannot take a live row and a final row under one id, so every kind a running trial can report
 has a preview twin named ``p`` + the kind: ``proot`` (key ``-``), ``pgen``, ``pugen``, ``ptool``,
 ``pjgen``, ``pjtool``. The formula is the same, so no existing id moves; a preview id can never
-collide with a final one because the kind is part of the name. What the loop reports while the
-trial runs goes out under the preview kinds, under a preview root whose parent is the final root;
+collide with a final one because the kind is part of the name. When the run asks for previews,
+what the loop reports while the trial runs goes out under the preview kinds, under a preview root
+whose parent is the final root;
 the record that counts is written once from the persisted bundle under the final kinds. ``grading``
 and ``event`` have no twin: nothing reports them before the bundle exists.
 """

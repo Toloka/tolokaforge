@@ -6,12 +6,13 @@ trace-check module reads events through it and nothing else.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, TypeAlias
 
 from tolokaforge.core.grading.predicates import ever_satisfiable, json_type_of
+from tolokaforge.core.grading.regex_engine import CompiledPatterns, RegexEngineKind
 from tolokaforge.core.grading.trace_checks.truth import _Truth
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
@@ -19,6 +20,7 @@ from tolokaforge.core.grading.trace_timeline import (
     TrialTimeline,
 )
 from tolokaforge.core.models import TraceMatcher, ValuePredicate
+from tolokaforge.runner.models import TRACE_PREDICATE_REGEX_OPERATORS
 
 
 class _Makeability(str, Enum):
@@ -131,8 +133,17 @@ def _missing_evidence(fields: Iterable[str], positions: Iterable[int]) -> str:
     )
 
 
+_RegexOperands: TypeAlias = Mapping[tuple[str, str], CompiledPatterns]
+"""Each ``regex`` / ``not_regex`` a matcher declares, compiled, keyed by the field
+its predicate reads and the operator name."""
+
+
 def select_events(
-    timeline: TrialTimeline, matcher: TraceMatcher, bindings: Mapping[str, Any]
+    timeline: TrialTimeline,
+    matcher: TraceMatcher,
+    bindings: Mapping[str, Any],
+    *,
+    regex_engine: RegexEngineKind,
 ) -> MatcherOutcome:
     """Resolve ``matcher`` against ``timeline`` under ``bindings``.
 
@@ -148,7 +159,13 @@ def select_events(
     ``bindings`` is the environment the constraint's binder produced for one
     candidate assignment — the required third argument, so every call site says what
     it resolves under, and empty for a matcher referencing nothing.
+
+    ``regex_engine`` is the block's engine, which a predicate naming its own
+    overrides. Every pattern is compiled before any event is read, so one its
+    engine refuses raises :class:`~tolokaforge.core.grading.regex_engine.UncompilablePattern`
+    on every resolution — not only on a timeline holding an event that reaches it.
     """
+    regexes = _regex_operands(matcher, regex_engine)
     results = _results_by_call_id(timeline)
     matched: list[TraceEvent] = []
     undecidable: list[TraceEvent] = []
@@ -157,7 +174,7 @@ def select_events(
     for event in timeline.events:
         if event.kind is not matcher.kind:
             continue
-        truth, missing, records = _resolve(matcher, event, results, bindings)
+        truth, missing, records = _resolve(matcher, event, results, bindings, regexes)
         comparisons.extend(records)
         if truth is _Truth.TRUE:
             matched.append(event)
@@ -192,11 +209,23 @@ def _unreadable_when_none(outcome: TraceEvent | None) -> frozenset[str]:
     return _RECORD_ONLY_FIELDS | {"result"}
 
 
+def _regex_operands(matcher: TraceMatcher, section: RegexEngineKind) -> _RegexOperands:
+    """Every pattern the matcher declares, compiled under its predicate's effective engine."""
+    return {
+        (field, name): CompiledPatterns.compile(
+            predicate.patterns_of(name), predicate.regex_engine_under(section)
+        )
+        for field, predicate in _declared_predicates(matcher)
+        for name in sorted(predicate.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS)
+    }
+
+
 def _resolve(
     matcher: TraceMatcher,
     event: TraceEvent,
     results: Mapping[str, TraceEvent],
     bindings: Mapping[str, Any],
+    regexes: _RegexOperands,
 ) -> tuple[_Truth, frozenset[str], list[_ComparisonRecord]]:
     """What this event decides, what it left unread, and what it compared.
 
@@ -214,6 +243,11 @@ def _resolve(
     whether it was refused or read a value no JSON type names: two bad references on
     one matcher would otherwise empty each other's candidate set, and an author who
     wrote two of them would be told about neither.
+
+    A predicate is evaluated only where its result can still change that answer —
+    see :func:`_rejections` — so on a call ``tool`` rejects, no ``result`` pattern
+    runs. The records keep the matcher's declared order whatever order the
+    predicates were evaluated in.
     """
     outcome = _outcome_of(event, results)
     unreadable_when_none = _unreadable_when_none(outcome)
@@ -222,28 +256,71 @@ def _resolve(
         _comparison_records(field, None if value is _MISSING else value, predicate, bindings, event)
         for field, value, predicate in readings
     ]
-    unreadable = {
-        field for field, value, _ in readings if value is None and field in unreadable_when_none
-    }
-    failing = {
+    unread = {
         index
-        for index, (field, value, predicate) in enumerate(readings)
-        if not (value is None and field in unreadable_when_none)
-        and not _predicate_holds(predicate, value, bindings)
+        for index, (field, value, _) in enumerate(readings)
+        if value is None and field in unreadable_when_none
     }
-    rejecting = {
-        index
-        for index in failing
-        if all(record.state is _Makeability.MADE for record in records[index])
-    }
+    unreadable = {readings[index][0] for index in unread}
+    failed, rejecting = _rejections(readings, records, unread, bindings, regexes)
     candidate_records = [
         record for index, found in enumerate(records) if not rejecting - {index} for record in found
     ]
-    if failing:
+    if failed:
         return _Truth.FALSE, frozenset(), candidate_records
     if unreadable:
         return _Truth.UNKNOWN, frozenset(unreadable), candidate_records
     return _Truth.TRUE, frozenset(), candidate_records
+
+
+def _rejections(
+    readings: list[tuple[str, Any, ValuePredicate]],
+    records: list[list[_ComparisonRecord]],
+    unread: set[int],
+    bindings: Mapping[str, Any],
+    regexes: _RegexOperands,
+) -> tuple[bool, frozenset[int]]:
+    """Whether some reading fails, and the rejecting readings that settle the records.
+
+    A rejecting reading is a failing one whose every comparison was made, a reading
+    with no comparison included. The records :func:`_resolve` keeps turn only on the
+    rejecting set: all of them with none, the sole rejecter's own with one, none
+    with two or more. So once a reading has failed — the verdict is then false —
+    only the readings that could still reject are evaluated, and evaluation stops at
+    a second rejecter, or at one carrying no records, since nothing a further
+    reading says can then change which records are kept. The set returned is exact
+    up to that point and answers the same as the full one would.
+
+    Readings are evaluated cheapest first — ``tool``, ``executor`` and ``status``,
+    then ``args`` paths, then ``text`` and ``result``, whose values are the
+    unbounded ones a pattern scans — and an unread reading is never evaluated.
+    """
+    failed = False
+    rejecting: list[int] = []
+    for index in sorted(set(range(len(readings))) - unread, key=lambda i: _cost(readings[i][0])):
+        field, value, predicate = readings[index]
+        could_reject = all(record.state is _Makeability.MADE for record in records[index])
+        if (failed and not could_reject) or _predicate_holds(
+            field, predicate, value, bindings, regexes
+        ):
+            continue
+        failed = True
+        if could_reject:
+            rejecting.append(index)
+        if len(rejecting) > 1 or (rejecting and not records[rejecting[0]]):
+            break
+    return failed, frozenset(rejecting)
+
+
+_FIELD_COST: Mapping[str, int] = {"tool": 0, "executor": 0, "status": 0, "text": 2, "result": 2}
+"""Which of a matcher's event fields :func:`_rejections` reads first; an ``args``
+path ranks between the two tiers."""
+
+_ARGS_COST = 1
+
+
+def _cost(field: str) -> int:
+    return _ARGS_COST if field.startswith(_ARGS_PREFIX) else _FIELD_COST[field]
 
 
 def _comparison_records(
@@ -316,25 +393,46 @@ def _unmakeable_message(record: _ComparisonRecord) -> str:
     )
 
 
+_EVENT_FIELDS: Mapping[str, Callable[[TraceEvent, TraceEvent | None], Any]] = {
+    "tool": lambda event, outcome: event.tool_name,
+    "executor": lambda event, outcome: event.executor,
+    "status": lambda event, outcome: outcome.status if outcome is not None else None,
+    "result": lambda event, outcome: outcome.result if outcome is not None else None,
+    "text": lambda event, outcome: event.text,
+}
+"""The value each field a matcher predicate reads takes on one event; ``args`` paths
+resolve through :func:`_argument_at` instead."""
+
+_ARGS_PREFIX = "args."
+
+
+def _declared_predicates(matcher: TraceMatcher) -> list[tuple[str, ValuePredicate]]:
+    """Every declared predicate and the field it reads, event fields before ``args`` paths."""
+    declared = [
+        (field, getattr(matcher, field))
+        for field in _EVENT_FIELDS
+        if getattr(matcher, field) is not None
+    ]
+    declared.extend(
+        (f"{_ARGS_PREFIX}{path}", predicate) for path, predicate in (matcher.args or {}).items()
+    )
+    return declared
+
+
 def _predicate_readings(
     matcher: TraceMatcher, event: TraceEvent, outcome: TraceEvent | None
 ) -> list[tuple[str, Any, ValuePredicate]]:
     """Every declared predicate paired with the value it reads on this event."""
-    declared = [
-        ("tool", event.tool_name, matcher.tool),
-        ("executor", event.executor, matcher.executor),
-        ("status", outcome.status if outcome is not None else None, matcher.status),
-        ("result", outcome.result if outcome is not None else None, matcher.result),
-        ("text", event.text, matcher.text),
+    return [
+        (field, _value_read(field, event, outcome), predicate)
+        for field, predicate in _declared_predicates(matcher)
     ]
-    readings = [
-        (field, value, predicate) for field, value, predicate in declared if predicate is not None
-    ]
-    readings.extend(
-        (f"args.{path}", _argument_at(event.arguments, path), predicate)
-        for path, predicate in (matcher.args or {}).items()
-    )
-    return readings
+
+
+def _value_read(field: str, event: TraceEvent, outcome: TraceEvent | None) -> Any:
+    if field.startswith(_ARGS_PREFIX):
+        return _argument_at(event.arguments, field.removeprefix(_ARGS_PREFIX))
+    return _EVENT_FIELDS[field](event, outcome)
 
 
 def _outcome_of(event: TraceEvent, results: Mapping[str, TraceEvent]) -> TraceEvent | None:
@@ -382,14 +480,30 @@ def _argument_at(arguments: Mapping[str, Any] | None, path: str) -> Any:
     return value
 
 
-def _predicate_holds(predicate: ValuePredicate, value: Any, bindings: Mapping[str, Any]) -> bool:
+def _predicate_holds(
+    field: str,
+    predicate: ValuePredicate,
+    value: Any,
+    bindings: Mapping[str, Any],
+    regexes: _RegexOperands,
+) -> bool:
     """Whether every operator the predicate declares holds — it is their conjunction.
 
     A predicate declaring no operator is rejected at load, so the conjunction is
-    never over the empty set and never vacuously true.
+    never over the empty set and never vacuously true. A pattern operator reads its
+    compiled form out of ``regexes``; every other operator reads the authored value.
     """
     return all(
-        _operator_holds(name, value, getattr(predicate, name), bindings)
+        _operator_holds(
+            name,
+            value,
+            (
+                regexes[(field, name)]
+                if name in TRACE_PREDICATE_REGEX_OPERATORS
+                else getattr(predicate, name)
+            ),
+            bindings,
+        )
         for name in predicate.declared_operators()
     )
 

@@ -106,15 +106,21 @@ which is the source the `grading` row above describes.
   refuses a task that does not, at `tools`, and `RegisterTrial` refuses its trial.
 - `filesystem.copy`: files copied into `/env/fs/agent-visible`.
 - `mock_web.base_url`: base URL for mock web service (`http://mock-web:8080`).
-- `rag.corpus_dir`: directory of knowledge-base documents for per-trial RAG
-  indexing. The reader indexes the `.md` and `.txt` files sitting directly in
-  that directory (flat, non-recursive). Declaring `corpus_dir` requires
-  `search_kb` in `tools.agent.enabled` — the corpus files travel with the task,
-  the runner indexes them into the rag-service per trial, and the agent's
-  `search_kb` tool queries that index. The full stack must include the
-  rag-service (reached by DNS, like `db-service`/`mock-web`). Declaring
-  `corpus_dir` without `search_kb`, or pointing it at a directory that does not
-  exist, is rejected at validation time.
+- `rag.corpus_dir`: directory of knowledge-base documents for a per-trial
+  search index. The `.md`, `.txt` and `.json` files sitting directly in that
+  directory (flat, non-recursive) travel with the task, and the runner builds the
+  trial's index from them with the task's search backend (`rag.backend`, default
+  `rag_service`, which indexes the `.md` / `.txt` ones; `bm25` reads all three,
+  a `.json` file being one `{id, title, content}` document). Declaring
+  `corpus_dir` requires the search tool (`rag.tool.name`,
+  default `search_kb`) in an actor's `tools.<actor>.enabled`; that tool queries
+  the index. With the default backend the runner indexes into the rag-service,
+  so the run needs the full stack (reached by DNS, like `db-service`/`mock-web`),
+  which the orchestrator selects for such a task; `bm25` runs in the runner
+  process and keeps the core stack. Declaring `corpus_dir` without
+  the search tool, or pointing it at a directory that does not exist, is
+  rejected at validation time. `rag.backend_config` and `rag.tool.description`
+  are described in [CONFIG.md § `initial_state.rag:`](CONFIG.md#initial_staterag--the-knowledge-base-its-search-backend-and-the-agents-tool).
 
 ## Multi-container environments (`environment_manifest`)
 
@@ -321,6 +327,36 @@ timeline events and the step itself is not a `user_message` (see
 judge's transcript labels the step and its results as the user's; a custom check's
 `transcript.user_messages` still lists it, as a user message carrying `tool_calls`.
 
+### Simulation step and environment-error budget
+
+Two optional top-level fields bound a trial by its transitions rather than by its
+turns:
+
+```yaml
+max_simulation_steps: 200     # absent: no step budget
+max_environment_errors: 10    # absent: no error budget
+```
+
+- Both are opt-in. A task that sets neither runs with no budget; `max_turns` applies
+  either way. Each value must be at least 1.
+- Steps are counted half-duplex. Every agent or user message is one step, and the
+  environment's reply to a message's tool calls is one more step, however many calls
+  that batch holds.
+- An environment error is a tool reply the environment completed with an error flag
+  (an MCP `isError: true` reply, recorded as `tool_status: environment_error`). Every
+  such reply in a batch counts, so one step can add several errors.
+- The budget is checked after a message that calls no tools and after each
+  environment batch, never between a message and its tool results: a message's calls
+  always run. The opening turn's steps count too.
+- Reaching the step limit ends the trial with `max_steps`, the error limit with
+  `too_many_errors`; when both are reached at once, `too_many_errors` wins. Like
+  `max_turns`, both endings are graded.
+- The budget needs `actors.user.tool_turns: isolated` and the built-in agent loop. A
+  trial that sets either field without them fails with an error before the dialogue
+  starts.
+- `trajectory.yaml` records the final counts as `simulation_steps` and
+  `environment_errors` (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)).
+
 ### Authoring the opening turn
 
 An opening line the task wants the agent to receive word-for-word belongs in
@@ -408,9 +444,13 @@ The exit token belongs to the **user simulator**. The engine reads it from
 simulator output only — a dispatched user reply that is the bare token ends the
 trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
 it delivers that text first and stops on the next turn (both are configurable, see
-[Declaring the stop tokens](#declaring-the-stop-tokens)). The opening turn is the
-exception: a bootstrap reply carrying the token seeds it literally, rather than
-ending a trial before the agent has spoken. Write it into the
+[Declaring the stop tokens](#declaring-the-stop-tokens)). Under the default
+`stop_with_text: deliver` the opening turn is the exception: a bootstrap reply
+carrying the token seeds it literally, rather than ending a trial before the agent
+has spoken. Under `end` an opening reply carrying the token ends the trial with
+`user_stop` before the agent is called, and the reply is recorded verbatim as the
+last user message; a `shared` opening that calls tools is still seeded literally, as
+its text already carries the tool results the token could be read from. Write it into the
 `backstory` (or a scripted flow), never into a task's agent-facing prompt: the
 agent is never asked for the token and its output is never checked for it, so a
 prompt that instructed it would promise a signal nothing consumes.
@@ -556,6 +596,7 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 
 - Prefer `state_checks.jsonpaths` for deterministic, objective checks — four operators, exactly one per assertion ([vocabulary](GRADING.md#the-jsonpaths-assertion-vocabulary)).
 - Use `transcript_rules` to enforce tool usage patterns.
+- When a correct trajectory can leave a state the golden path does not — a draft it superseded, a hold it released, rows its read tools logged, records numbered in another order with other tables citing them — declare a [`state_checks.comparison_view`](GRADING.md#comparison-view) so the hash compares what counts. Masking a cited id as `unstable_fields` instead loses the references to it. Worked pack: [`comparison_view`](../examples/native/comparison_view/README.md).
 - Use `trace_checks` when the condition is about **order, scoped absence, an argument the flat presence checks cannot express, a task with more than one correct route, or a condition that must hold without being scored** — see [Trace Checks](GRADING.md#trace-checks). Four worked packs: [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md), whose constraints reach a nested request-body argument, an ordering, and a scoped absence; [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md), which grades two alternative diagnostic routes behind one shared `severity: gate` check that a diagnose-only agent trips by mutating, and requires the note to quote the stale value the route's own read returned; [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md), whose constraints [correlate arguments](GRADING.md#correlating-arguments-across-matchers) — the posted reason code has to have come back in a result the agent read, and the lot has to have been read first; and [`native_shared_domain`](../examples/native/native_shared_domain/README.md), where a shared `severity: gate` constraint and a `required` rubric criterion grade the two conjuncts of one policy, each holding the half it can see.
 - Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks). Moving a mechanically checkable criterion out of the rubric and into `trace_checks` buys a verdict that does not vary between runs, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) is how that move is [declared](GRADING.md#declaring-a-migration-the-migrationyaml-sidecar) and checked against the judge's own recorded verdicts before it is trusted.
 - **Weight every component the pack configures.** A configured component missing from `combine.weights` is refused before the run, and a component a substrate scored anyway makes the fold raise on both substrates rather than being handed a share nobody declared.

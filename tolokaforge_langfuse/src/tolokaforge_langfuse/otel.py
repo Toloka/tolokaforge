@@ -8,20 +8,24 @@ rides ambient context, and a full queue drops (counted) rather than blocking the
 Attribute names follow the Langfuse OpenTelemetry conventions so a Langfuse receiver renders the
 same trace the offline uploader produces; any OTLP collector still receives valid spans.
 
+Every live span is scanned by the data-safety gate before it is queued: one that would carry a
+secret is withheld and counted, never rewritten (docs/OBSERVABILITY.md, "Delivery").
+
 **Two write shapes, chosen by the receiver's family** (detected once per run and passed in as
 ``server_api``):
 
 - ``v3``: what this module always did. The per-call spans carry the contract's final ids, the
   root is provisional at trial start and complete at trial end, and the trial-end pass re-sends
   every record through the ingestion API, where the receiver upserts.
-- ``v4``: the producer writes every id **once** by policy. The live spans become
-  declared **previews** under the preview kinds, children of a preview root whose parent is the
-  final root, marked ``preview: true`` and named ``preview: ...``; nothing live is ever re-sent
-  or completed. At ``trial_persisted`` the bundle's projection is converted
-  to spans by :mod:`tolokaforge_langfuse.otlp_spans` and written once, **the root last**, after
-  the media upload, with the complete manifest in the root's metadata; the scores keep the
-  ingestion route. A trial whose final root can no longer come gets one minimal error root at
-  ``run_finished``, so no trace is left without a root.
+- ``v4``: the producer writes every id **once** by policy. At ``trial_persisted`` the bundle's
+  projection is converted to spans by :mod:`tolokaforge_langfuse.otlp_spans` and written once,
+  **the root last**, after the media upload, with the complete manifest in the root's metadata;
+  the scores keep the ingestion route. Nothing goes out while the trial runs unless the run asks
+  for live **previews** (``previews``, the plugin's ``LANGFUSE_TRACING_PREVIEWS``): then the live
+  spans go out under the preview kinds, children of a preview root whose parent is the final
+  root, marked ``preview: true`` and named ``preview: ...``, and stay beside the final rows;
+  nothing live is ever re-sent or completed. A trial whose final root can no longer come gets
+  one minimal error root at ``run_finished``, so no trace is left without a root.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ import json
 import logging
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -48,6 +52,7 @@ from tolokaforge.core.redaction import SensitiveKeyRedaction
 from tolokaforge.observability import ids as _ids
 from tolokaforge.observability.observer import ExportReceipt, ModelRef, TrialIdentity
 from tolokaforge_langfuse.attachments import AttachCounts
+from tolokaforge_langfuse.costs import call_cost, call_record
 
 # the receiver families this observer writes for: `media` owns the names because the capability
 # probe lives there, and a run resolves its family there once, never from the version a receiver
@@ -73,7 +78,17 @@ from tolokaforge_langfuse.projection import (
     ProjectionContext,
     build_projection,
 )
-from tolokaforge_langfuse.vocabulary import ALL_DERIVED_GROUPS, SOURCE_TRIAL
+from tolokaforge_langfuse.safety import Finding, SafetyGate, strings_in
+from tolokaforge_langfuse.vocabulary import (
+    ALL_DERIVED_GROUPS,
+    NAME_AGENT,
+    NAME_JUDGE,
+    NAME_TRIAL,
+    SOURCE_TRIAL,
+    TRACE_USER_NONE,
+    trace_name,
+    trace_user,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -100,6 +115,9 @@ class ProjectionSettings:
     producer: str = "tolokaforge"  # the ``uploader_version`` metadata value
     # the groups of bundle-derived tags the trial-end pass adds (vocabulary.DERIVED_GROUPS)
     derived_groups: frozenset[str] = ALL_DERIVED_GROUPS
+    # the profile's ``[trace]``: the name template and the source of the trace's user
+    trace_name: str | None = None
+    trace_user: str = TRACE_USER_NONE
 
 
 def _scope() -> InstrumentationScope:
@@ -266,8 +284,9 @@ class TrialAttachments(Protocol):
     """The post-trial step a receiver provides (``media.LangfuseAttachments``): the
     file attachments, the ingestion route the trial-end events take, inline media, and the
     budget and breaker both share. ``attach_with_manifest``, ``register_media``, ``budget``,
-    ``scan_events``, ``note_trial_outcome`` and ``tripped`` are optional capabilities looked up
-    with ``getattr`` (a receiver with the bare ``attach`` / ``ingest`` pair still works)."""
+    ``note_trial_outcome`` and ``tripped`` are optional capabilities looked up with ``getattr``
+    (a receiver with the bare ``attach`` / ``ingest`` pair still works). The observer scans a
+    pass's events with its own gate, so the step needs no scanner of its own."""
 
     @property
     def mode(self) -> str: ...
@@ -296,6 +315,8 @@ class _PersistContext:
     judge_model: str | None = None
     user_model: str | None = None
     tags: tuple[str, ...] = ()
+    # the trace's user (the agent's model identity), which an error root carries too
+    user_id: str | None = None
     identity: TrialIdentity | None = None
     error: str | None = None
     root_sent: bool = False
@@ -309,6 +330,9 @@ class _TrialState:
     started_at: datetime
     models: dict[str, ModelRef] = field(default_factory=dict)
     agent: ModelIdentity | None = None
+    # whether the deployment's rules read the agent's model; a raw identity stands in for its tags
+    # when they cannot, and names no user (the bundle pass has no identity for it either)
+    agent_resolved: bool = False
     tags: tuple[str, ...] = ()
     generations: int = 0
     tool_calls: int = 0
@@ -337,15 +361,21 @@ class OTelTrialObserver:
         profile_version: str | None = None,
         projection: ProjectionSettings | None = None,
         server_api: str = SERVER_V3,
+        previews: bool = False,
+        gate: SafetyGate | None = None,
+        ambient: Sequence[str] = (),
     ) -> None:
         self._queue = queue
         self._attachments = attachments
         self._gradings = gradings
         self._projection = projection or ProjectionSettings()
         # the receiver family this run writes for: on v4 every observation is written
-        # once, the live rows are declared previews and the record comes from the bundle
+        # once and the record comes from the bundle
         self._server_api = server_api
         self._write_once = server_api == SERVER_V4
+        # on v4 the live rows go out only as declared previews, and only when asked for: a
+        # preview stays beside its final row, and the receiver counts every row it holds
+        self._previews = self._write_once and previews
         self._write_once_counts = {
             "previews": 0,
             "error_roots": 0,
@@ -355,10 +385,17 @@ class OTelTrialObserver:
         # the trials whose final root has not been written yet, by trace id: one of them gets an
         # error root at run end unless its bundle pass writes the real one
         self._roots_pending: dict[str, _PersistContext] = {}
-        self._grading_counts = {"sent": 0, "failed": 0, "scores": 0, "users": 0}
+        self._grading_counts = {
+            "sent": 0,
+            "failed": 0,
+            "withheld": 0,
+            "scores": 0,
+            "users": 0,
+        }
         self._projection_counts = {
             "sent": 0,
             "failed": 0,
+            "withheld": 0,
             "observations": 0,
             "events": 0,
             "media_uploaded": 0,
@@ -385,16 +422,30 @@ class OTelTrialObserver:
         self._context_messages = max(1, context_messages)
         self._flush_timeout_s = flush_timeout_s
         self._redaction = SensitiveKeyRedaction()
+        # one gate for the run: its spans, its trial-end passes and (when the plugin wires it so)
+        # its file attachments scan with it
+        self._gate = gate if gate is not None else SafetyGate.from_environment()
+        self._spans_withheld = 0
+        # what withheld a span or a pass, by rule and variable name, for the run-end summary
+        self._withheld_by: Counter[str] = Counter()
         self._states: dict[str, _TrialState] = {}
         self._states_lock = threading.Lock()
+        # the strings every span of the run carries by design: a known value one of them
+        # contains would withhold every span, so the gate leaves it out (and says so)
+        self._ambient = self._ambient_strings(ambient)
+        self._left_out: set[str] = set()
+        self._calibrate_gate()
 
     # -- TrialObserver ---------------------------------------------------------------------------
 
     def trial_started(
         self, identity: TrialIdentity, *, models: Mapping[str, ModelRef], started_at: datetime
     ) -> None:
+        self._refresh_gate()
         agent_ref = models.get("agent")
-        agent = self._resolve(agent_ref) if agent_ref is not None else None
+        agent, agent_resolved = (
+            self._resolve_read(agent_ref) if agent_ref is not None else (None, False)
+        )
         tags: list[str] = [HARNESS_TAG, SOURCE_TAG]
         if agent is not None:
             tags.extend(agent.tags)
@@ -408,43 +459,48 @@ class OTelTrialObserver:
             started_at=started_at,
             models=dict(models),
             agent=agent,
+            agent_resolved=agent_resolved,
             tags=tuple(tags),
         )
         with self._states_lock:
             self._states[identity.trace_id] = state
             if self._write_once:
                 self._roots_pending[identity.trace_id] = _PersistContext(
-                    started_at=started_at, identity=identity, tags=state.tags
+                    started_at=started_at,
+                    identity=identity,
+                    tags=state.tags,
+                    user_id=self._user_id(state),
                 )
         if self._write_once:
-            # (C) in shape R: the preview root names the final root as its parent, so the trace
-            # has no root row until the bundle's root arrives and exactly one afterwards. The
-            # trial is reachable meanwhile by its (deterministic) trace id and by session.
-            self._emit(
-                name=f"{PREVIEW_NAME_PREFIX}trial {identity.task_id}/{identity.trial_index}",
-                identity=identity,
-                span_id=self._preview_root_id(identity),
-                parent_id=identity.root_id,
-                attributes={
-                    **self._trace_attributes(state),
-                    **self._identity_attributes(identity),
-                    "langfuse.observation.type": "span",
-                    f"{OBSERVATION_METADATA_PREFIX}kind": "root",
-                    f"{OBSERVATION_METADATA_PREFIX}status": "running",
-                    f"{OBSERVATION_METADATA_PREFIX}trace_time_source": TRACE_TIME_SOURCE,
-                    **self._preview_marker(),
-                },
-                start=started_at,
-                end=started_at,
-                preview=True,
-            )
+            if self._previews:
+                # (C) in shape R: the preview root names the final root as its parent, so the
+                # trace has no root row until the bundle's root arrives and exactly one
+                # afterwards. The trial is reachable meanwhile by its trace id and by session.
+                self._emit(
+                    name=f"{PREVIEW_NAME_PREFIX}{NAME_TRIAL}",
+                    identity=identity,
+                    span_id=self._preview_root_id(identity),
+                    parent_id=identity.root_id,
+                    attributes={
+                        **self._trace_attributes(state),
+                        **self._identity_attributes(identity),
+                        "langfuse.observation.type": "agent",
+                        f"{OBSERVATION_METADATA_PREFIX}kind": "root",
+                        f"{OBSERVATION_METADATA_PREFIX}status": "running",
+                        f"{OBSERVATION_METADATA_PREFIX}trace_time_source": TRACE_TIME_SOURCE,
+                        **self._preview_marker(),
+                    },
+                    start=started_at,
+                    end=started_at,
+                    preview=True,
+                )
             return
         # The root span goes out now, open-ended (end = start) and marked running, and again at
         # the end with everything it knows: the receiver dates the trace from the first span it
         # sees, which would otherwise be the first generation, seconds after the trial started.
         attributes = {
             **self._trace_attributes(state),
-            "langfuse.observation.type": "span",
+            "langfuse.observation.type": "agent",
             "langfuse.trace.metadata.task_id": identity.task_id,
             "langfuse.trace.metadata.trial_index": identity.trial_index,
             "langfuse.trace.metadata.attempt": identity.attempt_id,
@@ -454,7 +510,7 @@ class OTelTrialObserver:
             "langfuse.trace.metadata.trace_time_source": TRACE_TIME_SOURCE,
         }
         self._emit(
-            name=f"trial {identity.task_id}/{identity.trial_index}",
+            name=NAME_TRIAL,
             identity=identity,
             span_id=identity.root_id,
             parent_id=None,
@@ -477,24 +533,13 @@ class OTelTrialObserver:
     ) -> None:
         state = self._state(identity)
         state.generations += 1
+        if self._nothing_live():
+            return
         # a non-agent generation is a judge turn of the run's own grading (contract v2: kind
         # ``jgen`` under the grading id ``live:<run_id>``)
         agent_role = role == "agent"
-        name = f"assistant turn {index}" if agent_role else f"judge turn {index}"
+        name = NAME_AGENT if agent_role else NAME_JUDGE
         usage = getattr(result, "usage", None)
-        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-        completion = int(getattr(usage, "completion_tokens", 0) or 0)
-        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-        details: dict[str, int] = {
-            "input": max(0, prompt - cache_read),
-            "output": completion,
-            "total": prompt + completion,
-        }
-        if cache_read:
-            details["cache_read_input_tokens"] = cache_read
-        if cache_creation:
-            details["cache_creation_input_tokens"] = cache_creation
         model_name = (
             state.agent.canonical
             if (role == "agent" and state.agent)
@@ -508,9 +553,6 @@ class OTelTrialObserver:
                 [self._message_dict(m) for m in list(request)[-self._context_messages :]]
             ),
             "langfuse.observation.output": self._json(self._result_dict(result)),
-            "langfuse.observation.usage_details": self._json(details),
-            "gen_ai.usage.input_tokens": prompt,
-            "gen_ai.usage.output_tokens": completion,
             "langfuse.observation.metadata.turn": turn,
             "langfuse.observation.metadata.role": role,
             "langfuse.observation.metadata.message_index": index,
@@ -534,9 +576,7 @@ class OTelTrialObserver:
         if model_name:
             attributes["langfuse.observation.model.name"] = model_name
             attributes["gen_ai.request.model"] = model_name
-        cost = getattr(result, "cost_usd", None)
-        if cost is not None:
-            attributes["langfuse.observation.cost_details"] = self._json({"total": float(cost)})
+        attributes.update(self._usage_cost_attributes(usage, result))
         kind, key = (
             ("gen", (index,)) if agent_role else ("jgen", (f"live:{identity.run_id}", index))
         )
@@ -551,6 +591,55 @@ class OTelTrialObserver:
             preview=self._write_once,
         )
 
+    def _usage_cost_attributes(self, usage: Any, result: Any) -> dict[str, Any]:
+        """A live generation's usage and cost attributes and its ``cost_basis``: the final
+        figures on a receiver that updates rows in place, zeros (the figures as metadata) on a
+        v4 preview, which stays in the trace beside the final row."""
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        details: dict[str, int] = {
+            # the prompt total holds the cache reads and the cache writes: each leaves it once
+            "input": max(0, prompt - cache_read - cache_creation),
+            "output": completion,
+            "total": prompt + completion,
+        }
+        if cache_read:
+            details["cache_read_input_tokens"] = cache_read
+        if cache_creation:
+            details["cache_creation_input_tokens"] = cache_creation
+        attributes: dict[str, Any] = {}
+        # the call's own record carries the charge the provider stated; a result without one
+        # (no usage block) has only the eval's figure, if any
+        calls = getattr(usage, "calls", None) or ()
+        cost, basis = call_cost(
+            call_record(calls[-1]) if calls else {"cost_usd": getattr(result, "cost_usd", None)}
+        )
+        attributes["langfuse.observation.metadata.cost_basis"] = basis
+        if self._write_once:
+            # A preview row stays in the trace beside the final row the bundle writes, and the
+            # receiver adds up the usage and cost of every row: a preview states zero usage and
+            # cost (explicitly, so the receiver infers none from its model) and its figures as
+            # metadata, so each call counts once, on its final row.
+            attributes["langfuse.observation.usage_details"] = self._json(
+                {"input": 0, "output": 0, "total": 0}
+            )
+            attributes["langfuse.observation.cost_details"] = self._json({"total": 0})
+            attributes["langfuse.observation.metadata.prompt_tokens"] = prompt
+            attributes["langfuse.observation.metadata.completion_tokens"] = completion
+            attributes["langfuse.observation.metadata.cost"] = _attribute_value(cost)
+        else:
+            # on a receiver that updates rows in place the live row is the final row; a call
+            # without any figure states an explicit zero, so the receiver prices nothing itself
+            attributes["langfuse.observation.usage_details"] = self._json(details)
+            attributes["gen_ai.usage.input_tokens"] = prompt
+            attributes["gen_ai.usage.output_tokens"] = completion
+            attributes["langfuse.observation.cost_details"] = self._json(
+                {"total": cost if cost is not None else 0}
+            )
+        return attributes
+
     def tool_call(
         self,
         identity: TrialIdentity,
@@ -564,6 +653,8 @@ class OTelTrialObserver:
     ) -> None:
         state = self._state(identity)
         state.tool_calls += 1
+        if self._nothing_live():
+            return
         tool_name = str(getattr(call, "name", "tool"))
         # contract v2: a tool execution is keyed by the episode-unique call id the loop assigned
         # (the same value the bundle's tool_log.yaml and tool message carry), never by position
@@ -580,7 +671,7 @@ class OTelTrialObserver:
         )
         attributes: dict[str, Any] = {
             **self._trace_attributes(state),
-            "langfuse.observation.type": "span",
+            "langfuse.observation.type": "tool",
             "langfuse.observation.level": "DEFAULT" if success else "ERROR",
             "langfuse.observation.input": self._json(
                 self._redact(getattr(call, "arguments", None) or {})
@@ -638,6 +729,7 @@ class OTelTrialObserver:
             judge_model=self._model_name_of(state, "judge"),
             user_model=self._model_name_of(state, "user"),
             tags=state.tags,
+            user_id=self._user_id(state),
             identity=identity,
             error=error,
             finished_at=_as_utc(getattr(trajectory, "end_ts", None))
@@ -695,7 +787,7 @@ class OTelTrialObserver:
         )
         attributes: dict[str, Any] = {
             **self._trace_attributes(state),
-            "langfuse.observation.type": "span",
+            "langfuse.observation.type": "agent",
             "langfuse.trace.input": self._cap(_content(first_user)),
             "langfuse.trace.output": self._cap(_content(last_assistant)),
         }
@@ -703,7 +795,7 @@ class OTelTrialObserver:
             attributes[f"langfuse.trace.metadata.{key}"] = _attribute_value(value)
         end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=timezone.utc)
         self._emit(
-            name=f"trial {identity.task_id}/{identity.trial_index}",
+            name=NAME_TRIAL,
             identity=identity,
             span_id=identity.root_id,
             parent_id=None,
@@ -799,6 +891,8 @@ class OTelTrialObserver:
             attach_mode=str(getattr(step, "mode", "all")),
             grades=self._gradings,
             derived_groups=settings.derived_groups,
+            trace_name=settings.trace_name,
+            trace_user=settings.trace_user,
         )
         media = getattr(step, "register_media", None)
         try:
@@ -819,25 +913,10 @@ class OTelTrialObserver:
             with self._states_lock:
                 self._projection_counts["failed"] += 1
             return
-        scan = getattr(step, "scan_events", None)
-        try:
-            findings = scan(projection.events) if callable(scan) else []
-        except Exception as exc:  # noqa: BLE001 - an unserialisable body is a failed pass
-            _log.warning(
-                "projection: trace %s not scanned: %s", identity.trace_id, type(exc).__name__
-            )
+        verdict = self._withheld_by_the_gate(projection.events, identity.trace_id, "projection")
+        if verdict is not None:
             with self._states_lock:
-                self._projection_counts["failed"] += 1
-            return
-        if findings:
-            # the outbound data-safety gate: nothing is rewritten, the pass is not sent
-            _log.warning(
-                "projection: trace %s not sent, the events would carry a secret: %s",
-                identity.trace_id,
-                ", ".join(findings),
-            )
-            with self._states_lock:
-                self._projection_counts["failed"] += 1
+                self._projection_counts[verdict] += 1
             return
         note = getattr(step, "note_trial_outcome", None)
         scores_sent = True
@@ -880,6 +959,32 @@ class OTelTrialObserver:
             if scores_sent:
                 self._grading_counts["scores"] += stats.scores
             self._grading_counts["users"] += stats.user_generations
+
+    def _withheld_by_the_gate(
+        self, events: list[dict[str, Any]], trace_id: str, what: str
+    ) -> str | None:
+        """The outbound data-safety gate over a pass's events, with the run's own gate whatever
+        the attachment step offers: ``None`` when they may be sent, else the counter that takes
+        the pass, ``withheld`` (they would carry a secret) or ``failed`` (they could not be
+        scanned). Nothing is rewritten; the warning names the rules and the variables, never a
+        value."""
+        try:
+            findings = self._gate.scan_structured(events)
+        except Exception as exc:  # noqa: BLE001 - an unserialisable body is a failed pass
+            _log.warning("%s: trace %s not scanned: %s", what, trace_id, type(exc).__name__)
+            return "failed"
+        if not findings:
+            return None
+        causes = _causes(findings)
+        with self._states_lock:
+            self._withheld_by.update(causes)
+        _log.warning(
+            "%s: trace %s not sent, the events would carry a secret: %s",
+            what,
+            trace_id,
+            ", ".join(causes),
+        )
+        return "withheld"
 
     def _write_projection_once(
         self,
@@ -977,6 +1082,11 @@ class OTelTrialObserver:
         if self._projection.environment is not None:
             for event in built.events:
                 event["body"].setdefault("environment", self._projection.environment)
+        verdict = self._withheld_by_the_gate(built.events, identity.trace_id, "gradings")
+        if verdict is not None:
+            with self._states_lock:
+                self._grading_counts[verdict] += 1
+            return
         try:
             self._attachments.ingest(built.events)  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001 - the observability layer only warns
@@ -998,6 +1108,7 @@ class OTelTrialObserver:
             self._queue.flush(self._flush_timeout_s)
             self._write_error_roots()
         flushed = self._queue.shutdown(self._flush_timeout_s)
+        self._warn_of_what_was_withheld()
         with self._states_lock:
             self._persist.clear()  # trials that were never announced
             self._roots_pending.clear()
@@ -1014,10 +1125,12 @@ class OTelTrialObserver:
                 "langfuse.manifests_failed": counts.manifests_failed,
                 "langfuse.gradings_sent": self._grading_counts["sent"],
                 "langfuse.gradings_failed": self._grading_counts["failed"],
+                "langfuse.gradings_refused_secret": self._grading_counts["withheld"],
                 "langfuse.scores_sent": self._grading_counts["scores"],
                 "langfuse.user_generations_sent": self._grading_counts["users"],
                 "langfuse.projections_sent": self._projection_counts["sent"],
                 "langfuse.projections_failed": self._projection_counts["failed"],
+                "langfuse.projections_refused_secret": self._projection_counts["withheld"],
                 "langfuse.observations_sent": self._projection_counts["observations"],
                 "langfuse.events_sent": self._projection_counts["events"],
                 "langfuse.media_uploaded": self._projection_counts["media_uploaded"],
@@ -1027,6 +1140,9 @@ class OTelTrialObserver:
                 # a root the exporter posted and could not confirm: no second root is written
                 "langfuse.roots_unconfirmed": self._write_once_counts["roots_unconfirmed"],
                 "langfuse.final_observations_sent": self._write_once_counts["final_observations"],
+                # live spans the data-safety gate withheld (neither queued nor dropped); a
+                # trial-end pass it withheld is counted as ``*_refused_secret``, not ``*_failed``
+                "langfuse.spans_refused_secret": self._spans_withheld,
             },
             details=(
                 {
@@ -1034,6 +1150,7 @@ class OTelTrialObserver:
                     "expect_project": self._expect_project,
                     "project_verified": self._project_verified,
                     "server_api": self._server_api,
+                    "previews": "on" if self._previews else "off",
                     # the receiver's native environment and the deployment profile of the run
                     "environment": self._projection.environment,
                     "profile_version": self._profile_version,
@@ -1088,14 +1205,14 @@ class OTelTrialObserver:
             # in the fifth minute of a four-hour run must not be dated as a four-hour trace
             ended = context.finished_at or started
             written = self._emit(
-                name=f"trial {identity.task_id}/{identity.trial_index}",
+                name=NAME_TRIAL,
                 identity=identity,
                 span_id=identity.root_id,
                 parent_id=None,
                 attributes={
-                    **self._native_attributes(identity.task_id, context.tags),
+                    **self._native_attributes(identity.task_id, context.tags, context.user_id),
                     **self._identity_attributes(identity),
-                    "langfuse.observation.type": "span",
+                    "langfuse.observation.type": "agent",
                     "langfuse.observation.status_message": self._cap(reason),
                     f"{TRACE_METADATA_PREFIX}status": "error",
                     f"{TRACE_METADATA_PREFIX}error": self._cap(reason),
@@ -1115,11 +1232,16 @@ class OTelTrialObserver:
     # -- helpers ------------------------------------------------------------------------------------
 
     def _resolve(self, ref: ModelRef) -> ModelIdentity:
+        return self._resolve_read(ref)[0]
+
+    def _resolve_read(self, ref: ModelRef) -> tuple[ModelIdentity, bool]:
+        """The model's identity, and whether the deployment's rules read it (the raw identity
+        stands in when they cannot)."""
         try:
-            return self._resolver.resolve(ref.provider, ref.name)
+            return self._resolver.resolve(ref.provider, ref.name), True
         except ModelNameResolverError as exc:
             _log.warning("model name not resolved, raw identity used: %s", exc)
-            return RawModelNameResolver().resolve(ref.provider, ref.name)
+            return RawModelNameResolver().resolve(ref.provider, ref.name), False
 
     def _state(self, identity: TrialIdentity) -> _TrialState:
         with self._states_lock:
@@ -1141,6 +1263,12 @@ class OTelTrialObserver:
                     )
             return state
 
+    def _user_id(self, state: _TrialState) -> str | None:
+        """The trace's user under the profile's ``[trace] user``: the agent's model identity when
+        the deployment's rules read it (the bundle pass's rule), else nobody."""
+        identity = state.agent.canonical if state.agent and state.agent_resolved else None
+        return trace_user(self._projection.trace_user, identity)
+
     def _model_name_of(self, state: _TrialState, role: str) -> str | None:
         ref = state.models.get(role)
         if ref is None:
@@ -1148,17 +1276,24 @@ class OTelTrialObserver:
         return self._resolve(ref).canonical
 
     def _trace_attributes(self, state: _TrialState) -> dict[str, Any]:
-        return self._native_attributes(state.identity.task_id, state.tags)
+        return self._native_attributes(state.identity.task_id, state.tags, self._user_id(state))
 
-    def _native_attributes(self, task_id: str, tags: Sequence[str]) -> dict[str, Any]:
+    def _native_attributes(
+        self, task_id: str, tags: Sequence[str], user_id: str | None = None
+    ) -> dict[str, Any]:
         # the receiver's native fields ride on every span: Langfuse fixes a trace's environment
         # at the first write it sees (verified on the instance 2026-09-17), and on v4 they are
-        # stored and filtered per observation, so every row carries them
+        # stored and filtered per observation, so every row carries them. The name and the user
+        # follow the profile's ``[trace]``, as the projection's do
         attributes: dict[str, Any] = {
-            "langfuse.trace.name": f"{self._label}/{task_id}",
+            "langfuse.trace.name": trace_name(
+                self._projection.trace_name, (*tags, f"task:{task_id}"), label=self._label
+            ),
             "langfuse.session.id": self._session_id,
             "langfuse.trace.tags": list(tags),
         }
+        if user_id:
+            attributes["langfuse.user.id"] = user_id
         settings = self._projection
         if settings.environment is not None:
             attributes["langfuse.environment"] = settings.environment
@@ -1181,6 +1316,10 @@ class OTelTrialObserver:
         return {f"{TRACE_METADATA_PREFIX}{key}": values[key] for key in IDENTITY_METADATA_KEYS}
 
     # -- the live rows: final on a v3 receiver, declared previews on a write-once one -----------
+
+    def _nothing_live(self) -> bool:
+        """The write-once layout without previews: a trial is written once, when persisted."""
+        return self._write_once and not self._previews
 
     def _preview_root_id(self, identity: TrialIdentity) -> str:
         return identity.observation_id(_ids.preview_kind("root"), _ids.ROOT_KEY)
@@ -1215,6 +1354,11 @@ class OTelTrialObserver:
         error: bool = False,
         preview: bool = False,
     ) -> bool:
+        """Queue one span; False when it was withheld (a secret) or the queue was full. Every live
+        span of every kind leaves through here."""
+        attrs = {k: v for k, v in attributes.items() if v is not None}
+        if self._carries_secret(name, identity, span_id, attrs):
+            return False
         trace_int = int(identity.trace_id, 16)
         context = SpanContext(
             trace_id=trace_int,
@@ -1241,7 +1385,7 @@ class OTelTrialObserver:
             context=context,
             parent=parent,
             resource=self._resource,
-            attributes={k: v for k, v in attributes.items() if v is not None},
+            attributes=attrs,
             events=(),
             links=(),
             kind=SpanKind.INTERNAL,
@@ -1255,6 +1399,98 @@ class OTelTrialObserver:
             with self._states_lock:
                 self._write_once_counts["previews"] += 1
         return queued
+
+    def _carries_secret(
+        self, name: str, identity: TrialIdentity, span_id: str, attributes: Mapping[str, Any]
+    ) -> bool:
+        """The data-safety gate over a span's name and attributes, before it is queued. A hit
+        withholds the span, counts it, and warns with the span, the rules and the variables the
+        known values came from, never a value."""
+        findings = self._gate.scan_structured({"name": name, "attributes": attributes})
+        if not findings:
+            return False
+        causes = _causes(findings)
+        with self._states_lock:
+            self._spans_withheld += 1
+            self._withheld_by.update(causes)
+        # a tool's name comes from the model: it is named only when it is clean itself
+        shown = name if not self._gate.scan(name.encode("utf-8", "replace")) else "(name withheld)"
+        _log.warning(
+            "span %r (%s) of trace %s not exported, it would carry a secret: %s",
+            shown,
+            span_id,
+            identity.trace_id,
+            ", ".join(causes),
+        )
+        return True
+
+    def _ambient_strings(self, extra: Sequence[str]) -> tuple[str, ...]:
+        """What every span of the run carries by design: its session, label and tags, the
+        caller's metadata, the receiver's native fields, and the run's id and tag (``extra``)."""
+        projection = self._projection
+        return tuple(
+            text
+            for text in (
+                self._session_id,
+                self._label,
+                HARNESS_TAG,
+                SOURCE_TAG,
+                *self._tags,
+                *strings_in(self._metadata),
+                projection.environment,
+                projection.release,
+                projection.version,
+                projection.producer,
+                projection.trace_name,
+                *extra,
+            )
+            if text
+        )
+
+    def _calibrate_gate(self) -> None:
+        """Leave out of the gate every known value the run's own values contain: with it the
+        gate would withhold every span."""
+        self._say_left_out(self._gate.drop_ambient(self._ambient))
+
+    def _refresh_gate(self) -> None:
+        """Re-read the gate's known values when what they came from changed (a secret registered
+        after the observer was built), leaving the ambient ones out again."""
+        try:
+            _, left_out = self._gate.refresh(self._ambient)
+        except Exception as exc:  # noqa: BLE001 - the gate keeps the values it has
+            _log.warning(
+                "the data-safety gate's credentials were not re-read: %s", type(exc).__name__
+            )
+            return
+        self._say_left_out(left_out)
+
+    def _say_left_out(self, names: Sequence[str]) -> None:
+        """Warn once per variable, by name, that its value is not scanned for."""
+        for name in names:
+            with self._states_lock:
+                new = name not in self._left_out
+                self._left_out.add(name)
+            if new:
+                _log.warning(
+                    "%s holds a value the run's own tracing values (session, run, label, tags, "
+                    "metadata, environment, release) contain, so the data-safety scan leaves it "
+                    "out: every span would be withheld otherwise",
+                    name,
+                )
+
+    def _warn_of_what_was_withheld(self) -> None:
+        """One warning at run end when the gate withheld anything: the per-span lines say which,
+        this one says that the run's traces are incomplete and why, by rule and variable."""
+        passes = self._projection_counts["withheld"], self._grading_counts["withheld"]
+        if not (self._spans_withheld or any(passes)):
+            return
+        _log.warning(
+            "live tracing withheld %d span(s), %d projection pass(es) and %d gradings pass(es) "
+            "that would have carried a secret (%s); the traces of this run are incomplete",
+            self._spans_withheld,
+            *passes,
+            ", ".join(f"{cause} x{count}" for cause, count in self._withheld_by.most_common(5)),
+        )
 
     def _redact(self, mapping: Any) -> Any:
         if isinstance(mapping, Mapping):
@@ -1306,6 +1542,11 @@ class OTelTrialObserver:
         if len(text) <= self._max_chars:
             return text
         return text[: self._max_chars - 16] + f"...[+{len(text) - self._max_chars + 16}]"
+
+
+def _causes(findings: Sequence[Finding]) -> list[str]:
+    """What the gate found, by rule and variable name, once each and never a value."""
+    return list(dict.fromkeys(finding.describe() for finding in findings))
 
 
 def _content(message: Any) -> str:

@@ -18,7 +18,6 @@ from tolokaforge.tools.builtin.files import (
 )
 from tolokaforge.tools.builtin.http_request import HTTPRequestTool
 from tolokaforge.tools.builtin.mobile import MobileTool
-from tolokaforge.tools.builtin.rag_search import SearchKBTool
 from tolokaforge.tools.builtin.submit import SubmitTool
 
 __all__ = [
@@ -38,7 +37,6 @@ __all__ = [
     "MoveFileTool",
     "ReadFileTool",
     "ReplaceLinesTool",
-    "SearchKBTool",
     "SubmitTool",
     "WriteFileTool",
 ]

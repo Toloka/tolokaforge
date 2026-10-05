@@ -15,8 +15,9 @@ What it does, in order, per file:
    leaves the runner at all);
 3. **project** it to ingestion bodies and then to OTLP spans, the same two steps the trial path
    takes, so a transcript and a trial read alike in the same UI;
-4. **scan** the serialised payload against the sentinel, which knows the credential shapes *and*
-   the values this very process holds. A hit sends nothing;
+4. **scan** the payload against the sentinel, which knows the credential shapes *and* the values
+   this very process holds: the shapes read the serialised JSON, the values also the raw strings.
+   A hit sends nothing;
 5. **export** one batch per transcript.
 
 Nothing here fails the pipeline on its own: the command reports what it refused, what it blocked
@@ -38,7 +39,7 @@ import re
 import urllib.error
 import urllib.request
 from base64 import b64encode
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,9 @@ MAX_PAGES = 50
 # a row the receiver filed under no environment of its own sits in its default
 DEFAULT_ENVIRONMENT = "default"
 DEFAULT_RUN_TAG = "v1"
+# the model-name resolvers the engine's tracing configuration knows: the raw names, or the
+# toloka-model-name-normalizer under a deployment's rules
+MODEL_NAME_NORMALIZERS = ("none", "toloka")
 READ_TIMEOUT_S = 10.0
 
 # ``agent_iter_3.jsonl`` is the third resolve iteration; ``agent_finalize.jsonl`` is the finalize
@@ -336,6 +340,11 @@ def upload(
     metadata: Mapping[str, Any] | None = None,
     tool_io: str | None = None,
     model: str | None = None,
+    trace_name: str | None = None,
+    user: str | None = None,
+    user_model: str | None = None,
+    model_name_normalizer: str = "none",
+    model_rules: str | None = None,
     producer_version: str = "automation",
     receiver: Receiver | None = None,
     dry_run: bool = False,
@@ -344,10 +353,31 @@ def upload(
 
     ``model`` is the model that served the runs when the CLI was pointed at an alias: the CLI
     reports the alias, and a gateway routes it to whatever it is configured to serve.
+    ``trace_name`` is the traces' name template (``{label}``, ``{transcript}``, ``{step}``; default
+    ``{label}/{transcript}``). The traces' user is ``user`` as given, or the identity of
+    ``user_model``, the model the agents worked on. Model names are read through the resolver
+    ``model_name_normalizer`` selects (``none``, the raw names, or ``toloka`` with the deployment's
+    ``model_rules``), the trial traces' rule, so a model has one name across both.
     """
+    from tolokaforge_langfuse.model_names import (
+        ModelNameResolverError,
+        build_model_name_resolver,
+    )
+
     from tolokaforge.observability import ids as engine_ids
     from tolokaforge_langfuse import otlp_spans, otlp_transport
     from tolokaforge_langfuse import transcripts as tr
+
+    if model_name_normalizer not in MODEL_NAME_NORMALIZERS:
+        # a misspelt choice would read every name raw and silently differ from the trial traces
+        raise UploadError(
+            f"--model-name-normalizer {model_name_normalizer!r} is not one of "
+            f"{', '.join(MODEL_NAME_NORMALIZERS)}"
+        )
+    try:
+        resolver = build_model_name_resolver(model_name_normalizer, model_rules)
+    except ModelNameResolverError as exc:
+        raise UploadError(f"the model-name resolver cannot be built: {exc}") from exc
 
     # surrounding whitespace goes, as from a --tag or --metadata value: a trailing newline read
     # from a file would otherwise end up inside the model tag
@@ -399,6 +429,10 @@ def upload(
                 metadata=dict(metadata or {}),
                 model=served_model,
                 input=prompt,
+                name=trace_name,
+                user=user,
+                user_model=user_model,
+                resolver=resolver,
             )
             built = tr.build_events(gated, options, ids=contract)
         except tr.TranscriptError as exc:
@@ -459,47 +493,17 @@ def _sentinel(receiver: Receiver | None) -> Any:
     a secret's."""
     from tolokaforge_langfuse import safety
 
-    gate = safety.SafetyGate.from_environment()
-    if receiver is None:
-        return gate
     held = {
-        value.encode("utf-8")
-        for value in receiver.headers.values()
-        if len(value) >= safety.MIN_SECRET_VALUE
+        f"header {name}": value for name, value in (receiver.headers if receiver else {}).items()
     }
-    known = sorted(set(gate.known_values) | held, key=len, reverse=True)
-    return safety.SafetyGate(known_values=tuple(known))
+    return safety.SafetyGate.from_environment(extra=held)
 
 
 def _scan(gate: Any, events: Sequence[Mapping[str, Any]], *, what: str) -> list[Any]:
-    """The sentinel over the events as JSON and as the raw strings the spans carry, one per line:
-    JSON escaping hides a value with a quote, a backslash or a non-ASCII character, and turns a
-    line break into two characters no line-anchored shape matches."""
-    serialised = json.dumps(events, default=str).encode("utf-8")
-    # blank lines go: no shape spans one, and a line-anchored shape's leading \s* would otherwise
-    # cross a whole run of them from every line start (quadratic in a run of newlines)
-    raw = "\n".join(
-        line for text in _strings(events) for line in text.splitlines() if line.strip()
-    ).encode("utf-8", "replace")
-    found, seen = [], set()
-    for finding in gate.scan(serialised, what=what) + gate.scan(raw, what=what):
-        if (finding.rule, finding.excerpt) not in seen:
-            seen.add((finding.rule, finding.excerpt))
-            found.append(finding)
-    return found
-
-
-def _strings(value: Any) -> Iterator[str]:
-    """Every string in ``value``, the keys included, and every other scalar as text."""
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            yield str(key)
-            yield from _strings(item)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            yield from _strings(item)
-    elif value is not None:
-        yield str(value)
+    """The sentinel over the events: the shapes over their JSON, the values the process holds also
+    over every raw string and its JSON-escaped forms. The wheel's one rule, the one every live
+    span and the trial-end pass use (``SafetyGate.scan_structured``)."""
+    return list(gate.scan_structured(events, what=what))
 
 
 def _project_verified(receiver: Receiver | None, project: str | None) -> bool:

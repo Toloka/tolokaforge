@@ -48,6 +48,9 @@ image of this engine version or newer refuses it as `Value error, ModelConfig wa
 key it does not declare` (or `OpenRouterConfig`, `ModelSessionConfig`, `ReasoningConfig`
 for a nested block) at `agent_model_config`, `user_model_config` or `judge_model_config`,
 naming the key and every key the image accepts; an older image drops it without a word.
+A spec the older image does parse is refused by the engine instead, with `runner image
+declares wire-protocol version N; engine requires M`: the engine reads the image's
+version off every successful registration and refuses one below its own.
 Same cause, same fix.
 The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
 models, so an unknown grading key there is an error rather than a dropped field — unlike a

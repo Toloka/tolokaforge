@@ -36,15 +36,17 @@ the gate has no false-reject mode. The severity of each rule is documented in
 from __future__ import annotations
 
 import logging
-import re
 import types
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import Enum
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ValidationError
 
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
+from tolokaforge.core.grading.comparison_view_checks import comparison_view_findings
 from tolokaforge.core.grading.golden_replay import (
     InitialStateSource,
     unreplayable_golden_source,
@@ -60,6 +62,11 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     unreachable_target,
 )
 from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
+from tolokaforge.core.grading.regex_engine import (
+    RegexEngineKind,
+    UncompilablePattern,
+    engine_for,
+)
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
@@ -73,6 +80,7 @@ from tolokaforge.core.models import (
     BoundValue,
     GradingCombineConfig,
     GradingFindingSeverity,
+    OnMissing,
     RequiredAction,
     ToolExecutorIdentity,
     ToolExpectations,
@@ -87,8 +95,9 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
 from tolokaforge.runner.models import (
-    _KINDS_WITHOUT_AN_ANCHOR,
     TRACE_PREDICATE_BINDING_OPERATORS,
+    TRACE_PREDICATE_REGEX_OPERATORS,
+    capture_group_count_refusal,
 )
 
 logger = logging.getLogger(__name__)
@@ -470,6 +479,22 @@ class SeededTablesLayer:
 
     tables: Mapping[str, list[dict[str, Any]]] | None
     known: bool = True
+    unstable_fields: Callable[[], tuple[str, ...]] | None = dataclass_field(
+        default=None, compare=False
+    )
+    """Reads the dotted ``table.field`` paths the task declares unstable beside its
+    seeded state (the native reading: ``fixtures/unstable_fields.json``), table names
+    as declared. Called only by the comparison-view rule, for a pack declaring a view,
+    which refuses a key or a reference the unstable filter would drop — so a pack
+    without one has nothing read on its behalf. ``None`` is an adapter that does not
+    report them: the rule then reports its masked-field checks unchecked rather than
+    holding the view to a mask it was not told of. A reader answering ``()`` is a task
+    declaring none."""
+    table_shapes: Mapping[str, str] = dataclass_field(default_factory=dict)
+    """The seeded tables written as something other than a list of records, and as what
+    (the native reading: :func:`~tolokaforge.adapters._task_loader.seeded_table_shapes`).
+    ``tables`` holds them normalised to lists, so this is the only place the shape
+    survives; a comparison view naming one is refused."""
     skip_kind: SkipKind = SkipKind.STRUCTURAL
     """The kind of skip a rule reading this layer reports where it cannot check.
 
@@ -485,11 +510,13 @@ class SeededTablesLayer:
                 "would be held against nothing. Report the tables the task seeds — {} "
                 "where it seeds none — or report unresolvable()"
             )
-        if not self.known and self.tables is not None:
+        if not self.known and (
+            self.tables is not None or self.unstable_fields is not None or self.table_shapes
+        ):
             raise ValueError(
-                "an unresolvable seeded-tables layer carries facts: the rule that reads "
-                f"them is skipped, so tables {sorted(self.tables)} would be resolved and "
-                "then ignored. Report the tables with known=True, or report nothing"
+                "an unresolvable seeded-tables layer carries facts: the rules that read "
+                "them are skipped, so its tables and unstable fields would be resolved and "
+                "then ignored. Report them with known=True, or report nothing"
             )
 
     @classmethod
@@ -930,6 +957,7 @@ _UNRESOLVED_SEEDED_TABLES_REASON = (
 )
 
 _ID_FIELDS_ADDRESS = "state_checks.id_fields"
+_COMPARISON_VIEW_ADDRESS = "state_checks.comparison_view"
 
 _JSONPATHS_ADDRESS = "state_checks.jsonpaths"
 _HASH_ENABLED_ADDRESS = "state_checks.hash.enabled"
@@ -1063,18 +1091,20 @@ def inspect_grading_authoring(
             caller holding no ``task.yaml`` — it skips the rules reading them wherever
             one would have been checked, and fails nothing.
     """
-    constraints = tuple(_trace_constraints(grading))
+    trace_checks = _trace_checks(grading)
+    constraints = tuple(_trace_constraints(trace_checks))
     sites = tuple(_trace_matcher_sites(constraints))
     binders = tuple(_trace_binding_sites(constraints))
     rules = _transcript_rules(grading)
     reports = [
         _check_sections_declare_something(grading),
-        _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
+        _check_regex_compiles(trace_checks, sites, binders, rules),
         _check_hash_source_declared(grading, hash_sources),
         _check_golden_actions_are_a_list(grading),
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
         _check_id_fields_against_seeded_tables(grading, seeded_tables),
+        _check_comparison_view_against_the_task(grading, seeded_tables),
         _check_state_reads_a_database_the_task_seeds(grading, seeded_tables),
         _check_jsonpaths_address_a_reachable_state(grading),
         _check_path_glob_is_compared_the_way_the_runner_reads_it(grading),
@@ -1462,42 +1492,169 @@ def _check_argument_paths(
     )
 
 
+@dataclass(frozen=True)
+class _PatternSite:
+    """One authored pattern, the engine that compiles it, and where an override goes."""
+
+    where: str
+    pattern: str
+    engine: RegexEngineKind
+    ignore_case: bool
+    captures: bool
+    """Whether the pattern is a binder's capture, which must declare exactly one group."""
+    override_at: str
+    """Where an author names ``regex_engine: backtracking`` for this pattern."""
+    in_a_pattern_list: bool
+    """Whether the pattern is a matcher's ``regex`` / ``not_regex``, which a list can split."""
+    consequence: str
+    """What a refused pattern does to the trial at grade time."""
+
+
+_TRACE_PATTERN_REFUSED = "raises out of the evaluator at grade time"
+_TRANSCRIPT_PATTERN_REFUSED = "fails its sub-check at grade time"
+
+
 def _check_regex_compiles(
+    trace_checks: TraceChecksConfig | None,
     sites: tuple[_MatcherSite, ...],
     binders: tuple[_BindingSite, ...],
-    disallow_regex: Iterable[str],
+    transcript_rules: TranscriptRulesConfig | None,
 ) -> AuthoringReport:
-    """Every authored pattern compiles here, or it raises inside the evaluator.
+    """Every authored pattern compiles under its effective engine.
 
-    Neither substrate catches ``re.error`` locally: core lets it propagate out of
-    the grader and the runner folds it into a failed grade response, so the trial
-    is lost rather than the constraint. A binder's capture pattern is compiled by
-    the same evaluator on the same trial, so it is read here for the same reason.
+    What a refusal costs at grade time depends on the site. A ``trace_checks``
+    pattern raises out of the evaluator, which neither substrate catches locally:
+    core lets it propagate out of the grader and the runner folds it into a failed
+    grade response, so the trial's grade is lost rather than the constraint. A
+    ``disallow_regex`` pattern fails its own sub-check. A refusal under
+    ``backtracking`` is an error, since Python ``re`` itself rejects the pattern; one
+    under ``linear`` is an advisory naming the ``backtracking`` opt-in — and, for a
+    matcher's pattern, the list form a lookahead conjunction splits into — since the
+    pattern may be one only a backtracking engine reads. A binder's capture is
+    compiled by the same evaluator on the same trial, and must declare exactly one
+    group under its own engine: the load validator counts with Python ``re`` alone,
+    so a pattern only RE2 compiles is counted here.
     """
+    authored = _transcript_pattern_sites(transcript_rules)
+    if trace_checks is not None:
+        authored += _trace_pattern_sites(trace_checks.regex_engine, sites, binders)
+    errors: list[Finding] = []
+    advisories: list[Finding] = []
+    for site in authored:
+        try:
+            compiled = engine_for(site.engine).compile(site.pattern, ignore_case=site.ignore_case)
+        except UncompilablePattern as refusal:
+            refused = errors if site.engine is RegexEngineKind.BACKTRACKING else advisories
+            refused.append(_uncompilable(site, refusal))
+            continue
+        if site.captures and compiled.groups != 1:
+            message = capture_group_count_refusal(site.pattern, compiled.groups)
+            errors.append(Finding(site.where, message))
+    return AuthoringReport(errors=tuple(errors), advisories=tuple(advisories))
+
+
+def _trace_pattern_sites(
+    section: RegexEngineKind,
+    sites: tuple[_MatcherSite, ...],
+    binders: tuple[_BindingSite, ...],
+) -> list[_PatternSite]:
+    """Every matcher and capture pattern, under the engine that compiles it at grade time."""
     authored = [
-        (f"transcript_rules.disallow_regex[{index}]", pattern)
-        for index, pattern in enumerate(disallow_regex)
-    ]
-    authored += [
-        (f"{predicate_site.where}.regex", predicate_site.predicate.regex)
+        _PatternSite(
+            where=where,
+            pattern=pattern,
+            engine=predicate_site.predicate.regex_engine_under(section),
+            ignore_case=False,
+            captures=False,
+            override_at="on the predicate or on the trace_checks block",
+            in_a_pattern_list=True,
+            consequence=_TRACE_PATTERN_REFUSED,
+        )
         for site in sites
         for predicate_site in _predicate_sites(site)
-        if predicate_site.predicate.regex is not None
+        for name in sorted(
+            predicate_site.predicate.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS
+        )
+        for where, pattern in _addressed_patterns(predicate_site, name)
     ]
     authored += [
-        (f"{predicate_site.where}.not_regex", predicate_site.predicate.not_regex)
-        for site in sites
-        for predicate_site in _predicate_sites(site)
-        if predicate_site.predicate.not_regex is not None
-    ]
-    authored += [
-        (f"{site.where}.values.{name}.pattern", value.pattern)
+        _PatternSite(
+            where=f"{site.where}.values.{name}.pattern",
+            pattern=bound.pattern,
+            engine=bound.regex_engine_under(section),
+            ignore_case=False,
+            captures=True,
+            override_at="on the bound value or on the trace_checks block",
+            in_a_pattern_list=False,
+            consequence=_TRACE_PATTERN_REFUSED,
+        )
         for site in binders
-        for name, value in site.binding.values.items()
-        if value.pattern is not None
+        for name, bound in site.binding.values.items()
+        if bound.pattern is not None
     ]
-    findings = (_uncompilable(where, pattern) for where, pattern in authored)
-    return AuthoringReport(errors=tuple(finding for finding in findings if finding is not None))
+    return authored
+
+
+def _addressed_patterns(predicate_site: _PredicateSite, operator: str) -> list[tuple[str, str]]:
+    """Each pattern ``operator`` names, at ``<site>.<operator>`` — ``[i]`` per item of a list."""
+    where = f"{predicate_site.where}.{operator}"
+    authored = getattr(predicate_site.predicate, operator)
+    if isinstance(authored, str):
+        return [(where, authored)]
+    return [
+        (f"{where}[{index}]", pattern)
+        for index, pattern in enumerate(predicate_site.predicate.patterns_of(operator))
+    ]
+
+
+def _transcript_pattern_sites(
+    transcript_rules: TranscriptRulesConfig | None,
+) -> list[_PatternSite]:
+    """Every ``disallow_regex`` pattern, read case-insensitively as the evaluator reads it."""
+    if transcript_rules is None:
+        return []
+    return [
+        _PatternSite(
+            where=f"transcript_rules.disallow_regex[{index}]",
+            pattern=pattern,
+            engine=transcript_rules.regex_engine,
+            ignore_case=True,
+            captures=False,
+            override_at="on the transcript_rules block",
+            in_a_pattern_list=False,
+            consequence=_TRANSCRIPT_PATTERN_REFUSED,
+        )
+        for index, pattern in enumerate(transcript_rules.disallow_regex)
+    ]
+
+
+def _uncompilable(site: _PatternSite, refusal: UncompilablePattern) -> Finding:
+    refused = (
+        f"regex {site.pattern!r} does not compile under the {site.engine.value} regex "
+        f"engine: {refusal.reason}"
+    )
+    if site.engine is RegexEngineKind.BACKTRACKING:
+        return Finding(
+            site.where,
+            f"{refused}. The pattern {site.consequence}, once the trial is already paid for",
+        )
+    opt_in = (
+        f"declares regex_engine: backtracking {site.override_at}, which runs Python re at "
+        "its backtracking cost"
+    )
+    remedy = (
+        "A lookahead conjunction (?=…a)(?=…b) is the list form regex: [a, b], every pattern "
+        "of which must search the value, and a negative lookahead (?!…c) is not_regex: [c] "
+        "on the same predicate, no pattern of which may; a pattern that needs other "
+        f"lookaround or backreferences {opt_in}"
+        if site.in_a_pattern_list
+        else f"A pattern that needs them {opt_in}"
+    )
+    return Finding(
+        site.where,
+        f"{refused}. The linear engine searches in time linear in the text and reads no "
+        f"lookaround or backreferences. {remedy}",
+    )
 
 
 def _check_hash_source_declared(
@@ -1833,6 +1990,72 @@ def _check_id_fields_against_seeded_tables(
         )
         return AuthoringReport()
     return AuthoringReport(errors=tuple(Finding(_ID_FIELDS_ADDRESS, f) for f in findings))
+
+
+def _check_comparison_view_against_the_task(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A declared comparison view reads tables the task seeds and columns its masks keep.
+
+    The findings the run path's loads refuse a view with, from the same computation
+    (:func:`~tolokaforge.core.grading.comparison_view_checks.comparison_view_findings`).
+    A refusal is an error; a warning — a missing table downgraded by
+    ``relaxed_validation``, or a view declared beside a disabled hash, which nothing
+    reads — is a hint: the pack still grades as written. What the layer does not report
+    is unchecked rather than assumed: every check where the seeded tables are
+    unresolvable, and the masked-field checks where the unstable fields are not
+    reported. Neither reports a defect, and ``RegisterTrial`` checks the description's
+    own unstable fields whatever this gate read. A block the view model refuses is
+    reported as an error naming the model's message.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping) or not state_checks.get("comparison_view"):
+        return AuthoringReport()
+    try:
+        view = ComparisonViewConfig.model_validate(state_checks["comparison_view"])
+    except ValidationError as exc:
+        return AuthoringReport(
+            errors=(
+                Finding(
+                    _COMPARISON_VIEW_ADDRESS,
+                    f"{_COMPARISON_VIEW_ADDRESS} is not a view this engine reads: "
+                    + "; ".join(error["msg"] for error in exc.errors()),
+                ),
+            )
+        )
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    _COMPARISON_VIEW_ADDRESS,
+                    _UNRESOLVED_SEEDED_TABLES_REASON,
+                    kind=seeded_tables.skip_kind,
+                ),
+            )
+        )
+    assert seeded_tables.tables is not None
+    hash_block = state_checks.get("hash")
+    findings = comparison_view_findings(
+        view,
+        tables=seeded_tables.tables,
+        unstable_fields=(
+            None if seeded_tables.unstable_fields is None else seeded_tables.unstable_fields()
+        ),
+        table_shapes=seeded_tables.table_shapes,
+        id_fields=state_checks.get("id_fields") or {},
+        numeric_string_fields=state_checks.get("numeric_string_fields") or (),
+        auto_mask_clock_columns=bool(state_checks.get("auto_mask_clock_columns")),
+        relaxed_validation=bool(state_checks.get("relaxed_validation")),
+        hash_enabled=isinstance(hash_block, Mapping) and bool(hash_block.get("enabled")),
+    )
+    return AuthoringReport(
+        errors=tuple(Finding(_COMPARISON_VIEW_ADDRESS, error) for error in findings.errors),
+        hints=tuple(Finding(_COMPARISON_VIEW_ADDRESS, warning) for warning in findings.warnings),
+        unchecked=tuple(
+            Skip(_COMPARISON_VIEW_ADDRESS, reason, kind=SkipKind.ADAPTER_DECLARED)
+            for reason in findings.unchecked
+        ),
+    )
 
 
 def _jsonpath_assertions(grading: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
@@ -2621,18 +2844,6 @@ def _undeclared_tool_message(name: str, inventory: ToolInventory) -> str:
     )
 
 
-def _uncompilable(where: str, pattern: str) -> Finding | None:
-    try:
-        re.compile(pattern)
-    except re.error as error:
-        return Finding(
-            where,
-            f"regex {pattern!r} does not compile: {error}. An uncompilable pattern raises "
-            "out of the evaluator at grade time, once the trial is already paid for",
-        )
-    return None
-
-
 def _tool_names_asserted_by(predicate: ValuePredicate) -> tuple[str, ...]:
     """The tool names a predicate asserts as tokens, if it asserts any."""
     named: list[str] = []
@@ -2667,6 +2878,11 @@ def _check_severity_gate_default_on_missing_is_risky(
     ``on_missing: withhold`` as the fix when the anchor's tool can silently error
     (rate limit, connector timeout, unavailable KB).
 
+    The advisory speaks only where the model admits the ``on_missing: fail`` it
+    recommends, read off :meth:`TraceConstraintExpr.kinds_refusing_on_missing`: a
+    tree holding ``present`` / ``absent`` / ``count`` at any depth refuses it, so a
+    gate over one is left to the default.
+
     Advisory only — no error, since a gate whose anchor is a deterministic action
     is a legitimate shape and this rule cannot tell the two apart at authoring
     time. See the on-missing docs on
@@ -2675,12 +2891,9 @@ def _check_severity_gate_default_on_missing_is_risky(
     advisories = tuple(
         Finding(where, _SEVERITY_GATE_DEFAULT_FAIL_ADVISORY.format(where=where))
         for where, constraint in constraints
-        if constraint.severity is TraceConstraintSeverity.GATE and constraint.on_missing is None
-        # The advisory speaks about an "anchor's tool" erroring silently, which
-        # only applies to kinds that read a matched anchor. Anchorless kinds
-        # (``present`` / ``absent`` / ``count``) have no anchor to error on —
-        # skip them so the advisory reads truthfully.
-        and bool(constraint.require.kinds_in_tree() - _KINDS_WITHOUT_AN_ANCHOR)
+        if constraint.severity is TraceConstraintSeverity.GATE
+        and constraint.on_missing is None
+        and not constraint.require.kinds_refusing_on_missing(OnMissing.FAIL)
     )
     return AuthoringReport(advisories=advisories)
 
@@ -2739,17 +2952,24 @@ def _check_graded_criteria_have_expected_anchor(grading: Mapping[str, Any]) -> A
     return AuthoringReport(hints=hints)
 
 
-def _trace_constraints(grading: Mapping[str, Any]) -> Iterator[tuple[str, TraceConstraint]]:
+def _trace_checks(grading: Mapping[str, Any]) -> TraceChecksConfig | None:
+    block = grading.get("trace_checks")
+    if not isinstance(block, Mapping):
+        return None
+    return TraceChecksConfig(**block)
+
+
+def _trace_constraints(
+    config: TraceChecksConfig | None,
+) -> Iterator[tuple[str, TraceConstraint]]:
     """Every constraint the block declares, shared and per-route, with its address.
 
     A route's constraints are graded exactly as the shared ones are, so a typo
     inside one is the same defect — and the route id joins the address because the
     block's one id space is what keeps the two forms apart.
     """
-    block = grading.get("trace_checks")
-    if not isinstance(block, Mapping):
+    if config is None:
         return
-    config = TraceChecksConfig(**block)
     for constraint in config.constraints:
         yield f"trace_checks.{constraint.id}", constraint
     for path in config.alternatives or ():

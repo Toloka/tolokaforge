@@ -15,21 +15,27 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from pydantic import ValidationError
+
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
     ToolActor,
     actor_tool_block,
+    declared_search_backend,
     declared_tool_names,
     enabled_tool_names,
     grading_source_under_adapter,
     replay_world_under_adapter,
+    search_declaration,
     seeded_tables_under_adapter,
     tool_inventory_under_adapter,
+    uses_search,
     validate_grading_yaml,
 )
 from tolokaforge.core.adapter_registry import CompositeAdapter, build_composite_adapter
 from tolokaforge.core.budgets import (
+    LIMIT_HIT_MARKER_FILENAME,
     BudgetHit,
     CompositeBudget,
     CostBudget,
@@ -88,13 +94,19 @@ from tolokaforge.core.models import (
 from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
-from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output.artifacts import (
+    FileArtifactWriter,
+    TrialArtifactWriter,
+    read_report_trajectory,
+)
 from tolokaforge.core.output.harness_comparison import (
     build_harness_comparison_slices,
     format_harness_comparison_table,
 )
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
+    RAG_SERVICE_STACK_SERVICE,
+    RegistryError,
     RuntimeBackendBuildContext,
     TrialGraderContext,
     UnknownImplementationError,
@@ -115,6 +127,7 @@ from tolokaforge.core.run_display_events import (
 )
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
+from tolokaforge.core.search.stack_services import UndeclaredStackServiceError
 from tolokaforge.core.trial import (
     DEFAULT_TOOL_TIMEOUT_S,
     EnvEndpoints,
@@ -122,7 +135,7 @@ from tolokaforge.core.trial import (
     TrialSpec,
 )
 from tolokaforge.core.trial_executor import TrialExecutor
-from tolokaforge.core.trial_identity import format_trial_id
+from tolokaforge.core.trial_identity import format_trial_id, trial_output_subpath
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.observability.factory import (
     RunIdentity,
@@ -149,23 +162,27 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 # Tools / initial-state declarations that require ``full_stack`` (mock-web
 # at port 8080 and rag-service at 8001) on top of the core db-service +
-# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs;
-# ``search_kb`` reaches rag-service. Tasks may also declare
-# ``initial_state.mock_web`` / ``initial_state.rag`` directly without
-# enabling those tools — both shapes flip the switch.
+# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs. A task
+# may also declare ``initial_state.mock_web`` directly without enabling those
+# tools. Knowledge-base search needs rag-service when the task's search backend
+# says so (ADR-0054): not by the tool's name, which a task may choose, but by
+# the ``stack_service`` its backend (``initial_state.rag.backend``, default
+# ``rag_service``) declares — for a task that searches at all, i.e. declares a
+# corpus or enables its search tool (``initial_state.rag.tool.name``, default
+# ``search_kb``).
 #
 # Routing matrix, over either actor's block:
-# +--------------------------------------+--------------+
-# | Signal in task config                | Stack        |
-# +--------------------------------------+--------------+
-# | tools.<actor>.enabled ∋ browser      | full_stack   |
-# | tools.<actor>.enabled ∋ mobile       | full_stack   |
-# | tools.<actor>.enabled ∋ search_kb    | full_stack   |
-# | initial_state.mock_web is truthy     | full_stack   |
-# | initial_state.rag is truthy          | full_stack   |
-# | otherwise                            | core_stack   |
-# +--------------------------------------+--------------+
-_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile", "search_kb"})
+# +------------------------------------------------------+--------------+
+# | Signal in task config                                | Stack        |
+# +------------------------------------------------------+--------------+
+# | tools.<actor>.enabled ∋ browser                      | full_stack   |
+# | tools.<actor>.enabled ∋ mobile                       | full_stack   |
+# | initial_state.mock_web is truthy                     | full_stack   |
+# | the task searches, and its backend's stack_service   | full_stack   |
+# |   is rag_service (the default backend's)             |              |
+# | otherwise                                            | core_stack   |
+# +------------------------------------------------------+--------------+
+_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 
 # Where a bridged local TypeSense server answers from inside ``runner-net``.
 # The alias is attached when the bridge connects the container to the network,
@@ -454,6 +471,8 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     for task in tasks:
         if _FULL_STACK_TOOL_NAMES & declared_tool_names(task):
             return True
+        if _search_needs_rag_service(task):
+            return True
         initial_state = task.initial_state if task.initial_state is not None else None
         if initial_state is None:
             continue
@@ -462,14 +481,29 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
             if hasattr(initial_state, "mock_web")
             else (initial_state.get("mock_web") if isinstance(initial_state, dict) else None)
         )
-        rag = (
-            initial_state.rag
-            if hasattr(initial_state, "rag")
-            else (initial_state.get("rag") if isinstance(initial_state, dict) else None)
-        )
-        if mock_web or rag:
+        if mock_web:
             return True
     return False
+
+
+def _is_a_malformed_search_declaration(error: Exception) -> bool:
+    """Whether a task failed to load because its ``initial_state.rag`` is malformed."""
+    if not isinstance(error, ValidationError):
+        return False
+    return any(tuple(detail["loc"][:2]) == ("initial_state", "rag") for detail in error.errors())
+
+
+def _search_needs_rag_service(task: Any) -> bool:
+    """Whether the task searches with a backend that declares the rag-service stack service.
+
+    A typed ``rag: {}`` block declares no corpus, so it searches only if an actor
+    enables its search tool — as the empty dict it replaced never selected the
+    full stack on its own.
+    """
+    search = search_declaration(task)
+    if not uses_search(task, search):
+        return False
+    return declared_search_backend(search).stack_service == RAG_SERVICE_STACK_SERVICE
 
 
 def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
@@ -831,6 +865,7 @@ class Orchestrator:
         self.task_units: list[tuple[str, BaseAdapter, TaskConfig]] = []
         self._entry_of_task: dict[str, str] = {}
         self.results: list[Trajectory] = []
+        self._previous_report_results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
         # Trial graders whose ``close()`` must fire at run teardown. Populated
@@ -1183,6 +1218,8 @@ class Orchestrator:
         grade = trajectory.grade
         if grade is not None and grade.judge_usage is not None:
             total += grade.judge_usage.cost_usd
+        elif grade is None and trajectory.grading_judge_usage is not None:
+            total += trajectory.grading_judge_usage.cost_usd
         return total
 
     @staticmethod
@@ -1203,6 +1240,17 @@ class Orchestrator:
         from tolokaforge.core.output_writer import GRADE_FILENAME
 
         logger = get_logger("orchestrator")
+
+        def judge_cost(judge_usage: Any, path: Path) -> float:
+            if not isinstance(judge_usage, dict):
+                logger.warning(
+                    "Ignoring non-mapping judge usage during resume cost seed",
+                    path=str(path),
+                    judge_usage_type=type(judge_usage).__name__,
+                )
+                return 0.0
+            return float(judge_usage.get("cost_usd", 0.0) or 0.0)
+
         # Two bundle depths coexist: single-adapter trials live at
         # ``trials/<task>/<idx>/`` and harness-entry trials at
         # ``trials/<entry>/<task>/<idx>/``. Seed from both so a resumed harness
@@ -1219,8 +1267,15 @@ class Orchestrator:
                 if grade_path.exists():
                     with open(grade_path) as f:
                         grade = yaml.safe_load(f) or {}
-                    judge_usage = grade.get("judge_usage") or {}
-                    total_cost += float(judge_usage.get("cost_usd", 0.0) or 0.0)
+                    total_cost += judge_cost(grade.get("judge_usage") or {}, grade_path)
+                else:
+                    trajectory_path = metrics_path.parent / "trajectory.yaml"
+                    if trajectory_path.exists():
+                        with open(trajectory_path) as f:
+                            trajectory = yaml.safe_load(f) or {}
+                        total_cost += judge_cost(
+                            trajectory.get("grading_judge_usage") or {}, trajectory_path
+                        )
             except Exception as exc:
                 logger.warning(
                     "Skipping unreadable trial bundle during resume cost seed",
@@ -2655,6 +2710,12 @@ class Orchestrator:
                                 "(orchestrator.strict_task_load=true — the run "
                                 "refuses to start with a silently shorter task list)"
                             ) from e
+                        if _is_a_malformed_search_declaration(e):
+                            raise RuntimeError(
+                                f"Failed to load task {task_id!r}: {e} (a malformed "
+                                "initial_state.rag refuses the run whatever "
+                                "orchestrator.strict_task_load says)"
+                            ) from e
                         self.logger.error(
                             "Failed to load task",
                             task_id=task_id,
@@ -2677,12 +2738,19 @@ class Orchestrator:
                             "(orchestrator.strict_task_load=true — the run refuses "
                             "to start with a silently shorter task list)"
                         ) from e
+                    if _is_a_malformed_search_declaration(e):
+                        raise RuntimeError(
+                            f"Failed to load task {task_id!r}: {e} (a malformed "
+                            "initial_state.rag refuses the run whatever "
+                            "orchestrator.strict_task_load says)"
+                        ) from e
                     self.logger.error("Failed to load task", task_id=task_id, error=str(e))
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
 
         self._refuse_an_unregistered_user_simulator()
+        self._refuse_an_unregistered_search_backend()
         if sets_user_temperature(self.config.models):
             self.logger.warning(
                 USER_TEMPERATURE_IGNORED, declared=self.config.models["user"].temperature
@@ -2731,6 +2799,46 @@ class Orchestrator:
                 load_user_simulator(name)
             except UnknownImplementationError as exc:
                 raise RuntimeError(f"task {task.task_id!r}: actors.user.simulator: {exc}") from exc
+
+    def _refuse_an_unregistered_search_backend(self) -> None:
+        """Build every searching task's search backend once, before any trial.
+
+        ``initial_state.rag.backend`` is task-scoped, so a run may mix backends, and
+        ``backend_config`` is per task. Each task that declares a ``rag`` block or
+        enables its search tool has its backend built here from the trial-less
+        context the adapter and the stack rule build it from, so an unregistered
+        name (a typo, a package not installed, or an editable install whose
+        ``.dist-info`` predates the ``tolokaforge.search_backends`` group) — or a
+        backend refusing the task's ``backend_config``, or one declaring a stack
+        service the engine does not declare — is one refusal naming the task and the
+        backend, not a bare error out of the stack rule or one refused
+        ``RegisterTrial`` per trial. ``typesense`` is refused too: it is the plane an
+        adapter declares for a corpus it indexed host-side, not a backend a task
+        selects.
+        """
+        for task in self.tasks:
+            search = search_declaration(task)
+            if not (search.declared or uses_search(task, search)):
+                continue
+            where = (
+                "initial_state.rag.backend"
+                if search.declared
+                else f"the default search backend {search.backend!r}"
+            )
+            try:
+                declared_search_backend(search)
+            except RegistryError as exc:
+                raise RuntimeError(f"task {task.task_id!r}: {where}: {exc}") from exc
+            except UndeclaredStackServiceError as exc:
+                raise RuntimeError(
+                    f"task {task.task_id!r}: {where}: search backend {search.backend!r} needs "
+                    f"a stack service this engine does not declare: {exc}"
+                ) from exc
+            except Exception as exc:
+                raise RuntimeError(
+                    f"task {task.task_id!r}: {where}: search backend {search.backend!r} "
+                    f"refused the task's declaration: {type(exc).__name__}: {exc}"
+                ) from exc
 
     def _refuse_an_unregistered_agent_loop(self) -> None:
         """Resolve ``orchestrator.agent_loop`` once, before any trial work.
@@ -2978,9 +3086,8 @@ class Orchestrator:
         rejected here — before any trial executes — naming the offending tasks
         (AGENTS.md rule 1).
 
-        Assumes every adapter populates ``to_task_description().grading.llm_judge``
-        for rubric tasks; only ``NativeAdapter`` implements rubric grading today,
-        so non-native adapters simply surface no offending tasks here.
+        The adapter declares whether its grader needs a judge, including
+        host-side graders whose briefs are outside the runner rubric block.
         """
         judge_config = self.config.models.get("judge")
         if judge_config is not None:
@@ -2994,11 +3101,11 @@ class Orchestrator:
         offending = [
             task.task_id
             for entry, task in self._entry_task_units()
-            if self._task_description(task.task_id, entry).grading.llm_judge is not None
+            if self._adapter_for_task(task.task_id, entry).requires_judge_model(task.task_id)
         ]
         if offending:
             raise ValueError(
-                "These selected tasks use an llm_judge grading component but the run "
+                "These selected tasks require a judge model but the run "
                 "config has no judge model: "
                 f"{', '.join(sorted(offending))}. Add a judge model to the run config "
                 "under models.judge (provider/name), e.g. "
@@ -3237,6 +3344,23 @@ class Orchestrator:
             )
             if run_state:
                 self._canonicalise_resumed_run_id(run_state, run_id)
+                self._previous_report_results = []
+                for trial in run_state.get_completed_trials():
+                    if self.state_manager.is_completed(
+                        trial.task_id, trial.trial_index, trial.entry, run_state=run_state
+                    ):
+                        bundle = (
+                            output_dir
+                            / "trials"
+                            / trial_output_subpath(trial.entry, trial.task_id, trial.trial_index)
+                        )
+                        previous = read_report_trajectory(bundle)
+                        if (previous.task_id, previous.trial_index) != (
+                            trial.task_id,
+                            trial.trial_index,
+                        ):
+                            raise ValueError(f"Completed trial bundle identity mismatch: {bundle}")
+                        self._previous_report_results.append(previous)
                 resume_info = self.state_manager.get_resume_info()
                 if resume_info:
                     self.logger.info(
@@ -3397,8 +3521,9 @@ class Orchestrator:
                 # so the playwright/binds plumbing above still applies.
                 if _run_needs_full_stack(self.tasks, stack_requirements):
                     self.logger.info(
-                        "Full-stack-dependent run detected (task browser/mobile/search_kb, "
-                        "initial_state.mock_web/rag, or adapter-declared rag-service need) "
+                        "Full-stack-dependent run detected (task browser/mobile, "
+                        "initial_state.mock_web, a search backend needing rag-service, or "
+                        "adapter-declared rag-service need) "
                         "- using full_stack (db-service + runner + rag-service + mock-web)",
                         adapter_needs_rag_service=bool(
                             stack_requirements is not None
@@ -3621,6 +3746,10 @@ class Orchestrator:
                     "Loaded existing run spend", total_cost_usd=round(total_cost_usd, 6)
                 )
             budget = self._resolve_budget(initial_cost_usd=total_cost_usd)
+            # This marker describes the current invocation, not an earlier
+            # budget pause. A fresh hit below writes the new value back.
+            (output_dir / LIMIT_HIT_MARKER_FILENAME).unlink(missing_ok=True)
+            self._stopped_reason = None
             budget_exhausted = False
             last_hit: BudgetHit | None = None
             if budget is not None:
@@ -4443,16 +4572,19 @@ class Orchestrator:
 
     def _generate_reports(self, output_dir: Path) -> None:
         """Generate aggregate reports with pass@k"""
-        if not self.results:
+        results = [*self._previous_report_results, *self.results]
+        if not results:
             self.logger.warning("No results to report")
             return
 
         # Group trajectories by (entry, task_id) so two harness entries running
         # the same task id produce one metrics row each instead of merging into
         # one. A single-adapter trajectory carries no entry (``harness_entry is
-        # None``) and groups by task id alone, unchanged.
+        # None``) and groups by task id alone, unchanged. ``results`` folds in the
+        # retained reports of trials completed on a prior run, so a resume keeps
+        # their rows in the denominator and cost totals.
         task_trajectories: dict[tuple[str, str], list[Trajectory]] = {}
-        for traj in self.results:
+        for traj in results:
             key = (traj.harness_entry or "", traj.task_id)
             task_trajectories.setdefault(key, []).append(traj)
         task_by_entry_task = {
@@ -4496,7 +4628,7 @@ class Orchestrator:
         # Calculate aggregate metrics
         aggregate = calculate_aggregate_metrics(all_task_metrics, weighted=True)
         aggregate.update(
-            calculate_latency_percentiles([t.metrics.latency_total_s for t in self.results])
+            calculate_latency_percentiles([t.metrics.latency_total_s for t in results])
         )
 
         # Metadata-sliced aggregates
@@ -4555,7 +4687,7 @@ class Orchestrator:
 
         # Deterministic failure attribution report
         failure_attributions = [
-            attribute_failure(traj) for traj in self.results if is_failed_trajectory(traj)
+            attribute_failure(traj) for traj in results if is_failed_trajectory(traj)
         ]
         failure_summary = summarize_failure_attributions(failure_attributions)
         failure_attribution_payload = {

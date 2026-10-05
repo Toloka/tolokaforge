@@ -463,6 +463,7 @@ models:
 ```
 
 Available overrides:
+- `api_call_timeout_s` (positive number) — per-call read/connect timeout for this model; use it to bound one judge attempt without changing other roles.
 - `dict_map_prompt_hints` (bool) — enables the `DictMapHints` prompt policy which appends explicit hints to the system prompt about dict-map parameters (`additionalProperties: {schema}`). When enabled together with `StrictSchema` (auto-enabled for GPT-5 models), both schema-level enriched descriptions AND system prompt hints are applied. Dict-map detection uses the shared `detect_dict_maps()` utility in [`tolokaforge/core/llm/dict_maps.py`](../tolokaforge/core/llm/dict_maps.py).
 - `supports_typed_dict_maps` (bool) — whether model handles typed dict-map schemas natively (without `StrictSchema` rewriting)
 - `supports_schema_extras` (bool) — whether model accepts `title`, `examples`, `minProperties`
@@ -700,6 +701,11 @@ initial_state:
     base_url: "http://mock-web:8080"
   rag:
     corpus_dir: "rag/corpus"
+    # backend: "rag_service"     # which registered search backend serves the corpus: rag_service | bm25 | a registered name
+    # backend_config: {}         # opaque config for that backend (bm25: see below)
+    # tool:
+    #   name: "search_kb"        # the agent's search tool
+    #   description: "..."       # default: the rag-service tool's description
 
 system_prompt: null
 
@@ -825,6 +831,80 @@ there and validates them itself; the built-in ignores it. See
 [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md) and
 [RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
 
+### `initial_state.rag:` — the knowledge base, its search backend and the agent's tool
+
+| key | default | meaning |
+|---|---|---|
+| `corpus_dir` | none | Directory of the corpus, relative to the task dir. Its `.md` / `.txt` / `.json` files travel with the task and the runner builds the trial's index from them (`rag_service` indexes the `.md` / `.txt` ones; `bm25` reads all three, `.json` as `{id, title, content}` documents). Declaring it requires an actor to enable the search tool. |
+| `backend` | `rag_service` | The search backend that serves the corpus, resolved against the `tolokaforge.search_backends` entry-point group. `rag_service` is the engine's hybrid rag-service (BM25 + dense, one index per trial; its tasks run on `full_stack`). `bm25` is Okapi BM25 in the runner process — deterministic, no stack service, so its tasks run on the core stack. `typesense` is reserved: that plane is declared by an adapter that indexes host-side, not by a native task. |
+| `backend_config` | `{}` | An opaque mapping handed to the backend's factory verbatim; the engine never reads its keys. `rag_service` takes none and refuses a non-empty one; `bm25` validates it into the table below. |
+| `tool.name` | `search_kb` | The agent's search tool. It goes to whichever actor's `tools.<actor>.enabled` names it, and the runner binds it to the trial's index by this name. |
+| `tool.description` | the rag-service tool's description | What the agent reads about the tool. Its parameters come from the backend (`rag_service`: `query`, `top_k`, `alpha`; `bm25`: `query`, and `top_k` when `agent_parameters` exposes it). |
+
+A task that writes no `rag` block and enables `search_kb` gets the defaults. Unknown
+keys in the block (a misspelt `backend`, `tool: {nme: …}`) are refused, and a
+malformed block refuses the run even under `orchestrator.strict_task_load: false`
+rather than dropping the task. An unregistered `backend` is refused at run start, naming the registered backends and
+the task that asked for it. The typed block dumps only the keys the author wrote,
+so `TaskConfig` dumps of a task declaring `corpus_dir` alone are unchanged.
+`task_defaults` has no `initial_state`, so the backend is chosen per task. See
+[ADR-0054](adr/0054-search-backend-protocol-and-registry.md) and
+[RUNTIME_BACKENDS.md § Plug-in extension points](RUNTIME_BACKENDS.md#plug-in-extension-points).
+
+#### `backend: bm25` — `backend_config`
+
+Okapi BM25 over the corpus, in the runner process (`tolokaforge/core/search/bm25.py`).
+The scores are bit-identical to `rank_bm25` 0.2.2's `BM25Okapi` without numpy. Every
+key is optional; unknown keys and out-of-range values are refused at run start, naming
+the task.
+
+| key | default | meaning |
+|---|---|---|
+| `documents.format` | `auto` | `json`: each `.json` file is one `{id, title, content}` document (strings; `id` and `content` non-empty; other keys ignored). `text`: each `.md` / `.txt` file is one document, `id` and `title` its file stem. `auto`: both, by extension. Files of other extensions are skipped. |
+| `documents.order` | `filename` | Documents load in sorted file-name order — the corpus order ties are broken by. |
+| `documents.skip_prefix` | `"_"` | Files whose name starts with it are not documents (a `_README.md` beside the corpus). `""` skips nothing. |
+| `documents.fields` | `[content]` | Which fields are indexed, joined by a space: `[content]`, `[title]` or `[title, content]`. A document whose indexed fields are blank (a blank `title` under `[title]`) refuses the trial, naming the file. The agent and the judge always read the whole `content`. |
+| `tokenizer` | `whitespace_lower` | `text.lower().split()`, applied to documents and queries. The only registered tokenizer. |
+| `bm25` | `{k1: 1.5, b: 0.75, epsilon: 0.25}` | `rank_bm25`'s constants: saturation, length normalisation (`0..1`), and the floor for a negative IDF as a fraction of the average IDF. |
+| `ranking.top_k` | `5` | Hits per search, `min(top_k, N)`. A zero score is a hit: a query touching nothing returns the first `top_k` documents in corpus order. |
+| `ranking.min_score` | `null` | Keep only hits scoring at least this much. `0.0` still keeps zero scores; a positive threshold drops the untouched documents. |
+| `ranking.tie_break` | `corpus_order` | Equal scores rank in corpus order (sort key `(-score, corpus_index)`). The only rule. |
+| `empty_query` | `no_results` | A blank query (empty or whitespace) renders the no-hits text; `error` renders the error text instead. Either way the agent reads text and nothing raises. |
+| `render.kind` | `json` | `json`: `{"results": [{doc_id, title, source, score, text}], "total", "query"}`, `text` being the whole document; no hits: `{"message": <empty_text>, "results": [], "query"}`; an error: `{"error": <error_text>, "results": []}`. `text`: the keys below. |
+| `render.empty_text`, `render.error_text` | `No relevant documents found.` / `Query is required` (json); `No results found.` / `Error: the query must not be empty.` (text) | The texts a no-hits search and an `empty_query: error` render. |
+| `render.item_template` (text) | `"{index}. {title}\n   ID: {id}\n   Score: {score}\n   Content: {content}\n"` | One hit, as a `str.format` template over `{index}` (1-based), `{id}`, `{title}`, `{score}` (already formatted with `score_format`), `{content}` and `{source}` (the file name). A format spec may follow a name: `{content:.300}` cuts the document to 300 characters. |
+| `render.separator` (text) | `"\n"` | Joins the hits. |
+| `render.score_format` (text) | `".4f"` | How `{score}` is formatted. |
+| `render.timing_suffix` (text) | `off` | `measured` appends `timing_template` after the hits (or the no-hits text; never the error text). |
+| `render.timing_template` (text) | `"\n\n[Timing: retrieval={retrieval_ms}ms, total={total_ms}ms]"` | Formatted with measured integer milliseconds: `{retrieval_ms}` (scoring and ranking), `{total_ms}` (the whole call), and `{reranking_ms}`, always `0` — this backend reranks nothing; the field lets a template carry that segment. |
+| `agent_parameters` | `[query]` | Which of `query` and `top_k` the agent's tool schema exposes; `query` is mandatory. An exposed `top_k` overrides `ranking.top_k` per call; an argument the schema does not expose is ignored. |
+
+A corpus that cannot be loaded or scored refuses the trial at `RegisterTrial`,
+naming the trial and, where one file is at fault, the file: a duplicate `id`, a
+blank document or blank indexed fields, a malformed JSON document, an empty corpus,
+or indexed text that tokenizes to no term at all.
+
+The judge's `search_kb` reads the same index with the same ranking and gets whole
+documents as `SearchHit.text`, with their titles; how much of each it shows is
+`grading.llm_judge.customization.judge_snippet_chars` (200 characters by default,
+`null` for whole documents). A built corpus is cached in the runner process by the
+corpus files' content and the config, so the trials of one task share one index.
+
+```yaml
+initial_state:
+  rag:
+    corpus_dir: "kb"               # {id, title, content} JSON files, or .md / .txt
+    backend: "bm25"
+    backend_config:
+      ranking: {top_k: 5}
+      render:
+        kind: text                 # "1. <title>\n   ID: <id>\n   Score: 0.1234\n   Content: <content>\n" per hit
+        timing_suffix: measured    # + "\n\n[Timing: retrieval=Xms, total=Zms]"
+    tool:
+      name: "search_kb"
+      description: "Search the knowledge base."
+```
+
 ## Grading Specification (`grading.yaml`)
 
 ```yaml
@@ -891,6 +971,9 @@ llm_judge:                                 # the judge MODEL is set once per run
                                            # false omits the agent's policy from the
                                            # judge's opening-message evidence
                                            # (evidence gating; agent untouched)
+    judge_snippet_chars: null              # int >= 1 | null (default 200): how
+                                           # much of each hit the judge's search_kb
+                                           # shows; null = whole documents
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -918,6 +1001,31 @@ same shape is reported unchecked at the same address. Every other authoring rule
 grading block is checked against — tool names, argument names, `regex` compilation —
 is in [GRADING.md](GRADING.md#what-is-validated-before-a-run).
 
+`state_checks.comparison_view` (optional) shapes both sides of that hash before it is
+computed: a `version` and a list of `rules`, each an `exclude_records`, `exclude_tables`
+or `normalize_ids` entry. It drops the records that do not count and re-keys generated
+ids by their records' content, together with the references to them:
+
+```yaml
+state_checks:
+  hash: { enabled: true, golden_actions: [...] }
+  comparison_view:
+    version: 1
+    rules:
+      - { kind: exclude_tables, tables: [lookup_log], reason: written by the read tools }
+      - { kind: exclude_records, table: documents, where: { status: superseded } }
+      - kind: normalize_ids
+        table: documents
+        key: [client_id, source_id]
+        references: [{ table: corrections, field: document_ref }]
+```
+
+The block is validated when the task loads, against the tables it seeds and the masks
+the hash applies after it. A pack without the block dumps, crosses the wire and hashes
+byte-identically to a pack graded by an engine without the key. The rule vocabulary, the order of the pre-hash steps, the record
+a grade carries and the load-time refusals are in
+[GRADING.md § Comparison view](GRADING.md#comparison-view).
+
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
 not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,
 or a per-task judge-model field is rejected at load with a migration message.
@@ -944,7 +1052,14 @@ custom prompt can never break `submit_report` validation.
 `include_agent_system_prompt` (`bool | None`) controls whether the agent's policy is
 embedded in the judge's opening-message evidence: unset/`true` include it (the
 default), `false` omits it (evidence gating, distinct from `system_prompt`'s
-wording). Omitting the block leaves the judge at the faithful default. All fields
+wording). `judge_snippet_chars` (`int >= 1 | None`, default `200`) is how much of
+each hit's content the judge's `search_kb` shows: the first that many characters,
+or the whole document for `null`; it is not tri-state, so a task writes `200` to
+undo a project figure. It does not apply to a TypeSense task's `search_policy`
+passthrough (`DelegatingReadTool`), which renders the agent's own tool output
+verbatim. Omitting the block leaves the judge at the faithful default. Every judge
+kind receives these settings resolved as one `JudgeTrialOptions` (see
+[JUDGE_KINDS.md](JUDGE_KINDS.md#protocol-contract)). All fields
 layer project→task (a project default under
 `grading_defaults.llm_judge.customization`, task wins; `system_prompt: null`
 resets a project prompt; `include_agent_system_prompt: true` (explicit

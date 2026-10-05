@@ -1,0 +1,166 @@
+[
+  {
+    "name": "find_client",
+    "description": "Look a client up by id.",
+    "parameters": {
+      "properties": {
+        "client_id": {
+          "description": "Client identifier, e.g. 'C-1'",
+          "title": "Client Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_id"
+      ],
+      "title": "find_clientArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "lookup_document",
+    "description": "Look a filed document up by id.",
+    "parameters": {
+      "properties": {
+        "document_id": {
+          "description": "Document identifier, e.g. 'DOC-001'",
+          "title": "Document Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "title": "lookup_documentArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "file_document",
+    "description": "File a client's source document (an invoice, a receipt) as a final document. Returns the filed document with its generated id.",
+    "parameters": {
+      "properties": {
+        "client_id": {
+          "description": "Client the document belongs to",
+          "title": "Client Id",
+          "type": "string"
+        },
+        "source_id": {
+          "description": "The source document's own number",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Document kind, e.g. 'invoice'",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client_id",
+        "source_id",
+        "kind"
+      ],
+      "title": "file_documentArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "supersede_document",
+    "description": "Supersede a document filed in error. It stays on file as superseded.",
+    "parameters": {
+      "properties": {
+        "document_id": {
+          "description": "Document to supersede",
+          "title": "Document Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "title": "supersede_documentArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "place_hold",
+    "description": "Place a payment hold for a client.",
+    "parameters": {
+      "properties": {
+        "client_id": {
+          "description": "Client the hold is for",
+          "title": "Client Id",
+          "type": "string"
+        },
+        "amount": {
+          "description": "Amount held",
+          "exclusiveMinimum": 0,
+          "title": "Amount",
+          "type": "number"
+        }
+      },
+      "required": [
+        "client_id",
+        "amount"
+      ],
+      "title": "place_holdArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "release_hold",
+    "description": "Release a payment hold. It stays on file as released.",
+    "parameters": {
+      "properties": {
+        "hold_id": {
+          "description": "Hold to release",
+          "title": "Hold Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hold_id"
+      ],
+      "title": "release_holdArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "file_correction",
+    "description": "File a correction against a document, optionally citing the hold it concerns. Returns the filed correction with its generated id.",
+    "parameters": {
+      "properties": {
+        "document_id": {
+          "description": "Document the correction corrects",
+          "title": "Document Id",
+          "type": "string"
+        },
+        "reason": {
+          "description": "What is wrong and what it should be",
+          "title": "Reason",
+          "type": "string"
+        },
+        "hold_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hold the correction concerns",
+          "title": "Hold Id"
+        }
+      },
+      "required": [
+        "document_id",
+        "reason"
+      ],
+      "title": "file_correctionArguments",
+      "type": "object"
+    }
+  }
+]

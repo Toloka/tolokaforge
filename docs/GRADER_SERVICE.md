@@ -558,7 +558,7 @@ import anywhere under `composite/` trips at pytest collection.
 | `tolokaforge.judge_model_providers` | [`judge_model_provider.py::JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) | `LiteLLMJudgeModelProvider` (fronts `LLMClient`) | holistic |
 | `tolokaforge.judge_kinds` | [`judge_kinds/_protocol.py::JudgeKind`](../tolokaforge/core/grading/judge_kinds/_protocol.py) | User-facing: `SingleShotRubricJudgeKind`, `MultiTurnRubricJudgeKind`, `AutoRubricJudgeKind`; internal building blocks: `VotedRubricJudgeKind`, `AutoAnchoredRubricJudgeKind` | holistic |
 | `tolokaforge.transcript_rule_matchers` | [`transcript_rule_matcher.py::TranscriptRuleMatcher`](../tolokaforge/core/grading/transcript_rule_matcher.py) | `DefaultTranscriptRuleMatcher` (wraps `evaluate_transcript_rules`) | holistic |
-| `tolokaforge.trace_check_operators` | [`trace_check_operator.py::TraceCheckOperator`](../tolokaforge/core/grading/trace_check_operator.py) | the shipped trace-check operators — non-binding and binding forms — registered via the entry-point group; see [`GRADING.md` § Operators](GRADING.md#operators) for the authored vocabulary | per-operator |
+| `tolokaforge.trace_check_operators` | [`trace_check_operator.py::TraceCheckOperator`](../tolokaforge/core/grading/trace_check_operator.py) | the shipped trace-check operators — non-binding and binding forms — registered via the entry-point group; `regex` and `not_regex` receive their pattern — every pattern of a list — as one `CompiledPatterns`, compiled under the predicate's [regex engine](GRADING.md#regex-engines), never as the authored string; an operator is called only on events where its result can change what the matcher selects or reports ([`GRADING.md` § What a matcher resolves to](GRADING.md#what-a-matcher-resolves-to-matched-and-undecidable)), so a registered operator that raises is reached only there — not on a call `tool` already rejects; see [`GRADING.md` § Operators](GRADING.md#operators) for the authored vocabulary | per-operator |
 | `tolokaforge.state_check_backends` | [`state_check_backend.py::StateCheckBackend`](../tolokaforge/core/grading/state_check_backend.py) | `JsonpathStateCheckBackend`, `DbProbesStateCheckBackend` (hash is NOT a backend — runner-integrated) | per-source |
 
 Register a downstream impl the same way as a `TrialGrader`:
@@ -676,25 +676,27 @@ Packs declaring `state_checks.db_probes` or judge criteria that need KB
 search grade correctly on `InProcess` / `LiveCallback`; snapshot mode
 routes those trials to a live-callback path in the caller.
 
-<a id="extension-points-the-nine-plug-in-groups"></a>
+<a id="extension-points-the-plug-in-groups"></a>
 
-## Extension points — the nine plug-in groups
+## Extension points — the plug-in groups
 
-Nine `importlib.metadata` entry-point groups let a downstream package
+Ten `importlib.metadata` entry-point groups let a downstream package
 extend the grader without a framework change: one runner-side dispatch
-selector (paired with the typed-kind registry), one substrate group, and
-six sub-component seams. Each group has a matching loader on
+selector (paired with the typed-kind registry), one substrate group, six
+sub-component seams, and the comparison-view rules the state hash is
+computed through. Each group has a matching loader on
 [`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
 
 - `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Every shipped name also registers in `tolokaforge.grader_kinds` below — `RegisterTrial` validates the wire name against both groups.
 - `tolokaforge.grader_kinds` — `load_grader_kind(name)` returns the typed `GraderKind` **class**, whose `evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None` drives runtime dispatch for every non-composite name at `RunnerServiceImpl._dispatch_via_grader_kind`. Composite (or `None`) stays on the runner-side fold. Two built-ins ship: `composite` (a reference impl over `CompositeFold`) and `test_execution` (reads through `substrate.run_test_suite(...)`).
-- `tolokaforge.judge_kinds` — `load_judge_kind(name)` returns the typed `JudgeKind` **class**, whose `evaluate(*, rubric, agent_system_prompt, transcript, db_reader, kb_search, workspace_dir, extra_read_tools, state_diff, judge_model_config, judge_model_provider, disable_knowledge_search, custom_system_prompt, include_agent_system_prompt, kind_config, logger) -> JudgeResult` drives runner-side LLM-judge dispatch. Three user-facing kinds ship — `single_shot_rubric` (wraps `LLMJudge` byte-identically), `multi_turn_rubric` (a baked-in `voted → auto_anchored → single_shot` composition), and `auto_rubric` (deterministic per-rubric router between the two) — plus two internal building blocks the composite kinds compose: `voted_rubric` and `auto_anchored_rubric`. User task configs should not select the internal blocks via `judge_kind:` directly (see [`docs/JUDGE_KINDS.md § Internal building blocks`](JUDGE_KINDS.md#internal-building-blocks)). Downstream kinds (e.g. agentic) register alongside without a framework PR. The kind is selected per-task via `grading.llm_judge.judge_kind`; per-kind options ride `grading.llm_judge.kind_config` as an opaque dict each kind validates itself (`multi_turn_rubric` and `auto_rubric` accept no `kind_config`). Every new kind must clear the κ-parity gate at `tests/canonical/test_judge_kind_parity.py` before selection as a task default — contract, thresholds, and authoring recipe are in [`docs/JUDGE_KINDS.md § Parity gate`](JUDGE_KINDS.md#parity-gate).
+- `tolokaforge.judge_kinds` — `load_judge_kind(name)` returns the typed `JudgeKind` **class**, whose `evaluate(*, rubric, agent_system_prompt, transcript, db_reader, kb_search, workspace_dir, extra_read_tools, state_diff, judge_model_config, judge_model_provider, options, kind_config, logger) -> JudgeResult` drives runner-side LLM-judge dispatch; `options` is the trial's `JudgeTrialOptions` (its customization, resolved once — see [`docs/JUDGE_KINDS.md § Protocol contract`](JUDGE_KINDS.md#protocol-contract)). Three user-facing kinds ship — `single_shot_rubric` (wraps `LLMJudge` byte-identically), `multi_turn_rubric` (a baked-in `voted → auto_anchored → single_shot` composition), and `auto_rubric` (deterministic per-rubric router between the two) — plus two internal building blocks the composite kinds compose: `voted_rubric` and `auto_anchored_rubric`. User task configs should not select the internal blocks via `judge_kind:` directly (see [`docs/JUDGE_KINDS.md § Internal building blocks`](JUDGE_KINDS.md#internal-building-blocks)). Downstream kinds (e.g. agentic) register alongside without a framework PR. The kind is selected per-task via `grading.llm_judge.judge_kind`; per-kind options ride `grading.llm_judge.kind_config` as an opaque dict each kind validates itself (`multi_turn_rubric` and `auto_rubric` accept no `kind_config`). Every new kind must clear the κ-parity gate at `tests/canonical/test_judge_kind_parity.py` before selection as a task default — contract, thresholds, and authoring recipe are in [`docs/JUDGE_KINDS.md § Parity gate`](JUDGE_KINDS.md#parity-gate).
 - `tolokaforge.grading_substrates` — `load_grading_substrate(name)` returns the `GradingSubstrate` **class** (the caller instantiates it with per-trial arguments).
 - `tolokaforge.custom_check_executors` — `load_custom_check_executor(name)` returns a factory.
 - `tolokaforge.judge_model_providers` — `load_judge_model_provider(name)` returns a factory that builds a `JudgeModel` from a `ModelConfig`.
 - `tolokaforge.transcript_rule_matchers` — `load_transcript_rule_matcher(name)` returns a factory.
 - `tolokaforge.state_check_backends` — `load_state_check_backend(name)` returns a factory.
 - `tolokaforge.trace_check_operators` — `load_trace_check_operator(name)` returns the **operator callable** directly (no factory wrapper; the callable itself is the contract).
+- `tolokaforge.comparison_view_rules` — `load_comparison_view_rule(kind)` returns the `ComparisonViewRule` **class** the `kind` of a `state_checks.comparison_view` entry names ([GRADING.md § Comparison view](GRADING.md#comparison-view), [ADR-0053](adr/0053-comparison-view-before-the-state-hash.md)): `NAME` is the entry-point name, `VERSION` the version of what the rule computes, `config_model` the `extra="forbid"` model its entry validates into, and `apply(state, *, initial, id_fields, config)` a pure, one-sided transform of one state. Three built-ins ship, `exclude_records`, `exclude_tables` and `normalize_ids`, and resolve through the group like any other rule. **This group is a trust boundary.** A rule decides which two states hash equal, so a registered rule can turn a failing trial into a passing one through the deterministic hash verdict, with nothing but its identity in the grade to show it. The engine runs a rule only for a task whose view names its kind, refuses a name two distributions register (a built-in's included), hands the rule one side's copies and never the other side, and hashes the rule's `NAME` and `VERSION` into the grade's `config_sha256`. It cannot tell a sound rule from an unsound one: review a distribution that registers a rule as you would a task's golden actions. The contract and the guarantees are on [`comparison_view.py::ComparisonViewRule`](../tolokaforge/core/grading/comparison_view.py).
 
 Copy-paste block for a downstream `pyproject.toml`:
 
@@ -725,13 +727,16 @@ my_state_backend = "my_package:my_state_backend_factory"
 
 [project.entry-points."tolokaforge.trace_check_operators"]
 my_operator = "my_package:my_operator"
+
+[project.entry-points."tolokaforge.comparison_view_rules"]
+my_rule = "my_package:MyComparisonViewRule"
 ```
 
 `tolokaforge.trial_graders` is the top-level grader-name seam ADR-0038
 shipped, already documented in
 [Registering a downstream grader](#registering-a-downstream-grader).
 A downstream package registering a new grader name lands there, not
-in any of the nine groups above.
+in any of the groups above.
 
 The bundle-transport seam `tolokaforge.bundle_stores` is documented in
 the [Bundle store seam](#bundle-store-seam) section below — it extends a

@@ -411,14 +411,6 @@ class CompositeGraderKind:
         judge_status = judge_status_cls.UNSPECIFIED
         judge_gate_failed = False
         if task_config.llm_judge and llm_messages:
-            customization = task_config.llm_judge.customization
-            disable_kb = bool(customization and customization.disable_knowledge_search)
-            custom_prompt = customization.system_prompt if customization else None
-            include_agent_prompt = (
-                customization.include_agent_system_prompt
-                if customization and customization.include_agent_system_prompt is not None
-                else True
-            )
             judge_kind = load_judge_kind(task_config.llm_judge.judge_kind)()
             state_diff_text = composite_mod.build_judge_state_diff(
                 trial_id=trial_id,
@@ -434,9 +426,6 @@ class CompositeGraderKind:
                 substrate=substrate,
                 judge_kind=judge_kind,
                 judge_model_provider=judge_model_provider,
-                disable_knowledge_search=disable_kb,
-                custom_system_prompt=custom_prompt,
-                include_agent_system_prompt=include_agent_prompt,
                 kind_config=task_config.llm_judge.kind_config,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,

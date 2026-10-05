@@ -490,6 +490,21 @@ class TestCollectExistingCost:
         total = Orchestrator._collect_existing_cost(tmp_path)
         assert abs(total - 0.07) < 1e-9
 
+    def test_sums_failed_judge_cost_from_trajectory_bundle(self, tmp_path: Path) -> None:
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trial_dir = tmp_path / "trials" / "T1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.05}))
+        (trial_dir / "trajectory.yaml").write_text(
+            yaml.dump(
+                {"grading_error": "judge malformed", "grading_judge_usage": {"cost_usd": 0.02}}
+            )
+        )
+        assert Orchestrator._collect_existing_cost(tmp_path) == pytest.approx(0.07)
+
     def test_grade_bundle_without_judge_usage(self, tmp_path: Path) -> None:
         """A grade bundle with no ``judge_usage`` adds nothing beyond the metrics cost."""
         import yaml
@@ -527,6 +542,35 @@ class TestCollectExistingCost:
         assert abs(total - 0.05) < 1e-9
         assert any("resume cost seed" in record.message for record in caplog.records)
 
+    def test_non_mapping_failed_judge_usage_is_warned_with_its_file(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A ``grading_judge_usage`` that is not a mapping adds nothing and names the file.
+
+        It must not fall into the broad unreadable-bundle skip: the metrics cost
+        still counts and the warning points at the trajectory, not at metrics.yaml.
+        """
+        import logging
+
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trial_dir = tmp_path / "trials" / "T1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.05}))
+        trajectory_path = trial_dir / "trajectory.yaml"
+        trajectory_path.write_text(
+            yaml.dump({"grading_error": "judge malformed", "grading_judge_usage": [0.02]})
+        )
+
+        with caplog.at_level(logging.WARNING):
+            total = Orchestrator._collect_existing_cost(tmp_path)
+        assert total == pytest.approx(0.05)
+        warned = [r for r in caplog.records if "non-mapping judge usage" in r.getMessage()]
+        assert [getattr(r, "path", None) for r in warned] == [str(trajectory_path)]
+        assert not any("unreadable trial bundle" in r.getMessage() for r in caplog.records)
+
 
 # ===================================================================
 # _trial_total_spend_usd (static method)
@@ -549,6 +593,16 @@ class TestTrialTotalSpendUsd:
 
         traj = _make_trajectory(cost=0.05, judge_cost=None)
         assert abs(Orchestrator._trial_total_spend_usd(traj) - 0.05) < 1e-9
+
+    def test_failed_judge_usage_counts_toward_budget(self) -> None:
+        from tolokaforge.core.models import JudgeUsage
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        traj = _make_trajectory(cost=0.05, judge_cost=None)
+        traj.grade = None
+        traj.grading_error = "judge malformed"
+        traj.grading_judge_usage = JudgeUsage(calls=1, cost_usd=0.02)
+        assert Orchestrator._trial_total_spend_usd(traj) == pytest.approx(0.07)
 
     def test_none_metrics_cost_counts_only_judge(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
@@ -1415,6 +1469,7 @@ def _orchestrator_with_tasks(config: RunConfig, judge_flags: dict[str, bool]):
     adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
         tid, has_judge=judge_flags[tid]
     )
+    adapter.requires_judge_model.side_effect = judge_flags.__getitem__
     orch.adapter = adapter
     return orch
 
@@ -1483,6 +1538,9 @@ class TestJudgeModelGate:
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=True
         )
+        adapter.requires_judge_model.side_effect = lambda tid: (
+            adapter.to_task_description(tid).grading.llm_judge is not None
+        )
         orch.adapter = adapter
 
         with patch(
@@ -1508,6 +1566,9 @@ class TestJudgeModelGate:
         adapter = MagicMock()
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
+        )
+        adapter.requires_judge_model.side_effect = lambda tid: (
+            adapter.to_task_description(tid).grading.llm_judge is not None
         )
         orch.adapter = adapter
 
@@ -1613,6 +1674,9 @@ class TestPrepareRunIdempotency:
         _write_grading_yaml(tmp_path)
         adapter.get_task_dir.return_value = tmp_path
         adapter.fingerprint.return_value = None
+        adapter.requires_judge_model.side_effect = lambda tid: (
+            adapter.to_task_description(tid).grading.llm_judge is not None
+        )
         orch.adapter = adapter
         return orch
 

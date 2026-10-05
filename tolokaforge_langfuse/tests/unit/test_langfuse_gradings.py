@@ -127,8 +127,11 @@ class TestBuildGradingEvents:
         assert built.grading_id == grading_id
         by = _by_type(built.events)
         root = ids.observation_id(TRACE, "root", "-")
-        # the grading observation under the root, keyed by the grading id
-        (grading,) = [b for b in by["span-create"] if b["name"].startswith("grading:")]
+        # the grading observation under the root, keyed by the grading id: an evaluator, named
+        # for its kind (the grading id is its metadata)
+        (grading,) = by["evaluator-create"]
+        assert grading["name"] == "grading"
+        assert grading["metadata"]["grading_id"] == grading_id
         assert grading["id"] == ids.grading_observation_id(TRACE, grading_id)
         assert grading["parentObservationId"] == root
         assert grading["metadata"]["content_fingerprint"] == content_fingerprint(GRADE)
@@ -151,10 +154,13 @@ class TestBuildGradingEvents:
             ids.observation_id(TRACE, "jgen", grading_id, 4),
         ]
         assert all(b["parentObservationId"] == grading["id"] for b in judge_gens)
+        assert [b["name"] for b in judge_gens] == ["judge", "judge"]
+        assert [b["metadata"]["message_index"] for b in judge_gens] == [2, 4]
         assert judge_gens[0]["usageDetails"] == {"input": 0, "output": 0, "total": 0}
         assert judge_gens[1]["usageDetails"] == {"input": 100, "output": 40, "total": 140}
         assert judge_gens[1]["metadata"]["usage_source"] == "aggregate"
-        (jtool,) = [b for b in by["span-create"] if b["name"].startswith("judge tool")]
+        (jtool,) = by["tool-create"]
+        assert jtool["name"].startswith("judge tool")
         assert jtool["id"] == ids.observation_id(TRACE, "jtool", grading_id, "call_1")
         assert built.judge_observations == 3
         # scores: on the grading (scope grading) and mirrored on the trace (scope primary)
@@ -214,7 +220,20 @@ class TestBuildGradingEvents:
             ids.observation_id(TRACE, "ugen", 2),
         ]
         assert users[1]["model"] == "anthropic/claude-sonnet-4.6"
-        assert users[1]["startTime"] == "2026-09-16T19:50:03+00:00"
+        assert [b["name"] for b in users] == ["user simulator", "user simulator"]
+        # the simulator's call ran from the message before its turn to the turn; the opener's
+        # from the trial's start
+        assert (users[1]["startTime"], users[1]["endTime"]) == (
+            "2026-09-16T19:50:02+00:00",
+            "2026-09-16T19:50:03+00:00",
+        )
+        assert (users[0]["startTime"], users[0]["endTime"]) == (
+            "2026-09-16T19:50:00+00:00",
+            "2026-09-16T19:50:01+00:00",
+        )
+        # this pass reads no call records: the turns state they carry no figure
+        assert all(b["metadata"]["cost_basis"] == "none" for b in users)
+        assert all(b["costDetails"] == {"total": 0} for b in users)
         assert users[1]["input"] == [
             {"role": "user", "content": "Hi, I need a refund"},
             {"role": "assistant", "content": "Sure"},
@@ -296,7 +315,7 @@ class TestBuildGradingEvents:
             TRACE, write_bundle(tmp_path / "T-6" / "0", task=task), run_id=RUN_ID
         )
         by = _by_type(built.events)
-        grading = next(b for b in by["span-create"] if b["name"].startswith("grading:"))
+        (grading,) = by["evaluator-create"]
         assert grading["metadata"]["judge_model"] == "azure/gpt-6-astra"
         users = [b for b in by["generation-create"] if b["metadata"]["role"] == "user"]
         assert users[0]["model"] == "anthropic/claude-sonnet-4.6"
@@ -380,8 +399,11 @@ class TestObserverGradings:
         pytest.importorskip("opentelemetry.sdk")
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
         from tolokaforge_langfuse.otel import OTelTrialObserver, ProjectionSettings, SpanQueue
+        from tolokaforge_langfuse.safety import SafetyGate
 
         queue = SpanQueue(InMemorySpanExporter(), max_size=100, batch_size=4, interval_s=0.05)
+        # hermetic: the developer's environment holds no credential this observer knows
+        kwargs.setdefault("gate", SafetyGate())
         return OTelTrialObserver(
             queue=queue,
             label="l",
@@ -430,15 +452,17 @@ class TestObserverGradings:
         assert step.attached == [identity.trace_id]
         (batch,) = step.batches
         types = {e["type"] for e in batch}
-        assert types == {"span-create", "generation-create", "score-create", "trace-create"}
-        grading = next(
-            e
-            for e in batch
-            if e["type"] == "span-create" and e["body"]["name"].startswith("grading:")
-        )
+        assert types == {
+            "evaluator-create",
+            "tool-create",
+            "generation-create",
+            "score-create",
+            "trace-create",
+        }
+        grading = next(e for e in batch if e["type"] == "evaluator-create")
         # the judge model the observer resolved at trial start survives the state drop
         assert grading["body"]["metadata"]["judge_model"].endswith("gemini-3.6-flash")
-        judge_gen = next(e for e in batch if e["body"].get("name", "").startswith("judge turn"))
+        judge_gen = next(e for e in batch if e["body"].get("name") == "judge")
         assert judge_gen["body"]["model"].endswith("gemini-3.6-flash")
         assert (
             receipt.extra["langfuse.gradings_sent"],
@@ -532,6 +556,7 @@ class TestLangfuseSwitch:
             "TOLOKAFORGE_TRACING_SESSION_ID",
             "TOLOKAFORGE_TRACING_LABEL",
             "LANGFUSE_TRACING_ENABLED",
+            "LANGFUSE_TRACING_PREVIEWS",
             "LANGFUSE_BASE_URL",
             "LANGFUSE_PUBLIC_KEY",
             "LANGFUSE_SECRET_KEY",
@@ -611,6 +636,33 @@ class TestLangfuseSwitch:
             and receipt.details[0]["project_verified"] == "verified"
         )
         assert (tmp_path / "run_identity.json").exists()
+
+    @pytest.mark.parametrize(
+        ("value", "previews"),
+        [(None, "off"), ("false", "off"), ("maybe", "off"), ("true", "on"), ("ON", "on")],
+    )
+    def test_previews_go_out_only_when_the_switch_asks(self, clean_env, value, previews) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from tolokaforge.core.models import ObservabilityConfig
+        from tolokaforge.observability.factory import build_trial_observer
+        from tolokaforge_langfuse import media
+
+        def v4_receiver(method, url, headers, body, timeout):
+            if media.V2_OBSERVATIONS_PATH in url:
+                return (200, json.dumps({"data": [], "meta": {}}).encode())
+            return (200, json.dumps({"data": [{"id": "p0", "name": "pilot-dev"}]}).encode())
+
+        clean_env.setattr(media, "urllib_opener", v4_receiver)
+        clean_env.setenv("LANGFUSE_TRACING_ENABLED", "true")
+        clean_env.setenv("LANGFUSE_BASE_URL", "https://lf.example")
+        clean_env.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        clean_env.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+        if value is not None:
+            clean_env.setenv("LANGFUSE_TRACING_PREVIEWS", value)
+        observer, _ = build_trial_observer(ObservabilityConfig(), engine_run_id="run-1")
+        receipt = observer.run_finished()
+        assert receipt.details[0]["server_api"] == "v4"
+        assert receipt.details[0]["previews"] == previews
 
     def test_the_switch_without_credentials_or_with_half_a_pair_refuses(self, clean_env) -> None:
         pytest.importorskip("opentelemetry.sdk")

@@ -1012,6 +1012,8 @@ class InProcessConductor:
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
             max_turns=max_turns,
+            max_simulation_steps=task.max_simulation_steps,
+            max_environment_errors=task.max_environment_errors,
             turn_timeout_s=turn_timeout_s,
             episode_timeout_s=episode_timeout_s,
             stuck_detector=stuck_detector,
@@ -1279,6 +1281,10 @@ class InProcessConductor:
             grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
         except GradingFailedError as e:
             trajectory.grading_error = str(e)
+            trajectory.grading_judge_usage = e.judge_usage
+            trajectory.grading_state_snapshots = e.state_snapshots
+            trajectory.grading_state_diff = e.state_diff
+            trajectory.grading_comparison_view = e.comparison_view
             self.logger.error(
                 "Trial could not be graded",
                 task_id=task_config.task_id,

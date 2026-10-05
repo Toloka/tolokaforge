@@ -98,6 +98,10 @@ message RegisterTrialResponse {
 
   // Number of user tools registered (for dual-control scenarios)
   int32 num_user_tools = 5;
+
+  // The runner's implemented wire contract. The host refuses an older image
+  // before any model call, even when that older runner accepts a newer host.
+  int32 runner_protocol_version = 6;
 }
 
 // Tool schema in OpenAI function calling format
@@ -181,6 +185,8 @@ enum ExecutionStatus {
   EXECUTION_STATUS_TOOL_NOT_FOUND = 4;
   EXECUTION_STATUS_INVALID_ARGUMENTS = 5;
   EXECUTION_STATUS_TRIAL_NOT_FOUND = 6;
+  // The MCP tool answered with isError=true; unlike ERROR, its call completed.
+  EXECUTION_STATUS_ENVIRONMENT_ERROR = 7;
 }
 
 message ToolMetrics {
@@ -244,6 +250,10 @@ message GradeTrialResponse {
 
   // The computed grade
   Grade grade = 3;
+
+  // Structured spend and DB evidence produced before an ungradeable verdict.
+  // Empty for ordinary failures and successful grades.
+  string failure_evidence_json = 4;
 }
 
 message Grade {
@@ -297,6 +307,17 @@ message Grade {
   // is a gate silently opening, and the host must tell that apart from a runner
   // that evaluated the gate and found it held.
   TraceChecksSummary trace_checks_summary = 11;
+
+  // What the comparison view did, when the pack declares state_checks.comparison_view:
+  // a JSON object with the golden's view record, the trial's view record (or the
+  // collision that kept the trial from having one), and on a mismatch the diff of the
+  // two views (runner.models.ComparisonViewGradeRecord). Unset when no view is declared
+  // or no hash was computed — `optional` so a grade without one encodes, and prints,
+  // byte-identically to a grade that has no field 12.
+  optional string comparison_view_json = 12;
+
+  // Host-grader replay snapshots. Kept out of grade.yaml by the host writer.
+  optional string state_snapshots_json = 13;
 }
 
 // The rubric judge's own accounting + audit transcript (see docs/RUBRIC_GRADING_DESIGN.md
@@ -362,6 +383,11 @@ message JudgeReport {
   optional bool include_agent_system_prompt = 15;
   reserved 16;
   reserved "chunk_boundaries_json";
+  // What the providers stated they charged for the judge's calls, in USD: the
+  // sum of each call's billed amount (OpenRouter's usage.cost, plus the
+  // upstream's bill on a BYOK call). Absent unless every call stated one;
+  // cost_usd stays the eval's own figure either way.
+  optional double billed_cost_usd = 17;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a
@@ -790,6 +816,10 @@ message SubstrateSearchHit {
   string source = 2;
   double score = 3;
   string text = 4;
+  // The document's title, when the search backend has one (bm25's JSON
+  // documents carry it; rag-service hits do not). Presence-tracked so an
+  // absent title crosses as None, never as an empty string.
+  optional string title = 5;
 }
 
 // -----------------------------------------------------------------------------

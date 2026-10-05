@@ -48,7 +48,7 @@ only ever ADDS to what litellm already permits.
 
 Nothing is written into litellm's global model map. That keeps three problems
 from existing: a price of ours cannot end up labelled ``cost_source="litellm"``
-(provider-authoritative) when it is our own table, an entry cannot survive to
+(litellm's figure, not ours) when it is our own table, an entry cannot survive to
 overwrite the richer upstream row once litellm ships one, and there is no
 process-global mutation to synchronise across the trial thread pool. When
 upstream does ship the entry, the allow-list becomes a harmless no-op.

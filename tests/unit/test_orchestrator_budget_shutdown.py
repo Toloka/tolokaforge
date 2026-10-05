@@ -36,6 +36,7 @@ from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     InitialStateConfig,
+    JudgeUsage,
     Metrics,
     ModelConfig,
     OrchestratorConfig,
@@ -47,6 +48,7 @@ from tolokaforge.core.models import (
     UserSimulatorConfig,
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+from tolokaforge.core.output_writer import OutputWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
 
@@ -180,6 +182,7 @@ def _build_orchestrator(
     orch.tasks = [_task_config(tid) for tid in task_ids]
     adapter = MagicMock()
     adapter.to_task_description.side_effect = lambda tid: _task_description(tid)
+    adapter.requires_judge_model.return_value = False
     adapter.docker_stack_requirements.return_value = MagicMock(needs_rag_service=False)
     adapter.trial_grader_name = "runner_rpc"
     _write_grading_yaml(tmp_path)
@@ -194,6 +197,13 @@ def _read_marker(output_dir: Path) -> dict[str, Any] | None:
     if not marker.exists():
         return None
     return json.loads(marker.read_text())
+
+
+def _persist_results(orch: Orchestrator, output_dir: Path) -> None:
+    """The in-memory conductor returns trials; persist them with the real writer."""
+    for trajectory in orch.results:
+        bundle = output_dir / "trials" / trajectory.task_id / str(trajectory.trial_index)
+        OutputWriter(bundle).write_all(trajectory, {}, {}, orch.logger)
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +514,120 @@ def test_budget_pause_refreshes_a_stale_report_from_an_earlier_pass(
 
     payload = json.loads((output_dir / "aggregate.json").read_text())
     assert "sentinel" not in payload, "the stale report from the earlier pass survived"
+
+
+@pytest.mark.parametrize("resume_limit", [1.0, 0.01])
+def test_resume_reports_completed_trials_once_and_refreshes_budget_marker(
+    tmp_path: Path, resume_limit: float
+) -> None:
+    calls = []
+
+    def factory(task_id: str, trial_idx: int) -> Trajectory:
+        calls.append((task_id, trial_idx))
+        trajectory = _traj(task_id, trial_idx, 0.1)
+        trajectory.grade.judge_usage = JudgeUsage(calls=1, cost_usd=0.05)
+        return trajectory
+
+    tasks = ["taskA", "taskB", "taskC"]
+    first, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=tasks,
+        budget=None,
+        trajectory_factory=factory,
+        legacy_max_budget_usd=0.01,
+    )
+    output_dir = first.run()
+    _persist_results(first, output_dir)
+    assert len(calls) == 1
+    assert _read_marker(output_dir)["threshold"] == 0.01
+    resumed, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=tasks,
+        budget=None,
+        trajectory_factory=factory,
+        legacy_max_budget_usd=resume_limit,
+    )
+    resumed.resume = True
+    resumed.run(run_id=output_dir.name, output_dir=output_dir)
+
+    aggregate = json.loads((output_dir / "aggregate.json").read_text())
+    expected = 3 if resume_limit == 1.0 else 1
+    assert len(calls) == len(set(calls)) == expected
+    assert len(resumed.results) == expected - 1  # Current-invocation attempts stay separate.
+    assert aggregate["total_trials"] == expected
+    assert aggregate["total_cost_incl_judge_usd"] == pytest.approx(expected * 0.15)
+    assert aggregate["judge_cost_usd"] == pytest.approx(expected * 0.05)
+    if resume_limit == 1.0:
+        assert _read_marker(output_dir) is None
+        assert resumed._stopped_reason is None
+        assert resumed.state_manager.load_state().status == "completed"
+    else:
+        assert _read_marker(output_dir)["value_at_hit"] == pytest.approx(0.15)
+        assert resumed.state_manager.load_state().status == "paused"
+
+
+def test_resume_report_retains_prior_ungradeable_trial_and_known_judge_usage(
+    tmp_path: Path,
+) -> None:
+    def ungradeable(task_id: str, trial_idx: int) -> Trajectory:
+        trajectory = _traj(task_id, trial_idx, 0.1)
+        trajectory.grade = None
+        trajectory.grading_error = "judge returned malformed JSON"
+        trajectory.grading_judge_usage = JudgeUsage(calls=1, cost_usd=0.05)
+        return trajectory
+
+    first, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=CompositeBudget([SampleBudget(limit=1)]),
+        trajectory_factory=ungradeable,
+    )
+    output_dir = first.run()
+    _persist_results(first, output_dir)
+    resumed, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=None,
+        cost_per_trial=0.1,
+    )
+    resumed.resume = True
+    resumed.run(run_id=output_dir.name, output_dir=output_dir)
+    aggregate = json.loads((output_dir / "aggregate.json").read_text())
+    assert aggregate["total_trials"] == 2
+    assert aggregate["ungradeable"] == 1
+    assert aggregate["total_cost_incl_judge_usd"] == pytest.approx(0.25)
+    failures = json.loads((output_dir / "failure_attribution.json").read_text())
+    assert failures["failures"][0]["failure_class"] == "grading_failure"
+
+
+def test_resume_refuses_unreadable_completed_bundle_before_running_new_trials(
+    tmp_path: Path,
+) -> None:
+    first, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=CompositeBudget([SampleBudget(limit=1)]),
+        cost_per_trial=0.1,
+    )
+    output_dir = first.run()
+    _persist_results(first, output_dir)
+    (output_dir / "trials/taskA/0/metrics.yaml").write_text("cost_usd: broken")
+    calls = []
+
+    def factory(task_id: str, trial_idx: int) -> Trajectory:
+        calls.append(task_id)
+        return _traj(task_id, trial_idx, 0.1)
+
+    resumed, _ = _build_orchestrator(
+        tmp_path=tmp_path,
+        task_ids=["taskA", "taskB"],
+        budget=None,
+        trajectory_factory=factory,
+    )
+    resumed.resume = True
+    with pytest.raises(ValueError, match="cost_usd"):
+        resumed.run(run_id=output_dir.name, output_dir=output_dir)
+    assert calls == []
 
 
 def test_grading_completeness_published_when_budget_exhausted_at_start(

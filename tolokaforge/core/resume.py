@@ -316,8 +316,19 @@ class RunStateManager:
 
         return False
 
-    def is_completed(self, task_id: str, trial_index: int, entry: str = "") -> bool:
+    def is_completed(
+        self,
+        task_id: str,
+        trial_index: int,
+        entry: str = "",
+        *,
+        run_state: RunState | None = None,
+    ) -> bool:
         """Check if trial is completed and should be skipped.
+
+        ``run_state`` is a state the caller already loaded; without it the state is
+        read from disk. A caller checking many trials passes it, so the state file
+        is parsed once rather than once per trial.
 
         Returns True if:
         - Trial passed successfully
@@ -328,7 +339,8 @@ class RunStateManager:
         - Trial has infrastructure errors (needs retry)
         - Trial status is not completed
         """
-        run_state = self.load_state()
+        if run_state is None:
+            run_state = self.load_state()
         if not run_state:
             return False
 
@@ -395,7 +407,9 @@ class RunStateManager:
         for trial in run_state.trials.values():
             if trial.status == "completed":
                 completed += 1
-            if self.is_completed(trial.task_id, trial.trial_index, trial.entry):
+            if self.is_completed(
+                trial.task_id, trial.trial_index, trial.entry, run_state=run_state
+            ):
                 already_done += 1
 
         to_retry = run_state.total_trials - already_done

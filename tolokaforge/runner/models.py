@@ -46,10 +46,19 @@ from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol
+from typing import Any, ClassVar, Literal, Protocol
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    ValidationInfo,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import (
     coerce_flat_stack_fields,
@@ -58,8 +67,12 @@ from tolokaforge.core.deprecations import (
     warn_deprecated,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
-from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig, ComparisonViewRecord
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
+from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -345,26 +358,59 @@ class RunnerUserSimulatorConfig(BaseModel):
 
 
 class SearchPlane(str, Enum):
-    """Which plane serves a task's ``documents_path``."""
+    """Built-in names ``SearchConfig.plane`` carries: what serves a task's corpus.
+
+    This enum is **not** an exhaustive, closed set: ``SearchConfig.plane`` is a free
+    ``str`` naming a backend registered under ``tolokaforge.search_backends``
+    (ADR-0054), so a backend the engine does not ship round-trips with its own name.
+    These members are the canonical constants for the names the engine itself
+    serves — first-party code references them instead of raw string literals.
+    """
 
     TYPESENSE = "typesense"
-    """The TypeSense collection the runner registers a search client against."""
+    """The TypeSense collection the runner registers a search client against.
+
+    Reserved in ``tolokaforge.search_backends``: the runner serves this plane itself.
+    """
 
     RAG_SERVICE = "rag_service"
     """The rag-service index built per trial from the bundled corpus."""
 
+    BM25 = "bm25"
+    """Okapi BM25 over the bundled corpus, in the runner process (no stack service)."""
+
+
+DEFAULT_SEARCH_TOOL_NAME = "search_kb"
+"""The agent's search tool when a task names none (``initial_state.rag.tool.name``)."""
+
 
 class SearchConfig(BaseModel):
-    """Configuration for knowledge base search (TypeSense).
+    """Configuration for knowledge base search.
 
-    ``plane`` is a fact about the task — which plane serves its corpus — and is
-    the only thing that decides it. A task that declares none leaves the runner
-    to derive one from the connection details it carries, which is what an
-    adapter emits until it declares the plane instead.
+    ``plane`` is a fact about the task — what serves its corpus — and is the only
+    thing that decides it. Its value is the name of a search backend registered
+    under ``tolokaforge.search_backends`` (``rag_service`` for the engine's
+    rag-service), or ``typesense`` for the plane the runner serves itself. A task
+    that declares none leaves the runner to derive one from the connection details
+    it carries, which is what an adapter emits until it declares the plane instead.
+
+    ``enabled`` means "this task needs rag-service". It predates ``plane`` and an
+    older runner image reads only it, so the adapter emits it: true exactly
+    when the backend ``plane`` names declares the rag-service stack service.
+
+    ``backend_config`` is the task's opaque ``initial_state.rag.backend_config``,
+    handed to the backend's factory verbatim, and ``tool_name`` is the agent's
+    search tool when the task names one. Both are left off the wire at their
+    default (:attr:`OMITTED_AT_DEFAULT`), so a task that declares neither
+    serialises without them, and an older image — which forbids a key it does not
+    declare — accepts it.
     """
 
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"backend_config", "tool_name"})
+    """Fields the dump leaves out while they hold their default value."""
+
     enabled: bool = False
-    plane: SearchPlane | None = None
+    plane: str | None = None
     domain_name: str | None = None  # "external_retail_v3"
     documents_path: str | None = None  # Path to docindex/ directory
 
@@ -375,7 +421,27 @@ class SearchConfig(BaseModel):
     port: int | None = None  # 8108 (container port)
     api_key: str | None = None  # TypeSense API key
 
+    backend_config: dict[str, Any] = Field(default_factory=dict)
+    tool_name: str = DEFAULT_SEARCH_TOOL_NAME
+
     model_config = {"extra": "forbid"}
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_fields_at_their_default(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        if not isinstance(self, SearchConfig):
+            # A plain mapping stored without validation (``model_copy(update=…)``)
+            # dumps as the mapping it is, as it did before this serializer existed.
+            return handler(self)
+        data = handler(self)
+        for name in self.OMITTED_AT_DEFAULT:
+            if getattr(self, name) == type(self).model_fields[name].get_default(
+                call_default_factory=True
+            ):
+                data.pop(name, None)
+        return data
 
 
 # =============================================================================
@@ -434,26 +500,6 @@ class DbProbe(BaseModel):
 
 
 _HASH_WEIGHT_CONTEXT = "task_description grading.state_checks.hash_weight"
-
-
-class HashComparisonBasis(str, Enum):
-    """The state a hash comparison was run against, and what selected it.
-
-    The two initial-state members grade identically by construction — the evaluator
-    resets the trial's database and hashes it either way — and are separate members
-    because the ledger accounts for a *declared* source and has nothing to file for a
-    block that declared none. Collapsing them would leave ``expect_initial_state``
-    accounted for without being read.
-    """
-
-    DECLARED_INITIAL_STATE = "declared_initial_state"
-    """``expect_initial_state``: the author asked for the state the task starts in."""
-
-    GOLDEN_REPLAY = "golden_replay"
-    """``golden_actions``: the state replaying them from the initial state produces."""
-
-    UNDECLARED_INITIAL_STATE = "undeclared_initial_state"
-    """No source at all: the same initial state, reached by falling through."""
 
 
 _RETIRED_EXPECTED_HASH_MESSAGE: str = (
@@ -544,11 +590,38 @@ class RunnerStateChecksConfig(BaseModel):
     # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
     auto_normalize_nullables: bool = False
 
+    # Opt-in: the one-sided transform both sides' full states go through before the
+    # unstable filter, the compare_columns pipeline and the masks (ADR-0053). Declared,
+    # it moves the hash onto the client path: ``_execute_hash_grading`` reads both full
+    # states and runs :func:`tolokaforge.core.grading.pre_hash.view_the_pair`. Absent,
+    # the key is left out of the wire dump, so an image predating it still accepts
+    # every spec that does not declare one — and refuses one that does.
+    comparison_view: ComparisonViewConfig | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``.
+
+    Read by the dump below and by the wire census, which gates such a key on itself:
+    it is on the wire only for a pack that declares it."""
+
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
 
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a dump that has none — the wire's absence.
+
+        A ``null`` would be a key an image predating the field refuses under
+        ``extra="forbid"``; leaving it out keeps every spec without a view
+        byte-identical to the one an older engine emitted.
+        """
+        return leave_out_absent_fields(self, handler)
 
     @model_validator(mode="before")
     @classmethod
@@ -713,6 +786,12 @@ class TranscriptRulesConfig(BaseModel):
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
+    regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
+    """The engine every ``disallow_regex`` pattern is compiled and searched by.
+
+    Accepted on a block declaring no pattern, unlike a predicate's or a bound
+    value's: the key is dumped at its default wherever the block travels, so the
+    model cannot tell one an author wrote from one the dump supplied."""
     # Both bounds are declarable from 1 up. A ceiling below 1 admits no
     # assistant-turn count at all, and a floor of 0 asserts nothing — and the
     # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
@@ -774,6 +853,13 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
 comprehended from the model, so the per-operator answer table has a second source
 to be checked against."""
 
+TRACE_PREDICATE_MODIFIERS: frozenset[str] = frozenset({"regex_engine"})
+"""The :class:`ValuePredicate` fields that change how its operators read and assert
+nothing on their own — so a predicate declaring only a modifier declares no operator."""
+
+TRACE_PREDICATE_REGEX_OPERATORS: frozenset[str] = frozenset({"regex", "not_regex"})
+"""The operators whose operand is a pattern, compiled under the predicate's engine."""
+
 TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
     {"equals_binding", "contains_binding"}
 )
@@ -807,6 +893,14 @@ class ValuePredicate(BaseModel):
     ``equals_binding`` and ``contains_binding`` name a value the constraint's
     ``bind`` extracted rather than writing it out, and compare with the same
     ``equals`` / ``contains`` the literal forms use.
+
+    ``regex`` and ``not_regex`` take one pattern or a non-empty list of them: every
+    pattern of a ``regex`` list must search the value, and no pattern of a
+    ``not_regex`` list may — a single string reads as the one-item list.
+
+    ``regex_engine`` is a modifier, not an operator (:data:`TRACE_PREDICATE_MODIFIERS`):
+    it names the engine this predicate's ``regex`` / ``not_regex`` run on, ``None``
+    inheriting ``trace_checks.regex_engine``.
     """
 
     equals: Any = None
@@ -815,8 +909,8 @@ class ValuePredicate(BaseModel):
     contains_ci: str | None = None
     not_contains: Any = None
     not_equals: Any = None
-    regex: str | None = None
-    not_regex: str | None = None
+    regex: str | list[str] | None = None
+    not_regex: str | list[str] | None = None
     is_null: bool | None = None
     omitted: bool | None = None
     gt: float | None = None
@@ -834,8 +928,25 @@ class ValuePredicate(BaseModel):
     exists: bool | None = None
     equals_binding: str | None = None
     contains_binding: str | None = None
+    regex_engine: RegexEngineKind | None = None
 
     model_config = {"extra": "forbid"}
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"regex_engine"})
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
+
+    def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
+        """The engine this predicate's patterns run on inside a block defaulting to ``section``."""
+        return section if self.regex_engine is None else self.regex_engine
+
+    def patterns_of(self, operator: str) -> tuple[str, ...]:
+        """The patterns a declared ``regex`` / ``not_regex`` names, in authored order."""
+        authored = getattr(self, operator)
+        return (authored,) if isinstance(authored, str) else tuple(authored)
 
     def declared_operators(self) -> frozenset[str]:
         """The operators this predicate asserts, which it is the conjunction of."""
@@ -851,6 +962,18 @@ class ValuePredicate(BaseModel):
             if getattr(self, name) is not None
         )
 
+    @field_validator("regex", "not_regex")
+    @classmethod
+    def _reject_an_empty_pattern_list(
+        cls, patterns: str | list[str] | None, info: ValidationInfo
+    ) -> str | list[str] | None:
+        if patterns != []:
+            return patterns
+        raise ValueError(
+            f"{info.field_name}: [] names no pattern, so it would hold vacuously over every "
+            f"string. List at least one pattern, or drop {info.field_name}"
+        )
+
     @model_validator(mode="after")
     def _reject_a_predicate_asserting_nothing(self) -> ValuePredicate:
         if not self.declared_operators():
@@ -860,6 +983,16 @@ class ValuePredicate(BaseModel):
                 "or drop the field"
             )
         return self
+
+    @model_validator(mode="after")
+    def _reject_an_engine_over_no_pattern(self) -> ValuePredicate:
+        if self.regex_engine is None or self.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS:
+            return self
+        raise ValueError(
+            f"a value predicate names regex_engine={self.regex_engine.value!r} but declares "
+            f"neither {' nor '.join(sorted(TRACE_PREDICATE_REGEX_OPERATORS))}, so the engine "
+            "reads no pattern. Drop regex_engine, or declare the pattern it is for"
+        )
 
     @model_validator(mode="after")
     def _require_a_date_literal_some_calendar_holds(self) -> ValuePredicate:
@@ -1020,25 +1153,48 @@ class BoundValue(BaseModel):
     ``field`` addresses the extraction the same way a matcher addresses a
     predicate — ``tool``, ``text``, ``result``, or an ``args`` path by dotted
     segments. ``pattern`` narrows a textual field to one capture group, which is
-    what makes a figure quoted inside prose bindable.
+    what makes a figure quoted inside prose bindable. ``regex_engine`` names the
+    engine ``pattern`` runs on, ``None`` inheriting ``trace_checks.regex_engine``.
     """
 
     field: str
     pattern: str | None = None
+    regex_engine: RegexEngineKind | None = None
 
     model_config = {"extra": "forbid"}
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"regex_engine"})
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
+
+    def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
+        """The engine ``pattern`` runs on inside a block defaulting to ``section``."""
+        return section if self.regex_engine is None else self.regex_engine
 
     def head_segment(self) -> str:
         """The field name ``field`` addresses, before any nested argument path."""
         return self.field.split(".", 1)[0]
 
     @model_validator(mode="after")
+    def _reject_an_engine_over_no_pattern(self) -> BoundValue:
+        if self.regex_engine is None or self.pattern is not None:
+            return self
+        raise ValueError(
+            f"a bound value names regex_engine={self.regex_engine.value!r} but declares no "
+            "pattern, so the engine reads nothing. Drop regex_engine, or declare the pattern "
+            "it is for"
+        )
+
+    @model_validator(mode="after")
     def _require_a_pattern_that_captures_exactly_one_value(self) -> BoundValue:
         """Zero groups bind the whole match under a name that reads like a capture.
 
-        Scoped to a pattern that compiles, as every other authored pattern is: an
-        uncompilable one has no group count, and the authoring gate reports it at
-        its own address rather than as a miscount here.
+        Counted by Python ``re`` and scoped to a pattern ``re`` compiles: an
+        uncompilable one has no group count here, and the authoring gate counts
+        groups under the binder's own engine and reports at the pattern's address.
         """
         if self.pattern is None:
             return self
@@ -1048,11 +1204,16 @@ class BoundValue(BaseModel):
             return self
         if groups == 1:
             return self
-        raise ValueError(
-            f"pattern {self.pattern!r} captures {groups} groups, and a binding reads "
-            "exactly one. Wrap the value to bind in a single group — none binds the "
-            "whole match, and several leave no defined which"
-        )
+        raise ValueError(capture_group_count_refusal(self.pattern, groups))
+
+
+def capture_group_count_refusal(pattern: str, groups: int) -> str:
+    """Why a bound value's ``pattern`` declaring ``groups`` capture groups, not one, binds nothing."""
+    return (
+        f"pattern {pattern!r} captures {groups} groups, and a binding reads "
+        "exactly one. Wrap the value to bind in a single group — none binds the "
+        "whole match, and several leave no defined which"
+    )
 
 
 class OnUnbound(str, Enum):
@@ -1349,6 +1510,10 @@ _KINDS_WITHOUT_AN_ANCHOR: frozenset[TraceConstraintKind] = frozenset(
     {TraceConstraintKind.PRESENT, TraceConstraintKind.ABSENT, TraceConstraintKind.COUNT}
 )
 
+_KINDS_WITHHOLD_HAS_NOTHING_TO_DECIDE_OVER: frozenset[TraceConstraintKind] = frozenset(
+    {TraceConstraintKind.ABSENT}
+)
+
 # Over one matched set, ``last`` and ``all`` on the left require the event nothing
 # follows to precede something, and ``first`` and ``all`` on the right require
 # something to precede the event nothing precedes — false at every trajectory. Their
@@ -1420,6 +1585,16 @@ class TraceConstraintExpr(BaseModel):
         return frozenset({kind}).union(
             *(item.kinds_in_tree() for item in nested if isinstance(item, TraceConstraintExpr))
         )
+
+    def kinds_refusing_on_missing(self, policy: OnMissing) -> frozenset[TraceConstraintKind]:
+        """The leaf kinds in this tree *policy* has nothing to decide over.
+
+        Empty iff the unmatched-anchor rule admits *policy* on this tree — the rule
+        :class:`TraceConstraint` enforces, and the one the gate-default advisory reads
+        so it never recommends a policy the model refuses. Composite kinds are never
+        returned: a composite passes the policy down rather than deciding over it.
+        """
+        return self.kinds_in_tree() & _KINDS_REFUSING_EACH_ON_MISSING[policy]
 
     @model_validator(mode="after")
     def _require_exactly_one_kind(self) -> TraceConstraintExpr:
@@ -1509,6 +1684,13 @@ class OnMissing(str, Enum):
     FAIL = "fail"
     PASS = "pass"
     WITHHOLD = "withhold"
+
+
+_KINDS_REFUSING_EACH_ON_MISSING: Mapping[OnMissing, frozenset[TraceConstraintKind]] = {
+    OnMissing.FAIL: _KINDS_WITHOUT_AN_ANCHOR,
+    OnMissing.PASS: _KINDS_WITHOUT_AN_ANCHOR,
+    OnMissing.WITHHOLD: _KINDS_WITHHOLD_HAS_NOTHING_TO_DECIDE_OVER,
+}
 
 
 class TraceConstraintSeverity(str, Enum):
@@ -1624,6 +1806,10 @@ class TraceConstraint(BaseModel):
     def bound_names(self) -> frozenset[str]:
         """The names this constraint's binder puts in scope, if it declares one."""
         return frozenset(self.bind.values) if self.bind is not None else frozenset()
+
+    def matchers(self) -> Iterator[TraceMatcher]:
+        """Every matcher the constraint declares, its binder's included."""
+        return _matchers_within(self)
 
     @field_validator("weight")
     @classmethod
@@ -1775,21 +1961,20 @@ class TraceConstraint(BaseModel):
         """
         if self.on_missing is None:
             return self
-        anchorless = self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
-        if not anchorless:
+        refusing = self.require.kinds_refusing_on_missing(self.on_missing)
+        if not refusing:
             return self
         if self.on_missing is OnMissing.WITHHOLD:
-            if TraceConstraintKind.ABSENT not in anchorless:
-                return self
             raise ValueError(
-                f"{self.id}: on_missing: withhold has nothing to decide over ['absent'], "
+                f"{self.id}: on_missing: withhold has nothing to decide over "
+                f"{sorted(kind.value for kind in refusing)}, "
                 "whose empty match IS its positive verdict — withholding there would "
                 "withhold the very check the constraint asks. Drop the on_missing, or "
                 "write a present with the complement matcher"
             )
         raise ValueError(
             f"{self.id}: on_missing has nothing to decide over "
-            f"{sorted(kind.value for kind in anchorless)}, whose verdict is the match "
+            f"{sorted(kind.value for kind in refusing)}, whose verdict is the match "
             "itself — a composite passes the policy down to every expression it holds, "
             "so nesting one of them does not anchor it. Setting it would answer the "
             "very question the constraint asks"
@@ -1822,6 +2007,13 @@ class TraceChecksConfig(BaseModel):
 
     constraints: list[TraceConstraint] = Field(default_factory=list)
     alternatives: list[TracePath] | None = None
+    regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
+    """The engine every ``regex`` / ``not_regex`` / ``bind.values[*].pattern`` in the
+    block runs on, unless its predicate or bound value names its own.
+
+    Accepted on a block declaring no pattern, unlike a predicate's or a bound
+    value's: the key is dumped at its default wherever the block travels, so the
+    model cannot tell one an author wrote from one the dump supplied."""
 
     model_config = {"extra": "forbid"}
 
@@ -2062,13 +2254,46 @@ class JudgeCustomization(BaseModel):
     rubric grades without the agent's framing. Evidence gating, distinct from
     ``system_prompt`` (which is the judge's own wording). A task sets ``true`` or
     ``null`` to re-include over a project ``false``.
+
+    ``judge_snippet_chars`` is how much of each hit the judge's ``search_kb`` shows:
+    the first that many characters (``200`` by default), or ``null`` for whole
+    documents — what a ``bm25`` task whose rubric reads a document's exact wording
+    needs. Not tri-state: ``null`` is a value, so a task resets a project's figure
+    by writing ``200``. Left off the dump at its default
+    (:attr:`OMITTED_AT_DEFAULT`), so a task that declares nothing serialises
+    without it and an older image, which forbids a key it does not declare,
+    accepts it.
+
+    :func:`~tolokaforge.core.grading.judge_kinds.resolve_judge_trial_options` turns
+    a customization into the
+    :class:`~tolokaforge.core.grading.judge_kinds.JudgeTrialOptions` a judge kind
+    receives.
     """
+
+    OMITTED_AT_DEFAULT: ClassVar[frozenset[str]] = frozenset({"judge_snippet_chars"})
+    """Fields the dump leaves out while they hold their default value."""
 
     disable_knowledge_search: bool | None = None
     system_prompt: str | None = None
     include_agent_system_prompt: bool | None = None
+    judge_snippet_chars: int | None = Field(default=DEFAULT_JUDGE_SNIPPET_CHARS, ge=1, strict=True)
 
     model_config = {"extra": "forbid"}
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_fields_at_their_default(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        if not isinstance(self, JudgeCustomization):
+            return handler(self)
+        data = handler(self)
+        for name in self.OMITTED_AT_DEFAULT:
+            if getattr(self, name) == type(self).model_fields[name].get_default(
+                call_default_factory=True
+            ):
+                data.pop(name, None)
+        return data
 
     @field_validator("system_prompt")
     @classmethod
@@ -3341,6 +3566,8 @@ class TaskDescription(BaseModel):
     # edit; see AdapterType for the well-known built-in names.
     adapter_type: str
     schema_version: str = "1.0.0"
+    max_simulation_steps: int | None = Field(default=None, ge=1)
+    max_environment_errors: int | None = Field(default=None, ge=1)
 
     # --- System Prompt ---
     system_prompt: str  # Full content, not file path
@@ -3645,16 +3872,38 @@ class TableDiff(BaseModel):
 
 
 class StateDiff(BaseModel):
-    """Human-readable diff between two stable states."""
+    """Human-readable diff between two stable states.
+
+    ``tables_on_one_side`` names the tables only one of the two states holds, and which
+    one: the diff of a table reads an absent one as empty, so a table one side holds
+    empty and the other not at all otherwise shows no difference while the two hash
+    apart. Only a comparison view's diff fills it in
+    (:func:`tolokaforge.core.grading.trial_golden_diff.compute_view_diff`); it is left out
+    of every dump while absent, so a diff without it dumps byte-identically to one from
+    an engine without the field.
+    """
 
     tables: dict[str, TableDiff] = Field(default_factory=dict)
     summary: str = ""
+    tables_on_one_side: dict[str, Literal["trial", "golden"]] | None = None
 
     model_config = {"extra": "forbid"}
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"tables_on_one_side"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_absent_one_sided_tables(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
 
     @property
     def identical(self) -> bool:
         """Check if states are identical (no differences)."""
+        if self.tables_on_one_side:
+            return False
         for table_diff in self.tables.values():
             if (
                 table_diff.missing
@@ -3852,52 +4101,52 @@ class TraceChecksResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class HashGradingResult(BaseModel):
-    """Result of hash-based grading."""
+class ComparisonViewTrialError(BaseModel):
+    """What kept the trial's state from being viewed, once the golden's view succeeded.
 
-    hash_match: bool
-    basis: HashComparisonBasis
-    """Which state the verdict was reached against, and which declaration selected it.
-
-    Carried out of the evaluator rather than re-derived from the config by whoever
-    needs it: the runtime ledger accounts for the source key this names, so a config
-    read a second time at the accounting site would report a key as evaluated whether
-    or not the evaluator ever looked at it.
+    ``error`` names the error's type (``ComparisonViewCollision`` for a re-keying that is
+    not bijective, ``ComparisonViewError`` for a record the rules cannot read), and
+    ``ids`` the ids it involves — empty where it names none.
     """
-    state_diff: StateDiff | None = None
-    golden_replay: GoldenReplayRecord
-    """How much of the golden path ran, in the shape both substrates report from.
 
-    An unresolvable name never reaches the replay — it fails the whole grade — so every
-    failure here describes an action that ran against a world it did not fit.
-    """
+    error: str
+    message: str
+    ids: list[Any] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
-    @property
-    def hash_score(self) -> float:
-        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist.
 
-        Meaningful only when :attr:`hash_unscorable` is ``False``: a broken replay hashed
-        the trial against a state no author asked for, so the caller reads
-        :attr:`hash_unscorable` before writing this into the runner components — the write
-        skipped, the ``hash_score`` field stays at the ``-1.0`` not-evaluated sentinel, and
-        the fold refuses the trial rather than composing a fabricated verdict.
-        """
-        return 1.0 if self.hash_match else 0.0
+class ComparisonViewGradeRecord(BaseModel):
+    """What a grade records about a comparison view (ADR-0053 § Versioning).
 
-    @property
-    def hash_unscorable(self) -> bool:
-        """Whether the golden replay left the trial's state hashable against a real world.
+    ``golden`` and ``trial`` are the records of the two views: the same ``version``,
+    ``function_version`` and ``config_sha256``, with each side's own ``applied``. A
+    trial whose state could not be viewed has no record of its own and carries
+    ``trial_error`` instead; it failed. ``view_diff`` is the diff of the two views on a
+    mismatch, the diff the hash verdict agrees with (#1444); ``None`` on a match or a
+    trial error. Both substrates build it with
+    :func:`tolokaforge.core.grading.pre_hash.comparison_view_grade_record`, so the
+    runner's ``Grade.comparison_view_json`` and core's ``Grade.comparison_view`` carry
+    the same JSON.
+    """
 
-        ``True`` when :attr:`golden_replay.failures` is non-empty — one or more per-action
-        failures during replay left partial state behind, so a hash against it would grade
-        the trial against a world no author asked for. The runner call site reads this bit
-        before writing :attr:`hash_score` into the runner components, so the ``-1.0``
-        not-evaluated sentinel survives and the fold's declared-but-unscored refusal fires
-        downstream.
-        """
-        return bool(self.golden_replay.failures)
+    golden: ComparisonViewRecord
+    trial: ComparisonViewRecord | None = None
+    view_diff: StateDiff | None = None
+    trial_error: ComparisonViewTrialError | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _a_trial_has_a_view_or_an_error(self) -> ComparisonViewGradeRecord:
+        if (self.trial is None) == (self.trial_error is None):
+            raise ValueError(
+                "a comparison-view record carries the trial's view record or the error that "
+                "kept it from one, exactly one of the two"
+            )
+        if self.trial_error is not None and self.view_diff is not None:
+            raise ValueError("a trial whose state could not be viewed has no view to diff")
+        return self
 
 
 _DEPRECATED_MODEL_ALIASES: dict[str, str] = {

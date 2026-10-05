@@ -14,6 +14,7 @@ matcher could never have selected decides nothing.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,9 +25,13 @@ from pydantic import ValidationError
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
 from tests.utils.trace_constraints import evaluate_constraint
+from tolokaforge.core import plugin_registry
+from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.regex_engine import RegexEngineKind, UncompilablePattern
 from tolokaforge.core.grading.trace_checks import (
     _binding_operator_names,
     _extracted,
+    evaluate_trace_checks,
     select_events,
 )
 from tolokaforge.core.grading.trace_timeline import (
@@ -36,18 +41,28 @@ from tolokaforge.core.grading.trace_timeline import (
 )
 from tolokaforge.core.models import (
     BoundValue,
+    GradingConfig,
+    Message,
+    MessageRole,
     RecordedToolCall,
     ToolCall,
     ToolExecutionStatus,
+    TraceChecksConfig,
+    TraceChecksResult,
     TraceMatcher,
+    Trajectory,
     ValuePredicate,
 )
 from tolokaforge.runner.models import (
     TRACE_PREDICATE_BINDING_OPERATORS,
+    TRACE_PREDICATE_MODIFIERS,
     TRACE_PREDICATE_OPERATORS,
 )
 
 pytestmark = pytest.mark.unit
+
+_BLOCK_ENGINE = TraceChecksConfig.model_fields["regex_engine"].default
+"""What a ``trace_checks`` block declaring no ``regex_engine`` resolves its matchers under."""
 
 # Both turns name the payment, so a matcher selecting on that text is held apart
 # from the user's turn by ``kind`` alone.
@@ -79,7 +94,7 @@ def test_a_tool_result_matcher_passes_over_the_message_whose_status_is_none():
     timeline = _timeline(recorded=[_payment_lookup()])
     matcher = TraceMatcher(kind=TraceEventKind.TOOL_RESULT, status=ValuePredicate(equals="success"))
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert _only(timeline, TraceEventKind.ASSISTANT_MESSAGE).status is None
     assert [event.kind for event in outcome.matched] == [TraceEventKind.TOOL_RESULT]
@@ -92,7 +107,7 @@ def test_an_assistant_message_matcher_passes_over_the_call_whose_text_is_none():
         kind=TraceEventKind.ASSISTANT_MESSAGE, text=ValuePredicate(contains="PAY-664306")
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert _only(timeline, TraceEventKind.TOOL_CALL).text is None
     assert _only(timeline, TraceEventKind.USER_MESSAGE).text == "Refund PAY-664306."
@@ -118,6 +133,7 @@ def test_an_absent_argument_is_unmatched_rather_than_vacuously_true():
             args={"refund_id": ValuePredicate(not_equals="R-1")},
         ),
         {},
+        regex_engine=_BLOCK_ENGINE,
     )
     absent = select_events(
         timeline,
@@ -126,6 +142,7 @@ def test_an_absent_argument_is_unmatched_rather_than_vacuously_true():
             args={"refund_id": ValuePredicate(exists=False)},
         ),
         {},
+        regex_engine=_BLOCK_ENGINE,
     )
 
     assert negative.matched == ()
@@ -152,10 +169,10 @@ def test_a_nested_argument_path_reaches_inside_a_request_body():
         args={"body.resolution_path": ValuePredicate(equals="policy_exception")},
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert outcome.matched == (_only(timeline, TraceEventKind.TOOL_CALL),)
-    assert select_events(timeline, other_path, {}).matched == ()
+    assert select_events(timeline, other_path, {}, regex_engine=_BLOCK_ENGINE).matched == ()
 
 
 @pytest.mark.parametrize(
@@ -183,7 +200,7 @@ def test_a_tool_call_matcher_reads_its_status_from_the_paired_result(
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert call.status is None
     assert _only(timeline, TraceEventKind.TOOL_RESULT).status is status
@@ -204,7 +221,7 @@ def test_a_status_predicate_cannot_be_decided_where_nothing_recorded_the_call():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert timeline.records_present is False
     assert call.status is None
@@ -230,7 +247,7 @@ def test_an_unexecuted_call_to_the_named_tool_cannot_be_decided():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert timeline.records_present is True
     assert unexecuted.arguments == {"amount": 20}
@@ -254,7 +271,7 @@ def test_an_unexecuted_call_to_another_tool_leaves_the_matcher_decided():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert unexecuted.tool_name == "search_policy"
     assert unexecuted.status is None
@@ -339,13 +356,18 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
 def test_the_answer_table_spans_the_operators_a_predicate_declares():
     """Three sources: the table, the written-out vocabulary, and the model's own fields.
 
+    The model's fields are the operators plus the modifiers, which change how an
+    operator reads and are never dispatched themselves — a modifier counted as an
+    operator would let ``{regex_engine: linear}`` alone read as a declared predicate.
+
     The binding subset is a fourth pair: the model names which operators take a
     binding name, and the evaluator dispatches them off its own map. A member in one
     and not the other either resolves a name as a literal or raises on a name the
     model admits.
     """
     assert set(_OPERATOR_ANSWERS) == TRACE_PREDICATE_OPERATORS
-    assert set(ValuePredicate.model_fields) == TRACE_PREDICATE_OPERATORS
+    assert set(ValuePredicate.model_fields) - TRACE_PREDICATE_MODIFIERS == TRACE_PREDICATE_OPERATORS
+    assert TRACE_PREDICATE_MODIFIERS.isdisjoint(TRACE_PREDICATE_OPERATORS)
     assert set(_binding_operator_names()) == TRACE_PREDICATE_BINDING_OPERATORS
     misrowed = {
         name: sorted(answer.predicate)
@@ -367,11 +389,13 @@ def test_an_operator_selects_the_call_whose_argument_it_holds_for(operator_name:
         _timeline(recorded=[recorded_call("probe", arguments=answer.holds_for)]),
         matcher,
         answer.bindings,
+        regex_engine=_BLOCK_ENGINE,
     )
     fails = select_events(
         _timeline(recorded=[recorded_call("probe", arguments=answer.fails_for)]),
         matcher,
         answer.bindings,
+        regex_engine=_BLOCK_ENGINE,
     )
 
     assert len(holds.matched) == 1
@@ -444,7 +468,7 @@ def test_the_three_state_matrix_holds_per_operator(
         args={"key": ValuePredicate(**{operator: expected})},
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert bool(outcome.matched) is holds
 
@@ -463,10 +487,16 @@ def test_a_missing_intermediate_key_reads_as_omitted() -> None:
     )
 
     missing_intermediate = select_events(
-        _timeline(recorded=[recorded_call("probe", arguments={"body": {}})]), matcher, {}
+        _timeline(recorded=[recorded_call("probe", arguments={"body": {}})]),
+        matcher,
+        {},
+        regex_engine=_BLOCK_ENGINE,
     )
     non_mapping_intermediate = select_events(
-        _timeline(recorded=[recorded_call("probe", arguments={"body": None})]), matcher, {}
+        _timeline(recorded=[recorded_call("probe", arguments={"body": None})]),
+        matcher,
+        {},
+        regex_engine=_BLOCK_ENGINE,
     )
 
     assert len(missing_intermediate.matched) == 1
@@ -528,7 +558,7 @@ def test_a_binder_extraction_reads_absent_and_null_as_one_condition() -> None:
             _timeline(recorded=[recorded_call("probe", arguments=arguments)]),
             TraceEventKind.TOOL_CALL,
         )
-        assert _extracted(bound, event, None) == []
+        assert _extracted(bound, None, event, None) == []
 
 
 def test_omitted_composes_with_withhold() -> None:
@@ -606,8 +636,10 @@ def test_a_date_only_value_reads_as_midnight_utc() -> None:
     """
     matcher = _date_matcher(date_gt="2026-03-01")
 
-    just_after = select_events(_at("2026-03-01T00:00:00.001Z"), matcher, {})
-    at_midnight = select_events(_at("2026-03-01"), matcher, {})
+    just_after = select_events(
+        _at("2026-03-01T00:00:00.001Z"), matcher, {}, regex_engine=_BLOCK_ENGINE
+    )
+    at_midnight = select_events(_at("2026-03-01"), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert len(just_after.matched) == 1
     assert at_midnight.matched == ()
@@ -625,9 +657,9 @@ def test_a_naive_datetime_reads_as_utc_on_both_sides() -> None:
     """
     matcher = _date_matcher(date_gt="2026-03-01T12:00:00")
 
-    equal = select_events(_at("2026-03-01T12:00:00+00:00"), matcher, {})
-    earlier = select_events(_at("2026-03-01T11:00:00Z"), matcher, {})
-    later = select_events(_at("2026-03-01T13:00:00Z"), matcher, {})
+    equal = select_events(_at("2026-03-01T12:00:00+00:00"), matcher, {}, regex_engine=_BLOCK_ENGINE)
+    earlier = select_events(_at("2026-03-01T11:00:00Z"), matcher, {}, regex_engine=_BLOCK_ENGINE)
+    later = select_events(_at("2026-03-01T13:00:00Z"), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert equal.matched == ()
     assert earlier.matched == ()
@@ -644,8 +676,13 @@ def test_an_absent_or_null_argument_satisfies_no_date_comparison(operator: str) 
     """
     matcher = _date_matcher(**{operator: "2026-03-01"})
 
-    missing = select_events(_timeline(recorded=[recorded_call("probe", arguments={})]), matcher, {})
-    null = select_events(_at(None), matcher, {})
+    missing = select_events(
+        _timeline(recorded=[recorded_call("probe", arguments={})]),
+        matcher,
+        {},
+        regex_engine=_BLOCK_ENGINE,
+    )
+    null = select_events(_at(None), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert missing.matched == ()
     assert null.matched == ()
@@ -661,8 +698,10 @@ def test_a_numeric_comparison_still_refuses_a_date_string() -> None:
     numeric_matcher = _date_matcher(gt=0.0)
     date_matcher = _date_matcher(date_gt="2026-03-01")
 
-    numeric_over_date = select_events(_at("2026-03-01"), numeric_matcher, {})
-    date_over_number = select_events(_at(5), date_matcher, {})
+    numeric_over_date = select_events(
+        _at("2026-03-01"), numeric_matcher, {}, regex_engine=_BLOCK_ENGINE
+    )
+    date_over_number = select_events(_at(5), date_matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert numeric_over_date.matched == ()
     assert date_over_number.matched == ()
@@ -677,9 +716,11 @@ def test_a_range_predicate_composes_the_two_ends() -> None:
     """
     matcher = _date_matcher(date_gte="2026-03-01", date_lt="2026-04-01")
 
-    mid_march = select_events(_at("2026-03-15"), matcher, {})
-    april_first_midnight = select_events(_at("2026-04-01T00:00:00Z"), matcher, {})
-    late_february = select_events(_at("2026-02-28"), matcher, {})
+    mid_march = select_events(_at("2026-03-15"), matcher, {}, regex_engine=_BLOCK_ENGINE)
+    april_first_midnight = select_events(
+        _at("2026-04-01T00:00:00Z"), matcher, {}, regex_engine=_BLOCK_ENGINE
+    )
+    late_february = select_events(_at("2026-02-28"), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert len(mid_march.matched) == 1
     assert april_first_midnight.matched == ()
@@ -720,3 +761,474 @@ def test_a_Z_suffix_datetime_parses_on_python_3_10() -> None:
 
     fractional = date_comparison_key("2026-03-01T12:00:00.123456Z")
     assert fractional == datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc)
+
+
+# --------------------------------------------------------------------------
+# The engine a pattern runs on: the block's, unless its predicate or bound value
+# names its own. ``\d`` against an Arabic-Indic digit is the probe, because both
+# engines compile it and only ``backtracking`` reads that digit as one.
+
+_LINEAR = RegexEngineKind.LINEAR
+_BACKTRACKING = RegexEngineKind.BACKTRACKING
+_ARABIC_INDIC_THREE = "٣"
+
+_EFFECTIVE_ENGINES = [
+    pytest.param(None, None, _LINEAR, id="block-undeclared"),
+    pytest.param(None, _BACKTRACKING, _BACKTRACKING, id="override-backtracking-in-undeclared"),
+    pytest.param(_LINEAR, None, _LINEAR, id="block-linear"),
+    pytest.param(_BACKTRACKING, None, _BACKTRACKING, id="block-backtracking"),
+    pytest.param(_LINEAR, _BACKTRACKING, _BACKTRACKING, id="override-backtracking-in-linear"),
+    pytest.param(_BACKTRACKING, _LINEAR, _LINEAR, id="override-linear-in-backtracking"),
+]
+
+
+def _graded(
+    turns: Sequence[tuple[str, str]],
+    constraint: dict[str, Any],
+    block_engine: RegexEngineKind | None,
+    recorded: Sequence[RecordedToolCall] = (),
+) -> TraceChecksResult:
+    """Graded under a block declaring ``block_engine``, or declaring none for ``None``."""
+    declared = {} if block_engine is None else {"regex_engine": block_engine}
+    config = TraceChecksConfig(
+        constraints=[{"id": "probe", "description": "the engine probe", **constraint}],
+        **declared,
+    )
+    return evaluate_trace_checks(build_timeline(turns=turns, recorded=recorded), config)
+
+
+@pytest.mark.parametrize("operator", ["regex", "not_regex"])
+@pytest.mark.parametrize(("block_engine", "override", "effective"), _EFFECTIVE_ENGINES)
+def test_a_matcher_pattern_runs_on_its_effective_engine(
+    operator: str,
+    block_engine: RegexEngineKind | None,
+    override: RegexEngineKind | None,
+    effective: RegexEngineKind,
+) -> None:
+    predicate: dict[str, Any] = {operator: r"\d"}
+    if override is not None:
+        predicate["regex_engine"] = override
+    constraint = {
+        "require": {"present": {"match": {"kind": "assistant_message", "text": predicate}}}
+    }
+
+    result = _graded(
+        [("assistant", f"Your code is {_ARABIC_INDIC_THREE}.")], constraint, block_engine
+    )
+
+    reads_a_digit = effective is _BACKTRACKING
+    assert result.passed is (reads_a_digit if operator == "regex" else not reads_a_digit)
+
+
+@pytest.mark.parametrize(("block_engine", "override", "effective"), _EFFECTIVE_ENGINES)
+def test_a_capture_pattern_runs_on_its_effective_engine(
+    block_engine: RegexEngineKind | None,
+    override: RegexEngineKind | None,
+    effective: RegexEngineKind,
+) -> None:
+    """Only ``backtracking`` captures the digit, so only there does the binder bind."""
+    bound: dict[str, Any] = {"field": "text", "pattern": r"code (\d)"}
+    if override is not None:
+        bound["regex_engine"] = override
+    constraint = {
+        "bind": {"match": {"kind": "user_message"}, "values": {"code": bound}},
+        "require": {
+            "present": {
+                "match": {"kind": "assistant_message", "text": {"contains_binding": "code"}}
+            }
+        },
+    }
+
+    result = _graded(
+        [
+            ("user", f"My code {_ARABIC_INDIC_THREE} is lost."),
+            ("assistant", f"Resetting code {_ARABIC_INDIC_THREE}."),
+        ],
+        constraint,
+        block_engine,
+    )
+
+    assert result.passed is (effective is _BACKTRACKING)
+
+
+_REFUSED_PATTERNS = [
+    pytest.param(_LINEAR, "(?=a)", id="linear-lookahead"),
+    pytest.param(_BACKTRACKING, "unterminated([", id="backtracking-unterminated"),
+]
+
+
+@pytest.mark.parametrize("as_list", [False, True], ids=["string", "second-list-item"])
+@pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
+def test_a_refused_matcher_pattern_raises_on_a_timeline_it_never_reaches(
+    block_engine: RegexEngineKind, pattern: str, as_list: bool
+) -> None:
+    """Compiled before any event is read, so the timeline carrying no tool call at all
+    does not let it through — and a list compiles every item, not only the first."""
+    authored: str | list[str] = ["^http", pattern] if as_list else pattern
+    constraint = {
+        "require": {"absent": {"match": {"kind": "tool_call", "tool": {"regex": authored}}}}
+    }
+
+    with pytest.raises(UncompilablePattern) as excinfo:
+        _graded([("user", "hi"), ("assistant", "hello")], constraint, block_engine)
+
+    assert excinfo.value.engine is block_engine
+    assert excinfo.value.pattern == pattern
+
+
+@pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
+def test_a_refused_capture_pattern_raises_on_a_timeline_it_never_reaches(
+    block_engine: RegexEngineKind, pattern: str
+) -> None:
+    constraint = {
+        "bind": {
+            "match": {"kind": "tool_call", "tool": {"equals": "open_case"}},
+            "values": {"case": {"field": "args.note", "pattern": f"{pattern}(x)"}},
+        },
+        "require": {
+            "present": {
+                "match": {"kind": "assistant_message", "text": {"contains_binding": "case"}}
+            }
+        },
+    }
+
+    with pytest.raises(UncompilablePattern) as excinfo:
+        _graded([("user", "hi"), ("assistant", "hello")], constraint, block_engine)
+
+    assert excinfo.value.engine is block_engine
+
+
+def _unbindable_constraint(pattern: str) -> dict[str, Any]:
+    """A bound constraint whose ``require`` tree alone declares ``pattern``."""
+    return {
+        "id": "refused",
+        "description": "a pattern under a binder that never fires",
+        "bind": {
+            "match": {"kind": "tool_call", "tool": {"equals": "open_case"}},
+            "values": {"case": {"field": "args.case_id"}},
+        },
+        "require": {
+            "present": {
+                "match": {
+                    "kind": "assistant_message",
+                    "text": {"regex": pattern, "contains_binding": "case"},
+                }
+            }
+        },
+    }
+
+
+_ROUTE_FILLER = {
+    "id": "filler",
+    "description": "a constraint naming no pattern",
+    "require": {"present": {"match": {"kind": "assistant_message"}}},
+}
+
+
+@pytest.mark.parametrize(
+    "turns",
+    [
+        pytest.param((("user", "hi"), ("assistant", "hello")), id="binder-selects-nothing"),
+        pytest.param((), id="timeline-without-events"),
+    ],
+)
+@pytest.mark.parametrize("where", ["shared", "route"])
+@pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
+def test_a_refused_require_pattern_raises_where_its_tree_is_never_entered(
+    block_engine: RegexEngineKind,
+    pattern: str,
+    where: str,
+    turns: Sequence[tuple[str, str]],
+) -> None:
+    """A binder that selects nothing leaves its ``require`` tree unresolved, and a
+    timeline without events leaves every tree unresolved — the block's patterns are
+    compiled before either is read, so neither lets a refused one through."""
+    refused = _unbindable_constraint(pattern)
+    block: dict[str, Any] = (
+        {"constraints": [refused]}
+        if where == "shared"
+        else {
+            "alternatives": [
+                {"id": "a", "description": "the route holding it", "constraints": [refused]},
+                {"id": "b", "description": "a clean route", "constraints": [_ROUTE_FILLER]},
+            ]
+        }
+    )
+    config = TraceChecksConfig(**block, regex_engine=block_engine)
+
+    with pytest.raises(UncompilablePattern) as excinfo:
+        evaluate_trace_checks(build_timeline(turns=turns), config)
+
+    assert excinfo.value.engine is block_engine
+    assert excinfo.value.pattern == pattern
+
+
+# --------------------------------------------------------------------------
+# A pattern list: every pattern of a ``regex`` list must search the value and no
+# pattern of a ``not_regex`` list may. The issue's lookahead conjunction, split
+# into its two halves, is the probe.
+
+_ACCOUNT_ID = r'"account_id":\s*"ACC-00000006"'
+_EMAIL = r'"email":\s*"x@y.z"'
+_ACCOUNT_LOOKAHEADS = rf"(?=[\s\S]*{_ACCOUNT_ID})(?=[\s\S]*{_EMAIL})"
+
+_BOTH = '{"account_id": "ACC-00000006", "name": "Ada", "email": "x@y.z"}'
+_ACCOUNT_ID_ONLY = '{"account_id": "ACC-00000006", "name": "Ada", "email": "a@b.c"}'
+_EMAIL_ONLY = '{"account_id": "ACC-00000007", "name": "Ada", "email": "x@y.z"}'
+_NEITHER = '{"account_id": "ACC-00000007", "name": "Ada", "email": "a@b.c"}'
+
+_BOTH_ENGINES = [pytest.param(_LINEAR, id="linear"), pytest.param(_BACKTRACKING, id="backtracking")]
+
+
+def _account_lookup_passes(
+    result: dict[str, Any], output: str, block_engine: RegexEngineKind
+) -> bool:
+    """Whether a ``get_account`` call whose result reads ``result`` is present."""
+    constraint = {
+        "require": {
+            "present": {
+                "match": {"kind": "tool_call", "tool": {"equals": "get_account"}, "result": result}
+            }
+        }
+    }
+    recorded = [recorded_call("get_account", output=output)]
+    return _graded(
+        [("user", "hi"), ("assistant", "done")], constraint, block_engine, recorded
+    ).passed
+
+
+@pytest.mark.parametrize("block_engine", _BOTH_ENGINES)
+@pytest.mark.parametrize(
+    ("output", "every_searches", "none_searches"),
+    [
+        pytest.param(_BOTH, True, False, id="both"),
+        pytest.param(_ACCOUNT_ID_ONLY, False, False, id="account-id-only"),
+        pytest.param(_EMAIL_ONLY, False, False, id="email-only"),
+        pytest.param(_NEITHER, False, True, id="neither"),
+    ],
+)
+def test_a_regex_list_needs_every_pattern_and_a_not_regex_list_refuses_any(
+    block_engine: RegexEngineKind, output: str, every_searches: bool, none_searches: bool
+) -> None:
+    patterns = [_ACCOUNT_ID, _EMAIL]
+
+    assert _account_lookup_passes({"regex": patterns}, output, block_engine) is every_searches
+    assert _account_lookup_passes({"not_regex": patterns}, output, block_engine) is none_searches
+
+
+@pytest.mark.parametrize("block_engine", _BOTH_ENGINES)
+@pytest.mark.parametrize("operator", ["regex", "not_regex"])
+@pytest.mark.parametrize("output", [_BOTH, _NEITHER], ids=["searched", "not-searched"])
+def test_a_one_item_list_reads_as_its_string(
+    block_engine: RegexEngineKind, operator: str, output: str
+) -> None:
+    as_string = _account_lookup_passes({operator: _ACCOUNT_ID}, output, block_engine)
+    as_list = _account_lookup_passes({operator: [_ACCOUNT_ID]}, output, block_engine)
+
+    assert as_list is as_string
+
+
+@pytest.mark.parametrize(
+    ("output", "passes"),
+    [
+        pytest.param(_BOTH, True, id="both"),
+        pytest.param(_ACCOUNT_ID_ONLY, False, id="account-id-only"),
+        pytest.param(_EMAIL_ONLY, False, id="email-only"),
+        pytest.param(_NEITHER, False, id="neither"),
+    ],
+)
+def test_a_lookahead_conjunction_and_its_list_form_grade_alike(output: str, passes: bool) -> None:
+    """The list is the replacement the linear engine's refusal of lookahead names."""
+    lookaheads = _account_lookup_passes({"regex": _ACCOUNT_LOOKAHEADS}, output, _BACKTRACKING)
+    split = _account_lookup_passes({"regex": [_ACCOUNT_ID, _EMAIL]}, output, _BACKTRACKING)
+
+    assert lookaheads is passes
+    assert split is passes
+
+
+# --------------------------------------------------------------------------
+# A matcher evaluates only the predicates that can change what it selects or
+# reports: on a call ``tool`` already rejects, its ``result`` pattern never runs.
+# The issue's lookahead conjunction under ``backtracking`` costs time quadratic in
+# the text it searches, so every result it is spared is the grade's whole budget.
+
+_OTHER_TOOL_CALLS = 6
+_TRAJECTORY_TIMESTAMP = "2026-01-01T00:00:00+00:00"
+
+
+def _policy_result(size: int) -> str:
+    """A ``search_policies`` result of about ``size`` characters naming neither field."""
+    return '{"policies": "' + "refunds within thirty days " * (size // 27) + '"}'
+
+
+def _account_lookup_after_policy_searches(
+    size: int, account: str = _BOTH
+) -> list[RecordedToolCall]:
+    """Six large ``search_policies`` results, then the ``get_account`` call returning ``account``."""
+    return [
+        *(
+            recorded_call("search_policies", sequence=index, output=_policy_result(size))
+            for index in range(_OTHER_TOOL_CALLS)
+        ),
+        recorded_call(
+            "get_account",
+            sequence=_OTHER_TOOL_CALLS,
+            arguments={"account_id": "ACC-00000006"},
+            output=account,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "admitting",
+    [
+        pytest.param({"tool": {"equals": "get_account"}}, id="tool"),
+        pytest.param({"args": {"account_id": {"equals": "ACC-00000006"}}}, id="args-path"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("block_engine", "pattern"),
+    [
+        pytest.param(_LINEAR, _ACCOUNT_ID, id="linear"),
+        pytest.param(_BACKTRACKING, _ACCOUNT_LOOKAHEADS, id="backtracking-lookahead"),
+    ],
+)
+def test_a_result_pattern_runs_only_on_the_call_a_cheaper_predicate_admits(
+    monkeypatch: pytest.MonkeyPatch,
+    block_engine: RegexEngineKind,
+    pattern: str,
+    admitting: dict[str, Any],
+) -> None:
+    """Counted at the real operator: an ``args`` path is read before ``result``
+    although a matcher declares ``result`` first."""
+    searched: list[Any] = []
+    load = plugin_registry.load_trace_check_operator
+
+    def counting_load(name: str) -> Any:
+        operator = load(name)
+        if name != "regex":
+            return operator
+
+        def counted(value: Any, expected: Any, bindings: Any) -> bool:
+            searched.append(value)
+            return operator(value, expected, bindings)
+
+        return counted
+
+    monkeypatch.setattr(plugin_registry, "load_trace_check_operator", counting_load)
+    constraint = {
+        "require": {
+            "present": {"match": {"kind": "tool_call", "result": {"regex": pattern}} | admitting}
+        }
+    }
+
+    result = _graded(
+        [("user", "Find the account."), ("assistant", "Found it.")],
+        constraint,
+        block_engine,
+        _account_lookup_after_policy_searches(4_000),
+    )
+
+    assert result.passed
+    assert searched == [_BOTH]
+
+
+def _account_lookup_trajectory(lookup: Sequence[RecordedToolCall]) -> Trajectory:
+    """A trajectory whose one assistant turn declares every call ``lookup`` records."""
+    declared = [
+        ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments) for call in lookup
+    ]
+    return Trajectory(
+        task_id="account-lookup",
+        trial_index=0,
+        start_ts=_TRAJECTORY_TIMESTAMP,
+        end_ts=_TRAJECTORY_TIMESTAMP,
+        messages=[
+            Message(role=MessageRole.USER, content="Find the account."),
+            Message(role=MessageRole.ASSISTANT, content="Looking.", tool_calls=declared),
+            Message(role=MessageRole.ASSISTANT, content="Found it."),
+        ],
+        tool_log=lookup,
+    )
+
+
+_NAMED_ACCOUNT_LOOKUP = {"kind": "tool_call", "tool": {"equals": "get_account"}}
+
+
+def _account_lookup_grading(
+    looked_up: str | list[str], other_account: str | list[str], **block: Any
+) -> GradingConfig:
+    """``get_account`` returned the account ``looked_up`` names and none ``other_account`` does."""
+    return GradingConfig(
+        combine={"method": "weighted", "weights": {"trace_checks": 1.0}},
+        trace_checks=TraceChecksConfig(
+            **block,
+            constraints=[
+                {
+                    "id": "looked-up",
+                    "description": "the account was looked up",
+                    "require": {
+                        "present": {
+                            "match": _NAMED_ACCOUNT_LOOKUP | {"result": {"regex": looked_up}}
+                        }
+                    },
+                },
+                {
+                    "id": "not-another",
+                    "description": "no other account was looked up",
+                    "require": {
+                        "absent": {
+                            "match": _NAMED_ACCOUNT_LOOKUP | {"result": {"regex": other_account}}
+                        }
+                    },
+                },
+            ],
+        ),
+    )
+
+
+def test_a_lookahead_under_backtracking_grades_large_results_in_bounded_time() -> None:
+    """Through the real engine, over results a lookahead would take minutes to search."""
+    trajectory = _account_lookup_trajectory(_account_lookup_after_policy_searches(100_000))
+    other_account = r'(?=[\s\S]*"account_id":\s*"ACC-00000007")(?=[\s\S]*"email")'
+    config = _account_lookup_grading(_ACCOUNT_LOOKAHEADS, other_account, regex_engine=_BACKTRACKING)
+
+    started = time.perf_counter()
+    grade = GradingEngine(config).grade_trajectory(trajectory, {})
+    elapsed = time.perf_counter() - started
+
+    assert [(item.id, item.passed) for item in grade.trace_check_results] == [
+        ("looked-up", True),
+        ("not-another", True),
+    ]
+    assert grade.components.trace_checks == 1.0
+    assert elapsed < 2.0
+
+
+def test_the_list_form_under_the_default_engine_grades_large_results_in_bounded_time() -> None:
+    """The issue's scenario as an author now writes it, declaring no engine: every
+    result is large, the named call's own result included, and none of them matches."""
+    size = 100_000
+    unmatched_account = (
+        '{"account_id": "ACC-00000006", "email": "a@b.c", "history": "'
+        + "renewed the annual plan " * (size // 24)
+        + '"}'
+    )
+    trajectory = _account_lookup_trajectory(
+        _account_lookup_after_policy_searches(size, account=unmatched_account)
+    )
+    config = _account_lookup_grading(
+        [_ACCOUNT_ID, _EMAIL], [r'"account_id":\s*"ACC-00000007"', r'"email"']
+    )
+    assert config.trace_checks.regex_engine is _LINEAR
+    assert len(unmatched_account) >= size
+
+    started = time.perf_counter()
+    grade = GradingEngine(config).grade_trajectory(trajectory, {})
+    elapsed = time.perf_counter() - started
+
+    assert [(item.id, item.passed) for item in grade.trace_check_results] == [
+        ("looked-up", False),
+        ("not-another", True),
+    ]
+    assert elapsed < 2.0

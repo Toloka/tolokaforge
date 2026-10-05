@@ -51,7 +51,7 @@ from tolokaforge.core.grading.judge_tools import (
     SearchKbTool,
     SubmitReportTool,
 )
-from tolokaforge.core.grading.kb_search import KnowledgeSearch
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS, KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     GRADED_MET_THRESHOLD,
     SUBMIT_REPORT_TOOL_NAME,
@@ -66,6 +66,7 @@ from tolokaforge.core.judge_prompt import (
     effective_judge_system_prompt,
 )
 from tolokaforge.core.llm.client import GenerationResult, LLMClient
+from tolokaforge.core.llm.usage import sum_known
 from tolokaforge.core.logging import StructuredLogger, get_logger
 from tolokaforge.core.loop import (
     LoopConfig,
@@ -127,7 +128,13 @@ class DBReader(Protocol):
 
 @dataclass
 class _JudgeMetricsSink(MetricsSink):
-    """Loop :class:`MetricsSink` that tallies the judge's token usage / cost."""
+    """Loop :class:`MetricsSink` that tallies the judge's token usage / cost.
+
+    ``billed_cost_usd`` sums the charge each call's
+    :class:`~tolokaforge.core.llm.usage.ProviderRawCall` states and turns
+    ``None`` for good at the first call that states none (no usage block, a
+    route that states no charge).
+    """
 
     calls: int = 0
     prompt_tokens: int = 0
@@ -136,6 +143,7 @@ class _JudgeMetricsSink(MetricsSink):
     cost_usd: float = 0.0
     tool_calls: int = 0
     consistency_rejections: int = 0
+    billed_cost_usd: float | None = 0.0
 
     def record_generation(self, result: GenerationResult) -> None:
         self.calls += 1
@@ -144,6 +152,9 @@ class _JudgeMetricsSink(MetricsSink):
         self.reasoning_tokens += result.usage.reasoning_tokens
         if result.cost_usd is not None:
             self.cost_usd += result.cost_usd
+        self.billed_cost_usd = sum_known(
+            (self.billed_cost_usd, sum_known(call.billed_cost_usd for call in result.usage.calls))
+        )
 
     def record_tool_call(self) -> None:
         self.tool_calls += 1
@@ -157,6 +168,8 @@ class _JudgeMetricsSink(MetricsSink):
             cost_usd=self.cost_usd,
             tool_calls=self.tool_calls,
             consistency_rejections=self.consistency_rejections,
+            # a judge that made no call has no call stating a charge
+            billed_cost_usd=self.billed_cost_usd if self.calls else None,
         )
 
 
@@ -459,6 +472,7 @@ def _build_judge_registry(
     extra_read_tools: list[Tool] | None,
     workspace_dir: Path | None,
     disable_knowledge_search: bool,
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
     logger: StructuredLogger,
 ) -> tuple[ToolRegistry, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Build the read-only tool registry offered to the judge.
@@ -508,7 +522,7 @@ def _build_judge_registry(
 
     kb_candidates: list[Tool] = []
     if kb_search is not None:
-        kb_candidates.append(SearchKbTool(kb_search))
+        kb_candidates.append(SearchKbTool(kb_search, snippet_chars=judge_snippet_chars))
     kb_candidates.extend(extra_read_tools or [])
 
     kb_offered: list[str] = []
@@ -630,6 +644,7 @@ class LLMJudge:
         custom_system_prompt: str | None = None,
         explicit_system_prompt: str | None = None,
         include_agent_system_prompt: bool = True,
+        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
@@ -650,6 +665,7 @@ class LLMJudge:
         self._custom_system_prompt = custom_system_prompt
         self._explicit_system_prompt = explicit_system_prompt
         self._include_agent_system_prompt = include_agent_system_prompt
+        self._judge_snippet_chars = judge_snippet_chars
         self._llm_client = llm_client
         self._logger = logger
 
@@ -695,6 +711,7 @@ class LLMJudge:
             extra_read_tools=extra_read_tools,
             workspace_dir=workspace_dir,
             disable_knowledge_search=self._disable_knowledge_search,
+            judge_snippet_chars=self._judge_snippet_chars,
             logger=logger,
         )
         tool_executor = ToolExecutor(registry)

@@ -44,11 +44,15 @@ from tolokaforge.core.grading.config_validation import (
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.core.grading.regex_engine import RegexEngineKind, UncompilablePattern
 from tolokaforge.core.grading.replay_layout import (
     TRACE_REPLAY_DIRNAME,
     discover_trial_bundles,
 )
-from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
+from tolokaforge.core.grading.trace_checks import (
+    compile_trace_check_patterns,
+    evaluate_trace_checks,
+)
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -159,11 +163,17 @@ class TraceReplayFailure(str, Enum):
     ``REDACTED_BUNDLE`` is separated for the mirror reason: the bundle is intact and
     reads perfectly. It was rewritten on purpose, and an operator told its file is
     unreadable would go looking for damage there is none of.
+
+    ``UNCOMPILABLE_PATTERN`` is a recorded block the regex engine it re-checks under
+    refuses — typically a lookaround pattern recorded before the block named an
+    engine, which re-checks under the default ``linear``. The bundle is intact too;
+    the remedy is a supplied block naming ``regex_engine: backtracking``.
     """
 
     UNREADABLE_INPUT = "unreadable_input"
     PREDATES_CALL_IDS = "predates_call_ids"
     REDACTED_BUNDLE = "redacted_bundle"
+    UNCOMPILABLE_PATTERN = "uncompilable_pattern"
 
 
 class ConstraintDiscrimination(str, Enum):
@@ -252,6 +262,9 @@ class TraceChecksOverride:
     describe what is wrong with a ``trace_checks`` block but not *which* file
     carries it, so they are re-raised naming the path.
 
+    A block naming a pattern its regex engine refuses is refused here too, so it
+    stops before any trial is re-checked rather than raising on the first one.
+
     Frozen, and ``block`` is stored as a read-only copy of what the caller passed, so
     a mapping mutated after construction cannot make ``block`` and ``config``
     disagree. Carrying a mapping also makes the type unhashable despite being frozen:
@@ -269,8 +282,28 @@ class TraceChecksOverride:
             raise TraceChecksOverrideError(
                 f"constraint override {self.path} cannot be used as written: {exc}"
             ) from exc
+        try:
+            compile_trace_check_patterns(config)
+        except UncompilablePattern as exc:
+            raise TraceChecksOverrideError(
+                f"constraint override {self.path} cannot be re-checked: {exc}. "
+                f"{_engine_remedy(exc, where='in this file')}"
+            ) from exc
         object.__setattr__(self, "block", MappingProxyType(dict(self.block)))
         object.__setattr__(self, "config", config)
+
+
+def _engine_remedy(refusal: UncompilablePattern, *, where: str) -> str:
+    """What makes a block the regex engine refused re-checkable, edited ``where``."""
+    if refusal.engine is RegexEngineKind.BACKTRACKING:
+        return f"Python re itself rejects the pattern; correct it {where}"
+    return (
+        "The linear engine (RE2, the default where no regex_engine is named) reads no "
+        "lookaround, backreferences or the other constructs docs/GRADING.md "
+        "(Regex engines) lists; declare regex_engine: backtracking on the block, "
+        f"or on the predicate or bound value carrying the pattern, {where} "
+        "(docs/TRACE_REPLAY.md, Which regex engine a re-check runs)"
+    )
 
 
 def load_trace_checks_override(path: Path) -> TraceChecksOverride:
@@ -587,11 +620,21 @@ def _resolve_trace_checks(
             "grading_config.trace_checks and no override was supplied"
         )
     try:
-        return TraceChecksConfig.model_validate(declared), ConstraintProvenance.RECORDED
+        config = TraceChecksConfig.model_validate(declared)
     except ValidationError as exc:
         raise MissingTraceReplayInputError(
             f"{bundle / TASK_FILENAME} declares a trace_checks block that does not validate: {exc}"
         ) from exc
+    try:
+        compile_trace_check_patterns(config)
+    except UncompilablePattern as exc:
+        raise MissingTraceReplayInputError(
+            f"{bundle / TASK_FILENAME} declares a trace_checks block that cannot be "
+            f"re-checked: {exc}. "
+            f"{_engine_remedy(exc, where='in a copy of the block passed as --constraints')}",
+            failure=TraceReplayFailure.UNCOMPILABLE_PATTERN,
+        ) from exc
+    return config, ConstraintProvenance.RECORDED
 
 
 def _is_a_call_id_defect(error: ErrorDetails) -> bool:
@@ -1102,11 +1145,13 @@ class TraceReplayEvidence(BaseModel):
     run also does. ``schema_versions`` counts the stamps seen, under ``unstamped``
     where a bundle predates the stamp; it is evidence and never a gate.
 
-    ``bundles_predating_call_ids`` and ``bundles_redacted`` are both subsets of
-    ``bundles_failed``, separated because neither is damage: the first is a corpus
-    older than the ids a re-check joins on, the second an intact bundle a policy
-    rewrote before it was written. Reading them out of ``bundles_failed`` alone
-    sends an operator looking for a broken file.
+    ``bundles_predating_call_ids``, ``bundles_redacted`` and
+    ``bundles_uncompilable_pattern`` are subsets of ``bundles_failed``, separated
+    because none is damage: the first is a corpus older than the ids a re-check
+    joins on, the second an intact bundle a policy rewrote before it was written,
+    the third an intact bundle whose recorded block holds a pattern the regex engine
+    it re-checks under refuses. Reading them out of ``bundles_failed`` alone sends
+    an operator looking for a broken file.
 
     ``bundles_skipped`` counts the bundles that declared no ``trace_checks`` and
     nothing else. A bundle carrying no ``task.yaml`` is counted by
@@ -1122,6 +1167,7 @@ class TraceReplayEvidence(BaseModel):
     bundles_failed: int
     bundles_predating_call_ids: int
     bundles_redacted: int
+    bundles_uncompilable_pattern: int
     schema_versions: dict[str, int]
 
     model_config = {"extra": "forbid"}
@@ -1367,6 +1413,9 @@ def _replay_evidence(outcomes: Sequence[TrialTraceReplayOutcome]) -> TraceReplay
         ),
         bundles_redacted=sum(
             1 for outcome in outcomes if outcome.failure is TraceReplayFailure.REDACTED_BUNDLE
+        ),
+        bundles_uncompilable_pattern=sum(
+            1 for outcome in outcomes if outcome.failure is TraceReplayFailure.UNCOMPILABLE_PATTERN
         ),
         schema_versions=dict(stamps),
     )

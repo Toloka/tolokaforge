@@ -147,7 +147,15 @@ returns to shape the `⏸ Run stopped (<reason>)` end banner (see
 | `value_at_hit` | float | The counter's value at the moment of the hit. May exceed `threshold` on the last increment (e.g. a $0.02 trial pushing spend from $4.99 to $5.01 records `value_at_hit=5.01`). |
 | `timestamp` | ISO 8601 UTC string | When the hit was detected. Formatted `YYYY-MM-DDTHH:MM:SSZ` with an explicit `Z` suffix. |
 
-Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/core/budgets.py); the on-disk shape is locked by the `LimitHitMarker` Pydantic model (`extra="forbid"`). A resumed run that hits a fresh limit overwrites an existing marker — the file always reflects the current run state, not a history.
+Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/core/budgets.py); the on-disk shape is locked by the `LimitHitMarker` Pydantic model (`extra="forbid"`). At scheduling start, resume removes the previous marker; a fresh budget hit writes the current value. A resumed run that completes without a hit has no marker. The file reflects the current invocation, not a history.
+
+Run aggregates include the saved completed trials that resume skips, together
+with the attempts produced by the current invocation. A saved trial contributes
+its separate `metrics.yaml`, `grade.yaml` and `tool_log.yaml` (when available),
+including a grading failure's known judge usage. Unreadable completed bundles
+abort resume before new trials start rather than disappearing from the report.
+The invocation's `Orchestrator.results` and grading-completeness gates still
+describe its newly executed attempts.
 
 ## `trials/{task_id}/{trial_index}/tools_schemas.yaml`
 
@@ -380,6 +388,9 @@ end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
 termination_reason: "agent_done"                      # TerminationReason enum or null
 grading_error: null                                   # why grading produced no verdict, or null
+grading_judge_usage: null                             # judge spend before an ungradeable verdict, or null
+grading_state_diff: null                              # DB diagnostic computed before judge failure, or null
+grading_comparison_view: null                         # projected DB diagnostic, or null
 snapshot_status:                                      # grade-bundle producer outcome; null when snapshot mode disabled or trial ended before grading
   outcome: "stored"                                   # stored | oversize | produce_failed | ungraded
   uri: "bundle://local_disk/f1c2..."                  # populated iff outcome == stored
@@ -425,8 +436,12 @@ user_reply_guard_events:                              # [] on a trial no detecto
 | `harness_entry` | `str` or `null` | non-null on a [multi-harness run](CONFIG.md#harnesses--run-multiple-adapters-in-one-run) | The `harnesses` entry this trial ran under. `null` for a single-adapter run, and for a bundle written before the field existed. Lets an analyst partition a multi-harness run's trials by entry. It is part of the trial identity: it prefixes the `trial_id` label and is a segment of the per-trial output path (`trials/<entry>/<task_id>/<idx>/`), which drops the entry segment for a single-adapter run. |
 | `adapter_type` | `str` or `null` | set at trial end from the resolved adapter | The registered type of the adapter that ran the trial (e.g. `"native"`). `null` only on bundles written before the field existed. |
 | `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers the first user message | Where the opening user turn came from. It is message index 0 unless the agent's opening line (`first_agent_message`) or a user's tool steps come first. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. A bootstrap the reply guard *refused* is one way to reach the first of those: it leaves the source `null` **and** records a `user_reply_guard_events` entry at the opening's `message_index` (0, or 1 after the agent's opening line) with `outcome: refused`, and that pair is the signature of a guard-refused opening. |
+| `simulation_steps`, `environment_errors` | nonnegative integers, when configured | an opt-in half-duplex simulation budget ran | The final participant/ENV transition count and cumulative completed environment-error count. A batch of tool replies is one step, although multiple replies can each increase `environment_errors`. Both fields are absent on trials without this budget. |
+| `messages[*].tool_status` | `ToolExecutionStatus`, when known | a TOOL message was emitted | The typed tool outcome. `environment_error` is a completed MCP reply with `isError: true`; its `content` is the raw environment text, even when it starts with `Error: `. Older messages without this field retain the legacy prefix-based trace fallback. |
 | `user_reply_guard_events` | list of `{message_index, outcome, rejected[]}` | one entry per user turn the reply guard did not accept on its first generation | What a defective user turn cost. `[]` is the normal state — a turn accepted on its first generation records nothing. `outcome: delivered` means a later attempt passed the guard and the turn was delivered; `outcome: refused` means the attempt budget was spent, so no clean turn could be produced and the trial errored as a `harness_error`. `rejected` carries one `{detector, reason, excerpt}` per discarded attempt, in order, and is never empty — a turn that discarded nothing is recorded by the absence of an entry, not by an empty list. `detector` is the name the detector is registered under, and `excerpt` is the evidence that detector recorded, truncated to 200 characters — the matched phrase for `fourth_wall`, and for `scratchpad` the matched tag plus the text that follows it, because a bare think tag reads the same whether it leaked or was pasted. `message_index` is the position in `messages` the turn was **dispatched at** — for a turn whose accepted reply was a bare `###STOP###` under `stop_with_text: deliver`, and for a refused turn, that position holds the loop's own SYSTEM message rather than a USER turn. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
+| `grading_judge_usage` | mapping or `null` | a judge answered but gave no verdict | Structured token/cost usage. It contributes to judge totals, budget stops and resume cost; an unanswered transport call leaves it `null` because its spend is unknown. |
+| `grading_state_diff`, `grading_comparison_view` | mappings or `null` | DB replay finished before grading failed | Diagnostic DB evidence without an invented verdict. |
 | `provision_stage` | `"materialise_run"`, `"provision"`, `"await_ready"`, `"reset_recipe"`, `"register_trial"`, `"cycle"`, or `null` | non-null iff `termination_reason == provision_error` | Which point of the provisioning lifecycle raised `ProvisionError`. `materialise_run` — the composition-plan validation refused the plan before any substrate work; `provision` — compose-up failed; `await_ready` — the readiness gate rejected the substrate; `reset_recipe` — the per-trial reset hook failed; `register_trial` — the runner-side arming step refused registration after `provision` + `await_ready` succeeded; `cycle` — a `ServiceLifecycleDispatcher` refused a between-trial cycle. The same value also lands on the per-trial [`metrics.yaml`](#provision-failure-bundle) as `error_stage`, so a reader of either artifact alone tells them apart. `null` on every trial whose termination reason is not `provision_error`. |
 | `snapshot_status` | [`SnapshotStatus`](../tolokaforge/core/models/trajectory.py) mapping or `null` | non-null when the run enabled `grader.snapshot` and the trial reached the trial-end producer seam | The trial-end grade-bundle producer outcome — `outcome: stored` carries `uri` + `bundle_size_bytes`; `oversize` carries `bundle_size_bytes` + `cap_bytes` + `reason`; `produce_failed` carries `reason`; `ungraded` carries no side data. See [RUNNER.md § Snapshot bundle mode](RUNNER.md#snapshot-bundle-mode) for the producer lifecycle. `null` on a run with snapshot mode disabled or a trial that ended before grading. |
 
@@ -541,7 +556,10 @@ model's. Four of its fields are unreachable from a message trace: `status`,
 `executor` (agent vs user simulator is invisible in a transcript),
 `latency_seconds`, and `sequence` (trial-wide order *across* executors). `output`
 is the tool's own text, untruncated — on a failed call, its own failure text,
-which the agent-facing `role: tool` message carries behind an `Error: ` prefix.
+which the agent-facing `role: tool` message carries behind an `Error: ` prefix
+for infrastructure failures. A completed MCP reply with `isError: true` is
+recorded as `environment_error`; its output and TOOL-message text are the
+environment's exact response, without an additional prefix.
 
 `call_id` is the trial's **episode-unique** tool-call id — the same value the
 matching `tool_calls` entry and `role: tool` message in `trajectory.yaml` carry,
@@ -700,7 +718,12 @@ per-call tokens, `cost_usd`, `cost_source` (`"litellm"` / `"local"` /
 `"unknown"`), `latency_s`, `gateway_route` + `gateway_route_kind`
 (`"exact"` / `"wildcard"`, the serving-path provenance when the call went
 through an LLM gateway, else null), and `openrouter_generation_id` — the
-trial-level `cost_usd` is the sum of those entries.
+trial-level `cost_usd` is the sum of those entries. `billed_cost_usd` rides
+beside `cost_usd` and feeds nothing in the bundle: what the response's usage
+block states the call was charged (OpenRouter's `usage.cost`, plus the
+upstream's bill on a BYOK call), null on a route that states none. A bundle
+written before it existed has no such key and loads it as null. See
+[LLM_LAYER.md](LLM_LAYER.md) § "Billed cost".
 
 The trial-level `cost_usd`, `usage`, `openrouter_generation_ids`, and
 `api_calls` sum across **every in-trial actor role**, not the agent alone: an
@@ -834,7 +857,7 @@ row's `input` rate, so `cost_usd` is an **overestimate of unknown size**
 (the size depends on the trial's cache-read share, which for a coding-harness
 trial is routinely 75 % of the prompt). Consumers comparing spend across
 models must exclude or re-price such trials rather than averaging them in.
-`false` for every litellm-priced call (provider-authoritative, already
+`false` for every litellm-priced call (litellm's figure, already
 cache-aware) and for every model whose row carries its cache rates. The
 same-model-two-spellings inventory behind this is recorded in
 [`tests/unit/test_pricing_known_duplicate_spellings.py`](../tests/unit/test_pricing_known_duplicate_spellings.py);
@@ -914,6 +937,7 @@ usage:
       gateway_route: openrouter/anthropic/claude-sonnet-4.6
       gateway_route_kind: exact
       openrouter_generation_id: gen-1787132417-e6DthuPJjrFMFf46ae5F
+      billed_cost_usd: 0.00912    # what the response stated it was charged; null when it states none
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
@@ -1450,6 +1474,11 @@ state_diff:  # Present when state check fails
     ...
   diff_lines: 200
   has_diff: true
+comparison_view:                # present only when the pack declares state_checks.comparison_view
+  golden: { version: 1, function_version: 1, config_sha256: "…", applied: [...], rekeyed_fields: [...] }
+  trial: { … }                  # null when the trial's state could not be viewed
+  view_diff: null               # the diff of the two views, on a mismatch
+  trial_error: null             # { error, message, ids } when the trial's state could not be viewed (it failed)
 custom_checks_details: null     # list[CustomCheckDetail] or null
 trace_check_results:            # one entry per declared trace constraint; [] when none ran
   - id: lookup_before_denial
@@ -1488,6 +1517,7 @@ judge_usage:                    # the judge's OWN token spend; null unless an LL
   completion_tokens: 318
   reasoning_tokens: 0
   cost_usd: 0.0142
+  billed_cost_usd: 0.0142      # what the providers stated they charged; null unless every call stated it
   tool_calls: 4
   consistency_rejections: 0    # submit_report attempts rejected for a verdict/justification mismatch
 judge_kb_gating:                # the judge's knowledge-search gating; null unless an LLM judge ran
@@ -1523,6 +1553,21 @@ credential-named values at every nesting level and naming the file in
 stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). The judge's
 prose (`reasons`, each criterion's `justification`) is written as the judge
 produced it: a key-name rule has no key to read there.
+
+### Host grader state snapshots
+
+A host grader can attach `Grade.state_snapshots` (`GradingStateSnapshots`) to
+its result. The writer puts it in `grading_state_snapshots.yaml`, leaving it
+out of `grade.yaml`. That sidecar has schema version 1, `source` (how the grader
+obtained the states), and three mappings: `initial`, `golden`, `final`. These
+are grader evidence and may be reconstructed by replay; they do not replace
+the live environment in `env.yaml` or select a comparison policy.
+
+The sidecar is written for pass and fail grades, and when DB replay completed
+before a later judge failure left the trial without a grade. It uses the same
+mapping redaction policy as `env.yaml` and is named in the redaction stamp when
+rewritten. No sidecar is written when the grader provides none; regrading a
+directory without snapshots removes an older snapshot sidecar.
 
 ### Trace-check verdicts
 
@@ -1609,6 +1654,11 @@ layers.
   was rejected for a verdict/justification mismatch (marker missing or
   marker/verdict conflict) on this trial — distinct from generic schema
   rejections, and `0` when every verdict matched its justification.
+  `billed_cost_usd` sums the charge each of the judge's own calls stated (those
+  calls are recorded inside the runner, not in `metrics.yaml`) and is `null`
+  unless every call stated one (or the runner image predates the field);
+  `cost_usd` stays the eval's own figure. A `grade.yaml` written before it existed has no such key and loads it
+  as `null`.
 * `judge_kb_gating` — the judge's knowledge-search gating for this trial,
   kept separate from `judge_usage` (which stays strictly token/cost).
   `knowledge_search_disabled` is the **authoritative signal**:
@@ -1844,6 +1894,8 @@ custom_prompt_source: null          # "recorded" | "override" | null (default pr
 judge_prompt_source: bundle         # "bundle" | null — bundle-recorded composed prompt path
 include_agent_system_prompt: true   # whether the agent policy was embedded in the judge's evidence
 agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
+judge_snippet_chars: 200            # characters of each hit the judge's search_kb showed; null = whole documents
+judge_snippet_chars_source: null    # "recorded" | "override" | null (defaulted to 200)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
 
@@ -1870,6 +1922,11 @@ when it carries its own `llm_judge.customization.include_agent_system_prompt`, a
 `agent_prompt_source` is `null` exactly when the gating defaulted to include (no
 recorded value, no override). See
 [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#agent-policy-evidence-gating).
+
+`judge_snippet_chars` / `judge_snippet_chars_source` resolve the same way: a
+`--grading` override sets the length only when it carries its own
+`llm_judge.customization.judge_snippet_chars` (`null` included), and
+`judge_snippet_chars_source` is `null` exactly when the length defaulted to `200`.
 
 ### `replay_report.yaml`
 

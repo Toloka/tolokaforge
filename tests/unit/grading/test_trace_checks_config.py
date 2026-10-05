@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import itertools
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, get_args
@@ -32,6 +33,7 @@ from pydantic import ValidationError
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
 from tests.utils.trace_checks_configs import (
+    COMPOSITE_CONSTRAINT_KINDS,
     EVERY_CONSTRAINT_KIND,
     EVERY_OPERATOR_MATCHER,
     every_kind_block,
@@ -45,6 +47,7 @@ from tolokaforge.runner.models import (
     TRACE_PREDICATE_OPERATORS,
     TraceConstraint,
     TraceConstraintExpr,
+    TraceConstraintKind,
     TraceConstraintSeverity,
     ValuePredicate,
 )
@@ -318,6 +321,58 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         ),
         message="ISO-8601",
         validator="_require_a_date_literal_some_calendar_holds",
+    ),
+    _Rejection(
+        label="regex_engine_alone_declares_no_operator",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_call", "tool": {"regex_engine": "linear"}}}}
+            )
+        ),
+        message="a value predicate declares no operator",
+        validator="_reject_a_predicate_asserting_nothing",
+    ),
+    _Rejection(
+        label="regex_engine_on_a_predicate_without_a_pattern",
+        block=_block(
+            _constraint(
+                {
+                    "present": {
+                        "match": {
+                            "kind": "tool_call",
+                            "tool": {"equals": "write_file", "regex_engine": "linear"},
+                        }
+                    }
+                }
+            )
+        ),
+        message="declares neither not_regex nor regex, so the engine reads no pattern",
+        validator="_reject_an_engine_over_no_pattern",
+    ),
+    _Rejection(
+        label="regex_list_naming_no_pattern",
+        block=_block(
+            _constraint({"present": {"match": {"kind": "tool_call", "tool": {"regex": []}}}})
+        ),
+        message="regex: [] names no pattern, so it would hold vacuously over every string",
+        validator="_reject_an_empty_pattern_list",
+    ),
+    _Rejection(
+        label="not_regex_list_naming_no_pattern",
+        block=_block(
+            _constraint({"present": {"match": {"kind": "tool_call", "tool": {"not_regex": []}}}})
+        ),
+        message="not_regex: [] names no pattern",
+        validator="_reject_an_empty_pattern_list",
+    ),
+    _Rejection(
+        label="regex_list_item_that_is_not_a_string",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_call", "tool": {"regex": ["^write", 7]}}}}
+            )
+        ),
+        message="regex.list[str].1\n  Input should be a valid string",
     ),
     _Rejection(
         label="immediately_before_without_among",
@@ -686,6 +741,17 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_require_a_pattern_that_captures_exactly_one_value",
     ),
     _Rejection(
+        label="regex_engine_on_a_bound_value_without_a_pattern",
+        block=_block(
+            _constraint(
+                _references_the_case(),
+                bind=_binder(values={"case": {**_BOUND_CASE, "regex_engine": "backtracking"}}),
+            )
+        ),
+        message="declares no pattern, so the engine reads nothing",
+        validator="_reject_an_engine_over_no_pattern",
+    ),
+    _Rejection(
         label="on_unbound_pass_on_a_gate",
         block=_block(
             _constraint(
@@ -974,9 +1040,41 @@ def test_a_block_declaring_no_alternatives_loads_and_dumps_as_a_flat_block():
 
     assert config.alternatives is None
     dumped = config.model_dump()
-    assert set(dumped) == {"constraints", "alternatives"}
+    assert set(dumped) == {"constraints", "alternatives", "regex_engine"}
     assert dumped["alternatives"] is None
     assert "alternatives" not in config.model_dump(exclude_defaults=True)
+
+
+def test_a_site_regex_engine_is_on_the_wire_only_where_it_is_authored():
+    """An undeclared per-site engine is left out of the dump rather than written as
+    ``null``, so a predicate or bound value naming none crosses with no new key."""
+    authored = TraceChecksConfig(
+        **_block(
+            _constraint(_references_the_case(), id="inheriting", bind=_binder()),
+            _constraint(
+                _references_the_case(
+                    equals_binding="case", regex=r"^C-\d+$", regex_engine="backtracking"
+                ),
+                id="overriding",
+                bind=_binder(
+                    values={
+                        "case": {**_BOUND_CASE, "pattern": r"(C-\d+)", "regex_engine": "linear"}
+                    }
+                ),
+            ),
+        )
+    )
+
+    inheriting, overriding = json.loads(authored.model_dump_json())["constraints"]
+
+    assert "regex_engine" not in inheriting["bind"]["values"]["case"]
+    assert "regex_engine" not in inheriting["require"]["present"]["match"]["args"]["case_id"]
+    assert "regex_engine" not in overriding["bind"]["match"]["tool"]
+    assert overriding["bind"]["values"]["case"]["regex_engine"] == "linear"
+    assert overriding["require"]["present"]["match"]["args"]["case_id"]["regex_engine"] == (
+        "backtracking"
+    )
+    assert TraceChecksConfig.model_validate_json(authored.model_dump_json()) == authored
 
 
 def test_a_purely_multi_path_block_omits_the_shared_constraints_entirely():
@@ -1035,10 +1133,10 @@ _KINDS_THAT_ANCHOR_NOTHING = frozenset({"present", "absent", "count"})
 
 # A composite belongs to neither set: it anchors whatever it holds, so whether the
 # policy has something to decide beside one is a question about the tree beneath it.
-_COMPOSITE_KINDS = frozenset({"all_of", "any_of", "negate"})
-
 _ANCHORING_LEAF_KINDS = sorted(
-    set(EVERY_CONSTRAINT_KIND) - _KINDS_THAT_ANCHOR_NOTHING - _COMPOSITE_KINDS
+    set(EVERY_CONSTRAINT_KIND)
+    - _KINDS_THAT_ANCHOR_NOTHING
+    - {kind.value for kind in COMPOSITE_CONSTRAINT_KINDS}
 )
 
 
@@ -1073,6 +1171,18 @@ def test_a_composite_over_anchored_kinds_still_admits_an_anchor_policy():
     config = TraceChecksConfig(**_block(_constraint(nested_orderings, on_missing="pass")))
 
     assert config.constraints[0].on_missing is OnMissing.PASS
+
+
+@pytest.mark.parametrize("policy", list(OnMissing))
+def test_every_policy_is_refused_beside_an_absent(policy: OnMissing):
+    """Each ``on_missing`` answers the refusal rule, and none decides over ``absent``.
+
+    The rule is table-driven, so a policy added to :class:`OnMissing` without a row
+    fails here instead of inheriting another policy's answer.
+    """
+    absent = TraceConstraintExpr.model_validate(EVERY_CONSTRAINT_KIND["absent"])
+
+    assert absent.kinds_refusing_on_missing(policy) == {TraceConstraintKind.ABSENT}
 
 
 def test_the_matchable_table_answers_for_every_event_kind():

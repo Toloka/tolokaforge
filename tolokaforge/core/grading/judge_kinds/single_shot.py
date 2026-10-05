@@ -3,7 +3,7 @@
 Registered under the name ``single_shot_rubric`` in the
 ``tolokaforge.judge_kinds`` entry-point group. Builds the judge model
 from the caller-supplied :class:`JudgeModelProvider`, constructs an
-:class:`LLMJudge` with the caller-supplied per-trial customization, and
+:class:`LLMJudge` with the trial's :class:`JudgeTrialOptions`, and
 runs it once over the trial's rubric evidence.
 
 Byte-identity anchor: the ``LLMJudge`` construction below matches the
@@ -23,6 +23,7 @@ from tolokaforge.core.grading.judge import LLMJudge
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
+    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
     from tolokaforge.core.grading.judge_result import JudgeResult
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
@@ -54,9 +55,7 @@ class SingleShotRubricJudgeKind:
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
-        disable_knowledge_search: bool,
-        custom_system_prompt: str | None,
-        include_agent_system_prompt: bool,
+        options: JudgeTrialOptions,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -64,9 +63,10 @@ class SingleShotRubricJudgeKind:
         judge_model = judge_model_provider.build(judge_model_config)
         return LLMJudge(
             judge_model_config,
-            disable_knowledge_search=disable_knowledge_search,
-            custom_system_prompt=custom_system_prompt,
-            include_agent_system_prompt=include_agent_system_prompt,
+            disable_knowledge_search=options.disable_knowledge_search,
+            custom_system_prompt=options.custom_system_prompt,
+            include_agent_system_prompt=options.include_agent_system_prompt,
+            judge_snippet_chars=options.judge_snippet_chars,
             llm_client=judge_model,
             logger=logger,
         ).run(

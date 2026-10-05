@@ -33,6 +33,7 @@ from tolokaforge.runner.models import CriterionResult
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
+    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
     from tolokaforge.core.logging import StructuredLogger
@@ -80,9 +81,7 @@ class VotedRubricJudgeKind:
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
-        disable_knowledge_search: bool,
-        custom_system_prompt: str | None,
-        include_agent_system_prompt: bool,
+        options: JudgeTrialOptions,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -116,9 +115,7 @@ class VotedRubricJudgeKind:
                 state_diff=state_diff,
                 judge_model_config=judge_model_config,
                 judge_model_provider=judge_model_provider,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
+                options=options,
                 kind_config=wrapped_kind_config,
                 logger=logger,
             )

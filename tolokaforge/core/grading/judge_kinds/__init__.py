@@ -1,7 +1,8 @@
 """``tolokaforge.judge_kinds`` — typed judge-kind package.
 
 Every entry in ``[project.entry-points."tolokaforge.judge_kinds"]``
-resolves to a class satisfying :class:`JudgeKind`. Five kinds ship
+resolves to a class satisfying :class:`JudgeKind`, whose ``evaluate``
+receives the trial's evidence and its :class:`JudgeTrialOptions`. Five kinds ship
 under this group — three user-facing (:class:`SingleShotRubricJudgeKind`,
 :class:`MultiTurnRubricJudgeKind`, :class:`AutoRubricJudgeKind`) plus
 two internal building blocks (:class:`VotedRubricJudgeKind`,
@@ -27,6 +28,10 @@ from tolokaforge.core.grading.judge_kinds._protocol import JudgeKind
 from tolokaforge.core.grading.judge_kinds.auto import AutoRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds.auto_anchored import AutoAnchoredRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds.multi_turn import MultiTurnRubricJudgeKind
+from tolokaforge.core.grading.judge_kinds.options import (
+    JudgeTrialOptions,
+    resolve_judge_trial_options,
+)
 from tolokaforge.core.grading.judge_kinds.single_shot import SingleShotRubricJudgeKind
 from tolokaforge.core.grading.judge_kinds.voted import (
     DEFAULT_AGGREGATOR,
@@ -42,7 +47,9 @@ __all__ = [
     "AutoAnchoredRubricJudgeKind",
     "AutoRubricJudgeKind",
     "JudgeKind",
+    "JudgeTrialOptions",
     "MultiTurnRubricJudgeKind",
     "SingleShotRubricJudgeKind",
     "VotedRubricJudgeKind",
+    "resolve_judge_trial_options",
 ]

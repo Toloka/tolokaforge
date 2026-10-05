@@ -53,6 +53,7 @@ from tolokaforge.core.grading.judge_kinds import (
     AutoAnchoredRubricJudgeKind,
     AutoRubricJudgeKind,
     JudgeKind,
+    JudgeTrialOptions,
     MultiTurnRubricJudgeKind,
     SingleShotRubricJudgeKind,
     VotedRubricJudgeKind,
@@ -69,6 +70,7 @@ from tolokaforge.core.grading.judge_kinds.parity import (
 from tolokaforge.core.grading.judge_kinds.voted import DEFAULT_N_SAMPLES
 from tolokaforge.core.grading.judge_model_provider import JudgeModel, JudgeModelProvider
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.runner.models import CriterionResult, Rubric
@@ -144,10 +146,13 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
         agent_system_prompt=str(data["agent_system_prompt"]),
         transcript=list(data["transcript"]),
         state_diff=data.get("state_diff"),
-        disable_knowledge_search=bool(data.get("disable_knowledge_search", False)),
-        custom_system_prompt=data.get("custom_system_prompt"),
-        include_agent_system_prompt=bool(data.get("include_agent_system_prompt", True)),
         judge_scripts=normalised_scripts,
+        options=JudgeTrialOptions(
+            disable_knowledge_search=bool(data.get("disable_knowledge_search", False)),
+            custom_system_prompt=data.get("custom_system_prompt"),
+            include_agent_system_prompt=bool(data.get("include_agent_system_prompt", True)),
+            judge_snippet_chars=data.get("judge_snippet_chars", DEFAULT_JUDGE_SNIPPET_CHARS),
+        ),
     )
 
 
@@ -648,9 +653,6 @@ def _build_auto_anchored_corpus() -> list[ParityCorpusEntry]:
                 agent_system_prompt=f"synthetic agent prompt {i}",
                 transcript=[{"role": "user", "content": f"synthetic user turn {i}"}],
                 state_diff=None,
-                disable_knowledge_search=False,
-                custom_system_prompt=None,
-                include_agent_system_prompt=True,
                 judge_scripts={
                     "single_shot_rubric": [
                         _submit_scoring_step(
@@ -902,9 +904,6 @@ def _build_auto_selector_corpus() -> list[ParityCorpusEntry]:
                 agent_system_prompt=f"synthetic agent prompt {i}",
                 transcript=[{"role": "user", "content": f"synthetic user turn {i}"}],
                 state_diff=None,
-                disable_knowledge_search=False,
-                custom_system_prompt=None,
-                include_agent_system_prompt=True,
                 judge_scripts={
                     # single_shot's own cassette — used by auto_rubric when the
                     # rubric is fully anchored, and by auto_anchored's wrapped

@@ -25,9 +25,10 @@ from pydantic import (
 from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.llm.reasoning import StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
-from tolokaforge.core.models.grade import Grade
+from tolokaforge.core.models.grade import Grade, GradingStateSnapshots, JudgeUsage
 from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 if TYPE_CHECKING:
     from tolokaforge_coding_harnesses.native_log import HarnessNativeLogCounts
@@ -198,6 +199,9 @@ class Message(BaseModel):
     content_blocks: list[dict[str, Any]] | None = None  # Multimodal content (screenshots)
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
+    # The completed tool outcome when known. Keeps a literal "Error: ..."
+    # returned by an environment distinct from the engine's error prefix.
+    tool_status: ToolExecutionStatus | None = None
     # Structured reasoning / thinking blocks. See tolokaforge.core.llm.reasoning.
     # Bare strings are rejected (Stage 0 migration); callers must pass
     # ``StructuredReasoning`` or a dict parsable by it.
@@ -699,7 +703,7 @@ class Metrics(BaseModel):
     marks the number unreliable rather than correcting it: the correction is
     the real rate, supplied via ``observability.pricing_overlay_path``.
 
-    ``False`` on every litellm-priced call (provider-authoritative, already
+    ``False`` on every litellm-priced call (litellm's figure, already
     cache-aware) and on every model whose row carries its cache rates."""
 
     reasoning_recovered_by_fallback: int = 0
@@ -966,11 +970,18 @@ class Trajectory(BaseModel):
     # executor. Persisted as the ``tool_log.yaml`` sidecar, not as a key on
     # ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
     tool_log: list[RecordedToolCall] = Field(default_factory=list)
+    simulation_steps: int | None = None
+    environment_errors: int | None = None
     grade: Grade | None = None
     # Grading ran for this trial and could not produce a verdict; this is the
     # reason it gave. ``None`` means grading either succeeded or was correctly
     # not attempted — it does not distinguish those two, ``grade`` does.
     grading_error: str | None = None
+    # Work completed before a grading failure, without inventing a verdict.
+    grading_judge_usage: JudgeUsage | None = None
+    grading_state_snapshots: GradingStateSnapshots | None = None
+    grading_state_diff: dict[str, Any] | None = None
+    grading_comparison_view: dict[str, Any] | None = None
     # Which point of the provisioning lifecycle raised ``ProvisionError``.
     # Non-``None`` iff ``termination_reason == PROVISION_ERROR``; ``None`` on
     # every other trial including bundles the executor writes for a failure
@@ -1022,4 +1033,14 @@ class Trajectory(BaseModel):
                 "grading_error records that no verdict could be computed, so a grade "
                 "alongside it describes a trial two different ways."
             )
+        if self.grading_error is None and any(
+            value is not None
+            for value in (
+                self.grading_judge_usage,
+                self.grading_state_snapshots,
+                self.grading_state_diff,
+                self.grading_comparison_view,
+            )
+        ):
+            raise ValueError("grading failure evidence requires grading_error")
         return self

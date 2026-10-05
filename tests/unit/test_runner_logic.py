@@ -889,6 +889,31 @@ class TestTrialRunnerRun:
 class TestUserSimulatorIntegration:
     """Tests for user simulator message flow in TrialRunner."""
 
+    @pytest.mark.parametrize("text", ["###STOP###", "Done. ###STOP###"])
+    @pytest.mark.parametrize(
+        "max_steps, reason", [(2, TerminationReason.USER_STOP), (1, TerminationReason.MAX_STEPS)]
+    )
+    def test_end_rule_honors_opening_stop_without_calling_agent(self, text, max_steps, reason):
+        from tolokaforge.core.actors.tool_turn_rule import UserToolTurnRule
+
+        agent = _make_agent_client()
+        user = _make_user_simulator()
+        user.reply.return_value = GenerationResult(text=text, tool_calls=[])
+        runner = _make_runner(
+            agent_client=agent,
+            user_simulator=user,
+            user_stop=UserStopRule(with_text="end"),
+            user_tool_turns=UserToolTurnRule(mode="isolated", max_steps=100),
+            max_simulation_steps=max_steps,
+        )
+
+        trajectory = runner.run("System", "")
+
+        assert trajectory.termination_reason is reason
+        assert trajectory.simulation_steps == 1
+        assert trajectory.messages[0].content == text
+        agent.generate.assert_not_called()
+
     def test_a_stop_token_in_the_opening_reply_is_seeded_literally(self) -> None:
         """Turn 0 reads ``###STOP###`` as text, not as a terminator.
 

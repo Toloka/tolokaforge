@@ -314,9 +314,10 @@ class LangfuseAttachments:
         return f"@@@langfuseMedia:type={content_type}|id={media_id}|source=bytes@@@"
 
     def scan_events(self, events: list[dict[str, Any]]) -> list[str]:
-        """The outbound data-safety gate over the serialised ingestion events: the rules hit
-        (empty when the bytes are clean); the caller sends nothing on a hit."""
-        return self._scan.scan(json.dumps(events, ensure_ascii=False, default=str).encode("utf-8"))
+        """The outbound data-safety gate over the ingestion events, as serialised and as raw
+        strings (the same scan every live span passes): the rules hit (empty when the events are
+        clean); the caller sends nothing on a hit."""
+        return self._scan.scan_structured(events)
 
     @contextmanager
     def budget(self) -> Iterator[None]:

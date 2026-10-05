@@ -2,6 +2,83 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.29.0 (2026-10-05)
+
+### BREAKING CHANGE
+
+- (a) ENGINE_PROTOCOL_VERSION is 4: an engine and a runner
+image on different sides of this release refuse each other at registration,
+for every pack — rebuild the image (make docker-build-core) with every engine
+upgrade. The grader image has no protocol gate of its own and is covered only
+through the runner it grades alongside, so keep the runner and grader on one
+image tag. (b) A trial with no events now raises on an uncompilable
+trace_checks pattern, where it used to return skipped. (c) A third-party
+tolokaforge.trace_check_operators operator is now reached only on events
+where the lazy matcher evaluates it, so an operator that raises is no longer
+reached on calls a cheaper predicate rejects.
+- grading regexes default to the linear engine (RE2). A pack
+declaring no regex_engine now grades trace_checks regex / not_regex /
+bind.values[*].pattern and transcript_rules.disallow_regex under RE2, which
+reads some patterns both engines compile differently: \d \w \s \b are ASCII
+only, $ without (?m) is end of text only, [[:alpha:]] is a POSIX class, a{,n}
+is literal text, and a lone surrogate is searched as U+FFFD. Patterns RE2
+cannot compile (lookaround, backreferences, possessive quantifiers, \Z,
+(?x), (?a), \N{...}, repeat counts over 1000, invalid repetition size,
+pattern too large) are now an authoring-gate advisory, fatal under the
+default fail_on, and raise at grade time when the gate is bypassed. Rewrite a
+lookahead conjunction as the list form (regex: [a, b], not_regex: [c]) or
+declare regex_engine: backtracking on the predicate, bound value or block.
+Older runner images refuse at RegisterTrial every trial whose pack declares
+trace_checks or transcript_rules, because regex_engine is always on the
+wire. The registered regex / not_regex trace-check operators receive a
+CompiledPatterns as expected, not the authored str.
+
+### Feat
+
+- **grading**: a linear-time regex engine by default, list-form regex, lazy trace matcher (#1780) (#1801)
+- **grading**: the judge's search_kb shows hit titles and reads judge_snippet_chars (ADR-0054 change 2) [TECHDEL-652] (#1708)
+- **search**: a built-in in-process bm25 backend (ADR-0054 change 2) [TECHDEL-652] (#1707)
+- **search**: the SearchBackend seam (ADR-0054), with rag-service on it [TECHDEL-652] (#1672)
+- **tau3**: preserve environment errors and native runtime limits (#1745)
+- **tau3**: single-attempt judge and grading evidence (#1744)
+- **grading**: state_checks.comparison_view on both substrates (ADR-0053) [TECHDEL-621] (#1712)
+- **grading**: normalize_ids in the comparison view (ADR-0053), with property tests [TECHDEL-654] (#1702)
+- **grading**: the comparison view module (ADR-0053), with exclude_records and exclude_tables [TECHDEL-654] (#1699)
+- **langfuse**: send live previews only when LANGFUSE_TRACING_PREVIEWS asks (#1774)
+
+### Fix
+
+- **grading**: runner protocol v4 — an older engine is refused, not silently graded under RE2 (#1780) (#1805)
+- review follow-ups from the comparison-view and search stacks (#1793)
+- **grading**: composite severity: gate constraints load as written — the gate advisory reads the model's own on_missing predicate (#1788)
+- **langfuse**: spell the project tag from a project name with spaces (#1779)
+- retain completed trial reports on resume (#1762)
+- honor opening stop and preserve evaluator failures (#1761)
+- close trial-owned MCP resources during cleanup (#1760)
+
+### Refactor
+
+- **grading**: one table answers which kinds each on_missing refuses; gate-advisory loader rows join the authoring-gate tests (#1789)
+
+## v0.28.3 (2026-10-04)
+
+### Feat
+
+- **langfuse**: type a trial's observations, name them without positions, clock each call (#1764)
+
+## v0.28.2 (2026-10-03)
+
+### Feat
+
+- **llm**: record what each LLM call was billed, and make a Langfuse trace's cost what the trial spent (#1759)
+- **automation**: send the prompt an agent was given as its transcript's trace input (#1743)
+
+### Fix
+
+- **docker**: resolve rag-service wheel lazily on the build path; LFS-free reinstall clone (#1747)
+- **docker**: build rag-service and grader on a wheel install; one build-context source of truth (#1741)
+- **langfuse**: build the single-attempt OTLP request without the SDK's exporter (#1740)
+
 ## v0.28.1 (2026-10-02)
 
 ### Feat

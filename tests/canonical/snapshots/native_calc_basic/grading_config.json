@@ -16,6 +16,7 @@
     "max_turns": 10,
     "min_assistant_turns": null,
     "must_contain": [],
+    "regex_engine": "linear",
     "required_actions": [],
     "tool_expectations": {
       "disallowed_tools": [],

@@ -169,6 +169,20 @@ def _tool_call(tool: str, **args: dict[str, Any]) -> dict[str, Any]:
     return match
 
 
+def _under_engine(grading: dict[str, Any], engine: str) -> dict[str, Any]:
+    """*grading* with its ``trace_checks`` block declaring ``regex_engine: engine``."""
+    return {**grading, "trace_checks": {**grading["trace_checks"], "regex_engine": engine}}
+
+
+def _captured_figure(pattern: str) -> dict[str, Any]:
+    """A binder capturing ``figure`` out of an assistant turn by *pattern*."""
+    return _bound_block(
+        {"kind": "assistant_message"},
+        {"figure": {"field": "text", "pattern": pattern}},
+        {"present": {"match": _tool_call("write_file", content={"contains_binding": "figure"})}},
+    )
+
+
 def _required_action(name: str, requestor: str) -> dict[str, Any]:
     """One ``required_actions`` entry, in the shape an author writes it."""
     return {
@@ -266,6 +280,29 @@ _NO_CALLER_READ_WHAT_THE_TASK_SEEDS = SeededTablesLayer.unresolvable()
 _THE_TASK_SEEDS_THESE_TABLES = SeededTablesLayer(tables=_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY)
 _THE_TASK_SEEDS_NO_TABLES = SeededTablesLayer(tables={})
 
+# A comparison view is held to the same seeded state, and to the unstable fields the
+# task declares beside it: a view ranking documents by a column the unstable filter
+# drops is refused, and one declared where no hash reads it is a hint.
+_DOCUMENTS = {"documents": [{"id": "D1", "client_id": "C1", "filed_at": "2026-01-01"}]}
+_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT = SeededTablesLayer(
+    tables=_DOCUMENTS, unstable_fields=lambda: ("documents.filed_at",)
+)
+_A_VIEW_RANKED_BY_A_MASKED_COLUMN = {
+    "version": 1,
+    "rules": [
+        {
+            "kind": "normalize_ids",
+            "table": "documents",
+            "ordinal_by": ["client_id"],
+            "rank_by": ["filed_at"],
+        }
+    ],
+}
+_A_VIEW_OF_THE_DOCUMENTS = {
+    "version": 1,
+    "rules": [{"kind": "normalize_ids", "table": "documents", "key": ["client_id"]}],
+}
+
 _A_FILESYSTEM_ROOTED_ASSERTION = {
     "path": "$.filesystem['/env/fs/agent-visible/x.py']",
     "contains": "def divide",
@@ -327,6 +364,33 @@ class _Rule:
 _A_DB_QUERY_CARRYING_A_TOOL_CONFIG = dataclasses.replace(
     _inventory(_TOOL_USE), json_db_tool_config_keys={"db_query": frozenset({"db_url"})}
 )
+
+
+# An anchored kind, so a gate over it draws the default-``on_missing`` advisory: its
+# anchor's tool can silently error. The matchers differ so the two-quantifier
+# validator accepts the shape.
+_HTTP_THEN_WRITE: dict[str, Any] = {
+    "before": {
+        "left": {"quantifier": "any", "match": _tool_call("http_request")},
+        "right": {"quantifier": "first", "match": _tool_call("write_file")},
+    }
+}
+
+
+def _a_gate_over(require: dict[str, Any]) -> dict[str, Any]:
+    """One ``severity: gate`` constraint over *require*, leaving ``on_missing`` defaulted."""
+    return {
+        "trace_checks": {
+            "constraints": [
+                {
+                    "id": "probe",
+                    "description": "a probe constraint",
+                    "severity": "gate",
+                    "require": require,
+                }
+            ]
+        }
+    }
 
 
 _RULES: tuple[_Rule, ...] = (
@@ -505,28 +569,124 @@ _RULES: tuple[_Rule, ...] = (
         message="Correlate two arguments the tools type the same way",
     ),
     _Rule(
-        label="matcher_regex_that_does_not_compile",
+        label="matcher_regex_the_backtracking_engine_does_not_compile",
         task=_HELPDESK,
-        grading=_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
+        grading=_under_engine(
+            _trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
+            "backtracking",
+        ),
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile",
+        message="raises out of the evaluator at grade time, once the trial is already paid for",
     ),
     _Rule(
-        label="matcher_not_regex_that_does_not_compile",
+        label="matcher_not_regex_the_backtracking_engine_does_not_compile",
         task=_HELPDESK,
-        grading=_trace_block({"kind": "tool_call", "tool": {"not_regex": "http_(request"}}),
+        grading=_under_engine(
+            _trace_block({"kind": "tool_call", "tool": {"not_regex": "http_(request"}}),
+            "backtracking",
+        ),
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile",
+        message="does not compile under the backtracking regex engine",
     ),
     _Rule(
-        label="transcript_regex_that_does_not_compile",
+        label="transcript_regex_the_backtracking_engine_does_not_compile",
         task=_HELPDESK,
-        grading={"transcript_rules": {"disallow_regex": ["unterminated(["]}},
+        grading={
+            "transcript_rules": {
+                "disallow_regex": ["unterminated(["],
+                "regex_engine": "backtracking",
+            }
+        },
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile",
+        message="fails its sub-check at grade time, once the trial is already paid for",
+    ),
+    _Rule(
+        label="matcher_lookahead_under_the_default_engine",
+        task=_HELPDESK,
+        grading=_trace_block({"kind": "tool_call", "tool": {"regex": "(?=http)http_request"}}),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="declares regex_engine: backtracking on the predicate or on the trace_checks block",
+    ),
+    _Rule(
+        label="matcher_lookahead_list_item_under_the_default_engine",
+        task=_HELPDESK,
+        grading=_trace_block({"kind": "tool_call", "tool": {"regex": ["^http", "(?=http)http_"]}}),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="A lookahead conjunction (?=…a)(?=…b) is the list form regex: [a, b]",
+    ),
+    _Rule(
+        label="matcher_lookahead_under_a_linear_predicate_in_a_backtracking_block",
+        task=_HELPDESK,
+        grading=_under_engine(
+            _trace_block(
+                {
+                    "kind": "tool_call",
+                    "tool": {"not_regex": "(?=http)ftp", "regex_engine": "linear"},
+                }
+            ),
+            "backtracking",
+        ),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="does not compile under the linear regex engine: invalid perl operator",
+    ),
+    _Rule(
+        label="unterminated_matcher_regex_under_a_backtracking_predicate",
+        task=_HELPDESK,
+        grading=_trace_block(
+            {
+                "kind": "tool_call",
+                "tool": {"regex": "http_(request", "regex_engine": "backtracking"},
+            }
+        ),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="raises out of the evaluator at grade time",
+    ),
+    _Rule(
+        label="capture_pattern_only_linear_compiles_with_no_group",
+        task=_CODING,
+        grading=_captured_figure(r"\pL+"),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="captures 0 groups, and a binding reads exactly one",
+    ),
+    _Rule(
+        label="capture_pattern_only_linear_compiles_with_two_groups",
+        task=_CODING,
+        grading=_captured_figure(r"(?<n>\d+)-(\d+)"),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="captures 2 groups, and a binding reads exactly one",
+    ),
+    _Rule(
+        label="capture_lookahead_under_the_default_engine",
+        task=_CODING,
+        grading=_captured_figure("(?=[0-9])([0-9]+)"),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="on the bound value or on the trace_checks block",
+    ),
+    _Rule(
+        label="transcript_lookahead_under_the_default_engine",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"disallow_regex": ["(?=pass)password"]}},
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="declares regex_engine: backtracking on the transcript_rules block",
+    ),
+    _Rule(
+        label="transcript_lone_surrogate_under_the_default_engine",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"disallow_regex": ["pass\ud800"]}},
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="a lone surrogate cannot be encoded as UTF-8",
     ),
     _Rule(
         label="hash_source_without_the_flag",
@@ -697,6 +857,47 @@ _RULES: tuple[_Rule, ...] = (
         seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     ),
     _Rule(
+        label="a_comparison_view_keyed_by_a_column_the_unstable_filter_drops",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": _A_VIEW_RANKED_BY_A_MASKED_COLUMN,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="errors",
+        message="builds its key from documents.filed_at, which unstable_fields masks",
+        seeded_tables=_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT,
+    ),
+    _Rule(
+        label="a_comparison_view_no_hash_reads",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "jsonpaths": [{"path": "$.db.documents[0].client_id", "equals": "C1"}],
+                "comparison_view": _A_VIEW_OF_THE_DOCUMENTS,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="hints",
+        message="state_checks.hash is not enabled, so no hash reads the view",
+        seeded_tables=_THE_TASK_SEEDS_DOCUMENTS_AND_MASKS_FILED_AT,
+    ),
+    _Rule(
+        label="a_comparison_view_nothing_resolved_the_seeded_tables_for",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "hash": {"enabled": True, "expect_initial_state": True},
+                "comparison_view": _A_VIEW_OF_THE_DOCUMENTS,
+            }
+        },
+        checker="_check_comparison_view_against_the_task",
+        channel="unchecked",
+        message="no caller resolved the tables this task seeds",
+    ),
+    _Rule(
         label="weight_naming_a_component_the_pack_never_configures",
         task=_HELPDESK,
         grading={},
@@ -708,33 +909,15 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="severity_gate_with_defaulted_on_missing_is_risky",
         task=_HELPDESK,
-        grading={
-            "trace_checks": {
-                "constraints": [
-                    {
-                        "id": "probe",
-                        "description": "a probe constraint",
-                        "severity": "gate",
-                        # Anchored kind (``before``) so the advisory fires — the
-                        # advisory is scoped to constraints that read an anchor
-                        # whose tool can silently error. Two different matchers
-                        # so the two-quantifier validator accepts the shape.
-                        "require": {
-                            "before": {
-                                "left": {
-                                    "quantifier": "any",
-                                    "match": _tool_call("http_request"),
-                                },
-                                "right": {
-                                    "quantifier": "first",
-                                    "match": _tool_call("write_file"),
-                                },
-                            }
-                        },
-                    }
-                ]
-            }
-        },
+        grading=_a_gate_over(_HTTP_THEN_WRITE),
+        checker="_check_severity_gate_default_on_missing_is_risky",
+        channel="advisories",
+        message="severity: gate with default on_missing: fail",
+    ),
+    _Rule(
+        label="a_composite_gate_over_anchors_alone_keeps_the_advisory",
+        task=_HELPDESK,
+        grading=_a_gate_over({"all_of": [_HTTP_THEN_WRITE, _HTTP_THEN_WRITE]}),
         checker="_check_severity_gate_default_on_missing_is_risky",
         channel="advisories",
         message="severity: gate with default on_missing: fail",
@@ -815,8 +998,8 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
     Provocation, not naming: each checker is wrapped and the whole table is run, so a
     row that stops reaching the checker it claims — because the dispatcher no longer
     calls it, say — fails here even though the row's own assertion still passes.
-    Two rows share ``_check_argument_paths``, one per severity, so the audit is
-    at-least-one rather than exactly-one.
+    Several checkers answer more than one row, so the audit is at-least-one rather
+    than exactly-one.
     """
     declared = _checker_names_in_source()
     assert {rule.checker for rule in _RULES} == declared
@@ -918,7 +1101,9 @@ def test_an_uncompilable_regex_is_caught_before_the_tokens_are_spent(tmp_path: P
     """
     grading = _trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}})
 
-    with pytest.raises(ValueError, match="unterminated subpattern"):
+    with pytest.raises(
+        ValueError, match=r"does not compile under the linear regex engine: missing \)"
+    ):
         validate_grading_yaml(_write_grading(tmp_path, grading), inventory=_inventory(_HELPDESK))
 
 
@@ -1002,6 +1187,46 @@ def test_an_anchorless_on_missing_is_refused_before_the_gate_at_any_depth(
     message = str(excinfo.value)
     assert "on_missing has nothing to decide over ['present']" in message, message
     assert "does not compile" not in message, message
+
+
+_A_REFUND_PROMISE = {
+    "absent": {"match": {"kind": "assistant_message", "text": {"contains": "refund"}}}
+}
+
+
+@pytest.mark.parametrize(
+    "require",
+    [
+        pytest.param(
+            {
+                "all_of": [
+                    {"present": {"match": _tool_call("http_request")}},
+                    {"present": {"match": _tool_call("write_file")}},
+                ]
+            },
+            id="present_only_all_of",
+        ),
+        pytest.param(
+            {
+                "all_of": [
+                    _A_REFUND_PROMISE,
+                    _HTTP_THEN_WRITE,
+                    {"present": {"match": _tool_call("http_request")}},
+                ]
+            },
+            id="absent_before_and_present_under_all_of",
+        ),
+    ],
+)
+def test_a_composite_gate_refusing_on_missing_fail_loads_with_none(
+    tmp_path: Path, require: dict[str, Any]
+) -> None:
+    """A composite gate holding present / absent loads at the default fail_on with no advisory."""
+    report = validate_grading_yaml(
+        _write_grading(tmp_path, _a_gate_over(require)), inventory=_inventory(_HELPDESK)
+    )
+
+    assert report.advisories == ()
 
 
 # ---------------------------------------------------------------------------
@@ -3034,13 +3259,15 @@ def test_the_transcript_rules_the_gate_reads_are_the_ones_the_model_declares() -
     as nothing, refusing a pack that grades — the failure direction a list beside the
     model cannot catch. ``tool_expectations`` is the one field read a level down,
     through the two keys the tool-name rule already addresses, so its own key set is
-    held against ``ToolExpectations`` in the same breath.
+    held against ``ToolExpectations`` in the same breath. ``regex_engine`` declares
+    no rule: it names the engine ``disallow_regex`` runs on, so a block carrying it
+    alone asserts nothing.
 
     The author-facing sentence is checked against the same sets, since a message that
     named a key the predicate stopped reading would send the author to declare
     something the gate goes on refusing.
     """
-    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations"} == set(
+    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations", "regex_engine"} == set(
         TranscriptRulesConfig.model_fields
     )
     assert set(_TOOL_EXPECTATION_HAZARDS) == set(ToolExpectations.model_fields)
@@ -3586,6 +3813,41 @@ def test_a_typo_inside_a_binder_is_reported_at_the_binders_own_matcher() -> None
     assert all("is not declared by this task" in finding.message for finding in report.errors)
 
 
+_LOOKAHEAD = "(?=http)http_request"
+
+
+@pytest.mark.parametrize(
+    "grading",
+    [
+        pytest.param(
+            _under_engine(
+                _trace_block({"kind": "tool_call", "tool": {"regex": _LOOKAHEAD}}), "backtracking"
+            ),
+            id="backtracking-block",
+        ),
+        pytest.param(
+            _trace_block(
+                {"kind": "tool_call", "tool": {"regex": _LOOKAHEAD, "regex_engine": "backtracking"}}
+            ),
+            id="backtracking-predicate",
+        ),
+        pytest.param(
+            {"transcript_rules": {"disallow_regex": [_LOOKAHEAD], "regex_engine": "backtracking"}},
+            id="backtracking-transcript-rules",
+        ),
+    ],
+)
+def test_a_lookahead_its_engine_compiles_draws_no_regex_finding(grading: dict[str, Any]) -> None:
+    """The gate compiles each pattern under the engine that runs it, not under one engine."""
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert not [
+        finding
+        for finding in report.errors + report.advisories
+        if "does not compile" in finding.message
+    ]
+
+
 def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> None:
     """A binder's pattern is compiled by the same evaluator a matcher's ``regex`` is.
 
@@ -3601,10 +3863,48 @@ def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> Non
 
     report = inspect_grading_authoring(grading, _inventory(_CODING))
 
-    assert [finding.where for finding in report.errors] == [
+    assert [finding.where for finding in report.advisories] == [
         "trace_checks.probe.bind.values.figure.pattern"
     ]
-    assert "does not compile" in report.errors[0].message
+    assert "does not compile" in report.advisories[0].message
+
+
+def test_each_pattern_of_a_list_is_reported_at_its_own_item() -> None:
+    """A list item's address carries its index; a single string keeps the operator's."""
+    grading = _trace_block(
+        {
+            "kind": "tool_call",
+            "tool": {"regex": ["^http", "(?=http)http_"], "not_regex": "(?!ftp)"},
+            "args": {"url": {"not_regex": ["(", "^ftp"], "regex_engine": "backtracking"}},
+        }
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.present.match.tool.not_regex",
+        "trace_checks.probe.present.match.tool.regex[1]",
+    ]
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.url.not_regex[0]",
+    ]
+
+
+@pytest.mark.parametrize(
+    "grading",
+    [
+        pytest.param(_captured_figure("(?=[0-9])([0-9]+)"), id="capture-pattern"),
+        pytest.param({"transcript_rules": {"disallow_regex": ["(?=pass)password"]}}, id="disallow"),
+    ],
+)
+def test_the_list_form_is_named_only_where_a_list_is_accepted(grading: dict[str, Any]) -> None:
+    """A binder's capture and a ``disallow_regex`` entry are one pattern each, so the
+    remedy a matcher's refusal names would not load there."""
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    [finding] = report.advisories
+    assert "does not compile under the linear regex engine" in finding.message
+    assert "list form" not in finding.message
 
 
 _UNCHECKED_EXTRACTIONS = (
@@ -3817,9 +4117,10 @@ def test_an_uncompilable_pattern_over_a_non_string_argument_names_both_repairs()
 
     report = inspect_grading_authoring(grading, _inventory(_CODING))
 
-    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS, _PATTERN_ADDRESS]
-    assert "does not compile" in report.errors[0].message
-    assert "type 'integer'" in report.errors[1].message
+    assert [finding.where for finding in report.advisories] == [_PATTERN_ADDRESS]
+    assert "does not compile" in report.advisories[0].message
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS]
+    assert "type 'integer'" in report.errors[0].message
 
 
 def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> None:

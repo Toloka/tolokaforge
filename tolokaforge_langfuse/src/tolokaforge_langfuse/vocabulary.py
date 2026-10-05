@@ -115,6 +115,43 @@ ALL_DERIVED_GROUPS: frozenset[str] = frozenset(DERIVED_GROUPS)
 # names the cost calculator, the engine's litellm library, whichever transport carried the call),
 # so nothing here guesses one
 
+# A trial trace's name is a template over the trace's tag values (``{<prefix>}``, the first value
+# under that prefix) and the run's ``{label}``. A deployment's profile chooses it (the receiver's
+# views by trace name group traces by it); without one a trace is named after the run and the task.
+DEFAULT_TRACE_NAME = "{label}/{task}"
+TRACE_NAME_LABEL = "label"
+# the prefixes only a trial's bundle gives a trace (``derived_tags``): a live row is written before
+# the bundle exists, so a name template may not use them, or the live rows and the bundle's would
+# name one trace two ways
+BUNDLE_DERIVED_PREFIXES: frozenset[str] = frozenset(
+    {"reasoning_mode", "reasoning_effort", "reasoning_budget", "route"}
+)
+# A trial trace's user, as a deployment's profile chooses it: none (the default), or the agent's
+# model identity under the deployment's model-name rules (the receiver's views by user are then
+# views by model)
+TRACE_USER_NONE = "none"
+TRACE_USER_MODEL = "model"
+TRACE_USERS: tuple[str, ...] = (TRACE_USER_NONE, TRACE_USER_MODEL)
+_PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+
+# Observation names carry no position, so the receiver's views by observation name group one kind
+# of observation; the position stays in the observation's metadata (``message_index``).
+NAME_TRIAL = "trial"
+NAME_TRANSCRIPT = "transcript"
+NAME_AGENT = "agent"
+NAME_USER_SIMULATOR = "user simulator"
+NAME_JUDGE = "judge"
+NAME_GRADING = "grading"
+# the actor of a usage call (``usage.calls[].role``) -> the name of its generation
+ROLE_NAMES: Mapping[str, str] = {"agent": NAME_AGENT, "user": NAME_USER_SIMULATOR}
+
+# The typed observations both producers write, each its own ingestion event type: a trial's or a
+# transcript's root is the agent, a tool execution a tool, a grading the evaluator. Generations and
+# events keep ``generation-create`` and ``event-create``.
+EVENT_AGENT = "agent-create"
+EVENT_TOOL = "tool-create"
+EVENT_EVALUATOR = "evaluator-create"
+
 _PREFIX_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
 _VALUE_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+@:-]*$")
 MAX_VALUE_CHARS = 128
@@ -144,6 +181,15 @@ def check_value(prefix: str, value: str) -> str:
             "digits and . _ / + @ : - without whitespace"
         )
     return value
+
+
+def project_tag_value(name: str) -> str:
+    """The ``project:`` tag's value for a Langfuse project name. The receiver's name may hold
+    capitals and spaces (``Toloka Arena``), a tag value may not, so the tag spells it lowercased,
+    each run of whitespace one ``-`` (``toloka-arena``); capitals are lowercased even without a
+    space (``Toloka`` gives ``toloka``), and a lowercase name without whitespace keeps its spelling.
+    A name still outside the value rule after that is a VocabularyError."""
+    return check_value("project", "-".join(str(name).split()).lower())
 
 
 def is_valid_value(value: object) -> bool:
@@ -200,6 +246,67 @@ def order_tags(tags: Iterable[str]) -> list[str]:
             seen.append(tag)
     rank = {prefix: index for index, prefix in enumerate(CORE_PREFIXES)}
     return sorted(seen, key=lambda t: (rank.get(t.partition(":")[0], len(rank)), seen.index(t)))
+
+
+def check_trace_name(template: object) -> str:
+    """A trace-name template: text with ``{<prefix>}`` placeholders under core prefixes and
+    ``{label}``; anything else is a VocabularyError."""
+    if not isinstance(template, str) or not template.strip():
+        raise VocabularyError("a trace-name template must be a non-empty string")
+    unknown = sorted(
+        {
+            name
+            for name in _PLACEHOLDER.findall(template)
+            if name != TRACE_NAME_LABEL and name not in CORE_PREFIXES
+        }
+    )
+    if unknown:
+        raise VocabularyError(
+            f"trace-name template {template!r}: {unknown} are neither tag prefixes nor "
+            f"{{{TRACE_NAME_LABEL}}}"
+        )
+    derived = sorted(set(_PLACEHOLDER.findall(template)) & BUNDLE_DERIVED_PREFIXES)
+    if derived:
+        raise VocabularyError(
+            f"trace-name template {template!r}: {derived} come from the trial's bundle alone, so "
+            "the rows written while the trial runs could not be named alike"
+        )
+    if re.sub(r"[{}]", "", _PLACEHOLDER.sub("", template)) != _PLACEHOLDER.sub("", template):
+        raise VocabularyError(f"trace-name template {template!r}: a brace outside a placeholder")
+    return template
+
+
+def trace_name(template: str | None, tags: Iterable[str], *, label: str) -> str:
+    """A trial trace's name: ``template`` (the profile's) over the trace's tag values and the run's
+    label. A template naming a value the trace does not carry yields the default name."""
+    values: dict[str, str] = {TRACE_NAME_LABEL: label}
+    for tag in tags:
+        prefix, sep, value = str(tag).partition(":")
+        if sep and value and prefix != TRACE_NAME_LABEL:
+            values.setdefault(prefix, value)
+    for candidate in (template, DEFAULT_TRACE_NAME):
+        if candidate and all(name in values for name in _PLACEHOLDER.findall(candidate)):
+            return _PLACEHOLDER.sub(lambda match: values[match.group(1)], candidate)
+    return label
+
+
+def check_trace_user(source: object) -> str:
+    if source not in TRACE_USERS:
+        raise VocabularyError(
+            f"the trace's user must be one of {list(TRACE_USERS)}, got {source!r}"
+        )
+    return str(source)
+
+
+def trace_user(source: str, model_identity: str | None) -> str | None:
+    """A trial trace's user under the profile's ``source``: the agent's model identity for
+    ``model``, nobody for ``none``."""
+    return model_identity if source == TRACE_USER_MODEL else None
+
+
+def generation_name(role: str) -> str:
+    """The name of a generation made for ``role`` (a usage call's actor)."""
+    return ROLE_NAMES.get(role, role)
 
 
 def facet_tags(fields: Mapping[str, Any] | None) -> list[str]:

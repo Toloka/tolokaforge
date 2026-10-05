@@ -211,7 +211,7 @@ predicate leaves: both readers would step over neither, agree on a short count, 
 # fails rather than silently shrinking the walk over it. ``coding_harness`` ships
 # a placeholder ``grading.yaml`` — its trial verifier overrides at run time, but the
 # static file exists so the standard pre-run gate accepts it and this walk counts it.
-_NATIVE_PACK_COUNT = 30
+_NATIVE_PACK_COUNT = 31
 
 
 class _Direction(str, Enum):
@@ -300,6 +300,7 @@ class _RetiredWireKey:
 _WALK_STOPS: tuple[str, ...] = (
     "grading.trace_checks",
     "grading.state_checks.compare_columns",
+    "grading.state_checks.comparison_view",
     "environment_manifest",
 )
 """The paths the model walk records without descending into. Read by the walk and by
@@ -327,11 +328,33 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
     _WireKey(
         path="search.plane",
         emitted_for="",
-        wire_shape="Literal['typesense', 'rag_service'] | None",
+        wire_shape="str | None",
         since="unreleased",
         lock=_DocLock(
             doc_key="search.plane",
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
+    _WireKey(
+        path="search.backend_config",
+        emitted_for="search.backend_config",
+        wire_shape="dict[str, Any]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="search.backend_config",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack declaring a non-empty `initial_state.rag.backend_config`",
+        ),
+    ),
+    _WireKey(
+        path="search.tool_name",
+        emitted_for="search.tool_name",
+        wire_shape="str",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="search.tool_name",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack naming its search tool other than `search_kb`",
         ),
     ),
     _WireKey(
@@ -525,6 +548,17 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         ),
     ),
     _WireKey(
+        path="grading.state_checks.comparison_view",
+        emitted_for="grading.state_checks.comparison_view",
+        wire_shape="ComparisonViewConfig | None",
+        is_leaf_container=True,
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="state_checks.comparison_view",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
+    _WireKey(
         path="grading.state_checks.db_probes",
         emitted_for="grading.state_checks",
         wire_shape="list[DbProbe]",
@@ -568,6 +602,16 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.transcript_rules.disallow_regex",
         emitted_for="grading.transcript_rules",
         wire_shape="list[str]",
+    ),
+    _WireKey(
+        path="grading.transcript_rules.regex_engine",
+        emitted_for="grading.transcript_rules",
+        wire_shape="Literal['linear', 'backtracking']",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="transcript_rules.regex_engine",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
     _WireKey(
         path="grading.transcript_rules.max_turns",
@@ -689,6 +733,24 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 since=_UNRELEASED,
                 breadth="a pack declaring one under a matcher predicate",
             ),
+            _DocLock(
+                doc_key="trace_checks.regex_engine",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring `trace_checks`",
+            ),
+            _DocLock(
+                doc_key="`trace_checks` `regex_engine` on a predicate or bound value",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring `regex_engine` on a matcher predicate or a bound value",
+            ),
+            _DocLock(
+                doc_key="`trace_checks` `regex` / `not_regex` written as a list",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring a list of patterns under a matcher predicate",
+            ),
         ),
     ),
     _WireKey(
@@ -760,6 +822,17 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.llm_judge.customization.include_agent_system_prompt",
         emitted_for="grading.llm_judge.customization",
         wire_shape="bool | None",
+    ),
+    _WireKey(
+        path="grading.llm_judge.customization.judge_snippet_chars",
+        emitted_for="grading.llm_judge.customization.judge_snippet_chars",
+        wire_shape="int | None [ge=1, strict=True]",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="grading.llm_judge.customization.judge_snippet_chars",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+            breadth="a pack setting `customization.judge_snippet_chars` other than 200",
+        ),
     ),
     _WireKey(
         path="grading.custom_checks",
@@ -927,8 +1000,14 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
     ``gate`` is the nearest ancestor a pack must declare — the nearest optional field or
     list above this one — which is a property of the ancestors and never of the field
     itself: an optional container is emitted unconditionally as ``null`` and only its
-    children wait on it.
+    children wait on it. Two kinds of field gate on themselves instead: one its model
+    names in ``omitted_when_absent`` (the dump leaves it out rather than writing
+    ``null``) and one its model leaves off the wire at its default
+    (``OMITTED_AT_DEFAULT``); either appears only in a pack that declares it.
     """
+    omitted = set(getattr(model, "omitted_when_absent", ())) | set(
+        getattr(model, "OMITTED_AT_DEFAULT", ())
+    )
     for name, field in model.model_fields.items():
         path = f"{prefix}.{name}" if prefix else name
         nested = _nested_model(field.annotation)
@@ -943,7 +1022,7 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
             )
         yield _WalkedKey(
             path=path,
-            emitted_for=gate,
+            emitted_for=path if name in omitted else gate,
             wire_shape=rendered,
             descended=not stopped and (nested is not None or element is not None),
         )
@@ -1281,7 +1360,7 @@ def test_the_example_corpus_emits_what_the_census_says_it_emits() -> None:
             path
             for path, value in emitted.items()
             if isinstance(value, dict) or (isinstance(value, list) and value)
-        }
+        } | {path for path in emitted if gated.get(path) == path}
         expected = unconditional | {path for path, gate in gated.items() if gate in declared_gates}
         shapes.add(frozenset(expected))
         if set(emitted) != expected:

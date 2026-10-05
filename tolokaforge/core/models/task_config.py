@@ -7,13 +7,23 @@ and both inherit :class:`TaskDefaults` from ``project.yaml``.
 """
 
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import canonicalize_actor_config, drop_retired_max_idle_turns
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
+from tolokaforge.core.grading.comparison_view import ComparisonViewConfig
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
 from tolokaforge.core.grading.state_composition import (
     AUTHORED_HASH_WEIGHT_CONTEXT,
     StateHashConfig,
@@ -23,9 +33,11 @@ from tolokaforge.core.grading.state_composition import (
 from tolokaforge.core.hash import ColumnCompareRule
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
+    DEFAULT_SEARCH_TOOL_NAME,
     EnvironmentPatch,
     JudgeCustomization,
     LLMJudgeConfig,
+    SearchPlane,
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
@@ -34,6 +46,7 @@ __all__ = [
     "ActorSpec",
     "AssetsConfig",
     "DEFAULT_MAX_USER_TOOL_STEPS",
+    "DEFAULT_SEARCH_TOOL_DESCRIPTION",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -43,6 +56,8 @@ __all__ = [
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
+    "RagConfig",
+    "RagToolConfig",
     "SEED_KIND_BY_EXTENSION",
     "SIMULATOR_STOP_TOKEN",
     "SeedKind",
@@ -93,6 +108,81 @@ class InitializationAction(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+DEFAULT_SEARCH_TOOL_DESCRIPTION = (
+    "Search the knowledge base for relevant information. Use this to find policies, "
+    "procedures, FAQs, and other documentation."
+)
+"""The agent's search-tool description when ``initial_state.rag.tool`` names none."""
+
+
+def _dump_declared_fields_only(
+    model: BaseModel, handler: SerializerFunctionWrapHandler
+) -> dict[str, Any]:
+    """Dump only the fields the author wrote, so a default never materialises.
+
+    ``TaskConfig`` is dumped whole by the canonical snapshots and the round-trip
+    paths. A typed block would otherwise dump its defaults as if the author had
+    written them — a task declaring ``corpus_dir`` alone would grow a backend, a
+    config and a tool block. A default an author writes out is kept. Plain
+    pydantic 2.x (``Field(exclude_if=...)`` needs 2.11; the engine allows 2.0).
+
+    A plain mapping stored in the field without validation — ``model_copy(update=…)``
+    or assignment — has no fields set to read, so it dumps as the mapping it is, as
+    the untyped block did.
+    """
+    if not isinstance(model, BaseModel):
+        return handler(model)
+    data = handler(model)
+    for name in type(model).model_fields.keys() - model.model_fields_set:
+        data.pop(name, None)
+    return data
+
+
+class RagToolConfig(BaseModel):
+    """``initial_state.rag.tool``: the agent's search tool over the corpus.
+
+    Which actor gets the tool is not declared here: the tool goes to the actor
+    whose ``tools.<actor>.enabled`` names it, as every tool does.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str = DEFAULT_SEARCH_TOOL_NAME
+    description: str = DEFAULT_SEARCH_TOOL_DESCRIPTION
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _dump_declared_fields_only(self, handler)
+
+
+class RagConfig(BaseModel):
+    """``initial_state.rag``: the corpus, the search backend serving it, and its tool.
+
+    ``backend`` names a backend registered under ``tolokaforge.search_backends``
+    (ADR-0054; ``rag_service`` is the engine's rag-service) and travels on the wire
+    as ``search.plane``. ``backend_config`` is handed to that backend's factory
+    verbatim — the engine never reads its keys. The dump carries only the fields
+    the author wrote (see :func:`_dump_declared_fields_only`).
+
+    Unknown keys are refused: a misspelt ``backend`` or ``tool.name`` would
+    otherwise select the default silently. Every pack declaring a ``rag`` block
+    when this became typed carried ``corpus_dir`` alone.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    corpus_dir: str | None = None
+    backend: str = SearchPlane.RAG_SERVICE.value
+    backend_config: dict[str, Any] = Field(default_factory=dict)
+    tool: RagToolConfig = Field(default_factory=RagToolConfig)
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _declared_only(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _dump_declared_fields_only(self, handler)
+
+
 class InitialStateConfig(BaseModel):
     """Initial environment state configuration"""
 
@@ -102,7 +192,7 @@ class InitialStateConfig(BaseModel):
     device_overrides: dict[str, Any] | None = None  # Per-task device state overrides
     filesystem: dict[str, Any] | None = None
     mock_web: dict[str, Any] | None = None
-    rag: dict[str, Any] | None = None
+    rag: RagConfig | None = None
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     initialization_actions: list[InitializationAction] | None = None
 
@@ -482,6 +572,8 @@ class TaskConfig(BaseModel):
     description: str
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
+    max_simulation_steps: int | None = Field(default=None, ge=1)
+    max_environment_errors: int | None = Field(default=None, ge=1)
     initial_user_message: str | None = None
     """The task's pinned opener. When set, this exact text — whitespace
     included — is message index 0, and no simulator dispatch produces the
@@ -798,6 +890,28 @@ class StateChecksConfig(BaseModel):
     # Applied symmetrically to both trial and golden. See
     # :func:`tolokaforge.core.hash.apply_global_nullable_normalize`.
     auto_normalize_nullables: bool = False
+    # Opt-in: a one-sided transform each side's full state goes through before every
+    # other step of the hash — records that do not count dropped, generated ids
+    # re-keyed together with the references to them (ADR-0053). Validated by its own
+    # model; checked against the task when it loads. Absent, the hash reads the states
+    # as written, and the key is left out of every dump.
+    comparison_view: ComparisonViewConfig | None = None
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"comparison_view"})
+    """Fields a dump leaves out while they are ``None``, rather than writing ``null``."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _omit_an_absent_comparison_view(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Leave ``comparison_view`` out of a dump that has none.
+
+        So a block declaring no view dumps byte-identically to one written before the
+        key existed: recorded ``grading_config.json`` parts and canonical snapshots keep
+        their bytes.
+        """
+        return leave_out_absent_fields(self, handler)
 
     @model_validator(mode="before")
     @classmethod

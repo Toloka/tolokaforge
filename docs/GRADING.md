@@ -37,7 +37,7 @@ selects the `JudgeKind` — the typed evaluator that drives LLM-judge
 dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
-[GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
+[GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-plug-in-groups)).
 Three user-facing kinds ship: `single_shot_rubric` (the shipping
 reference impl wrapping today's `LLMJudge` in one shot),
 `multi_turn_rubric` (a baked-in `voted → auto_anchored → single_shot`
@@ -496,26 +496,25 @@ because the hash verdict either substrate produces is `0.0` or `1.0`, never a
 fraction, so the value handed in is one the runner's own path would yield; the same
 lock asserts core's evaluator returns exactly those two for the fixture's two states.
 
-**That premise is guarded, within a stated limit.** The producers the manifest names
-split by the shape their verdict leaves in. Core's `check_hash` and
-`check_hash_against_golden_replay` hand theirs on as a bare float in a tuple, so the
-suite reads their sources: each must choose its score between literals rather than
-computing it, and every `return` must carry that score somewhere the audit reads. The
-runner's `_execute_hash_grading` returns its verdict inside `HashGradingResult`, whose
-`hash_score` is derived from the boolean `hash_match` — a non-binary or contradictory
-verdict is unrepresentable, so that producer's source needs no audit; the suite proves
-the derivation over both `hash_match` values, that constructing the model with an
-explicit `hash_score` is refused, and that the producer's declared return type keeps
-its verdict inside the model. The runner-side diff reports an order-mismatch verdict
-on the same-set-different-order class, so a `hash_score: 0.0` never sits beside a
-`state_diff` that reads as identical (see [§ Hash / diff verdict
-parity](#hash--diff-verdict-parity)). The producer set is derived from the hash family's
-declared evaluators and asserted as set equality against the union of the two frozen
-partitions, so a fourth producer forces a reviewable edit rather than landing with the
-guard green. What the source audit cannot see is a producer reached only *through* one
-of the functions it reads: it follows declared evaluators, not call graphs. So a
-partial hash score cannot land inside a guarded producer without the sweep's premise
-being re-examined, and a new producer cannot be declared without one.
+**That premise is a type invariant on both substrates.** Every producer the manifest
+names — core's `check_hash` and `check_hash_against_golden_replay`, and the runner's
+`_execute_hash_grading` — returns the one frozen
+[`HashGradingResult`](../tolokaforge/core/grading/hash_grading_result.py), whose
+`hash_score` is derived from the boolean `hash_match`: a non-binary or contradictory
+verdict is unrepresentable, so no producer's source needs reading. The suite proves
+that each producer declares that return type, the derivation over both `hash_match`
+values, and that the type has no score to set — a `hash_score` passed at construction
+or assigned afterwards is refused, and so is a `hash_match` that is not a `bool`. The
+same result carries the reason core reports, the comparison basis, the golden replay's
+record, the diff beside a mismatch and the comparison view's record, so what a
+comparison reports is a field of it rather than another element of a returned tuple.
+The runner-side diff reports an order-mismatch verdict on the same-set-different-order
+class, so a `hash_score: 0.0` never sits beside a `state_diff` that reads as identical
+(see [§ Hash / diff verdict parity](#hash--diff-verdict-parity)). The producer set is
+derived from the hash family's declared evaluators and asserted as set equality
+against a frozen set, so a fourth producer forces a reviewable edit rather than
+landing with the guard green; what the guard cannot see is a producer the manifest
+does not declare.
 
 ### Score-parity keys outside the hash family
 
@@ -531,6 +530,7 @@ being re-examined, and a new producer cannot be declared without one.
 | `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.weight` / `.on_missing` / `.severity` / `.within` / `.bind` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.regex_engine` / `transcript_rules.regex_engine` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
 `trace_checks` and `transcript_rules` are the two scored families where **every**
@@ -1331,6 +1331,172 @@ An engine old enough to predate both keys declares a protocol version below the
 image's bound, so it is refused at registration before any key is read — see
 [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock.
 
+### Comparison view
+
+`state_checks.comparison_view` declares a one-sided transform each side of a hash
+comparison goes through before anything else reads it: which records of a state
+count, and what keys a generated id. A rule is a function of one state, its initial
+state and the declaration — never of the other side — so a trial is compared on what
+it did rather than on the order it numbered its records in or the drafts it left
+behind. The design is [ADR-0053](adr/0053-comparison-view-before-the-state-hash.md);
+[`examples/native/comparison_view`](../examples/native/comparison_view/README.md) is a
+pack using every rule kind.
+
+```yaml
+state_checks:
+  hash: { enabled: true, golden_actions: [...] }
+  comparison_view:
+    version: 1                       # the block's schema version; an unknown one is refused
+    rules:                           # applied in list order; an empty list is refused
+      - kind: exclude_tables
+        tables: [lookup_log]
+        reason: written by the read tools; not business state   # required
+      - kind: exclude_records
+        table: holds
+        where: { status: released }
+        unless_referenced_by: [{ table: corrections, field: hold_ref }]
+      - kind: exclude_records
+        table: decisions
+        path: allocations            # the items of a nested list in each row
+        where: { all_zero: [amount, tax] }
+      - kind: normalize_ids
+        table: documents
+        key: [client_id, source_id]  # or rank_by: [...] with an optional ordinal_by: [...]
+        references: [{ table: corrections, field: document_ref }]
+        scope: new_records           # the default; or all
+```
+
+| kind | what it does |
+|---|---|
+| `exclude_records` | Drops the rows of `table` — with `path`, the items of the nested list there — matching `where`, unless a field `unless_referenced_by` names holds the row's id. `where` is a non-empty conjunction of `field: value` (exact, before any `numeric_string_fields` fold), `{in: [...]}`, `{is_null: bool}`, `{starts_with: prefix}` and `all_zero: [fields]`; a missing field reads as null. |
+| `exclude_tables` | Drops the named tables whole, key included. Every table a rule names must be seeded, so a table the agent's tools create (a log of its lookups) is seeded empty to be named; the drop then takes the rows the trial wrote and the key itself, so a trial that wrote the table and a golden whose replay never touched it compare alike. Refused for a table another rule names. |
+| `normalize_ids` | Re-keys the records of `table` in `scope` (`new_records`: ids the initial state's table lacks; `all`) to `<table>:<canonical JSON of the key fields>` — or of the `ordinal_by` group plus `#<n>`, ranked by `rank_by` — and rewrites every exact reference to them in `references` (a top-level field or a dotted path). The re-keying is bijective or raises `ComparisonViewCollision`: two records under one id, two records sharing a key, a key a kept record holds, a rank tie, a reference that already holds a new key. A reference to no re-keyed record stays as it is. |
+
+**Registered rules.** `kind` resolves through the `tolokaforge.comparison_view_rules`
+entry-point group, where the three kinds above register like any rule a distribution
+ships; an unknown kind is refused at load, naming the registered ones. A registered rule
+decides which states hash equal, so installing one is a grading decision:
+[GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-plug-in-groups)
+states the rule contract and what the engine holds a rule to. On the runner a rule from
+another distribution grades where that distribution is installed in the runner image;
+an image without it refuses the trial at `RegisterTrial`.
+
+**The order.** Both substrates put both sides through five steps:
+
+```
+full state (unstable fields present)
+  → 1. comparison view, rules in list order
+  → 2. unstable_fields
+  → 3. compare_columns pipeline
+  → 4. clock / nullable masks
+  → 5. compute_stable_hash (runner) | state_digest (core)
+```
+
+Steps 1–3 are one function, `tolokaforge.core.grading.pre_hash.view_the_pair`, which
+both substrates call; steps 4–5 are each substrate's own, so the two digests keep their
+different algebras while the states they hash are the same. Step 2 resolves each
+`unstable_fields` table name the way the db-service does (exact, singular / plural,
+suffix — `tolokaforge.core.hash.resolve_unstable_table_name`; the db-service image ships
+without `tolokaforge.core` and runs vendored copies of it and of `compute_stable_hash`,
+which parity tests hold to the shared functions), against
+the tables of both full states before the view drops any, and leaves in every id field the view
+re-keyed: once re-keyed, an id is a function of its record's content, and dropping it
+as `unstable(auto_id)` would let a reference to the wrong record pass.
+
+- **Runner.** With a view declared, `_execute_hash_grading` reads the full state of
+  both sides over `DBServiceClient.get_state` — the trial's before the reset, the
+  golden's after the replay — restores the trial's database, and only then runs the
+  five steps on the client. A view that cannot be computed therefore never leaves the
+  golden state in the trial's database. A pack without a view takes the server-side
+  `get_stable_hash` / `get_stable_state` path.
+- **Core.** `StateChecker.check_hash` and `check_hash_against_golden_replay` run the
+  same composition with an initial state of their own: the golden replay mutates the
+  initial state it loads, so the view reads a separate load taken before the replay.
+  Without a view, core's unstable filter keeps its exact table names.
+
+**Errors: the golden side, then the trial's.** The golden side is viewed first.
+
+| what the view hits | the trial |
+|---|---|
+| any `ComparisonViewError` on the golden side, a `ComparisonViewCollision` included | grading error: `GradeTrialResponse(success=False)` on the runner, the error raised out of `grade_trajectory` in core |
+| any `ComparisonViewError` on the trial side, after the golden's view succeeded — a re-keying that is not bijective, a new record without its key field, a list or a dict in a key field, a dict in a reference, a null id `unless_referenced_by` reads, a dict at a nested `path` | **fails**: `state_checks` scores `0.0`, the reason names the error's type, its message and the ids it involves |
+
+The golden's view succeeding shows the declaration fits the state the task's own golden
+path builds, so what the trial side cannot view is the trial's state — the same wrong
+state a hash without a view scores `0.0`, not a defect of the grader. A golden-side
+`ComparisonViewError` is a grading error, not a `0.0` verdict. Under a declared comparison
+view, an unexpected implementation exception on either side — anything but the view's
+declared `ComparisonViewError`s — also propagates as a grading error: a successful golden
+view does not prove the implementation has no trial-dependent bug. Only without a view do
+other hashing errors still fold into `0.0, "Error computing hash"`.
+
+**What the grade records.** A grade reached through a view carries a record of it —
+`Grade.comparison_view` on the host (and in `grade.yaml`), the JSON in the
+presence-tracked `Grade.comparison_view_json` on the wire, the same on both substrates:
+
+```yaml
+comparison_view:
+  golden:                      # the golden's view
+    version: 1
+    function_version: 1        # bumped on any change to what a rule computes
+    config_sha256: 3f1c…       # sha256 of what the rules do: kinds and non-default settings, reason left out
+    applied:                   # per rule and table touched
+      - { kind: exclude_tables, table: lookup_log, path: null, rows_removed: 0, ids_rewritten: 0, references_rewritten: 0 }
+      - { kind: normalize_ids, table: documents, path: null, rows_removed: 0, ids_rewritten: 1, references_rewritten: 1 }
+    rekeyed_fields: [{ table: documents, field: id }]
+  trial: { … }                 # the trial's view — null when its state could not be viewed
+  view_diff: null              # the diff of the two views after step 2, on a mismatch
+  trial_error: null            # { error, message, ids } when the trial's state could not be viewed
+```
+
+The key is absent from a grade, and from the wire, when no view is declared. On a
+mismatch the raw `state_diff` rides beside the view diff where its path computes one: on
+the runner over the stable states; in core the golden-replay check's raw diff, while
+core's `expect_initial_state` check (`check_hash`) records no raw diff at all, as without
+a view. The reasons carry `Comparison view: <view diff summary>` or the trial's error
+beside the hash sentence. The hash / diff parity below holds on the view pair: the digest
+is of the view, so the diff that agrees with it is `view_diff` — which also names a table
+only one side holds (`tables_on_one_side`), where the raw diff reads an absent table as
+empty.
+
+**Checked when the task loads.** The native adapter's `to_task_description` and
+`get_grading_config`, the runner's `RegisterTrial` (before anything is provisioned) and
+`tolokaforge validate` hold a view to its task through one function
+(`tolokaforge.core.grading.comparison_view_checks.comparison_view_findings`), naming
+the task, the rule and the field. Refused:
+
+- a table a rule names that the initial state does not seed — a warning instead under
+  `relaxed_validation`, as for `id_fields`;
+- a table a rule names that the initial state seeds as a mapping (records keyed by id,
+  the tau-bench shape) rather than a list of records, whatever `relaxed_validation`
+  says: the runner reads such a table as the list of its values and core's hash as
+  written, so one view would grade a trial two ways;
+- a field a rule reads that the table's **declared schema** does not carry. Only a
+  `TaskDescription` carrying `initial_state.schemas` declares one, so this check runs at
+  `RegisterTrial` for such a description; the native adapter declares no schemas, and
+  seeded records are never read as one — agents write fields no seeded row carries;
+- the id-field conflicts the rules raise when they apply: `key`, `ordinal_by` or
+  `rank_by` naming the id field, a reference naming the rule's own id field, a
+  composite key;
+- a `normalize_ids` `key`, `ordinal_by` or `rank_by` field the unstable filter drops,
+  the clock mask drops (`auto_mask_clock_columns`), or `numeric_string_fields` folds:
+  a key is read as it is, before any fold;
+- a `normalize_ids` `references` field the masks drop (a nested reference by its
+  top-level column);
+- a re-keyed id field the clock mask drops.
+
+A view declared beside a `hash` that is not enabled is read by nothing: a `⚠` hint in
+`tolokaforge validate`, a logged warning at load, never a refusal. Where the adapter's
+seeded-tables layer does not report the task's unstable fields, `validate` reports the
+masked-field checks unchecked rather than holding the view to an empty mask;
+`RegisterTrial` checks the description's own.
+
+The load resolves `unstable_fields` table names against the seeded tables, the grade
+against the tables of both full states. A table the agent creates can therefore resolve
+a declared name at grade time that it did not resolve at load — and mask a column the
+load never checked. That can only fail a trial wrongly, never pass one: the re-keyed id
+stays in the hash whatever is masked.
+
 ### Runner-engine version lock
 
 The trial spec crosses the wire as a plain `model_dump_json()` parsed by
@@ -1371,6 +1537,10 @@ reject it.
 | `trace_checks` negative-text operators (`not_contains`, `not_regex`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
 | `trace_checks` nullness operators (`is_null`, `omitted`) | a pack declaring one under a matcher's `args` or `text` predicate | `unreleased` | new engine → old image |
 | `trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
+| `trace_checks.regex_engine` | a pack declaring `trace_checks` | `unreleased` | new engine → old image |
+| `trace_checks` `regex_engine` on a predicate or bound value | a pack declaring `regex_engine` on a matcher predicate or a bound value | `unreleased` | new engine → old image |
+| `trace_checks` `regex` / `not_regex` written as a list | a pack declaring a list of patterns under a matcher predicate | `unreleased` | new engine → old image |
+| `transcript_rules.regex_engine` | a pack declaring `transcript_rules` | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
 | `state_checks.compare_columns` | a pack declaring `state_checks` | `unreleased` | new engine → old image |
 | `state_checks.compare_columns.<table>.<column>.mode == "subset"` | a pack declaring per-column permitted-extra tool-call params | `unreleased` | new engine → old image |
@@ -1380,18 +1550,24 @@ reject it.
 | `state_checks.compare_columns.<table>.<column>.order == "unordered"` | a pack declaring a table's rows are a set (row-permutation-insensitive) | `unreleased` | new engine → old image |
 | `state_checks.auto_mask_clock_columns` | a pack setting `state_checks.auto_mask_clock_columns: true` | `unreleased` | new engine → old image |
 | `state_checks.auto_normalize_nullables` | a pack setting `state_checks.auto_normalize_nullables: true` | `unreleased` | new engine → old image |
+| `state_checks.comparison_view` | a pack declaring `state_checks.comparison_view` | `unreleased` | new engine → old image |
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
 | `search.plane` | every pack | `unreleased` | new engine → old image |
+| `search.backend_config` | a pack declaring a non-empty `initial_state.rag.backend_config` | `unreleased` | new engine → old image |
+| `search.tool_name` | a pack naming its search tool other than `search_kb` | `unreleased` | new engine → old image |
 | `grading.llm_judge.judge_kind` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading_method_config` | every pack | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.judge_snippet_chars` | a pack setting `customization.judge_snippet_chars` other than 200 | `unreleased` | new engine → old image |
 
 `emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing
 under it, and `null` is a key an image must still declare. That is why `trace_checks`
 bites a pack that grades no trajectory at all, and why `search.plane` bites a task
-with no knowledge base.
+with no knowledge base. `search.backend_config` and `search.tool_name` are the
+opposite case: `SearchConfig` leaves them off the wire while they hold their default
+(an empty mapping, `search_kb`), so they bite only a pack that declares a value.
 
 Three rows need more than a cell:
 
@@ -1412,6 +1588,17 @@ Three rows need more than a cell:
   declare it.** An engine predating its removal translates the authored key onto that
   field, so the rejection is an old engine against a new image — the one row here whose
   direction runs that way.
+
+**`regex_engine` is refused at registration in both directions.** Its rows above are
+the wire model's lock, which runs new engine → old image only: an engine predating
+`trace_checks.regex_engine` and `transcript_rules.regex_engine` sends neither, and a
+current image's model would read their absence as the default `linear` — grading a
+pattern the older engine's gate passed by RE2, or raising on one RE2 refuses after the
+trial's tokens are spent. The wire-protocol version the `linear` default arrived in
+([`GRPC_PROTOCOL.md` § Version lock](GRPC_PROTOCOL.md#version-lock), version 4) closes
+both directions before any token is spent, for every pack: the runner refuses an engine
+below it; an image below it refuses a pack carrying either key at the wire model, and the
+engine refuses it for every other pack.
 
 `combine_method` is locked by its value domain the same way `id_fields` is: the runner
 validates it against the closed set in [§ Score Combination](#score-combination), so a
@@ -1809,6 +1996,14 @@ coincidental (many tables order rows by insertion time, not by contract), a per-
 `state_checks.ordered_tables` hint would let the hash ignore that order — tracked in
 [#1472](https://github.com/Toloka/tolokaforge/issues/1472).
 
+Through a [comparison view](#comparison-view) the invariant holds on the view pair: the
+digest is of the two views, so the diff that agrees with it is the grade's
+`comparison_view.view_diff`, computed over the views after the unstable filter by
+`compute_view_diff` — `compute_state_diff`, plus `tables_on_one_side` naming any table
+only one side holds, which `compute_state_diff` reads as empty and the hash does not.
+The raw `state_diff` beside it may read as identical where the views differ only in a
+generated id the view re-keyed.
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
@@ -1817,6 +2012,9 @@ coincidental (many tables order rows by insertion time, not by contract), a per-
 - Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
 - Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
+- Where a correct trajectory can leave drafts, released holds, read-tool logs or
+  differently numbered records behind, declare a
+  [comparison view](#comparison-view) rather than masking the ids that other tables cite
 - Combining the hash with JSONPath assertions requires an explicit `weight` —
   decide which source carries the verdict, per
   [Folding the hash verdict with `jsonpaths`](#folding-the-hash-verdict-with-jsonpaths).
@@ -1842,6 +2040,10 @@ is [trace checks](#trace-checks) territory — a result predicate beside
 `status: {equals: success}` is where an assertion about tool output lives. Nor can
 either substrate see the harness's `role: system` annotations — a termination
 notice cannot satisfy a required phrase (N3).
+
+**`disallow_regex` reads each pattern case-insensitively** on the engine
+`transcript_rules.regex_engine` names — [Regex engines](#regex-engines) says what
+each engine reads.
 
 ### Turn bounds
 
@@ -2109,8 +2311,8 @@ hold, so `{ gt: 0, lt: 100 }` is a range. The vocabulary:
 | `equals_ci` | a string equal to it, case-insensitively |
 | `contains` / `contains_ci` | the value contains it, case-sensitively or not |
 | `not_contains` | the value does not contain it — over a value the event carries |
-| `regex` | the pattern **searches** the value — unanchored, and only a string matches |
-| `not_regex` | the pattern finds nothing in the value — the complement of `regex` within declared events |
+| `regex` | the pattern **searches** the value under the predicate's [regex engine](#regex-engines) — unanchored, and only a string matches; a list: every pattern does |
+| `not_regex` | the pattern finds nothing in the value under the predicate's [regex engine](#regex-engines) — the complement of `regex` within declared events; a list: no pattern does |
 | `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
 | `date_gt` / `date_gte` / `date_lt` / `date_lte` | the value is an ISO-8601 date or datetime and the comparison holds chronologically |
 | `in_` / `not_in` | the value is (is not) a member of the list |
@@ -2171,9 +2373,134 @@ Two rules worth meeting here rather than in a silently ignored predicate:
   `not_equals`, which does hold over the absent case the way negative-text
   operators do not.
 
+**`regex` and `not_regex` take a list.** `regex: [a, b]` holds when every pattern
+searches the value and `not_regex: [a, b]` when none does; a single string is the
+one-item list, and an empty list is a load error. That is how a conjunction of
+lookaheads is written without lookaround — the two predicates below select the same
+`get_account` results, and only the second compiles under the default `linear`
+engine:
+
+```yaml
+- result: { regex: '(?=[\s\S]*"account_id":\s*"ACC-6")(?=[\s\S]*"email":\s*"x@y\.z")' }
+- result: { regex: ['"account_id":\s*"ACC-6"', '"email":\s*"x@y\.z"'] }
+```
+
+A negative lookahead is the same split onto `not_regex`: `regex: '^(?![\s\S]*refund)[\s\S]*approved'`
+is `{ regex: approved, not_regex: refund }`.
+
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
 not need. A predicate declaring **no** operator is rejected at load.
+
+**`regex_engine` is a modifier, not an operator.** It names the
+[engine](#regex-engines) the predicate's `regex` and `not_regex` run on and asserts
+nothing itself, so a predicate declaring only `regex_engine` declares no operator,
+and one declaring it beside neither pattern operator is a load error.
+
+### Regex engines
+
+Every pattern a pack writes for grading — a matcher's `regex` / `not_regex`, a
+binder's `bind.values.<name>.pattern`, and every `transcript_rules.disallow_regex`
+entry — is compiled and searched by one of two engines, named by what they
+guarantee:
+
+| `regex_engine` | engine | reads |
+|---|---|---|
+| `linear` (the default) | RE2 | no lookaround and no backreferences; a search costs time linear in the text |
+| `backtracking` | Python `re` | the whole `re` syntax; a search can backtrack, at a cost that grows faster than the text |
+
+**Where the engine is declared.** `trace_checks.regex_engine` is the engine of every
+pattern in the block, shared constraints and routes alike; a value predicate's own
+`regex_engine` covers its `regex` and `not_regex`, and a bound value's covers its
+`pattern`. `transcript_rules.regex_engine` is the engine of every `disallow_regex`
+entry. Both blocks default to `linear`. The nearest declaration wins — a predicate or
+bound value naming an engine overrides its block, one naming none inherits it:
+
+```yaml
+trace_checks:                          # no regex_engine: every pattern below runs on RE2 …
+  constraints:
+    - id: the_duplicate_was_flagged
+      description: "the agent flagged the account whose two ids repeat"
+      require:
+        present:
+          match:
+            kind: tool_result
+            tool: { equals: flag_account }
+            result: { regex: '(ACC-\d+) \1', regex_engine: backtracking }   # … but this backreference
+transcript_rules:
+  disallow_regex: ['password:\s*\S+']
+```
+
+A `regex_engine` on a predicate declaring neither `regex` nor `not_regex`, or on a
+bound value declaring no `pattern`, is a load error: it would change nothing.
+
+**What `linear` refuses.** RE2 does not compile:
+
+- lookaround — `(?=…)`, `(?!…)`, `(?<=…)`, `(?<!…)`;
+- backreferences — `\1`, `(?P=name)`;
+- possessive quantifiers — `a*+`;
+- `\Z` (RE2 spells end of text `\z`);
+- a repeat count over 1000 — `a{1001}` — and nested counted repetition whose product
+  is too large — `(\w{1,1000}){1,1000}` — both refused as "invalid repetition size";
+- a pattern over RE2's memory budget — `\pL{1000}` five times over — refused as
+  "pattern too large";
+- verbose mode `(?x)`, the ASCII flag `(?a)`, and named characters `\N{…}`;
+- a pattern holding a lone surrogate (U+D800–U+DFFF), which cannot be encoded as
+  UTF-8.
+
+**Patterns both engines compile can read differently.** These are the semantics of
+the `linear` default; a pattern that relies on the `backtracking` reading declares
+`regex_engine: backtracking`. Each row is pinned under both engines in
+`tests/unit/grading/test_regex_engine.py`:
+
+| pattern | text | `backtracking` | `linear` | why |
+|---|---|---|---|---|
+| `\d` | `٣` (U+0663) | match | no match | RE2 `\d` is ASCII |
+| `\w` | `é` | match | no match | RE2 `\w` is ASCII |
+| `\s` | U+001C | match | no match | RE2 `\s` is ASCII whitespace |
+| `\bfoo\b` | `éfoo` | no match | match | RE2 `\b` is an ASCII word boundary |
+| `a$` | `a` + newline | match | no match | RE2 `$` without `(?m)` is end of text only |
+| `[[:alpha:]]+` | `ab:` | no match | match | a POSIX class in RE2, a character set in `re` |
+| `a{,3}` | `aaaa` | match | no match | `re` reads `{0,3}`; RE2 reads the literal text `{,3}` |
+| `(?i)İ` (U+0130) | `i` | match | no match | `re` case-folds `İ` to `i`; RE2 does not. `disallow_regex` always runs ignore-case, so a bare `İ` entry reads this way |
+| U+FFFD | `abc ` + lone surrogate U+D800 + ` def` | no match | match | `linear` searches every lone surrogate as U+FFFD |
+
+The last row is how `linear` reads text that is not valid UTF-8. `json.loads` turns an
+escaped lone surrogate in a tool result or an assistant turn into one, and RE2 cannot
+encode it, so `linear` searches a view of the text with each code point in
+U+D800–U+DFFF replaced one-for-one by U+FFFD. A binder's capture is still sliced
+from the original text. Only a pattern that names U+FFFD itself, or counts it under
+`.` or a class, can read the substitute.
+
+**A lookahead conjunction is a [pattern list](#operators).**
+`(?=[\s\S]*a)(?=[\s\S]*b)` is `regex: [a, b]`, and a negative lookahead
+`^(?![\s\S]*c)` is `not_regex: [c]` on the same predicate. A binder's `pattern` and a
+`disallow_regex` entry are one pattern each, so a lookaround there that cannot be
+rewritten without it needs `backtracking`.
+
+**When to declare `backtracking`.** For a pattern that needs lookaround,
+backreferences or another construct RE2 refuses, or that relies on a row of the table
+above. Its cost is Python `re`'s: a search can take time quadratic in the text or
+worse. The matcher [evaluates a predicate only where it can change the
+outcome](#what-a-matcher-resolves-to-matched-and-undecidable), so beside a `tool`
+predicate a `result` pattern runs only on the calls that tool admits — that bounds how
+many values the pattern searches, not what one search costs.
+
+**A pattern its engine refuses never grades.** A `trace_checks` block compiles every
+pattern it declares — shared and per-route, matcher and capture — before it evaluates
+any constraint, so an uncompilable one raises on every grade, whatever the timeline
+holds: not only on a trial carrying an event that reaches it, but also where a binder
+that selected nothing leaves the `require` tree declaring it unread, and on a trial
+that left no trace at all. A `disallow_regex` entry its engine refuses is a failing
+sub-check, on a transcript with no assistant turn too. The
+[pre-run gate](#what-is-validated-before-a-run) compiles every pattern under its
+engine before a run spends anything: a `backtracking` refusal is an error, and a
+`linear` one an advisory naming the `regex_engine: backtracking` opt-in and, on a
+matcher's `regex` / `not_regex`, the pattern list — fatal under the default
+`fail_on`.
+
+Code-authored checks (`checks.py`) use whatever regex library their author imports;
+`checks_helpers.text_matches_pattern` is Python `re` with the caller's `re` flags.
 
 ### What a matcher resolves to: matched, and undecidable
 
@@ -2210,6 +2537,14 @@ Undecidability is scoped **to the matcher**, never to the event kind:
   nothing;
 - a matcher over a fully recorded call is *decided*, because the pairing answers
   it.
+
+**A predicate is evaluated only where its result can change what the matcher selects
+or the comparisons it reports.** The cheap fields — `tool`, `executor`, `status` — are
+read first, then `args` paths, then `text` and `result`, whatever order the matcher
+declares them in. So on a call `tool` already rejects, no `result` pattern runs, and a
+pattern's cost is paid only on the events the matcher's other predicates admit. The
+answer is the one evaluating every predicate gives — the same sets, and the same
+comparisons reported, in the same order.
 
 ### The constraint vocabulary — ten members
 
@@ -2757,6 +3092,22 @@ a flaky substrate can silently strip — a KB search's `status: success`, a data
 probe's read — where forcing the gate to `fail` on an infrastructure blip would
 zero every passing weight in the block.
 
+**A gate with no `on_missing` draws an advisory where it could carry
+`on_missing: fail`.** A gate whose `require` tree admits `on_missing: fail` — no
+`present`, `absent` or `count` at any depth — and declares no `on_missing` is
+reported as an [advisory](#what-is-validated-before-a-run): an anchor whose tool
+errors at runtime matches nothing, and the default `fail` then shuts the block.
+Declare `on_missing: withhold` where the anchor's tool can error, or
+`on_missing: fail` to accept the risk. A gate whose tree holds one of those three
+kinds gets no advisory, because `on_missing: fail` is refused there and the default
+is the only `fail` spelling it has. To keep an erroring anchor from shutting an
+`all_of` gate that mixes the two, split the anchored expression into a gate of its
+own and give that one `on_missing: withhold` — the two gates shut the block wherever
+their `all_of` would, except that an unmatched anchor on the split-off gate
+withholds instead of shutting it. A mixed `any_of` or `negate` gate has no such
+split: `on_missing` belongs to the whole constraint, never to one expression in it,
+so that gate keeps the default.
+
 **A gate nobody can decide trips.** Undecided is not a pass in the agent's favour
 anywhere in this vocabulary, and a gate is the one check the author said must hold —
 an undecided gate that opened would be a silent pass on exactly that check, and would
@@ -3204,7 +3555,7 @@ harness produces.
 A mis-authored check is charged to the agent or to nobody: a misspelled tool name in
 a `present` matcher scores the component `0.0` with the message a genuine agent
 failure carries, the same typo under `absent` passes every trial, and an
-uncompilable `regex` raises inside the evaluator once the tokens are spent. So a
+uncompilable `regex` raises at grade time once the tokens are spent. So a
 task's whole grading block is checked against its tools before anything is paid for — by
 `tolokaforge validate`, which exits non-zero, and by the run's own pre-flight, which
 makes one pass over every selected task before it schedules the first trial and
@@ -3235,7 +3586,10 @@ Findings come in three classes:
 | a `bind.values[*].pattern` over an argument the tool types `integer` / `number` / `boolean` / `array` / `object`, or over a bare `field: args` — a capture is taken off text alone, so the name binds on no trajectory | error on a schema forbidding extras, advisory on one permitting them | `bind.values[*].pattern` |
 | a reference on an `args` predicate whose declared type and the binding's declared type no value of either can satisfy the operator between — `equals_binding` across `integer` / `number` / `boolean` holds, `contains_binding` finds a scalar inside a container and a container inside nothing | error only where **both** schemas forbid extras, advisory wherever either permits them | the predicate's own `args.<path>` |
 | the same reference where the argument's schema writes no `type`, or writes one outside the six JSON type names | unchecked | as above |
-| a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
+| a `severity: gate` constraint with no `on_missing` whose `require` tree admits `on_missing: fail` — no `present` / `absent` / `count` anywhere in it — so an anchor that matched nothing trips the gate by default ([§ `severity`](#severity--a-check-that-must-hold)) | advisory | `trace_checks.<id>`, `trace_checks.<path id>.<constraint id>` |
+| a pattern the `backtracking` engine does not compile | error | every predicate's `regex` / `not_regex` — `regex[i]` / `not_regex[i]` for each item of a list — every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex[i]` |
+| a pattern the `linear` engine — the default — does not compile ([what it refuses](#regex-engines)) — the finding names `regex_engine: backtracking` and where to declare it, and on a predicate's `regex` / `not_regex` also the [pattern list](#operators) a lookahead conjunction splits into. Fatal under the default `fail_on`; under `fail_on: error` the run starts, and at grade time a `trace_checks` pattern raises and a `disallow_regex` entry fails its sub-check | advisory | as above |
+| a `bind.values[*].pattern` declaring other than one capture group under its engine — `\pL+` (none) and `(?<n>\d+)-(\d+)` (two) are patterns only `linear` compiles, so the load-time count, which reads Python `re`, does not reach them | error | `bind.values[*].pattern` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
@@ -3245,6 +3599,8 @@ Findings come in three classes:
 | a `state_checks.jsonpaths[*].path` rooted at `filesystem`, which the runner's JSONPath state does not carry — read from the block alone, so it answers whatever the caller resolved | error | `state_checks.jsonpaths` |
 | a `state_checks.jsonpaths[*].path_glob` compared with anything but `contains_ci` — including no operator at all — which the runner's file evaluator reads as the empty string every file contains | error | `state_checks.jsonpaths` |
 | a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
+| a `state_checks.comparison_view` a run's load refuses — a table a rule names that the seeded `initial_state` lacks or seeds as a mapping, an id-field conflict, a `normalize_ids` key field the unstable filter or the clock mask drops or `numeric_string_fields` folds, a `references` field the masks drop, a re-keyed id field the clock mask drops ([§ Comparison view](#comparison-view)) — where the caller resolved the seeded tables; or a block the view model refuses. A field a declared schema does not carry is checked at `RegisterTrial` only, the native adapter declaring no schema | error | `state_checks.comparison_view` |
+| a missing table under `relaxed_validation`, or a `comparison_view` beside a `hash` that is not enabled | hint — printed by `validate`, never fatal | `state_checks.comparison_view` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | any hash source declared under a `hash.enabled` a run reads as off — written `false`, `"false"`, `0`, `"0"`, `"no"`, `"off"`, `null`, or absent — wherever the adapter answers at all, whatever it answers: a source the block declares and nothing reads is the author's defect regardless | error, one for the block | `state_checks.hash.<the declared source>` |
@@ -3268,6 +3624,8 @@ Findings come in three classes:
 | an `id_fields` declaration whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks.id_fields` |
 | a task enabling `db_query` or `db_update` whose tool set does not say whether they are builtins (a `ToolInventory` reporting `json_db_builtins=None`, such as a recorded wire tool list), or whose adapter's `grading_seeded_tables` hook answers `unresolvable()` | unchecked | `tools` |
 | a task enabling `db_query` or `db_update` whose tool set does not say what their tool blocks carry (a `ToolInventory` reporting `json_db_tool_config_keys=None`, such as a recorded wire tool list) | unchecked | `tools` |
+| a `comparison_view` whose adapter's `grading_seeded_tables` hook answers `unresolvable()` | unchecked | `state_checks.comparison_view` |
+| a `comparison_view` with a `normalize_ids` rule, whose adapter's seeded-tables layer reports no unstable fields — the masked-field checks only | unchecked (`ADAPTER_DECLARED`) | `state_checks.comparison_view` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
@@ -3819,8 +4177,8 @@ generation with K-sample geometric-median aggregation.
   `{agent_system_prompt, transcript, rubric, read-only tools, state_diff}`.
 * **Harness-owned read-only tools.** The judge gets a fixed read-only allowlist —
   DB reads (`get_db_state` / `query_db`), a KB search mirroring the agent's
-  (`search_kb` for rag-service or the reused `search_policy` for TypeSense — see
-  *Judge KB faithfulness* below), `read_file` (only when the agent produced a
+  (`search_kb` over the task's search backend, or the reused `search_policy` for
+  TypeSense — see *Judge KB faithfulness* below), `read_file` (only when the agent produced a
   workspace), and the rubric-derived `submit_report`. No `write`, no `compute`.
 * **Single call, per-criterion output.** The judge inspects the final state, then
   calls `submit_report` once with `{justification, met|score}` for every criterion
@@ -3839,12 +4197,16 @@ able to read the **same knowledge base the agent read** — never a different
 corpus, and never none while still scoring policy compliance. The judge's KB
 capability is therefore resolved **per-trial to mirror the agent's** (issue #95):
 
-* **rag-service** — when the agent had the rag `search_kb` tool (a
-  `RAGSearchToolWrapper` was reconstructed and a rag client exists), the judge
-  gets a `search_kb` bound to the **same `rag_client` + `trial_id`**, querying the
-  per-trial `/trials/{trial_id}/search` index. Identical retrieval by
-  construction: the agent gets hits ⇒ the judge does too; the agent 404s ⇒ the
-  judge 404s.
+* **A search backend (`search.plane`, ADR-0054)** — when an agent tool is the
+  task's search tool (a `SearchToolWrapper` over the index the trial's backend
+  built — matched by instance, not by the tool's name, so a renamed tool keeps
+  it), the judge gets `search_kb` over that index's own `knowledge_search()`.
+  For `rag_service` that is bound to the **same `rag_client` + `trial_id`**,
+  querying the per-trial `/trials/{trial_id}/search` index. Identical retrieval
+  by construction: the agent gets hits ⇒ the judge does too; the agent 404s ⇒
+  the judge 404s. A backend whose `knowledge_search()` returns `None` gives the
+  judge no search. The judge's `search_kb` keeps its own name and its
+  `{query, top_k, alpha}` schema whatever the agent's tool is called.
 * **TypeSense (`search_policy`)** — when the agent had the read-only
   `search_policy` KB tool (the mcp_core TypeSense connector), the judge reuses
   **that exact reconstructed tool** through a read-only passthrough: same tool,
@@ -3867,6 +4229,18 @@ layers project→task — see
 [PROJECTS.md](PROJECTS.md#task-override-semantics) and
 [CONFIG.md](CONFIG.md#grading-specification-gradingyaml). When absent, behaviour
 is exactly as above.
+
+**How much of each hit the judge reads.** The judge's `search_kb` shows each hit's
+document id, its title when the backend has one (`bm25`'s JSON documents do;
+rag-service hits do not), source, score and content. The content is cut to its
+first 200 characters with an ellipsis by default. Set
+`grading.llm_judge.customization.judge_snippet_chars` to another positive integer
+to cut there, or to `null` to show whole documents — what a rubric that checks an
+agent's answer against a document's exact wording needs. It is not tri-state:
+`null` is a value, so a task undoes a project figure by writing `200`. It layers
+project→task like the other customization keys and is left off the wire at its
+default, so a task that does not set it crosses to an older image unchanged. The
+agent's search output is the backend's own rendering and is not affected.
 
 **Seeing which backend was used.** The judge's `reasons` (surfaced into the grade
 output's `reasons`) always ends with a `Judge KB: …` note — `Judge KB: search_kb`,

@@ -46,6 +46,10 @@ class JudgeUsage:
     ``consistency_rejections`` counts ``submit_report`` attempts rejected for a
     verdict/justification marker mismatch (a ``VerdictConsistencyError``) on
     this trial — distinct from generic schema rejections, which are not counted.
+
+    ``billed_cost_usd`` sums the charge each judge call's ``ProviderRawCall``
+    states, and is ``None`` unless every call stated one; ``cost_usd`` stays the
+    eval's own figure.
     """
 
     calls: int = 0
@@ -55,6 +59,7 @@ class JudgeUsage:
     cost_usd: float = 0.0
     tool_calls: int = 0
     consistency_rejections: int = 0
+    billed_cost_usd: float | None = None
 
 
 @dataclass(frozen=True)

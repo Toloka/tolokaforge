@@ -833,7 +833,7 @@ Two rules keep it honest:
   litellm refuses for an unmapped model exactly as it refuses `tools`.
 - **Nothing is written into litellm's global map.** The kwarg is per call, so
   our own price can never end up labelled `cost_source="litellm"` (the label
-  meaning provider-authoritative), no entry of ours can outlive the day
+  meaning litellm's figure, not ours), no entry of ours can outlive the day
   upstream ships a richer one, and there is no process-global mutation to
   synchronise across the trial thread pool. Once upstream carries the model,
   the allow-list is a harmless no-op.
@@ -959,6 +959,44 @@ attribute an id to a specific call or turn, which is what a comparison against
 another harness needs. The list is shorter than `api_calls` whenever a call was
 served off a non-OpenRouter route, and empty on a run that never reached
 OpenRouter. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `metrics.yaml`.
+
+## Billed cost
+
+`cost_usd` is the eval's own figure and stays what the cost ladder in
+`_assemble_result` makes it (litellm's `response_cost`, else the bundled table,
+else unknown). Beside it, `ProviderRawCall.billed_cost_usd` records what the
+response's usage block states the call was charged, `None` where it states no
+charge. It feeds neither `cost_usd`, `metrics.yaml`'s totals nor any budget.
+
+OpenRouter states the charge on every response: `usage.cost`, in credits of one
+USD each (its `usage: {include: true}` request flag is deprecated and changes
+nothing; litellm still sends it). On a **BYOK** call (`usage.is_byok: true`)
+`cost` is only OpenRouter's fee, often 0 inside its free allowance, and the
+upstream bills the inference to the key's owner, stated as
+`usage.cost_details.upstream_inference_cost`; the call cost the sum, and a BYOK
+block without that figure gives `None`. `extract_billed_cost`
+([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py)) is the single reader,
+and it reads the response body only. A provider's own API (Anthropic, OpenAI,
+Google) and a self-hosted model state no charge, so there `None` is the answer
+and `cost_usd` the only figure.
+
+Why the field exists although `cost_source: litellm` often carries the same
+number: litellm takes a charge the response states ahead of its own price map
+(OpenRouter's `usage.cost`, and a LiteLLM gateway's `x-litellm-response-cost`
+response header), so on a non-BYOK OpenRouter call `cost_usd` already equals the
+charge. On a BYOK call litellm's figure is OpenRouter's fee alone: inside the
+free allowance that is 0, which the ladder discards for litellm's own price map;
+outside it the fee is a few percent of the bill and the ladder keeps it, so
+`cost_usd` records the fee and not the upstream's bill. The label cannot say
+which of these a `litellm` cost is. A gateway's header is not read as a charge: on a route the
+gateway prices itself it is the gateway's estimate, not an upstream's bill.
+
+The judge sums the charges of its calls into `grade.judge_usage.billed_cost_usd`
+(field 17 of `JudgeReport`), `None` unless every call stated one
+(`usage.sum_known`): a sum over some calls would read as the bill for all. A
+runner image without the field sends none, so the sum fills once the runner
+carries it. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) and, for where Langfuse
+shows the charge, [OBSERVABILITY.md](OBSERVABILITY.md) § "Cost on a trace".
 
 ## `proxy` — routing calls through an LLM gateway
 
@@ -3113,3 +3151,16 @@ so `Orchestrator._build_conductor` and `run_trial` both refuse to start an armed
 run on a conductor that does not declare `supports_rate_limit_probe` — otherwise
 the run would absorb 429s while writing all-default `rate_limit_*` / `probe_*`
 metrics, and nothing in the artifacts would show it.
+
+### Per-call output format and sampling evidence
+
+`LLMClient.generate(response_format={"type": "json_object"})` passes an explicit
+output format to the transport. `GenerationResult.sent_sampling` records only
+the sampling keys actually sent after model policy (an empty dict means none;
+`None` means unobserved). Consumers must not infer sent values from the model
+config. `models.<role>.capabilities.api_call_timeout_s` accepts a finite positive
+number and overrides the call timeout for that model only.
+`generate(retry_policy="single_attempt")` makes exactly one request: the outer,
+timeout, LiteLLM and key-rotation retries are off for that call, and it refuses to
+run while the process-wide `litellm.num_retries` or `litellm.model_fallbacks` is
+set, since either would send a second request. The default is `"default"`.

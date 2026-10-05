@@ -696,7 +696,7 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-Ten swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (six seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
+Eleven swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (seven seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
@@ -707,6 +707,7 @@ Ten swappable seams are each exposed as an `importlib.metadata` entry-point grou
 | `tolokaforge.turn_policies` | `Callable[[TurnPolicyContext], TurnPolicy]` | `user_simulator` (the resolved user :class:`Actor`; ``None`` for policies that dispatch no user) |
 | `tolokaforge.agent_loops` | `Callable[[AgentLoopContext], AgentLoop]` | the trial's loop dependencies (LLM client, tool executor + schemas, loop budget, metrics sink, termination + user-turn seams, tool-call recorder, call-id assigner, logger, observation sinks) |
 | `tolokaforge.user_simulators` | `Callable[[UserSimulatorContext], UserSimulator]` | the resolved `actors.user` fields (`mode`, `persona`, `backstory`, `scripted_flow`), the trial deps the built-in needs (`tool_schemas`, `llm_config`, `rate_limit_probe`), the opaque `simulator_config` mapping the engine passes through untouched for a non-built-in simulator to read, and `task_dir`, the task's directory that paths in `simulator_config` resolve against |
+| `tolokaforge.search_backends` | `Callable[[SearchBackendContext], SearchBackend]` | the task's opaque `backend_config`, its declared search tool (`tool_name`, `tool_description`), a `logger`, and — at `RegisterTrial` only — the `trial_id`, the knowledge base's `domain_name` and the runner's handles on the declared stack services it reaches (`stack_services`, a `StackServices`) |
 | `tolokaforge.compose_materialisers` | `type[ComposeMaterialiser]` | *no context* — class is instantiated by the composer |
 | `tolokaforge.service_lifecycle_dispatchers` | `type[ServiceLifecycleDispatcher]` | *no context* — one class per `ServiceIsolation` label; the class's `isolation` ClassVar names the label the composer looks it up by |
 | `tolokaforge.substrate_composers` | `type[SubstrateComposer]` | *no context* — the backend instantiates the composer and injects its own materialiser + dispatcher registry |
@@ -877,6 +878,40 @@ my_sim = "mypkg.simulator:my_simulator_factory"
 ```
 
 tolokaforge ships `builtin` (the `BuiltinUserSimulator`) under this group; it resolves through the registry like any third-party simulator, and ignores `simulator_config`. An unregistered name is refused at run start, naming the registered simulators and the task that asked for it. See [ADR-0051](adr/0051-user-simulator-protocol-and-registry.md).
+
+**Search backend** — `mypkg/search.py`. A search backend is the retrieval behind a task's knowledge-base search tool. It is looked up per task by `initial_state.rag.backend` (carried on the wire as `search.plane`) and reads its own configuration from the opaque `initial_state.rag.backend_config` mapping:
+
+```python
+from tolokaforge.core.plugin_registry import SearchBackend, SearchBackendContext
+
+class MyBackend:
+    name = "my_search"
+    stack_service = None                      # or the stack service it needs, e.g. "rag_service"
+
+    def __init__(self, ctx: SearchBackendContext):
+        self.config = MyConfig.model_validate(ctx.backend_config)   # your own model
+        self.ctx = ctx
+
+    def tool_parameters(self):                # the agent tool's JSON-schema `parameters`; must declare `query`
+        return {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+
+    async def build_index(self, corpus_dir):  # the trial's work; a corpus with no documents raises SearchIndexBuildError
+        return MyIndex(load(corpus_dir), self.config)   # search(query, arguments, *, budget_s) -> SearchOutcome; knowledge_search()
+
+def my_backend_factory(ctx: SearchBackendContext) -> SearchBackend:
+    return MyBackend(ctx)
+```
+
+```toml
+[project.entry-points."tolokaforge.search_backends"]
+my_search = "mypkg.search:my_backend_factory"
+```
+
+The factory is called in two places: orchestrator-side with a trial-less context (no `trial_id`, no stack-service handles) so the native adapter can build the agent's schema from `tool_parameters()` and the stack rule can read `stack_service`, and by the runner at `RegisterTrial` with the trial's context, before `build_index`. So a factory does no trial work, and `tool_parameters()` / `stack_service` may depend on `backend_config` but not on the trial. The index's `search` returns a `SearchOutcome`: the hits (`SearchHit`) and the text the agent reads, which the backend renders itself; a failed search raises. `knowledge_search()` hands the judge a `KnowledgeSearch` over the same index, or `None` to give it nothing — the runner binds it only when an agent tool searched that index.
+
+A backend that needs a stack service declares one of the names `tolokaforge.core.search.stack_services` declares (`DECLARED_STACK_SERVICES`; today `"rag_service"`) and reads the runner's handle with `ctx.stack_services.get(RAG_SERVICE)`, typed by the service's Protocol (`RagServiceHandle`: `base_url`, `timeout`, `index_documents`, `search` — the only members a backend may use). That surface is versioned by `STACK_SERVICES_API_VERSION`: every change to the declared names or a handle's members bumps it and is recorded in ADR-0054 § Stack services, and a canonical test pins the surface to the version. A backend declaring an undeclared name is refused at run start, and the runner builds a trial's index only when it reaches the declared service, refusing the trial otherwise with the service's name and how a runner reaches it.
+
+tolokaforge ships two backends, each resolving through the registry like any third-party backend: `rag_service` (the hybrid rag-service, `stack_service = RAG_SERVICE_STACK_SERVICE` (`"rag_service"`), which takes no `backend_config`) and `bm25` (Okapi BM25 in the runner process, `stack_service = None`, so its tasks keep the core stack; pure Python, bit-identical to `rank_bm25` 0.2.2; `backend_config` selects the document format, tokenizer, BM25 constants, fixed top-k with corpus-order ties, the blank-query rule, a JSON or templated-text rendering and which parameters the agent sees — see [CONFIG.md § `backend: bm25`](CONFIG.md#backend-bm25--backend_config)). `typesense` is reserved — the runner serves that plane itself — so a registration under it fails every lookup into the group. At run start each searching task's backend is built from the trial-less context, so an unregistered name or a factory refusing the task's `backend_config` is one refusal naming the task and the backend; `RegisterTrial` refuses again for a trial whose backend fails to build. The context hands a backend a read-only deep copy of `backend_config`. A backend runs in the runner process: the runner image installs only the subset wheel, so a backend the engine does not ship reaches a containerised runner only through a runner image built with the package. `tolokaforge.testing.search_backends` ships the conformance suite (`SearchBackendConformanceSuite`: subclass it and supply the factory and `make_searches_fail`, how your search fails in production) and the in-memory reference to copy; the suite runs a backend the way the runner does, calling the judge's synchronous search from another thread while the event loop keeps running, so a judge search that bridges to a coroutine is certified either way it bridges. See [ADR-0054](adr/0054-search-backend-protocol-and-registry.md).
 
 **Composition-plan adapter seams** — `mypkg/k8s.py`. ADR-0044 splits the compose-mode runtime into three detachable adapter Protocols (see [Composition-plan seams](#composition-plan-seams) above for the shape). Each entry-point group targets an impl class directly; the caller instantiates with the class's own optional injection seams:
 

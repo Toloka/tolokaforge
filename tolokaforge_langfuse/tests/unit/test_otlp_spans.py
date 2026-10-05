@@ -14,6 +14,7 @@ import pytest
 
 pytest.importorskip("opentelemetry.sdk")
 from tolokaforge_langfuse.otlp_spans import (  # noqa: E402
+    OBSERVATION_EVENTS,
     observation_bodies,
     score_events,
     span_attributes,
@@ -66,14 +67,25 @@ class TestTheGolden:
         assert converted[-1]["isRoot"] and converted[-1]["parent"] is None
 
     def test_every_observation_of_the_projection_becomes_one_span(self, golden_events) -> None:
-        observations = [
-            e
-            for e in golden_events
-            if e["type"] in {"span-create", "generation-create", "event-create"}
-        ]
+        observations = [e for e in golden_events if e["type"] in OBSERVATION_EVENTS]
         spans = spans_from_events(golden_events)
         assert len(spans) == len(observations)
         assert len({s.context.span_id for s in spans}) == len(spans)  # every id exactly once
+
+    def test_each_event_type_names_its_observation_type(self, golden_events) -> None:
+        """The root is the agent, a tool execution a tool, the grading an evaluator."""
+        kinds = {
+            span.name: span.attributes["langfuse.observation.type"]
+            for span in spans_from_events(golden_events)
+        }
+        assert kinds["trial"] == "agent" and kinds["grading"] == "evaluator"
+        assert kinds["agent"] == "generation" and kinds["tool: search_booking"] == "tool"
+        assert {kind for name, kind in kinds.items() if name.startswith("log:")} == {"event"}
+
+    def test_the_traces_user_rides_on_every_span(self, golden_events) -> None:
+        spans = spans_from_events(golden_events)
+        assert {span.attributes["langfuse.user.id"] for span in spans} == {"acme/pilot-1"}
+        assert {span.attributes["langfuse.trace.name"] for span in spans} == {"pilot/pilot-domain"}
 
     def test_scores_are_not_spans_and_travel_unchanged(self, golden_events) -> None:
         scores = score_events(golden_events)

@@ -12,8 +12,7 @@ supplies, which bridges to its async DB client off the judge's worker thread (se
 ``judge.py`` module docstring). ``search_kb`` is :class:`SearchKbTool`, a
 harness-owned read-only tool that delegates to the per-trial
 :class:`~tolokaforge.core.grading.kb_search.KnowledgeSearch` resolved for the
-trial — the SAME index the agent searched. It does NOT reuse the builtin
-``SearchKBTool`` (that one re-derives a global rag URL — the bug this fixes).
+trial — the SAME index the agent searched.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 if TYPE_CHECKING:
@@ -216,13 +216,19 @@ class SearchKbTool(Tool):
     #: is by this declared tag, never by tool name.
     is_knowledge_search = True
 
-    def __init__(self, kb_search: KnowledgeSearch):
+    def __init__(
+        self, kb_search: KnowledgeSearch, *, snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
+    ):
+        """``snippet_chars`` is how much of each hit's text the judge reads
+        (``grading.llm_judge.customization.judge_snippet_chars``): the first that
+        many characters with an ellipsis when cut, or the whole document for ``None``."""
         super().__init__(
             name=SEARCH_KB_TOOL_NAME,
             description="Search the knowledge base for relevant information",
             policy=read_only_policy(),
         )
         self._kb = kb_search
+        self._snippet_chars = snippet_chars
 
     def get_schema(self) -> dict[str, Any]:
         return {
@@ -277,17 +283,22 @@ class SearchKbTool(Tool):
 
         lines = [f"Found {len(hits)} relevant documents:\n"]
         for i, hit in enumerate(hits, 1):
-            snippet = hit.text[:200]
-            ellipsis = "..." if len(hit.text) > 200 else ""
             lines.append(f"\n[{i}] Document: {hit.doc_id}")
+            if hit.title is not None:
+                lines.append(f"    Title: {hit.title}")
             lines.append(f"    Source: {hit.source}")
             lines.append(f"    Score: {hit.score:.3f}")
-            lines.append(f"    Content: {snippet}{ellipsis}")
+            lines.append(f"    Content: {self._snippet(hit.text)}")
         return ToolResult(
             success=True,
             output="\n".join(lines),
             metadata={"count": len(hits), "top_score": hits[0].score},
         )
+
+    def _snippet(self, text: str) -> str:
+        if self._snippet_chars is None or len(text) <= self._snippet_chars:
+            return text
+        return text[: self._snippet_chars] + "..."
 
 
 class DelegatingReadTool(Tool):

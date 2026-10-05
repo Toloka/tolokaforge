@@ -1,11 +1,12 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Twenty locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
+Twenty-one locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
 what each grading key is, which substrate scores it, and whether the two agree.
-Locks 16-20 are over what a grade *does* and *says*, which the manifest does not
+Locks 16-21 are over what a grade *does* and *says*, which the manifest does not
 describe — the proposition a hash source compares against, what the hash reads a
 record's numeric-looking strings as, what ``Grade.reasons`` carries for a component
-that took a verdict, and whose mistake a comparison no trajectory could make is:
+that took a verdict, whose mistake a comparison no trajectory could make is, and
+what a declared comparison view lets the hash count:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves; a position below a claimed
@@ -28,16 +29,15 @@ that took a verdict, and whose mistake a comparison no trajectory could make is:
 6. both substrates fold a hash verdict and a JSONPath score into one
    ``state_checks`` component by the author's weight, pinned cell by cell to
    arithmetic this module computes for itself;
-7. the hash verdict either substrate can produce is binary — source-audited for
-   the producers whose verdict leaves as a bare float in a tuple, and a type
-   invariant of ``HashGradingResult`` for the producer whose verdict leaves
-   inside it — which is what makes lock 6's canonical-tier hash inputs the only
-   values that path yields rather than a stand-in for it;
+7. the hash verdict either substrate can produce is binary — a type invariant of
+   the one ``HashGradingResult`` every hash producer declares it returns — which is
+   what makes lock 6's canonical-tier hash inputs the only values that path yields
+   rather than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
    enumerated here, and the tables those claims rest on — lock 6's weight sweep,
-   lock 9's method answers, lock 19's folding matrix — stay substantive; lock 19's
-   own nodeid is resolved besides, so that one differential cannot be deleted or
-   renamed with the set unchanged;
+   lock 9's method answers, lock 19's folding matrix, lock 21's view matrix — stay
+   substantive; the nodeids of locks 19 and 21 are resolved besides, so neither
+   differential can be deleted or renamed with the set unchanged;
 9. both substrates aggregate one split pair of deterministic components by the
    author's ``combine.method``, each method pinned to a score written out here;
 10. both substrates score one ``trace_checks`` pack to the same component through
@@ -91,13 +91,18 @@ that took a verdict, and whose mistake a comparison no trajectory could make is:
     where one candidate made the comparison beside one that could not, and ``0.0``
     where none could — with the sentence naming the reference on the verdict that
     crosses the wire, since a diagnostic the author never reads leaves an authoring
-    mistake looking like the agent's.
+    mistake looking like the agent's;
+21. a declared ``state_checks.comparison_view`` turns a verdict on both substrates
+    exactly where the trial differs only in what the view does not count: a matrix
+    grading one pack's seeded state, a state that differs in a re-filed id, a released
+    hold and a logged lookup, and the same state with a changed record, with and
+    without the view — and both grades carry the same record of it.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18, 19 and 20 drive a real trial, and each reads
+Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18, 19, 20 and 21 drive a real trial, and each reads
 it through one fixture loader, so what a ``grading_parity`` pack can express bounds what
 they can prove — for locks 15 and 18 that bound covers the keys their driver tables
 send to a parity pack, the hash family, the probes and the judge being driven from
@@ -113,12 +118,13 @@ carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
+import copy
 import importlib
 import json
 import re
 import shutil
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, UnionType
@@ -126,13 +132,14 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import pytest
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_COMPONENTS,
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
+from tests.utils.comparison_view_runner import grade_through_the_runner
 from tests.utils.grading_parity_packs import (
     FIXTURE_TIMESTAMP,
     TrialCase,
@@ -158,8 +165,9 @@ from tolokaforge.core.grading.composite_fold import (
     resolve_state_checks_component,
 )
 from tolokaforge.core.grading.default_state_check_backends import DbProbesStateCheckBackend
-from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
+from tolokaforge.core.grading.golden_replay import resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.hash_grading_result import HashGradingResult
 from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
@@ -272,22 +280,16 @@ _NUMERIC_STRING_FIELDS_KEY = "state_checks.numeric_string_fields"
 _GOLDEN_REPLAY_PACK = "shop_orders_02"
 
 # Every function that can hand a hash verdict to the shared composer, as
-# (repo-relative module, function name), partitioned by the shape the verdict
-# leaves in. Tuple-verdict producers hand it on as a bare float in a tuple, so
-# lock 7 audits their sources; the model-verdict producer returns it inside
-# ``HashGradingResult``, which derives the score from ``hash_match``, so lock 7
-# proves that invariant instead of reading its source. The union is asserted as
-# set equality against the hash family's declared evaluators, so a fourth
-# producer forces an edit here instead of landing with lock 7 green and lock
-# 6's binariness premise false.
-_TUPLE_VERDICT_PRODUCERS = frozenset(
+# (repo-relative module, function name). Each returns the shared ``HashGradingResult``,
+# which derives the score from ``hash_match``, so lock 7 proves that invariant and each
+# producer's declared return type instead of reading any source. The set is asserted
+# as equality against the hash family's declared evaluators, so a fourth producer
+# forces an edit here instead of landing with lock 7 green and lock 6's binariness
+# premise false.
+_HASH_VERDICT_PRODUCERS = frozenset(
     {
         ("tolokaforge/core/grading/state_checks.py", "check_hash"),
         ("tolokaforge/core/grading/state_checks.py", "check_hash_against_golden_replay"),
-    }
-)
-_MODEL_VERDICT_PRODUCERS = frozenset(
-    {
         ("tolokaforge/runner/service.py", "_execute_hash_grading"),
     }
 )
@@ -329,6 +331,7 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
         "state_checks.numeric_string_fields",
+        "state_checks.comparison_view",
         "combine.method",
         "combine.weights",
         "trace_checks",
@@ -337,18 +340,23 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
         "trace_checks.constraints.severity",
         "trace_checks.constraints.within",
         "trace_checks.constraints.bind",
+        "trace_checks.regex_engine",
+        "transcript_rules.regex_engine",
     }
 )
 
-# The five per-constraint fields that shape how a kind scores without scoring
-# anything themselves. Each owns a pack whose two trials a build ignoring the
-# field would score identically, so discrimination is the field being read.
-_TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
+# The five per-constraint fields that shape how a kind scores, and the two block
+# fields naming the regex engine a rule's patterns run on — none scoring anything
+# themselves. Each owns a pack whose two trials a build ignoring the field would
+# score identically, so discrimination is the field being read.
+_CONFIG_INPUT_KEYS: tuple[str, ...] = (
     "trace_checks.constraints.weight",
     "trace_checks.constraints.on_missing",
     "trace_checks.constraints.severity",
     "trace_checks.constraints.within",
     "trace_checks.constraints.bind",
+    "trace_checks.regex_engine",
+    "transcript_rules.regex_engine",
 )
 
 # FIELD_RESOLUTION_ONLY entries that need no tracking issue: aggregation and
@@ -612,13 +620,13 @@ def _evaluator_source(evaluator: str) -> tuple[str, str]:
 def _declared_hash_verdict_producers() -> dict[tuple[str, str], Any]:
     """Every evaluator the manifest names for a *scored* member of the hash family.
 
-    Keyed by source location — what the frozen producer partitions pin — with the
-    resolved callable as the value, so lock 7's model-verdict clause reads the
-    declared return type off the same walk its gate reads the set from.
+    Keyed by source location — what the frozen producer set pins — with the resolved
+    callable as the value, so lock 7 reads each declared return type off the same walk
+    its gate reads the set from.
 
     ``state_checks.hash.weight`` is ``CONFIG_INPUT`` — it names the composer that
     consumes a verdict, not a function that produces one — so the ``SCORED_CHECK``
-    filter is what keeps the fold itself out of the audit.
+    filter is what keeps the fold itself out of the lock.
     """
     return {
         _evaluator_source(evaluator): _import_dotted(evaluator)
@@ -1252,6 +1260,8 @@ def test_both_substrates_discriminate_each_shared_scored_key(
 
 
 _EXPECT_INITIAL_STATE_PACK = _task_id_for(_EXPECT_INITIAL_STATE_KEY)
+_COMPARISON_VIEW_KEY = "state_checks.comparison_view"
+_COMPARISON_VIEW_PACK = _task_id_for(_COMPARISON_VIEW_KEY)
 
 _TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
     {
@@ -1259,6 +1269,7 @@ _TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
         _PROBE_PACK: _TASKS_GLOB,
         _GOLDEN_REPLAY_PACK: _TASKS_GLOB,
         _EXPECT_INITIAL_STATE_PACK: _PARITY_GLOB,
+        _COMPARISON_VIEW_PACK: _PARITY_GLOB,
     }
 )
 """The packs whose declared keys together carry the manifest, and the glob loading each.
@@ -1278,14 +1289,16 @@ _TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType(
         _PROBES_KEY: _PROBE_PACK,
         _GOLDEN_ACTIONS_KEY: _GOLDEN_REPLAY_PACK,
         _EXPECT_INITIAL_STATE_KEY: _EXPECT_INITIAL_STATE_PACK,
+        _COMPARISON_VIEW_KEY: _COMPARISON_VIEW_PACK,
     }
 )
 """The pack that must carry a key to the runner as something other than the field default.
 
 Two reasons put a key here. The first is legality: a key ``all_keys`` cannot declare
 beside the rest needs a pack that can. The second is attribution — ``expect_initial_state``
-is legal there, but the pack named for it declares that key alone, so nothing else in the
-pack could be what put the field off its default. ``all_keys`` owns every key neither
+and ``comparison_view`` are legal there, but the pack named for each declares it beside
+nothing but the hash it shapes, so nothing else in the pack could be what put the field
+off its default. ``all_keys`` owns every key neither
 reason claims, so a key added to the manifest has an owner from the start and fails the
 lock until some pack declares it. Ownership is per key rather than per pack because
 declaring a key is not translating it: ``db_probe_grading`` writes
@@ -1621,122 +1634,15 @@ def test_the_composite_moves_with_the_weight_at_a_fixed_hash_verdict(test_data_d
 # --------------------------------------------------------------------------
 
 
-def _verdict_constants(expression: ast.expr) -> frozenset[float] | None:
-    """The values a hash-score expression can hold, or ``None`` if it computes one.
-
-    ``None`` is the interesting answer: a producer that derives a hash score instead
-    of choosing between two literals would make lock 6's ``0.0``/``1.0`` runner
-    inputs a stand-in for a value the path never yields.
-    """
-    if isinstance(expression, ast.Constant) and isinstance(expression.value, (int, float)):
-        return None if isinstance(expression.value, bool) else frozenset({float(expression.value)})
-    if isinstance(expression, ast.IfExp):
-        branches = (_verdict_constants(expression.body), _verdict_constants(expression.orelse))
-        if any(branch is None for branch in branches):
-            return None
-        return frozenset().union(*branches)
-    if isinstance(expression, ast.Name) and expression.id == _HASH_SCORE_NAME:
-        return frozenset()
-    return None
-
-
-def _verdict_expression(node: ast.AST) -> ast.expr | None:
-    """The expression ``node`` puts in the hash-score position, or ``None``.
-
-    Two shapes carry a verdict out of a tuple-verdict producer: the first element
-    of a returned tuple (the ``(score, reason, …)`` pair both audited producers
-    return) and an assignment to ``hash_score``, which a later return then hands on.
-    """
-    if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-        return node.value.elts[0]
-    assigned = (
-        isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == _HASH_SCORE_NAME
-    )
-    return node.value if assigned else None
-
-
-def _sole_function(module_path: str, function_name: str) -> ast.AST:
-    tree = ast.parse((_REPO_ROOT / module_path).read_text())
-    found = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
-    ]
-    assert len(found) == 1, (
-        f"{module_path} declares {len(found)} functions named {function_name!r}, so the "
-        "hash-verdict audit cannot say which one produces the verdict"
-    )
-    return found[0]
-
-
-def _carries_a_verdict(exit_node: ast.Return) -> bool:
-    """Whether a ``return`` puts its verdict somewhere this audit can read it."""
-    return any(_verdict_expression(node) is not None for node in ast.walk(exit_node))
-
-
-def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[float]:
-    """Every value the named producer can hand on as a hash score.
-
-    Fails when a score position holds a computed expression rather than a choice
-    between literals: a derived partial verdict would make lock 6's ``0.0``/``1.0``
-    runner inputs a stand-in for values that path never yields. Fails too when the
-    producer leaves by a ``return`` whose verdict sits outside the two positions
-    :func:`_verdict_expression` reads — otherwise a refactor to ``return result``
-    routes the verdict past the audit while the literals it left behind keep the
-    binariness assertion green.
-    """
-    producer = _sole_function(module_path, function_name)
-    constants: set[float] = set()
-    for node in ast.walk(producer):
-        expression = _verdict_expression(node)
-        if expression is None:
-            continue
-        reachable = _verdict_constants(expression)
-        assert reachable is not None, (
-            f"{module_path}::{function_name} computes a hash score at line "
-            f"{expression.lineno} instead of choosing between literals"
-        )
-        constants |= reachable
-
-    unaudited = [
-        node.lineno
-        for node in ast.walk(producer)
-        if isinstance(node, ast.Return) and not _carries_a_verdict(node)
-    ]
-    assert not unaudited, (
-        f"{module_path}::{function_name} returns at lines {unaudited} without putting a "
-        "verdict in a position this audit reads — the first element of a returned tuple, "
-        f"or an assignment to {_HASH_SCORE_NAME}. The literals it leaves behind would "
-        "keep the binariness assertion green while the verdict it actually returns "
-        "went unread"
-    )
-    return frozenset(constants)
-
-
-def _minimal_hash_result(**score_fields: Any) -> runner_models.HashGradingResult:
-    """A ``HashGradingResult`` carrying only what lock 7's model clause varies."""
-    return runner_models.HashGradingResult(
-        basis=runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE,
-        golden_replay=GoldenReplayRecord(authored=0),
-        **score_fields,
-    )
-
-
 def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
-    """Each producer is held to binariness by the shape its verdict leaves in.
+    """Every producer is held to binariness by the one type its verdict leaves in.
 
-    The two core producers hand their verdict on as a bare float in a tuple, and
-    core's golden-replay producer needs a task's MCP server, so their sources are
-    read: each must choose its score between literals, and every ``return`` must
-    carry it somewhere the audit reads. The runner's producer returns its verdict
-    inside ``HashGradingResult``, which derives ``hash_score`` from ``hash_match``
-    — so instead of reading that function's source, the lock proves the derivation
-    by exhaustion over the model's one free bit, that supplying a score at
-    construction is refused, and that the producer's declared return type keeps
-    the verdict inside the model.
+    Core's two checks and the runner's evaluator each declare that they return the
+    shared ``HashGradingResult``, whose ``hash_score`` is derived from ``hash_match`` —
+    so instead of reading any producer's source, the lock proves the declared return
+    types, the derivation by exhaustion over the one free bit, and that the type has no
+    score to set: not at construction, not afterwards, and not through a ``hash_match``
+    that is not a bool.
 
     What is callable is ``check_hash``, which core's ``expect_initial_state``
     branch reaches by hashing the pack's declared initial state; the composition
@@ -1745,43 +1651,42 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
     runner as the ones core's own evaluator returns for the same states.
     """
     producers = _declared_hash_verdict_producers()
-    assert frozenset(producers) == _TUPLE_VERDICT_PRODUCERS | _MODEL_VERDICT_PRODUCERS, (
+    assert frozenset(producers) == _HASH_VERDICT_PRODUCERS, (
         "the set of functions the manifest names as hash-verdict producers changed. Every "
-        "one is guarded below — tuple-verdict producers by source audit, the model-verdict "
-        "producer by the model's own derivation — and lock 6 hands the runner's fold a "
-        "0.0/1.0 verdict on the strength of that guard, so widening either partition is an "
-        "edit a reviewer sees"
+        "one is held to the shared result type below, and lock 6 hands the runner's fold a "
+        "0.0/1.0 verdict on the strength of that guard, so widening the set is an edit a "
+        "reviewer sees"
     )
-    for module_path, function_name in sorted(_TUPLE_VERDICT_PRODUCERS):
-        reachable = _reachable_hash_verdicts(module_path, function_name)
-        assert reachable == _BINARY_HASH_VERDICT, (
-            f"{module_path}::{function_name} can produce hash scores {sorted(reachable)}, "
-            f"not {sorted(_BINARY_HASH_VERDICT)}"
+    for module_path, function_name in sorted(_HASH_VERDICT_PRODUCERS):
+        declared_return = get_type_hints(producers[(module_path, function_name)]).get("return")
+        assert declared_return is HashGradingResult, (
+            f"{module_path}::{function_name} declares return type {declared_return!r}, not "
+            "HashGradingResult — its verdict would leave outside the type whose derivation "
+            "is the whole of what holds a producer to a binary verdict"
         )
 
-    for module_path, function_name in sorted(_MODEL_VERDICT_PRODUCERS):
-        declared_return = get_type_hints(producers[(module_path, function_name)]).get("return")
-        assert declared_return is runner_models.HashGradingResult, (
-            f"{module_path}::{function_name} declares return type {declared_return!r}, not "
-            "HashGradingResult — its verdict would leave outside the model whose derivation "
-            "is the whole of what holds this producer to a binary verdict"
-        )
     for match in (True, False):
-        derived = _minimal_hash_result(hash_match=match).hash_score
+        derived = HashGradingResult(hash_match=match).hash_score
         assert derived == (1.0 if match else 0.0), (
             f"HashGradingResult(hash_match={match}) derives hash_score {derived}, so the "
             "score no longer restates the verdict bit"
         )
     assert {
-        _minimal_hash_result(hash_match=match).hash_score for match in (True, False)
+        HashGradingResult(hash_match=match).hash_score for match in (True, False)
     } == _BINARY_HASH_VERDICT, (
         "exhausting hash_match yields hash scores outside "
-        f"{sorted(_BINARY_HASH_VERDICT)}, so the model-verdict producer's path can hand "
-        "the fold a value lock 6 never drives"
+        f"{sorted(_BINARY_HASH_VERDICT)}, so a producer's path can hand the fold a value "
+        "lock 6 never drives"
     )
     for match, score in ((True, 0.0), (True, 1.0), (False, 0.37)):
-        with pytest.raises(ValidationError, match=_HASH_SCORE_NAME):
-            _minimal_hash_result(hash_match=match, hash_score=score)
+        with pytest.raises(TypeError, match=_HASH_SCORE_NAME):
+            HashGradingResult(hash_match=match, hash_score=score)  # type: ignore[call-arg]
+        result = HashGradingResult(hash_match=match)
+        with pytest.raises(FrozenInstanceError):
+            result.hash_score = score  # type: ignore[misc]
+    for not_a_bit in (1, 0, 0.5, "true", None):
+        with pytest.raises(TypeError, match="hash_match is the hash verdict, a bool"):
+            HashGradingResult(hash_match=not_a_bit)  # type: ignore[arg-type]
 
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
     task_id = _task_id_for(_COMPOSITION_KEY)
@@ -1794,7 +1699,8 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
     )
     for case, hash_score in _COMPOSITION_HASH_CASES:
         db_state = extract_db_state(load_case(pack, case).state)
-        actual, _ = StateChecker().check_hash(db_state, expected_hash)
+        result = StateChecker().check_hash(db_state, expected_hash)
+        actual = result.hash_score
         assert actual == hash_score, (
             f"the composition fixture's {case!r} case scores {actual} against the hash of "
             f"the state its task declares it starts in, not the {hash_score} lock 6 assumes"
@@ -1806,21 +1712,14 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
 # --------------------------------------------------------------------------
 
 
-def _assert_the_folding_matrix_discriminates() -> None:
-    """The property lock 19's differential rests on, read off its matrix.
+def _assert_the_differential_drives_the_whole_matrix(nodeid: str, matrix_name: str) -> None:
+    """The differential ``nodeid`` names is parametrised over ``matrix_name``, and all of it.
 
-    Folding is per-field, so the rows have to differ in the places that make that
-    question askable: a representation difference a fold may collapse beside a genuine
-    difference it must refuse, and two field lists of one name each — the field that
-    differs, and another the record declares.
-
-    The differential is then bound to *this* matrix, because the clauses below and the
-    rows lock 19 actually drives are otherwise two lists nothing holds together: slicing
-    the parametrisation would drop the control rows while every clause here still read
-    the whole constant. What that binding reaches is the decorator naming the constant
-    whole; a helper filtering rows at call time would still escape it.
+    The clauses asserting a matrix's discrimination and the rows its differential drives
+    are otherwise two lists nothing holds together: slicing the parametrisation would
+    drop the control rows while every clause still read the whole constant.
     """
-    module_path, _, function_name = _FOLDING_DIFFERENTIAL_NODEID.partition("::")
+    module_path, _, function_name = nodeid.partition("::")
     differential = next(
         (
             node
@@ -1837,17 +1736,65 @@ def _assert_the_folding_matrix_discriminates() -> None:
     parametrisation = [
         node for decorator in differential.decorator_list for node in ast.walk(decorator)
     ]
-    assert any(
-        isinstance(node, ast.Name) and node.id == _FOLDING_MATRIX_NAME for node in parametrisation
-    ), (
-        f"{function_name} is not parametrised over {_FOLDING_MATRIX_NAME}, so the rows this "
-        "test asserts the discrimination of and the rows that differential drives are two "
+    assert any(isinstance(node, ast.Name) and node.id == matrix_name for node in parametrisation), (
+        f"{function_name} is not parametrised over {matrix_name}, so the rows this test "
+        "asserts the discrimination of and the rows that differential drives are two "
         "separate lists"
     )
     assert not any(isinstance(node, ast.Subscript) for node in parametrisation), (
         f"{function_name}'s parametrisation subscripts its source, so it can drive a subset "
-        f"of {_FOLDING_MATRIX_NAME} while every clause here still reads the whole constant. "
-        "Dropping the control rows that way reopens the per-field question in silence"
+        f"of {matrix_name} while every clause here still reads the whole constant"
+    )
+
+
+def _assert_the_comparison_view_matrix_discriminates() -> None:
+    """The property lock 21's differential rests on, read off its matrix.
+
+    A view's claim is that it changes a verdict exactly where the state differs only in
+    what it does not count. So the matrix needs a row where declaring it turns a fail
+    into a pass, a row it still fails, and the control that passes either way — under
+    both values of the declaration, or the declaration is never what the rows vary.
+    """
+    _assert_the_differential_drives_the_whole_matrix(
+        _COMPARISON_VIEW_DIFFERENTIAL_NODEID, _COMPARISON_VIEW_MATRIX_NAME
+    )
+    verdicts = {
+        (cell.view_declared, cell.trial_state): cell.state_checks
+        for cell in _COMPARISON_VIEW_MATRIX
+    }
+    states = {state for _, state in verdicts}
+    graded = all((declared, state) in verdicts for declared in (True, False) for state in states)
+    assert graded, f"the matrix does not grade every state with and without the view: {verdicts}"
+    moved = {state for state in states if verdicts[(True, state)] != verdicts[(False, state)]}
+    assert moved and all(verdicts[(True, state)] == 1.0 for state in moved), (
+        "no trial state passes because the view is declared, so the matrix never shows the "
+        f"view reaching a verdict: {verdicts}"
+    )
+    assert any(verdicts[(True, state)] == 0.0 for state in states), (
+        "every trial state passes through the view, so a view that counts nothing satisfies "
+        "the matrix"
+    )
+    controls = [state for state in states if verdicts[(True, state)] == verdicts[(False, state)]]
+    passing = [state for state in controls if verdicts[(True, state)] == 1.0]
+    assert passing, "no control row passes with and without the view"
+
+
+def _assert_the_folding_matrix_discriminates() -> None:
+    """The property lock 19's differential rests on, read off its matrix.
+
+    Folding is per-field, so the rows have to differ in the places that make that
+    question askable: a representation difference a fold may collapse beside a genuine
+    difference it must refuse, and two field lists of one name each — the field that
+    differs, and another the record declares.
+
+    The differential is then bound to *this* matrix, because the clauses below and the
+    rows lock 19 actually drives are otherwise two lists nothing holds together: slicing
+    the parametrisation would drop the control rows while every clause here still read
+    the whole constant. What that binding reaches is the decorator naming the constant
+    whole; a helper filtering rows at call time would still escape it.
+    """
+    _assert_the_differential_drives_the_whole_matrix(
+        _FOLDING_DIFFERENTIAL_NODEID, _FOLDING_MATRIX_NAME
     )
 
     record = _FOLDING_INITIAL_ORDERS["orders"][0]
@@ -1896,13 +1843,15 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     distinguishable at all, that lock 9's answer table still spans the declared
     combine methods with one distinct score each, that lock 14's weight maps still
     span the pair a membership rule is distinguishable over while its zero-share table
-    still answers ``all``/``any`` differently from ``weighted``, and that lock 19's
+    still answers ``all``/``any`` differently from ``weighted``, that lock 19's
     folding matrix still pairs a representation difference against a genuine one under
-    field lists that differ by name rather than by length. Membership alone enforces
-    nothing: a differential deleted wholesale leaves the escaped set unchanged.
+    field lists that differ by name rather than by length, and that lock 21's view
+    matrix still has a row the view turns, a row it fails and a control. Membership
+    alone enforces nothing: a differential deleted wholesale leaves the escaped set
+    unchanged.
 
-    Lock 19 is the one entry here that does not rest on membership: its nodeid is
-    resolved through the same parse the ``enforcing_test`` claims use, and its
+    Locks 19 and 21 are the entries here that do not rest on membership: each nodeid is
+    resolved through the same parse the ``enforcing_test`` claims use, and each
     parametrisation is read out of the same AST, so deleting the function, renaming it,
     or pointing it at a *subset* of the matrix asserted here all fail this test. The
     other entries keep the weaker guarantee.
@@ -1919,10 +1868,10 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         "that reaches neither lock 3 nor a lock named here is enforced by nothing"
     )
 
-    assert {key for key in escaped if key.startswith("trace_checks.")} == set(
-        _TRACE_CONFIG_INPUT_KEYS
-    ), (
-        "a per-constraint config input escaped lock 3 without joining the "
+    assert {
+        key for key in escaped if key.startswith(("trace_checks.", "transcript_rules."))
+    } == set(_CONFIG_INPUT_KEYS), (
+        "a trace_checks or transcript_rules config input escaped lock 3 without joining the "
         "parametrisation that drives its differential, so its claim rests on the "
         "membership above and nothing else"
     )
@@ -1972,6 +1921,11 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         f"{_NUMERIC_STRING_FIELDS_KEY}: its differential", _FOLDING_DIFFERENTIAL_NODEID
     )
     _assert_the_folding_matrix_discriminates()
+
+    _assert_nodeid_is_collectable(
+        f"{_COMPARISON_VIEW_KEY}: its differential", _COMPARISON_VIEW_DIFFERENTIAL_NODEID
+    )
+    _assert_the_comparison_view_matrix_discriminates()
 
 
 # --------------------------------------------------------------------------
@@ -2855,23 +2809,23 @@ def test_every_state_checks_refusal_names_the_trial_it_refused(
 
 
 # --------------------------------------------------------------------------
-# 11. Both substrates read every per-constraint config input
+# 11. Both substrates read every trace_checks and transcript_rules config input
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("author_key", _TRACE_CONFIG_INPUT_KEYS)
-def test_both_substrates_read_each_per_constraint_config_input(
+@pytest.mark.parametrize("author_key", _CONFIG_INPUT_KEYS)
+def test_both_substrates_read_each_config_input(
     author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
 ):
-    """A field that shapes how a kind scores, driven the way lock 3 drives a scored key.
+    """A field that shapes how a check scores, driven the way lock 3 drives a scored key.
 
-    Lock 3 selects ``SCORED_CHECK``, so these five escape it — they carry no
-    component of their own, they change what one does. Each pack is authored so
-    that a build ignoring the field scores its two trials *identically*: the
-    weights are the only thing telling one from the other, or the unmatched
-    anchor's policy is, or the turn window is, or which constraint is the gate is,
-    or the argument the two matchers correlate on is. Discrimination here is
-    therefore the field being read, not the constraint around it working.
+    Lock 3 selects ``SCORED_CHECK``, so these escape it — they carry no component
+    of their own, they change what one does. Each pack is authored so that a build
+    ignoring the field scores its two trials *identically*: the weights are the only
+    thing telling one from the other, or the unmatched anchor's policy is, or the
+    turn window is, or which constraint is the gate is, or the argument the two
+    matchers correlate on is, or the regex engine reading a digit is. Discrimination
+    here is therefore the field being read, not the check around it working.
     """
     verdict = _drive_both_substrates(
         author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
@@ -4498,6 +4452,127 @@ def test_an_unmakeable_comparison_fails_its_own_call_on_both_substrates(
         "the trial whose sibling call made the comparison is reported as an authoring "
         f"mistake anyway: {silent.message!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# 21. Both substrates read a declared comparison view alike
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ViewCell:
+    """One row: whether the pack's view is declared, what the trial left, what both owe."""
+
+    view_declared: bool
+    trial_state: str
+    state_checks: float
+
+
+#: ``unchanged`` leaves the seeded state; ``satisfying`` and ``violating`` are the pack's
+#: own cases — a document re-filed under a new id with the correction following it, a
+#: released hold and a logged lookup, and the same with the correction's reason
+#: rewritten. Only the view tells the first two apart from a changed state, and nothing
+#: tells the third apart from one.
+_COMPARISON_VIEW_MATRIX: tuple[_ViewCell, ...] = (
+    _ViewCell(False, "unchanged", 1.0),
+    _ViewCell(False, "satisfying", 0.0),
+    _ViewCell(False, "violating", 0.0),
+    _ViewCell(True, "unchanged", 1.0),
+    _ViewCell(True, "satisfying", 1.0),
+    _ViewCell(True, "violating", 0.0),
+)
+
+_COMPARISON_VIEW_MATRIX_NAME = "_COMPARISON_VIEW_MATRIX"
+"""The matrix constant's own name, so lock 8 can read it out of the differential's AST."""
+
+_COMPARISON_VIEW_DIFFERENTIAL_NODEID = (
+    "tests/canonical/test_grading_substrate_parity.py"
+    "::test_both_substrates_read_a_declared_comparison_view_alike"
+)
+"""The differential the matrix above exists for, named so lock 8 can resolve it."""
+
+
+def _view_label(cell: _ViewCell) -> str:
+    """One row's inputs as a name — never the verdict it is asserted against."""
+    return f"{'view' if cell.view_declared else 'no_view'}_{cell.trial_state}"
+
+
+def _comparison_view_trial_state(test_data_dir: Path, name: str) -> dict[str, Any]:
+    """The row's final database: the seeded state, or one of the pack's own cases."""
+    if name == "unchanged":
+        adapter = _parity_adapter(test_data_dir)
+        return copy.deepcopy(
+            adapter.to_task_description(_COMPARISON_VIEW_PACK).initial_state.tables
+        )
+    case = load_case(test_data_dir / "grading_parity" / _COMPARISON_VIEW_PACK, name)
+    return extract_db_state(case.state)
+
+
+def _runner_comparison_view_grade(
+    test_data_dir: Path, servicer: RunnerServiceImpl, context: Any, cell: _ViewCell
+) -> pb2.GradeTrialResponse:
+    """The pack through the native adapter onto the runner's real ``GradeTrial``.
+
+    A row without the view grades the same description with the key taken off it, which
+    the wire then omits — the spec an engine sends for a pack that never declared one.
+    """
+    description = _parity_adapter(test_data_dir).to_task_description(_COMPARISON_VIEW_PACK)
+    if not cell.view_declared:
+        description.grading.state_checks.comparison_view = None
+    return grade_through_the_runner(
+        servicer,
+        context,
+        description=description.model_dump(mode="json"),
+        trial_id=_ledger_trial_id(_view_label(cell), _COMPARISON_VIEW_KEY),
+        trial=_comparison_view_trial_state(test_data_dir, cell.trial_state),
+    )
+
+
+def _core_comparison_view_grade(test_data_dir: Path, cell: _ViewCell) -> core_models.Grade:
+    """Core's grade of the same row, through ``GradingEngine`` over the same pack."""
+    adapter = _parity_adapter(test_data_dir)
+    config = adapter.get_grading_config(_COMPARISON_VIEW_PACK)
+    if not cell.view_declared:
+        config.state_checks.comparison_view = None
+    return GradingEngine(
+        config, task_initial_state=adapter.get_task(_COMPARISON_VIEW_PACK).initial_state
+    ).grade_trajectory(
+        _messageless_trajectory(_COMPARISON_VIEW_PACK),
+        {"db": _comparison_view_trial_state(test_data_dir, cell.trial_state)},
+    )
+
+
+@pytest.mark.parametrize(
+    "cell",
+    tuple(pytest.param(cell, id=_view_label(cell)) for cell in _COMPARISON_VIEW_MATRIX),
+)
+def test_both_substrates_read_a_declared_comparison_view_alike(
+    cell, test_data_dir, runner_service, mock_grpc_context
+):
+    """``state_checks.comparison_view``'s ``BOTH_SCORE_PARITY`` claim.
+
+    The hash source is ``expect_initial_state``, the one both substrates drive in
+    process, so the golden side is the seeded state on both. The runner reads the
+    trial's full state back off its own db-service and runs the view after the restore;
+    core runs the view in ``check_hash``. Neither reads what the other computed, and
+    both grades carry the same record of the view: the configuration's sha, which
+    tables each rule touched on each side, and the view diff of a mismatch.
+    """
+    response = _runner_comparison_view_grade(test_data_dir, runner_service, mock_grpc_context, cell)
+    assert response.success is True, response.error
+    assert response.grade.components.state_checks == pytest.approx(cell.state_checks)
+
+    grade = _core_comparison_view_grade(test_data_dir, cell)
+    assert grade.components.state_checks == pytest.approx(cell.state_checks)
+
+    if not cell.view_declared:
+        assert not response.grade.HasField("comparison_view_json")
+        assert grade.comparison_view is None
+        return
+    runner_record = json.loads(response.grade.comparison_view_json)
+    same = runner_record == grade.comparison_view
+    assert same, "the two substrates recorded different views of one row"
+    assert (runner_record["view_diff"] is None) is (cell.state_checks == 1.0)
 
 
 # --------------------------------------------------------------------------

@@ -56,13 +56,19 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import yaml
 from pydantic import ValidationError
 
-from tolokaforge.core.models import RecordedToolCall
-from tolokaforge.core.output_writer import METRICS_FILENAME, TOOL_LOG_FILENAME, OutputWriter
+from tolokaforge.core.models import Metrics, RecordedToolCall, Trajectory
+from tolokaforge.core.output_writer import (
+    GRADE_FILENAME,
+    METRICS_FILENAME,
+    TOOL_LOG_FILENAME,
+    TRAJECTORY_FILENAME,
+    OutputWriter,
+)
 from tolokaforge.core.redaction import NoRedaction, RedactionPolicy, RedactionStamp
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.core.models import Grade, Metrics, Trajectory
+    from tolokaforge.core.models import Grade
 
 __all__ = [
     "FileArtifactWriter",
@@ -73,6 +79,7 @@ __all__ = [
     "bundle_redaction",
     "model_id_slug",
     "read_recorded_tool_log",
+    "read_report_trajectory",
     "refuse_redacted_bundle",
 ]
 
@@ -256,6 +263,41 @@ def read_recorded_tool_log(trial_dir: Path) -> tuple[list[RecordedToolCall], boo
 # ---------------------------------------------------------------------------
 # Protocol
 # ---------------------------------------------------------------------------
+
+
+def read_report_trajectory(trial_dir: Path) -> Trajectory:
+    """Read a saved trial for reporting, including its separate grade and metrics.
+
+    Reporting may inspect a redacted bundle; this is not a replay reader and
+    must not be used to regrade it. Legacy bundles can lack the tool-log sidecar.
+    Missing or malformed required files propagate instead of losing a trial
+    from a resumed run's denominator and cost totals.
+    """
+    trial_dir = Path(trial_dir)
+    with (trial_dir / TRAJECTORY_FILENAME).open(encoding="utf-8") as stream:
+        data = yaml.safe_load(stream)
+    with (trial_dir / METRICS_FILENAME).open(encoding="utf-8") as stream:
+        metrics = yaml.safe_load(stream)
+    # The bundle header also carries schema/redaction/provisioning metadata
+    # outside Metrics. Validate all actual metric fields, not that header.
+    metrics = Metrics.model_validate(
+        {key: value for key, value in metrics.items() if key in Metrics.model_fields}
+    )
+    grade_path = trial_dir / GRADE_FILENAME
+    grade = None
+    if grade_path.exists():
+        with grade_path.open(encoding="utf-8") as stream:
+            grade = yaml.safe_load(stream)
+        if not isinstance(grade, dict):
+            raise ValueError(f"Saved grade must be a mapping: {grade_path}")
+    record_path = trial_dir / TOOL_LOG_FILENAME
+    record = []
+    if record_path.exists():
+        with record_path.open(encoding="utf-8") as stream:
+            record = yaml.safe_load(stream)
+    return Trajectory.model_validate(
+        {**data, "metrics": metrics, "grade": grade, "tool_log": record}
+    )
 
 
 @runtime_checkable

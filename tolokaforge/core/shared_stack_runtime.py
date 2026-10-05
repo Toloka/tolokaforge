@@ -438,6 +438,18 @@ class GrpcRunnerClient:
             )
 
             response = self.stub.RegisterTrial(request)
+            if response.success and response.runner_protocol_version < ENGINE_PROTOCOL_VERSION:
+                return {
+                    "success": False,
+                    "error": (
+                        f"runner image declares wire-protocol version "
+                        f"{response.runner_protocol_version}; engine requires "
+                        f"{ENGINE_PROTOCOL_VERSION}. Rebuild or pin a matching runner image."
+                    ),
+                    "tool_schemas": [],
+                    "num_agent_tools": 0,
+                    "num_user_tools": 0,
+                }
 
             # Convert tool schemas to dicts
             tool_schemas = []
@@ -534,7 +546,10 @@ class GrpcRunnerClient:
             # cannot arrive here and be recorded as an ordinary failure.
             status = recorded_status(response.status)
 
-            success = response.status == ExecutionStatus.EXECUTION_STATUS_SUCCESS
+            success = response.status in (
+                ExecutionStatus.EXECUTION_STATUS_SUCCESS,
+                ExecutionStatus.EXECUTION_STATUS_ENVIRONMENT_ERROR,
+            )
             error = None
             if not success:
                 error = response.error_message or self._status_to_error(response.status)
@@ -605,6 +620,11 @@ class GrpcRunnerClient:
                 "success": response.success,
                 "error": response.error if response.error else None,
                 "grade": None,
+                "failure_evidence": (
+                    json.loads(response.failure_evidence_json)
+                    if response.failure_evidence_json
+                    else None
+                ),
             }
 
             if response.success and response.grade:
@@ -614,6 +634,14 @@ class GrpcRunnerClient:
                     "score": grade.score,
                     "reasons": grade.reasons,
                     "state_diff_json": grade.state_diff_json if grade.state_diff_json else None,
+                    "comparison_view_json": (
+                        grade.comparison_view_json if grade.comparison_view_json else None
+                    ),
+                    "state_snapshots_json": (
+                        grade.state_snapshots_json
+                        if grade.HasField("state_snapshots_json")
+                        else None
+                    ),
                     "components": _wire_components_to_scores(grade),
                     "custom_checks": [
                         {
@@ -707,6 +735,13 @@ class GrpcRunnerClient:
                                     "include_agent_system_prompt": grade.judge_report.include_agent_system_prompt
                                 }
                                 if grade.judge_report.HasField("include_agent_system_prompt")
+                                else {}
+                            ),
+                            # Presence-gated like field 15: absent means not every
+                            # judge call stated a charge, or a runner predating 17.
+                            **(
+                                {"billed_cost_usd": grade.judge_report.billed_cost_usd}
+                                if grade.judge_report.HasField("billed_cost_usd")
                                 else {}
                             ),
                         }

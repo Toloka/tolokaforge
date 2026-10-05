@@ -22,7 +22,7 @@ from tolokaforge.core.judge_prompt import (
     _compose_judge_system_prompt,
 )
 from tolokaforge.core.llm.client import GenerationResult
-from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.llm.usage import ProviderRawCall, Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 from tolokaforge.runner.models import Rubric
 
@@ -1046,6 +1046,77 @@ def test_usage_is_recorded():
     assert result.usage.cost_usd == pytest.approx(0.002)
     # A clean run records zero verdict-consistency rejections.
     assert result.usage.consistency_rejections == 0
+
+
+class _BilledScriptedClient(ScriptedClient):
+    """A ``ScriptedClient`` whose results carry a per-call record, as a live call's do."""
+
+    def __init__(self, script: list, records: list[ProviderRawCall]):
+        super().__init__(script)
+        self._records = list(records)
+
+    def generate(self, system, messages, tools, tool_choice="auto", observation=None):
+        result = super().generate(system, messages, tools, tool_choice, observation)
+        result.usage = Usage(
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            calls=(self._records.pop(0),),
+        )
+        return result
+
+
+def _judge_usage_for(records: list[ProviderRawCall]):
+    client = _BilledScriptedClient(
+        [
+            [("get_db_state", {})],
+            [("submit_report", _submit_args(refund_done=True))],
+        ],
+        records,
+    )
+    return _run_llm_judge(
+        rubric=_binary_rubric(),
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        llm_client=client,
+    ).usage
+
+
+def test_the_billed_cost_sums_over_the_judges_calls():
+    usage = _judge_usage_for(
+        [
+            ProviderRawCall(cost_usd=0.001, billed_cost_usd=0.0011),
+            ProviderRawCall(cost_usd=0.001, billed_cost_usd=0.0009),
+        ]
+    )
+    assert usage.cost_usd == pytest.approx(0.002)  # the eval's own figure, unchanged
+    assert usage.billed_cost_usd == pytest.approx(0.002)
+
+
+def test_one_call_without_a_charge_leaves_the_judges_bill_unknown():
+    usage = _judge_usage_for(
+        [
+            ProviderRawCall(cost_usd=0.001, billed_cost_usd=0.0011),
+            ProviderRawCall(cost_usd=0.001, billed_cost_usd=None),
+        ]
+    )
+    assert usage.billed_cost_usd is None
+    assert usage.cost_usd == pytest.approx(0.002)
+
+
+def test_results_without_a_call_record_state_no_charge():
+    # the plain ScriptedClient returns usage without per-call records
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    usage = _run_llm_judge(
+        rubric=_binary_rubric(),
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        llm_client=client,
+    ).usage
+    assert usage.billed_cost_usd is None
 
 
 def test_turn_exhaustion_without_submit_report_errors():

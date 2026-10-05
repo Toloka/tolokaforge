@@ -204,6 +204,194 @@ class TestAttachmentStep:
         monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
         assert sorted(plugin.secret_values()) == ["sk-lf-xyz", "sk-or-v1-abc"]
 
+    def test_secret_values_skip_the_tracing_launchers_own_variables(self, monkeypatch) -> None:
+        """A ``.env`` file may carry the launcher's session id, whose name says SESSION: it is
+        written on every span by design, so it is no credential."""
+        from tolokaforge_langfuse import plugin
+
+        class _Manager:
+            def list_all_keys(self):
+                return ["TOLOKAFORGE_TRACING_SESSION_ID", "OPENROUTER_API_KEY"]
+
+            def get_secret(self, key):
+                return {
+                    "TOLOKAFORGE_TRACING_SESSION_ID": "acme/pilot/v1/pilot_agent/123",
+                    "OPENROUTER_API_KEY": "sk-or-v1-abc",
+                }[key]
+
+        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
+        assert plugin.secret_values() == ["sk-or-v1-abc"]
+
+    def test_secret_values_use_the_one_name_filter(self, monkeypatch) -> None:
+        """The plugin's list and the process environment's follow one filter: an endpoint base
+        (``_BASE``) and the shell's ``PWD`` are no credentials in either."""
+        from tolokaforge_langfuse import plugin
+
+        class _Manager:
+            def list_all_keys(self):
+                return ["AZURE_API_BASE", "PWD", "ACME_API_KEY"]
+
+            def get_secret(self, key):
+                return {
+                    "AZURE_API_BASE": "https://x.example",
+                    "PWD": "/home/x",
+                    "ACME_API_KEY": "k-12345678",
+                }[key]
+
+        monkeypatch.setattr("tolokaforge.secrets.get_default_or_none", lambda: _Manager())
+        assert plugin.secret_items() == {"ACME_API_KEY": "k-12345678"}
+
+
+class TestTheLiveGate:
+    """One gate per run: every live span, the trial-end passes and the file attachments scan
+    with it. It knows the credentials the process holds, in its environment and in the
+    ``SecretManager`` (a ``.env`` file never reaches ``os.environ``), and the receiver's header
+    values, each by name, and the shapes."""
+
+    MANAGED = "managed-credential-value"
+
+    @pytest.fixture(autouse=True)
+    def managed_credential(self, monkeypatch) -> None:
+        from tolokaforge.secrets import DictProvider, SecretManager
+
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager",
+            SecretManager([DictProvider({"ACME_API_KEY": self.MANAGED})]),
+        )
+
+    def test_the_gate_knows_the_environment_the_secret_manager_and_the_headers_by_name(
+        self, monkeypatch
+    ) -> None:
+        from tolokaforge_langfuse.plugin import live_gate
+
+        monkeypatch.setenv("FOO_TOKEN", "environment-credential-value")
+        gate = live_gate({"X-Runner-Key": "runner-key-value-1234", "Accept": "json"})
+
+        def named(text: bytes) -> list[str]:
+            return [f.describe() for f in gate.scan(text)]
+
+        assert named(self.MANAGED.encode()) == ["known-secret-value from ACME_API_KEY"]
+        assert named(b"environment-credential-value") == ["known-secret-value from FOO_TOKEN"]
+        assert named(b"runner-key-value-1234") == ["known-secret-value from header X-Runner-Key"]
+        assert named(b"nothing to see") == [] and named(b"json") == []
+
+    def test_a_header_value_the_runs_tags_carry_does_not_withhold_the_run(self, caplog) -> None:
+        """``X-Project: pilot-dev`` is no secret and ``project:pilot-dev`` rides on every span:
+        a gate that knew the header's value would withhold the whole run."""
+        pytest.importorskip("opentelemetry.sdk")
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+        from tolokaforge_langfuse.otel import OTelTrialObserver, SpanQueue
+        from tolokaforge_langfuse.plugin import live_gate
+
+        gate = live_gate({"X-Project": "pilot-dev"})
+        queue = SpanQueue(InMemorySpanExporter(), max_size=10, batch_size=4, interval_s=0.05)
+        with caplog.at_level("WARNING", logger="tolokaforge_langfuse.otel"):
+            OTelTrialObserver(
+                queue=queue, label="l", session_id="s", tags=("project:pilot-dev",), gate=gate
+            ).run_finished()
+        assert any("header X-Project" in r.getMessage() for r in caplog.records)
+        assert gate.scan(b"project:pilot-dev") == []
+
+    def test_a_secret_registered_after_the_gate_was_built_is_known_after_a_refresh(self) -> None:
+        """``register_runtime_secret`` replaces the default manager (the engine's generated
+        TypeSense key arrives that way, after the observer is built)."""
+        from tolokaforge_langfuse.plugin import live_gate
+
+        from tolokaforge.secrets import register_runtime_secret
+
+        gate = live_gate()
+        assert gate.refresh() == (False, [])  # still the manager it was built from
+        register_runtime_secret("TYPESENSE_API_KEY", "late-registered-key-value")
+        assert gate.refresh() == (True, [])
+        assert [f.describe() for f in gate.scan(b"late-registered-key-value")] == [
+            "known-secret-value from TYPESENSE_API_KEY"
+        ]
+        assert gate.scan(self.MANAGED.encode())  # what it held stays
+        assert gate.refresh() == (False, [])
+
+    def test_the_attachment_step_scans_with_the_runs_gate(self) -> None:
+        from tolokaforge_langfuse.plugin import build_attachments
+        from tolokaforge_langfuse.safety import SafetyGate
+
+        value = "a-db-password-no-shape-matches"
+        events = [{"body": {"output": f"it said {value}"}}]
+        endpoint = "https://lf.example/api/public/otel/v1/traces"
+        gate = SafetyGate.from_environment({"DB_PASSWORD": value})
+        assert build_attachments(LangfuseConfig(), endpoint=endpoint, gate=gate).scan_events(events)
+        # without the run's gate the step knows only the SecretManager's own list
+        assert build_attachments(LangfuseConfig(), endpoint=endpoint).scan_events(events) == []
+
+    def test_the_observer_the_plugin_builds_withholds_a_managed_credential(
+        self, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("opentelemetry.sdk")
+        from datetime import datetime, timezone
+
+        from tolokaforge.core.models import ToolCall
+        from tolokaforge.observability.observer import TrialIdentity
+        from tolokaforge.tools.registry import ToolResult
+
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/v1/traces",
+                options={"langfuse": {"attach": "none"}},
+            )
+        )
+        observer, run = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        trial = TrialIdentity(
+            run_id=run.run_id, task_id="T-1", trial_index=0, attempt_id=0, run_tag=run.run_tag
+        )
+        observer.tool_call(
+            trial,
+            role="agent",
+            index=1,
+            call=ToolCall(id="c1", name="shell", arguments={}),
+            result=ToolResult(success=True, output=f"the config says {self.MANAGED}"),
+            started_at=now,
+            ended_at=now,
+        )
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.spans_refused_secret"] == 1
+        assert receipt.spans_queued == 0
+
+    def test_the_trial_end_pass_the_plugin_builds_withholds_what_the_managers_list_never_held(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """``DB_PASSWORD`` is an environment name the SecretManager's list does not hold, so the
+        attachment step's own scan never knew it: the bundle projection carrying it was sent."""
+        pytest.importorskip("opentelemetry.sdk")
+        import parity_bundle as pb
+        import yaml
+
+        from tolokaforge.observability.observer import TrialIdentity
+        from tolokaforge_langfuse import plugin
+
+        value = "a-db-password-no-shape-matches"
+        monkeypatch.setenv("DB_PASSWORD", value)
+        assert value not in plugin.secret_values()
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        trajectory = pb.trajectory()
+        assistant = next(m for m in trajectory["messages"] if m["role"] == "assistant")
+        assistant["content"] = f"the password is {value}"
+        (trial_dir / "trajectory.yaml").write_text(yaml.safe_dump(trajectory), encoding="utf-8")
+        config = ObservabilityConfig(
+            tracing=TracingConfig(
+                exporter="otlp",
+                endpoint="http://127.0.0.1:9/v1/traces",
+                options={"langfuse": {"attach": "none"}},
+            )
+        )
+        observer, run = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
+        trial = TrialIdentity(
+            run_id=run.run_id, task_id=pb.TASK_ID, trial_index=0, attempt_id=0, run_tag=run.run_tag
+        )
+        observer.trial_persisted(trial, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.projections_refused_secret"] == 1
+        assert receipt.extra["langfuse.projections_sent"] == 0
+
 
 class TestReceiverFromTheEnvironment:
     """A launcher (the connector's with-environment) injects the receiver; the config may stay

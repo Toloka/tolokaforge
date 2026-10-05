@@ -363,3 +363,110 @@ class TestPerCallRoleAndModelAttribution:
 
         assert result.usage.calls[0].role == "user"
         assert result.usage.calls[0].model == "openai/gpt-canon"
+
+
+class TestBilledCostBesideTheEvalCost:
+    """Pin that the call record carries the charge the response states, and that
+    it does not move ``cost_usd`` off the ladder above.
+
+    On an OpenRouter route litellm's ``response_cost`` already IS the stated
+    charge. On a BYOK call it is OpenRouter's fee alone: 0 inside the free
+    allowance, where the ladder falls through to litellm's price map, and the fee
+    itself outside it, which the ladder keeps. Either way only
+    ``billed_cost_usd`` records what was actually paid.
+    """
+
+    def test_a_stated_charge_rides_beside_an_unchanged_eval_cost(
+        self,
+        hermetic_pricing: Path,
+    ) -> None:
+        client = _make_client("anthropic/claude-opus-canon")
+        response = _make_response(
+            prompt_tokens=1_000_000,
+            completion_tokens=0,
+            cache_read_input_tokens=200_000,
+            hidden_params={"response_cost": 0.0042},
+        )
+        response.usage.cost = 0.0042
+        response.usage.is_byok = False
+
+        result = _generate(client, response)
+
+        call = result.usage.calls[0]
+        assert result.cost_usd == pytest.approx(0.0042, abs=1e-12)
+        assert (call.cost_usd, call.cost_source) == (result.cost_usd, "litellm")
+        assert call.billed_cost_usd == pytest.approx(0.0042, abs=1e-12)
+
+    def test_a_byok_call_records_the_upstreams_bill_the_ladder_cannot_see(
+        self,
+        hermetic_pricing: Path,
+    ) -> None:
+        client = _make_client("anthropic/claude-opus-canon")
+        response = _make_response(
+            prompt_tokens=1000,
+            completion_tokens=10,
+            hidden_params={"response_cost": 0.0},  # OpenRouter's fee, inside the free tier
+        )
+        response.usage.cost = 0.0
+        response.usage.is_byok = True
+        response.usage.cost_details = {"upstream_inference_cost": 0.0055}
+
+        with patch(
+            "tolokaforge.core.llm.client.litellm.completion_cost",
+            return_value=0.0053,  # litellm's own price map
+        ):
+            result = _generate(client, response)
+
+        call = result.usage.calls[0]
+        assert result.cost_usd == pytest.approx(0.0053, abs=1e-12)
+        assert call.cost_usd == result.cost_usd
+        assert call.billed_cost_usd == pytest.approx(0.0055, abs=1e-12)
+
+    def test_a_byok_fee_outside_the_free_allowance_stays_the_eval_cost(
+        self,
+        hermetic_pricing: Path,
+    ) -> None:
+        """Outside OpenRouter's free BYOK allowance its fee is positive, litellm reports it
+        as the response cost and the ladder keeps it: ``cost_usd`` is the fee alone, a few
+        percent of what was paid. Pinned as the ladder stands; only ``billed_cost_usd``
+        carries the upstream's bill."""
+        client = _make_client("anthropic/claude-opus-canon")
+        response = _make_response(
+            prompt_tokens=1000,
+            completion_tokens=10,
+            hidden_params={"response_cost": 0.000225},  # OpenRouter's fee
+        )
+        response.usage.cost = 0.000225
+        response.usage.is_byok = True
+        response.usage.cost_details = {"upstream_inference_cost": 0.0045}
+
+        result = _generate(client, response)
+
+        call = result.usage.calls[0]
+        assert result.cost_usd == pytest.approx(0.000225, abs=1e-12)
+        assert call.billed_cost_usd == pytest.approx(0.004725, abs=1e-12)
+
+    def test_a_route_stating_no_charge_records_none_and_keeps_the_ladder(
+        self,
+        hermetic_pricing: Path,
+    ) -> None:
+        client = _make_client("openai/gpt-canon")
+        response = _make_response(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_input_tokens=40,
+            hidden_params={},
+        )
+        # a MagicMock usage answers ``cost`` with a MagicMock: no charge stated
+
+        with patch(
+            "tolokaforge.core.llm.client.litellm.completion_cost",
+            side_effect=Exception("not in litellm catalog"),
+        ):
+            result = _generate(client, response)
+
+        call = result.usage.calls[0]
+        assert call.cost_source == "local"
+        # 60 fresh + 40 cache read at the input rate (no cache rate) + 50 output
+        assert call.cost_usd == pytest.approx(0.0006, abs=1e-12)
+        assert call.billed_cost_usd is None

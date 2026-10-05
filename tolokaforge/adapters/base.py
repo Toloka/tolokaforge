@@ -514,6 +514,14 @@ class BaseAdapter(ABC):
         """
         pass
 
+    def requires_judge_model(self, task_id: str) -> bool:
+        """Whether this task's grader needs ``models.judge`` before a trial runs.
+
+        Host-side graders override this when their evidence lives outside the
+        runner's rubric block. The default reads the runner grading declaration.
+        """
+        return self.to_task_description(task_id).grading.llm_judge is not None
+
     @abstractmethod
     def get_grading_config(self, task_id: str) -> GradingConfig:
         """

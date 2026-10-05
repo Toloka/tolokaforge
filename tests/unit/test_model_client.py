@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -57,6 +58,97 @@ def _make_client(**config_overrides: Any):
     with patch.dict("os.environ", {}, clear=False):
         client = LLMClient(cfg)
     return client
+
+
+@pytest.mark.unit
+class TestSingleAttemptPolicy:
+    def test_timeout_does_not_retry_at_any_layer(self) -> None:
+        client = _make_client()
+        with patch(
+            "tolokaforge.core.llm.client.completion",
+            side_effect=TimeoutError("read timed out"),
+        ) as completion:
+            with pytest.raises(LLMApiTimeoutError, match="after 1 attempts"):
+                client.generate(system="judge", retry_policy="single_attempt")
+        assert completion.call_count == 1
+        assert completion.call_args.kwargs["max_retries"] == 0
+        assert completion.call_args.kwargs["num_retries"] == 0
+
+    def test_quota_error_does_not_rotate_or_retry(self) -> None:
+        client = _make_client()
+        with patch.object(client, "_rotate_key", side_effect=AssertionError("rotated")):
+            with patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=RuntimeError("Key limit exceeded"),
+            ) as completion:
+                with pytest.raises(RuntimeError, match="failed without retry"):
+                    client.generate(system="judge", retry_policy="single_attempt")
+        assert completion.call_count == 1
+
+    @pytest.mark.parametrize(
+        ("attribute", "value"),
+        [("num_retries", 3), ("model_fallbacks", [{"gpt-4": ["gpt-4o"]}])],
+        ids=["global-retries", "global-fallbacks"],
+    )
+    def test_global_litellm_retries_refuse_a_single_attempt(
+        self, monkeypatch: pytest.MonkeyPatch, attribute: str, value: object
+    ) -> None:
+        monkeypatch.setattr(litellm, attribute, value)
+        client = _make_client()
+        with patch("tolokaforge.core.llm.client.completion") as completion:
+            with pytest.raises(RuntimeError, match="single_attempt cannot run"):
+                client.generate(system="judge", retry_policy="single_attempt")
+        completion.assert_not_called()
+
+    def test_unknown_policy_fails_before_transport(self) -> None:
+        client = _make_client()
+        with pytest.raises(ValueError, match="Unknown LLM retry policy"):
+            client.generate(retry_policy="typo")  # type: ignore[arg-type]
+
+
+def _completion_response(text: str) -> MagicMock:
+    """The smallest ``ModelResponse`` shape :meth:`LLMClient.generate` reads."""
+    message = MagicMock()
+    message.content = text
+    message.tool_calls = None
+    message.reasoning_content = None
+    del message.thinking_blocks
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "stop"
+    response = MagicMock()
+    response.choices = [choice]
+    response.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    return response
+
+
+@pytest.mark.unit
+class TestResponseFormat:
+    def _sent(self, **call: Any) -> dict[str, Any]:
+        client = _make_client()
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response('{"verdict": "pass"}'),
+            ) as completion,
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            result = client.generate(system="judge", **call)
+        assert completion.call_count == 1
+        assert result.text == '{"verdict": "pass"}'
+        return completion.call_args.kwargs
+
+    def test_it_reaches_the_transport(self) -> None:
+        sent = self._sent(response_format={"type": "json_object"})
+        assert sent["response_format"] == {"type": "json_object"}
+
+    def test_the_callers_mapping_is_not_handed_on(self) -> None:
+        requested = {"type": "json_object"}
+        sent = self._sent(response_format=requested)
+        assert sent["response_format"] is not requested
+
+    def test_without_it_the_request_carries_none(self) -> None:
+        assert "response_format" not in self._sent()
 
 
 # ===================================================================

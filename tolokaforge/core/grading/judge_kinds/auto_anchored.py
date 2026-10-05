@@ -41,12 +41,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from tolokaforge.core.grading.judge_kinds._shared import billed_sum
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeUsage
+from tolokaforge.core.llm.usage import sum_known
 from tolokaforge.core.models.trajectory import Message, MessageRole
 from tolokaforge.runner.models import Criterion, Rubric
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
+    from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
     from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
     from tolokaforge.core.logging import StructuredLogger
@@ -135,9 +138,7 @@ class AutoAnchoredRubricJudgeKind:
         state_diff: str | None,
         judge_model_config: ModelConfig,
         judge_model_provider: JudgeModelProvider,
-        disable_knowledge_search: bool,
-        custom_system_prompt: str | None,
-        include_agent_system_prompt: bool,
+        options: JudgeTrialOptions,
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
@@ -160,9 +161,7 @@ class AutoAnchoredRubricJudgeKind:
                 state_diff=state_diff,
                 judge_model_config=judge_model_config,
                 judge_model_provider=judge_model_provider,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
+                options=options,
                 logger=logger,
                 warmup_usage=JudgeUsage(),
                 anchor_map={},
@@ -189,9 +188,7 @@ class AutoAnchoredRubricJudgeKind:
             state_diff=state_diff,
             judge_model_config=judge_model_config,
             judge_model_provider=judge_model_provider,
-            disable_knowledge_search=disable_knowledge_search,
-            custom_system_prompt=custom_system_prompt,
-            include_agent_system_prompt=include_agent_system_prompt,
+            options=options,
             logger=logger,
             warmup_usage=warmup_usage,
             anchor_map=anchor_map,
@@ -250,7 +247,10 @@ def _load_or_generate_anchors(
         cached = _ANCHOR_CACHE.get(key)
         if cached is not None:
             _ANCHOR_CACHE.move_to_end(key)
-            return cached
+            # A hit makes no call, so nothing is charged for the warm-up this time; calls and
+            # cost_usd still count the cached warm-up on every hit, as they always have.
+            anchor_map, warmup_usage = cached
+            return anchor_map, dataclasses.replace(warmup_usage, billed_cost_usd=0.0)
 
         anchor_map, warmup_usage = _generate_anchors(
             rubric=rubric,
@@ -291,6 +291,9 @@ def _generate_anchors(
         completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
         reasoning_tokens=getattr(usage, "reasoning_tokens", 0) or 0,
         cost_usd=result.cost_usd or 0.0,
+        billed_cost_usd=sum_known(
+            call.billed_cost_usd for call in getattr(usage, "calls", None) or ()
+        ),
     )
     return anchor_map, warmup_usage
 
@@ -398,9 +401,7 @@ def _dispatch_wrapped(
     state_diff: str | None,
     judge_model_config: ModelConfig,
     judge_model_provider: JudgeModelProvider,
-    disable_knowledge_search: bool,
-    custom_system_prompt: str | None,
-    include_agent_system_prompt: bool,
+    options: JudgeTrialOptions,
     logger: StructuredLogger,
     warmup_usage: JudgeUsage,
     anchor_map: _AnchorMap,
@@ -423,9 +424,7 @@ def _dispatch_wrapped(
         state_diff=state_diff,
         judge_model_config=judge_model_config,
         judge_model_provider=judge_model_provider,
-        disable_knowledge_search=disable_knowledge_search,
-        custom_system_prompt=custom_system_prompt,
-        include_agent_system_prompt=include_agent_system_prompt,
+        options=options,
         kind_config=None,
         logger=logger,
     )
@@ -438,6 +437,7 @@ def _dispatch_wrapped(
         cost_usd=warmup_usage.cost_usd + inner.usage.cost_usd,
         tool_calls=inner.usage.tool_calls,
         consistency_rejections=inner.usage.consistency_rejections,
+        billed_cost_usd=billed_sum((warmup_usage, inner.usage)),
     )
 
     audit_prefix = _render_anchor_audit(anchor_map)

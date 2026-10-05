@@ -273,3 +273,10 @@ Issues that affect all adapters or the harness infrastructure.
 | **Symptom** | 20 consecutive `Health check failed: UNAVAILABLE: ipv4:127.0.0.1:37643: Socket closed` messages before the runner becomes ready. |
 | **Analysis** | The Runner container takes 20 seconds to start the gRPC server.  The health check retries every ~1s with no backoff.  Not a bug, but noisy. |
 | **Recommendation** | Add exponential backoff or increase initial delay for Runner health checks. |
+
+### Judge preflight
+
+Adapters with host-side judging override `requires_judge_model(task_id)`. The
+orchestrator checks every selected task before scheduling any trials and refuses
+a missing `models.judge`. The default implementation checks the task description
+for the built-in `llm_judge` component.
