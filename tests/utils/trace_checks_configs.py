@@ -11,7 +11,7 @@ assertion rather than quietly losing its coverage.
 from typing import Any
 
 # Every operator, spread across the fields whose values each one reads. The two
-# binding operators name values ``_PAYMENT_BINDER`` extracts, so the matcher is
+# binding operators name values ``PAYMENT_BINDER`` extracts, so the matcher is
 # authorable only under the constraint that carries that binder.
 EVERY_OPERATOR_MATCHER: dict[str, Any] = {
     "kind": "tool_call",
@@ -40,7 +40,7 @@ EVERY_OPERATOR_MATCHER: dict[str, Any] = {
 
 # The binder the two binding operators above read: one case id off the denial call,
 # and one currency figure captured out of the assistant's own wording.
-_PAYMENT_BINDER: dict[str, Any] = {
+PAYMENT_BINDER: dict[str, Any] = {
     "match": {
         "kind": "tool_call",
         "tool": {"equals": "servicenow_csm_update_case"},
@@ -150,6 +150,6 @@ def every_kind_block() -> dict[str, Any]:
         if kind == _ON_MISSING_KIND:
             constraint["on_missing"] = "pass"
         if kind == _BINDING_KIND:
-            constraint["bind"] = _PAYMENT_BINDER
+            constraint["bind"] = PAYMENT_BINDER
         constraints.append(constraint)
     return {"constraints": constraints}

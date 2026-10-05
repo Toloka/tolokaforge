@@ -76,6 +76,7 @@ from tolokaforge.core.models import (
     BoundValue,
     GradingCombineConfig,
     GradingFindingSeverity,
+    OnMissing,
     RequiredAction,
     ToolExecutorIdentity,
     ToolExpectations,
@@ -89,10 +90,7 @@ from tolokaforge.core.models import (
     ValuePredicate,
 )
 from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
-from tolokaforge.runner.models import (
-    _KINDS_WITHOUT_AN_ANCHOR,
-    TRACE_PREDICATE_BINDING_OPERATORS,
-)
+from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
 
 logger = logging.getLogger(__name__)
 
@@ -2756,6 +2754,11 @@ def _check_severity_gate_default_on_missing_is_risky(
     ``on_missing: withhold`` as the fix when the anchor's tool can silently error
     (rate limit, connector timeout, unavailable KB).
 
+    The advisory speaks only where the model admits the ``on_missing: fail`` it
+    recommends, read off :meth:`TraceConstraintExpr.kinds_refusing_on_missing`: a
+    tree holding ``present`` / ``absent`` / ``count`` at any depth refuses it, so a
+    gate over one is left to the default.
+
     Advisory only — no error, since a gate whose anchor is a deterministic action
     is a legitimate shape and this rule cannot tell the two apart at authoring
     time. See the on-missing docs on
@@ -2764,12 +2767,9 @@ def _check_severity_gate_default_on_missing_is_risky(
     advisories = tuple(
         Finding(where, _SEVERITY_GATE_DEFAULT_FAIL_ADVISORY.format(where=where))
         for where, constraint in constraints
-        if constraint.severity is TraceConstraintSeverity.GATE and constraint.on_missing is None
-        # The advisory speaks about an "anchor's tool" erroring silently, which
-        # only applies to kinds that read a matched anchor. Anchorless kinds
-        # (``present`` / ``absent`` / ``count``) have no anchor to error on —
-        # skip them so the advisory reads truthfully.
-        and bool(constraint.require.kinds_in_tree() - _KINDS_WITHOUT_AN_ANCHOR)
+        if constraint.severity is TraceConstraintSeverity.GATE
+        and constraint.on_missing is None
+        and not constraint.require.kinds_refusing_on_missing(OnMissing.FAIL)
     )
     return AuthoringReport(advisories=advisories)
 
