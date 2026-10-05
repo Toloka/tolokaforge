@@ -502,7 +502,7 @@ cannot provide.
     establishes that this golden state is valid; declared state errors such as a
     re-keying that is not bijective, a new record without its key field, a list
     or dict in a key field, a dict in a reference, a null id
-    `unless_referenced_by` reads, a dict at a nested `path` — is the trial's own
+    `unless_referenced_by` reads, a dict at a nested `path` — are the trial's own
     state, which a hash without a view would score `0.0` too, not a grader
     defect for `tolokaforge run` to report. The record carries `trial_error`
     (the error's type, its message and the ids it names) and the reason names
