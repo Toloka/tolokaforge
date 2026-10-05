@@ -4,9 +4,10 @@
 ``RunConfig.effective_output_format()`` and persists the tolokaforge trial
 bundle. Every format persists that bundle: it is the whole output under
 ``tolokaforge`` (the default) and the engine-side half under ``native`` /
-``both``. Native-artifact preservation attaches to the latter two separately,
-so today ``native`` and ``both`` write the same per-trial file set as the
-default — this test locks that equivalence and the default-unchanged contract.
+``both``. ``native`` / ``both`` add a ``native/`` directory holding the
+harness's own artifacts (see ``test_native_artifact_preservation.py``); with
+none staged, all three formats write the same per-trial file set, which this
+test locks together with the default-unchanged contract.
 
 The write path is driven end-to-end: a real ``FileArtifactWriter``, the
 production ``_write_artifacts`` phase, and a real ``RunConfig`` carrying each
@@ -111,9 +112,10 @@ def test_default_run_writes_the_tolokaforge_trial_bundle(tmp_path: Path) -> None
 def test_every_format_currently_writes_the_same_trial_bundle(
     tmp_path: Path, fmt: OutputFormat
 ) -> None:
-    """``tolokaforge``, ``native`` and ``both`` all persist the tolokaforge
-    bundle today — native-artifact preservation for ``native`` / ``both`` is a
-    later step. Each format writes into its own directory, and the file set is
-    the default bundle's."""
+    """With no native artifacts staged, ``tolokaforge``, ``native`` and
+    ``both`` all persist the same tolokaforge bundle. ``native`` / ``both`` add
+    a ``native/`` directory only when the harness staged artifacts (see
+    ``test_native_artifact_preservation.py``). Each format writes into its own
+    directory, and the file set is the default bundle's."""
     trial_dir = _write_bundle(tmp_path / fmt.value, output=OutputConfig(format=fmt))
     assert _trial_file_names(trial_dir) == _EXPECTED_TRIAL_FILES
