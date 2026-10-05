@@ -606,13 +606,14 @@ class BaseAdapter(ABC):
     )
     """The :class:`~tolokaforge.core.execution_mode.ExecutionMode` set this adapter runs.
 
-    Every adapter runs the engine's own turn loop, so the default is
-    ``{ENGINE_LOOP}``. An adapter that can also hand the trial to a
-    task-provided agent (a coding-harness CLI) overrides this to add
-    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`; the
-    orchestrator's capability gate reads it before any container work. Legacy
-    adapters that declare only ``supports_coding_harness = True`` are honoured
-    for one release — see
+    The default is ``{ENGINE_LOOP}``: an adapter runs the engine's own turn
+    loop unless it declares otherwise. An adapter that can also hand the trial
+    to a task-provided agent (a coding-harness CLI) overrides this to add
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`; a
+    delegated-only adapter that owns its environment replaces it with
+    ``{DELEGATED}``. The orchestrator's capability gate reads it before any
+    container work. Legacy adapters that declare only
+    ``supports_coding_harness = True`` are honoured for one release — see
     :func:`~tolokaforge.core.orchestrator.adapter_supported_modes`.
     """
 

@@ -167,8 +167,11 @@ terminal_bench = [
 harbor = [
     "tolokaforge-adapter-harbor",
 ]
+inspect_ai = [
+    "tolokaforge-adapter-inspect-ai",
+]
 adapters = [
-    "tolokaforge[terminal_bench,harbor]",
+    "tolokaforge[terminal_bench,harbor,inspect_ai]",
 ]
 all = [
     "tolokaforge[dx,browser,server,rag,office,adapters,runner]",
@@ -811,6 +814,7 @@ members = [
     "tools/judge-kind-ab",
     "external_adapters/tolokaforge-adapter-terminal-bench",
     "external_adapters/tolokaforge-adapter-harbor",
+    "external_adapters/tolokaforge-adapter-inspect-ai",
 ]
 
 [tool.uv.sources]
@@ -820,6 +824,7 @@ judge-kind-ab = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-harbor = { workspace = true }
+tolokaforge-adapter-inspect-ai = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
 tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }

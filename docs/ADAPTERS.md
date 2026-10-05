@@ -28,6 +28,7 @@ adapter discoverable (via the `tolokaforge.adapters` entry point):
 ```bash
 pip install "tolokaforge[terminal_bench]"   # Terminal-Bench tasks
 pip install "tolokaforge[harbor]"           # Harbor (Terminal-Bench 2.0) tasks
+pip install "tolokaforge[inspect_ai]"       # Inspect AI tasks
 pip install "tolokaforge[adapters]"         # all shipped adapters
 ```
 
@@ -67,18 +68,25 @@ treated as also running `DELEGATED` (see
 
 ### How to add a harness / delegated adapter
 
-1. **Inherit the mixin.** Add `CodingHarnessAdapterMixin`
+Two shapes exist. An adapter that runs a vendor coding-agent CLI from the
+registry inherits the mixin (step 1). An adapter that delegates to an external
+harness by emitting its own command skips the mixin and declares its mode
+directly (step 2), supplying its own command assembly and grading.
+
+1. **Registry CLI: inherit the mixin.** Add `CodingHarnessAdapterMixin`
    (`tolokaforge_coding_harnesses.adapter_support`) alongside `BaseAdapter`.
    It supplies the six wire-artefact helpers — registry resolution, command
    assembly, the four-key metadata handshake, the `bash` tool schema, the
    `test_execution` grading payload, and the install-script Dockerfile layer —
    and keeps `supports_coding_harness = True`. The mixin imports no engine
-   module, so the package boundary stays intact.
-2. **Declare the mode.** Override
-   `supported_execution_modes = frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})`
-   on the engine-facing adapter class so the orchestrator gate lets delegated
-   runs through. (`ExecutionMode` lives engine-side only — never import it into
-   the coding-harnesses package.)
+   module, so the package boundary stays intact. A delegated adapter that owns
+   its environment and emits its own command does not use the mixin.
+2. **Declare the mode.** Override `supported_execution_modes` on the
+   engine-facing adapter class so the orchestrator gate lets the run through —
+   `frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})` for a
+   registry adapter, or `frozenset({ExecutionMode.DELEGATED})` for a
+   delegated-only adapter. (`ExecutionMode` lives engine-side only — never
+   import it into the coding-harnesses package.)
 3. **Emit the handshake.** In `to_task_description`, when a harness is
    selected, emit `agent_harness_command` (and the sibling `agent_harness*`
    keys) via the mixin helpers, register the single `bash` agent tool, and
@@ -89,7 +97,8 @@ treated as also running `DELEGATED` (see
    (`tolokaforge.testing.adapters`) and set
    `expected_supported_execution_modes` to the set your adapter declares.
 
-The two shipped adopters are `NativeAdapter` and `TerminalBenchAdapter`.
+`NativeAdapter` (the engine's own loop) and `TerminalBenchAdapter` ship in
+the tree; additional delegated-harness adapters install through their extras.
 
 ---
 
