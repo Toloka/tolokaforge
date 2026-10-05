@@ -56,13 +56,19 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import yaml
 from pydantic import ValidationError
 
-from tolokaforge.core.models import RecordedToolCall
-from tolokaforge.core.output_writer import METRICS_FILENAME, TOOL_LOG_FILENAME, OutputWriter
+from tolokaforge.core.models import Metrics, RecordedToolCall, Trajectory
+from tolokaforge.core.output_writer import (
+    GRADE_FILENAME,
+    METRICS_FILENAME,
+    TOOL_LOG_FILENAME,
+    TRAJECTORY_FILENAME,
+    OutputWriter,
+)
 from tolokaforge.core.redaction import NoRedaction, RedactionPolicy, RedactionStamp
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.core.models import Grade, Metrics, Trajectory
+    from tolokaforge.core.models import Grade
 
 __all__ = [
     "FileArtifactWriter",
@@ -267,9 +273,6 @@ def read_report_trajectory(trial_dir: Path) -> Trajectory:
     Missing or malformed required files propagate instead of losing a trial
     from a resumed run's denominator and cost totals.
     """
-    from tolokaforge.core.models import Metrics, Trajectory
-    from tolokaforge.core.output_writer import GRADE_FILENAME, TRAJECTORY_FILENAME
-
     trial_dir = Path(trial_dir)
     with (trial_dir / TRAJECTORY_FILENAME).open(encoding="utf-8") as stream:
         data = yaml.safe_load(stream)
