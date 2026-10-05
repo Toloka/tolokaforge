@@ -609,7 +609,7 @@ class TestBuildSystemPrompt:
         task = _make_task_config(
             policies={"agent_system_prompt": "You are a special assistant."},
         )
-        result = orch._build_system_prompt(task, [], Path("/fake/dir"))
+        result = orch._build_system_prompt(task, [], Path("/fake/dir"), orch.agent_client)
         assert result == "You are a special assistant."
 
     def test_system_prompt_file(self, tmp_path: Path) -> None:
@@ -617,13 +617,13 @@ class TestBuildSystemPrompt:
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Custom domain prompt here.")
         task = _make_task_config(system_prompt="prompt.md")
-        result = orch._build_system_prompt(task, [], tmp_path)
+        result = orch._build_system_prompt(task, [], tmp_path, orch.agent_client)
         assert "Custom domain prompt here." in result
 
     def test_default_fallback(self) -> None:
         orch = self._make_orchestrator()
         task = _make_task_config(system_prompt=None)
-        result = orch._build_system_prompt(task, [], Path("/nonexistent"))
+        result = orch._build_system_prompt(task, [], Path("/nonexistent"), orch.agent_client)
         assert result == "You are a helpful assistant."
 
     def test_main_policy_with_additional(self, tmp_path: Path) -> None:
@@ -636,7 +636,7 @@ class TestBuildSystemPrompt:
         (tmp_path / "tasks" / "main_policy.md").write_text("Main policy content.")
         (tmp_path / "tasks" / "additional_policy.md").write_text("Additional policy content.")
         task = _make_task_config(system_prompt="additional_policy.md")
-        result = orch._build_system_prompt(task, [], task_dir)
+        result = orch._build_system_prompt(task, [], task_dir, orch.agent_client)
         assert "Main policy content." in result
         assert "Additional policy content." in result
         assert "<main_policy>" in result

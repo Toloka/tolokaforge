@@ -1346,6 +1346,7 @@ class Orchestrator:
         self,
         *,
         agent_client: LLMClient,
+        agent_clients_by_entry: Mapping[str, LLMClient] | None = None,
         runtime_backend: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
@@ -1431,6 +1432,7 @@ class Orchestrator:
             verbose=self.verbose,
             strict=self.strict,
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry or {},
             runtime_backend=runtime_backend,
             trial_grader=trial_grader,
             output_dir=output_dir,
@@ -3204,6 +3206,34 @@ class Orchestrator:
             return self._agent_client_factory(agent_config)
         return LLMClient(agent_config, rate_limit_probe=probe)
 
+    def _build_agent_clients_by_entry(self) -> dict[str, LLMClient]:
+        """Per-entry agent clients for a multi-harness run, keyed by entry name.
+
+        For each harness entry whose effective (entry-over-run) agent
+        :class:`ModelConfig` differs from the run-level agent config, build a
+        client through :meth:`_build_agent_client` so the same fallback/probe
+        wiring applies per entry. An entry equal to the run-level model is left
+        out of the map and reuses the run-level client; two entries resolving to
+        the same model share one client (dedup by resolved ``ModelConfig``). A
+        single-adapter run has no ``harnesses`` block and returns ``{}``.
+        """
+        harnesses = self.config.harnesses
+        if harnesses is None:
+            return {}
+        run_level = self.config.models.get("agent")
+        by_entry: dict[str, LLMClient] = {}
+        built: list[tuple[ModelConfig, LLMClient]] = []
+        for entry_config in harnesses.entries:
+            agent_model = self._entry_agent_model(entry_config)
+            if agent_model is None or agent_model == run_level:
+                continue
+            client = next((c for model, c in built if model == agent_model), None)
+            if client is None:
+                client = self._build_agent_client(agent_model)
+                built.append((agent_model, client))
+            by_entry[entry_config.name] = client
+        return by_entry
+
     def run(
         self,
         *,
@@ -3321,6 +3351,7 @@ class Orchestrator:
         )
 
         agent_client = self._build_agent_client(agent_config)
+        agent_clients_by_entry = self._build_agent_clients_by_entry()
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -3590,6 +3621,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
@@ -3715,7 +3747,7 @@ class Orchestrator:
                             worker_id=lease_owner,
                             run_id=run_id,
                             entry=lease.entry,
-                            agent_client=agent_client,
+                            agent_client=agent_clients_by_entry.get(lease.entry) or agent_client,
                             user_config=user_config,
                             judge_config=judge_config,
                             env_endpoints=env_endpoints,
@@ -4048,6 +4080,7 @@ class Orchestrator:
         )
 
         agent_client = self._build_agent_client(agent_config)
+        agent_clients_by_entry = self._build_agent_clients_by_entry()
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -4102,6 +4135,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
@@ -4184,7 +4218,7 @@ class Orchestrator:
                         worker_id=lease_owner,
                         run_id=run_id,
                         entry=lease.entry,
-                        agent_client=agent_client,
+                        agent_client=agent_clients_by_entry.get(lease.entry) or agent_client,
                         user_config=user_config,
                         judge_config=judge_config,
                         env_endpoints=env_endpoints,

@@ -133,7 +133,7 @@ class TestConductorDelegationParity:
         adapter = MagicMock()
         conductor = self._conductor(adapter)
 
-        from_method = conductor._build_system_prompt(task, [], tmp_path)
+        from_method = conductor._build_system_prompt(task, [], tmp_path, conductor.agent_client)
         from_helper = build_system_prompt(task=task, task_dir=tmp_path)
 
         assert from_method == from_helper == "Inline prompt body."
