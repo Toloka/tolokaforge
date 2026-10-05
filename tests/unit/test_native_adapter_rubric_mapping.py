@@ -351,7 +351,7 @@ def test_include_agent_system_prompt_none_when_no_layer_sets_it(tmp_path: Path):
     assert judge.customization.include_agent_system_prompt is None
 
 
-# judge_snippet_chars (ADR-0053): not tri-state — ``null`` means whole documents.
+# judge_snippet_chars (ADR-0054): not tri-state — ``null`` means whole documents.
 
 
 def test_judge_snippet_chars_project_figure_inherited_when_task_unset(tmp_path: Path):
