@@ -282,11 +282,16 @@ class ToolWrapper(ABC):
         pass
 
     def stop(self) -> None:  # noqa: B027
-        """Tear down resources provisioned by start() (override if needed)."""
+        """Tear down resources provisioned by start() (override if needed).
+
+        Must be idempotent, as must :meth:`cleanup`: a cleanup retried after another
+        resource failed to tear down calls both again on every tool of the trial,
+        including those whose first call succeeded.
+        """
         pass
 
     def cleanup(self) -> None:  # noqa: B027
-        """Clean up any resources (override in subclasses if needed)."""
+        """Clean up any resources (override in subclasses if needed); idempotent, see :meth:`stop`."""
         pass
 
 
