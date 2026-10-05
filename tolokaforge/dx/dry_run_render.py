@@ -99,9 +99,10 @@ def render_dry_run_sample(*, sample: DryRunSample, console: Console) -> None:
         Text.from_markup(f"[muted]Judge:[/muted] {sample.judge_model_line}"),
         Text.from_markup(f"[muted]Runtime:[/muted] {sample.runtime_line}"),
     )
+    task_label = sample.task_id if sample.entry is None else f"{sample.entry}/{sample.task_id}"
     panel = Panel(
         body,
-        title=f"Task {sample.task_id} · Trial {sample.trial_index}",
+        title=f"Task {task_label} · Trial {sample.trial_index}",
         title_align="left",
     )
     console.print(panel)

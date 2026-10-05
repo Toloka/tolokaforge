@@ -17,8 +17,11 @@ import yaml
 from rich.console import Console
 
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.adapter_registry import CompositeAdapter
 from tolokaforge.core.dry_run import (
     DryRunSample,
+    DryRunUnit,
+    load_harness_entry_units_for_dry_run,
     load_tasks_for_dry_run,
     materialize_dry_run_sample,
     tool_schema_to_openai_dict,
@@ -259,3 +262,99 @@ class TestLoadTasksForDryRun:
 
         assert len(tasks) == 2
         assert isinstance(adapter, NativeAdapter)
+
+
+def _multi_harness_run_config() -> RunConfig:
+    """Two native entries over the tool_use dataset, each pinned to one task.
+
+    Two entries of the same adapter type with different ``task_ids`` allow-lists:
+    the dry-run must resolve each entry's own task through the composite rather
+    than discovering the dataset's whole task list once.
+    """
+    return RunConfig(
+        models={"agent": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4-6")},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(
+            projects=[str(TOOL_USE_DATASET)],
+            tasks_glob="**/task.yaml",
+            output_dir="/tmp/dry_run_multi",
+        ),
+        harnesses={
+            "entries": [
+                {"name": "first", "adapter": "native", "task_ids": ["tool_use_public_example_01"]},
+                {"name": "second", "adapter": "native", "task_ids": ["tool_use_public_example_02"]},
+            ]
+        },
+    )
+
+
+class TestLoadHarnessEntryUnitsForDryRun:
+    def test_resolves_one_unit_per_entry_without_native_fallthrough(self) -> None:
+        units = load_harness_entry_units_for_dry_run(run_config=_multi_harness_run_config())
+
+        assert [u.entry for u in units] == ["first", "second"]
+        # Each entry's allow-list is honoured: one task per entry, not the
+        # whole dataset discovered once and shared.
+        assert [u.task.task_id for u in units] == [
+            "tool_use_public_example_01",
+            "tool_use_public_example_02",
+        ]
+        for unit in units:
+            assert isinstance(unit, DryRunUnit)
+            # Per-entry adapters, never the composite — each resolves its task.
+            assert isinstance(unit.adapter, NativeAdapter)
+            assert not isinstance(unit.adapter, CompositeAdapter)
+            assert unit.agent_config.name == "anthropic/claude-sonnet-4-6"
+
+    def test_both_entries_materialize_first_turn_wiring(self) -> None:
+        """Each resolved unit renders a full first-turn sample (the issue's crash
+        point): system prompt + sanitized tool spec, tagged with its entry."""
+        units = load_harness_entry_units_for_dry_run(run_config=_multi_harness_run_config())
+
+        samples = [
+            materialize_dry_run_sample(
+                task=unit.task,
+                adapter=unit.adapter,
+                agent_config=unit.agent_config,
+                judge_config=unit.judge_config,
+                runtime_choice="shared",
+                entry=unit.entry,
+            )
+            for unit in units
+        ]
+
+        assert {s.entry for s in samples} == {"first", "second"}
+        for sample in samples:
+            assert sample.system_prompt
+            assert sample.tool_spec
+
+        console = Console(record=True, width=120)
+        for sample in samples:
+            render_dry_run_sample(sample=sample, console=console)
+        rendered = console.export_text()
+        # The entry qualifies the panel title so the same task id under two
+        # entries never collides.
+        assert "first/tool_use_public_example_01" in rendered
+        assert "second/tool_use_public_example_02" in rendered
+
+    def test_single_adapter_sample_title_is_unqualified(self) -> None:
+        """Regression: a single-adapter sample carries no entry and renders the
+        bare ``Task <id>`` title — the multi-harness entry tag never leaks in."""
+        adapter = _tool_use_adapter()
+        task = adapter.get_task("tool_use_public_example_01")
+        agent = ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4-6")
+
+        sample = materialize_dry_run_sample(
+            task=task,
+            adapter=adapter,
+            agent_config=agent,
+            judge_config=None,
+            runtime_choice="shared",
+        )
+
+        assert sample.entry is None
+        console = Console(record=True, width=120)
+        render_dry_run_sample(sample=sample, console=console)
+        rendered = console.export_text()
+        assert "Task tool_use_public_example_01" in rendered
+        assert "/tool_use_public_example_01" not in rendered

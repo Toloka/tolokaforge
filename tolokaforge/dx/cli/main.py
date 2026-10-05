@@ -18,7 +18,11 @@ from rich.markup import escape
 
 from tolokaforge.core import pricing
 from tolokaforge.core.budgets import LimitHitMarker, make_budget
-from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
+from tolokaforge.core.dry_run import (
+    load_harness_entry_units_for_dry_run,
+    load_tasks_for_dry_run,
+    materialize_dry_run_sample,
+)
 from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.grading.corpus_curation import CurationError, curate_corpus
@@ -571,7 +575,18 @@ def _run_dry_run(
     via ``console.quiet``. Exits 1 (via :class:`SystemExit`) when the
     adapter resolves zero tasks — matches the "No tasks found" surface
     the real run has at the same point in its flow.
+
+    A ``harnesses:`` run resolves tasks and tools per entry through the run's
+    CompositeAdapter (the same per-entry resolution a real run uses), so it is
+    handled separately rather than falling through to single-adapter native
+    discovery.
     """
+    if run_config.harnesses is not None:
+        _run_dry_run_harnesses(
+            run_config=run_config, project=project, dry_run_samples=dry_run_samples
+        )
+        return
+
     adapter, tasks = load_tasks_for_dry_run(run_config=run_config, project=project)
     if not tasks:
         console.print("[red]No tasks found![/red]")
@@ -595,6 +610,41 @@ def _run_dry_run(
         for task in tasks[:n_rendered]
     ]
     render_dry_run(samples, console=console, n_available=len(tasks))
+
+
+def _run_dry_run_harnesses(
+    *,
+    run_config: RunConfig,
+    project: ProjectConfig | None,
+    dry_run_samples: int,
+) -> None:
+    """Render first-turn samples for a ``harnesses:`` run, one unit per entry.
+
+    Resolves every ``(entry, task)`` through the run's CompositeAdapter — the
+    orchestrator's own per-entry adapter / model resolution — so each entry's
+    first-turn wiring renders without falling through to native whole-repo
+    discovery. Shares the single-adapter dry-run contract: no run dir, no HTTP,
+    and the same "No tasks found" exit when nothing resolves.
+    """
+    units = load_harness_entry_units_for_dry_run(run_config=run_config, project=project)
+    if not units:
+        console.print("[red]No tasks found![/red]")
+        raise SystemExit(1)
+
+    runtime_choice = run_config.orchestrator.runtime
+    n_rendered = min(dry_run_samples, len(units))
+    samples = [
+        materialize_dry_run_sample(
+            task=unit.task,
+            adapter=unit.adapter,
+            agent_config=unit.agent_config,
+            judge_config=unit.judge_config,
+            runtime_choice=runtime_choice,
+            entry=unit.entry,
+        )
+        for unit in units[:n_rendered]
+    ]
+    render_dry_run(samples, console=console, n_available=len(units))
 
 
 @cli.command()
