@@ -743,7 +743,7 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 doc_key="`trace_checks` `regex_engine` on a predicate or bound value",
                 direction=_Direction.NEW_ENGINE_OLD_IMAGE,
                 since=_UNRELEASED,
-                breadth="a pack declaring a matcher predicate or a bound value",
+                breadth="a pack declaring `regex_engine` on a matcher predicate or a bound value",
             ),
             _DocLock(
                 doc_key="`trace_checks` `regex` / `not_regex` written as a list",

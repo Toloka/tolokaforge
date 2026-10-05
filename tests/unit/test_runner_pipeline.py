@@ -789,6 +789,8 @@ class TestRegisterTrialVersionGate:
     def test_engine_below_the_required_version_is_refused(
         self, runner_service, mock_grpc_context, simple_task_description
     ):
+        """A version-3 engine omits ``regex_engine`` from its grading config, which
+        this runner would read as ``linear`` and grade the pack's patterns under RE2."""
         trial_id = "skewed_engine:0"
         response = runner_service.RegisterTrial(
             register_request(

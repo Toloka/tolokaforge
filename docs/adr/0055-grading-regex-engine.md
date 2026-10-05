@@ -40,7 +40,8 @@ changes what a pattern means behind the author's back.
   the evaluators' existing fail-fast contract (`re.error`).
 - **No new wire drift.** Older runner images reject unknown keys at
   `RegisterTrial`, and `TrialSpec` is dumped without `exclude_none`, so every
-  key on a model is on the wire for every pack that declares the model.
+  key on a model is on the wire for every pack that declares the model,
+  unless the model names it in `omitted_when_absent`.
 
 ## Considered Options
 
@@ -111,7 +112,9 @@ what an authored pattern means.
 - **Per-site override:** `ValuePredicate.regex_engine` (its `regex` and
   `not_regex`) and `BoundValue.regex_engine` (its `pattern`). It is a modifier,
   not an operator: it asserts nothing on its own. A `regex_engine` on a site
-  with no pattern is a load error.
+  with no pattern is a load error. Both models name `regex_engine` in
+  `omitted_when_absent`, so an override is on the wire only where it is
+  authored.
 - `checks_helpers.text_matches_pattern` stays on Python `re`: it is a helper a
   pack's own Python calls, with Python's flags.
 
@@ -147,6 +150,7 @@ with the lone-surrogate row):
 | `a$` | `a` + newline | match | no match | RE2 `$` without `(?m)` is end of text only |
 | `[[:alpha:]]+` | `ab:` | no match | match | a POSIX class in RE2, a character set in `re` |
 | `a{,3}` | `aaaa` | match | no match | `re` reads `{0,3}`; RE2 reads the literal text `{,3}` |
+| `(?i)İ` (U+0130) | `i` | match | no match | `re` case-folds `İ` to `i`; RE2 does not |
 
 ### Changes
 
@@ -158,6 +162,8 @@ with the lone-surrogate row):
 3. The list form of `regex` and `not_regex`. **Implemented.**
 4. `linear` becomes the default; the gate's advisory for patterns `linear`
    cannot compile. **Implemented.**
+5. `ENGINE_PROTOCOL_VERSION` 4, so an engine and a runner image on opposite
+   sides of the default refuse each other at `RegisterTrial`. **Implemented.**
 
 ## Consequences
 
@@ -177,9 +183,10 @@ with the lone-surrogate row):
 - Packs whose patterns RE2 refuses must change them or opt into
   `backtracking`. Packs whose patterns hit a row of the table above change
   verdict with no refusal.
-- The new keys are on the wire for packs that declare `trace_checks` or
-  `transcript_rules`; an older runner image refuses those trials at
-  `RegisterTrial`.
+- An engine and a runner image on opposite sides of wire-protocol version 4
+  refuse each other at `RegisterTrial`, for every pack: an older engine's
+  config carries no `regex_engine`, which a current image would read as
+  `linear`. Every engine upgrade rebuilds the runner image.
 
 ### Follow-ups
 

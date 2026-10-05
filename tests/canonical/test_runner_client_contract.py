@@ -96,13 +96,16 @@ def test_grpc_runner_client_satisfies_protocol() -> None:
     assert isinstance(client, RunnerClient)
 
 
-def test_new_host_refuses_an_old_runner_before_the_trial_starts() -> None:
+@pytest.mark.parametrize("runner_version", [2, 3])
+def test_new_host_refuses_an_old_runner_before_the_trial_starts(runner_version: int) -> None:
+    """Version 3 is the last image predating the RE2 grading default; it is refused for
+    every pack, not left to refuse only a grading config carrying ``regex_engine``."""
     client = GrpcRunnerClient()
     requests = []
     client.stub = SimpleNamespace(
         RegisterTrial=lambda request: (
             requests.append(request)
-            or pb2.RegisterTrialResponse(success=True, runner_protocol_version=2)
+            or pb2.RegisterTrialResponse(success=True, runner_protocol_version=runner_version)
         )
     )
 
@@ -110,7 +113,7 @@ def test_new_host_refuses_an_old_runner_before_the_trial_starts() -> None:
 
     assert requests[0].engine_protocol_version == ENGINE_PROTOCOL_VERSION
     assert result["success"] is False
-    assert "runner image declares wire-protocol version 2" in result["error"]
+    assert f"runner image declares wire-protocol version {runner_version}" in result["error"]
 
 
 def test_stub_runner_client_satisfies_protocol() -> None:

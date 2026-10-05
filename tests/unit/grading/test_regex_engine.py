@@ -159,6 +159,7 @@ VERDICT_DIFFERENCES = [
     pytest.param("a$", "a\n", True, False, id="dollar-is-end-of-text"),
     pytest.param("[[:alpha:]]+", "ab:", False, True, id="posix-class"),
     pytest.param("a{,3}", "aaaa", True, False, id="empty-lower-bound-is-literal"),
+    pytest.param("(?i)\u0130", "i", True, False, id="ignore-case-folds-dotted-capital-i"),
     pytest.param("\ufffd", "abc \ud800 def", False, True, id="lone-surrogate-reads-as-u-fffd"),
 ]
 

@@ -72,7 +72,7 @@ from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
-from tolokaforge.core.grading.regex_engine import RegexEngineKind as RegexEngineKind
+from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -932,6 +932,13 @@ class ValuePredicate(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"regex_engine"})
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
+
     def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
         """The engine this predicate's patterns run on inside a block defaulting to ``section``."""
         return section if self.regex_engine is None else self.regex_engine
@@ -1155,6 +1162,13 @@ class BoundValue(BaseModel):
     regex_engine: RegexEngineKind | None = None
 
     model_config = {"extra": "forbid"}
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"regex_engine"})
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
 
     def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
         """The engine ``pattern`` runs on inside a block defaulting to ``section``."""

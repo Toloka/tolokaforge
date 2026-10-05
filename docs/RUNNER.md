@@ -259,17 +259,15 @@ runner **refuses to register a trial from an engine below its own version**,
 naming the skew in `RegisterTrialResponse.error`. The orchestrator already treats a
 registration failure as fatal, so a skewed pair fails before any tokens are spent.
 
-**This gate's bound is one-sided, and the unprotected direction is the quieter one.**
-An **older** engine against a newer image fails every trial at registration, loudly —
-for the field it cannot send (`call_id`) and, from protocol version 2 on, for the two
-`user_simulator` keys it still emits into the trial spec that the current image no
-longer declares. A **newer** engine against an older image passes *this* gate — the
-older runner does not know the `engine_protocol_version` field, and proto3 drops
-unknown fields on a proto message rather than erroring — so the version skew itself
-surfaces later and less clearly: that engine sends a `call_id` on every `ExecuteTool`
-which the older runner also ignores, so calls are recorded without the id grading
-joins on. Each version and what it first changed is listed in
-[`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock; refusing an
+**The runner's gate is one-sided; the engine closes the other direction.**
+An **older** engine against a newer image fails every trial at registration, loudly.
+A **newer** engine against an older image passes the runner's gate — proto3 drops an
+unknown field such as `engine_protocol_version` rather than erroring — so the engine
+checks the image instead: from protocol version 3 on, a successful registration
+returns `runner_protocol_version`, and the engine refuses an image below its own
+version before the trial starts. An image predating version 3 returns nothing there,
+which reads as `0` and is refused the same way. Each version and what it first
+changed is listed in [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock; refusing an
 engine below the bound at the gate, rather than at model validation, is what a bump
 buys.
 
