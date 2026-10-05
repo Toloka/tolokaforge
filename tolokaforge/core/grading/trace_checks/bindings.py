@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from tolokaforge.core.grading.regex_engine import CompiledRegex, RegexEngineKind, regex_engine
+from tolokaforge.core.grading.regex_engine import CompiledRegex, RegexEngineKind, engine_for
 from tolokaforge.core.grading.trace_checks.matcher import (
     _MISSING,
     MatcherOutcome,
@@ -194,7 +194,7 @@ def _capture_patterns(
 ) -> Mapping[str, CompiledRegex]:
     """Each bound name's capture pattern, compiled under its effective engine."""
     return {
-        name: regex_engine(bound.regex_engine_under(section)).compile(bound.pattern)
+        name: engine_for(bound.regex_engine_under(section)).compile(bound.pattern)
         for name, bound in binding.values.items()
         if bound.pattern is not None
     }

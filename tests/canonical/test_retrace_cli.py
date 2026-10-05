@@ -149,6 +149,19 @@ _MISSPELLED_TOOL_CHECKS: dict[str, Any] = {
     ]
 }
 
+# A lookahead the default ``linear`` engine refuses, in a block naming no engine.
+_LOOKAHEAD_CHECKS: dict[str, Any] = {
+    "constraints": [
+        {
+            "id": "the_order_was_read",
+            "description": "the agent read the order before answering",
+            "require": {
+                "present": {"match": {"kind": "tool_call", "tool": {"regex": "(?=get_)get_order"}}}
+            },
+        }
+    ]
+}
+
 _WIRE_TOOLS = [
     {
         "type": "function",
@@ -466,14 +479,21 @@ def test_a_bundle_whose_provider_reused_a_call_id_is_re_checked_rather_than_refu
     assert (source / TRACE_REPLAY_DIRNAME / "r1" / "trace_replay_report.yaml").is_file()
 
 
+@pytest.mark.parametrize(
+    ("block", "said"),
+    [
+        pytest.param(_MISSPELLED_TOOL_CHECKS, "get_ordr", id="misspelled-tool"),
+        pytest.param(_LOOKAHEAD_CHECKS, "regex_engine: backtracking", id="lookahead-under-linear"),
+    ],
+)
 def test_a_mis_authored_override_exits_one_before_any_trial_is_re_checked(
-    tmp_path: Path,
+    tmp_path: Path, block: dict[str, Any], said: str
 ) -> None:
     """One defect in one file, reported once, with nothing written.
 
     Two bundles, because with one "aborted before replaying" and "replayed and then
-    aborted" are the same observation. The misspelling reaches the console rather
-        than a traceback, and the output subtree is never created.
+    aborted" are the same observation. The defect reaches the console rather than a
+    traceback, and the output subtree is never created.
     """
     source = _corpus(tmp_path, [_read_the_order(), _read_the_order()], wire_tools=_WIRE_TOOLS)
 
@@ -481,12 +501,40 @@ def test_a_mis_authored_override_exits_one_before_any_trial_is_re_checked(
         "--source",
         str(source),
         "--constraints",
-        str(_override(tmp_path / "supplied", _MISSPELLED_TOOL_CHECKS)),
+        str(_override(tmp_path / "supplied", block)),
     )
 
     assert result.exit_code == 1, result.output
-    assert "get_ordr" in result.output
+    assert said in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
     assert not (source / TRACE_REPLAY_DIRNAME).exists()
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["re-check", "dry-run"])
+def test_a_recorded_pattern_the_default_engine_refuses_fails_that_bundle_and_reports_the_rest(
+    tmp_path: Path, dry_run: bool
+) -> None:
+    """An old bundle's lookahead is one named failure, not a traceback out of the batch.
+
+    The readable bundle beside it is still measured and, outside a dry run, the
+    report is still written; the failure names the opt-in that re-checks it.
+    """
+    source = tmp_path
+    refused = _write_bundle(
+        source / "trials" / "refund_task" / "0", _read_the_order(), trace_checks=_LOOKAHEAD_CHECKS
+    )
+    _write_bundle(source / "trials" / "refund_task" / "1", _read_the_order())
+
+    result = _retrace(
+        "--source", str(source), "--replay-id", "r1", *(["--dry-run"] if dry_run else [])
+    )
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert str(refused / "task.yaml") in result.output
+    assert "regex_engine: backtracking" in result.output
+    report = source / TRACE_REPLAY_DIRNAME / "r1" / "trace_replay_report.yaml"
+    assert report.is_file() is not dry_run
 
 
 def test_a_bundle_whose_tool_set_is_unknown_reports_the_skip_with_its_reason(

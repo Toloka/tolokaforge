@@ -2440,7 +2440,9 @@ bound value declaring no `pattern`, is a load error: it would change nothing.
   is too large — `(\w{1,1000}){1,1000}` — both refused as "invalid repetition size";
 - a pattern over RE2's memory budget — `\pL{1000}` five times over — refused as
   "pattern too large";
-- verbose mode `(?x)`, the ASCII flag `(?a)`, and named characters `\N{…}`.
+- verbose mode `(?x)`, the ASCII flag `(?a)`, and named characters `\N{…}`;
+- a pattern holding a lone surrogate (U+D800–U+DFFF), which cannot be encoded as
+  UTF-8.
 
 **Patterns both engines compile can read differently.** These are the semantics of
 the `linear` default; a pattern that relies on the `backtracking` reading declares
@@ -2488,8 +2490,9 @@ that left no trace at all. A `disallow_regex` entry its engine refuses is a fail
 sub-check, on a transcript with no assistant turn too. The
 [pre-run gate](#what-is-validated-before-a-run) compiles every pattern under its
 engine before a run spends anything: a `backtracking` refusal is an error, and a
-`linear` one an advisory naming the pattern list and the `backtracking` opt-in —
-fatal under the default `fail_on`.
+`linear` one an advisory naming the `regex_engine: backtracking` opt-in and, on a
+matcher's `regex` / `not_regex`, the pattern list — fatal under the default
+`fail_on`.
 
 Code-authored checks (`checks.py`) use whatever regex library their author imports;
 `checks_helpers.text_matches_pattern` is Python `re` with the caller's `re` flags.

@@ -787,7 +787,11 @@ class TranscriptRulesConfig(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
-    """The engine every ``disallow_regex`` pattern is compiled and searched by."""
+    """The engine every ``disallow_regex`` pattern is compiled and searched by.
+
+    Accepted on a block declaring no pattern, unlike a predicate's or a bound
+    value's: the key is dumped at its default wherever the block travels, so the
+    model cannot tell one an author wrote from one the dump supplied."""
     # Both bounds are declarable from 1 up. A ceiling below 1 admits no
     # assistant-turn count at all, and a floor of 0 asserts nothing — and the
     # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
@@ -1991,7 +1995,11 @@ class TraceChecksConfig(BaseModel):
     alternatives: list[TracePath] | None = None
     regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
     """The engine every ``regex`` / ``not_regex`` / ``bind.values[*].pattern`` in the
-    block runs on, unless its predicate or bound value names its own."""
+    block runs on, unless its predicate or bound value names its own.
+
+    Accepted on a block declaring no pattern, unlike a predicate's or a bound
+    value's: the key is dumped at its default wherever the block travels, so the
+    model cannot tell one an author wrote from one the dump supplied."""
 
     model_config = {"extra": "forbid"}
 

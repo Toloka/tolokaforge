@@ -16,7 +16,7 @@ A leaf with no first-party imports: the config models in
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
@@ -52,6 +52,9 @@ class UncompilablePattern(re.error):
         )
         self.engine = engine
         self.reason = reason
+
+    def __reduce__(self) -> tuple[type[UncompilablePattern], tuple[object, ...]]:
+        return (type(self), (self.engine, self.pattern, self.reason, self.pos))
 
 
 class CompiledRegex(Protocol):
@@ -92,13 +95,26 @@ class _BacktrackingRegex:
         return [match.group(1) for match in self._compiled.finditer(text)]
 
 
+class _Re2Match(Protocol):
+    def span(self, group: int) -> tuple[int, int]: ...
+
+
+class _Re2Pattern(Protocol):
+    @property
+    def groups(self) -> int: ...
+
+    def search(self, text: str) -> object | None: ...
+
+    def finditer(self, text: str) -> Iterator[_Re2Match]: ...
+
+
 class _LinearRegex:
     """RE2 encodes the text as UTF-8, which a lone surrogate (valid in a ``str``
     that ``json.loads`` produced) cannot be. It searches a view with every
     surrogate replaced one-for-one by U+FFFD; RE2 spans count code points, so a
     capture is sliced from the original text at the same span."""
 
-    def __init__(self, compiled: re2._Regexp) -> None:
+    def __init__(self, compiled: _Re2Pattern) -> None:
         self._compiled = compiled
 
     @property
@@ -141,6 +157,13 @@ def _compile_linear(pattern: str, ignore_case: bool) -> CompiledRegex:
         raise UncompilablePattern(
             RegexEngineKind.LINEAR, pattern, _decoded_reason(refusal)
         ) from refusal
+    except UnicodeEncodeError as refusal:
+        raise UncompilablePattern(
+            RegexEngineKind.LINEAR,
+            pattern,
+            "a lone surrogate cannot be encoded as UTF-8",
+            refusal.start,
+        ) from refusal
     return _LinearRegex(compiled)
 
 
@@ -167,8 +190,7 @@ _ENGINES: Mapping[RegexEngineKind, RegexEngine] = MappingProxyType(
 )
 
 
-def regex_engine(kind: RegexEngineKind) -> RegexEngine:
-    """The engine registered under ``kind``."""
+def engine_for(kind: RegexEngineKind) -> RegexEngine:
     return _ENGINES[kind]
 
 
@@ -190,7 +212,7 @@ class CompiledPatterns:
             raise TypeError(f"patterns must be a sequence of str, not the str {patterns!r}")
         if not patterns:
             raise ValueError("patterns must name at least one pattern")
-        compiler = regex_engine(engine)
+        compiler = engine_for(engine)
         return cls(engine, tuple(compiler.compile(pattern) for pattern in patterns))
 
     def every_searches(self, text: str) -> bool:

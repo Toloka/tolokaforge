@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, TypeAlias
 
 from tolokaforge.core.grading.predicates import ever_satisfiable, json_type_of
 from tolokaforge.core.grading.regex_engine import CompiledPatterns, RegexEngineKind
@@ -133,7 +133,7 @@ def _missing_evidence(fields: Iterable[str], positions: Iterable[int]) -> str:
     )
 
 
-_RegexOperands = Mapping[tuple[str, str], CompiledPatterns]
+_RegexOperands: TypeAlias = Mapping[tuple[str, str], CompiledPatterns]
 """Each ``regex`` / ``not_regex`` a matcher declares, compiled, keyed by the field
 its predicate reads and the operator name."""
 

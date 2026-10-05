@@ -55,6 +55,7 @@ from tolokaforge.core.grading.trace_replay import (
     ConstraintProvenance,
     TraceChecksOverride,
     TraceChecksOverrideError,
+    TraceReplayFailure,
     TraceReplayOutcomeStatus,
     TraceReplayReportError,
     build_trace_replay_report,
@@ -108,6 +109,27 @@ _STATUS_TRACE_CHECKS: dict[str, Any] = {
     ]
 }
 _TURNS = ("I want a refund for order O-1.", "Reading the order.")
+# A lookahead the default ``linear`` engine refuses, recorded with no engine named.
+_LOOKAHEAD_TRACE_CHECKS: dict[str, Any] = {
+    "constraints": [
+        {
+            "id": "the_order_was_looked_up",
+            "description": "the agent read the order before answering",
+            "require": {
+                "present": {"match": {"kind": "tool_call", "tool": {"regex": "(?=get_)get_order"}}}
+            },
+        }
+    ]
+}
+
+
+def _unterminated_under(engine: str) -> dict[str, Any]:
+    """A block whose one pattern Python ``re`` itself refuses, under ``engine``."""
+    constraint = {
+        **_LOOKAHEAD_TRACE_CHECKS["constraints"][0],
+        "require": {"present": {"match": {"kind": "tool_call", "tool": {"regex": "get_(order"}}}},
+    }
+    return {"regex_engine": engine, "constraints": [constraint]}
 
 
 def _looked_up_the_order(task_id: str = "refund_task") -> Trajectory:
@@ -406,6 +428,87 @@ def test_an_unreadable_trajectory_fails_its_own_bundle_and_the_batch_continues(
     assert str(broken / "trajectory.yaml") in (failed.reason or "")
     assert replayed.bundle == healthy
     assert replayed.status is TraceReplayOutcomeStatus.REPLAYED
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "healthy_status"),
+    [
+        pytest.param(False, TraceReplayOutcomeStatus.REPLAYED, id="re-check"),
+        pytest.param(True, TraceReplayOutcomeStatus.WOULD_REPLAY, id="dry-run"),
+    ],
+)
+def test_a_recorded_pattern_the_default_engine_refuses_fails_its_own_bundle_only(
+    tmp_path: Path, dry_run: bool, healthy_status: TraceReplayOutcomeStatus
+) -> None:
+    """A block recorded with a lookahead and no engine re-checks under ``linear``.
+
+    The refusal is that bundle's failure, naming the remedy, and the batch runs on.
+    Compiled while the inputs are read, so a dry run reports it too rather than
+    promising a re-check that would raise.
+    """
+    refused = _write_bundle(
+        tmp_path / "trials" / "refund_task" / "0", trace_checks=_LOOKAHEAD_TRACE_CHECKS
+    )
+    healthy = _write_bundle(tmp_path / "trials" / "refund_task" / "1")
+
+    failed, rest = run_trace_replay_batch(tmp_path, replay_id="r1", dry_run=dry_run)
+
+    assert failed.bundle == refused
+    assert failed.status is TraceReplayOutcomeStatus.FAILED
+    assert failed.failure is TraceReplayFailure.UNCOMPILABLE_PATTERN
+    assert "the linear regex engine cannot compile '(?=get_)get_order'" in (failed.reason or "")
+    assert "regex_engine: backtracking" in (failed.reason or "")
+    assert "in a copy of the block passed as --constraints" in (failed.reason or "")
+    assert "docs/TRACE_REPLAY.md" in (failed.reason or "")
+    assert (rest.bundle, rest.status) == (healthy, healthy_status)
+    assert not (tmp_path / "trace_replay" / "r1" / "trials" / "refund_task" / "0").exists()
+
+
+def test_the_backtracking_engine_named_in_a_supplied_block_re_checks_a_lookahead(
+    tmp_path: Path,
+) -> None:
+    """The remedy the failure names: the recorded block, supplied with the engine."""
+    _write_bundle(tmp_path / "trials" / "refund_task" / "0", trace_checks=_LOOKAHEAD_TRACE_CHECKS)
+    path = tmp_path / "backtracking.yaml"
+    path.write_text(
+        yaml.safe_dump({**_LOOKAHEAD_TRACE_CHECKS, "regex_engine": "backtracking"}),
+        encoding="utf-8",
+    )
+
+    (outcome,) = run_trace_replay_batch(
+        tmp_path, replay_id="r1", override=load_trace_checks_override(path)
+    )
+
+    assert outcome.status is TraceReplayOutcomeStatus.REPLAYED
+    assert outcome.result is not None
+    assert [item.passed for item in outcome.result.constraints] == [True]
+
+
+@pytest.mark.parametrize(
+    ("engine", "said"),
+    [
+        pytest.param(None, "regex_engine: backtracking", id="linear-by-default"),
+        pytest.param(
+            "backtracking",
+            "Python re itself rejects the pattern; correct it in this file",
+            id="backtracking",
+        ),
+    ],
+)
+def test_a_supplied_pattern_its_engine_refuses_is_refused_at_load_naming_the_file(
+    tmp_path: Path, engine: str | None, said: str
+) -> None:
+    """Refused before any bundle is read, rather than raising on the first re-check."""
+    block = _LOOKAHEAD_TRACE_CHECKS if engine is None else _unterminated_under(engine)
+    path = tmp_path / "constraints.yaml"
+    path.write_text(yaml.safe_dump(block), encoding="utf-8")
+
+    with pytest.raises(TraceChecksOverrideError) as raised:
+        load_trace_checks_override(path)
+
+    assert str(path) in str(raised.value)
+    assert "cannot be re-checked" in str(raised.value)
+    assert said in str(raised.value)
 
 
 @pytest.mark.parametrize(

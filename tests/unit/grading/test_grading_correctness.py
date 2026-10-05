@@ -710,6 +710,7 @@ class TestTranscriptRulesEvaluation:
         [
             pytest.param(RegexEngineKind.LINEAR, "(?=secret)", id="linear-lookahead"),
             pytest.param(RegexEngineKind.BACKTRACKING, "unterminated([", id="backtracking"),
+            pytest.param(RegexEngineKind.LINEAR, "secret\ud800", id="linear-lone-surrogate"),
         ],
     )
     def test_a_pattern_its_engine_refuses_fails_even_with_no_assistant_turn(self, engine, pattern):
@@ -719,8 +720,10 @@ class TestTranscriptRulesEvaluation:
             self._config(disallow_regex=[pattern], regex_engine=engine),
         )
         assert result.passed is False
-        assert result.details[0].message.startswith(f"Invalid disallow_regex {pattern!r}")
-        assert engine.value in result.details[0].message
+        message = result.details[0].message
+        assert message.startswith(f"Invalid disallow_regex {pattern!r}")
+        assert message.count(repr(pattern)) == 1
+        assert f"the {engine.value} regex engine cannot compile it" in message
 
     # --- max_turns ---------------------------------------------------------
 

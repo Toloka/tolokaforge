@@ -577,7 +577,7 @@ _RULES: tuple[_Rule, ...] = (
         ),
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile under the backtracking regex engine",
+        message="raises out of the evaluator at grade time, once the trial is already paid for",
     ),
     _Rule(
         label="matcher_not_regex_the_backtracking_engine_does_not_compile",
@@ -601,7 +601,7 @@ _RULES: tuple[_Rule, ...] = (
         },
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile under the backtracking regex engine",
+        message="fails its sub-check at grade time, once the trial is already paid for",
     ),
     _Rule(
         label="matcher_lookahead_under_the_default_engine",
@@ -646,7 +646,7 @@ _RULES: tuple[_Rule, ...] = (
         ),
         checker="_check_regex_compiles",
         channel="errors",
-        message="does not compile under the backtracking regex engine",
+        message="raises out of the evaluator at grade time",
     ),
     _Rule(
         label="capture_pattern_only_linear_compiles_with_no_group",
@@ -679,6 +679,14 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_regex_compiles",
         channel="advisories",
         message="declares regex_engine: backtracking on the transcript_rules block",
+    ),
+    _Rule(
+        label="transcript_lone_surrogate_under_the_default_engine",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"disallow_regex": ["pass\ud800"]}},
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="a lone surrogate cannot be encoded as UTF-8",
     ),
     _Rule(
         label="hash_source_without_the_flag",

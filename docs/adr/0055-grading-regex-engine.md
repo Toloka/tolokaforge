@@ -74,7 +74,7 @@ grading regex is compiled through:
 - `CompiledRegex` (a Protocol): `search(text) -> bool` and
   `first_groups(text) -> list[str | None]` — group 1 of every non-overlapping
   match, in order, the binder's read.
-- `regex_engine(kind)` looks the kind up in a closed, module-level mapping that
+- `engine_for(kind)` looks the kind up in a closed, module-level mapping that
   covers every member. Compiled patterns are cached per
   `(kind, pattern, ignore_case)` in a bounded cache.
 - `UncompilablePattern` subclasses `re.error` and carries `engine`, `pattern`

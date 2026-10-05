@@ -66,7 +66,7 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
     timeline — also where a binder that selected nothing, or a trial that left no
     trace, leaves the matcher declaring it unresolved.
     """
-    _compile_every_pattern(config)
+    compile_trace_check_patterns(config)
     if not timeline.events:
         return TraceChecksResult(
             accounted_keys=_accounting(config, _declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
@@ -248,11 +248,13 @@ def _every_constraint(config: TraceChecksConfig) -> list[TraceConstraint]:
     ]
 
 
-def _compile_every_pattern(config: TraceChecksConfig) -> None:
+def compile_trace_check_patterns(config: TraceChecksConfig) -> None:
     """Compile every matcher and capture pattern of the block under its effective engine.
 
-    Only for the refusal: the engine caches each compiled pattern, so the matchers
-    and binders that compile them again at evaluation read them back from the cache.
+    Raises :class:`~tolokaforge.core.grading.regex_engine.UncompilablePattern` on the
+    first refusal, which is all it answers: the engine caches each compiled pattern,
+    so the matchers and binders that compile them again at evaluation read them back
+    from the cache.
     """
     for constraint in _every_constraint(config):
         if constraint.bind is not None:

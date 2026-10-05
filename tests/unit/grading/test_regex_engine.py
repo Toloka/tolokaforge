@@ -4,6 +4,7 @@ that ``linear`` stays linear-time and quiet."""
 from __future__ import annotations
 
 import json
+import pickle
 import re
 import time
 
@@ -13,7 +14,7 @@ from tolokaforge.core.grading.regex_engine import (
     CompiledPatterns,
     RegexEngineKind,
     UncompilablePattern,
-    regex_engine,
+    engine_for,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.grading]
@@ -36,13 +37,14 @@ LINEAR_REFUSALS = [
     pytest.param(r"\pL{1000}" * 5, "pattern too large", id="over-the-memory-budget"),
     pytest.param(r"\N{DIGIT ONE}", "invalid escape sequence", id="named-character"),
     pytest.param("(?a)x", "invalid perl operator", id="ascii-flag"),
+    pytest.param("ab\ud800", "a lone surrogate cannot be encoded as UTF-8", id="lone-surrogate"),
 ]
 
 
 @pytest.mark.parametrize(("pattern", "reason"), LINEAR_REFUSALS)
 def test_linear_refuses_what_re2_cannot_compile(pattern: str, reason: str) -> None:
     with pytest.raises(UncompilablePattern) as refused:
-        regex_engine(LINEAR).compile(pattern)
+        engine_for(LINEAR).compile(pattern)
 
     assert isinstance(refused.value, re.error)
     assert refused.value.engine is LINEAR
@@ -58,17 +60,34 @@ def test_backtracking_compiles_them_unless_re_itself_refuses(pattern: str, _reas
         re.compile(pattern)
     except re.error as re_refusal:
         with pytest.raises(UncompilablePattern) as refused:
-            regex_engine(BACKTRACKING).compile(pattern)
+            engine_for(BACKTRACKING).compile(pattern)
         assert refused.value.engine is BACKTRACKING
         assert refused.value.reason == re_refusal.msg
         return
-    regex_engine(BACKTRACKING).compile(pattern)
+    engine_for(BACKTRACKING).compile(pattern)
+
+
+@pytest.mark.parametrize("kind", list(RegexEngineKind))
+def test_a_refusal_survives_a_pickle_round_trip(kind: RegexEngineKind) -> None:
+    with pytest.raises(UncompilablePattern) as refused:
+        engine_for(kind).compile("a(")
+
+    restored = pickle.loads(pickle.dumps(refused.value))
+
+    assert type(restored) is UncompilablePattern
+    assert (restored.engine, restored.pattern, restored.reason, restored.pos) == (
+        refused.value.engine,
+        refused.value.pattern,
+        refused.value.reason,
+        refused.value.pos,
+    )
+    assert str(restored) == str(refused.value)
 
 
 def test_a_linear_refusal_writes_nothing_to_stderr(capfd: pytest.CaptureFixture[str]) -> None:
     capfd.readouterr()
     with pytest.raises(UncompilablePattern):
-        regex_engine(LINEAR).compile("(?=never-compiled-before)")
+        engine_for(LINEAR).compile("(?=never-compiled-before)")
 
     captured = capfd.readouterr()
     assert captured.err == ""
@@ -79,7 +98,7 @@ def test_a_linear_refusal_writes_nothing_to_stderr(capfd: pytest.CaptureFixture[
 def test_every_engine_kind_is_registered_and_refuses_under_its_own_name(
     kind: RegexEngineKind,
 ) -> None:
-    engine = regex_engine(kind)
+    engine = engine_for(kind)
 
     assert engine.compile("a").search("cat")
     with pytest.raises(UncompilablePattern) as refused:
@@ -88,11 +107,11 @@ def test_every_engine_kind_is_registered_and_refuses_under_its_own_name(
 
 
 def test_a_compiled_pattern_is_reused_per_engine_pattern_and_case() -> None:
-    linear = regex_engine(LINEAR)
+    linear = engine_for(LINEAR)
 
     assert linear.compile("ab+") is linear.compile("ab+")
     assert linear.compile("ab+") is not linear.compile("ab+", ignore_case=True)
-    assert linear.compile("ab+") is not regex_engine(BACKTRACKING).compile("ab+")
+    assert linear.compile("ab+") is not engine_for(BACKTRACKING).compile("ab+")
 
 
 def _account_listing(size: int) -> str:
@@ -149,8 +168,8 @@ VERDICT_DIFFERENCES = [
 def test_patterns_both_engines_accept_can_get_different_verdicts(
     pattern: str, text: str, backtracking: bool, linear: bool
 ) -> None:
-    assert regex_engine(BACKTRACKING).compile(pattern).search(text) is backtracking
-    assert regex_engine(LINEAR).compile(pattern).search(text) is linear
+    assert engine_for(BACKTRACKING).compile(pattern).search(text) is backtracking
+    assert engine_for(LINEAR).compile(pattern).search(text) is linear
 
 
 @pytest.mark.parametrize("kind", list(RegexEngineKind))
@@ -168,7 +187,7 @@ def test_first_groups_reads_group_one_of_every_match_like_re(
 ) -> None:
     expected = [match.group(1) for match in re.finditer(pattern, text)]
 
-    assert regex_engine(kind).compile(pattern).first_groups(text) == expected
+    assert engine_for(kind).compile(pattern).first_groups(text) == expected
 
 
 @pytest.mark.parametrize(
@@ -183,7 +202,7 @@ def test_first_groups_reads_group_one_of_every_match_like_re(
 def test_groups_counts_every_capture_group_the_engine_reads(
     kind: RegexEngineKind, pattern: str, groups: int
 ) -> None:
-    assert regex_engine(kind).compile(pattern).groups == groups
+    assert engine_for(kind).compile(pattern).groups == groups
 
 
 @pytest.mark.parametrize("kind", list(RegexEngineKind))
@@ -198,7 +217,7 @@ def test_groups_counts_every_capture_group_the_engine_reads(
 def test_ignore_case_reads_like_an_inline_i_flag(
     kind: RegexEngineKind, pattern: str, text: str
 ) -> None:
-    engine = regex_engine(kind)
+    engine = engine_for(kind)
 
     assert engine.compile(pattern, ignore_case=True).search(text)
     assert engine.compile(f"(?i){pattern}").search(text)
@@ -207,7 +226,7 @@ def test_ignore_case_reads_like_an_inline_i_flag(
 
 def test_linear_searches_text_with_lone_surrogates_as_if_each_were_u_fffd() -> None:
     text = json.loads('"abc \\ud800 def"')
-    engine = regex_engine(LINEAR)
+    engine = engine_for(LINEAR)
 
     assert engine.compile("def").search(text)
     assert engine.compile("\ufffd").search(text)
@@ -216,7 +235,7 @@ def test_linear_searches_text_with_lone_surrogates_as_if_each_were_u_fffd() -> N
 
 def test_linear_captures_are_slices_of_the_original_text_around_surrogates() -> None:
     text = json.loads('"\\udfff caf\\u00e9 \\ud800id=42\\udbff x"')
-    engine = regex_engine(LINEAR)
+    engine = engine_for(LINEAR)
 
     assert engine.compile(r"id=(\d+)").first_groups(text) == ["42"]
     assert engine.compile(r"(.)id=").first_groups(text) == ["\ud800"]

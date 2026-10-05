@@ -721,6 +721,10 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 
+[[tool.mypy.overrides]]
+module = "re2"
+ignore_missing_imports = true
+
 # =============================================================================
 # Release tooling (commitizen) — drives the `Release (cz bump)` workflow.
 # `cz bump` reads/writes the single version literal in [project] version,

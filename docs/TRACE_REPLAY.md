@@ -175,7 +175,10 @@ before a run, against the tool set each bundle *recorded* (`tools_schemas.yaml` 
 post-policy list the provider saw). An **error** aborts the batch naming the file and
 the defect: a misspelled tool name is one defect in one file, and replayed it would
 arrive as a corpus of trials that all failed a constraint selecting nothing.
-Advisories and rules the gate could not answer are reported and the batch continues.
+Advisories and rules the gate could not answer are reported and the batch continues —
+except a pattern the block's regex engine refuses, which the gate reports as an
+advisory under `linear` but which could never be re-checked, so it is refused before
+the gate runs ([below](#which-regex-engine-a-re-check-runs)).
 
 A bundle that recorded no `tools_schemas.yaml` has an **unresolvable** tool set, not
 an empty one — every schema-dependent rule for it lands in the `unchecked` channel and
@@ -186,10 +189,15 @@ read as a clean bill of health.
 
 A block re-checks under the [regex engine](GRADING.md#regex-engines) it names, and a
 block naming none — a bundle recorded by an engine predating `regex_engine` among
-them — re-checks under the default `linear` (RE2). A pattern the effective engine
-refuses stops the batch with that refusal, whether it came from a recorded block or a
-supplied one: the gate reports a supplied block's `linear` refusal as an advisory,
-which does not stop the batch, and the re-check then raises on it.
+them — re-checks under the default `linear` (RE2). Every pattern is compiled under
+its effective engine before anything is re-checked, `--dry-run` included:
+
+- a **recorded** block holding a pattern its engine refuses — typically a lookaround
+  in a bundle recorded with no `regex_engine` — fails that bundle, counted
+  `failed` with a reason naming the pattern and the opt-in below, and the batch
+  re-checks the rest;
+- a **supplied** block holding one is refused when `--constraints` is loaded, exit
+  `1` naming the file, before any bundle is read and with nothing written.
 
 To re-check a bundle under Python `re` — for a pattern RE2 refuses, or one RE2 reads
 differently — copy the bundle's block (`grading_config.trace_checks` in its

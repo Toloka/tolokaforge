@@ -29,7 +29,7 @@ from tolokaforge.core.grading.key_manifest import (
 from tolokaforge.core.grading.regex_engine import (
     RegexEngineKind,
     UncompilablePattern,
-    regex_engine,
+    engine_for,
 )
 from tolokaforge.core.grading.trace_timeline import (
     AttemptedCall,
@@ -290,13 +290,16 @@ def _check_disallow_regex(
     assistant message too — rather than silently treated as 'no match'.
     """
     try:
-        compiled = regex_engine(engine).compile(pattern, ignore_case=True)
+        compiled = engine_for(engine).compile(pattern, ignore_case=True)
     except UncompilablePattern as exc:
         return TranscriptRuleResult(
             rule_type="disallow_regex",
             rule={"disallow_regex": pattern},
             passed=False,
-            message=f"Invalid disallow_regex {pattern!r}: {exc}",
+            message=(
+                f"Invalid disallow_regex {pattern!r}: the {exc.engine.value} regex engine "
+                f"cannot compile it: {exc.reason}"
+            ),
         )
 
     for content in assistant_messages:

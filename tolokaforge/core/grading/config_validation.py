@@ -65,7 +65,7 @@ from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
 from tolokaforge.core.grading.regex_engine import (
     RegexEngineKind,
     UncompilablePattern,
-    regex_engine,
+    engine_for,
 )
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
@@ -1506,6 +1506,12 @@ class _PatternSite:
     """Where an author names ``regex_engine: backtracking`` for this pattern."""
     in_a_pattern_list: bool
     """Whether the pattern is a matcher's ``regex`` / ``not_regex``, which a list can split."""
+    consequence: str
+    """What a refused pattern does to the trial at grade time."""
+
+
+_TRACE_PATTERN_REFUSED = "raises out of the evaluator at grade time"
+_TRANSCRIPT_PATTERN_REFUSED = "fails its sub-check at grade time"
 
 
 def _check_regex_compiles(
@@ -1514,18 +1520,20 @@ def _check_regex_compiles(
     binders: tuple[_BindingSite, ...],
     transcript_rules: TranscriptRulesConfig | None,
 ) -> AuthoringReport:
-    """Every authored pattern compiles under its effective engine, or it raises inside the evaluator.
+    """Every authored pattern compiles under its effective engine.
 
-    Neither substrate catches ``re.error`` locally: core lets it propagate out of
-    the grader and the runner folds it into a failed grade response, so the trial
-    is lost rather than the constraint. A refusal under ``backtracking`` is an error,
-    since Python ``re`` itself rejects the pattern; one under ``linear`` is an
-    advisory naming the ``backtracking`` opt-in — and, for a matcher's pattern, the
-    list form a lookahead conjunction splits into — since the pattern may be one only
-    a backtracking engine reads. A binder's capture is compiled by the same evaluator
-    on the same trial, and must declare exactly one group under its own engine: the
-    load validator counts with Python ``re`` alone, so a pattern only RE2 compiles is
-    counted here.
+    What a refusal costs at grade time depends on the site. A ``trace_checks``
+    pattern raises out of the evaluator, which neither substrate catches locally:
+    core lets it propagate out of the grader and the runner folds it into a failed
+    grade response, so the trial's grade is lost rather than the constraint. A
+    ``disallow_regex`` pattern fails its own sub-check. A refusal under
+    ``backtracking`` is an error, since Python ``re`` itself rejects the pattern; one
+    under ``linear`` is an advisory naming the ``backtracking`` opt-in — and, for a
+    matcher's pattern, the list form a lookahead conjunction splits into — since the
+    pattern may be one only a backtracking engine reads. A binder's capture is
+    compiled by the same evaluator on the same trial, and must declare exactly one
+    group under its own engine: the load validator counts with Python ``re`` alone,
+    so a pattern only RE2 compiles is counted here.
     """
     authored = _transcript_pattern_sites(transcript_rules)
     if trace_checks is not None:
@@ -1534,7 +1542,7 @@ def _check_regex_compiles(
     advisories: list[Finding] = []
     for site in authored:
         try:
-            compiled = regex_engine(site.engine).compile(site.pattern, ignore_case=site.ignore_case)
+            compiled = engine_for(site.engine).compile(site.pattern, ignore_case=site.ignore_case)
         except UncompilablePattern as refusal:
             refused = errors if site.engine is RegexEngineKind.BACKTRACKING else advisories
             refused.append(_uncompilable(site, refusal))
@@ -1560,6 +1568,7 @@ def _trace_pattern_sites(
             captures=False,
             override_at="on the predicate or on the trace_checks block",
             in_a_pattern_list=True,
+            consequence=_TRACE_PATTERN_REFUSED,
         )
         for site in sites
         for predicate_site in _predicate_sites(site)
@@ -1577,6 +1586,7 @@ def _trace_pattern_sites(
             captures=True,
             override_at="on the bound value or on the trace_checks block",
             in_a_pattern_list=False,
+            consequence=_TRACE_PATTERN_REFUSED,
         )
         for site in binders
         for name, bound in site.binding.values.items()
@@ -1612,6 +1622,7 @@ def _transcript_pattern_sites(
             captures=False,
             override_at="on the transcript_rules block",
             in_a_pattern_list=False,
+            consequence=_TRANSCRIPT_PATTERN_REFUSED,
         )
         for index, pattern in enumerate(transcript_rules.disallow_regex)
     ]
@@ -1625,8 +1636,7 @@ def _uncompilable(site: _PatternSite, refusal: UncompilablePattern) -> Finding:
     if site.engine is RegexEngineKind.BACKTRACKING:
         return Finding(
             site.where,
-            f"{refused}. An uncompilable pattern raises out of the evaluator at grade "
-            "time, once the trial is already paid for",
+            f"{refused}. The pattern {site.consequence}, once the trial is already paid for",
         )
     opt_in = (
         f"declares regex_engine: backtracking {site.override_at}, which runs Python re at "
