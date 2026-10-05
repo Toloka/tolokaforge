@@ -178,6 +178,21 @@ class LoopConfig:
     before the message is appended; ``None`` on both axes threads tool output
     through verbatim.
 
+    ``observation_window`` keeps that many of the most recent ``role=tool``
+    messages at full length on the wire and collapses older ones to a line
+    naming what was dropped. It bounds the cost of *replaying* observations,
+    which ``tool_output_max_chars`` does not: a cap bounds one message once,
+    while a window bounds what every later turn re-sends. ``None`` sends every
+    observation in full, which is the pre-opt-in behaviour.
+
+    ``observation_window_polling`` is how many turns the window boundary holds
+    still before it advances, so between ``observation_window`` and
+    ``observation_window + polling - 1`` observations are live at any moment.
+    Collapsing an observation rewrites the wire history at its position, and a
+    boundary that moves every turn therefore rewrites the prefix every turn;
+    holding it still lets the provider's cache survive the turns in between.
+    ``1`` advances every turn.
+
     ``max_context_tokens``, ``context_watermark`` and ``summarize_policy``
     arm the context-window summarize seam (see
     :mod:`tolokaforge.core.summarize_policy`). The pre-turn watermark check
@@ -197,6 +212,8 @@ class LoopConfig:
     output_length_retry_count: int = 0
     parser_error_retry_count: int = 0
     tool_output_max_chars: int | None = None
+    observation_window: int | None = None
+    observation_window_polling: int = 1
     max_context_tokens: int | None = None
     context_watermark: int | None = None
     summarize_policy: SummarizePolicy | None = None
@@ -930,6 +947,38 @@ class ToolCallFunnel:
             call.arguments = normalized_args
 
 
+def _with_collapsed_observations(
+    wire: list[Message], *, keep_last: int, turn: int, polling: int
+) -> list[Message]:
+    """*wire* with all but the most recent *keep_last* observations collapsed.
+
+    An observation is a ``role=tool`` message. The ones outside the window keep
+    their position and their identity in the conversation — only their content
+    becomes a line saying how much was dropped — so the model still sees that a
+    command ran and in what order, and can re-run it if it needs the output
+    again.
+
+    The boundary advances once per *polling* turns rather than once per turn.
+    Each advance rewrites the message at that position and so invalidates the
+    provider's cached prefix from there on; holding the boundary still between
+    advances is what keeps that cost occasional rather than continuous.
+    """
+    if keep_last < 0 or not wire:
+        return wire
+    live = keep_last + (turn % polling if polling > 1 else 0)
+    indices = [i for i, m in enumerate(wire) if m.role is MessageRole.TOOL]
+    if len(indices) <= live:
+        return wire
+    collapse = set(indices[: len(indices) - live])
+    out = list(wire)
+    for i in collapse:
+        content = out[i].content or ""
+        out[i] = out[i].model_copy(
+            update={"content": f"[earlier output, {len(content)} characters, not shown]"}
+        )
+    return out
+
+
 def _without_last_assistant_reasoning(wire: list[Message]) -> list[Message]:
     """*wire* with reasoning dropped from its most recent assistant message.
 
@@ -1592,6 +1641,13 @@ class ToolCallingLoop:
         if self.request_limiter is not None:
             self.request_limiter.acquire()
         wire = self._wire_messages
+        if self.config.observation_window is not None:
+            wire = _with_collapsed_observations(
+                wire,
+                keep_last=self.config.observation_window,
+                turn=turn,
+                polling=self.config.observation_window_polling,
+            )
         if not replay_reasoning:
             wire = _without_last_assistant_reasoning(wire)
         return self.llm_client.generate(

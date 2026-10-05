@@ -208,6 +208,28 @@ class ModelCapabilities:
     record every resampled generation because the trial paid for each call.
     """
 
+    observation_window: int | None = None
+    """How many of the most recent observations stay full-length on the wire.
+
+    ``tool_output_max_chars`` bounds one observation once; this bounds what
+    every later turn re-sends. In a long trial that is the larger number — a
+    74-turn trial resends its first observation 73 times — and it is the lever
+    the published context-management results measure. Older observations keep
+    their place and their order, with content replaced by a line naming how much
+    was dropped. ``None`` sends every observation in full.
+    """
+
+    observation_window_polling: int = 1
+    """Turns the observation-window boundary holds still before it advances.
+
+    Collapsing an observation rewrites the wire history at that position, so a
+    boundary that advances every turn rewrites the prefix every turn and the
+    provider's cached prefix never survives. Holding it still for several turns
+    makes that rewrite occasional instead, at the cost of carrying up to
+    ``polling - 1`` extra observations. Ignored when ``observation_window`` is
+    ``None``.
+    """
+
     tool_output_max_chars: int | None = None
     """Loop-layer cap on the ``role=tool`` message content, in chars.
 

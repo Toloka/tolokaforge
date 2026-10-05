@@ -1104,6 +1104,8 @@ def build_capabilities(
     output_length_retry_count = cfg.get("output_length_retry_count")
     parser_error_retry_count = cfg.get("parser_error_retry_count")
     tool_output_max_chars = cfg.get("tool_output_max_chars")
+    observation_window = cfg.get("observation_window")
+    observation_window_polling = cfg.get("observation_window_polling")
     default_max_turns = cfg.get("default_max_turns")
     default_agent_prompt_contract = cfg.get("default_agent_prompt_contract")
     max_context_tokens = cfg.get("max_context_tokens")
@@ -1137,6 +1139,10 @@ def build_capabilities(
         ),
         parser_error_retry_count=(
             int(parser_error_retry_count) if parser_error_retry_count is not None else 0
+        ),
+        observation_window=(int(observation_window) if observation_window is not None else None),
+        observation_window_polling=(
+            int(observation_window_polling) if observation_window_polling is not None else 1
         ),
         tool_output_max_chars=(
             int(tool_output_max_chars) if tool_output_max_chars is not None else None

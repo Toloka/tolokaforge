@@ -575,6 +575,8 @@ class TrialRunner:
                             output_length_retry_count=capabilities.output_length_retry_count,
                             parser_error_retry_count=capabilities.parser_error_retry_count,
                             tool_output_max_chars=capabilities.tool_output_max_chars,
+                            observation_window=capabilities.observation_window,
+                            observation_window_polling=capabilities.observation_window_polling,
                             max_context_tokens=capabilities.max_context_tokens,
                             context_watermark=capabilities.context_watermark,
                             summarize_policy=summarize_policy,
