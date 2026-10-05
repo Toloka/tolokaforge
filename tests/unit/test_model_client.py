@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -87,7 +88,52 @@ class TestSingleAttemptPolicy:
     def test_unknown_policy_fails_before_transport(self) -> None:
         client = _make_client()
         with pytest.raises(ValueError, match="Unknown LLM retry policy"):
-            client.generate(retry_policy="typo")
+            client.generate(retry_policy="typo")  # type: ignore[arg-type]
+
+
+def _completion_response(text: str) -> MagicMock:
+    """The smallest ``ModelResponse`` shape :meth:`LLMClient.generate` reads."""
+    message = MagicMock()
+    message.content = text
+    message.tool_calls = None
+    message.reasoning_content = None
+    del message.thinking_blocks
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "stop"
+    response = MagicMock()
+    response.choices = [choice]
+    response.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    return response
+
+
+@pytest.mark.unit
+class TestResponseFormat:
+    def _sent(self, **call: Any) -> dict[str, Any]:
+        client = _make_client()
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response('{"verdict": "pass"}'),
+            ) as completion,
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            result = client.generate(system="judge", **call)
+        assert completion.call_count == 1
+        assert result.text == '{"verdict": "pass"}'
+        return completion.call_args.kwargs
+
+    def test_it_reaches_the_transport(self) -> None:
+        sent = self._sent(response_format={"type": "json_object"})
+        assert sent["response_format"] == {"type": "json_object"}
+
+    def test_the_callers_mapping_is_not_handed_on(self) -> None:
+        requested = {"type": "json_object"}
+        sent = self._sent(response_format=requested)
+        assert sent["response_format"] is not requested
+
+    def test_without_it_the_request_carries_none(self) -> None:
+        assert "response_format" not in self._sent()
 
 
 # ===================================================================

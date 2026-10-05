@@ -20,7 +20,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 if TYPE_CHECKING:
     from tolokaforge.core.loop import TerminationDecision
@@ -143,6 +143,9 @@ _module_logger = get_logger("llm_client_cost")
 
 DEFAULT_API_CALL_TIMEOUT_S = 120.0
 DEFAULT_API_TIMEOUT_RETRIES = 5
+# ``default`` runs every retry layer; ``single_attempt`` makes exactly one request.
+RetryPolicy = Literal["default", "single_attempt"]
+_RETRY_POLICIES: frozenset[str] = frozenset(get_args(RetryPolicy))
 # Hard wall-clock ceiling per upstream call. ``None`` keeps the wall-clock
 # abort disabled by default (backward-compatible); opt in per-model via the
 # preset or the ``TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S`` env var.
@@ -1578,7 +1581,7 @@ class LLMClient:
         top_p: float | None = None,
         observation: LLMCallObservation | None = None,
         response_format: dict[str, Any] | None = None,
-        retry_policy: str = "default",
+        retry_policy: RetryPolicy = "default",
     ) -> GenerationResult:
         """Generate completion from LLM.
 
@@ -1619,7 +1622,7 @@ class LLMClient:
         judge whose reference transport makes exactly one request. It disables
         outer, timeout, LiteLLM and key-rotation retries for this call only.
         """
-        if retry_policy not in {"default", "single_attempt"}:
+        if retry_policy not in _RETRY_POLICIES:
             raise ValueError(f"Unknown LLM retry policy: {retry_policy}")
         messages = messages or []
 
