@@ -108,6 +108,25 @@ def test_runner_wire_preserves_host_grader_snapshots() -> None:
     )
 
 
+def test_unreadable_snapshots_refuse_with_the_runners_completed_evidence() -> None:
+    record = _record(matched=False)
+    raw = _raw(
+        state_snapshots_json="{not json",
+        state_diff_json=json.dumps({"docs": {"changed": 1}}),
+        comparison_view_json=json.dumps(record),
+        judge_report={"calls": 2, "prompt_tokens": 30, "completion_tokens": 7, "cost_usd": 0.01},
+    )
+    with pytest.raises(
+        GradingFailedError, match="state_snapshots_json payload is not readable"
+    ) as e:
+        _parse_grade_result(raw)
+    assert e.value.judge_usage is not None
+    assert (e.value.judge_usage.calls, e.value.judge_usage.prompt_tokens) == (2, 30)
+    assert e.value.state_diff == {"docs": {"changed": 1}}
+    assert e.value.comparison_view == record
+    assert e.value.state_snapshots is None
+
+
 def test_the_view_reason_follows_the_hash_sentence() -> None:
     from tolokaforge.runner.models import ComparisonViewGradeRecord
 

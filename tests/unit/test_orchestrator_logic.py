@@ -523,6 +523,35 @@ class TestCollectExistingCost:
         assert abs(total - 0.05) < 1e-9
         assert any("resume cost seed" in record.message for record in caplog.records)
 
+    def test_non_mapping_failed_judge_usage_is_warned_with_its_file(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A ``grading_judge_usage`` that is not a mapping adds nothing and names the file.
+
+        It must not fall into the broad unreadable-bundle skip: the metrics cost
+        still counts and the warning points at the trajectory, not at metrics.yaml.
+        """
+        import logging
+
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trial_dir = tmp_path / "trials" / "T1" / "0"
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.05}))
+        trajectory_path = trial_dir / "trajectory.yaml"
+        trajectory_path.write_text(
+            yaml.dump({"grading_error": "judge malformed", "grading_judge_usage": [0.02]})
+        )
+
+        with caplog.at_level(logging.WARNING):
+            total = Orchestrator._collect_existing_cost(tmp_path)
+        assert total == pytest.approx(0.05)
+        warned = [r for r in caplog.records if "non-mapping judge usage" in r.getMessage()]
+        assert [getattr(r, "path", None) for r in warned] == [str(trajectory_path)]
+        assert not any("unreadable trial bundle" in r.getMessage() for r in caplog.records)
+
 
 # ===================================================================
 # _trial_total_spend_usd (static method)

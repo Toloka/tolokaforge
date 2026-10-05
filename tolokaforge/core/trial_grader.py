@@ -463,15 +463,6 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    snapshots = None
-    if raw_grade.get("state_snapshots_json"):
-        try:
-            snapshots = GradingStateSnapshots.model_validate_json(raw_grade["state_snapshots_json"])
-        except ValidationError as exc:
-            raise GradingFailedError(
-                f"the runner's Grade.state_snapshots_json payload is not readable: {exc}"
-            ) from exc
-
     criterion_results = None
     raw_criterion_results = raw_grade.get("criterion_results")
     if raw_criterion_results:
@@ -551,6 +542,24 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             except (json.JSONDecodeError, TypeError):
                 pass
 
+    comparison_view = _parse_comparison_view(raw_grade.get("comparison_view_json"))
+
+    # Parsed last so a refusal over unreadable snapshots still carries the judge
+    # usage, state diff and comparison view the runner already produced — the
+    # evidence a host-side GradingFailedError carries. Malformed evidence
+    # invalidates the verdict; it does not discard the completed work.
+    snapshots = None
+    if raw_grade.get("state_snapshots_json"):
+        try:
+            snapshots = GradingStateSnapshots.model_validate_json(raw_grade["state_snapshots_json"])
+        except ValidationError as exc:
+            raise GradingFailedError(
+                f"the runner's Grade.state_snapshots_json payload is not readable: {exc}",
+                judge_usage=judge_usage,
+                state_diff=state_diff_parsed,
+                comparison_view=comparison_view,
+            ) from exc
+
     return Grade(
         binary_pass=raw_grade["binary_pass"],
         score=raw_grade["score"],
@@ -563,7 +572,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,
         state_snapshots=snapshots,
-        comparison_view=_parse_comparison_view(raw_grade.get("comparison_view_json")),
+        comparison_view=comparison_view,
         custom_checks_details=custom_checks_details,
         criterion_results=criterion_results,
         judge_status=JudgeStatus.from_proto(raw_grade.get("judge_status", 0)),
