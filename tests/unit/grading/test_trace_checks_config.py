@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
 from tests.utils.trace_checks_configs import (
+    COMPOSITE_CONSTRAINT_KINDS,
     EVERY_CONSTRAINT_KIND,
     EVERY_OPERATOR_MATCHER,
     every_kind_block,
@@ -1035,10 +1036,10 @@ _KINDS_THAT_ANCHOR_NOTHING = frozenset({"present", "absent", "count"})
 
 # A composite belongs to neither set: it anchors whatever it holds, so whether the
 # policy has something to decide beside one is a question about the tree beneath it.
-_COMPOSITE_KINDS = frozenset({"all_of", "any_of", "negate"})
-
 _ANCHORING_LEAF_KINDS = sorted(
-    set(EVERY_CONSTRAINT_KIND) - _KINDS_THAT_ANCHOR_NOTHING - _COMPOSITE_KINDS
+    set(EVERY_CONSTRAINT_KIND)
+    - _KINDS_THAT_ANCHOR_NOTHING
+    - {kind.value for kind in COMPOSITE_CONSTRAINT_KINDS}
 )
 
 

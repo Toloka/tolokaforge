@@ -12,13 +12,17 @@ from __future__ import annotations
 import itertools
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from tests.utils.trace_checks_configs import EVERY_CONSTRAINT_KIND, PAYMENT_BINDER
+from tests.utils.trace_checks_configs import (
+    COMPOSITE_CONSTRAINT_KINDS,
+    EVERY_CONSTRAINT_KIND,
+    PAYMENT_BINDER,
+)
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
     load_task_yaml,
@@ -32,7 +36,6 @@ from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
     OnMissing,
     TraceConstraint,
-    TraceConstraintExpr,
     TraceConstraintKind,
 )
 
@@ -45,22 +48,10 @@ _HELPDESK = (
 _ADVISORY = "severity: gate with default on_missing: fail"
 
 
-def _nests_expressions(annotation: Any) -> bool:
-    return annotation is TraceConstraintExpr or any(
-        _nests_expressions(arg) for arg in get_args(annotation)
-    )
-
-
-_COMPOSITE_KINDS = frozenset(
-    kind
-    for kind in TRACE_CONSTRAINT_KINDS
-    if _nests_expressions(TraceConstraintExpr.model_fields[kind.value].annotation)
-)
-
 _LEAVES: dict[str, dict[str, Any]] = {
     kind: require
     for kind, require in EVERY_CONSTRAINT_KIND.items()
-    if TraceConstraintKind(kind) not in _COMPOSITE_KINDS
+    if TraceConstraintKind(kind) not in COMPOSITE_CONSTRAINT_KINDS
 }
 
 # ``negate`` holds exactly one expression, so a pair goes under it as an ``all_of``.
@@ -73,9 +64,11 @@ _WRAPPERS: dict[str, Callable[[list[dict[str, Any]]], dict[str, Any]]] = {
 
 def test_the_walk_spans_every_leaf_and_every_composite_kind() -> None:
     """A kind added to the vocabulary fails here rather than going unwalked."""
-    assert _COMPOSITE_KINDS, "no field of TraceConstraintExpr nests expressions"
-    assert set(_LEAVES) == {kind.value for kind in TRACE_CONSTRAINT_KINDS - _COMPOSITE_KINDS}
-    assert set(_WRAPPERS) == {kind.value for kind in _COMPOSITE_KINDS}
+    assert COMPOSITE_CONSTRAINT_KINDS, "no field of TraceConstraintExpr nests expressions"
+    assert set(_LEAVES) == {
+        kind.value for kind in TRACE_CONSTRAINT_KINDS - COMPOSITE_CONSTRAINT_KINDS
+    }
+    assert set(_WRAPPERS) == {kind.value for kind in COMPOSITE_CONSTRAINT_KINDS}
 
 
 def _shapes() -> list[tuple[str, frozenset[str], dict[str, Any]]]:
@@ -212,7 +205,7 @@ _A_REFUND_PROMISE = {
 def test_a_composite_gate_refusing_on_missing_fail_loads_with_none(
     tmp_path: Path, require: dict[str, Any]
 ) -> None:
-    """The issue's two gates load as written at the default ``fail_on``."""
+    """A composite gate holding present / absent loads at the default fail_on with no advisory."""
     report = _validate(tmp_path, require)
 
     assert report.advisories == ()

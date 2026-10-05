@@ -1416,8 +1416,6 @@ _KINDS_WITHOUT_AN_ANCHOR: frozenset[TraceConstraintKind] = frozenset(
     {TraceConstraintKind.PRESENT, TraceConstraintKind.ABSENT, TraceConstraintKind.COUNT}
 )
 
-# ``absent``'s empty match IS its positive verdict, so withholding it would withhold
-# the very check asked.
 _KINDS_WITHHOLD_HAS_NOTHING_TO_DECIDE_OVER: frozenset[TraceConstraintKind] = frozenset(
     {TraceConstraintKind.ABSENT}
 )
@@ -1868,7 +1866,8 @@ class TraceConstraint(BaseModel):
             return self
         if self.on_missing is OnMissing.WITHHOLD:
             raise ValueError(
-                f"{self.id}: on_missing: withhold has nothing to decide over ['absent'], "
+                f"{self.id}: on_missing: withhold has nothing to decide over "
+                f"{sorted(kind.value for kind in refusing)}, "
                 "whose empty match IS its positive verdict — withholding there would "
                 "withhold the very check the constraint asks. Drop the on_missing, or "
                 "write a present with the complement matcher"
