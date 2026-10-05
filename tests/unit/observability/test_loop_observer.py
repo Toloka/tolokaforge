@@ -11,7 +11,8 @@ from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.loop import LoopConfig, MetricsSink, ToolCallingLoop, classify_loop_error
-from tolokaforge.core.models import Message, MessageRole, ToolCall
+from tolokaforge.core.models import Message, MessageRole, TerminationReason, ToolCall
+from tolokaforge.core.simulation_budget import SimulationBudget
 from tolokaforge.observability.observer import (
     InMemoryTrialObserver,
     LoopObserverBinding,
@@ -50,7 +51,7 @@ def _terminate_on_text(result, turn, messages):
     return None
 
 
-def _loop(client, observer):
+def _loop(client, observer, simulation_budget=None):
     from tolokaforge.core.loop import TerminationDecision  # noqa: F401  (documented seam)
 
     return ToolCallingLoop(
@@ -64,6 +65,7 @@ def _loop(client, observer):
         logger=StructuredLogger(name="test"),
         retry_sleep=lambda _s: None,
         observer=observer,
+        simulation_budget=simulation_budget,
     )
 
 
@@ -103,3 +105,18 @@ def test_loop_runs_without_an_observer() -> None:
         "system", [Message(role=MessageRole.USER, content="hi")], time.time()
     )
     assert outcome is not None
+
+
+def test_a_turn_the_simulation_budget_ends_still_reports_its_generation() -> None:
+    client = _ScriptedClient([GenerationResult(text="done", usage=Usage(prompt_tokens=1))])
+    observer = InMemoryTrialObserver()
+    messages = [Message(role=MessageRole.USER, content="hi", ts=datetime.now(tz=timezone.utc))]
+    binding = LoopObserverBinding(observer, TrialIdentity("run-1", "T-1", 0, 0))
+    budget = SimulationBudget(max_steps=1, max_errors=None)
+
+    outcome = _loop(client, binding, budget).run("system", messages, time.time())
+
+    assert outcome.termination_reason is TerminationReason.MAX_STEPS
+    generations = [args for name, args in observer.call_log.calls if name == "generation"]
+    assert [g["index"] for g in generations] == [1]
+    assert messages[1].role is MessageRole.ASSISTANT

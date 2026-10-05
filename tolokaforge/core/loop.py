@@ -1377,10 +1377,6 @@ class ToolCallingLoop:
             self._consecutive_stall_turns = 0
 
         self._append_both(messages, self._assistant_message(result))
-        if self.simulation_budget is not None:
-            reason = self.simulation_budget.participant(calls_environment=bool(result.tool_calls))
-            if reason is not None:
-                return self._stop_for_simulation_limit(messages, reason)
         if self.observer is not None:
             ended_at = messages[-1].ts or _now()
             self.observer.generation(
@@ -1391,6 +1387,12 @@ class ToolCallingLoop:
                 started_at=ended_at - timedelta(seconds=max(0.0, result.latency_s or 0.0)),
                 ended_at=ended_at,
             )
+        # After the observer, so a turn the budget ends still emits its generation span
+        # like every other ending of the turn.
+        if self.simulation_budget is not None:
+            reason = self.simulation_budget.participant(calls_environment=bool(result.tool_calls))
+            if reason is not None:
+                return self._stop_for_simulation_limit(messages, reason)
 
         # Checked after the turn is recorded, not at the point the counter
         # moved. This turn produced an action — ``record_generation`` has
