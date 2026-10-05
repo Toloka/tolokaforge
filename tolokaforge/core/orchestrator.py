@@ -29,6 +29,7 @@ from tolokaforge.adapters._task_loader import (
     validate_grading_yaml,
 )
 from tolokaforge.core.budgets import (
+    LIMIT_HIT_MARKER_FILENAME,
     BudgetHit,
     CompositeBudget,
     CostBudget,
@@ -86,7 +87,11 @@ from tolokaforge.core.models import (
 from tolokaforge.core.models.run_config import USER_TEMPERATURE_IGNORED, sets_user_temperature
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION, _engine_version
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
-from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output.artifacts import (
+    FileArtifactWriter,
+    TrialArtifactWriter,
+    read_report_trajectory,
+)
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
     RuntimeBackendBuildContext,
@@ -783,6 +788,7 @@ class Orchestrator:
         self.project = project
         self.tasks: list[TaskConfig] = []
         self.results: list[Trajectory] = []
+        self._previous_report_results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
         # Trial graders whose ``close()`` must fire at run teardown. Populated
@@ -2904,6 +2910,19 @@ class Orchestrator:
             run_state = self.state_manager.load_state()
             if run_state:
                 self._canonicalise_resumed_run_id(run_state, run_id)
+                self._previous_report_results = []
+                for trial in run_state.get_completed_trials():
+                    if self.state_manager.is_completed(
+                        trial.task_id, trial.trial_index, run_state=run_state
+                    ):
+                        bundle = output_dir / "trials" / trial.task_id / str(trial.trial_index)
+                        previous = read_report_trajectory(bundle)
+                        if (previous.task_id, previous.trial_index) != (
+                            trial.task_id,
+                            trial.trial_index,
+                        ):
+                            raise ValueError(f"Completed trial bundle identity mismatch: {bundle}")
+                        self._previous_report_results.append(previous)
                 resume_info = self.state_manager.get_resume_info()
                 if resume_info:
                     self.logger.info(
@@ -3276,6 +3295,10 @@ class Orchestrator:
                     "Loaded existing run spend", total_cost_usd=round(total_cost_usd, 6)
                 )
             budget = self._resolve_budget(initial_cost_usd=total_cost_usd)
+            # This marker describes the current invocation, not an earlier
+            # budget pause. A fresh hit below writes the new value back.
+            (output_dir / LIMIT_HIT_MARKER_FILENAME).unlink(missing_ok=True)
+            self._stopped_reason = None
             budget_exhausted = False
             last_hit: BudgetHit | None = None
             if budget is not None:
@@ -4075,13 +4098,14 @@ class Orchestrator:
 
     def _generate_reports(self, output_dir: Path) -> None:
         """Generate aggregate reports with pass@k"""
-        if not self.results:
+        results = [*self._previous_report_results, *self.results]
+        if not results:
             self.logger.warning("No results to report")
             return
 
         # Group trajectories by task
         task_trajectories = {}
-        for traj in self.results:
+        for traj in results:
             if traj.task_id not in task_trajectories:
                 task_trajectories[traj.task_id] = []
             task_trajectories[traj.task_id].append(traj)
@@ -4105,7 +4129,7 @@ class Orchestrator:
         # Calculate aggregate metrics
         aggregate = calculate_aggregate_metrics(all_task_metrics, weighted=True)
         aggregate.update(
-            calculate_latency_percentiles([t.metrics.latency_total_s for t in self.results])
+            calculate_latency_percentiles([t.metrics.latency_total_s for t in results])
         )
 
         # Metadata-sliced aggregates
@@ -4158,7 +4182,7 @@ class Orchestrator:
 
         # Deterministic failure attribution report
         failure_attributions = [
-            attribute_failure(traj) for traj in self.results if is_failed_trajectory(traj)
+            attribute_failure(traj) for traj in results if is_failed_trajectory(traj)
         ]
         failure_summary = summarize_failure_attributions(failure_attributions)
         failure_attribution_payload = {
