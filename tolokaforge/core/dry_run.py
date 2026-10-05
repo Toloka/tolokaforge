@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DryRunSample",
+    "DryRunUnit",
+    "load_harness_entry_units_for_dry_run",
     "load_tasks_for_dry_run",
     "materialize_dry_run_sample",
     "tool_schema_to_openai_dict",
@@ -62,6 +64,10 @@ class DryRunSample:
     # ``actors.user.first_agent_message``: the agent's own first turn, which the
     # first request carries ahead of the user's message. ``None`` when unset.
     agent_opening_line: str | None = None
+    # Owning ``harnesses:`` entry for a multi-harness dry-run; ``None`` for a
+    # single-adapter run. Disambiguates the same task id rendered under two
+    # entries (trial identity is ``(entry, task_id, trial_index)``).
+    entry: str | None = None
 
 
 def tool_schema_to_openai_dict(tool_schema: ToolSchema) -> dict[str, Any]:
@@ -176,6 +182,68 @@ def load_tasks_for_dry_run(
     return adapter, tasks
 
 
+@dataclass(frozen=True)
+class DryRunUnit:
+    """One ``(harness entry, task)`` of a multi-harness dry-run.
+
+    Carries the owning entry's adapter and its effective (entry-over-run)
+    agent / judge models, so each entry materialises its first-turn wiring
+    through the adapter and models that own it.
+    """
+
+    entry: str
+    adapter: BaseAdapter
+    task: TaskConfig
+    agent_config: ModelConfig
+    judge_config: ModelConfig | None
+
+
+def load_harness_entry_units_for_dry_run(
+    *,
+    run_config: RunConfig,
+    project: ProjectConfig | None = None,
+) -> list[DryRunUnit]:
+    """Resolve every ``(entry, task)`` of a ``harnesses:`` run for the dry-run.
+
+    Builds the run's :class:`~tolokaforge.core.adapter_registry.CompositeAdapter`
+    through the orchestrator's own per-entry resolution — one adapter per entry,
+    the entry-over-run model merge, the same per-entry execution-mode gate — then
+    pairs each entry's tasks with the adapter and effective models that own them.
+    This is the resolution a real run uses; the dry-run does not rediscover tasks
+    natively. No Docker, no TypeSense stack, no run directory: adapter
+    construction and task enumeration only. An entry whose effective
+    ``models.agent`` is unset fails loud rather than rendering a partial unit.
+    """
+    # Local import: the orchestrator imports core model/adapter modules at
+    # module load, so importing it at dry-run module top would cycle.
+    from tolokaforge.core.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator(run_config, project=project)
+    composite = orchestrator._create_composite_adapter()
+
+    units: list[DryRunUnit] = []
+    for entry in composite.entries.values():
+        models = orchestrator._merge_entry_models(entry.config.model)
+        agent_config = models.get("agent")
+        if agent_config is None:
+            raise RuntimeError(
+                f"harness entry {entry.name!r}: no effective models.agent — set one "
+                "on the entry's model map or at the run level."
+            )
+        judge_config = models.get("judge")
+        for task_id in entry.task_ids:
+            units.append(
+                DryRunUnit(
+                    entry=entry.name,
+                    adapter=entry.adapter,
+                    task=entry.adapter.get_task(task_id),
+                    agent_config=agent_config,
+                    judge_config=judge_config,
+                )
+            )
+    return units
+
+
 def _sanitized_tool_spec(
     *,
     adapter: BaseAdapter,
@@ -213,6 +281,7 @@ def materialize_dry_run_sample(
     agent_config: ModelConfig,
     judge_config: ModelConfig | None,
     runtime_choice: str,
+    entry: str | None = None,
 ) -> DryRunSample:
     """Produce a :class:`DryRunSample` for one task.
 
@@ -255,4 +324,5 @@ def materialize_dry_run_sample(
             if task.interaction_mode == "conversational"
             else None
         ),
+        entry=entry,
     )
