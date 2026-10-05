@@ -444,7 +444,8 @@ def test_a_recorded_pattern_the_default_engine_refuses_fails_its_own_bundle_only
 
     The refusal is that bundle's failure, naming the remedy, and the batch runs on.
     Compiled while the inputs are read, so a dry run reports it too rather than
-    promising a re-check that would raise.
+    promising a re-check that would raise. The evidence block counts it apart from
+    a damaged bundle: the bundle is intact.
     """
     refused = _write_bundle(
         tmp_path / "trials" / "refund_task" / "0", trace_checks=_LOOKAHEAD_TRACE_CHECKS
@@ -462,6 +463,15 @@ def test_a_recorded_pattern_the_default_engine_refuses_fails_its_own_bundle_only
     assert "docs/TRACE_REPLAY.md" in (failed.reason or "")
     assert (rest.bundle, rest.status) == (healthy, healthy_status)
     assert not (tmp_path / "trace_replay" / "r1" / "trials" / "refund_task" / "0").exists()
+    outcomes = [failed, rest]
+    report = build_trace_replay_report(
+        outcomes, declared=declared_trace_checks(outcomes), source=tmp_path, replay_id="r1"
+    )
+    assert report is not None
+    assert report.evidence.bundles_failed == 1
+    assert report.evidence.bundles_uncompilable_pattern == 1
+    assert report.evidence.bundles_redacted == 0
+    assert report.evidence.bundles_predating_call_ids == 0
 
 
 def test_the_backtracking_engine_named_in_a_supplied_block_re_checks_a_lookahead(

@@ -517,7 +517,8 @@ def test_a_recorded_pattern_the_default_engine_refuses_fails_that_bundle_and_rep
     """An old bundle's lookahead is one named failure, not a traceback out of the batch.
 
     The readable bundle beside it is still measured and, outside a dry run, the
-    report is still written; the failure names the opt-in that re-checks it.
+    report is still written; the failure names the opt-in that re-checks it. Both the
+    console and the report count it apart from a damaged bundle.
     """
     source = tmp_path
     refused = _write_bundle(
@@ -533,8 +534,12 @@ def test_a_recorded_pattern_the_default_engine_refuses_fails_that_bundle_and_rep
     assert isinstance(result.exception, SystemExit), result.exception
     assert str(refused / "task.yaml") in result.output
     assert "regex_engine: backtracking" in result.output
+    assert "1 with a pattern its regex engine refuses" in " ".join(result.output.split())
     report = source / TRACE_REPLAY_DIRNAME / "r1" / "trace_replay_report.yaml"
     assert report.is_file() is not dry_run
+    if not dry_run:
+        evidence = yaml.safe_load(report.read_text(encoding="utf-8"))["evidence"]
+        assert (evidence["bundles_failed"], evidence["bundles_uncompilable_pattern"]) == (1, 1)
 
 
 def test_a_bundle_whose_tool_set_is_unknown_reports_the_skip_with_its_reason(

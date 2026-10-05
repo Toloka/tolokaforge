@@ -71,6 +71,7 @@ replaces.
 | a re-check disagrees with the verdict the live run recorded for that constraint | `0` |
 | a bundle cannot be classified or reconstructed | `1`, after the per-bundle lines and the report |
 | a bundle declares it was redacted before it was written | `1`, counted as `redacted_bundle` rather than as an unreadable input |
+| a bundle's recorded block holds a pattern its regex engine refuses | `1`, counted as `uncompilable_pattern` rather than as an unreadable input; the batch re-checks the rest |
 | `--constraints` cannot be loaded, or fails the authoring gate | `1`, before any trial is re-checked; nothing is written |
 | `--source` holds no bundle at all | `1`, naming the source; nothing is loaded |
 | two bundles claim one task while declaring different `trace_checks` blocks | `1`, naming both; the batch ran, no report was written |
@@ -91,6 +92,9 @@ rather than an undecided one. The refusal is counted under its own
 `redacted_bundle` disposition, counted in the report's evidence block as
 `bundles_redacted` beside `bundles_failed`: the bundle is intact, and reporting it
 as an unreadable input would send an operator looking for damage there is none of.
+A recorded block whose pattern its [regex engine](#which-regex-engine-a-re-check-runs)
+refuses is counted the same way, as `bundles_uncompilable_pattern`: that bundle is
+intact too, and a supplied block naming `regex_engine: backtracking` re-checks it.
 
 ## What gets re-checked
 
@@ -193,9 +197,10 @@ them — re-checks under the default `linear` (RE2). Every pattern is compiled u
 its effective engine before anything is re-checked, `--dry-run` included:
 
 - a **recorded** block holding a pattern its engine refuses — typically a lookaround
-  in a bundle recorded with no `regex_engine` — fails that bundle, counted
-  `failed` with a reason naming the pattern and the opt-in below, and the batch
-  re-checks the rest;
+  in a bundle recorded with no `regex_engine` — fails that bundle with a reason
+  naming the pattern and the opt-in below, counted in the evidence block as
+  `bundles_uncompilable_pattern` beside `bundles_failed`, and the batch re-checks
+  the rest;
 - a **supplied** block holding one is refused when `--constraints` is loaded, exit
   `1` naming the file, before any bundle is read and with nothing written.
 
@@ -241,7 +246,8 @@ So a discrimination verdict is only as good as the corpus behind it, and the rep
 carries a run-level `evidence` block saying what the corpus was: how many bundles were
 read, how many carried a tool-call record, how many were skipped, how many carried no
 task snapshot, how many failed, how many were rejected as pre-call-id, how many were
-refused as redacted, and which schema stamps were seen (`unstamped` included). The task-less count is its own number rather
+refused as redacted, how many held a pattern their regex engine refuses, and which
+schema stamps were seen (`unstamped` included). The task-less count is its own number rather
 than part of `bundles_skipped`: what an aborted trial could not say about a pack and
 what a pack chose not to declare are two facts, and one number carrying both is a
 number nobody can act on. An operator reading `never_decided` needs to know whether the corpus is old

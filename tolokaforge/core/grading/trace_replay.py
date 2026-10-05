@@ -299,7 +299,8 @@ def _engine_remedy(refusal: UncompilablePattern, *, where: str) -> str:
         return f"Python re itself rejects the pattern; correct it {where}"
     return (
         "The linear engine (RE2, the default where no regex_engine is named) reads no "
-        "lookaround or backreferences; declare regex_engine: backtracking on the block, "
+        "lookaround, backreferences or the other constructs docs/GRADING.md "
+        "(Regex engines) lists; declare regex_engine: backtracking on the block, "
         f"or on the predicate or bound value carrying the pattern, {where} "
         "(docs/TRACE_REPLAY.md, Which regex engine a re-check runs)"
     )
@@ -1144,11 +1145,13 @@ class TraceReplayEvidence(BaseModel):
     run also does. ``schema_versions`` counts the stamps seen, under ``unstamped``
     where a bundle predates the stamp; it is evidence and never a gate.
 
-    ``bundles_predating_call_ids`` and ``bundles_redacted`` are both subsets of
-    ``bundles_failed``, separated because neither is damage: the first is a corpus
-    older than the ids a re-check joins on, the second an intact bundle a policy
-    rewrote before it was written. Reading them out of ``bundles_failed`` alone
-    sends an operator looking for a broken file.
+    ``bundles_predating_call_ids``, ``bundles_redacted`` and
+    ``bundles_uncompilable_pattern`` are subsets of ``bundles_failed``, separated
+    because none is damage: the first is a corpus older than the ids a re-check
+    joins on, the second an intact bundle a policy rewrote before it was written,
+    the third an intact bundle whose recorded block holds a pattern the regex engine
+    it re-checks under refuses. Reading them out of ``bundles_failed`` alone sends
+    an operator looking for a broken file.
 
     ``bundles_skipped`` counts the bundles that declared no ``trace_checks`` and
     nothing else. A bundle carrying no ``task.yaml`` is counted by
@@ -1164,6 +1167,7 @@ class TraceReplayEvidence(BaseModel):
     bundles_failed: int
     bundles_predating_call_ids: int
     bundles_redacted: int
+    bundles_uncompilable_pattern: int
     schema_versions: dict[str, int]
 
     model_config = {"extra": "forbid"}
@@ -1409,6 +1413,9 @@ def _replay_evidence(outcomes: Sequence[TrialTraceReplayOutcome]) -> TraceReplay
         ),
         bundles_redacted=sum(
             1 for outcome in outcomes if outcome.failure is TraceReplayFailure.REDACTED_BUNDLE
+        ),
+        bundles_uncompilable_pattern=sum(
+            1 for outcome in outcomes if outcome.failure is TraceReplayFailure.UNCOMPILABLE_PATTERN
         ),
         schema_versions=dict(stamps),
     )
