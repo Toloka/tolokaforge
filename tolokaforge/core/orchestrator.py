@@ -3677,6 +3677,9 @@ class Orchestrator:
                     run_state.mark_running(lease.task_id, lease.trial_index, entry=lease.entry)
                     self.state_manager.save_state(run_state)
 
+                    entry_client = agent_clients_by_entry.get(lease.entry) or agent_client
+                    entry_agent_config = entry_client.config
+
                     self._events.trial_started(
                         trial_id=format_trial_id(lease.entry, lease.task_id, lease.trial_index),
                         task_id=lease.task_id,
@@ -3684,7 +3687,7 @@ class Orchestrator:
                         total_index=self._total_index_by_key.get(
                             (lease.entry, lease.task_id, lease.trial_index), 0
                         ),
-                        agent_model=f"{agent_config.provider}/{agent_config.name}",
+                        agent_model=f"{entry_agent_config.provider}/{entry_agent_config.name}",
                         user_model=f"{user_config.provider}/{user_config.name}",
                     )
 
@@ -3696,7 +3699,7 @@ class Orchestrator:
                             worker_id=lease_owner,
                             run_id=run_id,
                             entry=lease.entry,
-                            agent_client=agent_clients_by_entry.get(lease.entry) or agent_client,
+                            agent_client=entry_client,
                             user_config=user_config,
                             judge_config=judge_config,
                             env_endpoints=env_endpoints,
