@@ -54,6 +54,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SerializerFunctionWrapHandler,
+    ValidationInfo,
     field_validator,
     model_serializer,
     model_validator,
@@ -71,6 +72,7 @@ from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS
 from tolokaforge.core.grading.omitted_fields import leave_out_absent_fields, schema_from_the_fields
+from tolokaforge.core.grading.regex_engine import RegexEngineKind as RegexEngineKind
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -784,6 +786,12 @@ class TranscriptRulesConfig(BaseModel):
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
+    regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
+    """The engine every ``disallow_regex`` pattern is compiled and searched by.
+
+    Accepted on a block declaring no pattern, unlike a predicate's or a bound
+    value's: the key is dumped at its default wherever the block travels, so the
+    model cannot tell one an author wrote from one the dump supplied."""
     # Both bounds are declarable from 1 up. A ceiling below 1 admits no
     # assistant-turn count at all, and a floor of 0 asserts nothing — and the
     # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
@@ -845,6 +853,13 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
 comprehended from the model, so the per-operator answer table has a second source
 to be checked against."""
 
+TRACE_PREDICATE_MODIFIERS: frozenset[str] = frozenset({"regex_engine"})
+"""The :class:`ValuePredicate` fields that change how its operators read and assert
+nothing on their own — so a predicate declaring only a modifier declares no operator."""
+
+TRACE_PREDICATE_REGEX_OPERATORS: frozenset[str] = frozenset({"regex", "not_regex"})
+"""The operators whose operand is a pattern, compiled under the predicate's engine."""
+
 TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
     {"equals_binding", "contains_binding"}
 )
@@ -878,6 +893,14 @@ class ValuePredicate(BaseModel):
     ``equals_binding`` and ``contains_binding`` name a value the constraint's
     ``bind`` extracted rather than writing it out, and compare with the same
     ``equals`` / ``contains`` the literal forms use.
+
+    ``regex`` and ``not_regex`` take one pattern or a non-empty list of them: every
+    pattern of a ``regex`` list must search the value, and no pattern of a
+    ``not_regex`` list may — a single string reads as the one-item list.
+
+    ``regex_engine`` is a modifier, not an operator (:data:`TRACE_PREDICATE_MODIFIERS`):
+    it names the engine this predicate's ``regex`` / ``not_regex`` run on, ``None``
+    inheriting ``trace_checks.regex_engine``.
     """
 
     equals: Any = None
@@ -886,8 +909,8 @@ class ValuePredicate(BaseModel):
     contains_ci: str | None = None
     not_contains: Any = None
     not_equals: Any = None
-    regex: str | None = None
-    not_regex: str | None = None
+    regex: str | list[str] | None = None
+    not_regex: str | list[str] | None = None
     is_null: bool | None = None
     omitted: bool | None = None
     gt: float | None = None
@@ -905,8 +928,18 @@ class ValuePredicate(BaseModel):
     exists: bool | None = None
     equals_binding: str | None = None
     contains_binding: str | None = None
+    regex_engine: RegexEngineKind | None = None
 
     model_config = {"extra": "forbid"}
+
+    def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
+        """The engine this predicate's patterns run on inside a block defaulting to ``section``."""
+        return section if self.regex_engine is None else self.regex_engine
+
+    def patterns_of(self, operator: str) -> tuple[str, ...]:
+        """The patterns a declared ``regex`` / ``not_regex`` names, in authored order."""
+        authored = getattr(self, operator)
+        return (authored,) if isinstance(authored, str) else tuple(authored)
 
     def declared_operators(self) -> frozenset[str]:
         """The operators this predicate asserts, which it is the conjunction of."""
@@ -922,6 +955,18 @@ class ValuePredicate(BaseModel):
             if getattr(self, name) is not None
         )
 
+    @field_validator("regex", "not_regex")
+    @classmethod
+    def _reject_an_empty_pattern_list(
+        cls, patterns: str | list[str] | None, info: ValidationInfo
+    ) -> str | list[str] | None:
+        if patterns != []:
+            return patterns
+        raise ValueError(
+            f"{info.field_name}: [] names no pattern, so it would hold vacuously over every "
+            f"string. List at least one pattern, or drop {info.field_name}"
+        )
+
     @model_validator(mode="after")
     def _reject_a_predicate_asserting_nothing(self) -> ValuePredicate:
         if not self.declared_operators():
@@ -931,6 +976,16 @@ class ValuePredicate(BaseModel):
                 "or drop the field"
             )
         return self
+
+    @model_validator(mode="after")
+    def _reject_an_engine_over_no_pattern(self) -> ValuePredicate:
+        if self.regex_engine is None or self.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS:
+            return self
+        raise ValueError(
+            f"a value predicate names regex_engine={self.regex_engine.value!r} but declares "
+            f"neither {' nor '.join(sorted(TRACE_PREDICATE_REGEX_OPERATORS))}, so the engine "
+            "reads no pattern. Drop regex_engine, or declare the pattern it is for"
+        )
 
     @model_validator(mode="after")
     def _require_a_date_literal_some_calendar_holds(self) -> ValuePredicate:
@@ -1091,25 +1146,41 @@ class BoundValue(BaseModel):
     ``field`` addresses the extraction the same way a matcher addresses a
     predicate — ``tool``, ``text``, ``result``, or an ``args`` path by dotted
     segments. ``pattern`` narrows a textual field to one capture group, which is
-    what makes a figure quoted inside prose bindable.
+    what makes a figure quoted inside prose bindable. ``regex_engine`` names the
+    engine ``pattern`` runs on, ``None`` inheriting ``trace_checks.regex_engine``.
     """
 
     field: str
     pattern: str | None = None
+    regex_engine: RegexEngineKind | None = None
 
     model_config = {"extra": "forbid"}
+
+    def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
+        """The engine ``pattern`` runs on inside a block defaulting to ``section``."""
+        return section if self.regex_engine is None else self.regex_engine
 
     def head_segment(self) -> str:
         """The field name ``field`` addresses, before any nested argument path."""
         return self.field.split(".", 1)[0]
 
     @model_validator(mode="after")
+    def _reject_an_engine_over_no_pattern(self) -> BoundValue:
+        if self.regex_engine is None or self.pattern is not None:
+            return self
+        raise ValueError(
+            f"a bound value names regex_engine={self.regex_engine.value!r} but declares no "
+            "pattern, so the engine reads nothing. Drop regex_engine, or declare the pattern "
+            "it is for"
+        )
+
+    @model_validator(mode="after")
     def _require_a_pattern_that_captures_exactly_one_value(self) -> BoundValue:
         """Zero groups bind the whole match under a name that reads like a capture.
 
-        Scoped to a pattern that compiles, as every other authored pattern is: an
-        uncompilable one has no group count, and the authoring gate reports it at
-        its own address rather than as a miscount here.
+        Counted by Python ``re`` and scoped to a pattern ``re`` compiles: an
+        uncompilable one has no group count here, and the authoring gate counts
+        groups under the binder's own engine and reports at the pattern's address.
         """
         if self.pattern is None:
             return self
@@ -1119,11 +1190,16 @@ class BoundValue(BaseModel):
             return self
         if groups == 1:
             return self
-        raise ValueError(
-            f"pattern {self.pattern!r} captures {groups} groups, and a binding reads "
-            "exactly one. Wrap the value to bind in a single group — none binds the "
-            "whole match, and several leave no defined which"
-        )
+        raise ValueError(capture_group_count_refusal(self.pattern, groups))
+
+
+def capture_group_count_refusal(pattern: str, groups: int) -> str:
+    """Why a bound value's ``pattern`` declaring ``groups`` capture groups, not one, binds nothing."""
+    return (
+        f"pattern {pattern!r} captures {groups} groups, and a binding reads "
+        "exactly one. Wrap the value to bind in a single group — none binds the "
+        "whole match, and several leave no defined which"
+    )
 
 
 class OnUnbound(str, Enum):
@@ -1717,6 +1793,10 @@ class TraceConstraint(BaseModel):
         """The names this constraint's binder puts in scope, if it declares one."""
         return frozenset(self.bind.values) if self.bind is not None else frozenset()
 
+    def matchers(self) -> Iterator[TraceMatcher]:
+        """Every matcher the constraint declares, its binder's included."""
+        return _matchers_within(self)
+
     @field_validator("weight")
     @classmethod
     def _require_a_weight_that_scores(cls, value: float) -> float:
@@ -1913,6 +1993,13 @@ class TraceChecksConfig(BaseModel):
 
     constraints: list[TraceConstraint] = Field(default_factory=list)
     alternatives: list[TracePath] | None = None
+    regex_engine: RegexEngineKind = RegexEngineKind.LINEAR
+    """The engine every ``regex`` / ``not_regex`` / ``bind.values[*].pattern`` in the
+    block runs on, unless its predicate or bound value names its own.
+
+    Accepted on a block declaring no pattern, unlike a predicate's or a bound
+    value's: the key is dumped at its default wherever the block travels, so the
+    model cannot tell one an author wrote from one the dump supplied."""
 
     model_config = {"extra": "forbid"}
 

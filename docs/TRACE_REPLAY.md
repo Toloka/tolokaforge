@@ -71,6 +71,7 @@ replaces.
 | a re-check disagrees with the verdict the live run recorded for that constraint | `0` |
 | a bundle cannot be classified or reconstructed | `1`, after the per-bundle lines and the report |
 | a bundle declares it was redacted before it was written | `1`, counted as `redacted_bundle` rather than as an unreadable input |
+| a bundle's recorded block holds a pattern its regex engine refuses | `1`, counted as `uncompilable_pattern` rather than as an unreadable input; the batch re-checks the rest |
 | `--constraints` cannot be loaded, or fails the authoring gate | `1`, before any trial is re-checked; nothing is written |
 | `--source` holds no bundle at all | `1`, naming the source; nothing is loaded |
 | two bundles claim one task while declaring different `trace_checks` blocks | `1`, naming both; the batch ran, no report was written |
@@ -91,6 +92,9 @@ rather than an undecided one. The refusal is counted under its own
 `redacted_bundle` disposition, counted in the report's evidence block as
 `bundles_redacted` beside `bundles_failed`: the bundle is intact, and reporting it
 as an unreadable input would send an operator looking for damage there is none of.
+A recorded block whose pattern its [regex engine](#which-regex-engine-a-re-check-runs)
+refuses is counted the same way, as `bundles_uncompilable_pattern`: that bundle is
+intact too, and a supplied block naming `regex_engine: backtracking` re-checks it.
 
 ## What gets re-checked
 
@@ -175,12 +179,55 @@ before a run, against the tool set each bundle *recorded* (`tools_schemas.yaml` 
 post-policy list the provider saw). An **error** aborts the batch naming the file and
 the defect: a misspelled tool name is one defect in one file, and replayed it would
 arrive as a corpus of trials that all failed a constraint selecting nothing.
-Advisories and rules the gate could not answer are reported and the batch continues.
+Advisories and rules the gate could not answer are reported and the batch continues —
+except a pattern the block's regex engine refuses, which the gate reports as an
+advisory under `linear` but which could never be re-checked, so it is refused before
+the gate runs ([below](#which-regex-engine-a-re-check-runs)).
 
 A bundle that recorded no `tools_schemas.yaml` has an **unresolvable** tool set, not
 an empty one — every schema-dependent rule for it lands in the `unchecked` channel and
 the console says so per bundle and once in full. A gate that could not run must never
 read as a clean bill of health.
+
+### Which regex engine a re-check runs
+
+A block re-checks under the [regex engine](GRADING.md#regex-engines) it names, and a
+block naming none — a bundle recorded by an engine predating `regex_engine` among
+them — re-checks under the default `linear` (RE2). Every pattern is compiled under
+its effective engine before anything is re-checked, `--dry-run` included:
+
+- a **recorded** block holding a pattern its engine refuses — typically a lookaround
+  in a bundle recorded with no `regex_engine` — fails that bundle with a reason
+  naming the pattern and the opt-in below, counted in the evidence block as
+  `bundles_uncompilable_pattern` beside `bundles_failed`, and the batch re-checks
+  the rest;
+- a **supplied** block holding one is refused when `--constraints` is loaded, exit
+  `1` naming the file, before any bundle is read and with nothing written.
+
+To re-check a bundle under Python `re` — for a pattern RE2 refuses, or one RE2 reads
+differently — copy the bundle's block (`grading_config.trace_checks` in its
+`task.yaml`) into a file, add `regex_engine: backtracking` to it, and pass that file
+as `--constraints`. The supplied block replaces the recorded one wholesale, so the
+copy has to carry every constraint:
+
+```yaml
+# backtracking.yaml — the bundle's own block, plus the engine
+trace_checks:
+  regex_engine: backtracking
+  constraints:
+    - id: the_account_was_looked_up
+      description: "the agent looked up the account the customer named"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: get_account }
+            result: { regex: '(?=[\s\S]*"account_id":\s*"ACC-6")(?=[\s\S]*"email")' }
+```
+
+```bash
+uv run tolokaforge retrace --source <run-dir> --constraints backtracking.yaml
+```
 
 ## Evidence and undecided verdicts
 
@@ -199,7 +246,8 @@ So a discrimination verdict is only as good as the corpus behind it, and the rep
 carries a run-level `evidence` block saying what the corpus was: how many bundles were
 read, how many carried a tool-call record, how many were skipped, how many carried no
 task snapshot, how many failed, how many were rejected as pre-call-id, how many were
-refused as redacted, and which schema stamps were seen (`unstamped` included). The task-less count is its own number rather
+refused as redacted, how many held a pattern their regex engine refuses, and which
+schema stamps were seen (`unstamped` included). The task-less count is its own number rather
 than part of `bundles_skipped`: what an aborted trial could not say about a pack and
 what a pack chose not to declare are two facts, and one number carrying both is a
 number nobody can act on. An operator reading `never_decided` needs to know whether the corpus is old

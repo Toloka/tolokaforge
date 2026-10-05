@@ -184,6 +184,8 @@ SUBSET_REQUIREMENT_NAMES: tuple[str, ...] = (
     "grpcio-health-checking",
     "protobuf",
     "mcp",
+    # The ``linear`` grading regex engine; the runner grades trace checks.
+    "google-re2",
     # Domain-tool runtime deps (``[project.optional-dependencies].runner``).
     "asyncpg",
     "psycopg2-binary",

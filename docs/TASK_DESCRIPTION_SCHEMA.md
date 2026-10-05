@@ -304,6 +304,7 @@ class TranscriptRulesConfig(BaseModel):
     """Transcript-based grading configuration."""
     must_contain: List[str] = Field(default_factory=list)
     disallow_regex: List[str] = Field(default_factory=list)
+    regex_engine: RegexEngineKind = "linear"   # engine for every disallow_regex pattern (docs/GRADING.md § Regex engines)
     max_turns: Optional[int] = Field(default=None, ge=1)            # a ceiling below 1 admits nothing
     min_assistant_turns: Optional[int] = Field(default=None, ge=1)  # gate: unmet → component 0.0
     tool_expectations: Optional[ToolExpectations] = None

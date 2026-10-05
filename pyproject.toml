@@ -119,6 +119,10 @@ dependencies = [
     # than reading uv.lock, so an unbounded range there resolves a version whose
     # every tool call fails inside the container while the host venv is fine.
     "mcp>=1.0,<2",
+    # The ``linear`` grading regex engine (RE2) behind
+    # :mod:`tolokaforge.core.grading.regex_engine` (ADR-0055). The runner
+    # grades trace checks, so the runner subset requires it too.
+    "google-re2>=1.1,<2",
 ]
 
 [project.optional-dependencies]
@@ -716,6 +720,10 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "re2"
+ignore_missing_imports = true
 
 # =============================================================================
 # Release tooling (commitizen) — drives the `Release (cz bump)` workflow.

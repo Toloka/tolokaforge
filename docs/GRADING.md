@@ -530,6 +530,7 @@ does not declare.
 | `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.weight` / `.on_missing` / `.severity` / `.within` / `.bind` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.regex_engine` / `transcript_rules.regex_engine` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
 `trace_checks` and `transcript_rules` are the two scored families where **every**
@@ -1536,6 +1537,10 @@ reject it.
 | `trace_checks` negative-text operators (`not_contains`, `not_regex`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
 | `trace_checks` nullness operators (`is_null`, `omitted`) | a pack declaring one under a matcher's `args` or `text` predicate | `unreleased` | new engine → old image |
 | `trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
+| `trace_checks.regex_engine` | a pack declaring `trace_checks` | `unreleased` | new engine → old image |
+| `trace_checks` `regex_engine` on a predicate or bound value | a pack declaring a matcher predicate or a bound value | `unreleased` | new engine → old image |
+| `trace_checks` `regex` / `not_regex` written as a list | a pack declaring a list of patterns under a matcher predicate | `unreleased` | new engine → old image |
+| `transcript_rules.regex_engine` | a pack declaring `transcript_rules` | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
 | `state_checks.compare_columns` | a pack declaring `state_checks` | `unreleased` | new engine → old image |
 | `state_checks.compare_columns.<table>.<column>.mode == "subset"` | a pack declaring per-column permitted-extra tool-call params | `unreleased` | new engine → old image |
@@ -1583,6 +1588,13 @@ Three rows need more than a cell:
   declare it.** An engine predating its removal translates the authored key onto that
   field, so the rejection is an old engine against a new image — the one row here whose
   direction runs that way.
+
+**`regex_engine` is defaulted, not rejected, in the other direction.** An engine
+predating `trace_checks.regex_engine` and `transcript_rules.regex_engine` sends
+neither, and a current image reads their absence as the default `linear`: a
+`trace_checks` pattern RE2 refuses raises at grade time, a `disallow_regex` entry RE2
+refuses fails its sub-check, and a pattern that hits a row of
+[§ Regex engines](#regex-engines)' differences table grades by RE2's reading.
 
 `combine_method` is locked by its value domain the same way `id_fields` is: the runner
 validates it against the closed set in [§ Score Combination](#score-combination), so a
@@ -2025,6 +2037,10 @@ is [trace checks](#trace-checks) territory — a result predicate beside
 either substrate see the harness's `role: system` annotations — a termination
 notice cannot satisfy a required phrase (N3).
 
+**`disallow_regex` reads each pattern case-insensitively** on the engine
+`transcript_rules.regex_engine` names — [Regex engines](#regex-engines) says what
+each engine reads.
+
 ### Turn bounds
 
 `max_turns` and `min_assistant_turns` bound one counter from two sides — the
@@ -2291,8 +2307,8 @@ hold, so `{ gt: 0, lt: 100 }` is a range. The vocabulary:
 | `equals_ci` | a string equal to it, case-insensitively |
 | `contains` / `contains_ci` | the value contains it, case-sensitively or not |
 | `not_contains` | the value does not contain it — over a value the event carries |
-| `regex` | the pattern **searches** the value — unanchored, and only a string matches |
-| `not_regex` | the pattern finds nothing in the value — the complement of `regex` within declared events |
+| `regex` | the pattern **searches** the value under the predicate's [regex engine](#regex-engines) — unanchored, and only a string matches; a list: every pattern does |
+| `not_regex` | the pattern finds nothing in the value under the predicate's [regex engine](#regex-engines) — the complement of `regex` within declared events; a list: no pattern does |
 | `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
 | `date_gt` / `date_gte` / `date_lt` / `date_lte` | the value is an ISO-8601 date or datetime and the comparison holds chronologically |
 | `in_` / `not_in` | the value is (is not) a member of the list |
@@ -2353,9 +2369,133 @@ Two rules worth meeting here rather than in a silently ignored predicate:
   `not_equals`, which does hold over the absent case the way negative-text
   operators do not.
 
+**`regex` and `not_regex` take a list.** `regex: [a, b]` holds when every pattern
+searches the value and `not_regex: [a, b]` when none does; a single string is the
+one-item list, and an empty list is a load error. That is how a conjunction of
+lookaheads is written without lookaround — the two predicates below select the same
+`get_account` results, and only the second compiles under the default `linear`
+engine:
+
+```yaml
+- result: { regex: '(?=[\s\S]*"account_id":\s*"ACC-6")(?=[\s\S]*"email":\s*"x@y\.z")' }
+- result: { regex: ['"account_id":\s*"ACC-6"', '"email":\s*"x@y\.z"'] }
+```
+
+A negative lookahead is the same split onto `not_regex`: `regex: '^(?![\s\S]*refund)[\s\S]*approved'`
+is `{ regex: approved, not_regex: refund }`.
+
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
 not need. A predicate declaring **no** operator is rejected at load.
+
+**`regex_engine` is a modifier, not an operator.** It names the
+[engine](#regex-engines) the predicate's `regex` and `not_regex` run on and asserts
+nothing itself, so a predicate declaring only `regex_engine` declares no operator,
+and one declaring it beside neither pattern operator is a load error.
+
+### Regex engines
+
+Every pattern a pack writes for grading — a matcher's `regex` / `not_regex`, a
+binder's `bind.values.<name>.pattern`, and every `transcript_rules.disallow_regex`
+entry — is compiled and searched by one of two engines, named by what they
+guarantee:
+
+| `regex_engine` | engine | reads |
+|---|---|---|
+| `linear` (the default) | RE2 | no lookaround and no backreferences; a search costs time linear in the text |
+| `backtracking` | Python `re` | the whole `re` syntax; a search can backtrack, at a cost that grows faster than the text |
+
+**Where the engine is declared.** `trace_checks.regex_engine` is the engine of every
+pattern in the block, shared constraints and routes alike; a value predicate's own
+`regex_engine` covers its `regex` and `not_regex`, and a bound value's covers its
+`pattern`. `transcript_rules.regex_engine` is the engine of every `disallow_regex`
+entry. Both blocks default to `linear`. The nearest declaration wins — a predicate or
+bound value naming an engine overrides its block, one naming none inherits it:
+
+```yaml
+trace_checks:                          # no regex_engine: every pattern below runs on RE2 …
+  constraints:
+    - id: the_duplicate_was_flagged
+      description: "the agent flagged the account whose two ids repeat"
+      require:
+        present:
+          match:
+            kind: tool_result
+            tool: { equals: flag_account }
+            result: { regex: '(ACC-\d+) \1', regex_engine: backtracking }   # … but this backreference
+transcript_rules:
+  disallow_regex: ['password:\s*\S+']
+```
+
+A `regex_engine` on a predicate declaring neither `regex` nor `not_regex`, or on a
+bound value declaring no `pattern`, is a load error: it would change nothing.
+
+**What `linear` refuses.** RE2 does not compile:
+
+- lookaround — `(?=…)`, `(?!…)`, `(?<=…)`, `(?<!…)`;
+- backreferences — `\1`, `(?P=name)`;
+- possessive quantifiers — `a*+`;
+- `\Z` (RE2 spells end of text `\z`);
+- a repeat count over 1000 — `a{1001}` — and nested counted repetition whose product
+  is too large — `(\w{1,1000}){1,1000}` — both refused as "invalid repetition size";
+- a pattern over RE2's memory budget — `\pL{1000}` five times over — refused as
+  "pattern too large";
+- verbose mode `(?x)`, the ASCII flag `(?a)`, and named characters `\N{…}`;
+- a pattern holding a lone surrogate (U+D800–U+DFFF), which cannot be encoded as
+  UTF-8.
+
+**Patterns both engines compile can read differently.** These are the semantics of
+the `linear` default; a pattern that relies on the `backtracking` reading declares
+`regex_engine: backtracking`. Each row is pinned under both engines in
+`tests/unit/grading/test_regex_engine.py`:
+
+| pattern | text | `backtracking` | `linear` | why |
+|---|---|---|---|---|
+| `\d` | `٣` (U+0663) | match | no match | RE2 `\d` is ASCII |
+| `\w` | `é` | match | no match | RE2 `\w` is ASCII |
+| `\s` | U+001C | match | no match | RE2 `\s` is ASCII whitespace |
+| `\bfoo\b` | `éfoo` | no match | match | RE2 `\b` is an ASCII word boundary |
+| `a$` | `a` + newline | match | no match | RE2 `$` without `(?m)` is end of text only |
+| `[[:alpha:]]+` | `ab:` | no match | match | a POSIX class in RE2, a character set in `re` |
+| `a{,3}` | `aaaa` | match | no match | `re` reads `{0,3}`; RE2 reads the literal text `{,3}` |
+| U+FFFD | `abc ` + lone surrogate U+D800 + ` def` | no match | match | `linear` searches every lone surrogate as U+FFFD |
+
+The last row is how `linear` reads text that is not valid UTF-8. `json.loads` turns an
+escaped lone surrogate in a tool result or an assistant turn into one, and RE2 cannot
+encode it, so `linear` searches a view of the text with each code point in
+U+D800–U+DFFF replaced one-for-one by U+FFFD. A binder's capture is still sliced
+from the original text. Only a pattern that names U+FFFD itself, or counts it under
+`.` or a class, can read the substitute.
+
+**A lookahead conjunction is a [pattern list](#operators).**
+`(?=[\s\S]*a)(?=[\s\S]*b)` is `regex: [a, b]`, and a negative lookahead
+`^(?![\s\S]*c)` is `not_regex: [c]` on the same predicate. A binder's `pattern` and a
+`disallow_regex` entry are one pattern each, so a lookaround there that cannot be
+rewritten without it needs `backtracking`.
+
+**When to declare `backtracking`.** For a pattern that needs lookaround,
+backreferences or another construct RE2 refuses, or that relies on a row of the table
+above. Its cost is Python `re`'s: a search can take time quadratic in the text or
+worse. The matcher [evaluates a predicate only where it can change the
+outcome](#what-a-matcher-resolves-to-matched-and-undecidable), so beside a `tool`
+predicate a `result` pattern runs only on the calls that tool admits — that bounds how
+many values the pattern searches, not what one search costs.
+
+**A pattern its engine refuses never grades.** A `trace_checks` block compiles every
+pattern it declares — shared and per-route, matcher and capture — before it evaluates
+any constraint, so an uncompilable one raises on every grade, whatever the timeline
+holds: not only on a trial carrying an event that reaches it, but also where a binder
+that selected nothing leaves the `require` tree declaring it unread, and on a trial
+that left no trace at all. A `disallow_regex` entry its engine refuses is a failing
+sub-check, on a transcript with no assistant turn too. The
+[pre-run gate](#what-is-validated-before-a-run) compiles every pattern under its
+engine before a run spends anything: a `backtracking` refusal is an error, and a
+`linear` one an advisory naming the `regex_engine: backtracking` opt-in and, on a
+matcher's `regex` / `not_regex`, the pattern list — fatal under the default
+`fail_on`.
+
+Code-authored checks (`checks.py`) use whatever regex library their author imports;
+`checks_helpers.text_matches_pattern` is Python `re` with the caller's `re` flags.
 
 ### What a matcher resolves to: matched, and undecidable
 
@@ -2392,6 +2532,14 @@ Undecidability is scoped **to the matcher**, never to the event kind:
   nothing;
 - a matcher over a fully recorded call is *decided*, because the pairing answers
   it.
+
+**A predicate is evaluated only where its result can change what the matcher selects
+or the comparisons it reports.** The cheap fields — `tool`, `executor`, `status` — are
+read first, then `args` paths, then `text` and `result`, whatever order the matcher
+declares them in. So on a call `tool` already rejects, no `result` pattern runs, and a
+pattern's cost is paid only on the events the matcher's other predicates admit. The
+answer is the one evaluating every predicate gives — the same sets, and the same
+comparisons reported, in the same order.
 
 ### The constraint vocabulary — ten members
 
@@ -3402,7 +3550,7 @@ harness produces.
 A mis-authored check is charged to the agent or to nobody: a misspelled tool name in
 a `present` matcher scores the component `0.0` with the message a genuine agent
 failure carries, the same typo under `absent` passes every trial, and an
-uncompilable `regex` raises inside the evaluator once the tokens are spent. So a
+uncompilable `regex` raises at grade time once the tokens are spent. So a
 task's whole grading block is checked against its tools before anything is paid for — by
 `tolokaforge validate`, which exits non-zero, and by the run's own pre-flight, which
 makes one pass over every selected task before it schedules the first trial and
@@ -3434,7 +3582,9 @@ Findings come in three classes:
 | a reference on an `args` predicate whose declared type and the binding's declared type no value of either can satisfy the operator between — `equals_binding` across `integer` / `number` / `boolean` holds, `contains_binding` finds a scalar inside a container and a container inside nothing | error only where **both** schemas forbid extras, advisory wherever either permits them | the predicate's own `args.<path>` |
 | the same reference where the argument's schema writes no `type`, or writes one outside the six JSON type names | unchecked | as above |
 | a `severity: gate` constraint with no `on_missing` whose `require` tree admits `on_missing: fail` — no `present` / `absent` / `count` anywhere in it — so an anchor that matched nothing trips the gate by default ([§ `severity`](#severity--a-check-that-must-hold)) | advisory | `trace_checks.<id>`, `trace_checks.<path id>.<constraint id>` |
-| a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
+| a pattern the `backtracking` engine does not compile | error | every predicate's `regex` / `not_regex` — `regex[i]` / `not_regex[i]` for each item of a list — every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex[i]` |
+| a pattern the `linear` engine — the default — does not compile ([what it refuses](#regex-engines)) — the finding names `regex_engine: backtracking` and where to declare it, and on a predicate's `regex` / `not_regex` also the [pattern list](#operators) a lookahead conjunction splits into. Fatal under the default `fail_on`; under `fail_on: error` the run starts, and at grade time a `trace_checks` pattern raises and a `disallow_regex` entry fails its sub-check | advisory | as above |
+| a `bind.values[*].pattern` declaring other than one capture group under its engine — `\pL+` (none) and `(?<n>\d+)-(\d+)` (two) are patterns only `linear` compiles, so the load-time count, which reads Python `re`, does not reach them | error | `bind.values[*].pattern` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |

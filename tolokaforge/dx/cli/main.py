@@ -1983,26 +1983,29 @@ def validate(tasks: str, strict_authoring: bool):
             )
             if strict_authoring and adapter_declared:
                 console.print(
-                    f"[red]✗ {task_file}: --strict-authoring refuses "
+                    f"[red]✗ {escape(task_file)}: --strict-authoring refuses "
                     f"{len(adapter_declared)} adapter-declared skip(s)[/red]"
                 )
                 for skip in adapter_declared:
-                    console.print(f"[red]  ✗ {skip.where}: {skip.reason}[/red]")
+                    console.print(f"[red]  ✗ {escape(skip.where)}: {escape(skip.reason)}[/red]")
                 for skip in report.unchecked:
                     if skip.kind is SkipKind.STRUCTURAL:
                         console.print(
-                            f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]"
+                            f"[yellow]  ? {escape(skip.where)} not checked: "
+                            f"{escape(skip.reason)}[/yellow]"
                         )
                 invalid += 1
                 continue
-            console.print(f"[green]✓ {task_file}[/green]")
+            console.print(f"[green]✓ {escape(task_file)}[/green]")
             for skip in report.unchecked:
-                console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")
+                console.print(
+                    f"[yellow]  ? {escape(skip.where)} not checked: {escape(skip.reason)}[/yellow]"
+                )
             for hint in report.hints:
-                console.print(f"[yellow]  ⚠ {hint.where}: {hint.message}[/yellow]")
+                console.print(f"[yellow]  ⚠ {escape(hint.where)}: {escape(hint.message)}[/yellow]")
             valid += 1
         except Exception as e:
-            console.print(f"[red]✗ {task_file}: {str(e)}[/red]")
+            console.print(f"[red]✗ {escape(task_file)}: {escape(str(e))}[/red]")
             invalid += 1
 
     console.print(f"\n[bold]Summary:[/bold] {valid} valid, {invalid} invalid")

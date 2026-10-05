@@ -24,6 +24,7 @@ from tolokaforge.core.grading.composite_fold import (
     combine_grade_components,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
 from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
 from tolokaforge.core.grading.transcript import evaluate_transcript_rules
@@ -678,6 +679,51 @@ class TestTranscriptRulesEvaluation:
         )
         assert result.passed is False
         assert result.score == 0.0
+
+    @pytest.mark.parametrize(
+        ("engine", "disallowed"),
+        [
+            pytest.param(None, False, id="undeclared-is-linear"),
+            pytest.param(RegexEngineKind.LINEAR, False, id="linear-reads-ascii-digits"),
+            pytest.param(RegexEngineKind.BACKTRACKING, True, id="backtracking-reads-unicode"),
+        ],
+    )
+    def test_disallow_regex_runs_on_the_blocks_engine(self, engine, disallowed):
+        """``\\d`` against an Arabic-Indic digit: the two engines give different verdicts."""
+        timeline = self._timeline([("assistant", "Your code is \u0663.")])
+        declared = {} if engine is None else {"regex_engine": engine}
+        result = evaluate_transcript_rules(
+            timeline, self._config(disallow_regex=[r"\d"], **declared)
+        )
+        assert result.passed is not disallowed
+
+    @pytest.mark.parametrize("engine", list(RegexEngineKind))
+    def test_disallow_regex_reads_case_insensitively_on_either_engine(self, engine):
+        timeline = self._timeline([("assistant", "Here it is: Password: hunter2")])
+        result = evaluate_transcript_rules(
+            timeline, self._config(disallow_regex=["PASSWORD:"], regex_engine=engine)
+        )
+        assert result.passed is False
+
+    @pytest.mark.parametrize(
+        ("engine", "pattern"),
+        [
+            pytest.param(RegexEngineKind.LINEAR, "(?=secret)", id="linear-lookahead"),
+            pytest.param(RegexEngineKind.BACKTRACKING, "unterminated([", id="backtracking"),
+            pytest.param(RegexEngineKind.LINEAR, "secret\ud800", id="linear-lone-surrogate"),
+        ],
+    )
+    def test_a_pattern_its_engine_refuses_fails_even_with_no_assistant_turn(self, engine, pattern):
+        """Compiled before any message is read, so the refusal does not wait for one."""
+        result = evaluate_transcript_rules(
+            self._timeline([("user", "hello")]),
+            self._config(disallow_regex=[pattern], regex_engine=engine),
+        )
+        assert result.passed is False
+        message = result.details[0].message
+        assert message.startswith(f"Invalid disallow_regex {pattern!r}")
+        assert message.count(repr(pattern)) == 1
+        assert f"the {engine.value} regex engine cannot compile it" in message
 
     # --- max_turns ---------------------------------------------------------
 

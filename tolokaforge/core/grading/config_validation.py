@@ -36,7 +36,6 @@ the gate has no false-reject mode. The severity of each rule is documented in
 from __future__ import annotations
 
 import logging
-import re
 import types
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -63,6 +62,11 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     unreachable_target,
 )
 from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
+from tolokaforge.core.grading.regex_engine import (
+    RegexEngineKind,
+    UncompilablePattern,
+    engine_for,
+)
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
@@ -90,7 +94,11 @@ from tolokaforge.core.models import (
     ValuePredicate,
 )
 from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
-from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
+from tolokaforge.runner.models import (
+    TRACE_PREDICATE_BINDING_OPERATORS,
+    TRACE_PREDICATE_REGEX_OPERATORS,
+    capture_group_count_refusal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1083,13 +1091,14 @@ def inspect_grading_authoring(
             caller holding no ``task.yaml`` — it skips the rules reading them wherever
             one would have been checked, and fails nothing.
     """
-    constraints = tuple(_trace_constraints(grading))
+    trace_checks = _trace_checks(grading)
+    constraints = tuple(_trace_constraints(trace_checks))
     sites = tuple(_trace_matcher_sites(constraints))
     binders = tuple(_trace_binding_sites(constraints))
     rules = _transcript_rules(grading)
     reports = [
         _check_sections_declare_something(grading),
-        _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
+        _check_regex_compiles(trace_checks, sites, binders, rules),
         _check_hash_source_declared(grading, hash_sources),
         _check_golden_actions_are_a_list(grading),
         _check_probes_are_the_only_state_source(grading),
@@ -1483,42 +1492,169 @@ def _check_argument_paths(
     )
 
 
+@dataclass(frozen=True)
+class _PatternSite:
+    """One authored pattern, the engine that compiles it, and where an override goes."""
+
+    where: str
+    pattern: str
+    engine: RegexEngineKind
+    ignore_case: bool
+    captures: bool
+    """Whether the pattern is a binder's capture, which must declare exactly one group."""
+    override_at: str
+    """Where an author names ``regex_engine: backtracking`` for this pattern."""
+    in_a_pattern_list: bool
+    """Whether the pattern is a matcher's ``regex`` / ``not_regex``, which a list can split."""
+    consequence: str
+    """What a refused pattern does to the trial at grade time."""
+
+
+_TRACE_PATTERN_REFUSED = "raises out of the evaluator at grade time"
+_TRANSCRIPT_PATTERN_REFUSED = "fails its sub-check at grade time"
+
+
 def _check_regex_compiles(
+    trace_checks: TraceChecksConfig | None,
     sites: tuple[_MatcherSite, ...],
     binders: tuple[_BindingSite, ...],
-    disallow_regex: Iterable[str],
+    transcript_rules: TranscriptRulesConfig | None,
 ) -> AuthoringReport:
-    """Every authored pattern compiles here, or it raises inside the evaluator.
+    """Every authored pattern compiles under its effective engine.
 
-    Neither substrate catches ``re.error`` locally: core lets it propagate out of
-    the grader and the runner folds it into a failed grade response, so the trial
-    is lost rather than the constraint. A binder's capture pattern is compiled by
-    the same evaluator on the same trial, so it is read here for the same reason.
+    What a refusal costs at grade time depends on the site. A ``trace_checks``
+    pattern raises out of the evaluator, which neither substrate catches locally:
+    core lets it propagate out of the grader and the runner folds it into a failed
+    grade response, so the trial's grade is lost rather than the constraint. A
+    ``disallow_regex`` pattern fails its own sub-check. A refusal under
+    ``backtracking`` is an error, since Python ``re`` itself rejects the pattern; one
+    under ``linear`` is an advisory naming the ``backtracking`` opt-in — and, for a
+    matcher's pattern, the list form a lookahead conjunction splits into — since the
+    pattern may be one only a backtracking engine reads. A binder's capture is
+    compiled by the same evaluator on the same trial, and must declare exactly one
+    group under its own engine: the load validator counts with Python ``re`` alone,
+    so a pattern only RE2 compiles is counted here.
     """
+    authored = _transcript_pattern_sites(transcript_rules)
+    if trace_checks is not None:
+        authored += _trace_pattern_sites(trace_checks.regex_engine, sites, binders)
+    errors: list[Finding] = []
+    advisories: list[Finding] = []
+    for site in authored:
+        try:
+            compiled = engine_for(site.engine).compile(site.pattern, ignore_case=site.ignore_case)
+        except UncompilablePattern as refusal:
+            refused = errors if site.engine is RegexEngineKind.BACKTRACKING else advisories
+            refused.append(_uncompilable(site, refusal))
+            continue
+        if site.captures and compiled.groups != 1:
+            message = capture_group_count_refusal(site.pattern, compiled.groups)
+            errors.append(Finding(site.where, message))
+    return AuthoringReport(errors=tuple(errors), advisories=tuple(advisories))
+
+
+def _trace_pattern_sites(
+    section: RegexEngineKind,
+    sites: tuple[_MatcherSite, ...],
+    binders: tuple[_BindingSite, ...],
+) -> list[_PatternSite]:
+    """Every matcher and capture pattern, under the engine that compiles it at grade time."""
     authored = [
-        (f"transcript_rules.disallow_regex[{index}]", pattern)
-        for index, pattern in enumerate(disallow_regex)
-    ]
-    authored += [
-        (f"{predicate_site.where}.regex", predicate_site.predicate.regex)
+        _PatternSite(
+            where=where,
+            pattern=pattern,
+            engine=predicate_site.predicate.regex_engine_under(section),
+            ignore_case=False,
+            captures=False,
+            override_at="on the predicate or on the trace_checks block",
+            in_a_pattern_list=True,
+            consequence=_TRACE_PATTERN_REFUSED,
+        )
         for site in sites
         for predicate_site in _predicate_sites(site)
-        if predicate_site.predicate.regex is not None
+        for name in sorted(
+            predicate_site.predicate.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS
+        )
+        for where, pattern in _addressed_patterns(predicate_site, name)
     ]
     authored += [
-        (f"{predicate_site.where}.not_regex", predicate_site.predicate.not_regex)
-        for site in sites
-        for predicate_site in _predicate_sites(site)
-        if predicate_site.predicate.not_regex is not None
-    ]
-    authored += [
-        (f"{site.where}.values.{name}.pattern", value.pattern)
+        _PatternSite(
+            where=f"{site.where}.values.{name}.pattern",
+            pattern=bound.pattern,
+            engine=bound.regex_engine_under(section),
+            ignore_case=False,
+            captures=True,
+            override_at="on the bound value or on the trace_checks block",
+            in_a_pattern_list=False,
+            consequence=_TRACE_PATTERN_REFUSED,
+        )
         for site in binders
-        for name, value in site.binding.values.items()
-        if value.pattern is not None
+        for name, bound in site.binding.values.items()
+        if bound.pattern is not None
     ]
-    findings = (_uncompilable(where, pattern) for where, pattern in authored)
-    return AuthoringReport(errors=tuple(finding for finding in findings if finding is not None))
+    return authored
+
+
+def _addressed_patterns(predicate_site: _PredicateSite, operator: str) -> list[tuple[str, str]]:
+    """Each pattern ``operator`` names, at ``<site>.<operator>`` — ``[i]`` per item of a list."""
+    where = f"{predicate_site.where}.{operator}"
+    authored = getattr(predicate_site.predicate, operator)
+    if isinstance(authored, str):
+        return [(where, authored)]
+    return [
+        (f"{where}[{index}]", pattern)
+        for index, pattern in enumerate(predicate_site.predicate.patterns_of(operator))
+    ]
+
+
+def _transcript_pattern_sites(
+    transcript_rules: TranscriptRulesConfig | None,
+) -> list[_PatternSite]:
+    """Every ``disallow_regex`` pattern, read case-insensitively as the evaluator reads it."""
+    if transcript_rules is None:
+        return []
+    return [
+        _PatternSite(
+            where=f"transcript_rules.disallow_regex[{index}]",
+            pattern=pattern,
+            engine=transcript_rules.regex_engine,
+            ignore_case=True,
+            captures=False,
+            override_at="on the transcript_rules block",
+            in_a_pattern_list=False,
+            consequence=_TRANSCRIPT_PATTERN_REFUSED,
+        )
+        for index, pattern in enumerate(transcript_rules.disallow_regex)
+    ]
+
+
+def _uncompilable(site: _PatternSite, refusal: UncompilablePattern) -> Finding:
+    refused = (
+        f"regex {site.pattern!r} does not compile under the {site.engine.value} regex "
+        f"engine: {refusal.reason}"
+    )
+    if site.engine is RegexEngineKind.BACKTRACKING:
+        return Finding(
+            site.where,
+            f"{refused}. The pattern {site.consequence}, once the trial is already paid for",
+        )
+    opt_in = (
+        f"declares regex_engine: backtracking {site.override_at}, which runs Python re at "
+        "its backtracking cost"
+    )
+    remedy = (
+        "A lookahead conjunction (?=…a)(?=…b) is the list form regex: [a, b], every pattern "
+        "of which must search the value, and a negative lookahead (?!…c) is not_regex: [c] "
+        "on the same predicate, no pattern of which may; a pattern that needs other "
+        f"lookaround or backreferences {opt_in}"
+        if site.in_a_pattern_list
+        else f"A pattern that needs them {opt_in}"
+    )
+    return Finding(
+        site.where,
+        f"{refused}. The linear engine searches in time linear in the text and reads no "
+        f"lookaround or backreferences. {remedy}",
+    )
 
 
 def _check_hash_source_declared(
@@ -2708,18 +2844,6 @@ def _undeclared_tool_message(name: str, inventory: ToolInventory) -> str:
     )
 
 
-def _uncompilable(where: str, pattern: str) -> Finding | None:
-    try:
-        re.compile(pattern)
-    except re.error as error:
-        return Finding(
-            where,
-            f"regex {pattern!r} does not compile: {error}. An uncompilable pattern raises "
-            "out of the evaluator at grade time, once the trial is already paid for",
-        )
-    return None
-
-
 def _tool_names_asserted_by(predicate: ValuePredicate) -> tuple[str, ...]:
     """The tool names a predicate asserts as tokens, if it asserts any."""
     named: list[str] = []
@@ -2828,17 +2952,24 @@ def _check_graded_criteria_have_expected_anchor(grading: Mapping[str, Any]) -> A
     return AuthoringReport(hints=hints)
 
 
-def _trace_constraints(grading: Mapping[str, Any]) -> Iterator[tuple[str, TraceConstraint]]:
+def _trace_checks(grading: Mapping[str, Any]) -> TraceChecksConfig | None:
+    block = grading.get("trace_checks")
+    if not isinstance(block, Mapping):
+        return None
+    return TraceChecksConfig(**block)
+
+
+def _trace_constraints(
+    config: TraceChecksConfig | None,
+) -> Iterator[tuple[str, TraceConstraint]]:
     """Every constraint the block declares, shared and per-route, with its address.
 
     A route's constraints are graded exactly as the shared ones are, so a typo
     inside one is the same defect — and the route id joins the address because the
     block's one id space is what keeps the two forms apart.
     """
-    block = grading.get("trace_checks")
-    if not isinstance(block, Mapping):
+    if config is None:
         return
-    config = TraceChecksConfig(**block)
     for constraint in config.constraints:
         yield f"trace_checks.{constraint.id}", constraint
     for path in config.alternatives or ():
