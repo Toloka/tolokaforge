@@ -61,6 +61,26 @@ class TestPrefixes:
         with pytest.raises(v.VocabularyError, match="must be one of"):
             v.validate_caller_tag("dataset:v9", profile_values={"dataset": ("v1",)})
 
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("Toloka Arena", "toloka-arena"),
+            ("  Toloka \t  Arena ", "toloka-arena"),
+            ("test-arena", "test-arena"),
+            ("pilot", "pilot"),
+            # capitals change the tag even without a space (CHANGELOG: a dashboard split)
+            ("Toloka", "toloka"),
+        ],
+    )
+    def test_a_project_name_is_spelled_as_a_tag_value(self, name: str, value: str) -> None:
+        """The receiver's project name may hold capitals and spaces, a tag value may not."""
+        assert v.project_tag_value(name) == value
+
+    @pytest.mark.parametrize("name", ["", "   ", "Toloka Arena!", "-arena"])
+    def test_a_project_name_no_spelling_can_save_is_refused(self, name: str) -> None:
+        with pytest.raises(v.VocabularyError, match="tag project:"):
+            v.project_tag_value(name)
+
     def test_order_follows_the_core_and_deduplicates(self) -> None:
         assert v.order_tags(["task:T", "model:a/b", "team:x", "route:r", "team:x"]) == [
             "team:x",

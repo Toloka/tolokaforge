@@ -75,7 +75,7 @@ records `expect_project` and `project_verified` in its `details` entry with `exp
 |---|---|
 | `LANGFUSE_BASE_URL` | traces go to `<base>/api/public/otel/v1/traces`, attachments and gradings to `<base>` |
 | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | the Basic header (through the `SecretManager`); set both or neither |
-| `LANGFUSE_PROJECT` | the project the keys must open (checked before the first export) and the trace's `project:` tag |
+| `LANGFUSE_PROJECT` | the project the keys must open (checked before the first export) and the trace's `project:` tag (§ The project and its environments) |
 | `LANGFUSE_EXTRA_HEADERS` | `k=v,k2=v2`, extra request headers (a gateway's own header) |
 | `TOLOKAFORGE_TRACING_RUN_ID`, `_RUN_TAG`, `_SESSION_ID`, `_LABEL` | the run's identity when the config carries none |
 | `TOLOKAFORGE_TRACING_PROFILE`, `LANGFUSE_ENVIRONMENT`, `TOLOKAFORGE_TRACING_METADATA` | a profile file when the config names none, the environment (the selector when the config declares `environments`) and the per-run metadata (the profile section below) |
@@ -410,7 +410,7 @@ defines, and the tags the producer derives from the bundle and from the model-na
 | Who sets it | Prefixes |
 |---|---|
 | the producer, from the bundle and the resolver | `harness:tolokaforge`, `source:trial`, `task:<task id>`, `model:<vendor/model>`, `model_vendor`, `model_family`, and when the normalizer's rules derive them `model_generation`, `model_tier`, `model_variant`, `model_size`, `model_stage`, `model_snapshot`; from `task.yaml` `model_config.agent.reasoning` `reasoning_mode`, `reasoning_effort`, `reasoning_budget`; `route` (the provider the run config routed the agent's calls to) |
-| the launcher that owns the receiver | `project:<the verified project>` |
+| the launcher that owns the receiver | `project:<the verified project, in a tag's spelling>` |
 | the caller (config `tags`, `TOLOKAFORGE_TRACING_TAGS`, the profile's fixed tags) | `team`, `dataset`, `run_kind` (`eval`, `smoke`, `canary`, `test`, `probe`), `scope` (`full`, `sample`), `config`, `domain`, `ci_run`, `ci_chain` |
 
 A caller tag under a producer prefix, an unknown prefix or a value outside a closed list is a
@@ -485,7 +485,11 @@ reader refuses a `${...}` placeholder inside the block, because it reads the fil
 
 **The project and its environments.** `project` is the one receiver project of the deployment:
 the credentials must open it (checked before the first export, the fail-closed check above), it
-is the default of `expect_project` and it gives the trace its `project:` tag. A launcher variable
+is the default of `expect_project` and it gives the trace its `project:` tag. The check compares
+the name exactly as the receiver shows it; the tag spells it lowercased, each run of whitespace
+one `-`, because a tag value holds no whitespace (`Toloka Arena` gives `project:toloka-arena`, and
+`pilot` stays `project:pilot`). Capitals are lowercased even without a space (`Toloka` gives
+`project:toloka`), so one project keeps one tag whatever the case of its name. A launcher variable
 (`TOLOKAFORGE_TRACING_EXPECT_PROJECT`, `LANGFUSE_PROJECT`) naming a different project is a
 configuration error. `environments` declares the project's native environments and what each
 accepts: `trial` (benchmark data), `transcript` (an agent's own transcript) or `any`. With the

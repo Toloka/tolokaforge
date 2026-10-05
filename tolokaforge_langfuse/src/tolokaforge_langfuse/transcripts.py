@@ -85,6 +85,7 @@ from tolokaforge_langfuse.vocabulary import (
     VocabularyError,
     check_value,
     order_tags,
+    project_tag_value,
 )
 
 NONE = "none"
@@ -756,7 +757,7 @@ def build_events(
 
     tags = order_tags(
         [
-            f"project:{_tag_value('project', options.project)}",
+            f"project:{_project_tag_value(options.project)}",
             f"harness:{HARNESS}",
             f"source:{SOURCE}",
             *(identity.tags if identity else ()),
@@ -1051,6 +1052,13 @@ def _caller_tags(tags: Mapping[str, str]) -> dict[str, str]:
     if missing:
         raise TranscriptError(f"a transcript needs {', '.join(missing)}")
     return {prefix: _tag_value(prefix, tags[prefix]) for prefix in tags if tags[prefix]}
+
+
+def _project_tag_value(name: str) -> str:
+    try:
+        return project_tag_value(name)
+    except VocabularyError as exc:
+        raise TranscriptError(str(exc)) from exc
 
 
 def _tag_value(prefix: str, value: str) -> str:

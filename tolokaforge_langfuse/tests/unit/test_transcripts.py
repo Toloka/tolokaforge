@@ -430,6 +430,11 @@ class TestTheProjection:
         # a transcript carries no trial facts, whatever the caller thinks
         assert not {t.partition(":")[0] for t in tags} & {"dataset", "scope", "domain", "config"}
 
+    def test_a_project_name_with_spaces_is_tagged_in_a_tags_spelling(self) -> None:
+        body = one(built(tr.redact(read()), project="Acme Traces"), "trace-create")[0]
+        assert "project:acme-traces" in body["tags"]
+        assert body["metadata"]["project"] == "Acme Traces"  # the receiver's own name
+
     def test_the_result_totals_are_queryable_trace_metadata(self) -> None:
         metadata = one(built(tr.redact(read())), "trace-create")[0]["metadata"]
         assert metadata["total_cost_usd"] == pytest.approx(0.0412)
