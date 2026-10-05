@@ -1422,7 +1422,25 @@ class ToolCallingLoop:
             return self._stop_on(decision)
 
         if result.tool_calls:
-            results = self._execute_tool_calls(result, messages)
+            batch_start = len(messages)
+            try:
+                results = self._execute_tool_calls(result, messages)
+            except Exception:
+                if self.simulation_budget is not None:
+                    # The batch answered this turn's calls, so it is still the one
+                    # environment step that closes the agent's step; left pending, an
+                    # API-error retry of the turn would hit the budget's "participant
+                    # replied before the pending environment batch" refusal and mask
+                    # the raised error. Counted with the environment errors of the
+                    # calls answered before the raise; a limit it reaches is enforced
+                    # at the budget's next check rather than over the raised error.
+                    self.simulation_budget.environment(
+                        errors=sum(
+                            message.tool_status is ToolExecutionStatus.ENVIRONMENT_ERROR
+                            for message in messages[batch_start:]
+                        )
+                    )
+                raise
             if self.simulation_budget is not None:
                 errors = sum(
                     resolve_tool_status(tool_result) is ToolExecutionStatus.ENVIRONMENT_ERROR
