@@ -26,6 +26,7 @@ from tolokaforge.adapters.base import (
     ComposeImageBuild,
     DockerStackRequirements,
 )
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -70,10 +71,16 @@ class InspectAiAdapter(BaseAdapter):
     """Runs Inspect AI tasks by delegating execution to ``inspect_ai`` in a container."""
 
     requires_docker_cli_in_runner: ClassVar[bool] = True
-    # The trial's "agent" step is one `inspect eval` command, not the engine LLM
-    # loop — the run selects it with `models.agent.harness: inspect_ai`, which the
-    # orchestrator lifts into `params.agent_model` (the model Inspect runs).
-    supports_coding_harness: ClassVar[bool] = True
+    """The runner shells out to ``docker exec`` to drive ``inspect eval`` in the
+    sibling task container, so the runner stack carries the host Docker socket."""
+
+    supported_execution_modes: ClassVar[frozenset[ExecutionMode]] = frozenset(
+        {ExecutionMode.DELEGATED}
+    )
+    """Delegated-only: a trial's agent step is a single ``inspect eval`` command
+    the adapter emits, never the engine's own turn loop. The run selects the
+    adapter with ``models.agent.harness: inspect_ai`` and the orchestrator lifts
+    ``models.agent.name`` into the model Inspect runs."""
 
     def __init__(self, params: dict[str, Any]):
         super().__init__(params)
