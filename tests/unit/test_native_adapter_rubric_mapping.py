@@ -15,6 +15,7 @@ import pytest
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.runner.models import JudgeCustomization, TaskDescription
 
 pytestmark = pytest.mark.unit
 
@@ -392,3 +393,12 @@ def test_judge_snippet_chars_is_off_the_wire_when_no_layer_sets_it(tmp_path: Pat
     assert description.grading.llm_judge.customization.judge_snippet_chars == 200
     wire = json.loads(description.model_dump_json())
     assert "judge_snippet_chars" not in wire["grading"]["llm_judge"]["customization"]
+
+
+def test_leaving_judge_snippet_chars_off_keeps_the_serialization_schema():
+    """The customization dump that drops the key at its default still describes
+    every field it can carry, and so does the task description holding it."""
+    serialization = JudgeCustomization.model_json_schema(mode="serialization")
+    assert set(serialization["properties"]) == set(JudgeCustomization.model_fields)
+    defs = TaskDescription.model_json_schema(mode="serialization")["$defs"]
+    assert set(defs["JudgeCustomization"]["properties"]) == set(JudgeCustomization.model_fields)
