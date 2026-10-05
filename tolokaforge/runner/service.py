@@ -17,6 +17,7 @@ Usage:
 """
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -41,6 +42,7 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
+from tolokaforge.core.grading.comparison_view_checks import check_wire_comparison_view
 from tolokaforge.core.grading.composite_fold import CompositeFold
 from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
@@ -50,6 +52,7 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
+from tolokaforge.core.grading.hash_grading_result import HashComparisonBasis, HashGradingResult
 from tolokaforge.core.grading.jsonpath_addressing import (
     addresses_the_database,
     block_addresses_the_database,
@@ -60,6 +63,14 @@ from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.kinds import GraderKindRefusedError
+from tolokaforge.core.grading.pre_hash import (
+    PreHashDeclaration,
+    TrialViewError,
+    comparison_view_grade_record,
+    comparison_view_reason,
+    resolve_unstable_fields,
+    view_the_pair,
+)
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
@@ -75,6 +86,7 @@ from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatch
 from tolokaforge.core.hash import (
     apply_compare_columns_pipeline,
     compute_stable_hash,
+    filter_unstable_fields,
 )
 from tolokaforge.core.models import (
     CriterionResult,
@@ -128,8 +140,6 @@ from tolokaforge.runner.id_resolution import (
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
-    HashComparisonBasis,
-    HashGradingResult,
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerInitialStateConfig,
@@ -970,6 +980,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if json_db_error is not None:
             logger.error(f"RegisterTrial: {trial_id} - {json_db_error}")
             return pb2.RegisterTrialResponse(success=False, error=json_db_error)
+
+        # A declared comparison view is checked against the description's own initial
+        # state — the belt-and-suspenders for an adapter other than the native one, which
+        # checks at description build. It reads the description alone, so it runs before
+        # anything lands on disk or in the db-service: a refusal has nothing to undo.
+        view_state_checks = task_description.grading.state_checks
+        if view_state_checks is not None:
+            view_error = check_wire_comparison_view(
+                view_state_checks,
+                task_description.initial_state,
+                context=f"RegisterTrial: {trial_id}",
+            )
+            if view_error:
+                logger.error(view_error)
+                return pb2.RegisterTrialResponse(success=False, error=view_error)
 
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None
@@ -1966,7 +1991,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Initialize grading components
         components = CompositeGradeComponents()
-        state_diff: StateDiff | None = None
+        state_diff: dict[str, Any] | None = None
         transcript_result: TranscriptEvaluationResult | None = None
         hash_result: HashGradingResult | None = None
         # Author key -> what became of it, filled in below at the points an
@@ -2216,7 +2241,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # reasons string to the shared fold. An undecidable fold fails the RPC
         # naming this trial rather than reaching the outer catch-all as an
         # anonymous grading error.
-        state_diff_dict = state_diff.model_dump() if state_diff else None
+        state_diff_dict = state_diff
         try:
             fold_result = CompositeFold.finalise(
                 components_dict=components.model_dump(),
@@ -2234,6 +2259,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 custom_checks_reasons=custom_checks_reasons,
                 judge_errored=judge_status == pb2.JUDGE_STATUS_ERRORED,
                 ledger_skip_notes=audit.skip_notes,
+                comparison_view_reason=(
+                    comparison_view_reason(hash_result.comparison_view)
+                    if hash_result is not None and hash_result.comparison_view is not None
+                    else None
+                ),
             )
         except ValueError as exc:
             logger.error(f"GradeTrial: {trial_id} - {exc}")
@@ -2310,6 +2340,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         )
                         for path in trace_checks_result.paths
                     ],
+                ),
+                **(
+                    {"comparison_view_json": hash_result.comparison_view.model_dump_json()}
+                    if hash_result is not None and hash_result.comparison_view is not None
+                    else {}
                 ),
             ),
         )
@@ -2683,9 +2718,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 compare against and the fields whose numeric-looking strings fold
 
         Returns:
-            HashGradingResult with hash_match (the model derives hash_score from it),
-            the basis the comparison was run against, an optional state_diff, and the
-            record of how much of the golden path ran
+            The shared :class:`HashGradingResult`: hash_match (the result derives
+            hash_score from it), the basis the comparison was run against, the dumped
+            state diff on a mismatch, the record of how much of the golden path ran,
+            and the comparison view's record where one is declared
 
         Raises:
             UnresolvableGoldenAction: an action names no tool registered for the trial,
@@ -2702,6 +2738,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         compare_columns = state_checks.compare_columns
         auto_mask_clock_columns = state_checks.auto_mask_clock_columns
         auto_normalize_nullables = state_checks.auto_normalize_nullables
+        # A declared comparison view reads each side's FULL state (unstable fields
+        # present) and runs every pre-hash step on the client, after the restore in
+        # step 7. A pack without one takes one of the two paths below.
+        comparison_view = state_checks.comparison_view
         # Client-side hashing is required whenever the state comparator
         # needs both raw states in hand — the pack declared any per-column
         # rule (folds, ordering, or subset extras), the auto clock-column
@@ -2743,7 +2783,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # fetch raw state now and defer hashing until we hold both sides.
         trial_hash: str | None = None
         trial_state_raw: dict[str, Any] | None = None
-        if client_side_hash:
+        trial_full_state: dict[str, Any] | None = None
+        if comparison_view is not None:
+            trial_full_state = (await self.db_client.get_state(trial_id)).data
+            logger.debug("GradeTrial: Trial full state fetched (comparison view declared)")
+        elif client_side_hash:
             trial_state_response = await self.db_client.get_stable_state(trial_id)
             trial_state_raw = trial_state_response.data
             logger.debug("GradeTrial: Trial state fetched (deferred hashing for compare_columns)")
@@ -2851,7 +2895,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # fold tokens. Fast path fetches the server-side digest directly.
         trial_state_processed: dict[str, Any] | None = None
         golden_state_raw: dict[str, Any] | None = None
-        if client_side_hash:
+        golden_full_state: dict[str, Any] | None = None
+        if comparison_view is not None:
+            # Read only: the view runs after the restore below, when both full states
+            # are in memory, so a view that cannot be computed never leaves the golden
+            # state in the trial's database.
+            golden_full_state = (await self.db_client.get_state(trial_id)).data
+            logger.debug("GradeTrial: Golden full state fetched (comparison view declared)")
+        elif client_side_hash:
             golden_state_response = await self.db_client.get_stable_state(trial_id)
             golden_state_raw = golden_state_response.data
             assert trial_state_raw is not None  # set in step 1 slow-path branch
@@ -2890,6 +2941,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.restore_snapshot(trial_id, "pre_golden")
         logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
 
+        golden_replay_record = GoldenReplayRecord(
+            authored=len(golden_actions), failures=tuple(replay_failures)
+        )
+        if comparison_view is not None:
+            assert trial_full_state is not None and golden_full_state is not None
+            return self._compare_through_the_view(
+                trial_context,
+                state_checks,
+                trial_full_state,
+                golden_full_state,
+                basis=basis,
+                golden_replay=golden_replay_record,
+            )
+
         # 8. Compare hashes
         hash_match = trial_hash == golden_hash
 
@@ -2921,10 +2986,86 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return HashGradingResult(
             hash_match=hash_match,
             basis=basis,
-            state_diff=state_diff,
-            golden_replay=GoldenReplayRecord(
-                authored=len(golden_actions), failures=tuple(replay_failures)
+            state_diff=state_diff.model_dump() if state_diff is not None else None,
+            golden_replay=golden_replay_record,
+        )
+
+    @staticmethod
+    def _compare_through_the_view(
+        trial_context: TrialContextRuntime,
+        state_checks: RunnerStateChecksConfig,
+        trial_state: dict[str, Any],
+        golden_state: dict[str, Any],
+        *,
+        basis: HashComparisonBasis,
+        golden_replay: GoldenReplayRecord,
+    ) -> HashGradingResult:
+        """Steps 1–5 of the pre-hash order over two full states, and what the grade records.
+
+        Steps 1–3 are :func:`~tolokaforge.core.grading.pre_hash.view_the_pair`, the
+        composition core runs too; steps 4–5 are this substrate's own
+        :func:`~tolokaforge.core.hash.compute_stable_hash`. A trial whose own state cannot
+        be viewed once the golden's was mismatches, and the record says why. On any
+        mismatch the raw ``state_diff`` is computed as the server-side path computes
+        it — over the stable states, every resolved unstable field dropped — and the
+        record carries the view diff the verdict agrees with.
+
+        Raises:
+            ComparisonViewError: the golden's view cannot be computed — a grading error.
+        """
+        assert state_checks.comparison_view is not None
+        task = trial_context.task_description
+        initial_state = task.initial_state if task is not None else None
+        declaration = PreHashDeclaration(
+            view=state_checks.comparison_view,
+            id_fields=state_checks.id_fields,
+            unstable_fields=tuple(
+                f"{spec.table_name}.{spec.field_name}"
+                for spec in (initial_state.unstable_fields if initial_state else ())
             ),
+            compare_columns=state_checks.compare_columns,
+            numeric_string_fields=tuple(state_checks.numeric_string_fields),
+            auto_normalize_nullables=state_checks.auto_normalize_nullables,
+        )
+        outcome = view_the_pair(
+            trial_state,
+            golden_state,
+            initial=copy.deepcopy(initial_state.tables) if initial_state else {},
+            declaration=declaration,
+        )
+        if isinstance(outcome, TrialViewError):
+            logger.info(f"GradeTrial: the trial's state cannot be viewed: {outcome.error}")
+            hash_match = False
+        else:
+            digests = [
+                compute_stable_hash(
+                    side,
+                    numeric_string_fields=state_checks.numeric_string_fields,
+                    auto_mask_clock_columns=state_checks.auto_mask_clock_columns,
+                    auto_normalize_nullables=state_checks.auto_normalize_nullables,
+                )
+                for side in (outcome.trial, outcome.golden)
+            ]
+            hash_match = digests[0] == digests[1]
+            logger.debug(
+                f"GradeTrial: Hashes of the comparison view — trial={digests[0][:16]}... "
+                f"golden={digests[1][:16]}..."
+            )
+        state_diff: StateDiff | None = None
+        if not hash_match:
+            stable = list(
+                resolve_unstable_fields(declaration.unstable_fields, trial_state, golden_state)
+            )
+            state_diff = compute_state_diff(
+                filter_unstable_fields(trial_state, stable),
+                filter_unstable_fields(golden_state, stable),
+            )
+        return HashGradingResult(
+            hash_match=hash_match,
+            basis=basis,
+            state_diff=state_diff.model_dump() if state_diff is not None else None,
+            golden_replay=golden_replay,
+            comparison_view=comparison_view_grade_record(outcome, matched=hash_match),
         )
 
     # =========================================================================

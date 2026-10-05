@@ -33,10 +33,11 @@ pre-hash steps and the versioning policy of the record. The semantics:
     share, a key a kept record already holds, a rank tie and a reference that
     already holds a new key are refused. A reference to no re-keyed record stays
     as it is. A re-keyed id is a function of its record's content, not a
-    generated value, so it must reach the hash: the unstable filter and the
-    clock mask after the view must not drop the fields the record lists in
-    ``rekeyed_fields``, even when ``unstable_fields`` names them. Key fields are
-    read as they are, before ``numeric_string_fields`` or
+    generated value, so it must reach the hash: the unstable filter after the
+    view leaves the fields the record lists in ``rekeyed_fields`` in, even when
+    ``unstable_fields`` names them, and a task whose clock mask would drop one is
+    refused when it loads (:mod:`tolokaforge.core.grading.comparison_view_checks`).
+    Key fields are read as they are, before ``numeric_string_fields`` or
     ``auto_normalize_nullables`` fold anything (``""`` and null give different
     keys), and a missing key field raises.
 
@@ -52,10 +53,12 @@ group: the three above register there like any rule a distribution ships. A rule
 decides which states hash equal, so registering one is a grading decision; the
 trust boundary is stated on :class:`ComparisonViewRule`.
 
-The module depends on the standard library and pydantic, and reaches the registry
-(:mod:`tolokaforge.core.plugin_registry`) only where a kind resolves: the runner
-will apply the view too, and the runner-subset wheel excludes ``state_checks`` and
-``combine``.
+The module depends on the standard library, pydantic and
+:mod:`tolokaforge.core.grading.omitted_fields` (the serializer helper the wire models
+share), and reaches the registry (:mod:`tolokaforge.core.plugin_registry`) only where
+a kind resolves: the runner applies the view too
+(:mod:`tolokaforge.core.grading.pre_hash`), and the runner-subset wheel excludes
+``state_checks`` and ``combine``.
 """
 
 from __future__ import annotations
@@ -72,7 +75,16 @@ from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
 from types import MappingProxyType, ModuleType
-from typing import Annotated, Any, ClassVar, Final, Literal, Protocol, cast, runtime_checkable
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
 
 from pydantic import (
     AfterValidator,
@@ -89,8 +101,11 @@ from pydantic import (
     ValidationError,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
+
+from tolokaforge.core.grading.omitted_fields import schema_from_the_fields
 
 __all__ = [
     "COMPARISON_VIEW_FUNCTION_VERSION",
@@ -133,20 +148,21 @@ _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d
 class ComparisonViewError(ValueError):
     """A rule cannot compute the view of this state.
 
-    It is an evaluation error, never a pass or a fail: the grade reports it as a
-    grading error.
+    Which side it is raised for decides what it means. On the golden side — viewed
+    first — the declaration does not fit the state the task's own golden path builds,
+    which is the author's to fix: the grade reports a grading error. On the trial side,
+    once the golden's view succeeded, the declaration is shown sound and what cannot be
+    viewed is the trial's own state: the caller fails the trial with this as the reason.
     """
 
 
 class ComparisonViewCollision(ComparisonViewError):
     """``normalize_ids`` cannot re-key this state bijectively.
 
-    Two records would share a key, a new key is the id of a kept record, two
-    records tie on ``rank_by``, or a reference already holds a new key. On the
-    golden side it is an evaluation error like any :class:`ComparisonViewError`.
-    On the trial side, once the golden's view succeeded, it is the trial's own
-    state that cannot be told apart, and the caller fails the trial with it as
-    the reason. ``ids`` are the ids involved.
+    Two records share an id, two records would share a key, a new key is the id of a
+    kept record, two records tie on ``rank_by``, or a reference already holds a new
+    key. It is read by side like any :class:`ComparisonViewError`; ``ids`` are the ids
+    involved, for the reason a failed trial carries.
     """
 
     def __init__(self, message: str, ids: tuple[Any, ...]) -> None:
@@ -212,7 +228,12 @@ def _segments(path: str) -> tuple[str, ...]:
 
 
 class InCondition(BaseModel):
-    """``{in: [v1, v2, ...]}``: the field equals one of the listed scalars."""
+    """``{in: [v1, v2, ...]}``: the field equals one of the listed scalars.
+
+    It dumps as ``{in: [...]}`` whether or not the caller asks for aliases: the trial
+    spec crosses the wire as a plain ``model_dump_json()``, and only the aliased form
+    validates back.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -224,6 +245,12 @@ class InCondition(BaseModel):
         if not isinstance(value, list | tuple):
             raise ValueError("must be a list of values")
         return tuple(_scalar(item, "each value") for item in value)
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _under_its_alias(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        dumped = handler(self)
+        return {"in": dumped["in"] if "in" in dumped else dumped["any_of"]}
 
 
 class IsNullCondition(BaseModel):
@@ -333,6 +360,24 @@ class ComparisonViewRuleConfig(BaseModel):
     def names(self) -> tuple[str, ...]:
         """The tables this entry names, for the ``exclude_tables`` guard."""
 
+    def id_field_errors(self, id_fields: Mapping[str, str | list[str]]) -> tuple[str, ...]:
+        """What applying this entry would refuse about an id field, read without a state.
+
+        :func:`apply_comparison_view` checks a rule's id fields when it runs, because
+        only it receives ``id_fields``. A task's load repeats the checks through this
+        method, which runs the same functions, so the author hears of a conflict before
+        a trial is paid for. A rule reading no id field has nothing to refuse.
+        """
+        return ()
+
+    def rekeyed_fields(self, id_fields: Mapping[str, str | list[str]]) -> tuple[RekeyedField, ...]:
+        """The id fields this entry re-keys, from the declaration alone (see :class:`RekeyedField`).
+
+        Raises:
+            ComparisonViewError: the id field cannot be resolved (a composite key).
+        """
+        return ()
+
 
 class RecordReference(BaseModel):
     """A field of another table's rows that may hold the ids of the rows a rule drops."""
@@ -383,6 +428,11 @@ class ExcludeRecordsConfig(ComparisonViewRuleConfig):
     def names(self) -> tuple[str, ...]:
         references = (reference.table for reference in self.unless_referenced_by)
         return tuple(dict.fromkeys((self.table, *references)))
+
+    def id_field_errors(self, id_fields: Mapping[str, str | list[str]]) -> tuple[str, ...]:
+        if not self.unless_referenced_by:
+            return ()
+        return _refusal(lambda: _unless_referenced_id_field(self, id_fields))
 
 
 class ExcludeTablesConfig(ComparisonViewRuleConfig):
@@ -469,6 +519,13 @@ class NormalizeIdsConfig(ComparisonViewRuleConfig):
         references = (reference.table for reference in self.references)
         return tuple(dict.fromkeys((self.table, *references)))
 
+    def id_field_errors(self, id_fields: Mapping[str, str | list[str]]) -> tuple[str, ...]:
+        return _refusal(lambda: _normalized_id_field(self, id_fields))
+
+    def rekeyed_fields(self, id_fields: Mapping[str, str | list[str]]) -> tuple[RekeyedField, ...]:
+        field = _record_id_field(self.table, id_fields, needed_by=_NORMALIZE)
+        return (RekeyedField(table=self.table, field=field),)
+
     def key_fields(self) -> frozenset[str]:
         """The fields of the table's records the new key is built from."""
         return frozenset((*self.key, *self.ordinal_by, *self.rank_by))
@@ -513,8 +570,8 @@ class RekeyedField(BaseModel):
     """An id field ``normalize_ids`` re-keyed, whose values are a function of content.
 
     A masked id is unstable because it is generated; a re-keyed one is not, so it
-    must reach the hash. The masks applied after the view (the unstable filter and
-    the clock mask) must not drop it.
+    must reach the hash. The unstable filter after the view leaves it in, and a task
+    whose clock mask would drop it is refused when it loads.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -727,11 +784,9 @@ class NormalizeIds:
         config: ComparisonViewRuleConfig,
     ) -> RuleOutcome:
         config = cast(NormalizeIdsConfig, config)
-        id_field = _record_id_field(config.table, id_fields, needed_by=_NORMALIZE)
-        _refuse_id_in_the_key(config, id_field)
-        _refuse_own_id_references(config.table, config.references, id_field, option="references")
+        id_field = _normalized_id_field(config, id_fields)
         kept_ids = _ids_that_keep_their_key(config, initial, id_field)
-        rekeyed_fields = (RekeyedField(table=config.table, field=id_field),)
+        rekeyed_fields = config.rekeyed_fields(id_fields)
         if config.table not in state:
             application = RuleApplication(kind=self.NAME, table=config.table)
             return RuleOutcome(state=state, applied=(application,), rekeyed=rekeyed_fields)
@@ -754,7 +809,8 @@ def _registry() -> ModuleType:
     """:mod:`tolokaforge.core.plugin_registry`, imported where a kind resolves.
 
     Not at module level: the registry imports every seam's module and the engine's
-    config models, which importing this module must not load.
+    config models, which import this module themselves, so a module-level import
+    would close a cycle.
     """
     from tolokaforge.core import plugin_registry
 
@@ -903,14 +959,31 @@ def _rows_to_keep(
 ) -> list[Record]:
     if not config.unless_referenced_by:
         return [row for row in rows if not matches(row)]
-    id_field = _record_id_field(config.table, id_fields, needed_by=_UNLESS)
-    _refuse_own_id_references(config.table, config.unless_referenced_by, id_field, option=_UNLESS)
+    id_field = _unless_referenced_id_field(config, id_fields)
     counts = _reference_counts(state, config.unless_referenced_by)
     return [
         row
         for row in rows
         if not matches(row) or _referenced_by_another_row(row, config, id_field, counts)
     ]
+
+
+def _unless_referenced_id_field(
+    config: ExcludeRecordsConfig, id_fields: Mapping[str, str | list[str]]
+) -> str:
+    """The id field ``unless_referenced_by`` reads, once the rule's own checks pass."""
+    id_field = _record_id_field(config.table, id_fields, needed_by=_UNLESS)
+    _refuse_own_id_references(config.table, config.unless_referenced_by, id_field, option=_UNLESS)
+    return id_field
+
+
+def _refusal(check: Callable[[], object]) -> tuple[str, ...]:
+    """The message ``check`` raises :class:`ComparisonViewError` with, or nothing."""
+    try:
+        check()
+    except ComparisonViewError as exc:
+        return (str(exc),)
+    return ()
 
 
 def _refuse_own_id_references(
@@ -1088,6 +1161,16 @@ def _rewrite_at(value: Any, segments: Sequence[str], leaf: Callable[[Any], Any],
 # ---------------------------------------------------------------------------
 
 
+def _normalized_id_field(
+    config: NormalizeIdsConfig, id_fields: Mapping[str, str | list[str]]
+) -> str:
+    """The id field ``normalize_ids`` re-keys, once the rule's own checks pass."""
+    id_field = _record_id_field(config.table, id_fields, needed_by=_NORMALIZE)
+    _refuse_id_in_the_key(config, id_field)
+    _refuse_own_id_references(config.table, config.references, id_field, option="references")
+    return id_field
+
+
 def _refuse_id_in_the_key(config: NormalizeIdsConfig, id_field: str) -> None:
     for option, fields in (
         ("key", config.key),
@@ -1142,13 +1225,15 @@ def _new_keys(
 
 
 def _refuse_duplicate_ids(table: str, ids: list[Any]) -> None:
+    """Two records under one id key two records by one value: the keying is not bijective."""
     seen: set[IdKey] = set()
     for value in ids:
         key = _reference_key(value)
         if key in seen:
-            raise ComparisonViewError(
+            raise ComparisonViewCollision(
                 f"{_NORMALIZE}: two records of table {table!r} share the id {value!r}, so a "
-                f"reference to it cannot follow one of them"
+                f"reference to it cannot follow one of them",
+                (value,),
             )
         seen.add(key)
 
@@ -1313,9 +1398,9 @@ class ComparisonViewConfig(BaseModel):
 
     ``kind`` resolves through the ``tolokaforge.comparison_view_rules`` entry-point
     group (:func:`resolve_comparison_view_rule`), not a static union, so a rule a
-    distribution registers validates the way the built-ins do. Dump it
-    with ``by_alias=True``: the ``in`` operator serialises under its alias only
-    then, and only that dump validates back.
+    distribution registers validates the way the built-ins do. Every dump validates
+    back: the ``in`` operator serialises under its alias whether or not the caller
+    asks for aliases.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -1349,15 +1434,23 @@ class ComparisonViewConfig(BaseModel):
     def _each_rule_as_its_own_model(
         self, rules: tuple[ComparisonViewRuleConfig, ...], info: FieldSerializationInfo
     ) -> list[dict[str, Any]]:
-        """Dump every rule with its own config model, not the base the field declares."""
+        """Dump every rule with its own config model, not the base the field declares.
+
+        ``kind`` is kept under every dump option: it is what the entry resolves through,
+        so a dump leaving it out (``exclude_defaults`` drops a ``kind`` at its default,
+        ``exclude_unset`` one a constructor filled in) would not validate back.
+        """
         return [
-            rule.model_dump(
-                mode=info.mode,
-                by_alias=info.by_alias,
-                exclude_unset=info.exclude_unset,
-                exclude_defaults=info.exclude_defaults,
-                exclude_none=info.exclude_none,
-            )
+            {
+                "kind": rule.kind,
+                **rule.model_dump(
+                    mode=info.mode,
+                    by_alias=info.by_alias,
+                    exclude_unset=info.exclude_unset,
+                    exclude_defaults=info.exclude_defaults,
+                    exclude_none=info.exclude_none,
+                ),
+            }
             for rule in rules
         ]
 
@@ -1389,6 +1482,18 @@ class ComparisonViewConfig(BaseModel):
                 )
             normalized[rule.table] = index
         return self
+
+    def rekeyed_fields(self, id_fields: Mapping[str, str | list[str]]) -> tuple[RekeyedField, ...]:
+        """Every id field the rules re-key, from the declaration and ``id_fields`` alone.
+
+        What :attr:`ComparisonViewRecord.rekeyed_fields` will name for any state, read
+        before there is one, so a task's load can check what the masks after the view
+        would do to them.
+
+        Raises:
+            ComparisonViewError: a re-keyed table's id field cannot be resolved.
+        """
+        return tuple(field for rule in self.rules for field in rule.rekeyed_fields(id_fields))
 
     def config_sha256(self) -> str:
         """sha256 of what the rules do: each rule's kind, its ``VERSION`` and its settings.

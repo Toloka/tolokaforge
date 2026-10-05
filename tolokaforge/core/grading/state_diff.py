@@ -9,9 +9,9 @@ opening message (and, because that message is part of the judge transcript,
 persisted verbatim into ``judge_trajectory.yaml``).
 
 Crucially this is the **initial → final** delta — the agent's own edits — NOT the
-trial-vs-golden diff (``runner/grading.py:compute_state_diff``). The golden diff
-reveals the expected answer and is deliberately withheld from the judge to avoid
-path-matching bias (see ``docs/RUBRIC_GRADING_DESIGN.md`` Decisions #7/#8). An
+trial-vs-golden diff (``core/grading/trial_golden_diff.py:compute_state_diff``). The
+golden diff reveals the expected answer and is deliberately withheld from the judge to
+avoid path-matching bias (see ``docs/RUBRIC_GRADING_DESIGN.md`` Decisions #7/#8). An
 initial→final delta leaks nothing about the oracle: it only says what the agent
 did, which is the thing most rubrics actually grade.
 

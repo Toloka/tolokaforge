@@ -520,6 +520,16 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl.GradeTrial",
     ),
     GradingKey(
+        author_key="state_checks.comparison_view",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="StateChecksConfig.comparison_view",
+        runner_field="RunnerStateChecksConfig.comparison_view",
+        core_evaluator=_CORE_HASH_EVALUATOR,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
+    ),
+    GradingKey(
         author_key="state_checks.db_probes",
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.RUNNER_ONLY,
