@@ -1283,9 +1283,14 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         return self.timeout_s or _COMPOSE_EXEC_DEFAULT_TIMEOUT_S
 
     async def execute(self, arguments: dict[str, Any]) -> str:
-        command = arguments.get("command", "")
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
+        commands = arguments.get("commands")
+        if commands is None:
+            command = arguments.get("command", "")
+            return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
+        return await loop.run_in_executor(
+            None, self._exec_batch_in_env, list(commands), self.own_budget_s
+        )
 
     def exec_in_env(self, command: str, timeout_s: float) -> str:
         """Run ``command`` in the trial container and return its output.
@@ -1293,6 +1298,33 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         Satisfies :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
         """
         return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+
+    def _exec_batch_in_env(self, commands: list[str], timeout_s: float) -> str:
+        """Run *commands* in order against one deadline, labelling each output.
+
+        Every command is its own ``docker exec``, so none of them sees another's
+        shell state — the same contract a caller gets from one ``command`` at a
+        time. The deadline spans the whole list: each command is given whatever
+        is left, and once the budget is gone the remaining commands are reported
+        unrun rather than silently dropped.
+        """
+        if not commands:
+            return ""
+        deadline = time.monotonic() + timeout_s
+        sections: list[str] = []
+        for index, command in enumerate(commands):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                unrun = len(commands) - index
+                sections.append(
+                    f"$ {command}\n[not run — the {timeout_s:g}s budget for this "
+                    f"call was spent; {unrun} command(s) remain]"
+                )
+                sections.extend(f"$ {later}\n[not run]" for later in commands[index + 1 :])
+                break
+            output = _run_argv_preserving_partial_output(self._exec_argv(command), remaining)
+            sections.append(f"$ {command}\n{output}")
+        return "\n\n".join(sections)
 
     def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
         """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
