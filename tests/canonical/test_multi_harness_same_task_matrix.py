@@ -43,6 +43,7 @@ from tests.utils.conductor_phases import runner_stub
 from tolokaforge.adapters import register_adapter
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.conductor import ConductorContext, InProcessConductor, _TrialSetup
+from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.models import (
     EvaluationConfig,
     Grade,
@@ -142,9 +143,33 @@ def _register_fakes() -> None:
 
 @dataclass
 class _Executed:
-    """What the conductor actually ran, as ``(entry, task_id, trial_index)``."""
+    """What the conductor actually ran.
+
+    ``specs`` is the dispatch order as ``(entry, task_id, trial_index)``;
+    ``agent_models`` records each trial's ``spec.agent_model_config`` keyed by
+    entry, so a test can assert the per-entry agent model that threaded onto
+    the spec through the real ``Orchestrator.run()`` dispatch.
+    """
 
     specs: list[tuple[str, str, int]] = field(default_factory=list)
+    agent_models: dict[str, ModelConfig] = field(default_factory=dict)
+
+
+class _RecordingAgentClientFactory:
+    """Agent-client factory that records each requested ``ModelConfig``.
+
+    Returns a real :class:`LLMClient` per build so the orchestrator's run-level
+    and per-entry clients are genuine clients whose ``config`` is assertable,
+    while ``requested`` captures exactly which agent models the run built a
+    client for (the run-level model plus one per differing entry).
+    """
+
+    def __init__(self) -> None:
+        self.requested: list[ModelConfig] = []
+
+    def __call__(self, config: ModelConfig) -> LLMClient:
+        self.requested.append(config)
+        return LLMClient(config)
 
 
 class _PassingGrader:
@@ -178,6 +203,7 @@ class _EntryGradingConductor:
 
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         self._recorder.specs.append((spec.entry, spec.task_id, spec.trial_index))
+        self._recorder.agent_models[spec.entry] = spec.agent_model_config
         now = datetime.now(UTC)
         trajectory = Trajectory(
             task_id=task_config.task_id,
@@ -267,16 +293,52 @@ def _single_adapter_config(output_dir: Path) -> RunConfig:
     )
 
 
-def _run(config: RunConfig, output_dir: Path, *, resume: bool = False) -> tuple[Path, _Executed]:
-    recorder = _Executed()
-    orch = Orchestrator(
-        config,
-        resume=resume,
-        deps=OrchestratorDeps(
-            runtime_backend=InMemoryRuntimeBackend(),
-            conductor_factory=lambda ctx: _EntryGradingConductor(ctx, _PassingGrader(), recorder),
-        ),
+# Run-level agent (``_models()``) is ``openai/gpt-4``; the two engine-loop
+# entries below override ``model.agent`` to a different model each.
+_AGENT_BASELINE = ModelConfig(provider="openai", name="gpt-5")
+_AGENT_CHALLENGER = ModelConfig(provider="anthropic", name="claude-3-7")
+
+
+def _two_model_engine_loop_config(output_dir: Path) -> RunConfig:
+    """Two engine-loop entries over the one task, each a different ``model.agent``."""
+    return RunConfig(
+        models=_models(),
+        orchestrator=_orchestrator_config(),
+        evaluation=EvaluationConfig(output_dir=str(output_dir)),
+        harnesses={
+            "entries": [
+                {
+                    "name": "baseline",
+                    "adapter": "matrix_fake_a",
+                    "mode": "engine_loop",
+                    "model": {"agent": _AGENT_BASELINE},
+                },
+                {
+                    "name": "challenger",
+                    "adapter": "matrix_fake_b",
+                    "mode": "engine_loop",
+                    "model": {"agent": _AGENT_CHALLENGER},
+                },
+            ]
+        },
     )
+
+
+def _run(
+    config: RunConfig,
+    output_dir: Path,
+    *,
+    resume: bool = False,
+    agent_client_factory: Any | None = None,
+) -> tuple[Path, _Executed]:
+    recorder = _Executed()
+    deps_kwargs: dict[str, Any] = {
+        "runtime_backend": InMemoryRuntimeBackend(),
+        "conductor_factory": lambda ctx: _EntryGradingConductor(ctx, _PassingGrader(), recorder),
+    }
+    if agent_client_factory is not None:
+        deps_kwargs["agent_client_factory"] = agent_client_factory
+    orch = Orchestrator(config, resume=resume, deps=OrchestratorDeps(**deps_kwargs))
     orch.load_tasks()
     run_dir = orch.run(run_id=output_dir.name, output_dir=output_dir)
     return run_dir, recorder
@@ -439,3 +501,58 @@ class TestSingleAdapterLayoutUnchanged:
 
         # One queue attempt, entry-less.
         assert _attempt_rows(run_dir) == [("", _TASK_ID, 0, "completed")]
+
+
+class TestPerEntryAgentModelThreadsEndToEnd:
+    """Two engine-loop entries over one task each run their own declared model.
+
+    Drives the real ``Orchestrator.run()`` + composite build (the path the
+    removed engine-loop + per-entry-``model.agent`` refusal used to block)
+    over the mock runtime, with no provider keys. Proves the per-entry agent
+    model threads all the way onto the trial spec and that a client was built
+    carrying each entry's model.
+    """
+
+    def test_each_engine_loop_entry_runs_its_own_declared_model(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "results" / "per_entry_models"
+        factory = _RecordingAgentClientFactory()
+        _, recorder = _run(
+            _two_model_engine_loop_config(output_dir),
+            output_dir,
+            agent_client_factory=factory,
+        )
+
+        # Both engine-loop legs ran, one per entry, for the one shared task.
+        assert recorder.specs == [
+            ("baseline", _TASK_ID, 0),
+            ("challenger", _TASK_ID, 0),
+        ]
+
+        # Each trial spec carries its entry's declared agent model, and the two
+        # differ by provider + name — the per-entry model threaded end to end.
+        assert recorder.agent_models["baseline"] == _AGENT_BASELINE
+        assert recorder.agent_models["challenger"] == _AGENT_CHALLENGER
+        baseline = recorder.agent_models["baseline"]
+        challenger = recorder.agent_models["challenger"]
+        assert (baseline.provider, baseline.name) != (challenger.provider, challenger.name)
+
+        # The run built a client carrying each entry's model (plus the run-level
+        # one), through the agent-client factory seam.
+        assert _AGENT_BASELINE in factory.requested
+        assert _AGENT_CHALLENGER in factory.requested
+        assert _models()["agent"] in factory.requested
+
+    def test_single_adapter_run_reuses_the_run_level_agent_model(self, tmp_path: Path) -> None:
+        # Back-compat: a run with no per-entry override builds exactly one agent
+        # client (the run-level one) and threads the run-level model onto the
+        # trial spec — no per-entry client, nothing shadowing the run-level one.
+        output_dir = tmp_path / "results" / "single_reuse"
+        factory = _RecordingAgentClientFactory()
+        _, recorder = _run(
+            _single_adapter_config(output_dir),
+            output_dir,
+            agent_client_factory=factory,
+        )
+
+        assert recorder.agent_models[""] == _models()["agent"]
+        assert factory.requested == [_models()["agent"]]

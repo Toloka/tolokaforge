@@ -12,9 +12,7 @@ the gate reads; it honours a legacy ``supports_coding_harness = True`` for one
 release.
 
 One capability gate serves both the single-adapter run (the empty-string
-entry) and the multi-harness matrix (one unit per entry/task). The separate
-per-entry ``_gate_entry_execution_mode`` keeps only the engine-loop +
-per-entry-``model.agent`` refusal (#1769).
+entry) and the multi-harness matrix (one unit per entry/task).
 """
 
 from __future__ import annotations
@@ -265,10 +263,6 @@ def _register_b3_fakes() -> None:
     register_adapter("fake_b3_deleg_emit", _DelegatedEmittingAdapter)
     register_adapter("fake_b3_legacy_emit", _LegacyEmittingAdapter)
     register_adapter("fake_b3_plain", _PlainEngineLoopAdapter)
-    # Engine-loop-only adapter that serves no tasks: used by the #1769 refusal
-    # tests, which fire during composite build, before any task enumeration.
-    register_adapter("fake_b3_engine", _EngineLoopOnlyAdapter)
-    register_adapter("fake_b3_delegated", _DelegatedEmittingAdapter)
 
 
 def _multi_harness_config(entries: list[dict[str, Any]]) -> RunConfig:
@@ -321,85 +315,3 @@ class TestMultiHarnessEntryGate:
             ]
         )
         assert orch._gate_execution_mode_capability() is None
-
-
-class TestEngineLoopPerEntryAgentModel:
-    """An engine-loop entry may not carry a per-entry ``model.agent`` (#1769).
-
-    This refusal is independent of the capability gate: it fires during
-    composite build, from ``_gate_entry_execution_mode``.
-    """
-
-    _AGENT_OVERRIDE = {"agent": {"provider": "openai", "name": "gpt-4o"}}
-
-    def test_engine_loop_entry_with_per_entry_agent_model_is_refused(self) -> None:
-        orch = Orchestrator(
-            _multi_harness_config(
-                [
-                    {
-                        "name": "engine-leg",
-                        "adapter": "fake_b3_engine",
-                        "mode": "engine_loop",
-                        "model": self._AGENT_OVERRIDE,
-                    }
-                ]
-            )
-        )
-        with pytest.raises(RuntimeError) as excinfo:
-            orch.load_tasks()
-
-        message = str(excinfo.value)
-        assert "engine-leg" in message
-        assert "#1769" in message
-
-    def test_inferred_engine_loop_entry_with_agent_model_is_refused(self) -> None:
-        # No explicit mode: the agent model carries no harness, so the entry
-        # infers engine-loop — and still trips the per-entry-agent refusal.
-        orch = Orchestrator(
-            _multi_harness_config(
-                [
-                    {
-                        "name": "inferred-leg",
-                        "adapter": "fake_b3_engine",
-                        "model": self._AGENT_OVERRIDE,
-                    }
-                ]
-            )
-        )
-        with pytest.raises(RuntimeError) as excinfo:
-            orch.load_tasks()
-
-        message = str(excinfo.value)
-        assert "inferred-leg" in message
-        assert "#1769" in message
-
-    def test_delegated_entry_with_per_entry_agent_model_is_allowed(self) -> None:
-        # A delegated entry honours its per-entry agent model (it flows through
-        # the harness command), so the refusal must not fire.
-        orch = Orchestrator(
-            _multi_harness_config(
-                [
-                    {
-                        "name": "delegated-leg",
-                        "adapter": "fake_b3_delegated",
-                        "mode": "delegated",
-                        "model": self._AGENT_OVERRIDE,
-                    }
-                ]
-            )
-        )
-        assert orch.load_tasks() is None
-
-    def test_engine_loop_entry_without_agent_model_is_allowed(self) -> None:
-        orch = Orchestrator(
-            _multi_harness_config(
-                [
-                    {
-                        "name": "engine-leg",
-                        "adapter": "fake_b3_engine",
-                        "mode": "engine_loop",
-                    }
-                ]
-            )
-        )
-        assert orch.load_tasks() is None

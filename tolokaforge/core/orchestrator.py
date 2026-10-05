@@ -1070,58 +1070,7 @@ class Orchestrator:
             "Creating composite adapter",
             entries=[entry.name for entry in harnesses.entries],
         )
-        return build_composite_adapter(
-            harnesses.entries,
-            params_for_entry,
-            validate_entry=self._gate_entry_execution_mode,
-        )
-
-    def _resolve_entry_mode(self, entry_config: Any) -> ExecutionMode:
-        """The execution mode a harness entry runs in.
-
-        An explicit ``entry.mode`` wins; otherwise it is inferred from the
-        entry's effective (entry-over-run) agent model — a coding-harness
-        selection (a ``harness`` that is not the ``engine-loop`` sentinel)
-        means :attr:`ExecutionMode.DELEGATED`, and anything else the engine's
-        own loop (:attr:`ExecutionMode.ENGINE_LOOP`).
-        """
-        if entry_config.mode is not None:
-            return entry_config.mode
-        agent = self._entry_agent_model(entry_config)
-        if agent is not None and agent.harness is not None and agent.harness != ENGINE_LOOP:
-            return ExecutionMode.DELEGATED
-        return ExecutionMode.ENGINE_LOOP
-
-    def _gate_entry_execution_mode(self, entry_config: Any, adapter: BaseAdapter) -> None:
-        """Refuse an engine-loop entry that carries a per-entry ``model.agent``.
-
-        Runs per entry during composite build — after the entry's adapter is
-        constructed but before any ``get_task_ids()`` or container work (see
-        :func:`~tolokaforge.core.adapter_registry.build_composite_adapter`).
-        The entry's execution-mode capability is checked separately, per
-        ``(entry, task)``, by :meth:`_gate_execution_mode_capability`.
-
-        An engine-loop entry that also sets a per-entry ``model.agent`` is
-        refused here: the engine loop uses the single run-level ``models.agent``
-        client, so a per-entry agent model would be a silent no-op. Honouring it
-        is follow-up #1769; until then the entry must omit it (use the run-level
-        agent) or be a delegated entry, where the per-entry agent model flows
-        through the harness command.
-        """
-        resolved_mode = self._resolve_entry_mode(entry_config)
-        if resolved_mode is ExecutionMode.ENGINE_LOOP and self._entry_sets_agent_model(
-            entry_config
-        ):
-            raise RuntimeError(
-                f"harness entry {entry_config.name!r}: a per-entry model.agent is "
-                "not honored for engine-loop entries yet (see #1769); omit it to "
-                "use the run-level models.agent, or use a delegated entry."
-            )
-
-    @staticmethod
-    def _entry_sets_agent_model(entry_config: Any) -> bool:
-        """Whether this entry declares its own ``model.agent`` override."""
-        return entry_config.model is not None and "agent" in entry_config.model
+        return build_composite_adapter(harnesses.entries, params_for_entry)
 
     def _entry_task_units(self) -> list[tuple[str, TaskConfig]]:
         """The run's ``(entry, task)`` dispatch spine.
@@ -1346,6 +1295,7 @@ class Orchestrator:
         self,
         *,
         agent_client: LLMClient,
+        agent_clients_by_entry: Mapping[str, LLMClient] | None = None,
         runtime_backend: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
@@ -1431,6 +1381,7 @@ class Orchestrator:
             verbose=self.verbose,
             strict=self.strict,
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry or {},
             runtime_backend=runtime_backend,
             trial_grader=trial_grader,
             output_dir=output_dir,
@@ -3204,6 +3155,34 @@ class Orchestrator:
             return self._agent_client_factory(agent_config)
         return LLMClient(agent_config, rate_limit_probe=probe)
 
+    def _build_agent_clients_by_entry(self) -> dict[str, LLMClient]:
+        """Per-entry agent clients for a multi-harness run, keyed by entry name.
+
+        For each harness entry whose effective (entry-over-run) agent
+        :class:`ModelConfig` differs from the run-level agent config, build a
+        client through :meth:`_build_agent_client` so the same fallback/probe
+        wiring applies per entry. An entry equal to the run-level model is left
+        out of the map and reuses the run-level client; two entries resolving to
+        the same model share one client (dedup by resolved ``ModelConfig``). A
+        single-adapter run has no ``harnesses`` block and returns ``{}``.
+        """
+        harnesses = self.config.harnesses
+        if harnesses is None:
+            return {}
+        run_level = self.config.models.get("agent")
+        by_entry: dict[str, LLMClient] = {}
+        built: list[tuple[ModelConfig, LLMClient]] = []
+        for entry_config in harnesses.entries:
+            agent_model = self._entry_agent_model(entry_config)
+            if agent_model is None or agent_model == run_level:
+                continue
+            client = next((c for model, c in built if model == agent_model), None)
+            if client is None:
+                client = self._build_agent_client(agent_model)
+                built.append((agent_model, client))
+            by_entry[entry_config.name] = client
+        return by_entry
+
     def run(
         self,
         *,
@@ -3321,6 +3300,7 @@ class Orchestrator:
         )
 
         agent_client = self._build_agent_client(agent_config)
+        agent_clients_by_entry = self._build_agent_clients_by_entry()
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -3590,6 +3570,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
@@ -3696,6 +3677,9 @@ class Orchestrator:
                     run_state.mark_running(lease.task_id, lease.trial_index, entry=lease.entry)
                     self.state_manager.save_state(run_state)
 
+                    entry_client = agent_clients_by_entry.get(lease.entry) or agent_client
+                    entry_agent_config = entry_client.config
+
                     self._events.trial_started(
                         trial_id=format_trial_id(lease.entry, lease.task_id, lease.trial_index),
                         task_id=lease.task_id,
@@ -3703,7 +3687,7 @@ class Orchestrator:
                         total_index=self._total_index_by_key.get(
                             (lease.entry, lease.task_id, lease.trial_index), 0
                         ),
-                        agent_model=f"{agent_config.provider}/{agent_config.name}",
+                        agent_model=f"{entry_agent_config.provider}/{entry_agent_config.name}",
                         user_model=f"{user_config.provider}/{user_config.name}",
                     )
 
@@ -3715,7 +3699,7 @@ class Orchestrator:
                             worker_id=lease_owner,
                             run_id=run_id,
                             entry=lease.entry,
-                            agent_client=agent_client,
+                            agent_client=entry_client,
                             user_config=user_config,
                             judge_config=judge_config,
                             env_endpoints=env_endpoints,
@@ -4048,6 +4032,7 @@ class Orchestrator:
         )
 
         agent_client = self._build_agent_client(agent_config)
+        agent_clients_by_entry = self._build_agent_clients_by_entry()
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -4102,6 +4087,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
@@ -4184,7 +4170,7 @@ class Orchestrator:
                         worker_id=lease_owner,
                         run_id=run_id,
                         entry=lease.entry,
-                        agent_client=agent_client,
+                        agent_client=agent_clients_by_entry.get(lease.entry) or agent_client,
                         user_config=user_config,
                         judge_config=judge_config,
                         env_endpoints=env_endpoints,

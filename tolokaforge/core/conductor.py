@@ -23,7 +23,7 @@ body.
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -171,6 +171,10 @@ class ConductorContext:
     trial_grader: TrialGrader
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
+    # Per-entry agent clients, keyed by harness entry name. An entry absent
+    # from the map (including the empty-string single-adapter entry) reuses
+    # ``agent_client``; see :meth:`InProcessConductor._agent_client_for`.
+    agent_clients_by_entry: Mapping[str, LLMClient] = field(default_factory=dict)
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
     # Live tracing seam (ADR-0047): the run's observer and the identity its trials trace under.
     trial_observer: TrialObserver = field(default_factory=NullTrialObserver)
@@ -496,6 +500,7 @@ class InProcessConductor:
         trial_grader: TrialGrader,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
+        agent_clients_by_entry: Mapping[str, LLMClient] | None = None,
         events: RunDisplayEvents = _NULL_EVENTS,
         trial_observer: TrialObserver | None = None,
         run_identity: RunIdentity | None = None,
@@ -507,6 +512,7 @@ class InProcessConductor:
         self.verbose = verbose
         self.strict = strict
         self.agent_client = agent_client
+        self._agent_clients_by_entry: Mapping[str, LLMClient] = agent_clients_by_entry or {}
         self.runtime_backend = runtime_backend
         self.trial_grader = trial_grader
         self.output_dir = output_dir
@@ -524,6 +530,16 @@ class InProcessConductor:
         one adapter, so the single path is unchanged.
         """
         return self.adapter.for_entry(spec.entry)
+
+    def _agent_client_for(self, spec: TrialSpec) -> LLMClient:
+        """The agent-side wire client for this trial's entry.
+
+        A multi-harness entry whose effective agent model differs from the
+        run-level one has its own client in the per-entry map; every other
+        trial (single-adapter, the empty-string entry, a non-overriding entry)
+        reuses the run-level ``agent_client``.
+        """
+        return self._agent_clients_by_entry.get(spec.entry) or self.agent_client
 
     def run(
         self,
@@ -872,6 +888,7 @@ class InProcessConductor:
 
         task = task_config
         user_config = spec.user_model_config
+        agent_client = self._agent_client_for(spec)
 
         # ``interaction_mode='agent_only'`` runs the agent as a monologue —
         # the turn loop never dispatches a user actor, so constructing a
@@ -933,12 +950,14 @@ class InProcessConductor:
                 max_repeated_tool_calls=stuck_cfg.max_repeated_tool_calls
             )
 
-        system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)
+        system_prompt = self._build_system_prompt(
+            task, setup.tool_schemas, setup.task_dir, agent_client
+        )
 
         max_turns = resolve_max_turns(
             task.max_turns,
             self.config.orchestrator.max_turns,
-            self.agent_client.capabilities.default_max_turns,
+            agent_client.capabilities.default_max_turns,
         )
 
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
@@ -988,7 +1007,7 @@ class InProcessConductor:
         runner = TrialRunner(
             task_id=task.task_id,
             trial_index=setup.trial_idx,
-            agent_client=self.agent_client,
+            agent_client=agent_client,
             user_simulator=user_simulator,
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
@@ -1085,11 +1104,14 @@ class InProcessConductor:
                 "cut short without grading a container the CLI is still writing to."
             )
 
-        system_prompt = self._build_system_prompt(task_config, setup.tool_schemas, setup.task_dir)
+        agent_client = self._agent_client_for(spec)
+        system_prompt = self._build_system_prompt(
+            task_config, setup.tool_schemas, setup.task_dir, agent_client
+        )
         runner = TrialRunner(
             task_id=task_config.task_id,
             trial_index=setup.trial_idx,
-            agent_client=self.agent_client,
+            agent_client=agent_client,
             user_simulator=None,
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
@@ -1407,8 +1429,9 @@ class InProcessConductor:
         # in the agent provider's dialect rather than in whatever the simulator's own
         # provider was handed — the file records one trial's declared surface, not two
         # providers' wire payloads.
-        agent_config = self.agent_client.config
-        sanitized = self.agent_client.capabilities.schema_sanitizer.sanitize(
+        agent_client = self._agent_client_for(spec)
+        agent_config = agent_client.config
+        sanitized = agent_client.capabilities.schema_sanitizer.sanitize(
             setup.tool_schemas + setup.user_tool_schemas
         )
         writer.write_tools_schemas(setup.trial_dir, sanitized)
@@ -1594,12 +1617,16 @@ class InProcessConductor:
         return result
 
     def _build_system_prompt(
-        self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
+        self,
+        task: TaskConfig,
+        tool_schemas: list[dict[str, Any]],
+        task_dir: Path,
+        agent_client: LLMClient,
     ) -> str:
         return build_system_prompt(
             task=task,
             task_dir=task_dir,
-            default_prompt_contract=self.agent_client.capabilities.default_agent_prompt_contract,
+            default_prompt_contract=agent_client.capabilities.default_agent_prompt_contract,
         )
 
 

@@ -144,7 +144,7 @@ harnesses:
       adapter: tau
       mode: delegated            # optional execution-mode override
       model:                     # optional per-entry model map, merged over `models`
-        agent:                   # honored for delegated entries (flows via harness)
+        agent:                   # per-entry agent model, honored in every mode
           provider: openrouter
           name: "anthropic/claude-sonnet-4.6"
       params: {}                 # adapter-specific params for this entry
@@ -170,12 +170,11 @@ harnesses:
   run-level `evaluation.projects` / `evaluation.tasks_glob`; set them on the
   entry to override. A per-entry `model` map is merged role-wise over the
   run-level `models` (the entry wins per role; roles it does not name fall back
-  to `models`). This override currently applies to delegated entries (and to
-  adapter-param and execution-mode resolution); a per-entry `agent` model on an
-  **engine-loop** entry is not honored yet (the engine loop uses the single
-  run-level `models.agent` client) and is refused at gate time rather than
-  silently ignored — see #1769. Omit it to use the run-level agent, or make the
-  entry delegated.
+  to `models`). A per-entry `agent` model is honored in every execution mode: a
+  delegated entry carries it through the harness command, and an engine-loop
+  entry drives the engine's own loop against its own declared agent client. Two
+  entries that resolve to the same agent model share one client; an entry that
+  names no `agent` (or names the run-level one) reuses the run-level client.
 - **`task_packs`** on an entry is the deprecated alias for `projects`, coerced
   with a `DeprecationWarning` exactly as on `evaluation`.
 - A `task_id` may appear under more than one entry — a real tasks×harnesses
@@ -230,6 +229,44 @@ did not finish: a resume after `engine/fix-order-sync/0` completed re-runs
 `terminal_bench/fix-order-sync/0` alone and leaves the completed leg untouched.
 
 A shipped multi-harness run config lives at `examples/harbor/run_harbor_multi.yaml`.
+
+#### Worked example — one task, two agent models in the engine loop
+
+Each engine-loop entry runs the engine's own loop against the `agent` model it
+declares, so the same task can be evaluated head-to-head across two models in a
+single run. Both entries set `mode: engine_loop` and share the one `task_id`,
+with a different per-entry `model.agent`:
+
+```yaml
+harnesses:
+  entries:
+    - name: baseline
+      adapter: native
+      mode: engine_loop
+      projects: ["/abs/path/pack"]
+      task_ids: ["fix-order-sync"]
+      model:
+        agent:
+          provider: openai
+          name: gpt-4o
+    - name: challenger
+      adapter: native
+      mode: engine_loop
+      projects: ["/abs/path/pack"]
+      task_ids: ["fix-order-sync"]
+      model:
+        agent:
+          provider: anthropic
+          name: claude-sonnet-4.6
+```
+
+The `baseline` leg drives the engine loop with `gpt-4o`, the `challenger` leg
+with `claude-sonnet-4.6`. Each leg's trajectory records its own
+`agent_model_config`, and the two legs are independent trials keyed by
+`(entry, task_id, trial_index)`, written under
+`trials/baseline/fix-order-sync/0/` and `trials/challenger/fix-order-sync/0/`.
+Two entries that name the same `agent` model share one agent client; an entry
+with no per-entry `agent` reuses the run-level `models.agent`.
 
 ### `rate_limit_probe:` — measure a provider's served throughput
 
