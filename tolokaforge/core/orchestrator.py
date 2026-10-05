@@ -1092,20 +1092,13 @@ class Orchestrator:
         return ExecutionMode.ENGINE_LOOP
 
     def _gate_entry_execution_mode(self, entry_config: Any, adapter: BaseAdapter) -> None:
-        """Refuse a harness entry whose adapter cannot run its execution mode.
+        """Refuse an engine-loop entry that carries a per-entry ``model.agent``.
 
         Runs per entry during composite build — after the entry's adapter is
         constructed but before any ``get_task_ids()`` or container work (see
-        :func:`~tolokaforge.core.adapter_registry.build_composite_adapter`), so
-        a mismatched entry fails loud before a run is paid for. The message
-        names the offending entry, its adapter, the requested mode, and the
-        modes the adapter runs. The single-adapter path keeps the run-level
-        gate in :meth:`load_tasks`.
-
-        This gate classifies an entry's mode from its config (explicit
-        ``mode`` or its harness selection); the conductor classifies from
-        emitted command metadata — two seams that can diverge, unified under
-        #1758.
+        :func:`~tolokaforge.core.adapter_registry.build_composite_adapter`).
+        The entry's execution-mode capability is checked separately, per
+        ``(entry, task)``, by :meth:`_gate_execution_mode_capability`.
 
         An engine-loop entry that also sets a per-entry ``model.agent`` is
         refused here: the engine loop uses the single run-level ``models.agent``
@@ -1115,17 +1108,6 @@ class Orchestrator:
         through the harness command.
         """
         resolved_mode = self._resolve_entry_mode(entry_config)
-        supported = adapter_supported_modes(adapter)
-        if resolved_mode not in supported:
-            raise RuntimeError(
-                f"harness entry {entry_config.name!r} selects execution mode "
-                f"{resolved_mode.value!r}, but adapter {entry_config.adapter!r} "
-                f"runs only {sorted(mode.value for mode in supported)}. An adapter "
-                "declares the delegated mode by overriding "
-                "``supported_execution_modes`` to include "
-                "``ExecutionMode.DELEGATED``. Either change the entry's mode / "
-                "harness, or switch it to an adapter that runs that mode."
-            )
         if resolved_mode is ExecutionMode.ENGINE_LOOP and self._entry_sets_agent_model(
             entry_config
         ):
@@ -1520,6 +1502,51 @@ class Orchestrator:
             raise RuntimeError(f"unit {cache_key}: {exc}") from exc
         self._unit_mode_cache[cache_key] = mode
         return mode
+
+    def _adapter_type_label(self, entry: str) -> str:
+        """The config adapter-type name for *entry*, for gate refusal messages.
+
+        A multi-harness entry names its own ``adapter``; the single-adapter run
+        (the empty-string entry) names ``evaluation.harness_adapter.type``,
+        defaulting to the built-in ``native``.
+        """
+        if entry and self.config.harnesses is not None:
+            for entry_config in self.config.harnesses.entries:
+                if entry_config.name == entry:
+                    return str(entry_config.adapter)
+        harness_adapter = self.config.evaluation.harness_adapter
+        return str(harness_adapter.type) if harness_adapter is not None else "native"
+
+    def _gate_execution_mode_capability(self) -> None:
+        """Refuse any ``(entry, task)`` whose adapter cannot run its mode.
+
+        The single capability gate for both single-adapter and multi-harness
+        runs. It walks the dispatch spine, classifies each unit's execution
+        mode from the same per-unit metadata decision the conductor dispatches
+        off (:meth:`_unit_execution_mode`), and refuses a unit whose owning
+        adapter does not run that mode — naming the unit, the adapter, the
+        classified mode, and the modes the adapter runs.
+
+        Runs in the pre-flight window: after every task description is
+        materialised and before any container is provisioned, so a capability
+        mismatch fails loud before a run is paid for.
+        """
+        for entry, task in self._entry_task_units():
+            mode = self._unit_execution_mode(entry, task.task_id)
+            supported = adapter_supported_modes(self._adapter_for_task(task.task_id, entry))
+            if mode in supported:
+                continue
+            raise RuntimeError(
+                f"task {task.task_id!r} (harness entry {entry!r}) runs in the "
+                f"{mode.value!r} execution mode, but adapter "
+                f"{self._adapter_type_label(entry)!r} runs only "
+                f"{sorted(supported_mode.value for supported_mode in supported)}. "
+                "An adapter declares the delegated mode by overriding "
+                "``supported_execution_modes`` to include "
+                "``ExecutionMode.DELEGATED``. Either drop the task's "
+                "coding-harness selection to run the engine's LLM loop, or "
+                "switch to an adapter that runs that mode."
+            )
 
     def _build_trial_spec(
         self,
@@ -2650,47 +2677,6 @@ class Orchestrator:
             else:
                 self.adapter = self._create_adapter()
 
-        # Execution-mode capability gate: a run that names a coding harness
-        # (anything but the engine-loop sentinel, from either config address)
-        # selects the delegated execution mode. Refuse it here — before
-        # ``get_task_ids()`` or any container work — against an adapter that
-        # does not run that mode, with a message naming both sides of the
-        # pair and the modes the adapter does run.
-        # This gate classifies delegation from the config harness slug, while
-        # the conductor classifies from emitted command metadata — two seams
-        # that can diverge; unifying them is tracked in #1758.
-        # A multi-harness run gates each entry's mode during composite build
-        # (``_gate_entry_execution_mode``, above), per entry rather than once at
-        # the run level, so this run-level gate is skipped for it.
-        if self.config.harnesses is None:
-            selected_harness = _configured_harness(self.config)
-            if selected_harness is not None:
-                supported = adapter_supported_modes(self.adapter)
-                if ExecutionMode.DELEGATED not in supported:
-                    adapter_type_name = (
-                        getattr(
-                            self.config.evaluation.harness_adapter,
-                            "type",
-                            "native",
-                        )
-                        if self.config.evaluation.harness_adapter
-                        else "native"
-                    )
-                    raise RuntimeError(
-                        f"coding harness {selected_harness!r} selects the "
-                        f"{ExecutionMode.DELEGATED.value!r} execution mode, but "
-                        f"adapter {adapter_type_name!r} runs only "
-                        f"{sorted(mode.value for mode in supported)}. An adapter "
-                        "declares the delegated mode by overriding "
-                        "``supported_execution_modes`` to include "
-                        "``ExecutionMode.DELEGATED`` (the shipped opt-ins are "
-                        "terminal_bench and native). Either drop the harness "
-                        "(``models.agent.harness`` or "
-                        "``evaluation.harness_adapter.params.agent_harness``) to "
-                        "run the engine's LLM loop, or switch to an adapter that "
-                        "runs the delegated mode."
-                    )
-
         self._warn_on_unreliable_pricing()
         self._refuse_an_unregistered_agent_loop()
         self._refuse_an_unreachable_harness_provider()
@@ -3347,6 +3333,12 @@ class Orchestrator:
         # already-coerced scopes. Fires BEFORE ``_extract_run_env_manifest`` so
         # the extract sees the coerced plan.
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
+
+        # Execution-mode capability gate: refuse any (entry, task) whose adapter
+        # cannot run the mode its metadata classifies, keyed off the same
+        # per-unit decision the conductor dispatches on. Fires here — after the
+        # descriptions are materialised, before any container is provisioned.
+        self._gate_execution_mode_capability()
 
         # Task-declared shared-stack manifest: if the run's tasks declare an
         # environment_manifest, extract the shared manifest here — mixed / divergent
@@ -4065,6 +4057,12 @@ class Orchestrator:
         # ``_extract_run_env_manifest`` fires, so worker and parent agree on
         # what the plan looks like.
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
+
+        # Execution-mode capability gate: refuse any (entry, task) whose adapter
+        # cannot run the mode its metadata classifies, keyed off the same
+        # per-unit decision the conductor dispatches on. Fires here — after the
+        # descriptions are materialised, before any container is provisioned.
+        self._gate_execution_mode_capability()
 
         # Workers join an already-materialised run; if the run's tasks declare
         # env_manifest, the parent orchestrator materialised a task-declared
