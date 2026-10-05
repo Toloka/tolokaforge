@@ -393,7 +393,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 - `tolokaforge/core/__init__.py`, `tolokaforge/core/_runner_subset.py` —
   the subset's own audit artifact and the `core/` package init.
 - The shared-spine files at the root of `core/` the runner closure reaches
-  directly â `RUNNER_SUBSET_LOOSE_FILES` in `tolokaforge/core/_runner_subset.py`
+  directly — `RUNNER_SUBSET_LOOSE_FILES` in `tolokaforge/core/_runner_subset.py`
   is the list (`plugin_registry.py` among them, for the `load_*` calls of the
   runner-reachable seams).
 
