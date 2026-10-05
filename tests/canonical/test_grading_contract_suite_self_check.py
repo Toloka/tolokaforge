@@ -1,17 +1,26 @@
-"""Both branches of the emit-payload schema check on the reusable suite fire.
+"""The reusable suite accepts synthetic adapters across its declared shapes.
 
-The two shipping adapters (Native, terminal-bench) both inherit the default
-empty payload, so the non-empty branch of the suite's schema check would be
-dead code without a subject that exercises it. A ``pytester`` in-process
-session drops a synthetic subclass in a tmpdir and runs the suite against
-two fake adapters — one returning ``{}`` (empty-payload short-circuit skips
-the check) and one returning the ``test_execution`` payload
+Two concerns ride on one ``pytester`` in-process session that drops synthetic
+subclasses in a tmpdir and runs the suite against three fake adapters.
+
+Both branches of the emit-payload schema check: the two shipping adapters
+(Native, terminal-bench) both inherit the default empty payload, so the
+non-empty branch of the suite's schema check would be dead code without a
+subject that exercises it. One fake returns ``{}`` (empty-payload
+short-circuit skips the check) and one returns the ``test_execution`` payload
 :meth:`~tolokaforge_coding_harnesses.adapter_support.CodingHarnessAdapterMixin.emit_test_execution_grading`
 emits (schema check runs and passes).
 
+A delegated-only mode set: the third fake declares
+``supported_execution_modes = {DELEGATED}`` and the subclass pins that set.
+It passes the suite's ``test_supported_execution_modes_matches_declared_expectation``
+with no per-adapter override — the in-tree lock that a delegated-only adapter
+is first-class in the shared contract, not an engine-loop subtype.
+
 The fake adapters do not opt into ``supports_coding_harness``, so the
-grader-kind alignment invariant skips against both — one extra skip per
-subject on top of the empty-payload skip on the empty-payload subject.
+grader-kind alignment invariant skips against all three; the two
+empty-payload subjects add one more skip each for the short-circuited schema
+check.
 """
 
 from __future__ import annotations
@@ -112,15 +121,34 @@ class TestNonEmptyPayloadValidates(AdapterGradingContractSuite):
     @pytest.fixture
     def task_and_dir(self):
         return _a_synthetic_task()
+
+
+class _FakeAdapterDelegatedOnly(_FakeAdapterEmptyPayload):
+    """Delegated-only: never runs the engine turn loop, declares {DELEGATED}."""
+
+    supported_execution_modes = frozenset({ExecutionMode.DELEGATED})
+
+
+class TestDelegatedOnlyPassesSuite(AdapterGradingContractSuite):
+    expected_supported_execution_modes = frozenset({ExecutionMode.DELEGATED})
+
+    @pytest.fixture
+    def adapter(self):
+        return _FakeAdapterDelegatedOnly()
+
+    @pytest.fixture
+    def task_and_dir(self):
+        return _a_synthetic_task()
 '''
 
 
-def test_both_branches_of_the_emit_payload_schema_check_fire(
+def test_synthetic_subclasses_pass_the_reusable_suite(
     pytester: pytest.Pytester,
 ) -> None:
     """Drop the synthetic subclasses in a tmpdir, run pytest against them, and
-    read the outcome: empty-payload branch skips the schema check, non-empty
-    branch runs it and passes."""
+    read the outcome: the empty-payload branch skips the schema check, the
+    non-empty branch runs it and passes, and the delegated-only subject passes
+    the execution-mode check with no per-adapter override."""
     pytester.makepyfile(test_suite_self_check=_SUITE_SUBCLASS_SOURCE)
 
     result = pytester.runpytest("-v", "--no-header", "-p", "no:cacheprovider")
@@ -131,15 +159,16 @@ def test_both_branches_of_the_emit_payload_schema_check_fire(
     )
 
     outcomes = result.parseoutcomes()
-    assert outcomes.get("passed", 0) >= 25, (
-        f"expected the two subclasses' 14 test methods each to run (28 total, "
-        f"minus 3 skips leaves 25 passes), got outcomes={outcomes!r}"
+    assert outcomes.get("passed", 0) >= 37, (
+        f"expected the three subclasses' 14 test methods each to run (42 "
+        f"total, minus 5 skips leaves 37 passes), got outcomes={outcomes!r}"
     )
-    assert outcomes.get("skipped", 0) == 3, (
-        f"expected exactly three skips — the empty-payload branch of the "
-        f"schema check on TestEmptyPayloadShortCircuits plus the grader-kind "
-        f"alignment invariant on both fake subjects (neither opts into "
-        f"supports_coding_harness) — got outcomes={outcomes!r}"
+    assert outcomes.get("skipped", 0) == 5, (
+        f"expected exactly five skips — the empty-payload branch of the "
+        f"schema check on the two empty-payload subjects "
+        f"(TestEmptyPayloadShortCircuits, TestDelegatedOnlyPassesSuite) plus "
+        f"the grader-kind alignment invariant on all three fake subjects "
+        f"(none opt into supports_coding_harness) — got outcomes={outcomes!r}"
     )
 
     result.stdout.fnmatch_lines(
@@ -152,5 +181,11 @@ def test_both_branches_of_the_emit_payload_schema_check_fire(
         [
             "*TestNonEmptyPayloadValidates*"
             "test_emit_runner_grading_payload_constructs_a_valid_runner_grading_config*PASSED*",
+        ]
+    )
+    result.stdout.fnmatch_lines(
+        [
+            "*TestDelegatedOnlyPassesSuite*"
+            "test_supported_execution_modes_matches_declared_expectation*PASSED*",
         ]
     )

@@ -1,9 +1,10 @@
 """Unit tests for the ``supported_execution_modes`` adapter capability.
 
-Every adapter runs the engine's own turn loop, so :class:`BaseAdapter`
-defaults to ``{ENGINE_LOOP}``. Adapters that can also hand a trial to a
-task-provided agent override to add ``DELEGATED`` — the two shipped opt-ins
-are the native and terminal-bench adapters.
+:class:`BaseAdapter` defaults to ``{ENGINE_LOOP}`` — the engine's own turn
+loop is the default, not a universal requirement. Adapters that can also hand
+a trial to a task-provided agent override to add ``DELEGATED`` (the shipped
+opt-ins are the native and terminal-bench adapters); a delegated-only adapter
+replaces the set with ``{DELEGATED}``.
 """
 
 from __future__ import annotations
