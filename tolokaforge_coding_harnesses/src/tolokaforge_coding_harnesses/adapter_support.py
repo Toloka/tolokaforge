@@ -44,6 +44,14 @@ from .protocols import PathResolver
 
 __all__ = ["HARNESS_USAGE_LOG_METADATA_KEY", "CodingHarnessAdapterMixin"]
 
+MAX_BATCH_COMMANDS = 10
+"""Commands one ``bash_batch`` call may carry.
+
+Bounds the tool's budget band: the declared ``timeout_s`` is the per-command
+ceiling times this number, so a full batch gets what the same commands would
+have got one call at a time, and a single turn still cannot run unbounded.
+"""
+
 
 HARNESS_USAGE_LOG_METADATA_KEY = "agent_harness_usage_log"
 """Metadata key carrying the *container* path of a trial's wire usage records.
@@ -273,8 +281,11 @@ class CodingHarnessAdapterMixin:
         fresh shell, exactly as the single-command tool does — the array changes
         how many run per turn, not how any one of them behaves.
 
-        *timeout_s* is the budget for the whole array, not per command; the
-        runner-side wrapper walks the list against one deadline.
+        *timeout_s* is the per-command ceiling, the same one the single-command
+        tool applies. The declared budget is that ceiling times
+        :data:`MAX_BATCH_COMMANDS`, so a full batch gets what the same commands
+        would have got one call at a time; the wrapper divides it back out and
+        stops the array once the whole band is spent.
         """
         return {
             "name": "bash_batch",
@@ -290,8 +301,10 @@ class CodingHarnessAdapterMixin:
                         "type": "array",
                         "items": {"type": "string"},
                         "minItems": 1,
+                        "maxItems": MAX_BATCH_COMMANDS,
                         "description": (
-                            "Shell commands to run, in order. Include every "
+                            "Shell commands to run, in order, at most "
+                            f"{MAX_BATCH_COMMANDS} per call. Include every "
                             "command whose input does not depend on another "
                             "command's output in the same call."
                         ),
@@ -300,7 +313,7 @@ class CodingHarnessAdapterMixin:
                 "required": ["commands"],
             },
             "category": "compute",
-            "timeout_s": timeout_s,
+            "timeout_s": timeout_s * MAX_BATCH_COMMANDS,
             "source": {
                 "toolset": toolset,
                 "module_path": "",

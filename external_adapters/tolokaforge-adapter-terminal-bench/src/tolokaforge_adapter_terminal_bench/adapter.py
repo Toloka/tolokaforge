@@ -16,6 +16,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
+from tolokaforge_coding_harnesses.adapter_support import CodingHarnessAdapterMixin
+
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
     BaseAdapter,
@@ -75,7 +77,6 @@ from tolokaforge_coding_harnesses import (
     validate_harness,
     validate_provider_env_keys,
 )
-from tolokaforge_coding_harnesses.adapter_support import CodingHarnessAdapterMixin
 
 _AGENT_TOOL_TIMEOUT_S = 120.0
 

@@ -3110,7 +3110,9 @@ class TestTerminalBenchAgentToolSelection:
     # -- refusals ------------------------------------------------------------
 
     def test_unknown_agent_tool_rejected_at_construction(self, fixture_dir, tmp_path):
-        with pytest.raises(ValueError, match=r"agent_tool 'tmux'.*\['bash', 'bash_session'\]"):
+        with pytest.raises(
+            ValueError, match=r"agent_tool 'tmux'.*\['bash', 'bash_session', 'bash_batch'\]"
+        ):
             self._adapter(fixture_dir, tmp_path, agent_tool="tmux")
 
     def test_bash_session_rejected_under_a_coding_harness(self, fixture_dir, tmp_path):

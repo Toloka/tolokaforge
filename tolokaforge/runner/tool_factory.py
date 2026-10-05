@@ -1288,9 +1288,33 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         if commands is None:
             command = arguments.get("command", "")
             return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
+        if not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
+            return (
+                "ERROR: `commands` must be an array of strings, one shell command per "
+                f"element — got {type(commands).__name__}. Nothing was run. Re-send the "
+                'call with a JSON array, e.g. {"commands": ["ls -la", "cat f.txt"]}.'
+            )
         return await loop.run_in_executor(
-            None, self._exec_batch_in_env, list(commands), self.own_budget_s
+            None, self._exec_batch_in_env, commands, self.own_budget_s
         )
+
+    @property
+    def _per_command_budget_s(self) -> float:
+        """Seconds one command of a batch may take, matching the one-shot tool.
+
+        A batch exists to replace N sequential single-command calls, so each of
+        its commands gets what one of those calls would have got. The declared
+        ``timeout_s`` bands the whole array, and the schema's ``maxItems`` says
+        how many commands that band was sized for — their ratio is the per-
+        command ceiling. A schema that names no ``maxItems`` has not been sized
+        for a batch, so the whole budget goes to each command and the running
+        total still stops the array.
+        """
+        properties = (self.tool_schema.parameters or {}).get("properties") or {}
+        max_items = (properties.get("commands") or {}).get("maxItems")
+        if not isinstance(max_items, int) or max_items < 1:
+            return self.own_budget_s
+        return self.own_budget_s / max_items
 
     def exec_in_env(self, command: str, timeout_s: float) -> str:
         """Run ``command`` in the trial container and return its output.
@@ -1310,6 +1334,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         """
         if not commands:
             return ""
+        per_command_s = self._per_command_budget_s
         deadline = time.monotonic() + timeout_s
         sections: list[str] = []
         for index, command in enumerate(commands):
@@ -1322,7 +1347,9 @@ class DockerComposeExecToolWrapper(ToolWrapper):
                 )
                 sections.extend(f"$ {later}\n[not run]" for later in commands[index + 1 :])
                 break
-            output = _run_argv_preserving_partial_output(self._exec_argv(command), remaining)
+            output = _run_argv_preserving_partial_output(
+                self._exec_argv(command), min(per_command_s, remaining)
+            )
             sections.append(f"$ {command}\n{output}")
         return "\n\n".join(sections)
 
