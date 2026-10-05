@@ -1,6 +1,6 @@
 # 0054. The `SearchBackend` Protocol and entry-point registry
 
-- **Status:** Accepted (change 1 of 3 implemented)
+- **Status:** Accepted (changes 1 and 2 of 3 implemented)
 - **Date:** 2026-09-30
 - **Deciders:** @CiroGamboa, @rsmtnn
 - **Supersedes:** none
@@ -416,6 +416,34 @@ The backend landed as the table says, with these refinements, documented in
   `SearchKbTool` (`judge_snippet_chars`) is change 2b.
 - `_bundle_corpus_artifacts` accepts `.json` next to `.md` / `.txt`. No shipped pack
   had a `.json` file under its corpus directory, so no `tool_artifacts` moved.
+
+#### As built (change 2b)
+
+- **`SearchHit.title`** is `str | None = None`. `bm25` fills it from the document;
+  rag-service leaves it `None`. It crosses to the remote grader as
+  `SubstrateSearchHit.title`, an `optional string` (tag 5), so an absent title
+  reads back as `None`, never as an empty string. The judge's `search_kb` shows a
+  `Title:` line only for a hit that has one, so a rag-service judge's output does
+  not change.
+- **`judge_snippet_chars`** is a field of `JudgeCustomization`: a strict positive
+  integer or `null`, default `200`. It is not tri-state like its siblings: `null`
+  means whole documents, so a task undoes a project figure by writing `200`. The
+  dump leaves it out at its default, so every existing `TaskDescription` is
+  byte-identical and an older image accepts a task that does not set it.
+- **It reaches the judge in `JudgeTrialOptions`** (issue #1716), not as a keyword
+  of its own. `JudgeKind.evaluate` takes the trial's per-trial customization as one
+  frozen `options` object — `disable_knowledge_search`, `custom_system_prompt`,
+  `include_agent_system_prompt`, `judge_snippet_chars` — so the Protocol's
+  signature, the detachment surface for out-of-tree kinds, does not change when a
+  knob is added: the knob is a field with a default. `resolve_judge_trial_options`
+  builds it from `JudgeCustomization` in one place (`grade_llm_judge`, which the
+  runner composite, the grader composite dispatch and the offline composite regrade
+  call, and the `judge_only` helper, which lays the run-level override over it);
+  replay builds it from the bundle, stamping each value's source in
+  `replay_provenance.yaml`, `judge_snippet_chars` included.
+- **Left out:** the run-level `grader.judge` overrides (`JudgeGraderConfig`),
+  whose `None` means "inherit" and so cannot carry a `null` that means whole
+  documents.
 
 ### Snapshots
 

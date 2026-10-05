@@ -925,6 +925,13 @@ This gates *evidence*, not the judge's wording — distinct from `system_prompt`
 is judge-side only (see
 [GRADING.md](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence)).
 
+`customization.judge_snippet_chars` layers by the same merge but is **not**
+tri-state: it is a positive integer or `null`, default `200`, and `null` means
+whole documents in the judge's `search_kb`. A task that omits the key inherits the
+project figure; a task `null` overrides it with whole documents; a task undoes a
+project figure by writing `200`. See
+[GRADING.md](GRADING.md#llm-judge-rubric-grading).
+
 ### Full override — replace entirely
 
 Some fields replace instead of merge:

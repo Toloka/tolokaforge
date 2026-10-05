@@ -232,6 +232,16 @@ override leaves the recorded gating in effect. `replay_provenance.yaml` stamps
 rubric-only override over a gated bundle reads `rubric_source: override` while
 `agent_prompt_source: recorded`.
 
+## Judge snippet length
+
+Replay reads `grading.llm_judge.customization.judge_snippet_chars` from the
+bundle's `task.yaml` (`200` when the bundle records none), and a `--grading`
+override replaces it only when its own `llm_judge.customization` sets the key —
+`null` (whole documents) included. `replay_provenance.yaml` stamps
+`judge_snippet_chars` and `judge_snippet_chars_source` (`recorded` / `override`,
+or `null` when it defaulted). The length reaches the judge kind inside the trial's
+`JudgeTrialOptions`, with the other customization values.
+
 ## New-vs-old bundle replayability
 
 - **New bundles** (recorded with a `judge_inputs.yaml`) replay at **full
@@ -256,7 +266,8 @@ trial:
 - `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` — the same formats as
   a normal trial bundle (so a replay bundle is itself replayable).
 - `replay_provenance.yaml` — the judge model used, whether each of the judge
-  model / rubric / KB-gating / judge system prompt / agent-policy gating came
+  model / rubric / KB-gating / judge system prompt / agent-policy gating /
+  snippet length came
   from the bundle (`prompts.yaml.judge_prompt` verbatim, or task.yaml
   customization) or an override, and the fidelity mode.
 

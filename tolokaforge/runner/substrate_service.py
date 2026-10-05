@@ -209,11 +209,14 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         return pb2.KBSearchResponse(
             kb_available=True,
             hits=[
+                # ``title=None`` leaves the optional field unset, so a backend
+                # without titles crosses as no title.
                 pb2.SubstrateSearchHit(
                     doc_id=hit.doc_id,
                     source=hit.source,
                     score=hit.score,
                     text=hit.text,
+                    title=hit.title,
                 )
                 for hit in hits
             ],

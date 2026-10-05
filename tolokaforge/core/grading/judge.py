@@ -51,7 +51,7 @@ from tolokaforge.core.grading.judge_tools import (
     SearchKbTool,
     SubmitReportTool,
 )
-from tolokaforge.core.grading.kb_search import KnowledgeSearch
+from tolokaforge.core.grading.kb_search import DEFAULT_JUDGE_SNIPPET_CHARS, KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     GRADED_MET_THRESHOLD,
     SUBMIT_REPORT_TOOL_NAME,
@@ -472,6 +472,7 @@ def _build_judge_registry(
     extra_read_tools: list[Tool] | None,
     workspace_dir: Path | None,
     disable_knowledge_search: bool,
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
     logger: StructuredLogger,
 ) -> tuple[ToolRegistry, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Build the read-only tool registry offered to the judge.
@@ -521,7 +522,7 @@ def _build_judge_registry(
 
     kb_candidates: list[Tool] = []
     if kb_search is not None:
-        kb_candidates.append(SearchKbTool(kb_search))
+        kb_candidates.append(SearchKbTool(kb_search, snippet_chars=judge_snippet_chars))
     kb_candidates.extend(extra_read_tools or [])
 
     kb_offered: list[str] = []
@@ -643,6 +644,7 @@ class LLMJudge:
         custom_system_prompt: str | None = None,
         explicit_system_prompt: str | None = None,
         include_agent_system_prompt: bool = True,
+        judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS,
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
@@ -663,6 +665,7 @@ class LLMJudge:
         self._custom_system_prompt = custom_system_prompt
         self._explicit_system_prompt = explicit_system_prompt
         self._include_agent_system_prompt = include_agent_system_prompt
+        self._judge_snippet_chars = judge_snippet_chars
         self._llm_client = llm_client
         self._logger = logger
 
@@ -708,6 +711,7 @@ class LLMJudge:
             extra_read_tools=extra_read_tools,
             workspace_dir=workspace_dir,
             disable_knowledge_search=self._disable_knowledge_search,
+            judge_snippet_chars=self._judge_snippet_chars,
             logger=logger,
         )
         tool_executor = ToolExecutor(registry)

@@ -39,9 +39,14 @@ from tolokaforge.core.grading.judge import (
     LLMJudge,
     model_config_from_ref,
 )
+from tolokaforge.core.grading.judge_kinds.options import JudgeTrialOptions
 from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
-from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
+from tolokaforge.core.grading.kb_search import (
+    DEFAULT_JUDGE_SNIPPET_CHARS,
+    KnowledgeSearch,
+    SearchHit,
+)
 from tolokaforge.core.grading.replay_layout import (
     JUDGE_REPLAY_DIRNAME,
     discover_trial_bundles,
@@ -281,6 +286,12 @@ class ReplayProvenance(BaseModel):
     # default. Resolved independently of the rubric.
     include_agent_system_prompt: bool
     agent_prompt_source: ProvenanceSource | None
+    # How much of each hit the judge's ``search_kb`` shows (``None`` for whole
+    # documents), and where it came from — RECORDED (the bundle's task.yaml
+    # customization) or OVERRIDE (a --grading override carrying it); None when
+    # neither carries it, which is always the default length.
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
+    judge_snippet_chars_source: ProvenanceSource | None = None
     fidelity_mode: FidelityMode
     # Which :class:`JudgeKind` this replay dispatched through and where the
     # decision came from. RECORDED — resolved from the bundle's
@@ -351,6 +362,21 @@ class ReplayProvenance(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _snippet_fields_coherent(self) -> ReplayProvenance:
+        """A defaulted stamp (``judge_snippet_chars_source is None``) can only be the
+        default length; an explicit value, the default included, carries a source."""
+        if (
+            self.judge_snippet_chars_source is None
+            and self.judge_snippet_chars != DEFAULT_JUDGE_SNIPPET_CHARS
+        ):
+            raise ValueError(
+                f"judge_snippet_chars must be {DEFAULT_JUDGE_SNIPPET_CHARS} when "
+                "judge_snippet_chars_source is None (got "
+                f"judge_snippet_chars={self.judge_snippet_chars})"
+            )
+        return self
+
 
 @dataclass(frozen=True)
 class ReplayInputs:
@@ -362,16 +388,16 @@ class ReplayInputs:
     transcript: list[dict[str, Any]]
     state_diff: str | None
     judge_model_config: ModelConfig
-    disable_knowledge_search: bool
-    # Mutually exclusive prompt seams, mirroring ``LLMJudge.__init__``. The bundle
-    # path (``_resolve_bundle_judge_prompt``) sets ``explicit_system_prompt`` and
-    # leaves ``custom_system_prompt`` at ``None``; the legacy path
-    # (``_resolve_custom_prompt``) sets ``custom_system_prompt`` and leaves
-    # ``explicit_system_prompt`` at ``None``. Both ``None`` means the engine
-    # default composition is in effect.
-    custom_system_prompt: str | None
+    # The trial's judge options, resolved from the bundle (and a --grading
+    # override) once, with each source stamped in ``provenance``.
+    options: JudgeTrialOptions
+    # Mutually exclusive with ``options.custom_system_prompt``, mirroring
+    # ``LLMJudge.__init__``. The bundle path (``_resolve_bundle_judge_prompt``)
+    # sets ``explicit_system_prompt`` and leaves the options' custom prompt at
+    # ``None``; the task.yaml path (``_resolve_custom_prompt``) sets the options'
+    # custom prompt and leaves ``explicit_system_prompt`` at ``None``. Both
+    # ``None`` means the engine default composition is in effect.
     explicit_system_prompt: str | None
-    include_agent_system_prompt: bool
     # Which :class:`JudgeKind` this replay dispatches through, resolved from the
     # bundle's ``task.yaml.grading_config.llm_judge.judge_kind`` (defaulting to
     # ``"single_shot_rubric"`` for legacy artifacts that omit that field).
@@ -427,22 +453,26 @@ class GradingOverride:
     """A ``--grading`` override: a rubric plus optional judge customization.
 
     All live under ``llm_judge`` in the override document, so one file swaps the
-    rubric AND (when it carries them) the judge prompt / agent-policy gating.
-    ``custom_system_prompt`` / ``include_agent_system_prompt`` are ``None`` when the
-    override carries neither — a rubric-only override, which leaves any recorded
-    value untouched at resolution.
+    rubric AND (when it carries them) the judge prompt / agent-policy gating /
+    snippet length. ``custom_system_prompt`` / ``include_agent_system_prompt`` are
+    ``None`` when the override carries neither, and ``carries_judge_snippet_chars``
+    says whether it sets ``judge_snippet_chars`` (whose ``None`` is a value: whole
+    documents) — a rubric-only override leaves every recorded value untouched at
+    resolution.
     """
 
     rubric: Rubric
     custom_system_prompt: str | None
     include_agent_system_prompt: bool | None
+    judge_snippet_chars: int | None = DEFAULT_JUDGE_SNIPPET_CHARS
+    carries_judge_snippet_chars: bool = False
 
 
 def load_grading_override(grading_path: Path) -> GradingOverride:
     """Parse a supplied ``grading.yaml`` override into a :class:`GradingOverride`.
 
     Accepts either a full grading document (``llm_judge.rubric: …``, optionally with
-    ``llm_judge.customization.system_prompt``) or a bare ``rubric:`` mapping, so an
+    ``llm_judge.customization``) or a bare ``rubric:`` mapping, so an
     operator can point ``--grading`` at a task's grading file or a hand-authored
     rubric snippet. Fails loud if neither carries a rubric. A bare ``rubric:``
     mapping carries no custom prompt.
@@ -453,14 +483,22 @@ def load_grading_override(grading_path: Path) -> GradingOverride:
     llm_judge = data.get("llm_judge")
     if isinstance(llm_judge, dict) and "rubric" in llm_judge:
         config = LLMJudgeConfig.model_validate(llm_judge)
-        custom = config.customization.system_prompt if config.customization else None
-        include_agent = (
-            config.customization.include_agent_system_prompt if config.customization else None
+        customization = config.customization
+        custom = customization.system_prompt if customization else None
+        include_agent = customization.include_agent_system_prompt if customization else None
+        carries_snippet = (
+            customization is not None and "judge_snippet_chars" in customization.model_fields_set
         )
         return GradingOverride(
             rubric=config.rubric,
             custom_system_prompt=custom,
             include_agent_system_prompt=include_agent,
+            judge_snippet_chars=(
+                customization.judge_snippet_chars
+                if carries_snippet and customization is not None
+                else DEFAULT_JUDGE_SNIPPET_CHARS
+            ),
+            carries_judge_snippet_chars=carries_snippet,
         )
     if "rubric" in data:
         return GradingOverride(
@@ -646,6 +684,35 @@ def _resolve_include_agent_system_prompt(
     return recorded, ProvenanceSource.RECORDED
 
 
+def _resolve_judge_snippet_chars(
+    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
+) -> tuple[int | None, ProvenanceSource | None]:
+    """Resolve how much of each hit the judge's ``search_kb`` shows.
+
+    The override wins only when it sets the key; otherwise the recorded value
+    survives — a rubric-only ``--grading`` override must never silently change a
+    recorded length. Absent from both (a task that never set it) is
+    ``(DEFAULT_JUDGE_SNIPPET_CHARS, None)``; ``None`` is whole documents. A
+    recorded value that is not a positive integer or null fails loud — the writer
+    never records one, so it is a corrupted or hand-edited bundle.
+    """
+    if grading_override is not None and grading_override.carries_judge_snippet_chars:
+        return grading_override.judge_snippet_chars, ProvenanceSource.OVERRIDE
+    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
+    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
+    if not isinstance(customization, dict) or "judge_snippet_chars" not in customization:
+        return DEFAULT_JUDGE_SNIPPET_CHARS, None
+    recorded = customization["judge_snippet_chars"]
+    if recorded is not None and (
+        isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 1
+    ):
+        raise MissingReplayInputError(
+            f"recorded customization.judge_snippet_chars in {trial_dir / TASK_FILENAME} "
+            "is not a positive integer or null"
+        )
+    return recorded, ProvenanceSource.RECORDED
+
+
 def _resolve_judge_model(
     task: dict[str, Any] | None, judge_model_override: str | None
 ) -> tuple[ModelConfig, ProvenanceSource]:
@@ -768,6 +835,9 @@ def read_replay_inputs(
         trial_dir, task, grading_override
     )
     judge_model_config, judge_model_source = _resolve_judge_model(task, judge_model_override)
+    judge_snippet_chars, judge_snippet_chars_source = _resolve_judge_snippet_chars(
+        trial_dir, task, grading_override
+    )
 
     trajectory = Trajectory.model_validate(trajectory_raw)
     recorded_agent_prompt = prompts.get("system_prompt") or ""
@@ -799,6 +869,8 @@ def read_replay_inputs(
         judge_prompt_source=judge_prompt_source,
         include_agent_system_prompt=include_agent_system_prompt,
         agent_prompt_source=agent_prompt_source,
+        judge_snippet_chars=judge_snippet_chars,
+        judge_snippet_chars_source=judge_snippet_chars_source,
         fidelity_mode=fidelity_mode,
         judge_kind=judge_kind,
         judge_kind_source=judge_kind_source,
@@ -810,10 +882,13 @@ def read_replay_inputs(
         transcript=transcript,
         state_diff=state_diff,
         judge_model_config=judge_model_config,
-        disable_knowledge_search=disable_knowledge_search,
-        custom_system_prompt=custom_system_prompt,
+        options=JudgeTrialOptions(
+            disable_knowledge_search=disable_knowledge_search,
+            custom_system_prompt=custom_system_prompt,
+            include_agent_system_prompt=include_agent_system_prompt,
+            judge_snippet_chars=judge_snippet_chars,
+        ),
         explicit_system_prompt=explicit_system_prompt,
-        include_agent_system_prompt=include_agent_system_prompt,
         judge_kind=judge_kind,
         kind_config=kind_config,
         db_reader=db_reader,
@@ -855,10 +930,11 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
     if inputs.explicit_system_prompt is not None:
         judge = LLMJudge(
             inputs.judge_model_config,
-            disable_knowledge_search=inputs.disable_knowledge_search,
-            custom_system_prompt=inputs.custom_system_prompt,
+            disable_knowledge_search=inputs.options.disable_knowledge_search,
+            custom_system_prompt=inputs.options.custom_system_prompt,
             explicit_system_prompt=inputs.explicit_system_prompt,
-            include_agent_system_prompt=inputs.include_agent_system_prompt,
+            include_agent_system_prompt=inputs.options.include_agent_system_prompt,
+            judge_snippet_chars=inputs.options.judge_snippet_chars,
             llm_client=judge_client,
         )
         return judge.run(
@@ -889,9 +965,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
         state_diff=inputs.state_diff,
         judge_model_config=inputs.judge_model_config,
         judge_model_provider=judge_model_provider,
-        disable_knowledge_search=inputs.disable_knowledge_search,
-        custom_system_prompt=inputs.custom_system_prompt,
-        include_agent_system_prompt=inputs.include_agent_system_prompt,
+        options=inputs.options,
         kind_config=inputs.kind_config,
         logger=get_logger("tolokaforge.core.grading.replay"),
     )

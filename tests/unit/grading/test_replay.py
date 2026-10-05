@@ -54,6 +54,7 @@ from tolokaforge.core.grading.replay import (
     TrialEligibility,
     classify_trial,
     emit_replay_report,
+    load_grading_override,
     read_replay_inputs,
     replay_trial,
     run_replay_batch,
@@ -148,6 +149,10 @@ def _conductor_written_model_config(judge: ModelConfig, output_dir: Path) -> dic
     return conductor._serialize_model_config(agent_config=agent, judge_config=judge)
 
 
+_NOT_RECORDED = object()
+"""The bundle's customization carries no ``judge_snippet_chars`` key at all."""
+
+
 def _write_recorded_inputs(
     trial_dir: Path,
     trajectory: Trajectory,
@@ -156,6 +161,7 @@ def _write_recorded_inputs(
     with_rubric: bool = True,
     recorded_system_prompt: str | None = None,
     recorded_include_agent_system_prompt: bool | None = None,
+    recorded_judge_snippet_chars: int | None | object = _NOT_RECORDED,
 ) -> None:
     """Write everything a bundle records except its grade, via the real writer."""
     writer = FileArtifactWriter()
@@ -169,6 +175,8 @@ def _write_recorded_inputs(
             customization["system_prompt"] = recorded_system_prompt
         if recorded_include_agent_system_prompt is not None:
             customization["include_agent_system_prompt"] = recorded_include_agent_system_prompt
+        if recorded_judge_snippet_chars is not _NOT_RECORDED:
+            customization["judge_snippet_chars"] = recorded_judge_snippet_chars
         if customization:
             llm_judge["customization"] = customization
         grading_config = {"llm_judge": llm_judge}
@@ -195,6 +203,7 @@ def _write_bundle(
     kb_gating: JudgeKbGating | None = None,
     recorded_system_prompt: str | None = None,
     recorded_include_agent_system_prompt: bool | None = None,
+    recorded_judge_snippet_chars: int | None | object = _NOT_RECORDED,
 ) -> Trajectory:
     """Write a new-shape bundle via the real writer; return the source trajectory."""
     trajectory = _trajectory()
@@ -205,6 +214,7 @@ def _write_bundle(
         with_rubric=with_rubric,
         recorded_system_prompt=recorded_system_prompt,
         recorded_include_agent_system_prompt=recorded_include_agent_system_prompt,
+        recorded_judge_snippet_chars=recorded_judge_snippet_chars,
     )
     FileArtifactWriter().write_grade(
         trial_dir,
@@ -499,9 +509,9 @@ def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
     on = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.ON)
     recorded = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.RECORDED)
 
-    assert off.disable_knowledge_search is True
-    assert on.disable_knowledge_search is False
-    assert recorded.disable_knowledge_search is True
+    assert off.options.disable_knowledge_search is True
+    assert on.options.disable_knowledge_search is False
+    assert recorded.options.disable_knowledge_search is True
     assert off.provenance.knowledge_search_mode is KnowledgeSearchMode.OFF
 
     # Forced `on` OFFERS the offline KB shim in the judge's tool surface.
@@ -516,14 +526,19 @@ def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
 
 
 def _grading_override(
-    system_prompt: str | None = None, include_agent_system_prompt: bool | None = None
+    system_prompt: str | None = None,
+    include_agent_system_prompt: bool | None = None,
+    judge_snippet_chars: int | None | object = _NOT_RECORDED,
 ) -> GradingOverride:
     from tolokaforge.runner.models import Rubric
 
+    carries_snippet = judge_snippet_chars is not _NOT_RECORDED
     return GradingOverride(
         rubric=Rubric.model_validate(_RUBRIC),
         custom_system_prompt=system_prompt,
         include_agent_system_prompt=include_agent_system_prompt,
+        judge_snippet_chars=judge_snippet_chars if carries_snippet else 200,  # type: ignore[arg-type]
+        carries_judge_snippet_chars=carries_snippet,
     )
 
 
@@ -540,7 +555,9 @@ def test_recorded_custom_prompt_is_reconstructed_and_stamped(tmp_path: Path) -> 
 
     inputs = read_replay_inputs(trial_dir)
 
-    assert inputs.custom_system_prompt == "Grade strictly against the refund policy handbook."
+    assert (
+        inputs.options.custom_system_prompt == "Grade strictly against the refund policy handbook."
+    )
     assert inputs.provenance.custom_system_prompt is True
     assert inputs.provenance.custom_prompt_source is ProvenanceSource.RECORDED
 
@@ -564,7 +581,7 @@ def test_grading_override_custom_prompt_wins_over_recorded(tmp_path: Path) -> No
         trial_dir, grading_override=_grading_override("Override judge voice.")
     )
 
-    assert inputs.custom_system_prompt == "Override judge voice."
+    assert inputs.options.custom_system_prompt == "Override judge voice."
     assert inputs.provenance.custom_system_prompt is True
     assert inputs.provenance.custom_prompt_source is ProvenanceSource.OVERRIDE
 
@@ -581,7 +598,7 @@ def test_no_recorded_customization_yields_no_custom_prompt(tmp_path: Path) -> No
 
     inputs = read_replay_inputs(trial_dir)
 
-    assert inputs.custom_system_prompt is None
+    assert inputs.options.custom_system_prompt is None
     assert inputs.provenance.custom_system_prompt is False
     assert inputs.provenance.custom_prompt_source is None
 
@@ -602,7 +619,7 @@ def test_rubric_only_override_preserves_recorded_custom_prompt(tmp_path: Path) -
 
     inputs = read_replay_inputs(trial_dir, grading_override=_grading_override(None))
 
-    assert inputs.custom_system_prompt == "Recorded judge voice."
+    assert inputs.options.custom_system_prompt == "Recorded judge voice."
     assert inputs.provenance.custom_prompt_source is ProvenanceSource.RECORDED
     assert inputs.provenance.rubric_source is ProvenanceSource.OVERRIDE
 
@@ -666,7 +683,7 @@ def test_recorded_agent_prompt_gating_is_reconstructed_and_stamped(tmp_path: Pat
 
     inputs = read_replay_inputs(trial_dir)
 
-    assert inputs.include_agent_system_prompt is False
+    assert inputs.options.include_agent_system_prompt is False
     assert inputs.provenance.include_agent_system_prompt is False
     assert inputs.provenance.agent_prompt_source is ProvenanceSource.RECORDED
 
@@ -689,7 +706,7 @@ def test_grading_override_agent_prompt_gating_wins_over_recorded(tmp_path: Path)
         trial_dir, grading_override=_grading_override(include_agent_system_prompt=True)
     )
 
-    assert inputs.include_agent_system_prompt is True
+    assert inputs.options.include_agent_system_prompt is True
     assert inputs.provenance.include_agent_system_prompt is True
     assert inputs.provenance.agent_prompt_source is ProvenanceSource.OVERRIDE
 
@@ -706,7 +723,7 @@ def test_no_recorded_agent_prompt_gating_yields_include_default(tmp_path: Path) 
 
     inputs = read_replay_inputs(trial_dir)
 
-    assert inputs.include_agent_system_prompt is True
+    assert inputs.options.include_agent_system_prompt is True
     assert inputs.provenance.include_agent_system_prompt is True
     assert inputs.provenance.agent_prompt_source is None
 
@@ -726,7 +743,7 @@ def test_rubric_only_override_preserves_recorded_agent_prompt_gating(tmp_path: P
 
     inputs = read_replay_inputs(trial_dir, grading_override=_grading_override(None))
 
-    assert inputs.include_agent_system_prompt is False
+    assert inputs.options.include_agent_system_prompt is False
     assert inputs.provenance.agent_prompt_source is ProvenanceSource.RECORDED
     assert inputs.provenance.rubric_source is ProvenanceSource.OVERRIDE
 
@@ -1177,3 +1194,122 @@ def test_rejudge_cli_exits_nonzero_when_a_trial_fails(tmp_path: Path) -> None:
 
     assert result.exit_code == 1, result.output
     assert "failed" in result.output
+
+
+# ---------------------------------------------------------------------------
+# judge_snippet_chars: one value in the options, its source in the provenance
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("recorded", [None, 40])
+def test_a_recorded_snippet_length_is_reconstructed_and_stamped(
+    tmp_path: Path, recorded: int | None
+) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_judge_snippet_chars=recorded,
+    )
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.options.judge_snippet_chars == recorded
+    assert inputs.provenance.judge_snippet_chars == recorded
+    assert inputs.provenance.judge_snippet_chars_source is ProvenanceSource.RECORDED
+
+
+def test_no_recorded_snippet_length_is_the_default_with_no_source(tmp_path: Path) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+    )
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.options.judge_snippet_chars == 200
+    assert inputs.provenance.judge_snippet_chars_source is None
+
+
+def test_an_override_carrying_the_snippet_length_wins_and_a_rubric_only_one_keeps_it(
+    tmp_path: Path,
+) -> None:
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_judge_snippet_chars=40,
+    )
+
+    overridden = read_replay_inputs(
+        trial_dir, grading_override=_grading_override(judge_snippet_chars=None)
+    )
+    rubric_only = read_replay_inputs(trial_dir, grading_override=_grading_override())
+
+    assert overridden.options.judge_snippet_chars is None
+    assert overridden.provenance.judge_snippet_chars_source is ProvenanceSource.OVERRIDE
+    assert rubric_only.options.judge_snippet_chars == 40
+    assert rubric_only.provenance.judge_snippet_chars_source is ProvenanceSource.RECORDED
+
+
+def test_a_grading_override_file_carries_the_snippet_length_only_when_it_sets_it(
+    tmp_path: Path,
+) -> None:
+    setting = tmp_path / "setting.yaml"
+    setting.write_text(
+        yaml.safe_dump(
+            {"llm_judge": {"rubric": _RUBRIC, "customization": {"judge_snippet_chars": None}}}
+        )
+    )
+    silent = tmp_path / "silent.yaml"
+    silent.write_text(
+        yaml.safe_dump({"llm_judge": {"rubric": _RUBRIC, "customization": {"system_prompt": "x"}}})
+    )
+
+    assert load_grading_override(setting).carries_judge_snippet_chars is True
+    assert load_grading_override(setting).judge_snippet_chars is None
+    assert load_grading_override(silent).carries_judge_snippet_chars is False
+
+
+def test_a_recorded_snippet_length_that_is_not_a_positive_integer_fails_loud(
+    tmp_path: Path,
+) -> None:
+    """The writer never records one, so the bundle was edited by hand. A rubric-only
+    override keeps the recorded rubric from being parsed, so the snippet reader is what
+    meets the value."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_judge_snippet_chars=40,
+    )
+    task_path = trial_dir / "task.yaml"
+    task_path.write_text(
+        task_path.read_text().replace("judge_snippet_chars: 40", "judge_snippet_chars: 0")
+    )
+
+    with pytest.raises(MissingReplayInputError, match="judge_snippet_chars"):
+        read_replay_inputs(trial_dir, grading_override=_grading_override())
+
+
+def test_a_defaulted_snippet_stamp_can_only_be_the_default_length() -> None:
+    with pytest.raises(ValueError, match="judge_snippet_chars must be 200"):
+        ReplayProvenance(
+            judge_model="openai/gpt",
+            judge_model_source=ProvenanceSource.RECORDED,
+            rubric_source=ProvenanceSource.RECORDED,
+            knowledge_search_mode=KnowledgeSearchMode.RECORDED,
+            knowledge_search_disabled=False,
+            custom_system_prompt=False,
+            custom_prompt_source=None,
+            include_agent_system_prompt=True,
+            agent_prompt_source=None,
+            judge_snippet_chars=None,
+            judge_snippet_chars_source=None,
+            fidelity_mode=FidelityMode.FULL,
+        )

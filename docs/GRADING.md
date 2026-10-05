@@ -1554,6 +1554,7 @@ reject it.
 | `grading.llm_judge.judge_kind` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 | `grading_method_config` | every pack | `unreleased` | new engine → old image |
+| `grading.llm_judge.customization.judge_snippet_chars` | a pack setting `customization.judge_snippet_chars` other than 200 | `unreleased` | new engine → old image |
 
 `emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing
@@ -4056,6 +4057,18 @@ layers project→task — see
 [PROJECTS.md](PROJECTS.md#task-override-semantics) and
 [CONFIG.md](CONFIG.md#grading-specification-gradingyaml). When absent, behaviour
 is exactly as above.
+
+**How much of each hit the judge reads.** The judge's `search_kb` shows each hit's
+document id, its title when the backend has one (`bm25`'s JSON documents do;
+rag-service hits do not), source, score and content. The content is cut to its
+first 200 characters with an ellipsis by default. Set
+`grading.llm_judge.customization.judge_snippet_chars` to another positive integer
+to cut there, or to `null` to show whole documents — what a rubric that checks an
+agent's answer against a document's exact wording needs. It is not tri-state:
+`null` is a value, so a task undoes a project figure by writing `200`. It layers
+project→task like the other customization keys and is left off the wire at its
+default, so a task that does not set it crosses to an older image unchanged. The
+agent's search output is the backend's own rendering and is not affected.
 
 **Seeing which backend was used.** The judge's `reasons` (surfaced into the grade
 output's `reasons`) always ends with a `Judge KB: …` note — `Judge KB: search_kb`,

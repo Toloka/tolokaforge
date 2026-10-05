@@ -816,6 +816,10 @@ message SubstrateSearchHit {
   string source = 2;
   double score = 3;
   string text = 4;
+  // The document's title, when the search backend has one (bm25's JSON
+  // documents carry it; rag-service hits do not). Presence-tracked so an
+  // absent title crosses as None, never as an empty string.
+  optional string title = 5;
 }
 
 // -----------------------------------------------------------------------------
