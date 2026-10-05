@@ -1,10 +1,11 @@
 """``bash_batch`` runs an array of commands against one deadline.
 
-Locks the four properties the batching tool rests on at
+Locks the properties the batching tool rests on at
 :class:`~tolokaforge.runner.tool_factory.DockerComposeExecToolWrapper`: a
-``commands`` array runs in order, each command is its own ``docker exec``, every
-command's output is labelled with the command that produced it, and a spent
-budget reports the remainder as unrun rather than dropping it.
+``commands`` array runs in order, each command is its own ``docker exec`` with
+the same per-command budget the one-shot tool applies, every command's output is
+labelled with the command that produced it, a spent budget reports the remainder
+as unrun rather than dropping it, and a malformed argument runs nothing.
 
 The single-``command`` path is covered here too, because the array is additive:
 a caller that sends ``command`` must reach the same argv it always did.
@@ -13,6 +14,7 @@ a caller that sends ``command`` must reach the same argv it always did.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -22,11 +24,14 @@ from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
 pytestmark = pytest.mark.unit
 
 
-def _wrapper(timeout_s: float = 30.0) -> DockerComposeExecToolWrapper:
+def _wrapper(timeout_s: float = 30.0, max_items: int | None = None) -> DockerComposeExecToolWrapper:
+    commands_schema: dict[str, object] = {"type": "array", "items": {"type": "string"}}
+    if max_items is not None:
+        commands_schema["maxItems"] = max_items
     schema = ToolSchema(
         name="bash_batch",
         description="stub",
-        parameters={"type": "object", "properties": {}},
+        parameters={"type": "object", "properties": {"commands": commands_schema}},
         category="compute",
         timeout_s=timeout_s,
         source=ToolSource(
@@ -68,31 +73,61 @@ def test_commands_array_runs_in_order_and_labels_each_output(monkeypatch) -> Non
 def test_spent_budget_reports_the_remainder_as_unrun(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_run(argv: list[str], timeout_s: float) -> str:
+    def slow_first(argv: list[str], timeout_s: float) -> str:
         calls.append(argv[-1])
+        time.sleep(0.15)
         return "ok"
 
-    # First command consumes the whole budget; the clock is past the deadline by
-    # the time the second is considered. The clock is driven through a list the
-    # batch walks itself — patching ``time.monotonic`` globally would also move
-    # the event loop's clock, so the sync body is exercised directly.
-    ticks = [0.0, 0.0, 100.0]
     monkeypatch.setattr(
-        "tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", fake_run
+        "tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", slow_first
     )
-    monkeypatch.setattr(
-        "tolokaforge.runner.tool_factory.time.monotonic",
-        lambda: ticks.pop(0) if ticks else 100.0,
-    )
-    wrapper = _wrapper(timeout_s=10.0)
+    # A real clock against a budget the first command outlives, so the deadline
+    # is exercised rather than simulated — patching ``time.monotonic`` here
+    # would rebind the stdlib clock for everything else in the process.
+    wrapper = _wrapper(timeout_s=0.1)
 
-    result = wrapper._exec_batch_in_env(["slow", "never", "also-never"], 10.0)
+    result = wrapper._exec_batch_in_env(["slow", "never", "also-never"], 0.1)
 
     assert calls == ["slow"]
     assert "[not run" in result
     assert "2 command(s) remain" in result
     # The commands that never ran are still named, so the model can retry them.
     assert "$ never" in result and "$ also-never" in result
+
+
+def test_each_command_gets_the_per_command_ceiling_not_a_share(monkeypatch) -> None:
+    budgets: list[float] = []
+
+    def record_budget(argv: list[str], timeout_s: float) -> str:
+        budgets.append(timeout_s)
+        return "ok"
+
+    monkeypatch.setattr(
+        "tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", record_budget
+    )
+    # Declared band is the per-command ceiling times maxItems, so a batch of
+    # three must not squeeze three commands into one command's worth of time:
+    # the point of the tool is to replace N single-command calls, not to
+    # handicap them.
+    wrapper = _wrapper(timeout_s=1200.0, max_items=10)
+
+    asyncio.run(wrapper.execute({"commands": ["a", "b", "c"]}))
+
+    assert budgets == [120.0, 120.0, 120.0]
+
+
+def test_a_non_array_commands_argument_runs_nothing_and_says_so(monkeypatch) -> None:
+    def fail(argv: list[str], timeout_s: float) -> str:  # pragma: no cover - must not run
+        raise AssertionError("a malformed commands argument must not reach docker exec")
+
+    monkeypatch.setattr("tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", fail)
+    wrapper = _wrapper()
+
+    # A string would otherwise be iterated into one exec per character.
+    for bad in ("ls -la", 7, [{"cmd": "ls"}], [None]):
+        result = asyncio.run(wrapper.execute({"commands": bad}))
+        assert result.startswith("ERROR: `commands` must be an array of strings")
+        assert "Nothing was run" in result
 
 
 def test_single_command_path_is_unchanged(monkeypatch) -> None:

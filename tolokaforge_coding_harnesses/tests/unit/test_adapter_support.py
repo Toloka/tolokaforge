@@ -21,6 +21,7 @@ import shlex
 from pathlib import Path
 
 import pytest
+from tolokaforge_coding_harnesses.adapter_support import MAX_BATCH_COMMANDS
 
 from tolokaforge_coding_harnesses import (
     ENGINE_LOOP,
@@ -211,6 +212,7 @@ class TestEmitHarnessToolSchema:
         assert params["properties"]["commands"]["type"] == "array"
         assert params["properties"]["commands"]["items"] == {"type": "string"}
         assert params["properties"]["commands"]["minItems"] == 1
+        assert params["properties"]["commands"]["maxItems"] == MAX_BATCH_COMMANDS
         assert "command" not in params["properties"]
 
         source = payload["source"]
@@ -220,7 +222,10 @@ class TestEmitHarnessToolSchema:
             "service": "agent",
             "compose_project_prefix": "tolokaforge-tbench",
         }
-        assert payload["timeout_s"] == 600.0
+        # The declared band is the per-command ceiling times the batch size, so
+        # a full batch gets what the same commands would have got one call at a
+        # time rather than sharing one command's worth of budget.
+        assert payload["timeout_s"] == 600.0 * MAX_BATCH_COMMANDS
 
     def test_toolset_override_reaches_the_source(self, adapter: _Adapter) -> None:
         payload = adapter.emit_harness_tool_schema(
