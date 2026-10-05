@@ -32,6 +32,7 @@ bumped and this document is updated in the same commit.
             ├── logs.yaml                   ← structured trial logs (through the redaction policy)
             ├── prompts.yaml                ← agent + user-sim + judge system prompts
             ├── tools_schemas.yaml          ← post-policy tool list (through the redaction policy)
+            ├── native/                     ← the harness's own artifacts, subtree kept (output.format native|both only)
             └── services/                   ← per-service compose logs (on trial-body or graded failure)
                 ├── {service}.log
                 └── _capture.yaml           ← manifest (provision-failure path only)
@@ -655,6 +656,35 @@ Each `services.<name>` entry:
 DSN passwords are redacted and host mount sources are never recorded, so
 the block is safe to share and stable across hosts.
 
+## `trials/{task_id}/{trial_index}/native/` — the harness's own artifacts
+
+Written only when `output.format` is `native` or `both` (see
+[CONFIG.md](CONFIG.md) § `output.format`), and only for a trial that ran under a
+delegated harness that produced native artifacts.
+The engine-loop path produces none, and a harness whose adapter names no native
+paths produces none, so those trials write no `native/` directory and their
+bundle is byte-for-byte the normalised one — the gate is the format and whether
+anything was staged, never the format alone.
+
+The harness's own files are copied out of the trial container while it is still
+up (the runtime deletes the per-trial bind-mounts at teardown, so there is no
+host path to read afterwards) and written here keeping each file's own subtree:
+a `terminal_bench` trial's `/logs/verifier/reward.txt` and `/logs/agent/…` land
+at `native/logs/verifier/reward.txt` and `native/logs/agent/…`. The normalised
+bundle beside `native/` is unchanged, so `native` and `both` are the full
+tolokaforge bundle **plus** this directory, and `tolokaforge` omits it.
+
+These are the harness's artifacts verbatim; the engine neither parses nor
+redacts them on the way to disk, with one read-only exception. When the harness
+CLI printed no turn or token totals of its own and routed through no request
+middleware, the engine reads the agent-session logs here to recover its inner
+turn count and token usage, and folds those into the trial's `metrics.yaml`
+labelled as harness-reported (`harness_usage_source: native_log`) rather than
+engine-measured — the lowest-precedence of the three telemetry taps (see
+§ `metrics.yaml`). That recovery never alters the preserved bytes, and a log it
+cannot read costs the trial nothing: the counts simply stay as the other taps
+left them.
+
 ## `trials/{task_id}/{trial_index}/metrics.yaml`
 
 `usage` is a nested block that carries the full
@@ -700,29 +730,39 @@ made none. A harness whose CLI prints no totals keeps the artefact shape and a
 `null` dialect, so "not measured" is never reported as a measured zero.
 
 `harness_usage_source` names the **non-stdout tap** `usage` and `cost_usd` were
-measured at — `"middleware_proxy"` today — and is `null` everywhere else. Some
-CLIs print no token counts at all (`kimi-code` prints none), so their tokens
-are recovered from the provider traffic: the request middleware the harness
-routes through records one usage block per provider response, and those records
-sum to one per-trial total, priced through the same table. **The CLI's printed
-totals win where both exist**, and the wire records fill in only where the CLI
-reported no token counts. The other order is defensible for spend — a proxy on
-the wire counts retries a CLI's end-of-run summary may fold away — but the two
-cannot both appear today: `kimi-code` is both the only proxied harness and the
-only one that prints no usage, so the precedence never arbitrates. This field is
-complementary to `harness_stdout_dialect`, not parallel: that one names which
-CLI grammar was parsed and is non-null whenever a CLI printed anything at all
-(turns included), while this one names which tap measured the tokens when no CLI
-did. So a stdout-sourced usage block leaves it `null`. Read together: dialect
-set and this `null` means the tokens (if any) are the CLI's own; this set means
-they are the wire's; both `null` means they are the engine's own. Absence is
-routine and silent — a harness with no middleware, or a CLI that made no
-provider call, leave the trial's accounting exactly as it was, and a malformed
-record is skipped rather than failing the trial. The records are read back out
-of the trial container while it is still up, because the runtime mounts the
-directory they are written into from a per-trial context copy it deletes at
-teardown; that read is engine instrumentation and is never part of `tool_calls`
-or [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
+measured at — `"middleware_proxy"` (the request-middleware wire) or
+`"native_log"` (the harness's own agent-session logs) — and is `null` everywhere
+else. Some CLIs print no token counts at all (`kimi-code` prints none), so their
+tokens are recovered elsewhere: the request middleware the harness routes
+through records one usage block per provider response, and those records sum to
+one per-trial total; failing that, a harness whose logs this run preserved (see
+§ `native/`) carries its own turn and token totals in those logs, read back and
+folded in. Both are priced through the same table. **The three taps apply
+highest precedence first — the CLI's stdout totals, then the wire usage, then
+the native logs — so each later one fills only what the earlier left, and no two
+double-count.** The stdout-over-wire order is defensible to reverse for spend —
+a proxy on the wire counts retries a CLI's end-of-run summary may fold away —
+but the two cannot both appear today: `kimi-code` is both the only proxied
+harness and the only one that prints no usage, so that pair never arbitrates;
+the native-log tap is the fallback for a harness whose CLI prints nothing and
+routes through no proxy, and it reads only logs a run already preserved. This
+field is complementary to `harness_stdout_dialect`, not parallel: that one names
+which CLI grammar was parsed and is non-null whenever a CLI printed anything at
+all (turns included), while this one names which tap measured the tokens when no
+CLI did. So a stdout-sourced usage block leaves it `null`. Read together:
+dialect set and this `null` means the tokens (if any) are the CLI's own; this
+set means they are the wire's or the native logs'; both `null` means they are
+the engine's own. A native-log trial that recovered only a turn count (no
+tokens) folds that count into `turns` and leaves this `null`, since no tokens
+were measured. Absence is routine and silent — a harness with no middleware, a
+CLI that made no provider call, a run that preserved no native output — all
+leave the trial's accounting exactly as it was, and a malformed record is
+skipped rather than failing the trial. The wire records are read back out of the
+trial container while it is still up, because the runtime mounts the directory
+they are written into from a per-trial context copy it deletes at teardown; the
+native logs are the same bytes written under `native/`. Either read is engine
+instrumentation and is never part of `tool_calls` or
+[`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
 `pricing_basis` and `pricing_key` record what that price was computed *from*:
 the four per-million rates the row carried, and the key that actually decided

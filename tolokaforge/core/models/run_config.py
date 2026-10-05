@@ -51,6 +51,8 @@ __all__ = [
     "MetricsConfig",
     "ObservabilityConfig",
     "OrchestratorConfig",
+    "OutputConfig",
+    "OutputFormat",
     "QueueGraderConfig",
     "QueueStorageConfig",
     "RATE_LIMIT_PROBE_ATTEMPT_CEILING_S",
@@ -724,6 +726,37 @@ class GradingValidationConfig(BaseModel):
 
     fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY
     """The least severe finding class that fails the run."""
+
+
+class OutputFormat(str, Enum):
+    """Which per-trial artifacts a run writes to disk.
+
+    ``tolokaforge`` writes the engine's own normalised trial bundle alone.
+    ``native`` and ``both`` write that same bundle *plus* the underlying
+    harness's own artifacts under the trial's ``native/`` directory — they are
+    identical today, the reduced-skeleton ``native`` variant being deferred so
+    the full bundle stays available for resume and observers. A trial that
+    produced no native artifacts (an engine-loop trial, or a harness whose
+    adapter names none) writes no ``native/`` directory under any format, so its
+    output is the normalised bundle regardless.
+    """
+
+    NATIVE = "native"
+    TOLOKAFORGE = "tolokaforge"
+    BOTH = "both"
+
+
+class OutputConfig(BaseModel):
+    """Which output format a run persists per trial.
+
+    A sub-object rather than a bare key so a future per-format option costs a
+    field here and nothing on :class:`RunConfig`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    format: OutputFormat = OutputFormat.TOLOKAFORGE
+    """The per-trial artifact format this run writes."""
 
 
 class EvaluationConfig(BaseModel):
@@ -1460,6 +1493,14 @@ class RunConfig(BaseModel):
     observability: ObservabilityConfig | None = None
     docker: DockerConfig | None = None
     grader: GraderConfig | None = None
+    output: OutputConfig | None = None
+
+    def effective_output_format(self) -> OutputFormat:
+        """Per-trial artifact format for this run. Defaults to
+        :attr:`OutputFormat.TOLOKAFORGE` when ``output`` is unset."""
+        if self.output is None:
+            return OutputFormat.TOLOKAFORGE
+        return self.output.format
 
     @property
     def effective_workers(self) -> int:

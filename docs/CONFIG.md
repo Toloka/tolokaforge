@@ -82,9 +82,13 @@ evaluation:
   # block. Omit the whole block for the default below.
   grading_validation:
     fail_on: "advisory"       # "advisory" | "error"
+
+output:                       # optional; omit for the tolokaforge default
+  format: "tolokaforge"       # "tolokaforge" | "native" | "both"
 ```
 
 Notes:
+- `output.format` (default `tolokaforge`) chooses what each trial writes to disk. `tolokaforge` writes the engine's own normalised trial bundle only. `native` and `both` write that same bundle **plus** the underlying harness's own files under the trial's `native/` directory (for example `native/logs/…` for a [delegated harness](ADAPTERS.md)) — they are identical today; the reduced-skeleton `native` variant is deferred so the full bundle stays available for resume and observers. A trial that produced no native files — an engine-loop trial, or a harness whose adapter names none — writes no `native/` directory under any format, so its output is the normalised bundle regardless. When a delegated harness's CLI prints no turn or token totals of its own, those inner counts are recovered from its native logs and folded into the trial's metrics labelled as harness-reported (not engine-measured); see [OUTPUT_FORMAT.md § `metrics.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexmetricsyaml) and § `native/`.
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `evaluation.grading_validation.fail_on` (default `advisory`) names the least severe finding class the pre-run gate refuses the run over. `advisory` fails on both classes; `error` fails on errors alone. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). `unchecked` is not a value here: it is a channel rather than a severity, and is logged rather than enforced so a gate that could check nothing does not read as a clean bill of health.
 - **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
