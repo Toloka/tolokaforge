@@ -14,6 +14,7 @@ matcher could never have selected decides nothing.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,6 +25,8 @@ from pydantic import ValidationError
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
 from tests.utils.trace_constraints import evaluate_constraint
+from tolokaforge.core import plugin_registry
+from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.regex_engine import RegexEngineKind, UncompilablePattern
 from tolokaforge.core.grading.trace_checks import (
     _binding_operator_names,
@@ -38,12 +41,16 @@ from tolokaforge.core.grading.trace_timeline import (
 )
 from tolokaforge.core.models import (
     BoundValue,
+    GradingConfig,
+    Message,
+    MessageRole,
     RecordedToolCall,
     ToolCall,
     ToolExecutionStatus,
     TraceChecksConfig,
     TraceChecksResult,
     TraceMatcher,
+    Trajectory,
     ValuePredicate,
 )
 from tolokaforge.runner.models import (
@@ -887,6 +894,71 @@ def test_a_refused_capture_pattern_raises_on_a_timeline_it_never_reaches(
     assert excinfo.value.engine is block_engine
 
 
+def _unbindable_constraint(pattern: str) -> dict[str, Any]:
+    """A bound constraint whose ``require`` tree alone declares ``pattern``."""
+    return {
+        "id": "refused",
+        "description": "a pattern under a binder that never fires",
+        "bind": {
+            "match": {"kind": "tool_call", "tool": {"equals": "open_case"}},
+            "values": {"case": {"field": "args.case_id"}},
+        },
+        "require": {
+            "present": {
+                "match": {
+                    "kind": "assistant_message",
+                    "text": {"regex": pattern, "contains_binding": "case"},
+                }
+            }
+        },
+    }
+
+
+_ROUTE_FILLER = {
+    "id": "filler",
+    "description": "a constraint naming no pattern",
+    "require": {"present": {"match": {"kind": "assistant_message"}}},
+}
+
+
+@pytest.mark.parametrize(
+    "turns",
+    [
+        pytest.param((("user", "hi"), ("assistant", "hello")), id="binder-selects-nothing"),
+        pytest.param((), id="timeline-without-events"),
+    ],
+)
+@pytest.mark.parametrize("where", ["shared", "route"])
+@pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
+def test_a_refused_require_pattern_raises_where_its_tree_is_never_entered(
+    block_engine: RegexEngineKind,
+    pattern: str,
+    where: str,
+    turns: Sequence[tuple[str, str]],
+) -> None:
+    """A binder that selects nothing leaves its ``require`` tree unresolved, and a
+    timeline without events leaves every tree unresolved — the block's patterns are
+    compiled before either is read, so neither lets a refused one through."""
+    refused = _unbindable_constraint(pattern)
+    block: dict[str, Any] = (
+        {"constraints": [refused]}
+        if where == "shared"
+        else {
+            "alternatives": [
+                {"id": "a", "description": "the route holding it", "constraints": [refused]},
+                {"id": "b", "description": "a clean route", "constraints": [_ROUTE_FILLER]},
+            ]
+        }
+    )
+    config = TraceChecksConfig(**block, regex_engine=block_engine)
+
+    with pytest.raises(UncompilablePattern) as excinfo:
+        evaluate_trace_checks(build_timeline(turns=turns), config)
+
+    assert excinfo.value.engine is block_engine
+    assert excinfo.value.pattern == pattern
+
+
 # --------------------------------------------------------------------------
 # A pattern list: every pattern of a ``regex`` list must search the value and no
 # pattern of a ``not_regex`` list may. The issue's lookahead conjunction, split
@@ -968,3 +1040,141 @@ def test_a_lookahead_conjunction_and_its_list_form_grade_alike(output: str, pass
 
     assert lookaheads is passes
     assert split is passes
+
+
+# --------------------------------------------------------------------------
+# A matcher evaluates only the predicates that can change what it selects or
+# reports: on a call ``tool`` already rejects, its ``result`` pattern never runs.
+# The issue's lookahead conjunction under ``backtracking`` costs time quadratic in
+# the text it searches, so every result it is spared is the grade's whole budget.
+
+_OTHER_TOOL_CALLS = 6
+_TRAJECTORY_TIMESTAMP = "2026-01-01T00:00:00+00:00"
+
+
+def _policy_result(size: int) -> str:
+    """A ``search_policies`` result of about ``size`` characters naming neither field."""
+    return '{"policies": "' + "refunds within thirty days " * (size // 27) + '"}'
+
+
+def _account_lookup_after_policy_searches(size: int) -> list[RecordedToolCall]:
+    """Six large ``search_policies`` results, then the ``get_account`` call naming both."""
+    return [
+        *(
+            recorded_call("search_policies", sequence=index, output=_policy_result(size))
+            for index in range(_OTHER_TOOL_CALLS)
+        ),
+        recorded_call(
+            "get_account",
+            sequence=_OTHER_TOOL_CALLS,
+            arguments={"account_id": "ACC-00000006"},
+            output=_BOTH,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "admitting",
+    [
+        pytest.param({"tool": {"equals": "get_account"}}, id="tool"),
+        pytest.param({"args": {"account_id": {"equals": "ACC-00000006"}}}, id="args-path"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("block_engine", "pattern"),
+    [
+        pytest.param(_LINEAR, _ACCOUNT_ID, id="linear"),
+        pytest.param(_BACKTRACKING, _ACCOUNT_LOOKAHEADS, id="backtracking-lookahead"),
+    ],
+)
+def test_a_result_pattern_runs_only_on_the_call_a_cheaper_predicate_admits(
+    monkeypatch: pytest.MonkeyPatch,
+    block_engine: RegexEngineKind,
+    pattern: str,
+    admitting: dict[str, Any],
+) -> None:
+    """Counted at the real operator: an ``args`` path is read before ``result``
+    although a matcher declares ``result`` first."""
+    searched: list[Any] = []
+    load = plugin_registry.load_trace_check_operator
+
+    def counting_load(name: str) -> Any:
+        operator = load(name)
+        if name != "regex":
+            return operator
+
+        def counted(value: Any, expected: Any, bindings: Any) -> bool:
+            searched.append(value)
+            return operator(value, expected, bindings)
+
+        return counted
+
+    monkeypatch.setattr(plugin_registry, "load_trace_check_operator", counting_load)
+    constraint = {
+        "require": {
+            "present": {"match": {"kind": "tool_call", "result": {"regex": pattern}} | admitting}
+        }
+    }
+
+    result = _graded(
+        [("user", "Find the account."), ("assistant", "Found it.")],
+        constraint,
+        block_engine,
+        _account_lookup_after_policy_searches(4_000),
+    )
+
+    assert result.passed
+    assert searched == [_BOTH]
+
+
+def test_a_lookahead_under_backtracking_grades_large_results_in_bounded_time() -> None:
+    """Through the real engine, over results a lookahead would take minutes to search."""
+    lookup = _account_lookup_after_policy_searches(100_000)
+    declared = [
+        ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments) for call in lookup
+    ]
+    trajectory = Trajectory(
+        task_id="account-lookup",
+        trial_index=0,
+        start_ts=_TRAJECTORY_TIMESTAMP,
+        end_ts=_TRAJECTORY_TIMESTAMP,
+        messages=[
+            Message(role=MessageRole.USER, content="Find the account."),
+            Message(role=MessageRole.ASSISTANT, content="Looking.", tool_calls=declared),
+            Message(role=MessageRole.ASSISTANT, content="Found it."),
+        ],
+        tool_log=lookup,
+    )
+    named = {"kind": "tool_call", "tool": {"equals": "get_account"}}
+    other_account = r'(?=[\s\S]*"account_id":\s*"ACC-00000007")(?=[\s\S]*"email")'
+    config = GradingConfig(
+        combine={"method": "weighted", "weights": {"trace_checks": 1.0}},
+        trace_checks=TraceChecksConfig(
+            regex_engine=_BACKTRACKING,
+            constraints=[
+                {
+                    "id": "looked-up",
+                    "description": "the account was looked up",
+                    "require": {
+                        "present": {"match": named | {"result": {"regex": _ACCOUNT_LOOKAHEADS}}}
+                    },
+                },
+                {
+                    "id": "not-another",
+                    "description": "no other account was looked up",
+                    "require": {"absent": {"match": named | {"result": {"regex": other_account}}}},
+                },
+            ],
+        ),
+    )
+
+    started = time.perf_counter()
+    grade = GradingEngine(config).grade_trajectory(trajectory, {})
+    elapsed = time.perf_counter() - started
+
+    assert [(item.id, item.passed) for item in grade.trace_check_results] == [
+        ("looked-up", True),
+        ("not-another", True),
+    ]
+    assert grade.components.trace_checks == 1.0
+    assert elapsed < 2.0

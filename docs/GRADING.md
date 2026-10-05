@@ -2431,10 +2431,12 @@ transcript_rules:
 A `regex_engine` on a predicate declaring neither `regex` nor `not_regex`, or on a
 bound value declaring no `pattern`, is a load error: it would change nothing.
 
-**A pattern its engine refuses never grades.** A matcher compiles every pattern it
-declares before it reads any event, so an uncompilable one raises each time the
-matcher is resolved, whatever the timeline holds — not only on a trial carrying an
-event that reaches it. A `disallow_regex` entry its engine refuses is a failing
+**A pattern its engine refuses never grades.** A `trace_checks` block compiles every
+pattern it declares — shared and per-route, matcher and capture — before it evaluates
+any constraint, so an uncompilable one raises on every grade, whatever the timeline
+holds: not only on a trial carrying an event that reaches it, but also where a binder
+that selected nothing leaves the `require` tree declaring it unread, and on a trial
+that left no trace at all. A `disallow_regex` entry its engine refuses is a failing
 sub-check, on a transcript with no assistant turn too. The
 [pre-run gate](#what-is-validated-before-a-run) compiles every pattern under its
 engine before a run spends anything.
@@ -2477,6 +2479,14 @@ Undecidability is scoped **to the matcher**, never to the event kind:
   nothing;
 - a matcher over a fully recorded call is *decided*, because the pairing answers
   it.
+
+**A predicate is evaluated only where its result can change what the matcher selects
+or the comparisons it reports.** The cheap fields — `tool`, `executor`, `status` — are
+read first, then `args` paths, then `text` and `result`, whatever order the matcher
+declares them in. So on a call `tool` already rejects, no `result` pattern runs, and a
+pattern's cost is paid only on the events the matcher's other predicates admit. The
+answer is the one evaluating every predicate gives — the same sets, and the same
+comparisons reported, in the same order.
 
 ### The constraint vocabulary — ten members
 

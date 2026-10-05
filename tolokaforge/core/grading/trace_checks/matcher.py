@@ -243,6 +243,11 @@ def _resolve(
     whether it was refused or read a value no JSON type names: two bad references on
     one matcher would otherwise empty each other's candidate set, and an author who
     wrote two of them would be told about neither.
+
+    A predicate is evaluated only where its result can still change that answer —
+    see :func:`_rejections` — so on a call ``tool`` rejects, no ``result`` pattern
+    runs. The records keep the matcher's declared order whatever order the
+    predicates were evaluated in.
     """
     outcome = _outcome_of(event, results)
     unreadable_when_none = _unreadable_when_none(outcome)
@@ -251,28 +256,71 @@ def _resolve(
         _comparison_records(field, None if value is _MISSING else value, predicate, bindings, event)
         for field, value, predicate in readings
     ]
-    unreadable = {
-        field for field, value, _ in readings if value is None and field in unreadable_when_none
-    }
-    failing = {
+    unread = {
         index
-        for index, (field, value, predicate) in enumerate(readings)
-        if not (value is None and field in unreadable_when_none)
-        and not _predicate_holds(field, predicate, value, bindings, regexes)
+        for index, (field, value, _) in enumerate(readings)
+        if value is None and field in unreadable_when_none
     }
-    rejecting = {
-        index
-        for index in failing
-        if all(record.state is _Makeability.MADE for record in records[index])
-    }
+    unreadable = {readings[index][0] for index in unread}
+    failed, rejecting = _rejections(readings, records, unread, bindings, regexes)
     candidate_records = [
         record for index, found in enumerate(records) if not rejecting - {index} for record in found
     ]
-    if failing:
+    if failed:
         return _Truth.FALSE, frozenset(), candidate_records
     if unreadable:
         return _Truth.UNKNOWN, frozenset(unreadable), candidate_records
     return _Truth.TRUE, frozenset(), candidate_records
+
+
+def _rejections(
+    readings: list[tuple[str, Any, ValuePredicate]],
+    records: list[list[_ComparisonRecord]],
+    unread: set[int],
+    bindings: Mapping[str, Any],
+    regexes: _RegexOperands,
+) -> tuple[bool, frozenset[int]]:
+    """Whether some reading fails, and the rejecting readings that settle the records.
+
+    A rejecting reading is a failing one whose every comparison was made, a reading
+    with no comparison included. The records :func:`_resolve` keeps turn only on the
+    rejecting set: all of them with none, the sole rejecter's own with one, none
+    with two or more. So once a reading has failed — the verdict is then false —
+    only the readings that could still reject are evaluated, and evaluation stops at
+    a second rejecter, or at one carrying no records, since nothing a further
+    reading says can then change which records are kept. The set returned is exact
+    up to that point and answers the same as the full one would.
+
+    Readings are evaluated cheapest first — ``tool``, ``executor`` and ``status``,
+    then ``args`` paths, then ``text`` and ``result``, whose values are the
+    unbounded ones a pattern scans — and an unread reading is never evaluated.
+    """
+    failed = False
+    rejecting: list[int] = []
+    for index in sorted(set(range(len(readings))) - unread, key=lambda i: _cost(readings[i][0])):
+        field, value, predicate = readings[index]
+        could_reject = all(record.state is _Makeability.MADE for record in records[index])
+        if (failed and not could_reject) or _predicate_holds(
+            field, predicate, value, bindings, regexes
+        ):
+            continue
+        failed = True
+        if could_reject:
+            rejecting.append(index)
+        if len(rejecting) > 1 or (rejecting and not records[rejecting[0]]):
+            break
+    return failed, frozenset(rejecting)
+
+
+_FIELD_COST: Mapping[str, int] = {"tool": 0, "executor": 0, "status": 0, "text": 2, "result": 2}
+"""Which of a matcher's event fields :func:`_rejections` reads first; an ``args``
+path ranks between the two tiers."""
+
+_ARGS_COST = 1
+
+
+def _cost(field: str) -> int:
+    return _ARGS_COST if field.startswith(_ARGS_PREFIX) else _FIELD_COST[field]
 
 
 def _comparison_records(

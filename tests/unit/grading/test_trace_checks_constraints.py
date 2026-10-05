@@ -1463,13 +1463,16 @@ def _comparisons_the_message_names(message: str) -> tuple[str, ...]:
 
 
 def _delivery_trajectory(
-    calls: Sequence[tuple[str, dict[str, Any]]], bound: Any = 4021
+    calls: Sequence[tuple[str, dict[str, Any]]],
+    bound: Any = 4021,
+    outputs: Sequence[str] | None = None,
 ) -> TrialTimeline:
     """The binder's call in turn 0, then one call of ``calls`` per turn from turn 1 on.
 
     ``bound`` is the value the binder's call carries and so the value the binding
     holds — the trajectory's own way of choosing which direction the reference is
-    read in.
+    read in. ``outputs`` are the results ``calls`` returned, one each, and empty
+    where omitted.
 
     One call per turn because a ``within`` window is the only way to ask what the
     constraint's window does to a comparison read outside it, and a window addresses
@@ -1489,9 +1492,13 @@ def _delivery_trajectory(
                 Turn(
                     "assistant",
                     f"Calling {tool}.",
-                    recorded=[recorded_call(tool, sequence=index, arguments=arguments)],
+                    recorded=[
+                        recorded_call(tool, sequence=index, arguments=arguments, output=output)
+                    ],
                 )
-                for index, (tool, arguments) in enumerate(calls, start=1)
+                for index, ((tool, arguments), output) in enumerate(
+                    zip(calls, outputs or [""] * len(calls), strict=True), start=1
+                )
             ),
         ]
     )
@@ -1663,6 +1670,45 @@ def test_an_unmakeable_comparison_fails_the_candidate_it_was_read_on(
 
     assert result.passed is cell.passed
     assert _comparisons_the_message_names(result.message) == cell.reported
+
+
+_LOGGED = r"logged code \w+"
+
+
+@pytest.mark.parametrize(
+    ("made_comparisons_result", "reported"),
+    [
+        pytest.param("nothing logged", ("args.code",), id="a_second_reading_rejects_it_too"),
+        pytest.param("logged code 99", (), id="the_made_comparison_rejects_it_alone"),
+    ],
+)
+def test_a_result_predicate_decides_whether_a_made_comparison_speaks_for_its_call(
+    made_comparisons_result: str, reported: tuple[str, ...]
+) -> None:
+    """A comparison is recorded on a call only where every other reading admits it.
+
+    Both trajectories carry the junk ``code: "x"`` call, whose result the pattern
+    admits, beside a ``code: 99`` call that made the comparison and came out false.
+    Where that call's result also fails the pattern, the comparison is one of two
+    readings rejecting it, so the call speaks for nothing and the junk call's
+    residue is reported. Where its result passes, the comparison is the call's sole
+    rejecter, so it was made on a candidate and silences the report.
+    """
+    matcher = _call_of(
+        "log", args={"code": {"equals_binding": "delivery"}}, result={"regex": _LOGGED}
+    )
+
+    result = evaluate_constraint(
+        _delivery_trajectory(
+            (("log", {"code": "x"}), ("log", {"code": 99})),
+            outputs=("logged code x", made_comparisons_result),
+        ),
+        {"present": {"match": matcher}},
+        bind=_DELIVERY_BINDING,
+    )
+
+    assert result.passed is False
+    assert _comparisons_the_message_names(result.message) == reported
 
 
 # Every extraction the load rules admit, and the value it reads off the trajectory

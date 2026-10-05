@@ -1789,6 +1789,10 @@ class TraceConstraint(BaseModel):
         """The names this constraint's binder puts in scope, if it declares one."""
         return frozenset(self.bind.values) if self.bind is not None else frozenset()
 
+    def matchers(self) -> Iterator[TraceMatcher]:
+        """Every matcher the constraint declares, its binder's included."""
+        return _matchers_within(self)
+
     @field_validator("weight")
     @classmethod
     def _require_a_weight_that_scores(cls, value: float) -> float:

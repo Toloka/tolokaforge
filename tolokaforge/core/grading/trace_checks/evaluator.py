@@ -20,8 +20,13 @@ from tolokaforge.core.grading.key_manifest import (
     UNBOUND_BINDING_SKIP,
 )
 from tolokaforge.core.grading.regex_engine import RegexEngineKind
-from tolokaforge.core.grading.trace_checks.bindings import _Candidates, _candidates
+from tolokaforge.core.grading.trace_checks.bindings import (
+    _Candidates,
+    _candidates,
+    _capture_patterns,
+)
 from tolokaforge.core.grading.trace_checks.dispatch import _HANDLERS
+from tolokaforge.core.grading.trace_checks.matcher import _regex_operands
 from tolokaforge.core.grading.trace_checks.resolver import _message, _Resolver
 from tolokaforge.core.grading.trace_checks.truth import _conjunction, _Truth
 from tolokaforge.core.grading.trace_timeline import TrialTimeline
@@ -54,7 +59,14 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
     kind is accounted as skipped, because every constraint would otherwise score
     against evidence the trial does not carry. A caller reads ``constraints`` to
     tell the two apart — empty is the trial that left no trace.
+
+    Every pattern the block declares is compiled under its effective engine before
+    anything else, so one its engine refuses raises
+    :class:`~tolokaforge.core.grading.regex_engine.UncompilablePattern` whatever the
+    timeline — also where a binder that selected nothing, or a trial that left no
+    trace, leaves the matcher declaring it unresolved.
     """
+    _compile_every_pattern(config)
     if not timeline.events:
         return TraceChecksResult(
             accounted_keys=_accounting(config, _declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
@@ -225,11 +237,28 @@ def _accounting(
 
 def _declared_kinds(config: TraceChecksConfig) -> set[TraceConstraintKind]:
     """Every kind the block declares, shared or inside a path, nesting included."""
-    declared = [
+    return {kind for item in _every_constraint(config) for kind in item.require.kinds_in_tree()}
+
+
+def _every_constraint(config: TraceChecksConfig) -> list[TraceConstraint]:
+    """The block's shared constraints, then every path's own."""
+    return [
         *config.constraints,
         *(item for path in config.alternatives or () for item in path.constraints),
     ]
-    return {kind for item in declared for kind in item.require.kinds_in_tree()}
+
+
+def _compile_every_pattern(config: TraceChecksConfig) -> None:
+    """Compile every matcher and capture pattern of the block under its effective engine.
+
+    Only for the refusal: the engine caches each compiled pattern, so the matchers
+    and binders that compile them again at evaluation read them back from the cache.
+    """
+    for constraint in _every_constraint(config):
+        if constraint.bind is not None:
+            _capture_patterns(constraint.bind, config.regex_engine)
+        for matcher in constraint.matchers():
+            _regex_operands(matcher, config.regex_engine)
 
 
 def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
