@@ -573,37 +573,15 @@ class TestTrialToolSurfacePartition:
         assert kwargs["user_simulator"].tool_schemas == []
         assert kwargs["user_tool_executor"] is None
 
-    def test_a_broken_harness_command_names_the_trial(self, tmp_path: Path) -> None:
-        """A blank ``agent_harness_command`` is a broken adapter. The classifier
-        raises naming the key; the dispatch call site re-raises with the
-        ``trial <id>:`` prefix so a multi-trial run says which trial carried the
-        bad metadata. The broken metadata is injected onto ``spec.task`` after
-        construction — a producer classifying it up front would refuse to build
-        the spec at all."""
-        conductor = self._conductor(tmp_path, _register_result([], []))
-        setup = _TrialSetup(
-            trial_id="t1:0",
-            trial_idx=0,
-            task_dir=tmp_path,
-            trial_dir=tmp_path / "trials" / "t1" / "0",
-            env_state=MagicMock(),
-            adapter_env=MagicMock(),
-            tool_schemas=[],
-            tool_executor=MagicMock(),
-            user_tool_schemas=[],
-            user_tool_executor=None,
-        )
-        base = _make_spec()
-        spec = base.model_copy(
-            update={
-                "task": base.task.model_copy(update={"metadata": {"agent_harness_command": "   "}})
-            }
-        )
-
-        with pytest.raises(RuntimeError, match=r"trial t1:0: .*agent_harness_command"):
-            conductor._run_agent_loop(
-                spec, TaskConfig(task_id="t1", description="d"), setup, AGENT_LOOP_IDENTITY
-            )
+    def test_a_broken_harness_command_is_refused_at_construction(self) -> None:
+        """A blank ``agent_harness_command`` is a broken adapter, not a request
+        to run the turn loop. The mode is classified when the spec is built, so
+        the fail-loud fires at construction naming the key — a spec can never
+        carry a bogus mode into the conductor. The producer wraps the same raise
+        with its unit coordinates (see ``test_orchestrator_execution_mode``); the
+        dispatch branch reads the carried mode and never reclassifies."""
+        with pytest.raises(RuntimeError, match=r"agent_harness_command.*non-blank"):
+            _make_spec(metadata={"agent_harness_command": "   "})
 
     def test_the_bundle_records_both_slices_in_order(self, tmp_path: Path) -> None:
         """``tools_schemas.yaml`` is the trial's whole declared tool surface.
@@ -944,3 +922,86 @@ class TestExecutionModeStampReadsCarriedField:
             result = conductor.run(spec, TaskConfig(task_id="t1", description="d"))
 
         assert result.trajectory.execution_mode is ExecutionMode.DELEGATED
+
+
+class TestExecutionModeDispatchReadsCarriedField:
+    """``_run_agent_loop`` branches on the carried ``spec.execution_mode`` — the
+    mode the producer classified — not on a re-read of ``spec.task.metadata``.
+    A spec whose carried mode disagrees with its own metadata proves which
+    source the dispatch branch reads."""
+
+    def _setup(self, tmp_path: Path) -> _TrialSetup:
+        return _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[],
+            user_tool_executor=None,
+        )
+
+    def test_carried_engine_loop_runs_the_engine_even_with_a_command_in_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        conductor = _conductor_registering(tmp_path, _register_result([], []))
+        # Metadata classifies DELEGATED; the carried mode is ENGINE_LOOP, so the
+        # two sources are distinguishable at the dispatch branch.
+        spec = _make_spec(metadata={"agent_harness_command": "claude --print"}).model_copy(
+            update={"execution_mode": ExecutionMode.ENGINE_LOOP}
+        )
+        assert select_execution_mode(spec.task.metadata) is ExecutionMode.DELEGATED
+
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+            patch.object(InProcessConductor, "_run_harness_trial") as harness,
+        ):
+            conductor._run_agent_loop(
+                spec,
+                TaskConfig(task_id="t1", description="d"),
+                self._setup(tmp_path),
+                AGENT_LOOP_IDENTITY,
+            )
+
+        harness.assert_not_called()
+        runner_cls.assert_called_once()
+
+    def test_carried_delegated_takes_the_harness_branch(self, tmp_path: Path) -> None:
+        conductor = _conductor_registering(tmp_path, _register_result([], []))
+        spec = _make_spec(metadata={"agent_harness_command": "claude --print"}).model_copy(
+            update={"execution_mode": ExecutionMode.DELEGATED}
+        )
+        with patch.object(
+            InProcessConductor,
+            "_run_harness_trial",
+            return_value=(MagicMock(), MagicMock(), "sys"),
+        ) as harness:
+            conductor._run_agent_loop(
+                spec,
+                TaskConfig(task_id="t1", description="d"),
+                self._setup(tmp_path),
+                AGENT_LOOP_IDENTITY,
+            )
+
+        harness.assert_called_once()
+        # The command the delegated branch runs with is read from metadata and
+        # passed through as the final positional argument.
+        assert harness.call_args.args[-1] == "claude --print"
+
+    def test_carried_delegated_without_a_command_names_the_trial(self, tmp_path: Path) -> None:
+        conductor = _conductor_registering(tmp_path, _register_result([], []))
+        # Carried DELEGATED but metadata holds no command: an inconsistent spec.
+        # Dispatch follows the carried mode into the harness branch, then fails
+        # loud on the missing command rather than running the turn loop.
+        spec = _make_spec().model_copy(update={"execution_mode": ExecutionMode.DELEGATED})
+        with pytest.raises(RuntimeError, match=r"trial t1:0: .*agent_harness_command"):
+            conductor._run_agent_loop(
+                spec,
+                TaskConfig(task_id="t1", description="d"),
+                self._setup(tmp_path),
+                AGENT_LOOP_IDENTITY,
+            )
