@@ -421,6 +421,7 @@ class SearchConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     @model_serializer(mode="wrap")
+    @schema_from_the_fields
     def _omit_fields_at_their_default(
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, Any]:

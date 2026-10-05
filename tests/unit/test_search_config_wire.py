@@ -169,3 +169,11 @@ def test_the_task_description_carries_the_search_block_unchanged() -> None:
     )
     assert list(json.loads(description.model_dump_json())["search"]) == _PRE_SEAM_KEYS
     assert list(description.model_dump(mode="json")["search"]) == _PRE_SEAM_KEYS
+
+
+def test_leaving_keys_off_at_their_default_keeps_the_serialization_schema() -> None:
+    """The dump that drops a key at its default still describes every field it can carry."""
+    serialization = SearchConfig.model_json_schema(mode="serialization")
+    assert set(serialization["properties"]) == set(SearchConfig.model_fields)
+    holder = TaskDescription.model_json_schema(mode="serialization")["$defs"]["SearchConfig"]
+    assert set(holder["properties"]) == set(SearchConfig.model_fields)

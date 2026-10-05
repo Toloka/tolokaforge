@@ -128,3 +128,18 @@ def test_there_is_no_tool_actors_field() -> None:
     """The actor that gets the tool is ``tools.<actor>.enabled``, declared once."""
     assert set(RagToolConfig.model_fields) == {"name", "description"}
     assert set(RagConfig.model_fields) == {"corpus_dir", "backend", "backend_config", "tool"}
+
+
+@pytest.mark.parametrize("model", [RagConfig, RagToolConfig, TaskConfig], ids=lambda m: m.__name__)
+def test_dumping_only_the_declared_fields_keeps_the_serialization_schema(
+    model: type[RagConfig | RagToolConfig | TaskConfig],
+) -> None:
+    """The dump that leaves undeclared fields out still describes every field it can carry."""
+    serialization = model.model_json_schema(mode="serialization")
+    validation = model.model_json_schema(mode="validation")
+    assert set(serialization["properties"]) == set(validation["properties"])
+    for name in ("RagConfig", "RagToolConfig"):
+        if name in validation.get("$defs", {}):
+            assert set(serialization["$defs"][name]["properties"]) == set(
+                validation["$defs"][name]["properties"]
+            )
