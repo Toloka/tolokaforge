@@ -96,10 +96,15 @@ def test_grpc_runner_client_satisfies_protocol() -> None:
     assert isinstance(client, RunnerClient)
 
 
-@pytest.mark.parametrize("runner_version", [2, 3])
+@pytest.mark.parametrize(
+    "runner_version",
+    [0, 2, 3],
+    ids=["unversioned_image", "first_versioned_response", "predating_the_linear_regex_default"],
+)
 def test_new_host_refuses_an_old_runner_before_the_trial_starts(runner_version: int) -> None:
-    """Version 3 is the last image predating the RE2 grading default; it is refused for
-    every pack, not left to refuse only a grading config carrying ``regex_engine``."""
+    """An image predating ``runner_protocol_version`` reads back as 0. Version 3 is the
+    last image predating the RE2 grading default; it is refused for every pack, not left
+    to refuse only a grading config carrying ``regex_engine``."""
     client = GrpcRunnerClient()
     requests = []
     client.stub = SimpleNamespace(
