@@ -340,18 +340,23 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
         "trace_checks.constraints.severity",
         "trace_checks.constraints.within",
         "trace_checks.constraints.bind",
+        "trace_checks.regex_engine",
+        "transcript_rules.regex_engine",
     }
 )
 
-# The five per-constraint fields that shape how a kind scores without scoring
-# anything themselves. Each owns a pack whose two trials a build ignoring the
-# field would score identically, so discrimination is the field being read.
-_TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
+# The five per-constraint fields that shape how a kind scores, and the two block
+# fields naming the regex engine a rule's patterns run on — none scoring anything
+# themselves. Each owns a pack whose two trials a build ignoring the field would
+# score identically, so discrimination is the field being read.
+_CONFIG_INPUT_KEYS: tuple[str, ...] = (
     "trace_checks.constraints.weight",
     "trace_checks.constraints.on_missing",
     "trace_checks.constraints.severity",
     "trace_checks.constraints.within",
     "trace_checks.constraints.bind",
+    "trace_checks.regex_engine",
+    "transcript_rules.regex_engine",
 )
 
 # FIELD_RESOLUTION_ONLY entries that need no tracking issue: aggregation and
@@ -1863,10 +1868,10 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         "that reaches neither lock 3 nor a lock named here is enforced by nothing"
     )
 
-    assert {key for key in escaped if key.startswith("trace_checks.")} == set(
-        _TRACE_CONFIG_INPUT_KEYS
-    ), (
-        "a per-constraint config input escaped lock 3 without joining the "
+    assert {
+        key for key in escaped if key.startswith(("trace_checks.", "transcript_rules."))
+    } == set(_CONFIG_INPUT_KEYS), (
+        "a trace_checks or transcript_rules config input escaped lock 3 without joining the "
         "parametrisation that drives its differential, so its claim rests on the "
         "membership above and nothing else"
     )
@@ -2804,23 +2809,23 @@ def test_every_state_checks_refusal_names_the_trial_it_refused(
 
 
 # --------------------------------------------------------------------------
-# 11. Both substrates read every per-constraint config input
+# 11. Both substrates read every trace_checks and transcript_rules config input
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("author_key", _TRACE_CONFIG_INPUT_KEYS)
-def test_both_substrates_read_each_per_constraint_config_input(
+@pytest.mark.parametrize("author_key", _CONFIG_INPUT_KEYS)
+def test_both_substrates_read_each_config_input(
     author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
 ):
-    """A field that shapes how a kind scores, driven the way lock 3 drives a scored key.
+    """A field that shapes how a check scores, driven the way lock 3 drives a scored key.
 
-    Lock 3 selects ``SCORED_CHECK``, so these five escape it — they carry no
-    component of their own, they change what one does. Each pack is authored so
-    that a build ignoring the field scores its two trials *identically*: the
-    weights are the only thing telling one from the other, or the unmatched
-    anchor's policy is, or the turn window is, or which constraint is the gate is,
-    or the argument the two matchers correlate on is. Discrimination here is
-    therefore the field being read, not the constraint around it working.
+    Lock 3 selects ``SCORED_CHECK``, so these escape it — they carry no component
+    of their own, they change what one does. Each pack is authored so that a build
+    ignoring the field scores its two trials *identically*: the weights are the only
+    thing telling one from the other, or the unmatched anchor's policy is, or the
+    turn window is, or which constraint is the gate is, or the argument the two
+    matchers correlate on is, or the regex engine reading a digit is. Discrimination
+    here is therefore the field being read, not the check around it working.
     """
     verdict = _drive_both_substrates(
         author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context

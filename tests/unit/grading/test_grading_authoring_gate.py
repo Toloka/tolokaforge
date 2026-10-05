@@ -169,6 +169,20 @@ def _tool_call(tool: str, **args: dict[str, Any]) -> dict[str, Any]:
     return match
 
 
+def _under_engine(grading: dict[str, Any], engine: str) -> dict[str, Any]:
+    """*grading* with its ``trace_checks`` block declaring ``regex_engine: engine``."""
+    return {**grading, "trace_checks": {**grading["trace_checks"], "regex_engine": engine}}
+
+
+def _captured_figure(pattern: str, **bound: Any) -> dict[str, Any]:
+    """A binder capturing ``figure`` out of an assistant turn by *pattern*."""
+    return _bound_block(
+        {"kind": "assistant_message"},
+        {"figure": {"field": "text", "pattern": pattern, **bound}},
+        {"present": {"match": _tool_call("write_file", content={"contains_binding": "figure"})}},
+    )
+
+
 def _required_action(name: str, requestor: str) -> dict[str, Any]:
     """One ``required_actions`` entry, in the shape an author writes it."""
     return {
@@ -577,6 +591,83 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_regex_compiles",
         channel="errors",
         message="does not compile",
+    ),
+    _Rule(
+        label="matcher_lookahead_under_a_linear_block",
+        task=_HELPDESK,
+        grading=_under_engine(
+            _trace_block({"kind": "tool_call", "tool": {"regex": "(?=http)http_request"}}),
+            "linear",
+        ),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="declares regex_engine: backtracking on the predicate or on the trace_checks block",
+    ),
+    _Rule(
+        label="matcher_lookahead_under_a_linear_predicate_in_a_backtracking_block",
+        task=_HELPDESK,
+        grading=_under_engine(
+            _trace_block(
+                {
+                    "kind": "tool_call",
+                    "tool": {"not_regex": "(?=http)ftp", "regex_engine": "linear"},
+                }
+            ),
+            "backtracking",
+        ),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="does not compile under the linear regex engine: invalid perl operator",
+    ),
+    _Rule(
+        label="unterminated_matcher_regex_under_a_backtracking_predicate_in_a_linear_block",
+        task=_HELPDESK,
+        grading=_under_engine(
+            _trace_block(
+                {
+                    "kind": "tool_call",
+                    "tool": {"regex": "http_(request", "regex_engine": "backtracking"},
+                }
+            ),
+            "linear",
+        ),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="does not compile under the backtracking regex engine",
+    ),
+    _Rule(
+        label="capture_pattern_only_linear_compiles_with_no_group",
+        task=_CODING,
+        grading=_under_engine(_captured_figure(r"\pL+"), "linear"),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="captures 0 groups, and a binding reads exactly one",
+    ),
+    _Rule(
+        label="capture_pattern_only_linear_compiles_with_two_groups",
+        task=_CODING,
+        grading=_captured_figure(r"(?<n>\d+)-(\d+)", regex_engine="linear"),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="captures 2 groups, and a binding reads exactly one",
+    ),
+    _Rule(
+        label="capture_lookahead_under_a_linear_block",
+        task=_CODING,
+        grading=_under_engine(_captured_figure("(?=[0-9])([0-9]+)"), "linear"),
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="on the bound value or on the trace_checks block",
+    ),
+    _Rule(
+        label="transcript_lookahead_under_a_linear_block",
+        task=_HELPDESK,
+        grading={
+            "transcript_rules": {"disallow_regex": ["(?=pass)password"], "regex_engine": "linear"}
+        },
+        checker="_check_regex_compiles",
+        channel="advisories",
+        message="declares regex_engine: backtracking on the transcript_rules block",
     ),
     _Rule(
         label="hash_source_without_the_flag",
@@ -3147,13 +3238,15 @@ def test_the_transcript_rules_the_gate_reads_are_the_ones_the_model_declares() -
     as nothing, refusing a pack that grades — the failure direction a list beside the
     model cannot catch. ``tool_expectations`` is the one field read a level down,
     through the two keys the tool-name rule already addresses, so its own key set is
-    held against ``ToolExpectations`` in the same breath.
+    held against ``ToolExpectations`` in the same breath. ``regex_engine`` declares
+    no rule: it names the engine ``disallow_regex`` runs on, so a block carrying it
+    alone asserts nothing.
 
     The author-facing sentence is checked against the same sets, since a message that
     named a key the predicate stopped reading would send the author to declare
     something the gate goes on refusing.
     """
-    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations"} == set(
+    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations", "regex_engine"} == set(
         TranscriptRulesConfig.model_fields
     )
     assert set(_TOOL_EXPECTATION_HAZARDS) == set(ToolExpectations.model_fields)
@@ -3697,6 +3790,47 @@ def test_a_typo_inside_a_binder_is_reported_at_the_binders_own_matcher() -> None
         "trace_checks.by_reading_the_file.the_route_quote_came_from_a_read.bind.match.tool",
     ]
     assert all("is not declared by this task" in finding.message for finding in report.errors)
+
+
+_LOOKAHEAD = "(?=http)http_request"
+
+
+@pytest.mark.parametrize(
+    "grading",
+    [
+        pytest.param(
+            _under_engine(
+                _trace_block({"kind": "tool_call", "tool": {"regex": _LOOKAHEAD}}), "backtracking"
+            ),
+            id="backtracking-block",
+        ),
+        pytest.param(
+            _under_engine(
+                _trace_block(
+                    {
+                        "kind": "tool_call",
+                        "tool": {"regex": _LOOKAHEAD, "regex_engine": "backtracking"},
+                    }
+                ),
+                "linear",
+            ),
+            id="backtracking-predicate-in-a-linear-block",
+        ),
+        pytest.param(
+            {"transcript_rules": {"disallow_regex": [_LOOKAHEAD], "regex_engine": "backtracking"}},
+            id="backtracking-transcript-rules",
+        ),
+    ],
+)
+def test_a_lookahead_its_engine_compiles_draws_no_regex_finding(grading: dict[str, Any]) -> None:
+    """The gate compiles each pattern under the engine that runs it, not under one engine."""
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert not [
+        finding
+        for finding in report.errors + report.advisories
+        if "does not compile" in finding.message
+    ]
 
 
 def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> None:

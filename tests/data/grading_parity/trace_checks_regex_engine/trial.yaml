@@ -1,0 +1,15 @@
+satisfying:
+  messages:
+    - role: user
+      content: "Did you log my complaint?"
+    - role: assistant
+      content: "Yes — your case reference 3 is open."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Did you log my complaint?"
+    - role: assistant
+      content: "Yes — your case reference ٣ is open."
+  state: {}

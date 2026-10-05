@@ -19,6 +19,7 @@ from tolokaforge.core.grading.key_manifest import (
     TRACE_CONSTRAINTS_KEY,
     UNBOUND_BINDING_SKIP,
 )
+from tolokaforge.core.grading.regex_engine import RegexEngineKind
 from tolokaforge.core.grading.trace_checks.bindings import _Candidates, _candidates
 from tolokaforge.core.grading.trace_checks.dispatch import _HANDLERS
 from tolokaforge.core.grading.trace_checks.resolver import _message, _Resolver
@@ -59,14 +60,17 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
             accounted_keys=_accounting(config, _declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
         )
     ledger = _KindLedger()
+    engine = config.regex_engine
     shared = [
-        _evaluate_constraint(timeline, constraint, ledger) for constraint in config.constraints
+        _evaluate_constraint(timeline, constraint, ledger, engine)
+        for constraint in config.constraints
     ]
     if config.alternatives is None:
         return _component(config, _decision_set(shared), ledger, winner_id="", paths=[])
     routes = {
         path.id: _decision_set(
-            shared + [_evaluate_constraint(timeline, item, ledger) for item in path.constraints]
+            shared
+            + [_evaluate_constraint(timeline, item, ledger, engine) for item in path.constraints]
         )
         for path in config.alternatives
     }
@@ -244,7 +248,10 @@ def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
 
 
 def _evaluate_constraint(
-    timeline: TrialTimeline, constraint: TraceConstraint, ledger: _KindLedger
+    timeline: TrialTimeline,
+    constraint: TraceConstraint,
+    ledger: _KindLedger,
+    regex_engine: RegexEngineKind,
 ) -> TraceConstraintResult:
     """One constraint's verdict, its ``require`` tree read once per bound candidate.
 
@@ -260,14 +267,14 @@ def _evaluate_constraint(
     ``require`` tree, since there is no environment to enter it under.
     """
     kind = constraint.require.declared_kind()
-    candidates = _candidates(timeline, constraint)
+    candidates = _candidates(timeline, constraint, regex_engine=regex_engine)
     on_missing = constraint.on_missing or OnMissing.FAIL
     definite = [
-        _read_under(timeline, constraint, environment, ledger.visited, on_missing)
+        _read_under(timeline, constraint, environment, ledger.visited, on_missing, regex_engine)
         for environment in candidates.definite
     ]
     possible = [
-        _read_under(timeline, constraint, environment, ledger.visited, on_missing)
+        _read_under(timeline, constraint, environment, ledger.visited, on_missing, regex_engine)
         for environment in candidates.undecidable
     ]
     if not definite and not possible:
@@ -354,8 +361,9 @@ def _read_under(
     environment: Mapping[str, Any],
     visited: set[TraceConstraintKind],
     on_missing: OnMissing,
+    regex_engine: RegexEngineKind,
 ) -> _CandidateReading:
-    resolver = _Resolver(timeline, constraint.within, visited, environment)
+    resolver = _Resolver(timeline, constraint.within, visited, environment, regex_engine)
     truth = _evaluate(constraint.require, resolver, on_missing)
     return _CandidateReading(
         environment=environment,

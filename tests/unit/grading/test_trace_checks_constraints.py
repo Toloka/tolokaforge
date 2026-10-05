@@ -58,6 +58,9 @@ from tolokaforge.runner.models import (
 
 pytestmark = pytest.mark.unit
 
+_BLOCK_ENGINE = TraceChecksConfig.model_fields["regex_engine"].default
+"""What a ``trace_checks`` block declaring no ``regex_engine`` resolves its matchers under."""
+
 _LOOKUP = "billing_api_get_payment"
 _DENIAL = "servicenow_csm_update_case"
 
@@ -307,8 +310,20 @@ def test_an_unmatched_side_fails_by_name_unless_the_author_opted_out():
     failing = evaluate_constraint(timeline, require)
     permitted = evaluate_constraint(timeline, require, on_missing="pass")
 
-    assert select_events(timeline, TraceMatcher(**_call_of(_DENIAL)), {}).matched == ()
-    assert len(select_events(timeline, TraceMatcher(**_call_of(_LOOKUP)), {}).matched) == 1
+    assert (
+        select_events(
+            timeline, TraceMatcher(**_call_of(_DENIAL)), {}, regex_engine=_BLOCK_ENGINE
+        ).matched
+        == ()
+    )
+    assert (
+        len(
+            select_events(
+                timeline, TraceMatcher(**_call_of(_LOOKUP)), {}, regex_engine=_BLOCK_ENGINE
+            ).matched
+        )
+        == 1
+    )
     assert failing.passed is False
     assert "right" in failing.message
     assert permitted.passed is True
@@ -1715,7 +1730,9 @@ def test_a_binder_may_extract_every_field_its_kind_carries(
         }
     )
 
-    assert _candidates(_extraction_probe(), constraint).definite == [{"read": expected}]
+    assert _candidates(_extraction_probe(), constraint, regex_engine=_BLOCK_ENGINE).definite == [
+        {"read": expected}
+    ]
 
 
 # --------------------------------------------------------------------------

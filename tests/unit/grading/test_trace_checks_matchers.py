@@ -24,9 +24,11 @@ from pydantic import ValidationError
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
 from tests.utils.trace_constraints import evaluate_constraint
+from tolokaforge.core.grading.regex_engine import RegexEngineKind, UncompilablePattern
 from tolokaforge.core.grading.trace_checks import (
     _binding_operator_names,
     _extracted,
+    evaluate_trace_checks,
     select_events,
 )
 from tolokaforge.core.grading.trace_timeline import (
@@ -39,15 +41,21 @@ from tolokaforge.core.models import (
     RecordedToolCall,
     ToolCall,
     ToolExecutionStatus,
+    TraceChecksConfig,
+    TraceChecksResult,
     TraceMatcher,
     ValuePredicate,
 )
 from tolokaforge.runner.models import (
     TRACE_PREDICATE_BINDING_OPERATORS,
+    TRACE_PREDICATE_MODIFIERS,
     TRACE_PREDICATE_OPERATORS,
 )
 
 pytestmark = pytest.mark.unit
+
+_BLOCK_ENGINE = TraceChecksConfig.model_fields["regex_engine"].default
+"""What a ``trace_checks`` block declaring no ``regex_engine`` resolves its matchers under."""
 
 # Both turns name the payment, so a matcher selecting on that text is held apart
 # from the user's turn by ``kind`` alone.
@@ -79,7 +87,7 @@ def test_a_tool_result_matcher_passes_over_the_message_whose_status_is_none():
     timeline = _timeline(recorded=[_payment_lookup()])
     matcher = TraceMatcher(kind=TraceEventKind.TOOL_RESULT, status=ValuePredicate(equals="success"))
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert _only(timeline, TraceEventKind.ASSISTANT_MESSAGE).status is None
     assert [event.kind for event in outcome.matched] == [TraceEventKind.TOOL_RESULT]
@@ -92,7 +100,7 @@ def test_an_assistant_message_matcher_passes_over_the_call_whose_text_is_none():
         kind=TraceEventKind.ASSISTANT_MESSAGE, text=ValuePredicate(contains="PAY-664306")
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert _only(timeline, TraceEventKind.TOOL_CALL).text is None
     assert _only(timeline, TraceEventKind.USER_MESSAGE).text == "Refund PAY-664306."
@@ -118,6 +126,7 @@ def test_an_absent_argument_is_unmatched_rather_than_vacuously_true():
             args={"refund_id": ValuePredicate(not_equals="R-1")},
         ),
         {},
+        regex_engine=_BLOCK_ENGINE,
     )
     absent = select_events(
         timeline,
@@ -126,6 +135,7 @@ def test_an_absent_argument_is_unmatched_rather_than_vacuously_true():
             args={"refund_id": ValuePredicate(exists=False)},
         ),
         {},
+        regex_engine=_BLOCK_ENGINE,
     )
 
     assert negative.matched == ()
@@ -152,10 +162,10 @@ def test_a_nested_argument_path_reaches_inside_a_request_body():
         args={"body.resolution_path": ValuePredicate(equals="policy_exception")},
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert outcome.matched == (_only(timeline, TraceEventKind.TOOL_CALL),)
-    assert select_events(timeline, other_path, {}).matched == ()
+    assert select_events(timeline, other_path, {}, regex_engine=_BLOCK_ENGINE).matched == ()
 
 
 @pytest.mark.parametrize(
@@ -183,7 +193,7 @@ def test_a_tool_call_matcher_reads_its_status_from_the_paired_result(
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert call.status is None
     assert _only(timeline, TraceEventKind.TOOL_RESULT).status is status
@@ -204,7 +214,7 @@ def test_a_status_predicate_cannot_be_decided_where_nothing_recorded_the_call():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert timeline.records_present is False
     assert call.status is None
@@ -230,7 +240,7 @@ def test_an_unexecuted_call_to_the_named_tool_cannot_be_decided():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert timeline.records_present is True
     assert unexecuted.arguments == {"amount": 20}
@@ -254,7 +264,7 @@ def test_an_unexecuted_call_to_another_tool_leaves_the_matcher_decided():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert unexecuted.tool_name == "search_policy"
     assert unexecuted.status is None
@@ -339,13 +349,18 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
 def test_the_answer_table_spans_the_operators_a_predicate_declares():
     """Three sources: the table, the written-out vocabulary, and the model's own fields.
 
+    The model's fields are the operators plus the modifiers, which change how an
+    operator reads and are never dispatched themselves — a modifier counted as an
+    operator would let ``{regex_engine: linear}`` alone read as a declared predicate.
+
     The binding subset is a fourth pair: the model names which operators take a
     binding name, and the evaluator dispatches them off its own map. A member in one
     and not the other either resolves a name as a literal or raises on a name the
     model admits.
     """
     assert set(_OPERATOR_ANSWERS) == TRACE_PREDICATE_OPERATORS
-    assert set(ValuePredicate.model_fields) == TRACE_PREDICATE_OPERATORS
+    assert set(ValuePredicate.model_fields) - TRACE_PREDICATE_MODIFIERS == TRACE_PREDICATE_OPERATORS
+    assert TRACE_PREDICATE_MODIFIERS.isdisjoint(TRACE_PREDICATE_OPERATORS)
     assert set(_binding_operator_names()) == TRACE_PREDICATE_BINDING_OPERATORS
     misrowed = {
         name: sorted(answer.predicate)
@@ -367,11 +382,13 @@ def test_an_operator_selects_the_call_whose_argument_it_holds_for(operator_name:
         _timeline(recorded=[recorded_call("probe", arguments=answer.holds_for)]),
         matcher,
         answer.bindings,
+        regex_engine=_BLOCK_ENGINE,
     )
     fails = select_events(
         _timeline(recorded=[recorded_call("probe", arguments=answer.fails_for)]),
         matcher,
         answer.bindings,
+        regex_engine=_BLOCK_ENGINE,
     )
 
     assert len(holds.matched) == 1
@@ -444,7 +461,7 @@ def test_the_three_state_matrix_holds_per_operator(
         args={"key": ValuePredicate(**{operator: expected})},
     )
 
-    outcome = select_events(timeline, matcher, {})
+    outcome = select_events(timeline, matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert bool(outcome.matched) is holds
 
@@ -463,10 +480,16 @@ def test_a_missing_intermediate_key_reads_as_omitted() -> None:
     )
 
     missing_intermediate = select_events(
-        _timeline(recorded=[recorded_call("probe", arguments={"body": {}})]), matcher, {}
+        _timeline(recorded=[recorded_call("probe", arguments={"body": {}})]),
+        matcher,
+        {},
+        regex_engine=_BLOCK_ENGINE,
     )
     non_mapping_intermediate = select_events(
-        _timeline(recorded=[recorded_call("probe", arguments={"body": None})]), matcher, {}
+        _timeline(recorded=[recorded_call("probe", arguments={"body": None})]),
+        matcher,
+        {},
+        regex_engine=_BLOCK_ENGINE,
     )
 
     assert len(missing_intermediate.matched) == 1
@@ -528,7 +551,7 @@ def test_a_binder_extraction_reads_absent_and_null_as_one_condition() -> None:
             _timeline(recorded=[recorded_call("probe", arguments=arguments)]),
             TraceEventKind.TOOL_CALL,
         )
-        assert _extracted(bound, event, None) == []
+        assert _extracted(bound, None, event, None) == []
 
 
 def test_omitted_composes_with_withhold() -> None:
@@ -606,8 +629,10 @@ def test_a_date_only_value_reads_as_midnight_utc() -> None:
     """
     matcher = _date_matcher(date_gt="2026-03-01")
 
-    just_after = select_events(_at("2026-03-01T00:00:00.001Z"), matcher, {})
-    at_midnight = select_events(_at("2026-03-01"), matcher, {})
+    just_after = select_events(
+        _at("2026-03-01T00:00:00.001Z"), matcher, {}, regex_engine=_BLOCK_ENGINE
+    )
+    at_midnight = select_events(_at("2026-03-01"), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert len(just_after.matched) == 1
     assert at_midnight.matched == ()
@@ -625,9 +650,9 @@ def test_a_naive_datetime_reads_as_utc_on_both_sides() -> None:
     """
     matcher = _date_matcher(date_gt="2026-03-01T12:00:00")
 
-    equal = select_events(_at("2026-03-01T12:00:00+00:00"), matcher, {})
-    earlier = select_events(_at("2026-03-01T11:00:00Z"), matcher, {})
-    later = select_events(_at("2026-03-01T13:00:00Z"), matcher, {})
+    equal = select_events(_at("2026-03-01T12:00:00+00:00"), matcher, {}, regex_engine=_BLOCK_ENGINE)
+    earlier = select_events(_at("2026-03-01T11:00:00Z"), matcher, {}, regex_engine=_BLOCK_ENGINE)
+    later = select_events(_at("2026-03-01T13:00:00Z"), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert equal.matched == ()
     assert earlier.matched == ()
@@ -644,8 +669,13 @@ def test_an_absent_or_null_argument_satisfies_no_date_comparison(operator: str) 
     """
     matcher = _date_matcher(**{operator: "2026-03-01"})
 
-    missing = select_events(_timeline(recorded=[recorded_call("probe", arguments={})]), matcher, {})
-    null = select_events(_at(None), matcher, {})
+    missing = select_events(
+        _timeline(recorded=[recorded_call("probe", arguments={})]),
+        matcher,
+        {},
+        regex_engine=_BLOCK_ENGINE,
+    )
+    null = select_events(_at(None), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert missing.matched == ()
     assert null.matched == ()
@@ -661,8 +691,10 @@ def test_a_numeric_comparison_still_refuses_a_date_string() -> None:
     numeric_matcher = _date_matcher(gt=0.0)
     date_matcher = _date_matcher(date_gt="2026-03-01")
 
-    numeric_over_date = select_events(_at("2026-03-01"), numeric_matcher, {})
-    date_over_number = select_events(_at(5), date_matcher, {})
+    numeric_over_date = select_events(
+        _at("2026-03-01"), numeric_matcher, {}, regex_engine=_BLOCK_ENGINE
+    )
+    date_over_number = select_events(_at(5), date_matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert numeric_over_date.matched == ()
     assert date_over_number.matched == ()
@@ -677,9 +709,11 @@ def test_a_range_predicate_composes_the_two_ends() -> None:
     """
     matcher = _date_matcher(date_gte="2026-03-01", date_lt="2026-04-01")
 
-    mid_march = select_events(_at("2026-03-15"), matcher, {})
-    april_first_midnight = select_events(_at("2026-04-01T00:00:00Z"), matcher, {})
-    late_february = select_events(_at("2026-02-28"), matcher, {})
+    mid_march = select_events(_at("2026-03-15"), matcher, {}, regex_engine=_BLOCK_ENGINE)
+    april_first_midnight = select_events(
+        _at("2026-04-01T00:00:00Z"), matcher, {}, regex_engine=_BLOCK_ENGINE
+    )
+    late_february = select_events(_at("2026-02-28"), matcher, {}, regex_engine=_BLOCK_ENGINE)
 
     assert len(mid_march.matched) == 1
     assert april_first_midnight.matched == ()
@@ -720,3 +754,131 @@ def test_a_Z_suffix_datetime_parses_on_python_3_10() -> None:
 
     fractional = date_comparison_key("2026-03-01T12:00:00.123456Z")
     assert fractional == datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc)
+
+
+# --------------------------------------------------------------------------
+# The engine a pattern runs on: the block's, unless its predicate or bound value
+# names its own. ``\d`` against an Arabic-Indic digit is the probe, because both
+# engines compile it and only ``backtracking`` reads that digit as one.
+
+_LINEAR = RegexEngineKind.LINEAR
+_BACKTRACKING = RegexEngineKind.BACKTRACKING
+_ARABIC_INDIC_THREE = "٣"
+
+_EFFECTIVE_ENGINES = [
+    pytest.param(_LINEAR, None, _LINEAR, id="block-linear"),
+    pytest.param(_BACKTRACKING, None, _BACKTRACKING, id="block-backtracking"),
+    pytest.param(_LINEAR, _BACKTRACKING, _BACKTRACKING, id="override-backtracking-in-linear"),
+    pytest.param(_BACKTRACKING, _LINEAR, _LINEAR, id="override-linear-in-backtracking"),
+]
+
+
+def _graded(
+    turns: Sequence[tuple[str, str]],
+    constraint: dict[str, Any],
+    block_engine: RegexEngineKind,
+    recorded: Sequence[RecordedToolCall] = (),
+) -> TraceChecksResult:
+    config = TraceChecksConfig(
+        constraints=[{"id": "probe", "description": "the engine probe", **constraint}],
+        regex_engine=block_engine,
+    )
+    return evaluate_trace_checks(build_timeline(turns=turns, recorded=recorded), config)
+
+
+@pytest.mark.parametrize("operator", ["regex", "not_regex"])
+@pytest.mark.parametrize(("block_engine", "override", "effective"), _EFFECTIVE_ENGINES)
+def test_a_matcher_pattern_runs_on_its_effective_engine(
+    operator: str,
+    block_engine: RegexEngineKind,
+    override: RegexEngineKind | None,
+    effective: RegexEngineKind,
+) -> None:
+    predicate: dict[str, Any] = {operator: r"\d"}
+    if override is not None:
+        predicate["regex_engine"] = override
+    constraint = {
+        "require": {"present": {"match": {"kind": "assistant_message", "text": predicate}}}
+    }
+
+    result = _graded(
+        [("assistant", f"Your code is {_ARABIC_INDIC_THREE}.")], constraint, block_engine
+    )
+
+    reads_a_digit = effective is _BACKTRACKING
+    assert result.passed is (reads_a_digit if operator == "regex" else not reads_a_digit)
+
+
+@pytest.mark.parametrize(("block_engine", "override", "effective"), _EFFECTIVE_ENGINES)
+def test_a_capture_pattern_runs_on_its_effective_engine(
+    block_engine: RegexEngineKind,
+    override: RegexEngineKind | None,
+    effective: RegexEngineKind,
+) -> None:
+    """Only ``backtracking`` captures the digit, so only there does the binder bind."""
+    bound: dict[str, Any] = {"field": "text", "pattern": r"code (\d)"}
+    if override is not None:
+        bound["regex_engine"] = override
+    constraint = {
+        "bind": {"match": {"kind": "user_message"}, "values": {"code": bound}},
+        "require": {
+            "present": {
+                "match": {"kind": "assistant_message", "text": {"contains_binding": "code"}}
+            }
+        },
+    }
+
+    result = _graded(
+        [
+            ("user", f"My code {_ARABIC_INDIC_THREE} is lost."),
+            ("assistant", f"Resetting code {_ARABIC_INDIC_THREE}."),
+        ],
+        constraint,
+        block_engine,
+    )
+
+    assert result.passed is (effective is _BACKTRACKING)
+
+
+_REFUSED_PATTERNS = [
+    pytest.param(_LINEAR, "(?=a)", id="linear-lookahead"),
+    pytest.param(_BACKTRACKING, "unterminated([", id="backtracking-unterminated"),
+]
+
+
+@pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
+def test_a_refused_matcher_pattern_raises_on_a_timeline_it_never_reaches(
+    block_engine: RegexEngineKind, pattern: str
+) -> None:
+    """Compiled before any event is read, so the timeline carrying no tool call at all
+    does not let it through."""
+    constraint = {
+        "require": {"absent": {"match": {"kind": "tool_call", "tool": {"regex": pattern}}}}
+    }
+
+    with pytest.raises(UncompilablePattern) as excinfo:
+        _graded([("user", "hi"), ("assistant", "hello")], constraint, block_engine)
+
+    assert excinfo.value.engine is block_engine
+
+
+@pytest.mark.parametrize(("block_engine", "pattern"), _REFUSED_PATTERNS)
+def test_a_refused_capture_pattern_raises_on_a_timeline_it_never_reaches(
+    block_engine: RegexEngineKind, pattern: str
+) -> None:
+    constraint = {
+        "bind": {
+            "match": {"kind": "tool_call", "tool": {"equals": "open_case"}},
+            "values": {"case": {"field": "args.note", "pattern": f"{pattern}(x)"}},
+        },
+        "require": {
+            "present": {
+                "match": {"kind": "assistant_message", "text": {"contains_binding": "case"}}
+            }
+        },
+    }
+
+    with pytest.raises(UncompilablePattern) as excinfo:
+        _graded([("user", "hi"), ("assistant", "hello")], constraint, block_engine)
+
+    assert excinfo.value.engine is block_engine

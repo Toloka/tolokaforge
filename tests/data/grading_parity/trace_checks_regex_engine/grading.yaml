@@ -1,0 +1,20 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# The two trials differ only in which digit the agent quotes: an ASCII 3 or an
+# Arabic-Indic three. The backtracking engine reads both as \d, so a build ignoring
+# the declared engine scores the trials identically; the linear engine reads \d as
+# ASCII only, which is the one reading telling them apart.
+trace_checks:
+  regex_engine: linear
+  constraints:
+    - id: the_reference_was_quoted
+      description: "the agent quotes the case reference number back to the customer"
+      require:
+        present:
+          match:
+            kind: assistant_message
+            text: { regex: 'reference \d' }

@@ -162,6 +162,21 @@ def test_first_groups_reads_group_one_of_every_match_like_re(
     assert regex_engine(kind).compile(pattern).first_groups(text) == expected
 
 
+@pytest.mark.parametrize(
+    ("kind", "pattern", "groups"),
+    [
+        pytest.param(BACKTRACKING, r"(a)(?:b)(?P<c>c)", 2, id="backtracking-named"),
+        pytest.param(LINEAR, r"(a)(?:b)(?P<c>c)", 2, id="linear-named"),
+        pytest.param(LINEAR, r"\pL+", 0, id="linear-only-unicode-class"),
+        pytest.param(LINEAR, r"(?<n>\d+)-(\d+)", 2, id="linear-only-named-group"),
+    ],
+)
+def test_groups_counts_every_capture_group_the_engine_reads(
+    kind: RegexEngineKind, pattern: str, groups: int
+) -> None:
+    assert regex_engine(kind).compile(pattern).groups == groups
+
+
 @pytest.mark.parametrize("kind", list(RegexEngineKind))
 @pytest.mark.parametrize(
     ("pattern", "text"),

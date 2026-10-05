@@ -604,6 +604,16 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         wire_shape="list[str]",
     ),
     _WireKey(
+        path="grading.transcript_rules.regex_engine",
+        emitted_for="grading.transcript_rules",
+        wire_shape="Literal['linear', 'backtracking']",
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="transcript_rules.regex_engine",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+    ),
+    _WireKey(
         path="grading.transcript_rules.max_turns",
         emitted_for="grading.transcript_rules",
         wire_shape="int | None [ge=1]",
@@ -722,6 +732,18 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 direction=_Direction.NEW_ENGINE_OLD_IMAGE,
                 since=_UNRELEASED,
                 breadth="a pack declaring one under a matcher predicate",
+            ),
+            _DocLock(
+                doc_key="trace_checks.regex_engine",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring `trace_checks`",
+            ),
+            _DocLock(
+                doc_key="`trace_checks` `regex_engine` on a predicate or bound value",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring a matcher predicate or a bound value",
             ),
         ),
     ),

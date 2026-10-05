@@ -322,6 +322,33 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_require_a_date_literal_some_calendar_holds",
     ),
     _Rejection(
+        label="regex_engine_alone_declares_no_operator",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_call", "tool": {"regex_engine": "linear"}}}}
+            )
+        ),
+        message="a value predicate declares no operator",
+        validator="_reject_a_predicate_asserting_nothing",
+    ),
+    _Rejection(
+        label="regex_engine_on_a_predicate_without_a_pattern",
+        block=_block(
+            _constraint(
+                {
+                    "present": {
+                        "match": {
+                            "kind": "tool_call",
+                            "tool": {"equals": "write_file", "regex_engine": "linear"},
+                        }
+                    }
+                }
+            )
+        ),
+        message="declares neither not_regex nor regex, so the engine reads no pattern",
+        validator="_reject_an_engine_over_no_pattern",
+    ),
+    _Rejection(
         label="immediately_before_without_among",
         block=_block(
             _constraint(
@@ -688,6 +715,17 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_require_a_pattern_that_captures_exactly_one_value",
     ),
     _Rejection(
+        label="regex_engine_on_a_bound_value_without_a_pattern",
+        block=_block(
+            _constraint(
+                _references_the_case(),
+                bind=_binder(values={"case": {**_BOUND_CASE, "regex_engine": "backtracking"}}),
+            )
+        ),
+        message="declares no pattern, so the engine reads nothing",
+        validator="_reject_an_engine_over_no_pattern",
+    ),
+    _Rejection(
         label="on_unbound_pass_on_a_gate",
         block=_block(
             _constraint(
@@ -976,7 +1014,7 @@ def test_a_block_declaring_no_alternatives_loads_and_dumps_as_a_flat_block():
 
     assert config.alternatives is None
     dumped = config.model_dump()
-    assert set(dumped) == {"constraints", "alternatives"}
+    assert set(dumped) == {"constraints", "alternatives", "regex_engine"}
     assert dumped["alternatives"] is None
     assert "alternatives" not in config.model_dump(exclude_defaults=True)
 

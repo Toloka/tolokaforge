@@ -785,6 +785,8 @@ class TranscriptRulesConfig(BaseModel):
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
+    regex_engine: RegexEngineKind = RegexEngineKind.BACKTRACKING
+    """The engine every ``disallow_regex`` pattern is compiled and searched by."""
     # Both bounds are declarable from 1 up. A ceiling below 1 admits no
     # assistant-turn count at all, and a floor of 0 asserts nothing — and the
     # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
@@ -846,6 +848,13 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
 comprehended from the model, so the per-operator answer table has a second source
 to be checked against."""
 
+TRACE_PREDICATE_MODIFIERS: frozenset[str] = frozenset({"regex_engine"})
+"""The :class:`ValuePredicate` fields that change how its operators read and assert
+nothing on their own — so a predicate declaring only a modifier declares no operator."""
+
+TRACE_PREDICATE_REGEX_OPERATORS: frozenset[str] = frozenset({"regex", "not_regex"})
+"""The operators whose operand is a pattern, compiled under the predicate's engine."""
+
 TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
     {"equals_binding", "contains_binding"}
 )
@@ -879,6 +888,10 @@ class ValuePredicate(BaseModel):
     ``equals_binding`` and ``contains_binding`` name a value the constraint's
     ``bind`` extracted rather than writing it out, and compare with the same
     ``equals`` / ``contains`` the literal forms use.
+
+    ``regex_engine`` is a modifier, not an operator (:data:`TRACE_PREDICATE_MODIFIERS`):
+    it names the engine this predicate's ``regex`` / ``not_regex`` run on, ``None``
+    inheriting ``trace_checks.regex_engine``.
     """
 
     equals: Any = None
@@ -906,8 +919,13 @@ class ValuePredicate(BaseModel):
     exists: bool | None = None
     equals_binding: str | None = None
     contains_binding: str | None = None
+    regex_engine: RegexEngineKind | None = None
 
     model_config = {"extra": "forbid"}
+
+    def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
+        """The engine this predicate's patterns run on inside a block defaulting to ``section``."""
+        return section if self.regex_engine is None else self.regex_engine
 
     def declared_operators(self) -> frozenset[str]:
         """The operators this predicate asserts, which it is the conjunction of."""
@@ -932,6 +950,16 @@ class ValuePredicate(BaseModel):
                 "or drop the field"
             )
         return self
+
+    @model_validator(mode="after")
+    def _reject_an_engine_over_no_pattern(self) -> ValuePredicate:
+        if self.regex_engine is None or self.declared_operators() & TRACE_PREDICATE_REGEX_OPERATORS:
+            return self
+        raise ValueError(
+            f"a value predicate names regex_engine={self.regex_engine.value!r} but declares "
+            f"neither {' nor '.join(sorted(TRACE_PREDICATE_REGEX_OPERATORS))}, so the engine "
+            "reads no pattern. Drop regex_engine, or declare the pattern it is for"
+        )
 
     @model_validator(mode="after")
     def _require_a_date_literal_some_calendar_holds(self) -> ValuePredicate:
@@ -1092,25 +1120,41 @@ class BoundValue(BaseModel):
     ``field`` addresses the extraction the same way a matcher addresses a
     predicate — ``tool``, ``text``, ``result``, or an ``args`` path by dotted
     segments. ``pattern`` narrows a textual field to one capture group, which is
-    what makes a figure quoted inside prose bindable.
+    what makes a figure quoted inside prose bindable. ``regex_engine`` names the
+    engine ``pattern`` runs on, ``None`` inheriting ``trace_checks.regex_engine``.
     """
 
     field: str
     pattern: str | None = None
+    regex_engine: RegexEngineKind | None = None
 
     model_config = {"extra": "forbid"}
+
+    def regex_engine_under(self, section: RegexEngineKind) -> RegexEngineKind:
+        """The engine ``pattern`` runs on inside a block defaulting to ``section``."""
+        return section if self.regex_engine is None else self.regex_engine
 
     def head_segment(self) -> str:
         """The field name ``field`` addresses, before any nested argument path."""
         return self.field.split(".", 1)[0]
 
     @model_validator(mode="after")
+    def _reject_an_engine_over_no_pattern(self) -> BoundValue:
+        if self.regex_engine is None or self.pattern is not None:
+            return self
+        raise ValueError(
+            f"a bound value names regex_engine={self.regex_engine.value!r} but declares no "
+            "pattern, so the engine reads nothing. Drop regex_engine, or declare the pattern "
+            "it is for"
+        )
+
+    @model_validator(mode="after")
     def _require_a_pattern_that_captures_exactly_one_value(self) -> BoundValue:
         """Zero groups bind the whole match under a name that reads like a capture.
 
-        Scoped to a pattern that compiles, as every other authored pattern is: an
-        uncompilable one has no group count, and the authoring gate reports it at
-        its own address rather than as a miscount here.
+        Counted by Python ``re`` and scoped to a pattern ``re`` compiles: an
+        uncompilable one has no group count here, and the authoring gate counts
+        groups under the binder's own engine and reports at the pattern's address.
         """
         if self.pattern is None:
             return self
@@ -1120,11 +1164,16 @@ class BoundValue(BaseModel):
             return self
         if groups == 1:
             return self
-        raise ValueError(
-            f"pattern {self.pattern!r} captures {groups} groups, and a binding reads "
-            "exactly one. Wrap the value to bind in a single group — none binds the "
-            "whole match, and several leave no defined which"
-        )
+        raise ValueError(capture_group_count_refusal(self.pattern, groups))
+
+
+def capture_group_count_refusal(pattern: str, groups: int) -> str:
+    """Why a bound value's ``pattern`` declaring ``groups`` capture groups, not one, binds nothing."""
+    return (
+        f"pattern {pattern!r} captures {groups} groups, and a binding reads "
+        "exactly one. Wrap the value to bind in a single group — none binds the "
+        "whole match, and several leave no defined which"
+    )
 
 
 class OnUnbound(str, Enum):
@@ -1914,6 +1963,9 @@ class TraceChecksConfig(BaseModel):
 
     constraints: list[TraceConstraint] = Field(default_factory=list)
     alternatives: list[TracePath] | None = None
+    regex_engine: RegexEngineKind = RegexEngineKind.BACKTRACKING
+    """The engine every ``regex`` / ``not_regex`` / ``bind.values[*].pattern`` in the
+    block runs on, unless its predicate or bound value names its own."""
 
     model_config = {"extra": "forbid"}
 

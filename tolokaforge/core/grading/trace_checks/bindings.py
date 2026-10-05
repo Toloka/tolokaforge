@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import itertools
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from tolokaforge.core.grading.regex_engine import CompiledRegex, RegexEngineKind, regex_engine
 from tolokaforge.core.grading.trace_checks.matcher import (
     _MISSING,
     MatcherOutcome,
@@ -72,18 +72,28 @@ _UNBOUND_ENVIRONMENT: Mapping[str, Any] = {}
 """What a constraint declaring no binder resolves its matchers under."""
 
 
-def _candidates(timeline: TrialTimeline, constraint: TraceConstraint) -> _Candidates:
+def _candidates(
+    timeline: TrialTimeline, constraint: TraceConstraint, *, regex_engine: RegexEngineKind
+) -> _Candidates:
     """Every distinct assignment the binder yields, in the order its events occur.
 
     The binder resolves through :func:`select_events` like every other matcher, so
     it has an undecidable set of its own: an event whose membership the trial cannot
     settle yields a candidate the constraint must be decided *without* assuming, and
     one whose extraction reads unrecorded evidence yields a candidate with no value.
+
+    ``regex_engine`` is the block's engine, for the matcher's patterns and every
+    capture pattern not naming its own; the captures are compiled before any event
+    is read, as the matcher's are.
     """
     if constraint.bind is None:
         return _Candidates([_UNBOUND_ENVIRONMENT], [], False, {}, "")
+    captures = _capture_patterns(constraint.bind, regex_engine)
     outcome = _restricted(
-        select_events(timeline, constraint.bind.match, _UNBOUND_ENVIRONMENT), constraint.within
+        select_events(
+            timeline, constraint.bind.match, _UNBOUND_ENVIRONMENT, regex_engine=regex_engine
+        ),
+        constraint.within,
     )
     results = _results_by_call_id(timeline)
     bound: list[Mapping[str, Any]] = []
@@ -91,7 +101,7 @@ def _candidates(timeline: TrialTimeline, constraint: TraceConstraint) -> _Candid
     missing: dict[int, frozenset[str]] = {}
     unnamed = False
     for event, settled in _selected(outcome):
-        reading = _bound_event(constraint.bind, event, results)
+        reading = _bound_event(constraint.bind, captures, event, results)
         (bound if settled else possible).extend(reading.assignments)
         unnamed = unnamed or bool(reading.unreadable)
         membership = frozenset() if settled else frozenset(outcome.unreadable_fields)
@@ -179,8 +189,22 @@ class _BoundEvent:
     unreadable: frozenset[str]
 
 
+def _capture_patterns(
+    binding: TraceBinding, section: RegexEngineKind
+) -> Mapping[str, CompiledRegex]:
+    """Each bound name's capture pattern, compiled under its effective engine."""
+    return {
+        name: regex_engine(bound.regex_engine_under(section)).compile(bound.pattern)
+        for name, bound in binding.values.items()
+        if bound.pattern is not None
+    }
+
+
 def _bound_event(
-    binding: TraceBinding, event: TraceEvent, results: Mapping[str, TraceEvent]
+    binding: TraceBinding,
+    captures: Mapping[str, CompiledRegex],
+    event: TraceEvent,
+    results: Mapping[str, TraceEvent],
 ) -> _BoundEvent:
     """One assignment per element of the cross product of the names' extracted values.
 
@@ -193,7 +217,9 @@ def _bound_event(
     """
     outcome = _outcome_of(event, results)
     names = sorted(binding.values)
-    extracted = [_extracted(binding.values[name], event, outcome) for name in names]
+    extracted = [
+        _extracted(binding.values[name], captures.get(name), event, outcome) for name in names
+    ]
     unreadable = _unreadable_when_none(outcome).intersection(
         binding.values[name].head_segment()
         for name, values in zip(names, extracted, strict=True)
@@ -205,16 +231,24 @@ def _bound_event(
     )
 
 
-def _extracted(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None) -> list[Any]:
-    """The values one name reads off one event, in the order the event carries them."""
+def _extracted(
+    bound: BoundValue,
+    capture: CompiledRegex | None,
+    event: TraceEvent,
+    outcome: TraceEvent | None,
+) -> list[Any]:
+    """The values one name reads off one event, in the order the event carries them.
+
+    ``capture`` is ``bound.pattern`` compiled, ``None`` exactly where it declares none.
+    """
     value = _binder_reading(bound, event, outcome)
     if value is None:
         return []
-    if bound.pattern is None:
+    if capture is None:
         return [value]
     if not isinstance(value, str):
         return []
-    return [match.group(1) for match in re.finditer(bound.pattern, value)]
+    return capture.first_groups(value)
 
 
 def _binder_reading(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None) -> Any:

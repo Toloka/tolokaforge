@@ -57,6 +57,11 @@ class UncompilablePattern(re.error):
 class CompiledRegex(Protocol):
     """One pattern, compiled by one engine."""
 
+    @property
+    def groups(self) -> int:
+        """How many capture groups the pattern declares, named ones included."""
+        ...
+
     def search(self, text: str) -> bool:
         """Whether the pattern matches anywhere in ``text``."""
         ...
@@ -76,6 +81,10 @@ class _BacktrackingRegex:
     def __init__(self, compiled: re.Pattern[str]) -> None:
         self._compiled = compiled
 
+    @property
+    def groups(self) -> int:
+        return self._compiled.groups
+
     def search(self, text: str) -> bool:
         return self._compiled.search(text) is not None
 
@@ -91,6 +100,10 @@ class _LinearRegex:
 
     def __init__(self, compiled: re2._Regexp) -> None:
         self._compiled = compiled
+
+    @property
+    def groups(self) -> int:
+        return self._compiled.groups
 
     def search(self, text: str) -> bool:
         return self._compiled.search(_without_surrogates(text)) is not None
