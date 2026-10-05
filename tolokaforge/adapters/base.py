@@ -3,6 +3,7 @@
 import glob as glob_module
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
@@ -21,6 +22,8 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
 
 if TYPE_CHECKING:
+    from tolokaforge_coding_harnesses.native_log import HarnessNativeLogCounts
+
     from tolokaforge.tools.registry import Tool
 
 logger = get_logger(__name__)
@@ -656,6 +659,30 @@ class BaseAdapter(ABC):
         no harness library is imported in core to answer it.
         """
         return []
+
+    def ingest_native_logs(
+        self, task_id: str, native_files: Mapping[str, bytes]
+    ) -> "HarnessNativeLogCounts | None":
+        """Inner turn/token counts a harness reported in its staged native logs.
+
+        Given the trial's staged native artifacts (the ``relative path -> bytes``
+        mapping the engine read out of the container, the same bytes written
+        under ``native/``), recover the harness's own turn count and token usage
+        — the accounting the engine never measured, because a harness trial is
+        one tool call that issues no LLM request. The engine folds the result
+        into the trial's metrics as harness-reported, at the lowest precedence
+        behind the CLI's stdout totals and any wire-usage records.
+
+        The default is ``None``: no ingestion. The engine-loop path and any
+        adapter whose harness leaves no recoverable logs return it, so their
+        metrics are untouched. An adapter that can recover counts returns them
+        (or partial counts, with the fields it could not recover left ``None``);
+        it never raises, because folding native logs may not cost a trial its
+        result. The return is a plain counts record, not the engine's
+        :class:`~tolokaforge.core.llm.usage.Usage`, so an adapter shipped by a
+        harness package that imports no engine type can answer it.
+        """
+        return None
 
     def fingerprint(self) -> dict[str, Any] | None:
         """What this adapter reports about the resolved inputs it ran on.

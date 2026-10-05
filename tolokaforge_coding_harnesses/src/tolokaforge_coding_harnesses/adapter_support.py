@@ -40,6 +40,7 @@ from ._registry import (
     resolve_effective_registry,
     validate_harness,
 )
+from .native_log import HarnessNativeLogCounts, parse_native_logs
 from .protocols import PathResolver
 
 __all__ = ["HARNESS_USAGE_LOG_METADATA_KEY", "CodingHarnessAdapterMixin"]
@@ -323,6 +324,27 @@ class CodingHarnessAdapterMixin:
         container is up and writes it under the trial's ``native/`` directory.
         """
         return [_NATIVE_ARTIFACT_CONTAINER_ROOT]
+
+    def ingest_native_logs(
+        self, task_id: str, native_files: Mapping[str, bytes]
+    ) -> HarnessNativeLogCounts | None:
+        """Inner turn/token counts recovered from the trial's staged native logs.
+
+        Harbor / terminal-bench trials write the harness's own agent-session
+        logs under ``/logs/agent`` — preserved by
+        :meth:`native_artifact_container_paths` — and those sessions carry the
+        turn and token accounting the engine never saw: a harness trial is one
+        tool call, so the engine issues no LLM request and measures none of its
+        own. This reads it back from the staged bytes.
+
+        Returns plain counts (:class:`~.native_log.HarnessNativeLogCounts`), not
+        the engine's :class:`Usage`, because this package imports no engine type;
+        the engine folds them into the trial metrics as harness-reported. ``None``
+        — or partial counts with the unrecovered fields left ``None`` — whenever
+        the logs are absent, unreadable, or carry no turn record. The parse
+        raises on nothing, so a malformed log costs a trial no result.
+        """
+        return parse_native_logs(native_files)
 
     def write_install_script_layer(
         self,

@@ -73,7 +73,7 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
     _NullRunDisplayEvents,
 )
-from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.runner import HarnessNativeLogIngest, TrialRunner
 from tolokaforge.core.runtime import ProvisionError, RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
@@ -1110,12 +1110,17 @@ class InProcessConductor:
         # runner reads them out while the container is up, and the preserve
         # decision stays here rather than riding into the runner. An adapter with
         # no native artifacts (the engine-loop default) returns an empty list, so
-        # ``native`` / ``both`` collapse to the normalised bundle.
+        # ``native`` / ``both`` collapse to the normalised bundle. The same
+        # format gate hands the runner the adapter's native-log ingest, so a
+        # harness whose CLI printed no counts recovers them from the logs the run
+        # just preserved — and a ``tolokaforge``-format run stages nothing and
+        # ingests nothing, leaving its metrics identical.
         native_paths: list[str] | None = None
+        ingest_native_logs: HarnessNativeLogIngest | None = None
         if self.config.effective_output_format() in (OutputFormat.NATIVE, OutputFormat.BOTH):
-            native_paths = self._adapter_for(spec).native_artifact_container_paths(
-                task_config.task_id
-            )
+            adapter = self._adapter_for(spec)
+            native_paths = adapter.native_artifact_container_paths(task_config.task_id)
+            ingest_native_logs = adapter.ingest_native_logs
         trajectory = runner.run_harness(
             tool_name=tool.name,
             command=harness_command,
@@ -1126,6 +1131,7 @@ class InProcessConductor:
                 usage_log if isinstance(usage_log, str) and usage_log else None
             ),
             native_artifact_container_paths=native_paths,
+            ingest_native_logs=ingest_native_logs,
         )
         return trajectory, runner, system_prompt
 

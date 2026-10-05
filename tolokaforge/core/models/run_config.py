@@ -731,8 +731,14 @@ class GradingValidationConfig(BaseModel):
 class OutputFormat(str, Enum):
     """Which per-trial artifacts a run writes to disk.
 
-    ``tolokaforge`` writes the engine's own trial bundle. ``native`` writes
-    the artifacts the underlying harness produced. ``both`` writes each.
+    ``tolokaforge`` writes the engine's own normalised trial bundle alone.
+    ``native`` and ``both`` write that same bundle *plus* the underlying
+    harness's own artifacts under the trial's ``native/`` directory — they are
+    identical today, the reduced-skeleton ``native`` variant being deferred so
+    the full bundle stays available for resume and observers. A trial that
+    produced no native artifacts (an engine-loop trial, or a harness whose
+    adapter names none) writes no ``native/`` directory under any format, so its
+    output is the normalised bundle regardless.
     """
 
     NATIVE = "native"

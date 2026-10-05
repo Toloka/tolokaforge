@@ -12,7 +12,7 @@ census (:class:`RateLimitProbeRoleMetrics`,
 import dataclasses
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, Self, get_args
+from typing import TYPE_CHECKING, Any, Literal, Self, get_args
 
 from pydantic import (
     BaseModel,
@@ -29,11 +29,15 @@ from tolokaforge.core.models.grade import Grade
 from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
 
+if TYPE_CHECKING:
+    from tolokaforge_coding_harnesses.native_log import HarnessNativeLogCounts
+
 __all__ = [
     "REPLY_DEFECT_EXCERPT_MAX_CHARS",
     "CostByRoleMetrics",
     "CostByRoleModelMetrics",
     "FirstUserMessageSource",
+    "HarnessInnerCounts",
     "Message",
     "MessageRole",
     "Metrics",
@@ -459,6 +463,50 @@ class ParserErrorRecord(BaseModel):
     reason: str
 
 
+@dataclasses.dataclass(frozen=True)
+class HarnessInnerCounts:
+    """A harness's own inner turn / token counts, recovered from its native logs.
+
+    An in-process value the engine folds into a harness trial's :class:`Metrics`
+    — not a serialised type: it never reaches a bundle, only the fields it
+    populates do. A harness trial is one tool call, so the engine issues no LLM
+    request and measures none of these; an adapter recovers them from the
+    harness's own logs and the engine folds them in as harness-reported.
+
+    ``turns`` and ``usage`` are each ``None`` when the logs did not carry them,
+    so a partial recovery (turns but no tokens, say) folds the one it has and
+    leaves the other to its default — never writing a spurious zero.
+    """
+
+    turns: int | None = None
+    usage: Usage | None = None
+
+    @classmethod
+    def from_native_log_counts(
+        cls, counts: "HarnessNativeLogCounts | None"
+    ) -> "HarnessInnerCounts | None":
+        """Build from the harness package's plain-int counts, or ``None``.
+
+        The adapter hook returns boundary-safe plain counts (that package imports
+        no engine type); this is where the engine's :class:`Usage` is built from
+        them, on the inclusive-prompt basis the counts already carry. ``None``
+        when nothing was recovered, so the caller's fold is a single ``is None``
+        guard.
+        """
+        if counts is None or not counts.has_any:
+            return None
+        usage: Usage | None = None
+        if counts.has_token_counts:
+            usage = Usage(
+                prompt_tokens=counts.prompt_tokens or 0,
+                completion_tokens=counts.completion_tokens or 0,
+                reasoning_tokens=counts.reasoning_tokens or 0,
+                cache_read_input_tokens=counts.cache_read_input_tokens or 0,
+                cache_creation_input_tokens=counts.cache_creation_input_tokens or 0,
+            )
+        return cls(turns=counts.turns, usage=usage)
+
+
 class Metrics(BaseModel):
     """Trial execution metrics.
 
@@ -565,12 +613,17 @@ class Metrics(BaseModel):
 
     harness_usage_source: str | None = None
     """The non-stdout tap ``usage`` and ``cost_usd`` on this trial were
-    measured at — ``"middleware_proxy"`` today.
+    measured at — ``"middleware_proxy"`` (the request-middleware wire) or
+    ``"native_log"`` (the harness's own agent-session logs).
 
     Some harness CLIs print no usage at all (``kimi-code`` prints none), so
-    their tokens are recovered from the provider traffic instead: the request
-    middleware the harness routes through records one usage block per response,
-    and those records sum to the counts above.
+    their tokens are recovered elsewhere: the request middleware the harness
+    routes through records one usage block per response, and those records sum
+    to the counts above; failing that, the harness's own logs — preserved under
+    the trial's ``native/`` directory when the run keeps native artifacts —
+    carry the turns and tokens the CLI never printed. The wire measurement wins
+    over the logs where both exist, so this names whichever actually supplied the
+    tokens.
 
     Complementary to ``harness_stdout_dialect``, not parallel to it. That field
     names *which CLI grammar* was parsed and is non-``None`` whenever a CLI
@@ -580,10 +633,11 @@ class Metrics(BaseModel):
     the same fact — and the three states read:
 
     * dialect set, this ``None`` — the tokens (if any) are the CLI's own;
-    * this set — the tokens are the wire's, whatever the CLI printed;
+    * this set — the tokens are the wire's or the native logs', whatever the CLI
+      printed;
     * both ``None`` — the counts are the engine's own measurements.
 
-    A name rather than a boolean so a second tap is a new value here instead of
+    A name rather than a boolean so a further tap is a new value here instead of
     a second flag nobody's reader knows to check."""
 
     harness_reported_cost_usd: float | None = None
