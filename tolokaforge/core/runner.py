@@ -1625,9 +1625,11 @@ class TrialRunner:
 
         Returns the opening message text with any tool results inlined, and the
         calls that produced them. Only the tool-call half of a user turn is
-        shared with :meth:`_dispatch_user_actor`: turn 0 does not read stop
-        tokens, so a token in the opening is seeded literally rather than
-        terminating the trial before the agent has spoken.
+        shared with :meth:`_dispatch_user_actor`. Under ``stop_with_text:
+        deliver`` turn 0 does not read stop tokens, so a token in the opening is
+        seeded literally rather than terminating the trial before the agent has
+        spoken; under ``end`` the caller ends the trial on a stop token in an
+        opening that called no tools (see :meth:`_seed_first_user_message`).
 
         Probe mode collapses this to one attempt. The retry loop only ever
         catches 429s (see the ``is_rate_limit`` guard below), and under probe

@@ -438,9 +438,13 @@ The exit token belongs to the **user simulator**. The engine reads it from
 simulator output only — a dispatched user reply that is the bare token ends the
 trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
 it delivers that text first and stops on the next turn (both are configurable, see
-[Declaring the stop tokens](#declaring-the-stop-tokens)). The opening turn is the
-exception: a bootstrap reply carrying the token seeds it literally, rather than
-ending a trial before the agent has spoken. Write it into the
+[Declaring the stop tokens](#declaring-the-stop-tokens)). Under the default
+`stop_with_text: deliver` the opening turn is the exception: a bootstrap reply
+carrying the token seeds it literally, rather than ending a trial before the agent
+has spoken. Under `end` an opening reply carrying the token ends the trial with
+`user_stop` before the agent is called, and the reply is recorded verbatim as the
+last user message; a `shared` opening that calls tools is still seeded literally, as
+its text already carries the tool results the token could be read from. Write it into the
 `backstory` (or a scripted flow), never into a task's agent-facing prompt: the
 agent is never asked for the token and its output is never checked for it, so a
 prompt that instructed it would promise a signal nothing consumes.
