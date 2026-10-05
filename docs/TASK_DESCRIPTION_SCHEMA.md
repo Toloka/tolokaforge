@@ -378,6 +378,11 @@ class TaskDescription(BaseModel):
     description: str                              # Task description / user goal
     adapter_type: str                             # Open string from the adapter registry; use AdapterType.* constants for the built-ins
     schema_version: str = "1.0.0"
+    # Opt-in half-duplex budget (absent ⇒ none): one participant message is one step,
+    # a whole tool-reply batch is one environment step; see TASKS.md § Simulation step
+    # and environment-error budget
+    max_simulation_steps: Optional[int] = Field(default=None, ge=1)    # reached ⇒ max_steps
+    max_environment_errors: Optional[int] = Field(default=None, ge=1)  # reached ⇒ too_many_errors
     
     # --- System Prompt ---
     system_prompt: str                            # Full content, not file path

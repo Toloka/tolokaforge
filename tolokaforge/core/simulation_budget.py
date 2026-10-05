@@ -2,7 +2,7 @@
 
 One participant message is one step. A whole batch of tool replies is one
 environment step, regardless of how many calls it contains. The budget is
-checked only after that batch, matching the pinned Sierra orchestrator.
+checked only after that batch.
 """
 
 from __future__ import annotations

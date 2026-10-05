@@ -81,8 +81,8 @@ pytestmark = pytest.mark.canonical
 # a trial the agent drove to an end the harness planned for: it had no further
 # action to take and no counterparty could ask for one, it called a completion
 # tool to say so itself, the simulated user closed the dialogue, or a turn or
-# simulation budget ran out. Task graders see these completed trials; tau3's
-# grader returns zero on the native simulation-budget endings.
+# simulation budget ran out. These reasons are measured and the trial is graded;
+# what a grader awards for each is the grader's own decision.
 GRADED_REASONS = frozenset(
     {
         TerminationReason.AGENT_DONE,
