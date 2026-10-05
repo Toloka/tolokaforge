@@ -85,6 +85,21 @@ class TestSingleAttemptPolicy:
                     client.generate(system="judge", retry_policy="single_attempt")
         assert completion.call_count == 1
 
+    @pytest.mark.parametrize(
+        ("attribute", "value"),
+        [("num_retries", 3), ("model_fallbacks", [{"gpt-4": ["gpt-4o"]}])],
+        ids=["global-retries", "global-fallbacks"],
+    )
+    def test_global_litellm_retries_refuse_a_single_attempt(
+        self, monkeypatch: pytest.MonkeyPatch, attribute: str, value: object
+    ) -> None:
+        monkeypatch.setattr(litellm, attribute, value)
+        client = _make_client()
+        with patch("tolokaforge.core.llm.client.completion") as completion:
+            with pytest.raises(RuntimeError, match="single_attempt cannot run"):
+                client.generate(system="judge", retry_policy="single_attempt")
+        completion.assert_not_called()
+
     def test_unknown_policy_fails_before_transport(self) -> None:
         client = _make_client()
         with pytest.raises(ValueError, match="Unknown LLM retry policy"):

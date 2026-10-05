@@ -154,6 +154,9 @@ runner = [
     "odata-query>=0.10.0",
 ]
 rag = [
+    # The live bm25 parity check (tests/unit/test_bm25_okapi_parity.py) and its
+    # fixture generator run only on exactly 0.2.2; a newer lock leaves the
+    # committed-fixture arm alone, so bump them together.
     "rank-bm25>=0.2.2",
 ]
 office = [

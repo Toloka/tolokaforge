@@ -2,7 +2,7 @@
 
 What each ``exclude_records`` condition, path and reference matches is covered in
 ``test_comparison_view_exclude_records.py``; the load-time check against a task's
-initial state in ``test_comparison_view_findings.py``; a rule registered out of tree,
+initial state in ``test_comparison_view_checks.py``; a rule registered out of tree,
 and the rule contract, in ``tests/canonical/test_comparison_view_rule_registry.py``.
 """
 
