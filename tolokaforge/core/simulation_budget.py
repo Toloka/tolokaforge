@@ -2,7 +2,7 @@
 
 One participant message is one step. A whole batch of tool replies is one
 environment step, regardless of how many calls it contains. The budget is
-checked only after that batch.
+checked only after that batch completes.
 """
 
 from __future__ import annotations

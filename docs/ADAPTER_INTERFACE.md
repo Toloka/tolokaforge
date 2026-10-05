@@ -336,7 +336,10 @@ class MyTool(ToolWrapper):
 ```
 
 The runner calls `start` / `stop` generically on every tool whose
-`has_lifecycle` is set — it doesn't need to know your tool by name.
+`has_lifecycle` is set — it doesn't need to know your tool by name. `stop()` and
+`cleanup()` must be idempotent: when one resource of a trial fails to tear down, the
+cleanup retry calls both again on every tool of that trial, including those already
+stopped.
 
 #### Current limitations of the lifecycle contract
 

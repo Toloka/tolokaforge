@@ -1,4 +1,4 @@
-"""The half-duplex step and environment-error boundaries of a simulation budget."""
+"""Half-duplex step and environment-error boundaries."""
 
 import pytest
 

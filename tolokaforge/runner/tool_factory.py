@@ -29,13 +29,14 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from tolokaforge.runner.compose_naming import compose_container_name
 from tolokaforge.runner.db_client import (
@@ -281,11 +282,16 @@ class ToolWrapper(ABC):
         pass
 
     def stop(self) -> None:  # noqa: B027
-        """Tear down resources provisioned by start() (override if needed)."""
+        """Tear down resources provisioned by start() (override if needed).
+
+        Must be idempotent, as must :meth:`cleanup`: a cleanup retried after another
+        resource failed to tear down calls both again on every tool of the trial,
+        including those whose first call succeeded.
+        """
         pass
 
     def cleanup(self) -> None:  # noqa: B027
-        """Clean up any resources (override in subclasses if needed)."""
+        """Clean up any resources (override in subclasses if needed); idempotent, see :meth:`stop`."""
         pass
 
 
@@ -524,10 +530,24 @@ class MCPServerProcess(BaseModel):
     script_path: str
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0
+    _start_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _request_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _stop_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _closed: bool = PrivateAttr(default=False)
 
     model_config = {"arbitrary_types_allowed": True}
 
     def start(self) -> None:
+        with self._start_lock:
+            if self._closed:
+                raise RuntimeError("MCP server has been closed")
+            try:
+                self._start()
+            except BaseException:
+                self.stop()
+                raise
+
+    def _start(self) -> None:
         """Start the MCP server subprocess and perform MCP protocol handshake.
 
         MCP requires an initialize / notifications/initialized exchange before
@@ -544,6 +564,9 @@ class MCPServerProcess(BaseModel):
             stderr=subprocess.PIPE,
             text=True,
         )
+        if self._closed:
+            self.stop()
+            raise RuntimeError("MCP server closed during startup")
 
         # MCP initialization handshake
         self.send_request(
@@ -563,16 +586,34 @@ class MCPServerProcess(BaseModel):
 
     def stop(self) -> None:
         """Stop the MCP server subprocess."""
-        if self.process is not None:
-            self.process.terminate()
+        # Do not take the request lock: terminating the child must unblock a
+        # request whose worker survived a timeout/cancellation.
+        with self._stop_lock:
+            self._stop()
+
+    def _stop(self) -> None:
+        self._closed = True
+        process = self.process
+        if process is not None:
+            process.terminate()
             try:
-                self.process.wait(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                process.kill()
+                process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
             self.process = None
             logger.info(f"Stopped MCP server: {self.script_path}")
 
     def send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        # One stdio connection has one ordered response stream. Different tool
+        # workers must not consume each other's response.
+        with self._request_lock:
+            return self._send_request(method, params)
+
+    def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Send a JSON-RPC request to the MCP server.
 
@@ -585,6 +626,7 @@ class MCPServerProcess(BaseModel):
         """
         if self.process is None:
             raise RuntimeError("MCP server not started")
+        process = self.process
 
         self.request_id += 1
         request = {
@@ -596,28 +638,32 @@ class MCPServerProcess(BaseModel):
 
         # Send request
         request_line = json.dumps(request) + "\n"
-        self.process.stdin.write(request_line)
-        self.process.stdin.flush()
+        process.stdin.write(request_line)
+        process.stdin.flush()
 
         # Read response
-        response_line = self.process.stdout.readline()
+        response_line = process.stdout.readline()
         if not response_line:
             # Drain stderr so the actual subprocess crash reason is visible.
             # Without this the only signal is the empty-stdout symptom and the
             # real cause (import error, lifespan crash, …) is lost in the pipe.
             stderr_tail = ""
-            if self.process.stderr is not None:
+            if process.stderr is not None:
                 try:
-                    stderr_tail = self.process.stderr.read() or ""
+                    stderr_tail = process.stderr.read() or ""
                 except Exception:
                     pass
-            exit_code = self.process.poll()
+            exit_code = process.poll()
             raise RuntimeError(
                 f"MCP server closed connection (script={self.script_path}, "
                 f"exit_code={exit_code}, stderr_tail={stderr_tail[-2000:]!r})"
             )
 
         response = json.loads(response_line)
+        if response.get("id") != request["id"]:
+            raise RuntimeError(
+                f"MCP response id {response.get('id')!r} does not match request {request['id']}"
+            )
 
         if "error" in response:
             error = response["error"]
@@ -662,6 +708,46 @@ class MCPServerProcess(BaseModel):
         )
 
 
+class MCPServerPool:
+    """Lazy MCP processes owned by one trial's reconstructed tools."""
+
+    def __init__(self) -> None:
+        self._servers: dict[str, MCPServerProcess] = {}
+        self._lock = threading.Lock()
+        self._cleanup_lock = threading.Lock()
+        self._closed = False
+
+    def get_server(self, script: str) -> MCPServerProcess:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Trial MCP servers have been closed")
+            if script not in self._servers:
+                self._servers[script] = MCPServerProcess(script_path=script)
+            server = self._servers[script]
+        server.start()
+        return server
+
+    def cleanup(self) -> None:
+        with self._cleanup_lock:
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        with self._lock:
+            self._closed = True
+            servers = list(self._servers.items())
+        errors = []
+        for script, server in servers:
+            try:
+                server.stop()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                with self._lock:
+                    del self._servers[script]
+        if errors:
+            raise RuntimeError(f"Trial MCP server cleanup failed: {errors!r}") from errors[0]
+
+
 class MCPServerToolWrapper(ToolWrapper):
     """
     Wrapper for Native MCP server tools.
@@ -671,28 +757,23 @@ class MCPServerToolWrapper(ToolWrapper):
     JSON-RPC requests.
     """
 
-    # Shared server processes (one per script)
-    _servers: dict[str, MCPServerProcess] = {}
-
     def __init__(
         self,
         tool_schema: ToolSchemaModel,
         server_script: str,
         db_client: DBServiceClient,
         trial_id: str,
+        server_pool: MCPServerPool | None = None,
     ):
         super().__init__(tool_schema)
         self.server_script = server_script
         self.db_client = db_client
         self.trial_id = trial_id
+        self._server_pool = server_pool if server_pool is not None else MCPServerPool()
 
     def _get_server(self) -> MCPServerProcess:
         """Get or create the MCP server process."""
-        if self.server_script not in self._servers:
-            server = MCPServerProcess(script_path=self.server_script)
-            server.start()
-            self._servers[self.server_script] = server
-        return self._servers[self.server_script]
+        return self._server_pool.get_server(self.server_script)
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         """Return the tool call's output text; ``execute_call`` carries the flag too."""
@@ -767,17 +848,8 @@ class MCPServerToolWrapper(ToolWrapper):
         self._get_server().reset_state(initial_state)
 
     def cleanup(self) -> None:
-        """Stop the MCP server if this is the last tool using it."""
-        # Note: In practice, we'd track usage count and only stop
-        # when no tools are using the server
-        pass
-
-    @classmethod
-    def cleanup_all_servers(cls) -> None:
-        """Stop all MCP server processes."""
-        for server in cls._servers.values():
-            server.stop()
-        cls._servers.clear()
+        """Close this trial's pool; repeated cleanup by sibling tools is safe."""
+        self._server_pool.cleanup()
 
 
 # =============================================================================
@@ -1129,14 +1201,34 @@ class ReconstructedTools(BaseModel):
         return self.agent_tools.get(name)
 
     def cleanup(self) -> None:
-        """Clean up all tool resources."""
-        for tool in self.agent_tools.values():
-            if hasattr(tool, "cleanup"):
-                tool.cleanup()
-        for tool in self.user_tools.values():
-            if hasattr(tool, "cleanup"):
-                tool.cleanup()
-        MCPServerToolWrapper.cleanup_all_servers()
+        """Clean up all tool resources (see :func:`cleanup_tools`)."""
+        cleanup_tools(self.agent_tools, self.user_tools)
+
+
+def cleanup_tools(agent_tools: dict[str, Any], user_tools: dict[str, Any]) -> None:
+    """Stop and clean up every tool in both registries, once per instance.
+
+    Every tool is attempted even when an earlier one fails; the failures are
+    raised together afterwards.
+    """
+    errors = []
+    seen = set()
+    for tool in (*agent_tools.values(), *user_tools.values()):
+        if id(tool) in seen:
+            continue
+        seen.add(id(tool))
+        callbacks = []
+        if getattr(tool, "has_lifecycle", False):
+            callbacks.append(tool.stop)
+        if hasattr(tool, "cleanup"):
+            callbacks.append(tool.cleanup)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                errors.append(exc)
+    if errors:
+        raise RuntimeError(f"Trial tool cleanup failed: {errors!r}") from errors[0]
 
 
 # =============================================================================
@@ -1684,6 +1776,7 @@ class ToolFactory:
         self._initial_state_data = initial_state_data or {}
         self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
+        self._mcp_server_pool = MCPServerPool()
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models
@@ -2129,6 +2222,7 @@ class ToolFactory:
             server_script=source.mcp_server_script,
             db_client=self.db_client,
             trial_id=self.trial_id,
+            server_pool=self._mcp_server_pool,
         )
 
     def _create_docker_compose_exec_wrapper(

@@ -24,6 +24,15 @@ Tolokaforge supports two queue backends:
 2. `worker`: leases attempts, executes them, and marks `completed`/`failed`/`requeued`.
 3. `status`: shows queue counts, ETA, estimated cost, and token totals from artifacts.
 
+The runner's `CleanupTrial` RPC stops the trial's tool resources before removing
+its registration and artifacts. MCP wrappers created by one `ToolFactory` share
+a subprocess pool; another trial owns a separate pool, even for the same script.
+Cleanup reaps children and closes their pipes, including a child waiting on a
+tool response. Repeated or concurrent cleanup for the same registration is
+idempotent. Teardown and DB deletion failures are reported, with the registration
+retained for a cleanup retry. A lifecycle tool failing during registration also
+triggers cleanup of that attempt's resources.
+
 ### The pre-run gate
 
 Before a single trial is scheduled — by `run`, and by `prepare` so a distributed
@@ -447,8 +456,11 @@ Some tools own per-trial resources — a compose stack, a long-lived
 subprocess — that must be provisioned when a trial starts and torn down when
 it resets. The runner manages this generically off a single capability, never
 off adapter identity: a `ToolWrapper` sets `has_lifecycle = True`, and the
-runner calls `start()` on `RegisterTrial` and `stop()` on `ResetTrial` for
-every tool that declares it. Tools without the capability are untouched.
+runner calls `start()` on `RegisterTrial` and `stop()` on `ResetTrial` and
+`CleanupTrial` for every tool that declares it. Tools without the capability are
+untouched. `stop()` and `cleanup()` must be idempotent: a cleanup retried after one
+resource failed to tear down calls them again on every tool of the trial, the ones
+already stopped included. The built-in lifecycle tools are.
 
 `start()` receives a `ToolLifecycleContext`:
 

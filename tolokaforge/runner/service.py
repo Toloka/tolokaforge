@@ -181,6 +181,7 @@ from tolokaforge.runner.tool_factory import (
     ToolLifecycleContext,
     ToolReconstructionError,
     ToolWrapper,
+    cleanup_tools,
 )
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
@@ -494,6 +495,10 @@ class TrialContextRuntime:
         self.user_tools: dict[str, Callable] = {}
         self.tool_call_history: list[RecordedToolCall] = []
         self.default_timeout = default_timeout
+        self.cleanup_lock = asyncio.Lock()
+        # Set once the tools are torn down, so a cleanup retried after a DB
+        # failure releases the registration without stopping them twice.
+        self.tools_released = False
         # Run-level LLM config for the read-only rubric judge, carried from the
         # TrialSpec. None when no selected task uses an llm_judge component; the
         # orchestrator validates up front that it is present whenever a rubric is.
@@ -1230,6 +1235,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool.start(trial_context.lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
+                    try:
+                        self._run_async(self.cleanup_trial(trial_id))
+                    except Exception as cleanup_error:
+                        # The start failure is the answer the caller needs; a
+                        # cleanup that also failed is logged, not returned.
+                        logger.error(
+                            f"RegisterTrial: Cleanup after the failed lifecycle start of "
+                            f"{trial_id} also failed: {cleanup_error}"
+                        )
                     return pb2.RegisterTrialResponse(
                         success=False,
                         error=f"Tool lifecycle start failed: {e}",
@@ -3454,14 +3468,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         logger.info(f"Cleaning up trial: {trial_id}")
 
-        # Remove from local context
         trial_context = self.trials.get(trial_id)
-        if trial_context is not None:
-            # Explicit teardown of the per-trial judge KnowledgeSearch. Dropping
-            # the context below already GCs it, but clearing here documents intent
-            # and keeps lifecycle symmetric with register_kb_search at setup.
-            trial_context.clear_kb_search()
-            del self.trials[trial_id]
+        if trial_context is None:
+            await self._cleanup_trial_resources(trial_id, None)
+            return
+        async with trial_context.cleanup_lock:
+            # Another cleanup may have finished while this call waited. Its
+            # context identifies the registration this request must retire.
+            if self.trials.get(trial_id) is not trial_context:
+                return
+            await self._cleanup_trial_resources(trial_id, trial_context)
+
+    async def _cleanup_trial_resources(
+        self, trial_id: str, trial_context: TrialContextRuntime | None
+    ) -> None:
+        if trial_context is not None and not trial_context.tools_released:
+            # Teardown precedes deleting scripts/context. It runs off the
+            # shared event loop so reaping one child cannot block other trials.
+            await asyncio.to_thread(
+                cleanup_tools, trial_context.agent_tools, trial_context.user_tools
+            )
+            trial_context.tools_released = True
 
         # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's
@@ -3475,16 +3502,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # so the practical impact is a bounded handle held for the runner's
         # lifetime, not unbounded growth across trials.
 
-        # Drop extracted tool artifacts (no-op if none were extracted)
-        self._cleanup_trial_artifacts(trial_id)
-
-        # Delete from DB Service
+        # Keep registration reserved until DB deletion completes. Otherwise a
+        # late cleanup could delete a newly registered attempt with this ID.
         try:
             await self.db_client.delete_trial(trial_id)
         except DBTrialNotFoundError:
             pass  # Already deleted
         except DBServiceError as e:
-            logger.warning(f"Failed to delete trial from DB Service: {e}")
+            logger.error(f"Failed to delete trial from DB Service: {e}")
+            raise
+
+        self._cleanup_trial_artifacts(trial_id)
+        if trial_context is not None:
+            trial_context.clear_kb_search()
+            del self.trials[trial_id]
 
     def cleanup_all_trials(self) -> None:
         """Clean up all trials (for shutdown)."""
