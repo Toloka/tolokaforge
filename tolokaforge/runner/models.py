@@ -1420,6 +1420,10 @@ _KINDS_WITHOUT_AN_ANCHOR: frozenset[TraceConstraintKind] = frozenset(
     {TraceConstraintKind.PRESENT, TraceConstraintKind.ABSENT, TraceConstraintKind.COUNT}
 )
 
+_KINDS_WITHHOLD_HAS_NOTHING_TO_DECIDE_OVER: frozenset[TraceConstraintKind] = frozenset(
+    {TraceConstraintKind.ABSENT}
+)
+
 # Over one matched set, ``last`` and ``all`` on the left require the event nothing
 # follows to precede something, and ``first`` and ``all`` on the right require
 # something to precede the event nothing precedes — false at every trajectory. Their
@@ -1491,6 +1495,21 @@ class TraceConstraintExpr(BaseModel):
         return frozenset({kind}).union(
             *(item.kinds_in_tree() for item in nested if isinstance(item, TraceConstraintExpr))
         )
+
+    def kinds_refusing_on_missing(self, policy: OnMissing) -> frozenset[TraceConstraintKind]:
+        """The leaf kinds in this tree *policy* has nothing to decide over.
+
+        Empty iff the unmatched-anchor rule admits *policy* on this tree — the rule
+        :class:`TraceConstraint` enforces, and the one the gate-default advisory reads
+        so it never recommends a policy the model refuses. Composite kinds are never
+        returned: a composite passes the policy down rather than deciding over it.
+        """
+        refusing = (
+            _KINDS_WITHHOLD_HAS_NOTHING_TO_DECIDE_OVER
+            if policy is OnMissing.WITHHOLD
+            else _KINDS_WITHOUT_AN_ANCHOR
+        )
+        return self.kinds_in_tree() & refusing
 
     @model_validator(mode="after")
     def _require_exactly_one_kind(self) -> TraceConstraintExpr:
@@ -1846,21 +1865,20 @@ class TraceConstraint(BaseModel):
         """
         if self.on_missing is None:
             return self
-        anchorless = self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
-        if not anchorless:
+        refusing = self.require.kinds_refusing_on_missing(self.on_missing)
+        if not refusing:
             return self
         if self.on_missing is OnMissing.WITHHOLD:
-            if TraceConstraintKind.ABSENT not in anchorless:
-                return self
             raise ValueError(
-                f"{self.id}: on_missing: withhold has nothing to decide over ['absent'], "
+                f"{self.id}: on_missing: withhold has nothing to decide over "
+                f"{sorted(kind.value for kind in refusing)}, "
                 "whose empty match IS its positive verdict — withholding there would "
                 "withhold the very check the constraint asks. Drop the on_missing, or "
                 "write a present with the complement matcher"
             )
         raise ValueError(
             f"{self.id}: on_missing has nothing to decide over "
-            f"{sorted(kind.value for kind in anchorless)}, whose verdict is the match "
+            f"{sorted(kind.value for kind in refusing)}, whose verdict is the match "
             "itself — a composite passes the policy down to every expression it holds, "
             "so nesting one of them does not anchor it. Setting it would answer the "
             "very question the constraint asks"

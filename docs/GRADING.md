@@ -2939,6 +2939,22 @@ a flaky substrate can silently strip — a KB search's `status: success`, a data
 probe's read — where forcing the gate to `fail` on an infrastructure blip would
 zero every passing weight in the block.
 
+**A gate with no `on_missing` draws an advisory where it could carry
+`on_missing: fail`.** A gate whose `require` tree admits `on_missing: fail` — no
+`present`, `absent` or `count` at any depth — and declares no `on_missing` is
+reported as an [advisory](#what-is-validated-before-a-run): an anchor whose tool
+errors at runtime matches nothing, and the default `fail` then shuts the block.
+Declare `on_missing: withhold` where the anchor's tool can error, or
+`on_missing: fail` to accept the risk. A gate whose tree holds one of those three
+kinds gets no advisory, because `on_missing: fail` is refused there and the default
+is the only `fail` spelling it has. To keep an erroring anchor from shutting an
+`all_of` gate that mixes the two, split the anchored expression into a gate of its
+own and give that one `on_missing: withhold` — the two gates shut the block wherever
+their `all_of` would, except that an unmatched anchor on the split-off gate
+withholds instead of shutting it. A mixed `any_of` or `negate` gate has no such
+split: `on_missing` belongs to the whole constraint, never to one expression in it,
+so that gate keeps the default.
+
 **A gate nobody can decide trips.** Undecided is not a pass in the agent's favour
 anywhere in this vocabulary, and a gate is the one check the author said must hold —
 an undecided gate that opened would be a silent pass on exactly that check, and would
@@ -3417,6 +3433,7 @@ Findings come in three classes:
 | a `bind.values[*].pattern` over an argument the tool types `integer` / `number` / `boolean` / `array` / `object`, or over a bare `field: args` — a capture is taken off text alone, so the name binds on no trajectory | error on a schema forbidding extras, advisory on one permitting them | `bind.values[*].pattern` |
 | a reference on an `args` predicate whose declared type and the binding's declared type no value of either can satisfy the operator between — `equals_binding` across `integer` / `number` / `boolean` holds, `contains_binding` finds a scalar inside a container and a container inside nothing | error only where **both** schemas forbid extras, advisory wherever either permits them | the predicate's own `args.<path>` |
 | the same reference where the argument's schema writes no `type`, or writes one outside the six JSON type names | unchecked | as above |
+| a `severity: gate` constraint with no `on_missing` whose `require` tree admits `on_missing: fail` — no `present` / `absent` / `count` anywhere in it — so an anchor that matched nothing shuts the gate by default ([§ `severity`](#severity--a-check-that-must-hold)) | advisory | `trace_checks.<id>`, `trace_checks.<path id>.<constraint id>` |
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
