@@ -33,6 +33,11 @@ call, the same code the offline connector and the CI pre-check run; this module 
 receiver: endpoint, credentials, the project check, the receiver family and the observer.
 Relative paths in the block anchor to the nearest ``project.yaml`` above the working directory.
 
+Live previews (ADR-0048, previews amendment): on a v4 receiver a trial is written once, when it
+is persisted, and nothing goes out while it runs. ``LANGFUSE_TRACING_PREVIEWS=true`` also sends
+the live rows as declared previews; they stay beside the final rows, and the receiver's own views
+count every row. Off by default; a v3 receiver always gets the live rows, which are its record.
+
 The pairing with the engine is checked once per run (:func:`check_engine_api`): the engine's
 ``PLUGIN_API_VERSION`` must equal this package's ``__api_version__``; a mismatch is a
 configuration error naming both versions, so a plugin released ahead of, or behind, the engine
@@ -77,6 +82,7 @@ TRACING_SESSION_ID_ENV = "TOLOKAFORGE_TRACING_SESSION_ID"
 TRACING_LABEL_ENV = "TOLOKAFORGE_TRACING_LABEL"
 # the one switch and the plain Langfuse receiver variables
 LANGFUSE_ENABLED_ENV = "LANGFUSE_TRACING_ENABLED"
+LANGFUSE_PREVIEWS_ENV = "LANGFUSE_TRACING_PREVIEWS"
 LANGFUSE_BASE_URL_ENV = "LANGFUSE_BASE_URL"
 LANGFUSE_PUBLIC_KEY_SECRET = "LANGFUSE_PUBLIC_KEY"
 LANGFUSE_SECRET_KEY_SECRET = "LANGFUSE_SECRET_KEY"
@@ -212,6 +218,7 @@ def build(
             trace_user=plan.profile.trace_user,
         ),
         server_api=server_api,
+        previews=langfuse_previews(),
         gate=gate,
         ambient=(run_id, identity.run_tag),
     )
@@ -276,6 +283,12 @@ def _env(name: str) -> str | None:
 def langfuse_enabled() -> bool:
     """``LANGFUSE_TRACING_ENABLED`` is truthy (``1`` / ``true`` / ``yes`` / ``on``)."""
     return (os.environ.get(LANGFUSE_ENABLED_ENV, "").strip().lower()) in _TRUE
+
+
+def langfuse_previews() -> bool:
+    """``LANGFUSE_TRACING_PREVIEWS`` is truthy: a v4 receiver also gets the live rows as declared
+    previews while a trial runs (ADR-0048, previews amendment). Off by default."""
+    return (os.environ.get(LANGFUSE_PREVIEWS_ENV, "").strip().lower()) in _TRUE
 
 
 def _secret(name: str) -> str | None:

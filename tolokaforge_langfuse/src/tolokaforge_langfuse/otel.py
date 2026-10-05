@@ -17,14 +17,15 @@ secret is withheld and counted, never rewritten (docs/OBSERVABILITY.md, "Deliver
 - ``v3``: what this module always did. The per-call spans carry the contract's final ids, the
   root is provisional at trial start and complete at trial end, and the trial-end pass re-sends
   every record through the ingestion API, where the receiver upserts.
-- ``v4``: the producer writes every id **once** by policy. The live spans become
-  declared **previews** under the preview kinds, children of a preview root whose parent is the
-  final root, marked ``preview: true`` and named ``preview: ...``; nothing live is ever re-sent
-  or completed. At ``trial_persisted`` the bundle's projection is converted
-  to spans by :mod:`tolokaforge_langfuse.otlp_spans` and written once, **the root last**, after
-  the media upload, with the complete manifest in the root's metadata; the scores keep the
-  ingestion route. A trial whose final root can no longer come gets one minimal error root at
-  ``run_finished``, so no trace is left without a root.
+- ``v4``: the producer writes every id **once** by policy. At ``trial_persisted`` the bundle's
+  projection is converted to spans by :mod:`tolokaforge_langfuse.otlp_spans` and written once,
+  **the root last**, after the media upload, with the complete manifest in the root's metadata;
+  the scores keep the ingestion route. Nothing goes out while the trial runs unless the run asks
+  for live **previews** (``previews``, the plugin's ``LANGFUSE_TRACING_PREVIEWS``): then the live
+  spans go out under the preview kinds, children of a preview root whose parent is the final
+  root, marked ``preview: true`` and named ``preview: ...``, and stay beside the final rows;
+  nothing live is ever re-sent or completed. A trial whose final root can no longer come gets
+  one minimal error root at ``run_finished``, so no trace is left without a root.
 """
 
 from __future__ import annotations
@@ -360,6 +361,7 @@ class OTelTrialObserver:
         profile_version: str | None = None,
         projection: ProjectionSettings | None = None,
         server_api: str = SERVER_V3,
+        previews: bool = False,
         gate: SafetyGate | None = None,
         ambient: Sequence[str] = (),
     ) -> None:
@@ -368,9 +370,12 @@ class OTelTrialObserver:
         self._gradings = gradings
         self._projection = projection or ProjectionSettings()
         # the receiver family this run writes for: on v4 every observation is written
-        # once, the live rows are declared previews and the record comes from the bundle
+        # once and the record comes from the bundle
         self._server_api = server_api
         self._write_once = server_api == SERVER_V4
+        # on v4 the live rows go out only as declared previews, and only when asked for: a
+        # preview stays beside its final row, and the receiver counts every row it holds
+        self._previews = self._write_once and previews
         self._write_once_counts = {
             "previews": 0,
             "error_roots": 0,
@@ -467,27 +472,28 @@ class OTelTrialObserver:
                     user_id=self._user_id(state),
                 )
         if self._write_once:
-            # (C) in shape R: the preview root names the final root as its parent, so the trace
-            # has no root row until the bundle's root arrives and exactly one afterwards. The
-            # trial is reachable meanwhile by its (deterministic) trace id and by session.
-            self._emit(
-                name=f"{PREVIEW_NAME_PREFIX}{NAME_TRIAL}",
-                identity=identity,
-                span_id=self._preview_root_id(identity),
-                parent_id=identity.root_id,
-                attributes={
-                    **self._trace_attributes(state),
-                    **self._identity_attributes(identity),
-                    "langfuse.observation.type": "agent",
-                    f"{OBSERVATION_METADATA_PREFIX}kind": "root",
-                    f"{OBSERVATION_METADATA_PREFIX}status": "running",
-                    f"{OBSERVATION_METADATA_PREFIX}trace_time_source": TRACE_TIME_SOURCE,
-                    **self._preview_marker(),
-                },
-                start=started_at,
-                end=started_at,
-                preview=True,
-            )
+            if self._previews:
+                # (C) in shape R: the preview root names the final root as its parent, so the
+                # trace has no root row until the bundle's root arrives and exactly one
+                # afterwards. The trial is reachable meanwhile by its trace id and by session.
+                self._emit(
+                    name=f"{PREVIEW_NAME_PREFIX}{NAME_TRIAL}",
+                    identity=identity,
+                    span_id=self._preview_root_id(identity),
+                    parent_id=identity.root_id,
+                    attributes={
+                        **self._trace_attributes(state),
+                        **self._identity_attributes(identity),
+                        "langfuse.observation.type": "agent",
+                        f"{OBSERVATION_METADATA_PREFIX}kind": "root",
+                        f"{OBSERVATION_METADATA_PREFIX}status": "running",
+                        f"{OBSERVATION_METADATA_PREFIX}trace_time_source": TRACE_TIME_SOURCE,
+                        **self._preview_marker(),
+                    },
+                    start=started_at,
+                    end=started_at,
+                    preview=True,
+                )
             return
         # The root span goes out now, open-ended (end = start) and marked running, and again at
         # the end with everything it knows: the receiver dates the trace from the first span it
@@ -527,6 +533,8 @@ class OTelTrialObserver:
     ) -> None:
         state = self._state(identity)
         state.generations += 1
+        if self._nothing_live():
+            return
         # a non-agent generation is a judge turn of the run's own grading (contract v2: kind
         # ``jgen`` under the grading id ``live:<run_id>``)
         agent_role = role == "agent"
@@ -645,6 +653,8 @@ class OTelTrialObserver:
     ) -> None:
         state = self._state(identity)
         state.tool_calls += 1
+        if self._nothing_live():
+            return
         tool_name = str(getattr(call, "name", "tool"))
         # contract v2: a tool execution is keyed by the episode-unique call id the loop assigned
         # (the same value the bundle's tool_log.yaml and tool message carry), never by position
@@ -1140,6 +1150,7 @@ class OTelTrialObserver:
                     "expect_project": self._expect_project,
                     "project_verified": self._project_verified,
                     "server_api": self._server_api,
+                    "previews": "on" if self._previews else "off",
                     # the receiver's native environment and the deployment profile of the run
                     "environment": self._projection.environment,
                     "profile_version": self._profile_version,
@@ -1305,6 +1316,10 @@ class OTelTrialObserver:
         return {f"{TRACE_METADATA_PREFIX}{key}": values[key] for key in IDENTITY_METADATA_KEYS}
 
     # -- the live rows: final on a v3 receiver, declared previews on a write-once one -----------
+
+    def _nothing_live(self) -> bool:
+        """The write-once layout without previews: a trial is written once, when persisted."""
+        return self._write_once and not self._previews
 
     def _preview_root_id(self, identity: TrialIdentity) -> str:
         return identity.observation_id(_ids.preview_kind("root"), _ids.ROOT_KEY)

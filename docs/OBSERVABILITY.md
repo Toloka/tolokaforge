@@ -2,7 +2,9 @@
 
 `observability.tracing` in the run config selects an installed trial-observer plugin. The
 Langfuse plugin described here exports each generation and tool call as an OpenTelemetry span
-while the trial runs; the graded trial closes the trace. Its OTLP/HTTP exporter sends valid spans
+while the trial runs; the graded trial closes the trace. On a Langfuse v4 receiver it writes each
+trial once, when it is persisted, and sends live rows only as opt-in previews (§ The write-once
+producer layout). Its OTLP/HTTP exporter sends valid spans
 to any collector, and its receiver-specific REST operations complete the trace in Langfuse.
 The engine's observer seam also accepts other backends.
 
@@ -77,6 +79,7 @@ records `expect_project` and `project_verified` in its `details` entry with `exp
 | `LANGFUSE_EXTRA_HEADERS` | `k=v,k2=v2`, extra request headers (a gateway's own header) |
 | `TOLOKAFORGE_TRACING_RUN_ID`, `_RUN_TAG`, `_SESSION_ID`, `_LABEL` | the run's identity when the config carries none |
 | `TOLOKAFORGE_TRACING_PROFILE`, `LANGFUSE_ENVIRONMENT`, `TOLOKAFORGE_TRACING_METADATA` | a profile file when the config names none, the environment (the selector when the config declares `environments`) and the per-run metadata (the profile section below) |
+| `LANGFUSE_TRACING_PREVIEWS` | `true` / `1` / `yes` / `on`: a v4 receiver also gets the live rows as declared previews while a trial runs; off by default (§ The write-once producer layout) |
 
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` keep precedence when set.
 
@@ -230,8 +233,11 @@ events for observations are refused) and makes a trace **be its root observation
 is the list of root observations). On the measured 4.38.0 `events_only` receiver, a re-sent
 observation id is an update, last write wins, even when its content or `environment` changes.
 Transient rows during ingestion converge; they are not permanent duplicates. The observer detects
-the receiver's family once per run and uses separate live previews and a complete bundle-derived
-record on v4. Writing that record once is a producer policy, not a receiver limitation.
+the receiver's family once per run and, on v4, writes a complete bundle-derived record once; live
+previews are opt-in. Writing that record once is a producer policy, not a receiver limitation, and
+it is what Langfuse asks of an OTLP producer on v4: one complete span per unit of work, never
+exported again under its id
+([Migrate custom ingestion to Langfuse v4](https://langfuse.com/integrations/native/opentelemetry/migration-to-v4)).
 
 **How the family is decided.** `GET /api/public/v2/observations` answers on a v4 receiver in every
 write mode and 404s on a v3 one; the version the receiver reports cannot decide, because a v4
@@ -244,21 +250,32 @@ lands in the tracing receipt (`details[0].server_api`).
 
 | When | What | Ids |
 |---|---|---|
-| trial start | the **preview root** `preview: trial`, whose parent is the final root's id, with the trace name, session, the tags known then, the native fields and the identity metadata | `obs\|<trace>\|proot\|-` |
-| every call end | the same live bodies as on a v3 receiver, under the **preview kinds** and under the preview root, named `preview: ...`, with `preview: true` in their metadata; a preview generation states zero usage and cost (explicitly, so the receiver infers none from its model) and its own figures in metadata (`prompt_tokens`, `completion_tokens`, `cost`, `cost_basis`), so it adds nothing to the trace's cost (§ Cost on a trace) | `pgen`, `pjgen`, `ptool`, `pjtool` |
+| trial start | previews only: the **preview root** `preview: trial`, whose parent is the final root's id, with the trace name, session, the tags known then, the native fields and the identity metadata | `obs\|<trace>\|proot\|-` |
+| every call end | previews only: the same live bodies as on a v3 receiver, under the **preview kinds** and under the preview root, named `preview: ...`, with `preview: true` in their metadata; a preview generation states zero usage and cost (explicitly, so the receiver infers none from its model) and its own figures in metadata (`prompt_tokens`, `completion_tokens`, `cost`, `cost_basis`), so it adds nothing to the trace's cost (§ Cost on a trace) | `pgen`, `pjgen`, `ptool`, `pjtool` |
 | trial persisted | the whole bundle projection converted to spans by `tolokaforge_langfuse.otlp_spans`, written **once**, the **root last**, after the media upload, with the complete manifest in the root's metadata as a JSON string the receiver parses back; the scores through the ingestion route, each with the grading's own timestamp | the final kinds, unchanged |
 | run end | one minimal **error root** for every trace whose real root can no longer come (the trial never persisted, the bundle pass wrote none, or the root never reached the exporter): name, session, tags, native fields, identity, start, `status: error` and the reason, no manifest and no verdict | `root` |
+
+**Previews are opt-in.** By default nothing is written while a trial runs: the trial appears,
+complete, when it is persisted (a trial that never persists appears at run end, as its error
+root). `LANGFUSE_TRACING_PREVIEWS=true` (or `1` / `yes` / `on`) adds the
+preview rows, to watch a long trial as it runs. A preview stays in the trace beside its final row
+(a single observation cannot be deleted), and the receiver's own views count every row it holds:
+its dashboards count each previewed call twice in their call and observation counts and latency
+distributions. Usage and cost stay right, because a preview states zero (§ Cost on a trace). A v3
+receiver ignores the switch: its live rows are the record. The receipt says whether previews
+went out (`details[0].previews`: `on` / `off`, always `off` on v3).
 
 Within a run, the producer does not re-send observations: a preview id can never collide with a
 final one (the kind is part of the id), a preview row says so in its own metadata, and a reader
 excludes previews by that marker and by the ids the contract derives. Until the final root arrives
-the trace has **no** root row, so it is in no trace list; a reviewer reaches a running trial by its
-(deterministic) trace id or by its session, and the trace joins the list when the trial ends.
+the trace has **no** root row, so it is in no trace list; with previews on, a reviewer reaches a
+running trial by its (deterministic) trace id or by its session, and the trace joins the list when
+the trial ends.
 The trace's name, session, tags, native
 fields and identity metadata ride on **every** span, previews included, because a v4 receiver
 stores and filters them per observation.
 
-The receipt gains four counters under `extra`: `langfuse.previews_sent`,
+The receipt gains four counters under `extra`: `langfuse.previews_sent` (0 unless previews are on),
 `langfuse.final_observations_sent`, `langfuse.error_roots_sent` and
 `langfuse.roots_unconfirmed`. The first three count spans **queued**, not spans a receiver
 acknowledged: the queue takes a span whether or not the endpoint answers, and what actually left
@@ -631,7 +648,8 @@ receiver facts live in `details`, for example:
 
 ```json
 {"exporter": "langfuse", "expect_project": "pilot", "project_verified": "verified",
- "server_api": "v4", "environment": "test", "profile_version": "pilot-2026.10.01.1"}
+ "server_api": "v4", "previews": "off", "environment": "test",
+ "profile_version": "pilot-2026.10.01.1"}
 ```
 
 `details` is a list, preserving each observer's facts even when two target different projects.

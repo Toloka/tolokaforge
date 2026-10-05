@@ -60,7 +60,8 @@ class LangfuseConfig(BaseModel):
     server_api: Literal["auto", "v3", "v4"] = "auto"
     """Which receiver family to write for; ``auto`` asks the receiver once, at run start
     (``GET /api/public/v2/observations``: a v4 server answers it in every write mode, a v3 one
-    404s). ``v4`` writes every observation once, the live rows as declared previews."""
+    404s). ``v4`` writes every observation once, from the persisted bundle; the live rows go out
+    as declared previews only with ``LANGFUSE_TRACING_PREVIEWS``."""
     attach_api_base: str | None = None
     """REST base URL; by default strip ``/api/public/otel/v1/traces`` from the endpoint."""
     attach_timeout_s: float = Field(default=60.0, gt=0)

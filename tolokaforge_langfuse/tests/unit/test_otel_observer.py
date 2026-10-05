@@ -434,9 +434,11 @@ def _v4_trial(observer, identity=IDENTITY):
 
 
 class TestPreviewRows:
+    """``previews=True`` (the plugin's ``LANGFUSE_TRACING_PREVIEWS``): the live rows of a v4 run."""
+
     def test_the_live_rows_are_previews_under_a_preview_root(self) -> None:
         exporter = InMemorySpanExporter()
-        observer, _ = _v4_observer(exporter)
+        observer, _ = _v4_observer(exporter, previews=True)
         _v4_trial(observer)
         observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
         receipt = observer.run_finished()
@@ -470,7 +472,7 @@ class TestPreviewRows:
 
     def test_no_preview_id_can_be_a_final_id(self) -> None:
         exporter = InMemorySpanExporter()
-        observer, _ = _v4_observer(exporter)
+        observer, _ = _v4_observer(exporter, previews=True)
         _v4_trial(observer)
         observer.run_finished()
         previews = {
@@ -487,13 +489,121 @@ class TestPreviewRows:
 
     def test_trial_finished_writes_no_root(self) -> None:
         exporter = InMemorySpanExporter()
-        observer, _ = _v4_observer(exporter)
+        observer, _ = _v4_observer(exporter, previews=True)
         _v4_trial(observer)
         observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
         # the root is one of the bundle's observations; nothing may take its id before it
         assert IDENTITY.root_id not in {
             format(s.context.span_id, "016x") for s in exporter.get_finished_spans()
         }
+
+
+class TestNoPreviewsByDefault:
+    """Without previews a v4 run writes a trial once, when it is persisted: the live hooks send
+    nothing, and the switch adds the preview rows and changes nothing else."""
+
+    def _persisted(self, tmp_path, **kwargs):
+        import parity_bundle as pb
+
+        from tolokaforge.observability.observer import TrialIdentity
+
+        identity = TrialIdentity(
+            run_id=pb.RUN_ID,
+            task_id=pb.TASK_ID,
+            trial_index=pb.TRIAL_INDEX,
+            attempt_id=pb.ATTEMPT_ID,
+            run_tag=pb.RUN_TAG,
+        )
+        trial_dir = pb.write_parity_bundle(tmp_path / "run")
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(exporter, attachments=_V4Attachments(), **kwargs)
+        _v4_trial(observer, identity)
+        observer.trial_finished(identity, trajectory=_Trajectory([], grade=_Grade()))
+        observer.trial_persisted(identity, trial_dir=trial_dir)
+        receipt = observer.run_finished()
+        return identity, exporter.get_finished_spans(), receipt
+
+    def test_a_running_trial_writes_nothing(self) -> None:
+        exporter = InMemorySpanExporter()
+        observer, queue = _v4_observer(exporter)
+        _v4_trial(observer)
+        observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
+        assert queue.flush(5)
+        assert exporter.get_finished_spans() == ()
+        receipt = observer.run_finished()
+        assert receipt.extra["langfuse.previews_sent"] == 0
+        assert receipt.details[0]["previews"] == "off"
+        # the trial never persisted: its trace still gets a root, and nothing else
+        (root,) = exporter.get_finished_spans()
+        assert format(root.context.span_id, "016x") == IDENTITY.root_id
+        assert receipt.extra["langfuse.error_roots_sent"] == 1
+
+    @pytest.mark.parametrize("hook", ["generation", "tool_call"])
+    def test_a_trial_whose_start_was_never_announced_still_gets_its_root(self, hook) -> None:
+        """The live hooks send nothing, but only after the trial is tracked: a trial the loop
+        reports without a start still owes its trace a root."""
+        exporter = InMemorySpanExporter()
+        observer, _ = _v4_observer(exporter)
+        if hook == "generation":
+            observer.generation(
+                IDENTITY,
+                role="agent",
+                index=1,
+                turn=0,
+                request=[Message(role=MessageRole.USER, content="hello", ts=T0)],
+                result=GenerationResult(
+                    text="hi", usage=Usage(prompt_tokens=1, completion_tokens=1)
+                ),
+                started_at=T0,
+                ended_at=T0 + timedelta(seconds=1),
+            )
+        else:
+            observer.tool_call(
+                IDENTITY,
+                role="agent",
+                index=1,
+                call=ToolCall(id="c1", name="shell", arguments={}),
+                result=ToolResult(success=True, output="ok"),
+                started_at=T0,
+                ended_at=T0 + timedelta(seconds=1),
+            )
+        receipt = observer.run_finished()
+        (root,) = exporter.get_finished_spans()
+        assert format(root.context.span_id, "016x") == IDENTITY.root_id
+        assert receipt.extra["langfuse.error_roots_sent"] == 1
+        assert receipt.extra["langfuse.previews_sent"] == 0
+
+    def test_the_switch_adds_the_previews_and_leaves_the_record_as_it_is(self, tmp_path) -> None:
+        def final_rows(spans):
+            return [
+                (format(s.context.span_id, "016x"), s.name)
+                for s in spans
+                if not _attrs(s).get("langfuse.observation.metadata.preview")
+            ]
+
+        identity, without, receipt_without = self._persisted(tmp_path / "off")
+        _, with_previews, receipt_with = self._persisted(tmp_path / "on", previews=True)
+        assert not any(s.name.startswith("preview: ") for s in without)
+        assert {s.name for s in with_previews if s.name.startswith("preview: ")} == {
+            "preview: trial",
+            "preview: agent",
+            "preview: tool: shell",
+        }
+        assert final_rows(without) == final_rows(with_previews)
+        assert final_rows(without)[-1] == (identity.root_id, "trial")  # the root still goes last
+        assert receipt_without.extra["langfuse.previews_sent"] == 0
+        assert receipt_with.extra["langfuse.previews_sent"] == 3
+        assert receipt_with.details[0]["previews"] == "on"
+
+    def test_a_v3_receiver_keeps_its_live_rows_and_takes_no_previews(self) -> None:
+        exporter = InMemorySpanExporter()
+        observer, _ = _observer(exporter, server_api="v3", previews=True)
+        _v4_trial(observer)
+        receipt = observer.run_finished()
+        names = {s.name for s in exporter.get_finished_spans()}
+        assert {"trial", "agent", "tool: shell"} <= names
+        assert not any(name.startswith("preview: ") for name in names)
+        assert receipt.details[0]["previews"] == "off"
 
 
 class TestTheFinalLayout:
@@ -573,7 +683,9 @@ class TestTheProfilesTrace:
         from tolokaforge_langfuse.otel import ProjectionSettings
 
         exporter = InMemorySpanExporter()
-        observer, _ = _v4_observer(exporter, projection=ProjectionSettings(**self.SETTINGS))
+        observer, _ = _v4_observer(
+            exporter, previews=True, projection=ProjectionSettings(**self.SETTINGS)
+        )
         _v4_trial(observer)
         observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
         observer.run_finished()
@@ -597,7 +709,10 @@ class TestTheProfilesTrace:
 
         exporter = InMemorySpanExporter()
         observer, _ = _v4_observer(
-            exporter, resolver=Refusing(), projection=ProjectionSettings(**self.SETTINGS)
+            exporter,
+            previews=True,
+            resolver=Refusing(),
+            projection=ProjectionSettings(**self.SETTINGS),
         )
         _v4_trial(observer)
         observer.trial_finished(IDENTITY, trajectory=None, error="RuntimeError: the worker died")
@@ -831,7 +946,7 @@ class TestLiveCost:
 
     def _generation_attrs(self, result, *, role: str = "agent", server_api: str = "v3") -> dict:
         exporter = InMemorySpanExporter()
-        observer, _ = _observer(exporter, server_api=server_api)
+        observer, _ = _observer(exporter, server_api=server_api, previews=True)
         observer.trial_started(
             IDENTITY, models={"agent": ModelRef("openrouter", "openai/gpt-6-astra")}, started_at=T0
         )
@@ -1037,7 +1152,7 @@ class TestEverySpanIsScannedBeforeItLeaves:
         exporter = InMemorySpanExporter()
         gate = gate if gate is not None else SafetyGate.from_environment()
         extra = {"projection": projection} if projection is not None else {}
-        observer, _ = _observer(exporter, server_api=server_api, gate=gate, **extra)
+        observer, _ = _observer(exporter, server_api=server_api, gate=gate, previews=True, **extra)
         self._trial(observer, **trial)
         if tool_error is not None:
             observer.tool_call(
@@ -1190,6 +1305,7 @@ class TestEverySpanIsScannedBeforeItLeaves:
             session_id="s",
             tags=(f"note:{self.PROVIDER_KEY}",),
             server_api=server_api,
+            previews=True,
         )
         self._trial(observer)
         observer.trial_finished(IDENTITY, trajectory=_Trajectory([], grade=_Grade()))
