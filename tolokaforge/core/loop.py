@@ -930,6 +930,25 @@ class ToolCallFunnel:
             call.arguments = normalized_args
 
 
+def _without_last_assistant_reasoning(wire: list[Message]) -> list[Message]:
+    """*wire* with reasoning dropped from its most recent assistant message.
+
+    Returns the list unchanged when the last assistant message carries no
+    reasoning, so a resample on a route that never replays reasoning sends the
+    identical object it would have sent anyway.
+    """
+    for index in range(len(wire) - 1, -1, -1):
+        message = wire[index]
+        if message.role is not MessageRole.ASSISTANT:
+            continue
+        if message.reasoning is None:
+            return wire
+        stripped = list(wire)
+        stripped[index] = message.model_copy(update={"reasoning": None})
+        return stripped
+    return wire
+
+
 def _opening(wire: list[Message]) -> list[Message]:
     """The head of *wire* a summarize keeps: everything through the first user turn.
 
@@ -1557,11 +1576,16 @@ class ToolCallingLoop:
         self, turn: int, system_prompt: str, *, replay_reasoning: bool = True
     ) -> GenerationResult:
         """One agent call. ``replay_reasoning=False`` sends the history with the
-        model's own prior deliberation stripped off the wire.
+        deliberation that produced the actionless turn stripped off the wire.
 
         A resample that replays the reasoning which just produced an actionless
         turn is close to re-rolling the same dice, and measurably behaves like
-        it. Only the wire copy is stripped — the recorded messages the grader
+        it. Only that one message is stripped: earlier assistant turns reasoned
+        their way into actions, so their deliberation is not what is being
+        re-rolled, and rewriting them would change every byte of the prompt
+        after the first — on a route whose codec replays reasoning, that
+        discards the provider's cached prefix and bills the whole context
+        afresh. Only the wire copy is touched; the recorded messages the grader
         reads keep their reasoning, so nothing leaves the trajectory.
         """
         self.logger.debug("Requesting agent response", turn=turn)
@@ -1569,14 +1593,7 @@ class ToolCallingLoop:
             self.request_limiter.acquire()
         wire = self._wire_messages
         if not replay_reasoning:
-            wire = [
-                (
-                    m.model_copy(update={"reasoning": None})
-                    if m.role == MessageRole.ASSISTANT and m.reasoning is not None
-                    else m
-                )
-                for m in wire
-            ]
+            wire = _without_last_assistant_reasoning(wire)
         return self.llm_client.generate(
             system=system_prompt,
             messages=wire,
