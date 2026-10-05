@@ -1370,7 +1370,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         prefix, so the runner resolves ``artifacts_dir / documents_path`` to
         the same tree. Globs are flat (non-recursive), matching
         ``load_documents_from_directory``. ``.json`` files are the ``bm25``
-        backend's ``{id, title, content}`` documents (ADR-0053); which files a
+        backend's ``{id, title, content}`` documents (ADR-0054); which files a
         backend indexes is the backend's own rule — ``rag_service`` reads the
         ``.md``/``.txt`` ones. The whole task directory is deliberately NOT
         bundled — that would ship ``grading.yaml`` (which may carry a planted

@@ -1,6 +1,6 @@
 """The ``bm25`` search backend: Okapi BM25 over the bundled corpus, in the runner process.
 
-The second built-in retrieval (ADR-0053, change 2). A task selects it with
+The second built-in retrieval (ADR-0054, change 2). A task selects it with
 ``initial_state.rag.backend: bm25``; it needs no stack service, so its tasks run
 on the core stack, and the runner builds the trial's index at ``RegisterTrial``
 from the corpus the task shipped. Everything a task can tune travels in
