@@ -2912,7 +2912,9 @@ class Orchestrator:
                 self._canonicalise_resumed_run_id(run_state, run_id)
                 self._previous_report_results = []
                 for trial in run_state.get_completed_trials():
-                    if self.state_manager.is_completed(trial.task_id, trial.trial_index):
+                    if self.state_manager.is_completed(
+                        trial.task_id, trial.trial_index, run_state=run_state
+                    ):
                         bundle = output_dir / "trials" / trial.task_id / str(trial.trial_index)
                         previous = read_report_trajectory(bundle)
                         if (previous.task_id, previous.trial_index) != (

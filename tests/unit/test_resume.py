@@ -3,6 +3,7 @@
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -232,6 +233,21 @@ class TestRunStateManager:
 
             # Check completion status
             assert manager.is_completed("task1", 0) is True
+            assert manager.is_completed("task1", 1) is False
+
+    def test_is_completed_reads_a_state_it_is_given_instead_of_the_disk(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            run_state = manager.initialize_run(
+                run_id="test_run", config_path="test.yaml", task_ids=["task1"], repeats=2
+            )
+            run_state.mark_completed("task1", 0, True, 0.9)
+            manager.save_state(run_state)
+            run_state.mark_completed("task1", 1, True, 0.8)  # held only in memory
+
+            with patch.object(manager, "load_state", side_effect=AssertionError("re-read")):
+                assert manager.is_completed("task1", 0, run_state=run_state) is True
+                assert manager.is_completed("task1", 1, run_state=run_state) is True
             assert manager.is_completed("task1", 1) is False
 
     def test_get_resume_info(self):
