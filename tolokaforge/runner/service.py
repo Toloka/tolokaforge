@@ -3135,7 +3135,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         outcome = view_the_pair(
             trial_state,
             golden_state,
-            initial=copy.deepcopy(initial_state.tables) if initial_state else {},
+            initial=copy.deepcopy(initial_state.tables) if initial_state else None,
             declaration=declaration,
         )
         if isinstance(outcome, TrialViewError):
