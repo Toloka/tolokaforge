@@ -671,8 +671,9 @@ def load_comparison_view_rule(name: str) -> type[ComparisonViewRule]:
 
     Returns the class itself, matching :func:`load_judge_kind`: the ``kind`` of a
     ``comparison_view`` entry is the registered name, and the view instantiates the
-    class for each entry naming it. The built-in ``exclude_records`` and
-    ``exclude_tables`` resolve through this loader like any other registration.
+    class for each entry naming it. The built-in ``exclude_records``,
+    ``exclude_tables`` and ``normalize_ids`` resolve through this loader like any
+    other registration.
     :func:`tolokaforge.core.grading.comparison_view.resolve_comparison_view_rule`
     is the caller: it holds the class to the rule contract. A registered rule
     decides which states hash equal, the trust boundary
