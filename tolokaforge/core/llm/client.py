@@ -2402,6 +2402,8 @@ class LLMClient:
         kwargs = dict(kwargs)
         kwargs.setdefault("timeout", self._api_call_timeout_s)
         if single_attempt:
+            # Reads the process-wide litellm.num_retries / model_fallbacks once, on the
+            # assumption they are set at startup and not mutated per call.
             if litellm.num_retries not in (None, 0) or litellm.model_fallbacks is not None:
                 raise RuntimeError(
                     "single_attempt cannot run with global LiteLLM retries or model fallbacks"
@@ -2447,9 +2449,9 @@ class LLMClient:
                             model = rewrite.ensure_prefix + model
                         kwargs["model"] = model
 
-                if single_attempt:
-                    return self._call_completion_with_timeout_retry(kwargs, single_attempt=True)
-                return self._call_completion_with_timeout_retry(kwargs)
+                return self._call_completion_with_timeout_retry(
+                    kwargs, single_attempt=single_attempt
+                )
             except LLMApiTimeoutError:
                 # Pass through unchanged so ``_should_retry_exception`` can
                 # opt the outer ``Retrying`` controller out of re-attempting
