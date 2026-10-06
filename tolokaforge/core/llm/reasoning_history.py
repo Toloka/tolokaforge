@@ -9,6 +9,11 @@ The policy is resolved once per request, over the whole message list, before any
 provider serialisation, so a route's behaviour does not depend on which codec is
 installed behind it.
 
+A turn counts as carrying reasoning when the route's codec would put a payload
+on the wire for it, not when a reader can read it: an opaque block the provider
+replays is governed here exactly like readable thinking, and a block the codec
+encodes to nothing is governed by neither.
+
 Some routes do not get a choice: Anthropic requires thinking blocks to
 round-trip intact alongside tool results. A codec whose route mandates replay
 says so with :attr:`ReasoningCodec.forced_history`, and that overrides whatever a
@@ -23,10 +28,11 @@ not optional.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.capabilities import ModelCapabilities
+    from tolokaforge.core.llm.reasoning_codec import ReasoningCodec
     from tolokaforge.core.models import Message
 
 ReasoningHistory = Literal["none", "all", "last", "auto"]
@@ -41,21 +47,28 @@ DEFAULT_REASONING_HISTORY: ReasoningHistory = "auto"
 route's codec names something else, so an existing run is unchanged."""
 
 
-def _carries_replayable_reasoning(message: Message) -> bool:
-    """True when this message's reasoning would reach the wire.
+def replayed_reasoning_payload(message: Message, codec: ReasoningCodec) -> dict[str, Any]:
+    """The provider-shaped fields *message* contributes to a request, ``{}`` for none.
 
-    Mirrors the two conditions the replay splice already applies: reasoning a
-    reader produced rather than the codec (``capture_only``) is never sent, and
-    reasoning with no text encodes to nothing. A policy that ignored either
-    would count a message as "the last one carrying reasoning", strip the turn
-    below it, and send nothing at all.
+    The single definition of "this turn replays reasoning", read both by the
+    policy below and by the serialiser that splices the payload onto the
+    request, so a turn the policy counts is exactly a turn the wire carries.
+
+    Reasoning a reader produced rather than the codec (``capture_only``) is
+    never sent. Everything else is decided by the codec: readable text is not
+    the test, because an opaque block carries a payload and a placeholder block
+    carries none. A policy that counted a turn the codec encodes to nothing
+    would call it "the last one carrying reasoning", strip the turn below it,
+    and send nothing at all.
     """
     from tolokaforge.core.models import MessageRole
 
     if message.role is not MessageRole.ASSISTANT:
-        return False
+        return {}
     reasoning = message.reasoning
-    return reasoning is not None and not reasoning.capture_only and not reasoning.is_empty()
+    if reasoning is None or reasoning.capture_only:
+        return {}
+    return codec.encode_for_replay(reasoning)
 
 
 def resolve_reasoning_history(
@@ -64,8 +77,9 @@ def resolve_reasoning_history(
     """*messages* with reasoning dropped from the turns the policy excludes.
 
     Returns the input list unchanged whenever the policy is a no-op — the route
-    mandates ``all``, nothing carries replayable reasoning, or the setting is
-    ``all``. A leg whose model emits no reasoning therefore allocates nothing.
+    mandates ``all``, the setting is ``all``, or no turn puts reasoning on the
+    wire. A leg whose model emits no reasoning, and a route whose codec replays
+    nothing, therefore allocate nothing.
 
     Only the copy bound for the wire is affected; the recorded messages the
     grader reads keep their reasoning either way.
@@ -74,7 +88,8 @@ def resolve_reasoning_history(
     if setting == "all":
         return messages
 
-    carriers = [i for i, m in enumerate(messages) if _carries_replayable_reasoning(m)]
+    codec = capabilities.reasoning_codec
+    carriers = [i for i, m in enumerate(messages) if replayed_reasoning_payload(m, codec)]
     if not carriers:
         return messages
     keep = {carriers[-1]} if setting == "last" else set()
