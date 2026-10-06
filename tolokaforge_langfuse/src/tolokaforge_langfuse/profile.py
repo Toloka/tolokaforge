@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -306,15 +307,6 @@ def _string_list(value: Any, *, where: str) -> list[str]:
 
 
 def _load_toml(text: str, *, where: str) -> Mapping[str, Any]:
-    try:
-        import tomllib
-    except ImportError:  # pragma: no cover - Python 3.10: the package depends on tomli there
-        try:
-            import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-        except ImportError as exc:
-            raise TracingProfileError(
-                f"{where}: reading TOML needs Python 3.11+ or the 'tomli' package"
-            ) from exc
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:

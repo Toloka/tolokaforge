@@ -75,6 +75,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,6 +85,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -241,51 +243,33 @@ def _hash_file(path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# pyproject.toml helpers (stdlib-only, no tomli)
+# pyproject.toml helpers
 # ---------------------------------------------------------------------------
+
+
+def _project_table(path: Path) -> dict[str, Any]:
+    """The ``[project]`` table of *path*, or ``{}`` if it is unreadable or not valid TOML.
+
+    The engine-root walk reads every ancestor's ``pyproject.toml``, so a third-party
+    file that does not parse counts as "not the engine" rather than aborting the build.
+    """
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return {}
+    project = document.get("project")
+    return project if isinstance(project, dict) else {}
 
 
 def _is_engine_pyproject(path: Path) -> bool:
     """``True`` if *path* is a ``pyproject.toml`` for the tolokaforge engine."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    in_project = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped == "[project]":
-            in_project = True
-            continue
-        if in_project and stripped.startswith("["):
-            break
-        if in_project:
-            m = re.match(r"""name\s*=\s*["']([^"']+)["']""", stripped)
-            if m and m.group(1) == _ENGINE_PKG:
-                return True
-    return False
+    return _project_table(path).get("name") == _ENGINE_PKG
 
 
 def _read_pyproject_version(root: Path) -> str | None:
-    """Extract ``project.version`` from a ``pyproject.toml``."""
-    path = root / "pyproject.toml"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    in_project = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped == "[project]":
-            in_project = True
-            continue
-        if in_project and stripped.startswith("["):
-            break
-        if in_project:
-            m = re.match(r"""version\s*=\s*["']([^"']+)["']""", stripped)
-            if m:
-                return m.group(1)
-    return None
+    """``project.version`` from *root*'s ``pyproject.toml``; ``None`` if absent or unparsable."""
+    version_value = _project_table(root / "pyproject.toml").get("version")
+    return version_value if isinstance(version_value, str) else None
 
 
 def _find_engine_source_root() -> Path | None:

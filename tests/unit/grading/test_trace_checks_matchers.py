@@ -745,14 +745,8 @@ def test_a_valid_date_literal_is_admitted_at_load() -> None:
         assert loaded.date_gte == literal
 
 
-def test_a_Z_suffix_datetime_parses_on_python_3_10() -> None:
-    """The one behaviour ``date_comparison_key``'s normalization exists for.
-
-    ``datetime.fromisoformat("2026-03-01T12:00:00Z")`` raises on Python 3.10 —
-    Z-suffix support landed in 3.11 — so the helper must rewrite the trailing
-    ``Z`` before it hands the literal off. On 3.11+ this is a correctness
-    assertion rather than a portability one; the test runs the same on both.
-    """
+def test_a_Z_suffix_datetime_parses_as_utc() -> None:
+    """A trailing ``Z`` reads as UTC, with and without fractional seconds."""
     from datetime import datetime
 
     from tolokaforge.core.grading.predicates import date_comparison_key

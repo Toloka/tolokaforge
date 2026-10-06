@@ -126,6 +126,22 @@ class TestPyprojectHelpers:
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
         assert _read_pyproject_version(tmp_path) is None
 
+    def test_commented_project_table_is_the_engine(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text(
+            textwrap.dedent("""\
+                [project]  # distribution metadata
+                name = "tolokaforge"  # the engine
+                version = "9.9.9"
+            """),
+        )
+        assert _is_engine_pyproject(tmp_path / "pyproject.toml")
+        assert _read_pyproject_version(tmp_path) == "9.9.9"
+
+    def test_malformed_pyproject_is_not_the_engine(self, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "tolokaforge\nversion = 1\n')
+        assert not _is_engine_pyproject(tmp_path / "pyproject.toml")
+        assert _read_pyproject_version(tmp_path) is None
+
 
 # ===================================================================
 # Wheel filename matching

@@ -546,7 +546,7 @@ def _end_from_latency(started: str | None, latency: object) -> str | None:
     if not started or latency in (None, "") or not isinstance(latency, (int, float, str)):
         return None
     try:
-        base = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        base = datetime.fromisoformat(started)
         ended: str = (base + timedelta(seconds=float(latency))).isoformat()
         return ended.replace("+00:00", "Z") if started.endswith("Z") else ended
     except (TypeError, ValueError):

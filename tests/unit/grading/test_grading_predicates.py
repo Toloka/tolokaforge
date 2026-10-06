@@ -204,11 +204,10 @@ def test_the_table_answers_for_exactly_the_operators_a_predicate_may_bind() -> N
 def test_date_comparison_key_normalizes_an_iso_shape(literal: str, expected: datetime) -> None:
     """Every accepted shape reads through the same UTC datetime.
 
-    Six rows span the policy: a date-only string is midnight UTC of that day;
+    The rows span the policy: a date-only string is midnight UTC of that day;
     the Z suffix and an explicit ``+00:00`` are the same instant; a naive
-    datetime reads as UTC; a non-UTC offset converts; a fractional second
-    passes through — including the one-digit shape Python 3.10's
-    ``fromisoformat`` would reject without the helper's padding.
+    datetime reads as UTC; a non-UTC offset converts; a fractional second of
+    any digit count reads as microseconds.
     """
     assert date_comparison_key(literal) == expected
 

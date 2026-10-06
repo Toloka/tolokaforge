@@ -259,7 +259,7 @@ def _nanos(value: str | None, *, fallback: int | None = None) -> int | None:
         return fallback
     text = str(value)
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return fallback
     if parsed.tzinfo is None:

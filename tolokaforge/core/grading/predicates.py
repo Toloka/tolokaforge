@@ -111,11 +111,10 @@ def ever_satisfiable(operator: str, held: str | None, bound: str | None) -> bool
     return bound in satisfiable_bounds[held]
 
 
-# One ISO-8601 shape gate before ``datetime.fromisoformat``. Python 3.10's
-# ``fromisoformat`` grammar is a subset of 3.11+'s (no ``Z`` suffix; fractional
-# seconds must be exactly 3 or 6 digits), and one regex read here is what keeps
-# the same config parsing identically across every interpreter this package
-# supports.
+# The accepted date grammar: an extended-format calendar date, optionally a time
+# with fractional seconds and a ``Z`` or ``±HH:MM`` offset. ``datetime.fromisoformat``
+# accepts more (basic format ``20260301``, week dates, ordinal dates), so the gate
+# is what fixes which strings count as dates.
 _ISO_8601_SHAPE = re.compile(
     r"^\d{4}-\d{2}-\d{2}" r"(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$"
 )
@@ -135,21 +134,16 @@ def date_comparison_key(value: Any) -> datetime | None:
     which every caller must treat as unknown rather than as a mismatch.
 
     A string that does not match the ISO-8601 shape gate — ``next week``,
-    ``March 2026`` — reads as ``None`` too, for the same reason. The gate
-    exists because ``datetime.fromisoformat``'s accepted grammar widened
-    across Python versions.
+    ``March 2026`` — reads as ``None`` too, for the same reason. So does an
+    ISO-8601 form outside the gate's grammar, such as ``20260301`` or a week
+    date, which ``datetime.fromisoformat`` alone would accept.
     """
     if not isinstance(value, str):
         return None
     if _ISO_8601_SHAPE.match(value) is None:
         return None
-    literal = value[:-1] + "+00:00" if value.endswith("Z") else value
-    fraction = re.search(r"\.(\d+)", literal)
-    if fraction is not None and len(fraction.group(1)) not in (3, 6):
-        padded = fraction.group(1).ljust(6, "0")[:6]
-        literal = literal[: fraction.start(1)] + padded + literal[fraction.end(1) :]
     try:
-        parsed = datetime.fromisoformat(literal)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     if parsed.tzinfo is None:

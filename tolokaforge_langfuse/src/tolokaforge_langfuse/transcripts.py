@@ -609,7 +609,7 @@ def _ended(
         return stamps[-1]
     if started and result is not None and result.duration_ms:
         try:
-            base = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            base = datetime.fromisoformat(started)
         except ValueError:
             return stamps[-1] if stamps else None
         try:
