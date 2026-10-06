@@ -9,14 +9,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tolokaforge.core import plugin_registry
 from tolokaforge.core.actors.user_stop import UserStop, UserStopRule
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.capabilities import ModelCapabilities
+from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.loop import classify_loop_error
+from tolokaforge.core.loop import LoopConfig, classify_loop_error
 from tolokaforge.core.models import (
     MessageRole,
     Metrics,
+    ModelConfig,
     TerminationReason,
     ToolCall,
     Trajectory,
@@ -1217,3 +1220,79 @@ class TestUserStopRuleFind:
         that invariant itself rather than trusting the caller to have validated."""
         with pytest.raises(ValueError, match="inside"):
             UserStopRule(tokens=("###STOP###", "###STOP"))
+
+
+# ===================================================================
+# Observation window from a run config
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestObservationWindowReachesTheLoop:
+    """``models.<role>.capabilities.observation_window`` and its polling companion.
+
+    Both are loop-layer knobs on ``ModelCapabilities``, so a run config reaches
+    them through the capability-override path. These pin the whole chain — the
+    config block, the override translation, and the runner's ``LoopConfig`` — so
+    a key that stops being recognised, or stops being wired, fails here rather
+    than in a run that silently sends every observation in full.
+    """
+
+    @staticmethod
+    def _loop_config(capabilities: dict[str, object] | None) -> LoopConfig:
+        cfg = ModelConfig(
+            provider="openrouter",
+            name="anthropic/claude-sonnet-4.6",
+            capabilities=capabilities,
+        )
+        agent = _make_agent_client()
+        agent.capabilities = build_capabilities(cfg.name, cfg.provider, cfg.capabilities or {})
+        runner = _make_runner(agent_client=agent)
+
+        seen: list[LoopConfig] = []
+        real_load = plugin_registry.load_agent_loop
+
+        def capturing_load(name: str):
+            factory = real_load(name)
+
+            def capturing_factory(context):
+                seen.append(context.config)
+                return factory(context)
+
+            return capturing_factory
+
+        with patch.object(plugin_registry, "load_agent_loop", capturing_load):
+            runner.run("System", "Task")
+
+        assert len(seen) == 1
+        return seen[0]
+
+    def test_the_window_a_config_sets_is_the_window_the_loop_runs_with(self) -> None:
+        config = self._loop_config({"observation_window": 5, "observation_window_polling": 4})
+
+        assert (config.observation_window, config.observation_window_polling) == (5, 4)
+
+    def test_a_config_that_sets_neither_leaves_every_observation_in_full(self) -> None:
+        config = self._loop_config(None)
+
+        assert (config.observation_window, config.observation_window_polling) == (None, 1)
+
+    @pytest.mark.parametrize("value", [-1, 1.5, "5", True])
+    def test_a_window_that_is_not_a_non_negative_int_is_refused(self, value: object) -> None:
+        with pytest.raises(ValueError, match="observation_window"):
+            build_capabilities(
+                "anthropic/claude-sonnet-4.6", "openrouter", {"observation_window": value}
+            )
+
+    @pytest.mark.parametrize("value", [0, -1, 2.5, "4", True])
+    def test_a_polling_interval_that_is_not_a_positive_int_is_refused(self, value: object) -> None:
+        with pytest.raises(ValueError, match="observation_window_polling"):
+            build_capabilities(
+                "anthropic/claude-sonnet-4.6", "openrouter", {"observation_window_polling": value}
+            )
+
+    def test_a_typo_in_the_window_key_is_refused_rather_than_ignored(self) -> None:
+        with pytest.raises(ValueError, match="Unknown capability override keys"):
+            build_capabilities(
+                "anthropic/claude-sonnet-4.6", "openrouter", {"observation_windows": 5}
+            )
