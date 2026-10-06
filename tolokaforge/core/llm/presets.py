@@ -908,6 +908,7 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "supports_tool_images",
         # Reasoning codec
         "gemini_drop_placeholder_signature",
+        "reasoning_history",
         # Params policy
         "fixed_temperature",
         "supports_seed",
@@ -960,6 +961,10 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         ):
             raise ValueError("api_call_timeout_s must be a finite positive number")
         cfg["api_call_timeout_s"] = float(timeout)
+
+    history = overrides.get("reasoning_history")
+    if history is not None:
+        cfg["reasoning_history"] = history
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):
