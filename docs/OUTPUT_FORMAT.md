@@ -336,7 +336,8 @@ it and resolves the default simulator — while `interaction_mode` and
 
 Computed by the orchestrator at trial-start via
 [`tolokaforge.core.llm.presets.resolve_effective_preset`](../tolokaforge/core/llm/presets.py)
-+ [`resolve_policy_names`](../tolokaforge/core/llm/presets.py). Shape:
++ [`resolve_policy_names`](../tolokaforge/core/llm/presets.py)
++ [`resolve_context_controls`](../tolokaforge/core/llm/presets.py). Shape:
 
 | Field | Values | Source |
 |---|---|---|
@@ -349,6 +350,18 @@ Computed by the orchestrator at trial-start via
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |
 | `message_assembly_policy` | `null` \| `nova` (only `aws_nova` / `aws_nova_openrouter` carry `nova`; every other preset resolves to `null`) | policy registry |
 | `assistant_text_policy` | `passthrough` (every shipped preset today; out-of-tree subclasses land via the `--presets-file` overlay) | policy registry |
+| `reasoning_history` | `all` \| `none` \| `last` — the **effective** setting after the route has had its say, never `auto` | [`effective_reasoning_history`](../tolokaforge/core/llm/reasoning_history.py) |
+| `observation_window` | integer \| `null` — how many of the most recent observations stayed full-length on the wire; `null` sends every observation in full | capability value |
+| `observation_window_polling` | integer ≥ 1 — turns the window boundary held still before advancing; inert when `observation_window` is `null` | capability value |
+
+The three context-control fields record what the trial **ran under**, which is
+not always what its config asked for. `model_config.<role>.capabilities` carries
+the request; `resolved.*` carries the resolution. `reasoning_history` is where
+the two most often diverge: a codec that declares `forced_history` — the
+Anthropic route does, because the provider requires thinking blocks to
+round-trip intact — overrides the preset, so a config asking for `last` on that
+route records `all` here. Comparing the two fields is the only way to assert
+after a run that a requested setting survived.
 
 `params_policy` is intentionally omitted from `resolved.*` — it is a
 stateful [`GenerationParams`](../tolokaforge/core/llm/params_policy.py)
@@ -941,6 +954,7 @@ reasoning_recovered_by_fallback: 0 # readable reasoning the preset's codec does 
 reasoning_channel_unknown: 0       # billed for reasoning that arrived in no channel we know
 reasoning_replay_dropped: false    # reasoning was extracted and then never sent back
 tool_calls: 7
+tool_commands: 11                  # shell commands issued; a batching tool makes one call carry several
 tool_success_rate: 1.0
 stuck_detected: false
 tool_usage:
@@ -980,7 +994,14 @@ time measured around each call, failures included.
 `executor` and `latency_seconds` it aggregates live in
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
-`tool_calls` and `tool_success_rate` count the **agent's** calls — the same
+`tool_commands` counts the shell commands behind those calls. A tool whose
+argument is an array of commands records one `tool_calls` entry for the whole
+array and one `tool_commands` entry per element; every other call contributes
+one to each. `tool_commands / turns` therefore reads as work per turn whichever
+shell tool a run selected, while `tool_calls / turns` does not.
+
+`tool_calls`, `tool_commands` and `tool_success_rate` count the **agent's**
+calls — the same
 scoping stuck detection and `transcript_rules.tool_expectations` apply, so a
 trial whose user actor called a tool of its own does not read as the agent having
 used one. `tool_usage` and `tool_log.yaml` carry every executor's calls, so on a
