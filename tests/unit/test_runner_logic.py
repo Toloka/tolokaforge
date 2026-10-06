@@ -120,6 +120,14 @@ def _make_runner(**kwargs) -> TrialRunner:
         "episode_timeout_s": 600,
     }
     defaults.update(kwargs)
+    # A bare ``MagicMock`` agent answers every capability read with another Mock.
+    # The loop consults ``observation_window`` on each turn and compares it to an
+    # int, so a Mock there raises a ``TypeError`` that displaces whatever error
+    # the test injected. Production types the field ``int | None``; this keeps the
+    # mock honest about that rather than teaching the loop to expect a Mock.
+    agent = defaults["agent_client"]
+    if not isinstance(agent.capabilities, ModelCapabilities):
+        agent.capabilities = ModelCapabilities()
     return TrialRunner(**defaults)
 
 
