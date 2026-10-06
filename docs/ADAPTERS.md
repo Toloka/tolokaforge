@@ -28,6 +28,7 @@ adapter discoverable (via the `tolokaforge.adapters` entry point):
 ```bash
 pip install "tolokaforge[terminal_bench]"   # Terminal-Bench tasks
 pip install "tolokaforge[inspect_ai]"       # Inspect AI tasks
+pip install "tolokaforge[harbor]"           # Harbor harness (harbor run + Terminus 2)
 pip install "tolokaforge[adapters]"         # all shipped adapters
 ```
 
@@ -99,6 +100,39 @@ directly (step 2), supplying its own command assembly and grading.
 
 `NativeAdapter` (the engine's own loop) and `TerminalBenchAdapter` ship in
 the tree; additional delegated-harness adapters install through their extras.
+
+---
+
+## `harbor` — HarborAdapter (delegated, external plugin)
+
+Opt-in plugin from the `tolokaforge-adapter-harbor` distribution
+(`pip install "tolokaforge[harbor]"`); selected via
+`evaluation.harness_adapter.type: harbor`. The **delegated** kind (step 2 above,
+not the registry mixin): it declares `supported_execution_modes =
+{DELEGATED}` directly, owns its own environment, and emits its own command.
+
+Runs Terminal-Bench 2.0 task packs by delegating execution to the real Harbor
+harness — the trial's agent step is a single `harbor run -p /app/task -a
+terminus-2 -m <model> -e docker -o /logs/harbor --job-name trial -k 1 -y`, and
+Harbor drives its own Terminus 2 agent + verifier inside a sandbox it builds via
+Docker-out-of-Docker. Grading is `test_execution`: a generated `tests/test.sh`
+reads `verifier_result.rewards.reward` from Harbor's native
+`/logs/harbor/trial/*__*/result.json`. This is **delegation, not task-reuse** —
+to run the same TB2 pack on tolokaforge's own loop, use the `terminal_bench`
+adapter instead.
+
+Because Harbor owns the sandbox, tolokaforge's per-trial `TaskIsolation`,
+spend-cap, and crash-restart guarantees do **not** apply inside Harbor's run, and
+the DooD sibling containers Harbor spins up are cleaned up by Harbor (a Harbor
+crash can orphan them on the host). See the package
+[`README.md`](../external_adapters/tolokaforge-adapter-harbor/README.md) §
+Forfeitures and the examples under [`examples/harbor/`](../examples/harbor/).
+
+### Open Issues
+
+No issues found. The keyless `oracle` end-to-end path (agent image build → `harbor
+run -a oracle` over the mounted socket → `result.json` → `test_execution`) is
+covered by the adapter's integration test.
 
 ---
 
