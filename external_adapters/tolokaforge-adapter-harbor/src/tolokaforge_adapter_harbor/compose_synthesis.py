@@ -16,6 +16,23 @@ task-stack service; task-stack composes an adapter writes are not re-validated b
 the manifest's relative-bind-mount safety check (only the engine mirror compose
 is), which is the same freedom the inspect agent uses to declare its own volumes.
 
+Harbor's sandbox is a **second** DooD level: Harbor (running in the agent
+container) shells ``docker compose`` against the host daemon to build and run its
+sandbox, and bind-mounts its own job directory (the ``harbor run -o`` path, where
+it writes ``result.json`` and the verifier output) INTO that sandbox. The host
+daemon resolves that bind source on the HOST filesystem, so the job directory
+must sit at an **identical absolute path on the host and inside the agent
+container** — otherwise the host daemon cannot see the agent container's private
+``/logs`` and refuses the mount ("Mounts denied" on Docker Desktop; a silently
+empty auto-created dir on Linux). The job directory is therefore an *identity*
+bind mount (``<staging>/harbor_jobs`` → the same path), and ``harbor run -o``
+targets that absolute path. The tolokaforge verifier reward
+(``/logs/verifier/reward.txt``, written by the generated ``tests/test.sh`` and
+read by the runner over ``docker exec``) stays an in-container path — it rides no
+nested mount, so it needs no identity treatment. In the orchestrator-image case
+the staging root must itself be a host-visible path for the same reason (the DooD
+caveat in ``docs/ORCHESTRATOR_IMAGE.md``).
+
 No subprocess is run here; the image is built declaratively by the orchestrator
 from the ``build:`` context this module writes.
 """
@@ -36,8 +53,10 @@ from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
 
 PROJECT_PREFIX = "tf_harbor_"
 CONTAINER_LOGS_DIR = "/logs"
-HARBOR_JOBS_DIR = "/logs/harbor"
 HARBOR_JOB_NAME = "trial"
+# Staging subdir identity-mounted (host path == container path) as Harbor's
+# ``-o`` job directory, so Harbor's sandbox can bind-mount it via the host daemon.
+HARBOR_JOBS_DIRNAME = "harbor_jobs"
 STAGING_LOGS_DIRNAME = "_logs"
 TASK_PACK_DIRNAME = "task"
 CONTAINER_TASK_DIR = "/app/task"
@@ -76,19 +95,27 @@ COPY tests /tests
 WORKDIR /app
 """
 
-# Self-contained (stdlib-only) reward extractor: read the one Harbor job result,
-# take ``verifier_result.rewards.reward``, fall back to the mean of per-step
-# rewards for a multi-step task, and write 0.0 when the run raised or produced no
-# result. Harbor is never imported here — the verifier reads its JSON directly.
-_TEST_SH = """\
+
+def _render_test_sh(result_glob: str) -> str:
+    """The tolokaforge verifier: extract Harbor's reward and write it where the
+    runner's ``test_execution`` grading reads it (``/logs/verifier/reward.txt``).
+
+    Self-contained (stdlib-only): read the one Harbor job result matching
+    ``result_glob``, take ``verifier_result.rewards.reward``, fall back to the
+    mean of per-step rewards for a multi-step task, and write 0.0 when the run
+    raised or produced no result. Harbor is never imported here — the verifier
+    reads its JSON directly. ``result_glob`` is an absolute host-identity path
+    (see the module docstring), interpolated into the Python heredoc.
+    """
+    return f"""\
 #!/usr/bin/env bash
 set -uo pipefail
-mkdir -p /logs/verifier
-python3 - > /logs/verifier/reward.txt <<'PY'
+mkdir -p {CONTAINER_LOGS_DIR}/verifier
+python3 - > {CONTAINER_LOGS_DIR}/verifier/reward.txt <<'PY'
 import glob
 import json
 
-matches = sorted(glob.glob("/logs/harbor/trial/*__*/result.json"))
+matches = sorted(glob.glob({result_glob!r}))
 if not matches:
     print(0.0)
     raise SystemExit
@@ -102,8 +129,8 @@ if result.get("exception_info") is not None:
 
 
 def reward_of(node):
-    verifier_result = (node or {}).get("verifier_result") or {}
-    rewards = verifier_result.get("rewards") or {}
+    verifier_result = (node or {{}}).get("verifier_result") or {{}}
+    rewards = verifier_result.get("rewards") or {{}}
     try:
         return float(rewards["reward"])
     except (KeyError, TypeError, ValueError):
@@ -131,6 +158,10 @@ class MaterialisedEnvironment:
     agent_service: str
     staging_dir: Path
     agent_image: str
+    harbor_jobs_dir: Path
+    """Absolute host path identity-mounted as Harbor's ``-o`` job directory
+    (host path == container path), so Harbor's sandbox can bind-mount it via the
+    host daemon. The adapter passes this to ``harbor run -o``."""
 
 
 def materialise_task_environment(
@@ -162,15 +193,17 @@ def materialise_task_environment(
         digest = f"h{digest}"
 
     staging_dir = (staging_root / f"harbor-{_safe(task_name)}-{digest}").resolve()
+    harbor_jobs_dir = staging_dir / HARBOR_JOBS_DIRNAME
     _write_staging(
         pack_dir,
         staging_dir,
         harbor_version=harbor_version,
         base_image=base_image,
+        harbor_jobs_dir=harbor_jobs_dir,
     )
 
     agent_image = f"tolokaforge-harbor-{_safe(task_name)}:{digest}"
-    task_doc = _task_compose_doc(agent_service, agent_image, provider_env_keys)
+    task_doc = _task_compose_doc(agent_service, agent_image, provider_env_keys, harbor_jobs_dir)
     compose_file = staging_dir / _TASK_COMPOSE_FILENAME
     compose_file.write_text(yaml.safe_dump(task_doc, sort_keys=False))
 
@@ -184,6 +217,7 @@ def materialise_task_environment(
         agent_service=agent_service,
         staging_dir=staging_dir,
         agent_image=agent_image,
+        harbor_jobs_dir=harbor_jobs_dir,
     )
 
 
@@ -193,6 +227,7 @@ def _write_staging(
     *,
     harbor_version: str,
     base_image: str,
+    harbor_jobs_dir: Path,
 ) -> None:
     def _ignore(_dir: str, names: list[str]) -> list[str]:
         return [n for n in names if n == "__pycache__"]
@@ -213,13 +248,24 @@ def _write_staging(
     )
     tests_dir = staging_dir / "tests"
     tests_dir.mkdir(exist_ok=True)
-    (tests_dir / "test.sh").write_text(_TEST_SH)
-    (staging_dir / STAGING_LOGS_DIRNAME / "harbor").mkdir(parents=True, exist_ok=True)
+    (tests_dir / "test.sh").write_text(_render_test_sh(_result_glob(harbor_jobs_dir)))
+    # Identity-mounted job directory (host == container path); pre-created so the
+    # bind mount carries the host's ownership rather than Docker's root-owned stub.
+    harbor_jobs_dir.mkdir(parents=True, exist_ok=True)
     (staging_dir / STAGING_LOGS_DIRNAME / "verifier").mkdir(parents=True, exist_ok=True)
 
 
+def _result_glob(harbor_jobs_dir: Path) -> str:
+    """Glob matching the one per-task ``result.json`` Harbor writes under its job
+    directory: ``<jobs>/<job-name>/<task[:32]>__<7char>/result.json``."""
+    return f"{harbor_jobs_dir}/{HARBOR_JOB_NAME}/*__*/result.json"
+
+
 def _task_compose_doc(
-    agent_service: str, agent_image: str, provider_env_keys: Sequence[str]
+    agent_service: str,
+    agent_image: str,
+    provider_env_keys: Sequence[str],
+    harbor_jobs_dir: Path,
 ) -> dict[str, Any]:
     environment = {key: f"${{{provider_input(key)}}}" for key in sorted(provider_env_keys)}
     body: dict[str, Any] = {
@@ -232,9 +278,15 @@ def _task_compose_doc(
         # is an absolute bind source; a task-stack compose the adapter synthesises
         # is not subject to the manifest's relative-bind-mount safety check, which
         # validates the engine mirror compose only.
+        #
+        # The job directory is an IDENTITY mount (same absolute path on host and
+        # in the container) so Harbor's sandbox — a second DooD level built on the
+        # host daemon — can bind-mount it; a non-identity path is invisible to the
+        # host daemon and the mount is refused. See the module docstring.
         "volumes": [
             "./tests:/tests",
             f"./{STAGING_LOGS_DIRNAME}:{CONTAINER_LOGS_DIR}",
+            f"{harbor_jobs_dir}:{harbor_jobs_dir}",
             f"{DOCKER_SOCKET_PATH}:{DOCKER_SOCKET_PATH}",
         ],
     }

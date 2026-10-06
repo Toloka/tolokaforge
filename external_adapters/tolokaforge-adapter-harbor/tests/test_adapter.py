@@ -55,7 +55,11 @@ def test_to_task_description_builds_terminus_2_command(adapter: HarborAdapter):
     assert "-a terminus-2" in command
     assert "-m anthropic/claude-sonnet-4-5" in command
     assert "-e docker" in command
-    assert "-o /logs/harbor" in command
+    # ``-o`` targets the environment's identity-mounted (absolute) job dir, not an
+    # in-container ``/logs`` path Harbor's sandbox could not bind-mount via the host.
+    jobs_dir = adapter._environment(_TASK_ID).harbor_jobs_dir
+    assert jobs_dir.name == "harbor_jobs"
+    assert f"-o {jobs_dir}" in command
     assert "--job-name trial" in command
     assert "-k 1 -y" in command
 

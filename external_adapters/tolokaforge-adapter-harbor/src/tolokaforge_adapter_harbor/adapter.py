@@ -225,18 +225,22 @@ class HarborAdapter(BaseAdapter):
             network_policy=self.network_policy,
         )
 
-    def _harbor_command(self) -> str:
+    def _harbor_command(self, jobs_dir: str) -> str:
         """Assemble the single ``harbor run`` invocation the delegated agent runs.
 
-        ``-m`` is omitted for the keyless ``oracle`` agent (it runs the task's
-        reference solution); every other agent requires a ``provider/model``.
+        ``-o`` targets *jobs_dir*, the environment's identity-mounted job
+        directory (host path == container path), so Harbor's sandbox can
+        bind-mount it via the host daemon. ``-m`` is omitted for the keyless
+        ``oracle`` agent (it runs the task's reference solution); every other
+        agent requires a ``provider/model``.
         """
         if self.agent != _ORACLE_AGENT and not self.agent_model:
             raise ValueError(
                 "harbor adapter: `agent_model` is required to run a task with the "
-                f"{self.agent!r} agent (set evaluation.harness_adapter.params.agent_model "
-                "to a 'provider/model' string, e.g. 'anthropic/claude-sonnet-4-5'). "
-                "Use agent='oracle' for a keyless reference run."
+                f"{self.agent!r} agent (set models.agent.name to a 'provider/model' "
+                "string, e.g. 'anthropic/claude-sonnet-4-5', with "
+                "models.agent.harness: harbor). Use agent='oracle' for a keyless "
+                "reference run."
             )
         parts = [
             "harbor run",
@@ -246,7 +250,7 @@ class HarborAdapter(BaseAdapter):
         if self.agent != _ORACLE_AGENT:
             parts.append(f"-m {shlex.quote(self.agent_model)}")
         parts.append(f"-e {shlex.quote(self.sandbox_backend)}")
-        parts.append(f"-o {cs.HARBOR_JOBS_DIR}")
+        parts.append(f"-o {shlex.quote(jobs_dir)}")
         parts.append(f"--job-name {cs.HARBOR_JOB_NAME}")
         parts.append("-k 1 -y")
         for key, value in self.agent_kwargs.items():
@@ -257,7 +261,7 @@ class HarborAdapter(BaseAdapter):
         self._ensure_discovered()
         task = self._tasks[task_id]
         env = self._environment(task_id)
-        command = self._harbor_command()
+        command = self._harbor_command(str(env.harbor_jobs_dir))
         manifest = resolve_environment_patch(None, self._environment_patch(task_id))
         exec_tool = ToolSchema(
             name="bash",

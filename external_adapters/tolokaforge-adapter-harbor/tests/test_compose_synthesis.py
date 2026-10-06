@@ -65,9 +65,23 @@ def test_test_sh_reads_reward_from_harbor_result(tmp_path):
     env = _materialise(tmp_path)
     test_sh = (env.staging_dir / "tests" / "test.sh").read_text()
     assert "/logs/verifier/reward.txt" in test_sh
-    assert "/logs/harbor/trial/*__*/result.json" in test_sh
+    # The reward is read from the identity-mounted job dir (absolute host path),
+    # not an in-container ``/logs`` path Harbor's sandbox could not bind-mount.
+    assert f"{env.harbor_jobs_dir}/trial/*__*/result.json" in test_sh
     # The verifier must not import harbor.
     assert "import harbor" not in test_sh
+
+
+def test_job_dir_is_identity_mounted(tmp_path):
+    """Harbor's sandbox bind-mounts the job dir via the host daemon, so it must
+    sit at an identical absolute path on host and in the agent container."""
+    env = _materialise(tmp_path)
+    doc = yaml.safe_load(env.compose_file.read_text())
+    volumes = doc["services"]["main"]["volumes"]
+    assert f"{env.harbor_jobs_dir}:{env.harbor_jobs_dir}" in volumes
+    # Pre-created on the host so the bind mount carries host ownership.
+    assert env.harbor_jobs_dir.is_dir()
+    assert env.harbor_jobs_dir.name == "harbor_jobs"
 
 
 def test_provider_env_keys_become_compose_env(tmp_path):
@@ -81,23 +95,26 @@ def test_provider_env_keys_become_compose_env(tmp_path):
 
 
 def _run_reward_extractor(tmp_path: Path, result: dict | None) -> str:
-    """Run the generated ``test.sh`` with ``/logs`` redirected under ``tmp_path``.
+    """Render the verifier ``test.sh`` against a fixture job dir and run it.
 
     Writes ``result`` (when given) to the one Harbor job dir the verifier globs,
-    runs the script, and returns the last line of the reward file.
+    redirects the fixed ``/logs/verifier`` output under ``tmp_path`` for this
+    host-side run, runs the script, and returns the last line of the reward file.
     """
-    logs = tmp_path / "logs"
-    (logs / "verifier").mkdir(parents=True, exist_ok=True)
+    verifier = tmp_path / "verifier"
+    verifier.mkdir(parents=True, exist_ok=True)
+    jobs = tmp_path / "harbor_jobs"
     if result is not None:
-        job = logs / "harbor" / "trial" / "write-release-note__abc1234"
+        job = jobs / "trial" / "write-release-note__abc1234"
         job.mkdir(parents=True, exist_ok=True)
         (job / "result.json").write_text(json.dumps(result))
 
-    script = cs._TEST_SH.replace("/logs/", f"{logs}/")
+    script = cs._render_test_sh(cs._result_glob(jobs))
+    script = script.replace(f"{cs.CONTAINER_LOGS_DIR}/verifier", str(verifier))
     script_path = tmp_path / "test.sh"
     script_path.write_text(script)
     subprocess.run(["bash", str(script_path)], check=True)
-    return (logs / "verifier" / "reward.txt").read_text().strip().splitlines()[-1]
+    return (verifier / "reward.txt").read_text().strip().splitlines()[-1]
 
 
 def test_reward_extraction_single_step(tmp_path):
