@@ -18,7 +18,7 @@ is), which is the same freedom the inspect agent uses to declare its own volumes
 
 Harbor's sandbox is a **second** DooD level: Harbor (running in the agent
 container) shells ``docker compose`` against the host daemon to build and run its
-sandbox, and bind-mounts its own job directory (the ``harbor run -o`` path, where
+sandbox, and bind-mounts its own job directory (the ``harbor run --jobs-dir`` path, where
 it writes ``result.json`` and the verifier output) INTO that sandbox. The host
 daemon resolves that bind source on the HOST filesystem, so the job directory
 must sit at an **identical absolute path on the host and inside the agent
@@ -136,7 +136,7 @@ def _render_test_sh(harbor_jobs_dir: Path, harbor_version: str) -> str:
     reward_path = f"{CONTAINER_LOGS_DIR}/verifier/reward.txt"
     return f"""\
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 python3 - <<'PY'
 import glob
 import json
@@ -240,7 +240,7 @@ class MaterialisedEnvironment:
     harbor_jobs_dir: Path
     """Absolute host path identity-mounted as Harbor's ``-o`` job directory
     (host path == container path), so Harbor's sandbox can bind-mount it via the
-    host daemon. The adapter passes this to ``harbor run -o``."""
+    host daemon. The adapter passes this to ``harbor run --jobs-dir``."""
 
 
 def materialise_task_environment(
