@@ -70,7 +70,7 @@ def resolve_reasoning_history(
     Only the copy bound for the wire is affected; the recorded messages the
     grader reads keep their reasoning either way.
     """
-    setting = _effective_setting(capabilities)
+    setting = effective_reasoning_history(capabilities)
     if setting == "all":
         return messages
 
@@ -88,8 +88,13 @@ def resolve_reasoning_history(
     return resolved
 
 
-def _effective_setting(capabilities: ModelCapabilities) -> ReasoningHistory:
-    """The policy actually applied, after the route has had its say."""
+def effective_reasoning_history(capabilities: ModelCapabilities) -> ReasoningHistory:
+    """The policy actually applied, after the route has had its say.
+
+    A route that mandates replay reports ``all`` here whatever the preset asked
+    for, which is why the per-trial record reads this rather than
+    :attr:`ModelCapabilities.reasoning_history`.
+    """
     forced = getattr(capabilities.reasoning_codec, "forced_history", None)
     if forced is not None:
         return forced

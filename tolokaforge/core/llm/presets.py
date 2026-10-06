@@ -59,6 +59,7 @@ from tolokaforge.core.llm.reasoning_codec import (
 from tolokaforge.core.llm.reasoning_history import (
     DEFAULT_REASONING_HISTORY,
     REASONING_HISTORY_VALUES,
+    effective_reasoning_history,
 )
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
@@ -93,6 +94,7 @@ __all__ = [
     "get_resolved_presets",
     "ignored_sampling_params",
     "litellm_model_entries",
+    "resolve_context_controls",
     "resolve_effective_preset",
     "resolve_overlay_path",
     "resolve_policy_names",
@@ -1325,6 +1327,33 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
             _ASSISTANT_TEXT_POLICIES,
             "assistant_text_policy",
         ),
+    }
+
+
+def resolve_context_controls(capabilities: ModelCapabilities) -> dict[str, Any]:
+    """The context-control values *capabilities* actually runs under.
+
+    Companion to :func:`resolve_policy_names` for the settings that are scalars
+    rather than named policies, shaped for the same
+    ``task.yaml.model_config.<role>.resolved.*`` block::
+
+        {
+            "reasoning_history":          "all" | "none" | "last",
+            "observation_window":         int | None,
+            "observation_window_polling": int,
+        }
+
+    ``reasoning_history`` is the **effective** setting, not the requested one: a
+    route whose codec declares ``forced_history`` overrides the preset, and
+    ``auto`` resolves against the codec. A reader comparing this against the
+    requested ``model_config.<role>.capabilities.reasoning_history`` sees when
+    the two differ, which is the only record that a leg asking for less replay
+    ran with more.
+    """
+    return {
+        "reasoning_history": effective_reasoning_history(capabilities),
+        "observation_window": capabilities.observation_window,
+        "observation_window_polling": capabilities.observation_window_polling,
     }
 
 
