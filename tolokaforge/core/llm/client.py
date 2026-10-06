@@ -71,7 +71,10 @@ from tolokaforge.core.llm.providers import (
 )
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
-from tolokaforge.core.llm.reasoning_history import resolve_reasoning_history
+from tolokaforge.core.llm.reasoning_history import (
+    replayed_reasoning_payload,
+    resolve_reasoning_history,
+)
 from tolokaforge.core.llm.reasoning_transport import (
     PermissiveReasoningReader,
     arriving_reasoning,
@@ -1549,17 +1552,14 @@ class LLMClient:
                         content = "I understand."
                 litellm_msg["content"] = content
 
-            # P4b — splice reasoning-codec replay payload (e.g. Anthropic
+            # Splice the reasoning-codec replay payload (e.g. Anthropic
             # ``thinking_blocks``) onto assistant dicts. Zero provider-specific
-            # branching: the codec Protocol is the only abstraction.
-            if (
-                msg.role == MessageRole.ASSISTANT
-                and msg.reasoning is not None
-                and not msg.reasoning.capture_only
-            ):
-                replay_payload = self.capabilities.reasoning_codec.encode_for_replay(msg.reasoning)
-                if replay_payload:
-                    litellm_msg.update(replay_payload)
+            # branching: the codec Protocol is the only abstraction, and
+            # ``replayed_reasoning_payload`` is the same predicate the
+            # reasoning-history policy counts turns with.
+            replay_payload = replayed_reasoning_payload(msg, self.capabilities.reasoning_codec)
+            if replay_payload:
+                litellm_msg.update(replay_payload)
 
             litellm_messages.append(litellm_msg)
 
