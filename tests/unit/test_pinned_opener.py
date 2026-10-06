@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.llm import BuiltinUserSimulator, GenerationResult
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
@@ -59,6 +60,9 @@ def _make_agent_client() -> MagicMock:
         usage=Usage(prompt_tokens=10, completion_tokens=5),
     )
     client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
+    # Real capabilities: the loop reads these as ints every turn, and a Mock
+    # reaches a comparison and raises instead.
+    client.capabilities = ModelCapabilities()
     return client
 
 
