@@ -28,6 +28,7 @@ production code.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -442,29 +443,42 @@ class TestResumeIsSelectivePerEntry:
     def test_resume_reruns_only_the_incomplete_entry(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "results" / "matrix_resume"
 
-        # Seed a prior run's state: entry_a completed and passed, entry_b never
-        # finished. Written with the same (entry, task_id, trial_index) keying a
-        # real run produces, through the production RunStateManager.
-        manager = RunStateManager(output_dir)
-        state = manager.initialize_run(
-            run_id=output_dir.name,
-            config_path="",
-            units=[("entry_a", _TASK_ID), ("entry_b", _TASK_ID)],
-            repeats=1,
-        )
-        state.mark_completed(_TASK_ID, 0, binary_pass=True, score=1.0, entry="entry_a")
-        manager.save_state(state)
+        # A first run completes both entries, leaving what a real run leaves: each
+        # entry's bundle on disk under trials/<entry>/<task>/<idx>/ and the
+        # (entry, task_id, trial_index)-keyed state the production RunStateManager
+        # writes.
+        _run(_matrix_config(output_dir), output_dir)
 
-        # is_completed reads the seeded state selectively by entry.
+        # Simulate a prior run where entry_b never finished: roll its trial back
+        # to pending and drop its bundle, and remove the durable queue so the
+        # resume rebuilds one holding only the incomplete entry. entry_a stays
+        # completed WITH its bundle on disk — the completed-trial report a resume
+        # reads back and retains under its entry-aware key.
+        manager = RunStateManager(output_dir)
+        state = manager.load_state()
+        assert state is not None
+        trial_b = state.trials[f"entry_b:{_TASK_ID}:0"]
+        trial_b.status = "pending"
+        trial_b.binary_pass = None
+        trial_b.score = None
+        state.completed_trials = 1
+        manager.save_state(state)
+        shutil.rmtree(output_dir / "trials" / "entry_b")
+        for queue_file in output_dir.glob("run_queue.sqlite*"):
+            queue_file.unlink()
+
+        # is_completed reads the state selectively by entry.
         assert manager.is_completed(_TASK_ID, 0, entry="entry_a") is True
         assert manager.is_completed(_TASK_ID, 0, entry="entry_b") is False
 
         run_dir, recorder = _run(_matrix_config(output_dir), output_dir, resume=True)
 
-        # Only entry_b's trial re-ran; entry_a's completed trial was skipped.
+        # Only entry_b's trial re-ran; entry_a's completed trial was skipped and
+        # its bundle retained (read back into the resumed run's report) rather
+        # than re-executed.
         assert recorder.specs == [("entry_b", _TASK_ID, 0)]
         assert (run_dir / "trials" / "entry_b" / _TASK_ID / "0" / "trajectory.yaml").exists()
-        assert not (run_dir / "trials" / "entry_a").exists()
+        assert (run_dir / "trials" / "entry_a" / _TASK_ID / "0" / "trajectory.yaml").exists()
 
         # The queue this resume built holds only the incomplete entry's attempt.
         assert _attempt_rows(run_dir) == [("entry_b", _TASK_ID, 0, "completed")]

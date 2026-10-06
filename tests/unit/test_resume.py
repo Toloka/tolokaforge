@@ -248,7 +248,7 @@ class TestRunStateManager:
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = RunStateManager(Path(tmpdir))
             run_state = manager.initialize_run(
-                run_id="test_run", config_path="test.yaml", task_ids=["task1"], repeats=2
+                run_id="test_run", config_path="test.yaml", units=[("", "task1")], repeats=2
             )
             run_state.mark_completed("task1", 0, True, 0.9)
             manager.save_state(run_state)

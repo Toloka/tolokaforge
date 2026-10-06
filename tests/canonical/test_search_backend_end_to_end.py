@@ -36,6 +36,7 @@ from tests.utils.fake_rag_service import FakeRagService
 from tests.utils.runner_requests import execute_request, register_request
 from tests.utils.search_backends import register_search_backends
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.grading.judge_tools import SearchKbTool
 from tolokaforge.core.grading.kb_search import RagServiceKnowledgeSearch
 from tolokaforge.core.models import ModelConfig
@@ -110,6 +111,7 @@ def _trial_spec_json(description: Any, trial_id: str = TRIAL_ID) -> str:
         trial_id=trial_id,
         run_id="e2e_run",
         task=description,
+        execution_mode=ExecutionMode.ENGINE_LOOP,
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(db_url="http://db.test:8000", runner_url="http://r.test:50051"),
     )

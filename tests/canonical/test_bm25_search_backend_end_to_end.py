@@ -31,6 +31,7 @@ from tests.canonical._factories import write_yaml_file
 from tests.utils.runner_requests import execute_request, register_request
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.grading.judge_tools import SearchKbTool
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.orchestrator import _tasks_need_full_stack
@@ -123,6 +124,7 @@ def _trial_spec_json(description: Any) -> str:
         trial_id=TRIAL_ID,
         run_id="e2e_run",
         task=description,
+        execution_mode=ExecutionMode.ENGINE_LOOP,
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(db_url="http://db.test:8000", runner_url="http://r.test:50051"),
     )
