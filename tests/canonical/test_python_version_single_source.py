@@ -12,7 +12,10 @@ dedicated workflow wiring.
 Code that runs inside a task image runs on that image's ``python3``, not on the pin.
 Each such path carries a ``[tool.ruff.per-file-target-version]`` entry naming the
 lowest interpreter it supports, and the sandbox checks keep those entries tied to
-real paths and to the images they describe.
+real paths and to the images they describe. A task image is any Dockerfile in a
+task tree or built ``FROM python:X.Y``: under ``FROM python:X.Y`` its linted code
+must target at most ``X.Y``; on any other base every linted file in its task tree
+must be covered by an explicit entry declaring the image's ``python3`` version.
 """
 
 from __future__ import annotations
@@ -258,29 +261,35 @@ def _python_files_matching(pattern: str) -> Iterator[Path]:
             yield path
 
 
-def _image_python_dockerfiles() -> dict[Path, str]:
-    """Map each Dockerfile built ``FROM python:X.Y`` to the lowest ``X.Y`` it names."""
-    images: dict[Path, str] = {}
+def _task_tree(dockerfile: Path) -> Path | None:
+    """The nearest ancestor of ``dockerfile`` holding a task manifest, if any."""
+    for directory in dockerfile.parents:
+        if directory == REPO_ROOT:
+            return None
+        if any((directory / manifest).is_file() for manifest in _TASK_MANIFESTS):
+            return directory
+    return None
+
+
+def _task_image_dockerfiles() -> dict[Path, tuple[Path, str | None]]:
+    """Map each task-image Dockerfile to its sandbox tree and lowest ``FROM python:X.Y``.
+
+    A Dockerfile is a task image when it lives in a task tree or is built
+    ``FROM python:X.Y``; the version is ``None`` for any other base.
+    """
+    images: dict[Path, tuple[Path, str | None]] = {}
     for dirpath, filenames in _walk_repo():
         for name in filenames:
             if name != "Dockerfile" and not name.endswith(".Dockerfile"):
                 continue
             path = Path(dirpath) / name
             versions = _DOCKERFILE_FROM_PYTHON_RE.findall(path.read_text())
-            if versions:
-                images[path] = min(versions, key=_version_tuple)
-    assert images, f"no `FROM python:X.Y` Dockerfile found under {REPO_ROOT} — the guard is vacuous"
+            tree = _task_tree(path)
+            if tree is not None or versions:
+                image = min(versions, key=_version_tuple) if versions else None
+                images[path] = (tree or path.parent, image)
+    assert images, f"no task-image Dockerfile found under {REPO_ROOT} — the guard is vacuous"
     return images
-
-
-def _sandbox_tree(dockerfile: Path) -> Path:
-    """The task directory that ships ``dockerfile``, or its own directory outside a task."""
-    for directory in dockerfile.parents:
-        if directory == REPO_ROOT:
-            break
-        if any((directory / manifest).is_file() for manifest in _TASK_MANIFESTS):
-            return directory
-    return dockerfile.parent
 
 
 def _ruff_linted_files(trees: list[Path]) -> set[Path]:
@@ -315,13 +324,34 @@ def test_the_middleware_proxy_declares_a_sandbox_target_at_or_below_the_floor() 
     )
 
 
+def _sandbox_target_violation(
+    path: Path, dockerfile: Path, image: str | None, targets: list[str]
+) -> str | None:
+    rel, image_rel = path.relative_to(REPO_ROOT), dockerfile.relative_to(REPO_ROOT)
+    if image is None:
+        if targets:
+            return None
+        return (
+            f"{rel}: ruff lints it at the {_FLOOR} floor but {image_rel} is not built "
+            "FROM python:X.Y — declare the image's python3 version with a "
+            "[tool.ruff.per-file-target-version] entry covering this file"
+        )
+    target = max(targets, key=_version_tuple) if targets else _FLOOR
+    if _version_tuple(target) <= _version_tuple(image):
+        return None
+    return (
+        f"{rel}: ruff lints it as Python {target} but {image_rel} runs it on python:{image} "
+        f"— add a [tool.ruff.per-file-target-version] entry at or below {image}"
+    )
+
+
 def test_linted_task_image_code_targets_at_most_its_image_python() -> None:
-    images = _image_python_dockerfiles()
-    trees = {dockerfile: _sandbox_tree(dockerfile) for dockerfile in images}
-    linted = _ruff_linted_files(sorted(set(trees.values())))
+    images = _task_image_dockerfiles()
+    trees = sorted({tree for tree, _ in images.values()})
+    linted = _ruff_linted_files(trees)
     assert linted, (
         "ruff --show-files listed no Python file under "
-        f"{sorted(str(tree.relative_to(REPO_ROOT)) for tree in set(trees.values()))} "
+        f"{[str(tree.relative_to(REPO_ROOT)) for tree in trees]} "
         "— the sandbox target guard would pass vacuously"
     )
     coverage = {
@@ -329,16 +359,12 @@ def test_linted_task_image_code_targets_at_most_its_image_python() -> None:
         for pattern, version in per_file_target_versions().items()
     }
     violations: list[str] = []
-    for dockerfile, image in sorted(images.items()):
-        for path in sorted(p for p in linted if p.is_relative_to(trees[dockerfile])):
+    for dockerfile, (tree, image) in sorted(images.items()):
+        for path in sorted(p for p in linted if p.is_relative_to(tree)):
             targets = [version for version, files in coverage.values() if path in files]
-            target = max(targets, key=_version_tuple) if targets else _FLOOR
-            if _version_tuple(target) > _version_tuple(image):
-                violations.append(
-                    f"{path.relative_to(REPO_ROOT)}: ruff lints it as Python {target} but "
-                    f"{dockerfile.relative_to(REPO_ROOT)} runs it on python:{image} — add a "
-                    f"[tool.ruff.per-file-target-version] entry at or below {image}"
-                )
+            violation = _sandbox_target_violation(path, dockerfile, image, targets)
+            if violation is not None:
+                violations.append(violation)
     assert not violations, "\n".join(violations)
 
 
