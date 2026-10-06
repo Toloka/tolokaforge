@@ -53,18 +53,26 @@ def test_to_task_description_builds_terminus_2_command(adapter: HarborAdapter):
     assert command.startswith("harbor run")
     assert "-p /app/task" in command
     assert "-a terminus-2" in command
+    # Terminus keeps the model slug verbatim (its openrouter/ prefix routes
+    # through LiteLLM); the adapter never strips it.
     assert "-m anthropic/claude-sonnet-4-5" in command
     assert "-e docker" in command
-    # ``-o`` targets the environment's identity-mounted (absolute) job dir, not an
-    # in-container ``/logs`` path Harbor's sandbox could not bind-mount via the host.
+    # ``--jobs-dir`` targets the environment's identity-mounted (absolute) job
+    # dir, not an in-container ``/logs`` path Harbor's sandbox could not
+    # bind-mount via the host daemon.
     jobs_dir = adapter._environment(_TASK_ID).harbor_jobs_dir
     assert jobs_dir.name == "harbor_jobs"
-    assert f"-o {jobs_dir}" in command
-    assert "--job-name trial" in command
+    assert f"--jobs-dir {jobs_dir}" in command
+    # Unique per trial: the job name expands the engine's per-trial slug inside
+    # the container, so concurrent trials of one task never share a job dir.
+    assert '--job-name tf-"${TOLOKAFORGE_TRIAL_SLUG}"' in command
+    # Real Terminus runs install tooling per trial; the setup budget is lifted.
+    assert "--agent-setup-timeout-multiplier 10" in command
     assert "-k 1 -y" in command
 
     assert desc.metadata["agent_harness"] == "harbor"
     assert desc.metadata["harbor_agent"] == "terminus-2"
+    assert desc.metadata["harbor_version"] == "0.23.0"
 
 
 def test_delegated_contract_one_exec_tool_and_test_execution(adapter: HarborAdapter):
@@ -82,19 +90,47 @@ def test_delegated_contract_one_exec_tool_and_test_execution(adapter: HarborAdap
     assert desc.environment_manifest is not None
 
 
-def test_oracle_agent_omits_model(tmp_path):
+def test_oracle_agent_omits_model_and_setup_multiplier(tmp_path):
     adapter = HarborAdapter(
         {"harbor_tasks_dir": str(_PACK), "agent": "oracle", "staging_root": str(tmp_path)}
     )
     command = adapter.to_task_description(_TASK_ID).metadata["agent_harness_command"]
     assert "-a oracle" in command
     assert " -m " not in command
+    # Oracle runs no agent setup, so the setup-budget flag is omitted — this is
+    # what keeps the keyless oracle command (and its e2e) unaffected.
+    assert "--agent-setup-timeout-multiplier" not in command
 
 
 def test_terminus_2_requires_model(tmp_path):
     adapter = HarborAdapter({"harbor_tasks_dir": str(_PACK), "staging_root": str(tmp_path)})
     with pytest.raises(ValueError, match="agent_model"):
         adapter.to_task_description(_TASK_ID)
+
+
+def test_unsupported_vendor_cli_agent_fails_loud(tmp_path):
+    with pytest.raises(ValueError, match="unsupported agent"):
+        HarborAdapter(
+            {
+                "harbor_tasks_dir": str(_PACK),
+                "agent": "claude-code",
+                "agent_model": "anthropic/claude-sonnet-4-5",
+                "staging_root": str(tmp_path),
+            }
+        )
+
+
+def test_agent_setup_timeout_multiplier_is_configurable(tmp_path):
+    adapter = HarborAdapter(
+        {
+            "harbor_tasks_dir": str(_PACK),
+            "agent_model": "anthropic/claude-sonnet-4-5",
+            "agent_setup_timeout_multiplier": 4,
+            "staging_root": str(tmp_path),
+        }
+    )
+    command = adapter.to_task_description(_TASK_ID).metadata["agent_harness_command"]
+    assert "--agent-setup-timeout-multiplier 4" in command
 
 
 def test_sandbox_backend_passes_through(tmp_path):

@@ -67,6 +67,21 @@ _ORACLE_AGENT = "oracle"
 _DEFAULT_SANDBOX_BACKEND = "docker"
 _DEFAULT_AGENT_TIMEOUT_S = 1800.0
 
+# Terminus resolves its model through LiteLLM, which routes an ``openrouter/``
+# slug to its OpenRouter handler (reading ``OPENROUTER_API_KEY``); the prefix is
+# therefore KEPT. Vendor coding CLIs (claude-code/codex/gemini-cli) are the
+# mirror image — they want the prefix stripped and reach OpenRouter through
+# per-CLI ``*_BASE_URL`` + token env — and are not wired in v1, so the adapter
+# supports only the terminus family plus the keyless ``oracle`` and fails loud
+# otherwise rather than emitting an invocation that would silently mis-auth.
+_TERMINUS_AGENTS = frozenset({"terminus", "terminus-1", "terminus-2"})
+_SUPPORTED_AGENTS = _TERMINUS_AGENTS | {_ORACLE_AGENT}
+
+# Terminus installs tooling (tmux, asciinema) per trial; Harbor's default 360s
+# agent-setup budget is routinely too tight for a real run, so the multiplier
+# defaults high. Oracle runs no agent setup, so it never receives the flag.
+_DEFAULT_AGENT_SETUP_TIMEOUT_MULTIPLIER = 10.0
+
 # One scalar reward per task -> the same test_execution runner dispatch
 # terminal-bench and inspect_ai use.
 _TEST_EXECUTION_GRADING: dict[str, Any] = {
@@ -105,8 +120,18 @@ class HarborAdapter(BaseAdapter):
         ).resolve()
         self.task_id_filter: list[str] | None = _as_list(params.get("task_ids"))
         self.agent: str = params.get("agent") or _DEFAULT_AGENT
+        if self.agent not in _SUPPORTED_AGENTS:
+            raise ValueError(
+                f"harbor adapter: unsupported agent {self.agent!r}. v1 supports the "
+                f"terminus family ({', '.join(sorted(_TERMINUS_AGENTS))}) and the keyless "
+                "'oracle'. Vendor coding CLIs (claude-code, codex, gemini-cli) need per-CLI "
+                "OpenRouter auth that is not wired here yet."
+            )
         self.agent_model: str = params.get("agent_model") or ""
         self.sandbox_backend: str = params.get("sandbox_backend") or _DEFAULT_SANDBOX_BACKEND
+        self.agent_setup_timeout_multiplier: float = float(
+            params.get("agent_setup_timeout_multiplier") or _DEFAULT_AGENT_SETUP_TIMEOUT_MULTIPLIER
+        )
         self.harbor_version: str = params.get("harbor_version") or _DEFAULT_HARBOR_VERSION
         self.base_image: str = params.get("base_image") or _DEFAULT_BASE_IMAGE
         self.agent_kwargs: dict[str, str] = _as_str_map(params.get("agent_kwargs") or {})
@@ -122,6 +147,7 @@ class HarborAdapter(BaseAdapter):
             if staging_root
             else Path(tempfile.gettempdir()) / "tolokaforge-harbor"
         )
+        _assert_host_visible_staging_root(self.staging_root)
         self.agent_provider_env = _resolve_provider_env(params.get("agent_provider_env") or {})
 
         self._tasks: dict[str, TerminalBenchTask] = {}
@@ -228,17 +254,31 @@ class HarborAdapter(BaseAdapter):
     def _harbor_command(self, jobs_dir: str) -> str:
         """Assemble the single ``harbor run`` invocation the delegated agent runs.
 
-        ``-o`` targets *jobs_dir*, the environment's identity-mounted job
+        ``--jobs-dir`` targets *jobs_dir*, the environment's identity-mounted job
         directory (host path == container path), so Harbor's sandbox can
-        bind-mount it via the host daemon. ``-m`` is omitted for the keyless
-        ``oracle`` agent (it runs the task's reference solution); every other
-        agent requires a ``provider/model``.
+        bind-mount it via the host daemon; Harbor writes this trial under
+        ``<jobs_dir>/<job-name>/``. ``--job-name`` is unique per trial — it
+        expands the engine's per-trial slug inside the container
+        (:data:`~tolokaforge_adapter_harbor.compose_synthesis.HARBOR_JOB_NAME_SHELL`),
+        so concurrent trials of one task (``repeats>1`` / ``workers>1``) cannot
+        collide on one job directory, and the verifier reads that exact path.
+
+        ``-m`` is omitted for the keyless ``oracle`` agent (it runs the task's
+        reference solution); the terminus family requires a ``provider/model``,
+        and its ``openrouter/`` prefix is kept verbatim so LiteLLM routes to
+        OpenRouter (reading ``OPENROUTER_API_KEY`` from ``agent_provider_env``).
+        ``--agent-setup-timeout-multiplier`` is added for the terminus family
+        (oracle runs no agent setup) so per-trial tooling installs fit the budget.
+
+        No secret rides the argv: the provider key reaches the container as a
+        compose env input, referenced here only by Harbor's own agent, never
+        interpolated into this command string.
         """
         if self.agent != _ORACLE_AGENT and not self.agent_model:
             raise ValueError(
                 "harbor adapter: `agent_model` is required to run a task with the "
                 f"{self.agent!r} agent (set models.agent.name to a 'provider/model' "
-                "string, e.g. 'anthropic/claude-sonnet-4-5', with "
+                "string, e.g. 'openrouter/anthropic/claude-sonnet-4.6', with "
                 "models.agent.harness: harbor). Use agent='oracle' for a keyless "
                 "reference run."
             )
@@ -250,8 +290,14 @@ class HarborAdapter(BaseAdapter):
         if self.agent != _ORACLE_AGENT:
             parts.append(f"-m {shlex.quote(self.agent_model)}")
         parts.append(f"-e {shlex.quote(self.sandbox_backend)}")
-        parts.append(f"-o {shlex.quote(jobs_dir)}")
-        parts.append(f"--job-name {cs.HARBOR_JOB_NAME}")
+        parts.append(f"--jobs-dir {shlex.quote(jobs_dir)}")
+        # Unquoted on purpose: the ``"$TOLOKAFORGE_TRIAL_SLUG"`` inside expands
+        # in the container's shell to this trial's unique slug.
+        parts.append(f"--job-name {cs.HARBOR_JOB_NAME_SHELL}")
+        if self.agent != _ORACLE_AGENT:
+            parts.append(
+                f"--agent-setup-timeout-multiplier {self.agent_setup_timeout_multiplier:g}"
+            )
         parts.append("-k 1 -y")
         for key, value in self.agent_kwargs.items():
             parts.append(f"--ak {shlex.quote(f'{key}={value}')}")
@@ -296,6 +342,7 @@ class HarborAdapter(BaseAdapter):
                 "agent_harness": "harbor",
                 "harbor_agent": self.agent,
                 "harbor_model": self.agent_model,
+                "harbor_version": self.harbor_version,
             },
         )
 
@@ -332,6 +379,35 @@ class HarborAdapter(BaseAdapter):
             components=GradeComponents(),
             reasons="harbor grading runs via the Runner GradeTrial RPC (test_execution)",
         )
+
+
+def _assert_host_visible_staging_root(staging_root: Path) -> None:
+    """Refuse a ``staging_root`` Harbor's nested sandbox could not see.
+
+    Harbor's sandbox bind-mounts the job directory via the **host** daemon, so
+    the staging root must resolve to a real host path. When the adapter runs
+    inside a container (the orchestrator image), a path that is not on a bind
+    mount from the host is invisible to the host daemon — Harbor's sandbox then
+    silently sees no results and every trial reads as ungradeable. Fail loud
+    here instead. On a bare-host run (no container) the path is always
+    host-visible, so the check is a no-op.
+    """
+    if not Path("/.dockerenv").exists():
+        return
+    try:
+        mounts = Path("/proc/mounts").read_text()
+    except OSError:
+        return  # cannot introspect mounts; do not block the run
+    mountpoints = {fields[1] for line in mounts.splitlines() if len(fields := line.split()) >= 2}
+    if any(str(ancestor) in mountpoints for ancestor in (staging_root, *staging_root.parents)):
+        return
+    raise ValueError(
+        f"harbor adapter: staging_root {staging_root} is not on a host-visible bind "
+        "mount, but this process is containerised. Harbor's sandbox bind-mounts the "
+        "job directory through the host daemon, so a container-only staging_root makes "
+        "it see no results (every trial reads as ungradeable). Point staging_root at a "
+        "directory bind-mounted from the host (e.g. under the mounted output dir)."
+    )
 
 
 def _resolve_provider_env(raw: dict[str, str]) -> dict[str, str]:

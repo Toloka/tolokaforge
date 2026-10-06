@@ -37,14 +37,22 @@ this adapter **delegates** rather than reimplementing anything:
 2. **Run in a container** — the adapter synthesises a two-stack compose plan
    (engine + task) whose agent container has `harbor` + the Docker CLI + the task
    pack baked in. The trial's "agent" step is a single
-   `harbor run -p /app/task -a terminus-2 -m <model> -e docker -o /logs/harbor
-   --job-name trial -k 1 -y` command. Because `harbor run -e docker` shells
+   `harbor run -p /app/task -a terminus-2 -m <model> -e docker --jobs-dir
+   <host-identity-path> --job-name tf-<trial> --agent-setup-timeout-multiplier 10
+   -k 1 -y` command. The job name is unique per trial (it expands the engine's
+   per-trial slug in the container), so `repeats>1` / `workers>1` of one task
+   never collide on a job directory. Because `harbor run -e docker` shells
    `docker compose` to build its own sandbox, the agent container bind-mounts the
    host Docker socket (Docker-out-of-Docker).
 3. **Grade** — `test_execution`: a generated `tests/test.sh` reads
-   `verifier_result.rewards.reward` out of Harbor's native
-   `/logs/harbor/trial/*__*/result.json` and writes it to
-   `/logs/verifier/reward.txt`, which the runner reads.
+   `verifier_result.rewards.reward` out of Harbor's native `result.json` at this
+   trial's exact job path and writes the number to `/logs/verifier/reward.txt`,
+   which the runner reads. `harbor run` exits 0 even when the agent never started,
+   so when the result shows an `exception_info`, no `verifier_result`, or is
+   missing/off-schema, the verifier writes an **ungradeable sentinel** instead of
+   a number and exits non-zero — the runner then books the trial as a **grading
+   error**, not a `0.0` score (an absent reward is not a zero reward). The pinned
+   Harbor version is stamped into the verifier output so a schema drift is visible.
 
 ## Usage
 
@@ -92,11 +100,12 @@ comparable tasks (to surface the per-harness comparison report) is in
 |---|---|---|
 | `harbor_tasks_dir` | first project / base dir | Directory the TB2 packs are discovered under. |
 | `task_ids` | all discovered | Allow-list of task ids to run. |
-| `agent` | `terminus-2` | Harbor agent (`harbor run -a`). Use `oracle` for a keyless reference run. |
+| `agent` | `terminus-2` | Harbor agent (`harbor run -a`). v1 supports the terminus family (`terminus`/`terminus-1`/`terminus-2`) and the keyless `oracle`; any other agent (vendor coding CLIs) fails loud. |
 | `sandbox_backend` | `docker` | Harbor sandbox backend (`harbor run -e`). |
-| `agent_provider_env` | `{}` | Env the model provider needs, forwarded into the trial container; values may be `${secret:NAME}` refs. |
+| `agent_provider_env` | `{}` | Env the model provider needs (e.g. `OPENROUTER_API_KEY`), forwarded into the trial container; values may be `${secret:NAME}` refs. |
+| `agent_setup_timeout_multiplier` | `10` | Multiplier on Harbor's 360s agent-setup budget (`--agent-setup-timeout-multiplier`); Terminus installs tooling per trial and the default is too tight. Omitted for `oracle`. |
 | `agent_kwargs` | `{}` | `key=value` pairs forwarded as `harbor run --ak key=value`. |
-| `harbor_version` | `0.23.0` | `harbor` pin installed into the agent image. |
+| `harbor_version` | `0.23.0` | `harbor` pin installed into the agent image, and stamped into each trial's metadata/verifier output so a schema drift is visible. |
 | `base_image` | `python:3.12-slim-bookworm` | Agent-image base (Harbor needs Python ≥ 3.12). |
 | `agent_timeout_s` | task's `[agent].timeout_sec` | Per-trial agent budget. |
 | `network_policy` | `full_internet` | Trial network policy. |
@@ -107,20 +116,33 @@ The model Terminus 2 runs comes from `models.agent.name` (lifted to
 
 ### Grading
 
-`test_execution`. The generated `tests/test.sh` reads the one Harbor job result
-at `/logs/harbor/trial/<task[:32]>__<7char>/result.json`, takes
-`verifier_result.rewards.reward` (falling back to the mean of per-step rewards
-for a multi-step task), and writes the float to `/logs/verifier/reward.txt`. The
-runner reads that reward as the trial's score. Harbor is never imported by the
-verifier — it reads Harbor's JSON directly.
+`test_execution`. The generated `tests/test.sh` reads this trial's one Harbor job
+result at `<jobs-dir>/tf-<trial>/<task[:32]>__<7char>/result.json` (an exact
+per-trial path, never a "newest job" glob), takes `verifier_result.rewards.reward`
+(falling back to the mean of per-step rewards for a multi-step task), and writes
+the float to `/logs/verifier/reward.txt`. The runner reads that reward as the
+trial's score. Harbor is never imported by the verifier — it reads Harbor's JSON
+directly.
+
+**Infra-failure is a grading error, not a `0.0`.** `harbor run` exits 0 even when
+the agent never started. The verifier only writes a real number when the result
+shows a genuine evaluation; when Harbor recorded an `exception_info`, wrote no
+result, produced no `verifier_result`, or the result is off-schema, the verifier
+writes an ungradeable sentinel and exits non-zero, and the runner books the trial
+as an errored grade rather than a legitimate failing score.
 
 ### Credentials
 
 Model credentials reach the container through `tolokaforge.secrets`:
 `agent_provider_env` values (which may be `${secret:NAME}` refs) are resolved at
 load time and passed as per-trial compose inputs — never read from the
-environment by this package. Harbor also supports OpenRouter (`-m openrouter/...`
-with `OPENROUTER_API_KEY`).
+environment by this package, and never interpolated into the logged `harbor run`
+argv. The terminus family routes its model through LiteLLM, so an `openrouter/`
+model slug keeps its prefix (LiteLLM's OpenRouter handler reads
+`OPENROUTER_API_KEY`); the adapter never strips it. Vendor coding CLIs
+(claude-code/codex/gemini-cli) use the mirror recipe — prefix stripped, OpenRouter
+reached via per-CLI `*_BASE_URL` + token — which is not wired in v1, so those
+agents are refused up front rather than mis-authed silently.
 
 ## Forfeitures — what you give up under Harbor
 
@@ -143,6 +165,26 @@ guarantees stop at the `harbor run` boundary. Choose task-reuse
 
 If those guarantees matter for your run, run the TB2 pack on tolokaforge's own
 loop through `tolokaforge-adapter-terminal-bench` instead.
+
+## Real Terminus (keyed) runs — DooD realities
+
+The keyless `oracle` path exercises the whole chain without a model, but a real
+`terminus-2` run adds Docker-out-of-Docker realities the oracle never hits:
+
+- **The model call can originate on the host.** Harbor builds its sandbox on the
+  **host** daemon (DooD), and the Terminus LLM/proxy call can leave from there
+  rather than from inside the trial container. Name resolution and egress must
+  work for the host, not just the trial network — a run that resolves the
+  provider only from inside the trial container can still fail at the model call.
+- **The host needs `docker buildx`.** Harbor builds an egress sidecar for its
+  sandbox, which requires buildx on the host daemon. Install it before a keyed
+  run (`docker buildx version` should succeed).
+- **`staging_root` must be host-visible.** Harbor's sandbox bind-mounts the job
+  directory through the host daemon, so a container-only `staging_root` is
+  invisible to it and every trial silently produces no results. When the adapter
+  runs inside a container it **fails loud** on a non-host-visible `staging_root`
+  rather than producing empty results; point it at a host-mounted path (e.g.
+  under the mounted output dir). On a bare-host run any absolute path works.
 
 ## Development
 

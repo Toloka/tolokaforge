@@ -113,13 +113,17 @@ not the registry mixin): it declares `supported_execution_modes =
 
 Runs Terminal-Bench 2.0 task packs by delegating execution to the real Harbor
 harness — the trial's agent step is a single `harbor run -p /app/task -a
-terminus-2 -m <model> -e docker -o /logs/harbor --job-name trial -k 1 -y`, and
-Harbor drives its own Terminus 2 agent + verifier inside a sandbox it builds via
-Docker-out-of-Docker. Grading is `test_execution`: a generated `tests/test.sh`
-reads `verifier_result.rewards.reward` from Harbor's native
-`/logs/harbor/trial/*__*/result.json`. This is **delegation, not task-reuse** —
-to run the same TB2 pack on tolokaforge's own loop, use the `terminal_bench`
-adapter instead.
+terminus-2 -m <model> -e docker --jobs-dir <host-identity-path> --job-name
+tf-<trial> --agent-setup-timeout-multiplier 10 -k 1 -y`, and Harbor drives its
+own Terminus 2 agent + verifier inside a sandbox it builds via
+Docker-out-of-Docker. The job name is unique per trial, so concurrent trials of
+one task do not collide. Grading is `test_execution`: a generated `tests/test.sh`
+reads `verifier_result.rewards.reward` from this trial's exact Harbor
+`result.json`, and — because `harbor run` exits 0 even when the agent never
+started — surfaces an infra-failure (recorded exception, missing/off-schema
+result, no verifier result) as a **grading error** rather than a `0.0` score.
+This is **delegation, not task-reuse** — to run the same TB2 pack on
+tolokaforge's own loop, use the `terminal_bench` adapter instead.
 
 Because Harbor owns the sandbox, tolokaforge's per-trial `TaskIsolation`,
 spend-cap, and crash-restart guarantees do **not** apply inside Harbor's run, and

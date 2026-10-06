@@ -155,8 +155,25 @@ to build **its own** sandbox (Docker-out-of-Docker, two levels deep). The wrappe
 already mounts that socket, so no extra flag is required — but the same DooD
 caveat as every child stack applies, doubly: Harbor builds its sandbox on the
 host daemon, outside tolokaforge's per-trial isolation, and a Harbor crash can
-orphan those sibling containers on the host. Run from a host path, not a
-container-only path.
+orphan those sibling containers on the host.
+
+A **real Terminus** run (unlike the keyless oracle) adds three DooD realities to
+plan for:
+
+- **`staging_root` must be host-visible.** Point `params.staging_root` at a
+  directory under the mounted output dir (e.g. `/work/out/harbor-staging`), not a
+  container-only path like `/tmp`. Harbor's sandbox bind-mounts the job directory
+  through the host daemon, so a container-only staging root is invisible to it and
+  every trial silently produces no results. The adapter **fails loud** on a
+  non-host-visible `staging_root` when it detects it is containerised, rather than
+  producing empty results — but choosing a mounted path up front avoids the trip.
+- **The model call can originate on the host.** Because Harbor builds its sandbox
+  on the host daemon, the Terminus LLM/proxy call can leave from the **host**, not
+  from inside the trial container. Host name-resolution and egress to the provider
+  must work, not just the trial network's.
+- **The host needs `docker buildx`.** Harbor builds an egress sidecar for its
+  sandbox, which requires buildx on the host daemon (`docker buildx version`
+  should succeed before a keyed run).
 
 ## Status
 

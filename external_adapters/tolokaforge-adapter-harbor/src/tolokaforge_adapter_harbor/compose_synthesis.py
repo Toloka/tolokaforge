@@ -25,8 +25,8 @@ must sit at an **identical absolute path on the host and inside the agent
 container** — otherwise the host daemon cannot see the agent container's private
 ``/logs`` and refuses the mount ("Mounts denied" on Docker Desktop; a silently
 empty auto-created dir on Linux). The job directory is therefore an *identity*
-bind mount (``<staging>/harbor_jobs`` → the same path), and ``harbor run -o``
-targets that absolute path. The tolokaforge verifier reward
+bind mount (``<staging>/harbor_jobs`` → the same path), and ``harbor run
+--jobs-dir`` targets that absolute path. The tolokaforge verifier reward
 (``/logs/verifier/reward.txt``, written by the generated ``tests/test.sh`` and
 read by the runner over ``docker exec``) stays an in-container path — it rides no
 nested mount, so it needs no identity treatment. In the orchestrator-image case
@@ -49,13 +49,26 @@ from typing import Any
 import yaml
 
 from tolokaforge.core.compose_materialisation import DOCKER_SOCKET_PATH
+from tolokaforge.core.grading.kinds.test_execution import UNGRADEABLE_SENTINEL
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
 
 PROJECT_PREFIX = "tf_harbor_"
 CONTAINER_LOGS_DIR = "/logs"
-HARBOR_JOB_NAME = "trial"
+
+# Per-trial Harbor job name. Harbor writes each run under
+# ``<jobs-dir>/<job-name>/``; a name shared across trials of one task would
+# collide when ``repeats>1`` / ``workers>1`` run that task concurrently. The
+# name is therefore derived in-container from the per-trial slug the engine
+# substitutes into every trial-scope stack, so the ``harbor run`` command and
+# the verifier that reads the result agree on one unique directory without the
+# adapter having to thread a per-trial value through two separate steps.
+TRIAL_SLUG_ENV = "TOLOKAFORGE_TRIAL_SLUG"
+_JOB_NAME_PREFIX = "tf"
+# Shell expression (expanded inside the trial container by ``bash -c``) naming
+# this trial's Harbor job: ``tf-<trial slug>``.
+HARBOR_JOB_NAME_SHELL = f'{_JOB_NAME_PREFIX}-"${{{TRIAL_SLUG_ENV}}}"'
 # Staging subdir identity-mounted (host path == container path) as Harbor's
-# ``-o`` job directory, so Harbor's sandbox can bind-mount it via the host daemon.
+# jobs directory, so Harbor's sandbox can bind-mount it via the host daemon.
 HARBOR_JOBS_DIRNAME = "harbor_jobs"
 STAGING_LOGS_DIRNAME = "_logs"
 TASK_PACK_DIRNAME = "task"
@@ -96,55 +109,121 @@ WORKDIR /app
 """
 
 
-def _render_test_sh(result_glob: str) -> str:
+def _render_test_sh(harbor_jobs_dir: Path, harbor_version: str) -> str:
     """The tolokaforge verifier: extract Harbor's reward and write it where the
     runner's ``test_execution`` grading reads it (``/logs/verifier/reward.txt``).
 
-    Self-contained (stdlib-only): read the one Harbor job result matching
-    ``result_glob``, take ``verifier_result.rewards.reward``, fall back to the
-    mean of per-step rewards for a multi-step task, and write 0.0 when the run
-    raised or produced no result. Harbor is never imported here — the verifier
-    reads its JSON directly. ``result_glob`` is an absolute host-identity path
-    (see the module docstring), interpolated into the Python heredoc.
+    Self-contained (stdlib-only): read the one Harbor job result under this
+    trial's job directory, take ``verifier_result.rewards.reward`` (falling back
+    to the mean of per-step rewards for a multi-step task), and write that real
+    number. Harbor is never imported here — the verifier reads its JSON directly.
+
+    ``harbor run`` exits 0 even when the agent never started, so a reward is only
+    written when the result shows a **genuine** evaluation. When Harbor recorded
+    an ``exception_info``, wrote no result at all, produced no ``verifier_result``,
+    or the result does not match the pinned schema, the verifier writes
+    :data:`~tolokaforge.core.grading.kinds.test_execution.UNGRADEABLE_SENTINEL`
+    instead of a number and exits non-zero — so ``test_execution`` books the
+    trial as a grading error rather than a legitimate ``0.0`` score.
+
+    The job directory is resolved in-container from the per-trial slug the engine
+    substitutes into the stack (``<harbor_jobs_dir>/tf-$TOLOKAFORGE_TRIAL_SLUG/``),
+    read via an **exact** per-trial path rather than a "newest job" glob, so
+    concurrent trials of one task cannot read each other's results. The pinned
+    Harbor version is stamped into the verifier output so a schema drift is
+    visible in the recorded trial rather than silently mis-parsed.
     """
+    reward_path = f"{CONTAINER_LOGS_DIR}/verifier/reward.txt"
     return f"""\
 #!/usr/bin/env bash
 set -uo pipefail
-mkdir -p {CONTAINER_LOGS_DIR}/verifier
-python3 - > {CONTAINER_LOGS_DIR}/verifier/reward.txt <<'PY'
+python3 - <<'PY'
 import glob
 import json
+import os
+import sys
 
-matches = sorted(glob.glob({result_glob!r}))
+REWARD_PATH = {reward_path!r}
+JOBS_DIR = {str(harbor_jobs_dir)!r}
+HARBOR_VERSION = {harbor_version!r}
+UNGRADEABLE = {UNGRADEABLE_SENTINEL!r}
+
+print("harbor verifier: harbor==%s" % HARBOR_VERSION)
+
+
+def _write(text):
+    os.makedirs(os.path.dirname(REWARD_PATH), exist_ok=True)
+    with open(REWARD_PATH, "w") as handle:
+        handle.write("%s\\n" % text)
+
+
+def ungradeable(reason):
+    # Harbor can exit 0 without ever running the agent; a zero reward would read
+    # as a real failing score. Write the sentinel so test_execution refuses the
+    # trial (grading error), and exit non-zero with a diagnostic.
+    print("harbor verifier: UNGRADEABLE: %s" % reason)
+    sys.stderr.write("harbor verifier: UNGRADEABLE: %s\\n" % reason)
+    _write(UNGRADEABLE)
+    sys.exit(1)
+
+
+slug = os.environ.get({TRIAL_SLUG_ENV!r}, "")
+job_name = "{_JOB_NAME_PREFIX}-%s" % slug
+pattern = os.path.join(JOBS_DIR, job_name, "*__*", "result.json")
+matches = sorted(glob.glob(pattern))
 if not matches:
-    print(0.0)
-    raise SystemExit
+    ungradeable(
+        "harbor wrote no result.json at %r (the agent/sandbox never produced a "
+        "graded trial)" % pattern
+    )
 
-with open(matches[0]) as handle:
-    result = json.load(handle)
+try:
+    with open(matches[0]) as handle:
+        result = json.load(handle)
+except (OSError, ValueError) as exc:
+    ungradeable("harbor result.json at %r is unreadable: %s" % (matches[0], exc))
+
+if not isinstance(result, dict):
+    ungradeable(
+        "harbor result.json is a %s, expected an object (schema drift for "
+        "harbor==%s)" % (type(result).__name__, HARBOR_VERSION)
+    )
 
 if result.get("exception_info") is not None:
-    print(0.0)
-    raise SystemExit
+    ungradeable(
+        "harbor recorded exception_info=%r (the trial raised before a real "
+        "evaluation)" % (result.get("exception_info"),)
+    )
 
 
 def reward_of(node):
-    verifier_result = (node or {{}}).get("verifier_result") or {{}}
-    rewards = verifier_result.get("rewards") or {{}}
-    try:
-        return float(rewards["reward"])
-    except (KeyError, TypeError, ValueError):
+    if not isinstance(node, dict):
         return None
+    verifier_result = node.get("verifier_result")
+    if not isinstance(verifier_result, dict):
+        return None
+    rewards = verifier_result.get("rewards")
+    if not isinstance(rewards, dict) or "reward" not in rewards:
+        return None
+    value = rewards["reward"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 top = reward_of(result)
 if top is not None:
-    print(top)
-    raise SystemExit
+    _write(top)
+    sys.exit(0)
 
 steps = result.get("step_results") or []
 values = [r for r in (reward_of(step) for step in steps) if r is not None]
-print(sum(values) / len(values) if values else 0.0)
+if not values:
+    ungradeable(
+        "harbor result.json carries no verifier_result.rewards.reward and no "
+        "per-step reward (no evaluation happened; harbor==%s)" % HARBOR_VERSION
+    )
+_write(sum(values) / len(values))
 PY
 """
 
@@ -248,17 +327,11 @@ def _write_staging(
     )
     tests_dir = staging_dir / "tests"
     tests_dir.mkdir(exist_ok=True)
-    (tests_dir / "test.sh").write_text(_render_test_sh(_result_glob(harbor_jobs_dir)))
+    (tests_dir / "test.sh").write_text(_render_test_sh(harbor_jobs_dir, harbor_version))
     # Identity-mounted job directory (host == container path); pre-created so the
     # bind mount carries the host's ownership rather than Docker's root-owned stub.
     harbor_jobs_dir.mkdir(parents=True, exist_ok=True)
     (staging_dir / STAGING_LOGS_DIRNAME / "verifier").mkdir(parents=True, exist_ok=True)
-
-
-def _result_glob(harbor_jobs_dir: Path) -> str:
-    """Glob matching the one per-task ``result.json`` Harbor writes under its job
-    directory: ``<jobs>/<job-name>/<task[:32]>__<7char>/result.json``."""
-    return f"{harbor_jobs_dir}/{HARBOR_JOB_NAME}/*__*/result.json"
 
 
 def _task_compose_doc(
@@ -268,6 +341,10 @@ def _task_compose_doc(
     harbor_jobs_dir: Path,
 ) -> dict[str, Any]:
     environment = {key: f"${{{provider_input(key)}}}" for key in sorted(provider_env_keys)}
+    # The engine substitutes a unique per-trial slug into every trial-scope
+    # stack; carrying it into the container's env lets the ``harbor run`` command
+    # and the verifier both derive this trial's unique Harbor job name from it.
+    environment[TRIAL_SLUG_ENV] = f"${{{TRIAL_SLUG_ENV}}}"
     body: dict[str, Any] = {
         "image": agent_image,
         "build": {"context": ".", "dockerfile": "Dockerfile"},
