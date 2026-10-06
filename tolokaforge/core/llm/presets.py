@@ -56,6 +56,10 @@ from tolokaforge.core.llm.reasoning_codec import (
     OpenAIReasoningCodec,
     ReasoningCodec,
 )
+from tolokaforge.core.llm.reasoning_history import (
+    DEFAULT_REASONING_HISTORY,
+    REASONING_HISTORY_VALUES,
+)
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
     JsonCoerceResponse,
@@ -172,6 +176,23 @@ _POLICY_REGISTRIES: dict[str, dict[str, type[Any]]] = {
     "message_assembly_policy": _MESSAGE_ASSEMBLY_POLICIES,
     "assistant_text_policy": _ASSISTANT_TEXT_POLICIES,
 }
+
+
+def _validated_reasoning_history(value: object, where: str) -> str:
+    """A preset's ``reasoning_history``, or the default when it declares none.
+
+    Validated here rather than left to fail at request time, because the
+    overlay checker only verifies slot names and silently accepts an unknown
+    scalar key — a typo would otherwise reach the wire as the default and look
+    like the setting had no effect.
+    """
+    if value is None:
+        return DEFAULT_REASONING_HISTORY
+    if value not in REASONING_HISTORY_VALUES:
+        raise ValueError(
+            f"{where}: reasoning_history {value!r} is not one of {list(REASONING_HISTORY_VALUES)}."
+        )
+    return str(value)
 
 
 def _merge_out_of_tree_policy_registrations() -> None:
@@ -1104,6 +1125,7 @@ def build_capabilities(
     output_length_retry_count = cfg.get("output_length_retry_count")
     parser_error_retry_count = cfg.get("parser_error_retry_count")
     tool_output_max_chars = cfg.get("tool_output_max_chars")
+    reasoning_history = cfg.get("reasoning_history")
     observation_window = cfg.get("observation_window")
     observation_window_polling = cfg.get("observation_window_polling")
     default_max_turns = cfg.get("default_max_turns")
@@ -1140,6 +1162,7 @@ def build_capabilities(
         parser_error_retry_count=(
             int(parser_error_retry_count) if parser_error_retry_count is not None else 0
         ),
+        reasoning_history=_validated_reasoning_history(reasoning_history, where),
         observation_window=(int(observation_window) if observation_window is not None else None),
         observation_window_polling=(
             int(observation_window_polling) if observation_window_polling is not None else 1

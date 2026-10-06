@@ -25,6 +25,10 @@ from tolokaforge.core.llm.message_assembly_policy import (
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.prompt_policy import NoPromptEnrichment, SystemPromptPolicy
 from tolokaforge.core.llm.reasoning_codec import NoReasoningCodec, ReasoningCodec
+from tolokaforge.core.llm.reasoning_history import (
+    DEFAULT_REASONING_HISTORY,
+    ReasoningHistory,
+)
 from tolokaforge.core.llm.response_policy import ResponsePolicy, StandardResponse
 from tolokaforge.core.llm.schema_sanitizer import PassthroughSchema, ToolSchemaSanitizer
 from tolokaforge.core.models.model_config import OpenRouterConfig
@@ -60,6 +64,18 @@ class ModelCapabilities:
 
     reasoning_codec: ReasoningCodec = field(default_factory=NoReasoningCodec)
     """Provider-specific extract + replay for structured reasoning."""
+
+    reasoning_history: ReasoningHistory = DEFAULT_REASONING_HISTORY
+    """How many assistant turns replay their reasoning: ``all``, ``none``, ``last``.
+
+    The codec decides the *shape* replayed reasoning takes; this decides how
+    many turns carry it, which is what costs input tokens on every later turn.
+    Measured on one terminal-bench leg, replayed reasoning was 35% of input.
+
+    ``auto`` — the default — defers to the route, so an existing run is
+    unchanged. A route that mandates replay overrides this entirely rather than
+    letting a config produce provider errors at run time.
+    """
 
     cache_policy: CachePolicy = field(default_factory=NoCache)
     """Attaches cache-control markers to cacheable request prefixes."""
