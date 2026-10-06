@@ -37,6 +37,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.dx.dry_run_render import render_dry_run_sample
+from tolokaforge_coding_harnesses import ENGINE_LOOP
 
 pytestmark = pytest.mark.unit
 
@@ -262,6 +263,72 @@ class TestLoadTasksForDryRun:
 
         assert len(tasks) == 2
         assert isinstance(adapter, NativeAdapter)
+
+
+def _coding_harness_run_config() -> RunConfig:
+    """Single native adapter with a coding-harness agent model.
+
+    ``models.agent.harness`` is the canonical coding-harness selector; a real
+    run injects it (and ``models.agent.name``) into the adapter's construction
+    params as ``agent_harness`` / ``agent_model``. The single-adapter dry-run
+    path must resolve the same injection.
+    """
+    return RunConfig(
+        models={
+            "agent": ModelConfig(
+                provider="openrouter",
+                name="anthropic/claude-sonnet-4-6",
+                harness="claude-code",
+            ),
+        },
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(
+            projects=[str(TOOL_USE_DATASET)],
+            tasks_glob="**/task.yaml",
+            output_dir="/tmp/dry_run_harness",
+        ),
+    )
+
+
+class TestLoadTasksForDryRunSharesRealAssembly:
+    """The single-adapter dry-run resolves adapter params through the
+    orchestrator's own ``_create_adapter``, so a coding-harness run's
+    ``agent_harness`` / ``agent_model`` injection is surfaced exactly as a real
+    run assembles it."""
+
+    def test_coding_harness_injection_is_surfaced(self) -> None:
+        adapter, tasks = load_tasks_for_dry_run(run_config=_coding_harness_run_config())
+
+        assert isinstance(adapter, NativeAdapter)
+        assert tasks
+        # The gap this closes: the hand-rolled builder omitted this injection, so
+        # a coding-harness dry-run previewed engine-loop wiring, not the CLI's.
+        assert adapter.agent_harness == "claude-code"
+        assert adapter.agent_model == "anthropic/claude-sonnet-4-6"
+
+    def test_dry_run_adapter_matches_the_real_run_adapter(self) -> None:
+        """Parity with what a live single-adapter run assembles — the dry-run and
+        the real run now build the adapter through the same code."""
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        run_config = _coding_harness_run_config()
+        dry_adapter, _ = load_tasks_for_dry_run(run_config=run_config)
+        real_adapter = Orchestrator(run_config)._create_adapter()
+
+        assert isinstance(real_adapter, NativeAdapter)
+        assert (dry_adapter.agent_harness, dry_adapter.agent_model) == (
+            real_adapter.agent_harness,
+            real_adapter.agent_model,
+        )
+
+    def test_plain_native_dry_run_is_unchanged(self) -> None:
+        """Regression: a run with no ``models.agent.harness`` injects nothing —
+        the adapter stays on the engine loop, exactly as before."""
+        adapter, _ = load_tasks_for_dry_run(run_config=_tool_use_run_config())
+
+        assert isinstance(adapter, NativeAdapter)
+        assert adapter.agent_harness == ENGINE_LOOP
+        assert adapter.agent_model == ""
 
 
 def _multi_harness_run_config() -> RunConfig:

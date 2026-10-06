@@ -8,10 +8,10 @@ branch stitches them together.
 
 Three helpers:
 
-* :func:`load_tasks_for_dry_run` — build the adapter from a
-  :class:`RunConfig` and enumerate every declared :class:`TaskConfig`.
-  Deliberately skips the TypeSense preflight ``Orchestrator.load_tasks``
-  performs.
+* :func:`load_tasks_for_dry_run` — build the adapter through the
+  orchestrator's own :meth:`Orchestrator._create_adapter` and enumerate
+  every declared :class:`TaskConfig`. Deliberately skips the TypeSense
+  preflight ``Orchestrator.load_tasks`` performs.
 * :func:`load_harness_entry_units_for_dry_run` — resolve each
   ``harnesses:`` entry's ``(entry, task)`` legs through the orchestrator's
   composite adapter, the same resolution a real run uses.
@@ -23,11 +23,10 @@ Three helpers:
 from __future__ import annotations
 
 import copy
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.adapters import BaseAdapter, get_adapter
+from tolokaforge.adapters import BaseAdapter
 from tolokaforge.core.llm.presets import build_capabilities, resolve_effective_preset
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.tools.registry import sanitize_schema_properties
@@ -120,48 +119,6 @@ def _model_line(model: ModelConfig) -> str:
     return f"{model.provider}/{model.name} · preset: {preset}"
 
 
-def _build_dry_run_adapter_params(
-    run_config: RunConfig,
-    project: ProjectConfig | None,
-) -> tuple[str | None, dict[str, Any]]:
-    """Return ``(adapter_type, params)`` for adapter construction.
-
-    Mirrors :meth:`Orchestrator._create_adapter` — same param assembly,
-    same env-override for ``TASK_PACKS_DIRS``, same project-defaults
-    forwarding — minus every Docker / TypeSense side effect. The
-    typesense config *is* forwarded for a run that has a plane, so
-    adapters that embed it in :class:`TaskDescription` render the config
-    verbatim (unresolved port / api_key) for the operator to inspect.
-    """
-    adapter_config = run_config.evaluation.harness_adapter
-    if adapter_config:
-        adapter_type: str | None = adapter_config.type
-        params: dict[str, Any] = dict(adapter_config.params)
-    else:
-        adapter_type = None
-        params = {}
-
-    params["tasks_glob"] = run_config.evaluation.tasks_glob
-    task_packs = list(run_config.evaluation.projects)
-    env_task_packs = os.environ.get("TASK_PACKS_DIRS", "").strip()
-    if env_task_packs:
-        task_packs = [part.strip() for part in env_task_packs.split(",") if part.strip()]
-    params["task_packs"] = task_packs
-
-    typesense_config = run_config.orchestrator.effective_typesense()
-    if typesense_config is not None:
-        params["typesense"] = typesense_config.model_dump()
-
-    if project is not None:
-        defaults = project.task_defaults.model_dump(exclude_defaults=True)
-        if defaults:
-            params["project_task_defaults"] = defaults
-        if project.default_environment is not None:
-            params["project_default_environment"] = project.default_environment
-
-    return adapter_type, params
-
-
 def load_tasks_for_dry_run(
     *,
     run_config: RunConfig,
@@ -169,15 +126,22 @@ def load_tasks_for_dry_run(
 ) -> tuple[BaseAdapter, list[TaskConfig]]:
     """Instantiate the adapter and load every declared task.
 
-    Skips the TypeSense preflight :meth:`Orchestrator.load_tasks` runs
-    (dry-run must not start Docker containers). Constructs the adapter
-    via the shared :func:`get_adapter` factory using the same parameter
-    assembly the orchestrator uses at run start. Failed task loads
-    propagate as exceptions — surfacing config errors here is the
+    Builds the adapter through the orchestrator's own
+    :meth:`Orchestrator._create_adapter`, so a single-adapter dry-run
+    resolves the exact construction params a real run assembles —
+    including the ``agent_harness`` / ``agent_model`` injection a
+    coding-harness (delegated) run performs. Skips the TypeSense preflight
+    :meth:`Orchestrator.load_tasks` runs (dry-run must not start Docker
+    containers), which :meth:`Orchestrator.__init__` never triggers. Failed
+    task loads propagate as exceptions — surfacing config errors here is the
     point of ``--dry-run``.
     """
-    adapter_type, params = _build_dry_run_adapter_params(run_config, project)
-    adapter = get_adapter(adapter_type, params)
+    # Local import: keeps the orchestrator's heavy import chain (docker, grpc,
+    # the runtime stack) out of this module's load cost.
+    from tolokaforge.core.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator(run_config, project=project)
+    adapter = orchestrator._create_adapter()
 
     tasks: list[TaskConfig] = []
     for task_id in adapter.get_task_ids():
