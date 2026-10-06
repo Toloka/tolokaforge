@@ -83,14 +83,16 @@ The wrapper mounts, into the container:
 | output dir (`-o`) | `/work/out` | rw | run reports land here |
 | `.env` (`-e`) | `/work/.env` | ro | provider credentials |
 
-and runs `tolokaforge run --config /work/config/<config>`.
+and runs `tolokaforge run --config /work/config/<config> --output-dir /work/out`.
 
-Point your run config at the mounted paths:
+The wrapper passes `--output-dir /work/out`, so the report lands in the mounted
+output directory without your run config having to name it. The flag overrides
+`evaluation.output_dir` for the run; outside the wrapper, `tolokaforge run
+--output-dir <path>` targets any directory, and omitting it keeps the config's
+`evaluation.output_dir` (or the `results/run_<timestamp>` default).
 
-- `evaluation.output_dir: /work/out` — so the report lands in the mounted
-  output directory. (There is no `--output-dir` flag; the config decides.)
-- project / task paths under `/work/tasks` — so the tasks resolve inside the
-  container.
+Point your run config's project / task paths under `/work/tasks` so the tasks
+resolve inside the container.
 
 Anything after `--` is forwarded to `tolokaforge run`, e.g. a keyless dry run:
 

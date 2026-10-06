@@ -767,6 +767,19 @@ def _run_dry_run_harnesses(
     ),
 )
 @click.option(
+    "--output-dir",
+    "output_dir_override",
+    type=click.Path(file_okay=False),
+    default=None,
+    help=(
+        "Directory the run report lands in (aggregate.json, "
+        "metadata_slices.json, per_task_metrics.json). Overrides "
+        "evaluation.output_dir in the run config. Omitting it keeps the "
+        "config value, or the results/run_<timestamp> default when the config "
+        "sets none. See docs/CLI.md."
+    ),
+)
+@click.option(
     "--fail-on-zero-coverage",
     "fail_on_zero_coverage",
     is_flag=True,
@@ -805,6 +818,7 @@ def run(
     time_limit: str | None,
     dry_run: bool,
     image_source: str | None,
+    output_dir_override: str | None,
     fail_on_zero_coverage: bool,
     fail_on_zero_judge_graded: bool,
 ):
@@ -851,6 +865,13 @@ def run(
     if "output_dir" not in config_data.get("evaluation", {}):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         config_data["evaluation"]["output_dir"] = f"results/run_{timestamp}"
+
+    # --output-dir overrides evaluation.output_dir for this run. The flag beats
+    # both the config value and the timestamp default above; omitting it leaves
+    # either untouched. Mirrors the --image-source / --workers override pattern.
+    if output_dir_override is not None:
+        config_data.setdefault("evaluation", {})["output_dir"] = output_dir_override
+        console.print(f"[cyan]Output dir override: {output_dir_override}[/cyan]")
 
     # Apply user model override: CLI flag > env var > YAML config
     # Priority: --user-model flag takes precedence over USER_MODEL env var.

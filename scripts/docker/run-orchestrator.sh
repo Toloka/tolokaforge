@@ -12,13 +12,15 @@
 #   * the task-pack directory  -> /work/tasks  (read-only)
 #   * an output directory      -> /work/out    (read-write)
 #   * the .env file            -> /work/.env   (read-only; DotEnvProvider reads it)
-# and runs ``tolokaforge run --config /work/config/<config>``.
+# and runs ``tolokaforge run --config /work/config/<config> --output-dir
+# /work/out``, so reports land in the mounted output directory without the run
+# config having to name it.
 #
 # Secrets: this wrapper forwards NOTHING secret itself. Credentials come only
 # from the mounted read-only .env, which the engine's SecretManager reads via
-# DotEnvProvider. Point your run config's ``evaluation.output_dir`` at
-# ``/work/out`` and its project paths under ``/work/tasks`` so reports land in
-# the mounted output directory and tasks resolve inside the container.
+# DotEnvProvider. Point your run config's project paths under ``/work/tasks`` so
+# tasks resolve inside the container; the output location is set by the
+# ``--output-dir /work/out`` flag this wrapper passes.
 #
 # Usage:
 #   scripts/docker/run-orchestrator.sh -c CONFIG [options] [-- EXTRA run args]
@@ -44,7 +46,7 @@ OUT_DIR="./out"
 ENV_FILE="./.env"
 
 usage() {
-    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while getopts ":c:i:t:o:e:h" opt; do
@@ -122,4 +124,4 @@ if [[ -n "${EXTRA_DOCKER_ARGS:-}" ]]; then
 fi
 
 exec docker "${DOCKER_ARGS[@]}" "${IMAGE}" \
-    run --config "/work/config/${CONFIG_NAME}" "$@"
+    run --config "/work/config/${CONFIG_NAME}" --output-dir /work/out "$@"
