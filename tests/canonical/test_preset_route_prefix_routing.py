@@ -65,6 +65,7 @@ _ANYWHERE_GLOBS = frozenset(
         "anthropic_claude_4_7:*claude-sonnet-4.7*",
         "anthropic_claude_opus_5:*claude-opus-5*",
         "anthropic_claude_fable_5_1:*claude-fable-5.1*",
+        "anthropic_claude_sonnet_5_5:*claude-sonnet-5.5*",
         "anthropic:*claude*",
         "openai_gpt5:*gpt-5*",
         "openai_gpt6:*gpt-6*",
