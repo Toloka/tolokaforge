@@ -31,6 +31,7 @@ import pytest
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.kinds import (
+    UNGRADEABLE_SENTINEL,
     GraderKindRefusedError,
     TestExecutionGraderKind,
 )
@@ -200,6 +201,31 @@ def test_script_exec_error_returns_grade_with_execution_failed_reasons() -> None
     assert grade.reasons == (
         "test.sh execution failed: Command 'bash test.sh' timed out after 300.0 seconds"
     )
+
+
+def test_ungradeable_sentinel_raises_refused_not_zero_score() -> None:
+    """A verifier that wrote the ungradeable sentinel instead of a number means
+    no evaluation happened; the kind refuses (grading error) rather than
+    recording a legitimate 0.0 — an absent reward is not a zero reward."""
+    substrate = _ScriptedSubstrate(
+        _result(
+            exit_code=1,
+            reward_bytes=(UNGRADEABLE_SENTINEL + "\n").encode(),
+            stdout="harbor verifier: UNGRADEABLE: harbor recorded exception_info",
+        ),
+    )
+    with pytest.raises(GraderKindRefusedError, match="ungradeable") as exc_info:
+        _evaluate(substrate)
+    assert "exception_info" in exc_info.value.reason
+
+
+def test_non_sentinel_non_numeric_reward_still_falls_back_to_zero() -> None:
+    """The sentinel path is exact: any other non-numeric reward keeps the
+    documented 0.0 fallback (no behavioural drift for existing adapters)."""
+    substrate = _ScriptedSubstrate(_result(reward_bytes=b"not a number\n"))
+    grade = _evaluate(substrate)
+    assert grade is not None
+    assert grade.score == pytest.approx(0.0)
 
 
 def test_kind_config_overrides_reach_substrate_and_extra_keys_are_refused() -> None:
