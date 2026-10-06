@@ -29,6 +29,7 @@ _FORBIDDEN_HARNESS_DISTS = {"inspect-ai", "harbor"}
 _SHIPPED_ADAPTER_DISTS = {
     "tolokaforge-adapter-terminal-bench",
     "tolokaforge-adapter-inspect-ai",
+    "tolokaforge-adapter-harbor",
 }
 
 

@@ -22,6 +22,7 @@ members = [
     "pricing-updater",
     "rubric-calibrator",
     "tolokaforge",
+    "tolokaforge-adapter-harbor",
     "tolokaforge-adapter-inspect-ai",
     "tolokaforge-adapter-terminal-bench",
     "tolokaforge-coding-harnesses",
@@ -5567,6 +5568,7 @@ dependencies = [
 
 [package.optional-dependencies]
 adapters = [
+    { name = "tolokaforge-adapter-harbor" },
     { name = "tolokaforge-adapter-inspect-ai" },
     { name = "tolokaforge-adapter-terminal-bench" },
 ]
@@ -5587,6 +5589,7 @@ all = [
     { name = "rank-bm25" },
     { name = "rich" },
     { name = "sqlalchemy" },
+    { name = "tolokaforge-adapter-harbor" },
     { name = "tolokaforge-adapter-inspect-ai" },
     { name = "tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn" },
@@ -5602,6 +5605,9 @@ dx = [
     { name = "click-repl" },
     { name = "prompt-toolkit" },
     { name = "rich" },
+]
+harbor = [
+    { name = "tolokaforge-adapter-harbor" },
 ]
 inspect-ai = [
     { name = "tolokaforge-adapter-inspect-ai" },
@@ -5719,7 +5725,8 @@ requires-dist = [
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "testcontainers", specifier = ">=4.14.2,<5" },
     { name = "tolokaforge", extras = ["dx", "browser", "server", "rag", "office", "adapters", "runner"], marker = "extra == 'all'", editable = "." },
-    { name = "tolokaforge", extras = ["terminal-bench", "inspect-ai"], marker = "extra == 'adapters'", editable = "." },
+    { name = "tolokaforge", extras = ["terminal-bench", "inspect-ai", "harbor"], marker = "extra == 'adapters'", editable = "." },
+    { name = "tolokaforge-adapter-harbor", marker = "extra == 'harbor'", editable = "external_adapters/tolokaforge-adapter-harbor" },
     { name = "tolokaforge-adapter-inspect-ai", marker = "extra == 'inspect-ai'", editable = "external_adapters/tolokaforge-adapter-inspect-ai" },
     { name = "tolokaforge-adapter-terminal-bench", marker = "extra == 'terminal-bench'", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "tolokaforge-langfuse", marker = "extra == 'otel'", editable = "tolokaforge_langfuse" },
@@ -5729,7 +5736,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'runner'", specifier = ">=0.25.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.25.0" },
 ]
-provides-extras = ["dx", "browser", "server", "runner", "rag", "office", "terminal-bench", "inspect-ai", "adapters", "all", "bundle-store-s3", "otel"]
+provides-extras = ["dx", "browser", "server", "runner", "rag", "office", "terminal-bench", "inspect-ai", "harbor", "adapters", "all", "bundle-store-s3", "otel"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5767,6 +5774,23 @@ dev = [
     { name = "tolokaforge-adapter-terminal-bench", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "tolokaforge-langfuse", editable = "tolokaforge_langfuse" },
     { name = "uvicorn", specifier = ">=0.25.0" },
+]
+
+[[package]]
+name = "tolokaforge-adapter-harbor"
+version = "0.1.0"
+source = { editable = "external_adapters/tolokaforge-adapter-harbor" }
+dependencies = [
+    { name = "pyyaml" },
+    { name = "tolokaforge" },
+    { name = "tolokaforge-adapter-terminal-bench" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyyaml", specifier = ">=6.0.1" },
+    { name = "tolokaforge", editable = "." },
+    { name = "tolokaforge-adapter-terminal-bench", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
 ]
 
 [[package]]

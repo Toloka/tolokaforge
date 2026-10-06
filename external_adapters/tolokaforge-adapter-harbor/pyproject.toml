@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tolokaforge-adapter-harbor"
+version = "0.1.0"
+description = "Harbor-harness adapter plugin for tolokaforge — delegates execution to the Harbor harness (harbor run + Terminus 2) and grades from its native result.json"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "tolokaforge",
+    "tolokaforge-adapter-terminal-bench",
+    "pyyaml>=6.0.1",
+]
+
+[project.entry-points."tolokaforge.adapters"]
+harbor = "tolokaforge_adapter_harbor.adapter:HarborAdapter"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tolokaforge_adapter_harbor"]
