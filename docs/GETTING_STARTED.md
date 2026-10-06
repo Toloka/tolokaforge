@@ -9,7 +9,7 @@ For roadmap, benchmark-type status, and phased delivery details, see:
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - A model API key (OpenAI, Anthropic, Google, OpenRouter, etc.)
 - Docker (required — the only supported runtime for tool execution)
 

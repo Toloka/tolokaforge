@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "tolokaforge-langfuse"
 version = "0.1.0"
 description = "Langfuse live tracing for tolokaforge: the OTLP trial observer, the trial-end projection of a trial bundle and the deployment profile."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "Tolokaforge Contributors"},
@@ -18,8 +18,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -38,7 +36,6 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-common>=1.27",
     "requests>=2.7",
     "pyyaml>=6.0.1",
-    "tomli>=2.0; python_version < '3.11'",
 ]
 
 # The engine's trial-observer seam (ADR-0047): ``build(tracing, identity, *, engine_run_id,
