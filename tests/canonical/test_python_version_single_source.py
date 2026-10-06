@@ -319,6 +319,11 @@ def test_linted_task_image_code_targets_at_most_its_image_python() -> None:
     images = _image_python_dockerfiles()
     trees = {dockerfile: _sandbox_tree(dockerfile) for dockerfile in images}
     linted = _ruff_linted_files(sorted(set(trees.values())))
+    assert linted, (
+        "ruff --show-files listed no Python file under "
+        f"{sorted(str(tree.relative_to(REPO_ROOT)) for tree in set(trees.values()))} "
+        "— the sandbox target guard would pass vacuously"
+    )
     coverage = {
         pattern: (version, set(_python_files_matching(pattern)))
         for pattern, version in per_file_target_versions().items()

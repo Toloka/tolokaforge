@@ -4,7 +4,7 @@ Tolokaforge ships with a mock load configuration that exercises the full orchest
 
 ## Environment
 
-The numbers below were recorded on this machine:
+The numbers below were recorded on the following machine:
 
 | Component | Value |
 |-----------|-------|

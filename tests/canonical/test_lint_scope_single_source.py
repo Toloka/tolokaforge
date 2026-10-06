@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import ast
 import re
+from pathlib import Path
 
 import pytest
 
-from tests.utils.ruff_targets import REPO_ROOT
-
 pytestmark = pytest.mark.canonical
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _MAKEFILE = REPO_ROOT / "Makefile"
 _DEV_MCP_SERVER = REPO_ROOT / "tools" / "dev-mcp" / "src" / "dev_mcp" / "server.py"
