@@ -9,11 +9,16 @@ The policy is resolved once per request, over the whole message list, before any
 provider serialisation, so a route's behaviour does not depend on which codec is
 installed behind it.
 
-Some routes do not get a choice. Moonshot documents preserved thinking as
-mandatory on ``kimi-k2.7-code``; Anthropic requires thinking blocks to round-trip
-intact alongside tool results. A codec whose route mandates replay says so with
-:attr:`ReasoningCodec.forced_history`, and that overrides whatever a preset asked
-for rather than letting a config produce 400s at run time.
+Some routes do not get a choice: Anthropic requires thinking blocks to
+round-trip intact alongside tool results. A codec whose route mandates replay
+says so with :attr:`ReasoningCodec.forced_history`, and that overrides whatever a
+preset asked for rather than letting a config produce 400s at run time.
+
+A route that *generates* reasoning unconditionally is a separate matter and does
+not constrain this policy. ``kimi-k2.7-code`` is such a route — thinking cannot
+be switched off there — but omitting prior ``reasoning_content`` from the request
+is documented as legal, so the saving is available even where the generation is
+not optional.
 """
 
 from __future__ import annotations
