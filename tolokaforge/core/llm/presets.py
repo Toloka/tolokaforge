@@ -195,6 +195,41 @@ def _validated_reasoning_history(value: object, where: str) -> str:
     return str(value)
 
 
+def _validated_observation_window(value: object, where: str) -> int | None:
+    """A preset's ``observation_window``, or ``None`` when it declares none.
+
+    Validated here rather than coerced at the loop boundary, because the overlay
+    checker only verifies slot names and silently accepts an unknown scalar key
+    — a typo would otherwise reach the loop as the default and look like the
+    setting had no effect. ``None`` is a value, not an absence: it sends every
+    observation in full and is how a config clears a preset's window.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(
+            f"{where}: observation_window {value!r} is not a non-negative integer or null."
+        )
+    return value
+
+
+def _validated_observation_window_polling(value: object, where: str) -> int:
+    """A preset's ``observation_window_polling``, or the default when it declares none.
+
+    Validated here for the same reason as :func:`_validated_observation_window`:
+    a typo must be refused rather than silently reverting the boundary to
+    advancing every turn, which is the behaviour the setting exists to avoid.
+    Zero turns is not a slower boundary, it is no boundary, so the floor is one.
+    """
+    if value is None:
+        return 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"{where}: observation_window_polling {value!r} is not a positive integer."
+        )
+    return value
+
+
 def _merge_out_of_tree_policy_registrations() -> None:
     """Merge ``tolokaforge-models`` policy classes onto ``_POLICY_REGISTRIES``.
 
@@ -909,6 +944,9 @@ _RECOGNISED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         # Reasoning codec
         "gemini_drop_placeholder_signature",
         "reasoning_history",
+        # Observation window
+        "observation_window",
+        "observation_window_polling",
         # Params policy
         "fixed_temperature",
         "supports_seed",
@@ -965,6 +1003,12 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
     history = overrides.get("reasoning_history")
     if history is not None:
         cfg["reasoning_history"] = history
+
+    if "observation_window" in overrides:
+        cfg["observation_window"] = overrides["observation_window"]
+
+    if "observation_window_polling" in overrides:
+        cfg["observation_window_polling"] = overrides["observation_window_polling"]
 
     # dict_map_prompt_hints → prompt_policy
     if overrides.get("dict_map_prompt_hints"):
@@ -1168,9 +1212,9 @@ def build_capabilities(
             int(parser_error_retry_count) if parser_error_retry_count is not None else 0
         ),
         reasoning_history=_validated_reasoning_history(reasoning_history, where),
-        observation_window=(int(observation_window) if observation_window is not None else None),
-        observation_window_polling=(
-            int(observation_window_polling) if observation_window_polling is not None else 1
+        observation_window=_validated_observation_window(observation_window, where),
+        observation_window_polling=_validated_observation_window_polling(
+            observation_window_polling, where
         ),
         tool_output_max_chars=(
             int(tool_output_max_chars) if tool_output_max_chars is not None else None
