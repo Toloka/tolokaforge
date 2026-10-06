@@ -25,7 +25,9 @@ from pathlib import Path
 
 __all__ = [
     "JUDGE_REPLAY_DIRNAME",
+    "NATIVE_ARTIFACTS_DIRNAME",
     "RESERVED_DIRNAMES",
+    "SERVICE_CAPTURE_DIRNAME",
     "TRACE_REPLAY_DIRNAME",
     "discover_trial_bundles",
     "is_trial_bundle",
@@ -37,12 +39,26 @@ BUNDLE_MARKER = "trajectory.yaml"
 TRACE_REPLAY_DIRNAME = "trace_replay"
 #: Judge replay's output subtree.
 JUDGE_REPLAY_DIRNAME = "replays"
+#: The harness's own artifacts, staged beside a bundle (``<bundle>/native/``).
+NATIVE_ARTIFACTS_DIRNAME = "native"
+#: Per-trial and run-level service-capture sidecar (``<bundle>/services/``,
+#: ``<run>/services/``).
+SERVICE_CAPTURE_DIRNAME = "services"
 #: Directory names reserved anywhere under a source: nothing beneath one is
-#: discovered, at any depth, because a previously-replayed subtree can be nested
-#: arbitrarily. Neither command's output holds a ``trajectory.yaml`` today, so the
-#: exclusion is what holds when either one's write set changes. The trade is
-#: deliberate — a *task* named ``replays`` would hide its own trials.
-RESERVED_DIRNAMES = frozenset({TRACE_REPLAY_DIRNAME, JUDGE_REPLAY_DIRNAME})
+#: discovered, at any depth, because such a subtree can be nested arbitrarily. Two
+#: are a replay command's output and two are a sidecar written beside a bundle (the
+#: harness's native artifacts, the service-capture logs); any of them can hold a
+#: file named like the bundle marker, yet none is itself a recorded trial. Name is
+#: the filter so the exclusion holds whatever a subtree's own write set grows to.
+#: The trade is deliberate — a *task* named ``replays`` would hide its own trials.
+RESERVED_DIRNAMES = frozenset(
+    {
+        TRACE_REPLAY_DIRNAME,
+        JUDGE_REPLAY_DIRNAME,
+        NATIVE_ARTIFACTS_DIRNAME,
+        SERVICE_CAPTURE_DIRNAME,
+    }
+)
 
 
 def is_trial_bundle(path: Path) -> bool:
