@@ -198,7 +198,7 @@ def test_the_table_answers_for_exactly_the_operators_a_predicate_may_bind() -> N
         "east-two-normalized-to-utc",
         "naive-read-as-utc",
         "microseconds",
-        "one-fractional-digit-padded",
+        "one-fractional-digit",
     ],
 )
 def test_date_comparison_key_normalizes_an_iso_shape(literal: str, expected: datetime) -> None:

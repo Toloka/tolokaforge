@@ -113,7 +113,7 @@ def ever_satisfiable(operator: str, held: str | None, bound: str | None) -> bool
 
 # The accepted date grammar: an extended-format calendar date, optionally a time
 # with fractional seconds and a ``Z`` or ``±HH:MM`` offset. ``datetime.fromisoformat``
-# accepts more (basic format ``20260301``, week dates, ordinal dates), so the gate
+# accepts more (basic format ``20260301``, week dates), so the gate
 # is what fixes which strings count as dates.
 _ISO_8601_SHAPE = re.compile(
     r"^\d{4}-\d{2}-\d{2}" r"(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$"

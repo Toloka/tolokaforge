@@ -5,9 +5,11 @@ All tests are synthetic — no Docker daemon, no network, no real wheel builds.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import textwrap
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,7 @@ from tolokaforge.docker.wheel_resolver import (
     WheelArtifact,
     WheelProvider,
     WheelResolver,
+    _EngineSourceSearch,
     _hash_file,
     _is_engine_pyproject,
     _looks_like_sha,
@@ -136,11 +139,6 @@ class TestPyprojectHelpers:
         )
         assert _is_engine_pyproject(tmp_path / "pyproject.toml")
         assert _read_pyproject_version(tmp_path) == "9.9.9"
-
-    def test_malformed_pyproject_is_not_the_engine(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text('[project]\nname = "tolokaforge\nversion = 1\n')
-        assert not _is_engine_pyproject(tmp_path / "pyproject.toml")
-        assert _read_pyproject_version(tmp_path) is None
 
 
 # ===================================================================
@@ -288,6 +286,35 @@ class TestLocalSourceWheelProvider:
         assert art1 is not None
         assert art2 is not None
         assert art1.content_hash == art2.content_hash
+
+    def test_malformed_pyproject_is_not_the_engine(
+        self, tmp_path: Path, cache_dir: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """An unparsable ancestor pyproject is skipped, but named in the log and last_failure."""
+        checkout = tmp_path / "checkout"
+        fake_module = checkout / "tolokaforge" / "docker" / "wh.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+        pyproject = checkout / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "tolokaforge\nversion = 1\n')
+        with pytest.raises(tomllib.TOMLDecodeError) as parse_error:
+            tomllib.loads(pyproject.read_text())
+        expected = f"{pyproject}: {parse_error.value}"
+
+        provider = LocalSourceWheelProvider()
+        with (
+            caplog.at_level(logging.WARNING, logger="tolokaforge.docker.wheel_resolver"),
+            patch("tolokaforge.docker.wheel_resolver.__file__", str(fake_module)),
+        ):
+            assert provider.provide(cache_dir) is None
+
+        assert "no engine source tree" in provider.last_failure
+        assert f"skipped unparsable {expected}" in provider.last_failure
+        assert any(
+            str(pyproject) in record.getMessage() and str(parse_error.value) in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
 
     def test_no_source_yields_none(self, cache_dir: Path):
         """When no source checkout is found, return None."""
@@ -685,7 +712,7 @@ class TestGitInstallRelocatedCacheResolution:
             ),
             patch(
                 "tolokaforge.docker.wheel_resolver._find_engine_source_root",
-                return_value=None,
+                return_value=_EngineSourceSearch(root=None),
             ),
             patch(
                 "tolokaforge.docker.wheel_resolver._read_direct_url",

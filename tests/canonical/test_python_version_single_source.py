@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
@@ -26,15 +28,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.utils.ruff_targets import per_file_target_versions
+from tests.utils.ruff_targets import REPO_ROOT, per_file_target_versions
+from tolokaforge_coding_harnesses import MIDDLEWARE_PROXY_SCRIPT
 
 pytestmark = pytest.mark.canonical
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_WORKFLOW_DIR = _REPO_ROOT / ".github" / "workflows"
-_DOCKERFILE_DIR = _REPO_ROOT / "tolokaforge" / "docker" / "dockerfiles"
-_PINNED_VERSION = (_REPO_ROOT / ".python-version").read_text().strip()
+_WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+_DOCKERFILE_DIR = REPO_ROOT / "tolokaforge" / "docker" / "dockerfiles"
+_PINNED_VERSION = (REPO_ROOT / ".python-version").read_text().strip()
 _FLOOR = ".".join(_PINNED_VERSION.split(".")[:2])
 _EXPECTED_REQUIRES_PYTHON = f">={_FLOOR}"
 _LIBRARY_DISTRIBUTIONS = frozenset(
@@ -85,7 +87,7 @@ def test_workflow_uv_python_install_reads_the_pin() -> None:
                 continue
             arg = _TRAILING_COMMENT_RE.sub("", match.group(1)).strip()
             if arg != _EXPECTED_INSTALL_ARG:
-                rel = path.relative_to(_REPO_ROOT)
+                rel = path.relative_to(REPO_ROOT)
                 violations.append(
                     f"{rel}:{lineno}: `uv python install {arg}` hardcodes the version — "
                     f"expected `uv python install {_EXPECTED_INSTALL_ARG}`"
@@ -100,7 +102,7 @@ def test_workflow_setup_python_uses_version_file() -> None:
     violations: list[str] = []
     for path in _workflow_files():
         doc = yaml.safe_load(path.read_text())
-        rel = path.relative_to(_REPO_ROOT)
+        rel = path.relative_to(REPO_ROOT)
         for step in _iter_steps(doc):
             uses = step.get("uses", "")
             if not isinstance(uses, str) or not uses.startswith("actions/setup-python"):
@@ -125,7 +127,7 @@ def test_runtime_dockerfiles_single_source_python() -> None:
     violations: list[str] = []
     for path in dockerfiles:
         text = path.read_text()
-        rel = path.relative_to(_REPO_ROOT)
+        rel = path.relative_to(REPO_ROOT)
         arg_match = _ARG_LINE_RE.search(text)
         if arg_match is None:
             violations.append(
@@ -145,24 +147,31 @@ def test_runtime_dockerfiles_single_source_python() -> None:
     assert not violations, "\n".join(violations)
 
 
-def _package_pyprojects() -> dict[Path, dict]:
-    found: dict[Path, dict] = {}
-    for dirpath, dirnames, filenames in os.walk(_REPO_ROOT):
-        rel_dir = Path(dirpath).relative_to(_REPO_ROOT)
+def _walk_repo(
+    skipped_prefixes: tuple[tuple[str, ...], ...] = (),
+) -> Iterator[tuple[str, list[str]]]:
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        rel_dir = Path(dirpath).relative_to(REPO_ROOT)
         dirnames[:] = [
             name
             for name in dirnames
             if not name.startswith(".")
             and name != "node_modules"
-            and (*rel_dir.parts, name) not in _PYPROJECT_SKIPPED_PREFIXES
+            and (*rel_dir.parts, name) not in skipped_prefixes
         ]
+        yield dirpath, filenames
+
+
+def _package_pyprojects() -> dict[Path, dict]:
+    found: dict[Path, dict] = {}
+    for dirpath, filenames in _walk_repo(_PYPROJECT_SKIPPED_PREFIXES):
         if "pyproject.toml" in filenames:
             path = Path(dirpath) / "pyproject.toml"
-            found[path.relative_to(_REPO_ROOT)] = tomllib.loads(path.read_text())
+            found[path.relative_to(REPO_ROOT)] = tomllib.loads(path.read_text())
     names = {doc.get("project", {}).get("name") for doc in found.values()}
     missing = _LIBRARY_DISTRIBUTIONS - names
     assert not missing, (
-        f"pyproject discovery under {_REPO_ROOT} missed library distributions {sorted(missing)} "
+        f"pyproject discovery under {REPO_ROOT} missed library distributions {sorted(missing)} "
         "— the floor guard would pass vacuously"
     )
     return found
@@ -179,7 +188,7 @@ def test_every_package_requires_the_pinned_floor() -> None:
 
 
 def test_lint_and_type_check_targets_name_the_floor() -> None:
-    tool = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())["tool"]
+    tool = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["tool"]
     floor_tag = "py" + _FLOOR.replace(".", "")
     found = {
         "[tool.ruff].target-version": (tool["ruff"].get("target-version"), floor_tag),
@@ -218,10 +227,10 @@ def test_version_classifiers_name_only_the_floor() -> None:
 
 
 def test_documented_toml_snippets_require_the_floor() -> None:
-    docs = sorted((*(_REPO_ROOT / "docs").glob("*.md"), _REPO_ROOT / "README.md"))
+    docs = sorted((*(REPO_ROOT / "docs").glob("*.md"), REPO_ROOT / "README.md"))
     violations: list[str] = []
     for path in docs:
-        rel = path.relative_to(_REPO_ROOT)
+        rel = path.relative_to(REPO_ROOT)
         for block in _TOML_FENCE_RE.finditer(path.read_text()):
             violations.extend(
                 f"{rel}: fenced TOML declares requires-python = {match.group(1)!r} "
@@ -232,11 +241,9 @@ def test_documented_toml_snippets_require_the_floor() -> None:
     assert not violations, "\n".join(violations)
 
 
-_MIDDLEWARE_PROXY = (
-    "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/middleware_proxy.py"
-)
-_CODING_HARNESS_ENVIRONMENT = "examples/native/coding_harness/environment"
+_MIDDLEWARE_PROXY = MIDDLEWARE_PROXY_SCRIPT.relative_to(REPO_ROOT).as_posix()
 _DOCKERFILE_FROM_PYTHON_RE = re.compile(r"^FROM python:(\d+\.\d+)\S*", re.MULTILINE)
+_TASK_MANIFESTS = ("task.yaml", "task.toml")
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -244,11 +251,55 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 def _python_files_matching(pattern: str) -> Iterator[Path]:
-    for path in _REPO_ROOT.glob(pattern):
+    for path in REPO_ROOT.glob(pattern):
         if path.is_dir():
             yield from path.rglob("*.py")
         elif path.suffix == ".py":
             yield path
+
+
+def _image_python_dockerfiles() -> dict[Path, str]:
+    """Map each Dockerfile built ``FROM python:X.Y`` to the lowest ``X.Y`` it names."""
+    images: dict[Path, str] = {}
+    for dirpath, filenames in _walk_repo():
+        for name in filenames:
+            if name != "Dockerfile" and not name.endswith(".Dockerfile"):
+                continue
+            path = Path(dirpath) / name
+            versions = _DOCKERFILE_FROM_PYTHON_RE.findall(path.read_text())
+            if versions:
+                images[path] = min(versions, key=_version_tuple)
+    assert images, f"no `FROM python:X.Y` Dockerfile found under {REPO_ROOT} — the guard is vacuous"
+    return images
+
+
+def _sandbox_tree(dockerfile: Path) -> Path:
+    """The task directory that ships ``dockerfile``, or its own directory outside a task."""
+    for directory in dockerfile.parents:
+        if directory == REPO_ROOT:
+            break
+        if any((directory / manifest).is_file() for manifest in _TASK_MANIFESTS):
+            return directory
+    return dockerfile.parent
+
+
+def _ruff_linted_files(trees: list[Path]) -> set[Path]:
+    listing = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "check",
+            "--show-files",
+            "--force-exclude",
+            *map(str, trees),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return {Path(line) for line in listing.stdout.splitlines() if line.endswith(".py")}
 
 
 def test_the_middleware_proxy_declares_a_sandbox_target_at_or_below_the_floor() -> None:
@@ -264,16 +315,26 @@ def test_the_middleware_proxy_declares_a_sandbox_target_at_or_below_the_floor() 
     )
 
 
-def test_the_coding_harness_example_target_matches_its_image() -> None:
-    pattern = f"{_CODING_HARNESS_ENVIRONMENT}/**"
-    dockerfile = _REPO_ROOT / _CODING_HARNESS_ENVIRONMENT / "Dockerfile"
-    image = _DOCKERFILE_FROM_PYTHON_RE.search(dockerfile.read_text())
-    assert image is not None, f"{dockerfile.relative_to(_REPO_ROOT)}: no `FROM python:X.Y` line"
-    version = per_file_target_versions().get(pattern)
-    assert version == image.group(1), (
-        f"pyproject.toml: [tool.ruff.per-file-target-version] {pattern!r} is {version!r} "
-        f"— expected {image.group(1)!r}, the `FROM python:` of {dockerfile.relative_to(_REPO_ROOT)}"
-    )
+def test_linted_task_image_code_targets_at_most_its_image_python() -> None:
+    images = _image_python_dockerfiles()
+    trees = {dockerfile: _sandbox_tree(dockerfile) for dockerfile in images}
+    linted = _ruff_linted_files(sorted(set(trees.values())))
+    coverage = {
+        pattern: (version, set(_python_files_matching(pattern)))
+        for pattern, version in per_file_target_versions().items()
+    }
+    violations: list[str] = []
+    for dockerfile, image in sorted(images.items()):
+        for path in sorted(p for p in linted if p.is_relative_to(trees[dockerfile])):
+            targets = [version for version, files in coverage.values() if path in files]
+            target = max(targets, key=_version_tuple) if targets else _FLOOR
+            if _version_tuple(target) > _version_tuple(image):
+                violations.append(
+                    f"{path.relative_to(REPO_ROOT)}: ruff lints it as Python {target} but "
+                    f"{dockerfile.relative_to(REPO_ROOT)} runs it on python:{image} — add a "
+                    f"[tool.ruff.per-file-target-version] entry at or below {image}"
+                )
+    assert not violations, "\n".join(violations)
 
 
 def test_every_sandbox_target_names_an_existing_path() -> None:

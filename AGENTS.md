@@ -97,23 +97,16 @@ uv pip list
 
 ### Linting and Formatting
 
-We use `ruff` for linting and `black` plus `ruff format` for formatting Python code. The scope is the Makefile's `LINT_DIRS` (`make lint`, `make lint-fix`, `make format`, `make format-check`):
+We use `ruff` for linting and `black` plus `ruff format` for formatting Python code. The scope is the Makefile's `LINT_DIRS`:
 
 ```bash
-# Check for linting issues
-uv run ruff check tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
-
-# Auto-fix linting issues
-uv run ruff check --fix tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
-
-# Format code
-uv run black tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
-uv run ruff format tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
-
-# Format check (CI)
-uv run black --check tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
-uv run ruff format --check tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
+make lint          # check for linting issues
+make lint-fix      # auto-fix linting issues
+make format        # format code (black, then ruff format)
+make format-check  # format check (CI)
 ```
+
+The dev MCP tools `lint_check`, `lint_fix`, `format_code` and `format_check` run the same commands over the same scope.
 
 ### Testing
 
@@ -289,10 +282,10 @@ Recommended MCP servers for AI agents working on this project:
 
 - `pyproject.toml` for project configuration
 - `uv` for package management
-- `ruff` for linting and formatting
+- `ruff` for linting; `black` + `ruff format` for formatting
 - `pytest` for testing
 
-The runtime Python version is single-sourced in `.python-version`; changing it propagates to dev, CI, the devcontainer (via uv), and all runtime Docker images. Its `major.minor` is also the declared install floor: every package's `requires-python` is `>=` that version and its version classifiers name only it. It is also the ruff, black and mypy target (`[tool.ruff].target-version`, `[tool.black].target-version`, `[tool.mypy].python_version`); code that runs on a task image's `python3` instead carries a lower `[tool.ruff.per-file-target-version]` entry. A canonical guard (`tests/canonical/test_python_version_single_source.py`) fails CI if a workflow or runtime Dockerfile hardcodes a version, or if a package's `requires-python`, its classifiers, a documented TOML snippet, or a lint/type-check target diverge from the floor.
+The runtime Python version is single-sourced in `.python-version`; changing it propagates to dev, CI, the devcontainer (via uv), and all runtime Docker images. Its `major.minor` is also the declared install floor: every package's `requires-python` is `>=` that version and its version classifiers name only it. It is also the ruff, black and mypy target (`[tool.ruff].target-version`, `[tool.black].target-version`, `[tool.mypy].python_version`); code that runs on a task image's `python3` instead carries a `[tool.ruff.per-file-target-version]` entry at or below the `FROM python:X.Y` of the task's Dockerfile. A canonical guard (`tests/canonical/test_python_version_single_source.py`) fails CI if a workflow or runtime Dockerfile hardcodes a version, or if a package's `requires-python`, its classifiers, a documented TOML snippet, or a lint/type-check target diverge from the floor, or if ruff lints task-image code above its image's Python.
 
 **Don't suppress warnings** — update code to use actual functionality instead.
 

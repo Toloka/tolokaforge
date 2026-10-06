@@ -609,6 +609,7 @@ extend-exclude = [
 [tool.ruff.per-file-target-version]
 "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/middleware_proxy.py" = "py310"
 "examples/native/coding_harness/environment/**" = "py311"
+"tests/data/terminal_bench_tasks/**" = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]

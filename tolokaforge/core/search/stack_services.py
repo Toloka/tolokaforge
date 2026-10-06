@@ -198,7 +198,7 @@ class StackServices:
                     f"API version {STACK_SERVICES_API_VERSION} declares for it"
                 )
 
-    def get[Handle](self, service: StackService[Handle]) -> Handle:
+    def get[H](self, service: StackService[H]) -> H:
         """This runner's handle on ``service``, typed by its Protocol.
 
         Raises:
@@ -211,4 +211,4 @@ class StackServices:
         handle = getattr(self, service.name)
         if handle is None:
             raise StackServiceUnavailableError(service)
-        return cast(Handle, handle)
+        return cast(H, handle)
