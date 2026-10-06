@@ -328,6 +328,21 @@ def test_per_task_metrics_round_trip_with_none_cost() -> None:
     _round_trip(PerTaskMetrics, payload)
 
 
+def test_per_task_metrics_round_trip_with_harness_entry_and_execution_mode() -> None:
+    """A mixed-run row carries the owning ``harness_entry`` and the trial's
+    ``execution_mode``. The model is ``extra="forbid"``, so the row would be
+    rejected if the fields were not declared — this proves they are."""
+    payload = calculate_task_metrics([_make_trajectory(trial_index=0)])
+    payload = _augment_task_metrics(payload, task_id="task-harness")
+    payload["harness_entry"] = "terminal_bench"
+    payload["execution_mode"] = "delegated"
+
+    _round_trip(PerTaskMetrics, payload)
+    model = PerTaskMetrics.model_validate(payload)
+    assert model.harness_entry == "terminal_bench"
+    assert model.execution_mode == "delegated"
+
+
 # ---------------------------------------------------------------------------
 # AggregateMetrics + RunAggregate
 # ---------------------------------------------------------------------------

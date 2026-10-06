@@ -391,7 +391,7 @@ tolokaforge run --config examples/native/tool_use/run_config.yaml --dry-run
 
 ### What it does
 
-1. Loads the run config (same `load_effective_run_config` path a real run takes) and applies every CLI override — `--user-model`, `--judge-model`, `--runtime`, `--workers`, `--cost-limit`, `--time-limit`, `--presets-file` — identically to a real invocation. A malformed `--time-limit=30xyz` fails with the same `click.BadParameter` diagnostic under `--dry-run` as under a real run.
+1. Loads the run config (same `load_effective_run_config` path a real run takes) and applies every CLI override — `--user-model`, `--judge-model`, `--runtime`, `--workers`, `--cost-limit`, `--time-limit`, `--presets-file`, `--output-dir` — identically to a real invocation. A malformed `--time-limit=30xyz` fails with the same `click.BadParameter` diagnostic under `--dry-run` as under a real run.
 2. Constructs the adapter and enumerates every declared task. **Skips the TypeSense preflight** `Orchestrator.load_tasks()` performs — dry-run never starts Docker.
 3. For the first three tasks (fixed cap; more never needed in practice), materialises the first-turn wire request: system prompt, first user message, sanitized OpenAI-shape tool spec, and resolved model / judge / runtime identifiers.
 4. Renders one `rich.panel.Panel` per sample on stderr through the shared `console`.
@@ -783,6 +783,8 @@ A failure that produces **no run** — bad config, orchestrator raise, zero task
 The grading-completeness gate is the one non-zero exit that **does** print the run directory: the run happened, wrote every artifact and emitted its path, and the exit code reports separately that it could not grade everything it measured — see [§ Run and worker exit codes](#run-and-worker-exit-codes). Suppressing the path there would make the incomplete run harder to inspect than the complete one.
 
 The emitted path is `Path.resolve()`'d: symlinks are canonicalised and the line is always absolute, regardless of the caller's cwd or how the config expressed `evaluation.output_dir`.
+
+`--output-dir <path>` on `tolokaforge run` overrides `evaluation.output_dir` for the run, so the report (`aggregate.json`, `metadata_slices.json`, `per_task_metrics.json`) lands under `<path>`. The flag beats the config value; omitting it keeps `evaluation.output_dir`, or the `results/run_<timestamp>` default when the config sets none. Precedence mirrors `--workers` (flag > config). The standalone orchestrator wrapper (`scripts/docker/run-orchestrator.sh`) uses it to target the mounted output directory — see [docs/ORCHESTRATOR_IMAGE.md](ORCHESTRATOR_IMAGE.md).
 
 The shell idiom captures the artifact:
 

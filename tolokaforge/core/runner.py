@@ -1,11 +1,16 @@
 """Trial runner with agent-user loop"""
 
+import base64
+import binascii
+import io
 import shlex
+import tarfile
 import time
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from tolokaforge_coding_harnesses.native_log import NATIVE_LOG_USAGE_SOURCE
 from tolokaforge_coding_harnesses.stdout_telemetry import (
     HarnessStdoutTelemetry,
     parse_harness_stdout,
@@ -51,6 +56,7 @@ from tolokaforge.core.models import (
     CostByRoleMetrics,
     CostByRoleModelMetrics,
     FirstUserMessageSource,
+    HarnessInnerCounts,
     Message,
     MessageRole,
     Metrics,
@@ -87,7 +93,16 @@ from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 if TYPE_CHECKING:
+    from tolokaforge_coding_harnesses.native_log import HarnessNativeLogCounts
+
     from tolokaforge.observability.observer import LoopObserver
+
+# An adapter's native-log ingest, as the conductor hands it to ``run_harness``:
+# the trial's staged native artifacts in, the harness's own plain-int counts
+# out (or ``None``). Boundary-safe counts rather than the engine's ``Usage`` —
+# the adapter is answered by a harness package that imports no engine type — so
+# the runner builds :class:`HarnessInnerCounts` from them itself.
+HarnessNativeLogIngest = Callable[[str, Mapping[str, bytes]], "HarnessNativeLogCounts | None"]
 
 _HARNESS_USAGE_READ_CALL_ID_PREFIX = "harness-usage:"
 """Call-id prefix for the engine's own read of a harness trial's usage records.
@@ -95,6 +110,13 @@ _HARNESS_USAGE_READ_CALL_ID_PREFIX = "harness-usage:"
 Distinct from the ``harness:`` id the CLI's own exec carries, so the runner-side
 execution record the read unavoidably leaves is attributable to the engine
 rather than readable as a second thing the agent did."""
+
+_HARNESS_ARTIFACT_READ_CALL_ID_PREFIX = "harness-artifacts:"
+"""Call-id prefix for the engine's own read of a harness trial's native artifacts.
+
+Distinct from both the CLI's ``harness:`` exec id and the ``harness-usage:``
+read id, so the runner-side execution record this copy unavoidably leaves is
+attributable to the engine's artifact preservation rather than to the agent."""
 
 _USAGE_READ_DETAIL_CHARS = 200
 """How much of a failed usage read's output the log carries.
@@ -335,6 +357,22 @@ class TrialRunner:
         # nothing, read back out of the trial container while it was still up.
         self._harness_stdout_telemetry: HarnessStdoutTelemetry | None = None
         self._harness_usage_records: str | None = None
+        # Staged by :meth:`run_harness` when the run preserves native artifacts:
+        # a ``relative path -> bytes`` mapping of the harness's own output, read
+        # out of the trial container while it was still up (the runtime deletes
+        # the bind-mounts at teardown). ``None`` on every other way a trial is
+        # driven and whenever no native paths were requested. The conductor
+        # reads it off :attr:`harness_native_artifacts` to write the trial's
+        # ``native/`` directory.
+        self._harness_native_artifacts: dict[str, bytes] | None = None
+        # Set by :meth:`run_harness` when the caller passed an ingest callable:
+        # the resolved adapter's :meth:`BaseAdapter.ingest_native_logs`, called
+        # at trial end over the staged native artifacts to recover the harness's
+        # own inner turn / token counts. ``None`` on every other way a trial is
+        # driven, and whenever the run does not preserve native artifacts — the
+        # fold then no-ops. The lowest-precedence telemetry tap: stdout totals
+        # and wire usage both win over it.
+        self._harness_native_log_ingest: HarnessNativeLogIngest | None = None
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
         self._effective_system_prompt: str | None = None
@@ -375,6 +413,17 @@ class TrialRunner:
         returns and persisted to ``prompts.yaml``.
         """
         return self._effective_system_prompt
+
+    @property
+    def harness_native_artifacts(self) -> dict[str, bytes] | None:
+        """The harness's own artifacts, as ``relative path -> bytes``.
+
+        Populated by :meth:`run_harness` only when the caller asked for native
+        artifacts to be preserved and the trial container held some; ``None``
+        otherwise. The conductor reads this after ``run_harness`` returns and
+        writes it under the trial's ``native/`` directory.
+        """
+        return self._harness_native_artifacts
 
     @property
     def user_system_prompt(self) -> str | None:
@@ -665,6 +714,8 @@ class TrialRunner:
         timeout_s: float,
         harness: str = "",
         usage_log_container_path: str | None = None,
+        native_artifact_container_paths: Sequence[str] | None = None,
+        ingest_native_logs: HarnessNativeLogIngest | None = None,
     ) -> Trajectory:
         """Run the trial as a single invocation of a coding-harness CLI.
 
@@ -698,6 +749,20 @@ class TrialRunner:
                 the container is still up. ``None`` — and a file the proxy
                 never wrote — leave the token accounting to what the CLI
                 printed.
+            native_artifact_container_paths: In-container paths (files or
+                directories) whose bytes are preserved as the harness's native
+                artifacts, read back the moment the CLI's exec returns while the
+                container is still up. ``None`` or empty preserves nothing — the
+                caller passes paths only when the run's output format keeps
+                native artifacts, so staging and the preserve decision stay with
+                the caller and this method just copies what it is handed.
+            ingest_native_logs: The resolved adapter's
+                :meth:`~tolokaforge.adapters.base.BaseAdapter.ingest_native_logs`,
+                called at trial end over the staged native artifacts to recover
+                the harness's own inner turn / token counts. ``None`` — and a
+                trial that staged no artifacts — leave the counts as the CLI's
+                stdout and the wire supplied them; the ingest is the lowest
+                precedence of the three, filling only what neither already did.
         """
         trial_id = f"{self.task_id}:{self.trial_index}"
         with trial_id_scope(trial_id):
@@ -750,6 +815,14 @@ class TrialRunner:
                 self._harness_usage_records = self._read_container_usage_records(
                     tool_name, usage_log_container_path
                 )
+            if native_artifact_container_paths:
+                self._harness_native_artifacts = self._read_container_artifacts(
+                    tool_name, native_artifact_container_paths
+                )
+            # Stashed for the trial-end fold; the ingest runs after the stdout
+            # and wire taps so it can defer to them (see
+            # :meth:`_apply_harness_native_log_ingest`).
+            self._harness_native_log_ingest = ingest_native_logs
             self.messages.append(
                 Message(
                     role=MessageRole.ASSISTANT,
@@ -1055,22 +1128,27 @@ class TrialRunner:
     def _apply_harness_telemetry(self) -> None:
         """Replace the single-tool-call accounting with the harness's own.
 
-        Two taps can report a harness trial's tokens, and **the CLI's printed
-        totals win**: the wire records fill in only where the CLI reported no
-        token counts at all.
+        Three taps can report a harness trial's turns and tokens, applied
+        highest precedence first so each later one fills only what the earlier
+        ones left: the CLI's printed stdout totals, then the token usage a
+        request middleware measured on the wire, then the counts recovered from
+        the harness's own native logs. **The CLI's printed totals win**, the
+        wire fills tokens only where the CLI reported none, and the native-log
+        ingest fills turns and tokens only where neither did — so no two taps
+        ever double-count the same quantity.
 
-        The other order is defensible — arguably better — for *spend*. A
-        request middleware sits on the traffic, so it counts the retries a
-        CLI's end-of-run summary may quietly fold away, which makes it the
-        truer figure for what a run cost. It is not preferred here because the
-        two sources cannot both appear: ``kimi-code`` is the only shipped
-        harness routed through a proxy, and it is also the only one that prints
-        no usage. So the precedence below never actually arbitrates, and
-        reversing it would change nothing observable while a merge policy for
-        an impossible overlap would be untestable code.
+        The stdout-over-wire order is defensible to reverse for *spend* — a
+        proxy on the wire counts the retries a CLI's end-of-run summary may
+        quietly fold away — but the two cannot both appear today: ``kimi-code``
+        is the only shipped harness routed through a proxy, and it is also the
+        only one that prints no usage. The native-log tap is the fallback for a
+        harness whose CLI prints nothing and routes through no proxy, and it
+        reads only artifacts a run already preserved, so it costs an unpreserved
+        run nothing.
         """
         self._apply_harness_stdout_telemetry()
         self._apply_harness_wire_usage()
+        self._apply_harness_native_log_ingest()
 
     def _apply_harness_stdout_telemetry(self) -> None:
         """Replace the single-tool-call accounting with what the CLI reported.
@@ -1209,6 +1287,98 @@ class TrialRunner:
             return None
         return result.output or None
 
+    def _read_container_artifacts(
+        self, tool_name: str, container_paths: Sequence[str]
+    ) -> dict[str, bytes] | None:
+        """Copy native-artifact paths out of the trial container via *tool_name*.
+
+        Generalises :meth:`_read_container_usage_records` from one text file to a
+        set of files or directories whose bytes are the harness's own artifacts.
+        Each path is archived with ``tar`` rooted at ``/`` so its member names
+        keep the container subtree (``/logs`` → ``logs/verifier/reward.txt``),
+        base64-encoded to survive the text-only exec seam, and expanded into a
+        ``relative path -> bytes`` mapping the conductor writes under the trial's
+        ``native/`` directory.
+
+        The read has to happen while the container is up, for the same reason
+        the usage read does: the runtime deletes the per-trial bind-mounts at
+        teardown, so there is no host path to open afterwards.
+
+        Preserving artifacts may not cost a trial its result, so every failure
+        mode — an absent path, an executor that raised, a container already
+        gone, a corrupt archive — skips that one path and leaves the rest,
+        returning ``None`` when nothing could be read. This is the same
+        blanket-except contract :meth:`_read_container_usage_records` uses, and
+        the reason both arms log what happened.
+        """
+        collected: dict[str, bytes] = {}
+        for container_path in container_paths:
+            archive = self._read_one_container_path(tool_name, container_path)
+            if archive is not None:
+                collected.update(archive)
+        return collected or None
+
+    def _read_one_container_path(
+        self, tool_name: str, container_path: str
+    ) -> dict[str, bytes] | None:
+        """One path's ``tar | base64`` read, expanded to ``member -> bytes``.
+
+        ``None`` on any failure — absence must not cost the trial — with the
+        reason logged so a missing artifact is debuggable rather than silent.
+        """
+        relative = container_path.lstrip("/")
+        if not relative:
+            return None
+        command = f"tar -cf - -C / {shlex.quote(relative)} | base64"
+        try:
+            result = self.tool_executor.execute(
+                tool_name,
+                {"command": command},
+                call_id=f"{_HARNESS_ARTIFACT_READ_CALL_ID_PREFIX}{self.task_id}:{self.trial_index}",
+            )
+        except Exception as exc:  # noqa: BLE001 — artifact copy never fails a trial
+            self.logger.info(
+                "Harness native artifacts could not be read from the container",
+                path=container_path,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        if resolve_tool_status(result) is not ToolExecutionStatus.SUCCESS:
+            self.logger.info(
+                "Harness native artifacts are absent from the container",
+                path=container_path,
+                detail=resolve_tool_output(result)[:_USAGE_READ_DETAIL_CHARS],
+            )
+            return None
+        return self._expand_tar_base64(container_path, result.output or "")
+
+    def _expand_tar_base64(self, container_path: str, encoded: str) -> dict[str, bytes] | None:
+        """Decode a base64 ``tar`` stream into ``member path -> bytes``.
+
+        Only regular-file members are kept; directory members carry no bytes.
+        A decode or archive error returns ``None`` — a truncated copy is worth
+        reporting, never worth failing a trial over.
+        """
+        try:
+            raw = base64.b64decode(encoded)
+            members: dict[str, bytes] = {}
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+                for member in archive.getmembers():
+                    if not member.isfile():
+                        continue
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        continue
+                    members[member.name] = extracted.read()
+        except (binascii.Error, ValueError, tarfile.TarError, OSError) as exc:
+            self.logger.info(
+                "Harness native artifacts could not be unpacked",
+                path=container_path,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return members or None
+
     def _apply_harness_wire_usage(self) -> None:
         """Fold in the token usage a request middleware measured on the wire.
 
@@ -1280,6 +1450,58 @@ class TrialRunner:
         priced = self._price_harness_tokens(self.metrics.usage)
         if priced is not None:
             self.metrics.cost_usd = priced
+
+    def _apply_harness_native_log_ingest(self) -> None:
+        """Fold in the inner counts the harness left in its own native logs.
+
+        The lowest-precedence tap, and a no-op on every trial but a harness one
+        whose run preserved native artifacts *and* whose adapter was handed in to
+        recover from them. A trial that staged nothing, or ran with no ingest
+        callable, leaves the accounting exactly as the earlier taps set it.
+
+        Precedence is enforced here, not in the parse: ``turns`` is filled only
+        when the CLI printed no stdout totals (the wire tap never touches turns),
+        and ``usage`` only when neither stdout nor the wire already supplied it —
+        so the three taps never double-count. When this tap does supply the
+        tokens it stamps :data:`NATIVE_LOG_USAGE_SOURCE`, so the trial reads as
+        harness-reported in the three-state attribution rather than as an
+        engine-measured one, and prices them through the same
+        :meth:`_price_harness_tokens` the other taps use — one pricing authority
+        across every arm of a comparison.
+
+        The adapter's ingest is defensive and raises on nothing, but the call is
+        wrapped regardless: recovering native logs may never cost a trial its
+        already-graded result, the same contract the container reads honour.
+        """
+        ingest = self._harness_native_log_ingest
+        artifacts = self._harness_native_artifacts
+        if ingest is None or not artifacts:
+            return
+        try:
+            counts = HarnessInnerCounts.from_native_log_counts(ingest(self.task_id, artifacts))
+        except Exception as exc:  # noqa: BLE001 — telemetry never fails a trial
+            self.logger.info(
+                "Harness native-log ingest could not recover inner counts",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        if counts is None:
+            return
+
+        stdout_telemetry = self._harness_stdout_telemetry
+        # ``turns`` yields to the CLI's own count; the wire tap never set it.
+        if counts.turns is not None and stdout_telemetry is None:
+            self.metrics.turns = counts.turns
+
+        # ``usage`` yields to both the CLI's stdout tokens and the wire's.
+        stdout_set_usage = stdout_telemetry is not None and stdout_telemetry.has_token_counts
+        wire_set_usage = self.metrics.harness_usage_source is not None
+        if counts.usage is not None and not stdout_set_usage and not wire_set_usage:
+            self.metrics.harness_usage_source = NATIVE_LOG_USAGE_SOURCE
+            self.metrics.usage = counts.usage
+            priced = self._price_harness_tokens(self.metrics.usage)
+            if priced is not None:
+                self.metrics.cost_usd = priced
 
     def _price_harness_tokens(self, usage: Usage) -> float | None:
         """Our own price for *usage*, or ``None`` when the model is unpriceable.

@@ -41,6 +41,7 @@ from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
@@ -119,10 +120,12 @@ def _trial_spec_json(trial_id: str, *, combine_method: str) -> str:
     to apply independently. Writing the value onto the serialised payload puts it on
     the wire the runner decodes, so ``RegisterTrial`` is what answers for it.
     """
+    task_desc = TaskDescription.model_validate(_task_description())
     spec = TrialSpec(
         trial_id=trial_id,
         run_id=f"{_TASK_ID}_run",
-        task=TaskDescription.model_validate(_task_description()),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
         env_endpoints=EnvEndpoints(
             db_url="http://db.test:8000",

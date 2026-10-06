@@ -168,6 +168,7 @@ def _register_pack_trial(pack: ParityPack) -> None:
     never executed under this fixture, only graded, so the field satisfies
     TrialSpec's non-null requirement without dialling any LLM.
     """
+    from tolokaforge.core.execution_mode import select_execution_mode
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
     from tolokaforge.core.trial import EnvEndpoints, TrialSpec
@@ -176,6 +177,7 @@ def _register_pack_trial(pack: ParityPack) -> None:
         trial_id=pack.trial_id,
         run_id="parity-rc-smoke",
         task=pack.task_description,
+        execution_mode=select_execution_mode(pack.task_description.metadata),
         agent_model_config=ModelConfig(provider="openai", name="gpt-4o-mini"),
         judge_model_config=pack.judge_model_config,
         env_endpoints=EnvEndpoints(

@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.models import ModelConfig, Trajectory
 from tolokaforge.runner.models import (
     EnvironmentManifest,
@@ -74,7 +75,21 @@ class TrialSpec(BaseModel):
 
     # ---- Identity --------------------------------------------------------
     trial_id: str
-    """Canonical ``"{task_id}:{trial_index}"`` identifier for this trial."""
+    """Opaque display label for this trial, built by
+    :func:`tolokaforge.core.trial_identity.format_trial_id`:
+    ``"{entry}:{task_id}:{trial_index}"`` for a harness entry,
+    ``"{task_id}:{trial_index}"`` for a single-adapter run. Compared for
+    equality and shown in logs; never parsed back into its parts (a
+    ``task_id`` may contain a colon). Identity is read from ``entry`` /
+    ``task_id`` / ``trial_index`` below."""
+
+    task_id: str = ""
+    """The task this trial runs. Authoritative identity field; the producer
+    sets it alongside ``trial_index`` and ``entry`` so no consumer parses
+    ``trial_id``."""
+
+    trial_index: int = 0
+    """0-based repeat index of this trial within ``(entry, task_id)``."""
 
     run_id: str = Field(min_length=1)
     """The orchestrator-level run this trial belongs to. Set by the
@@ -89,9 +104,26 @@ class TrialSpec(BaseModel):
     """Identifier of the worker process that owns this attempt, or ``None``
     in single-process orchestrator mode."""
 
+    entry: str = ""
+    """The harness entry this trial belongs to, in a multi-harness run.
+
+    The conductor resolves the owning adapter once per trial via
+    ``adapter.for_entry(entry)``. Empty (the default) is the single-adapter
+    case: ``BaseAdapter.for_entry`` ignores the name and returns the one
+    adapter, so the single-adapter path is unchanged. The entry is part of
+    trial identity: it keys the ``trial_id`` label, the ``trials/<entry>/…``
+    output path, and the durable resume/queue state, so the same ``task_id``
+    can run under two entries in one run."""
+
     # ---- The task itself -------------------------------------------------
     task: TaskDescription
     """The task pack the trial executes."""
+
+    execution_mode: ExecutionMode
+    """How this trial is driven, classified once by the producer from the
+    task's ``agent_harness_command`` metadata. Required: every producer
+    classifies, so no consumer re-derives it. The conductor reads this field
+    to stamp trial identity rather than reclassifying the metadata."""
 
     # ---- Per-trial execution parameters ----------------------------------
     agent_model_config: ModelConfig
@@ -128,7 +160,8 @@ class TrialResult(BaseModel):
     """The result of a trial — ``Trajectory`` plus the canonical trial id and worker id."""
 
     trial_id: str
-    """Canonical ``"{task_id}:{trial_index}"`` identifier."""
+    """Opaque trial label, as built by
+    :func:`tolokaforge.core.trial_identity.format_trial_id`."""
 
     trajectory: Trajectory
     """Status, grade, metrics, message trace, tool log, final env state."""

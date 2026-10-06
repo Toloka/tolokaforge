@@ -1,0 +1,60 @@
+# Run the vendored Terminal-Bench 2.0 task through the real Harbor harness.
+#
+# This DELEGATES execution to Harbor: the trial's agent step is a single
+# `harbor run` command, and Harbor drives its own Terminus 2 agent and verifier
+# inside a sandbox it builds itself. tolokaforge provisions the trial and grades
+# from the reward Harbor writes to its native result.json. (To run the same TB2
+# task on tolokaforge's OWN loop instead, use the terminal_bench adapter — see
+# examples/terminal_bench/.)
+#
+# Requirements:
+#   - A running Docker daemon (Harbor shells `docker compose` on the host socket).
+#   - The adapter installed: pip install "tolokaforge[harbor]"
+#   - A locally-built runner image (the runner shells `docker exec`): --image-source build
+#   - A provider key for Terminus 2, forwarded via params.agent_provider_env.
+#
+# Invoke:
+#   scripts/with_env.sh uv run tolokaforge run \
+#     --config examples/harbor/run_harbor.yaml --image-source build
+#
+# Keyless free smoke: set params.agent to "oracle", drop `harness`/`name` on
+# models.agent back to any placeholder, and drop params.agent_provider_env. The
+# `oracle` agent runs the task's reference solution
+# (examples/harbor/write-release-note/solution/solve.sh) with no provider key, so
+# the verifier scores 1.0 — a $0 end-to-end wiring check.
+
+models:
+  # Delegated-adapter model surface (same as the inspect_ai adapter): `harness`
+  # selects the Harbor adapter's model path and `name` is the `provider/model`
+  # the orchestrator lifts into `harbor run -m <model>` (Terminus 2's model).
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4.6"  # illustrative
+    harness: "harbor"
+  user:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  queue_backend: sqlite
+  strict_task_load: true
+  timeouts:
+    # The task's own [agent] timeout_sec is 120; keep the episode budget above it.
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/harbor"
+  tasks_glob: "write-release-note/task.toml"
+  output_dir: "results/harbor/write-release-note"
+  harness_adapter:
+    type: "harbor"
+    params:
+      harbor_tasks_dir: "examples/harbor"
+      task_ids: ["write-release-note"]
+      agent: "terminus-2"
+      agent_provider_env:
+        OPENROUTER_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      sandbox_backend: "docker"

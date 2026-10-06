@@ -1060,9 +1060,10 @@ def cleanup_partial_materialisation(compose: DockerCompose | None, temp_dir: Pat
 class LogCaptureConfig:
     """Per-run policy for capturing per-service compose logs on trial failure.
 
-    ``output_root`` is the run's ``output_dir``; capture writes under
-    ``output_root/trials/<task>/<idx>/services/``. ``tail`` is the
-    ``docker compose logs --tail`` bound. ``on_success`` is the debug escape
+    ``output_root`` is the run's ``output_dir``; capture writes under the
+    trial's bundle dir ``output_root/trials/<entry>/<task>/<idx>/services/``
+    (empty entry → the two-level ``trials/<task>/<idx>/services/``). ``tail`` is
+    the ``docker compose logs --tail`` bound. ``on_success`` is the debug escape
     hatch that captures logs for successful trials too.
     """
 
@@ -1133,15 +1134,18 @@ def _fetch_service_logs(
     return result.stdout
 
 
-def trial_services_dir(output_root: Path, trial_id: str) -> Path:
-    """Return the per-trial ``services/`` capture dir for ``trial_id``.
+def trial_services_dir(output_root: Path, entry: str, task_id: str, trial_index: int) -> Path:
+    """Return the per-trial ``services/`` capture dir for a trial.
 
-    ``trial_id`` is the canonical ``"{task_id}:{trial_index}"`` id; the tail
-    ``:index`` becomes the trial subdir, matching the conductor's
-    ``output_root/trials/<task_id>/<index>/`` bundle layout.
+    Anchored on the conductor's bundle layout via
+    :func:`tolokaforge.core.trial_identity.trial_output_subpath`:
+    ``output_root/trials/<entry>/<task_id>/<index>/services/`` under a harness
+    entry, ``output_root/trials/<task_id>/<index>/services/`` for a
+    single-adapter run (empty ``entry``).
     """
-    task_id, trial_index = trial_id.rsplit(":", 1)
-    return output_root / "trials" / task_id / trial_index / "services"
+    from tolokaforge.core.trial_identity import trial_output_subpath
+
+    return output_root / "trials" / trial_output_subpath(entry, task_id, trial_index) / "services"
 
 
 def run_services_dir(output_root: Path) -> Path:

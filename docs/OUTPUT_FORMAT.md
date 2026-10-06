@@ -32,6 +32,7 @@ bumped and this document is updated in the same commit.
             ├── logs.yaml                   ← structured trial logs (through the redaction policy)
             ├── prompts.yaml                ← agent + user-sim + judge system prompts
             ├── tools_schemas.yaml          ← post-policy tool list (through the redaction policy)
+            ├── native/                     ← the harness's own artifacts, subtree kept (output.format native|both only)
             └── services/                   ← per-service compose logs (on trial-body or graded failure)
                 ├── {service}.log
                 └── _capture.yaml           ← manifest (provision-failure path only)
@@ -380,6 +381,8 @@ agent and user-simulator system prompts live in
 task_id: "051fa6cb-..."
 trial_index: 0
 simulator_schema_version: 4
+harness_entry: null                                   # the `harnesses` entry this trial ran under; null for a single-adapter run
+adapter_type: "native"                                # the resolved adapter's registered type; null on bundles written before the field
 start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
@@ -430,6 +433,8 @@ user_reply_guard_events:                              # [] on a trial no detecto
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
 | `simulator_schema_version` | `int` | always; [§ Schema Version Stamps](#schema-version-stamps) carries the current value | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. |
+| `harness_entry` | `str` or `null` | non-null on a [multi-harness run](CONFIG.md#harnesses--run-multiple-adapters-in-one-run) | The `harnesses` entry this trial ran under. `null` for a single-adapter run, and for a bundle written before the field existed. Lets an analyst partition a multi-harness run's trials by entry. It is part of the trial identity: it prefixes the `trial_id` label and is a segment of the per-trial output path (`trials/<entry>/<task_id>/<idx>/`), which drops the entry segment for a single-adapter run. |
+| `adapter_type` | `str` or `null` | set at trial end from the resolved adapter | The registered type of the adapter that ran the trial (e.g. `"native"`). `null` only on bundles written before the field existed. |
 | `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers the first user message | Where the opening user turn came from. It is message index 0 unless the agent's opening line (`first_agent_message`) or a user's tool steps come first. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. A bootstrap the reply guard *refused* is one way to reach the first of those: it leaves the source `null` **and** records a `user_reply_guard_events` entry at the opening's `message_index` (0, or 1 after the agent's opening line) with `outcome: refused`, and that pair is the signature of a guard-refused opening. |
 | `simulation_steps`, `environment_errors` | nonnegative integers, when configured | an opt-in half-duplex simulation budget ran | The final participant/ENV transition count and cumulative completed environment-error count. A batch of tool replies is one step, although multiple replies can each increase `environment_errors`. Both fields are absent on trials without this budget. |
 | `messages[*].tool_status` | `ToolExecutionStatus`, when known | a TOOL message was emitted | The typed tool outcome. `environment_error` is a completed MCP reply with `isError: true`; its `content` is the raw environment text, even when it starts with `Error: `. Older messages without this field retain the legacy prefix-based trace fallback. |
@@ -669,6 +674,35 @@ Each `services.<name>` entry:
 DSN passwords are redacted and host mount sources are never recorded, so
 the block is safe to share and stable across hosts.
 
+## `trials/{task_id}/{trial_index}/native/` — the harness's own artifacts
+
+Written only when `output.format` is `native` or `both` (see
+[CONFIG.md](CONFIG.md) § `output.format`), and only for a trial that ran under a
+delegated harness that produced native artifacts.
+The engine-loop path produces none, and a harness whose adapter names no native
+paths produces none, so those trials write no `native/` directory and their
+bundle is byte-for-byte the normalised one — the gate is the format and whether
+anything was staged, never the format alone.
+
+The harness's own files are copied out of the trial container while it is still
+up (the runtime deletes the per-trial bind-mounts at teardown, so there is no
+host path to read afterwards) and written here keeping each file's own subtree:
+a `terminal_bench` trial's `/logs/verifier/reward.txt` and `/logs/agent/…` land
+at `native/logs/verifier/reward.txt` and `native/logs/agent/…`. The normalised
+bundle beside `native/` is unchanged, so `native` and `both` are the full
+tolokaforge bundle **plus** this directory, and `tolokaforge` omits it.
+
+These are the harness's artifacts verbatim; the engine neither parses nor
+redacts them on the way to disk, with one read-only exception. When the harness
+CLI printed no turn or token totals of its own and routed through no request
+middleware, the engine reads the agent-session logs here to recover its inner
+turn count and token usage, and folds those into the trial's `metrics.yaml`
+labelled as harness-reported (`harness_usage_source: native_log`) rather than
+engine-measured — the lowest-precedence of the three telemetry taps (see
+§ `metrics.yaml`). That recovery never alters the preserved bytes, and a log it
+cannot read costs the trial nothing: the counts simply stay as the other taps
+left them.
+
 ## `trials/{task_id}/{trial_index}/metrics.yaml`
 
 `usage` is a nested block that carries the full
@@ -719,29 +753,39 @@ made none. A harness whose CLI prints no totals keeps the artefact shape and a
 `null` dialect, so "not measured" is never reported as a measured zero.
 
 `harness_usage_source` names the **non-stdout tap** `usage` and `cost_usd` were
-measured at — `"middleware_proxy"` today — and is `null` everywhere else. Some
-CLIs print no token counts at all (`kimi-code` prints none), so their tokens
-are recovered from the provider traffic: the request middleware the harness
-routes through records one usage block per provider response, and those records
-sum to one per-trial total, priced through the same table. **The CLI's printed
-totals win where both exist**, and the wire records fill in only where the CLI
-reported no token counts. The other order is defensible for spend — a proxy on
-the wire counts retries a CLI's end-of-run summary may fold away — but the two
-cannot both appear today: `kimi-code` is both the only proxied harness and the
-only one that prints no usage, so the precedence never arbitrates. This field is
-complementary to `harness_stdout_dialect`, not parallel: that one names which
-CLI grammar was parsed and is non-null whenever a CLI printed anything at all
-(turns included), while this one names which tap measured the tokens when no CLI
-did. So a stdout-sourced usage block leaves it `null`. Read together: dialect
-set and this `null` means the tokens (if any) are the CLI's own; this set means
-they are the wire's; both `null` means they are the engine's own. Absence is
-routine and silent — a harness with no middleware, or a CLI that made no
-provider call, leave the trial's accounting exactly as it was, and a malformed
-record is skipped rather than failing the trial. The records are read back out
-of the trial container while it is still up, because the runtime mounts the
-directory they are written into from a per-trial context copy it deletes at
-teardown; that read is engine instrumentation and is never part of `tool_calls`
-or [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
+measured at — `"middleware_proxy"` (the request-middleware wire) or
+`"native_log"` (the harness's own agent-session logs) — and is `null` everywhere
+else. Some CLIs print no token counts at all (`kimi-code` prints none), so their
+tokens are recovered elsewhere: the request middleware the harness routes
+through records one usage block per provider response, and those records sum to
+one per-trial total; failing that, a harness whose logs this run preserved (see
+§ `native/`) carries its own turn and token totals in those logs, read back and
+folded in. Both are priced through the same table. **The three taps apply
+highest precedence first — the CLI's stdout totals, then the wire usage, then
+the native logs — so each later one fills only what the earlier left, and no two
+double-count.** The stdout-over-wire order is defensible to reverse for spend —
+a proxy on the wire counts retries a CLI's end-of-run summary may fold away —
+but the two cannot both appear today: `kimi-code` is both the only proxied
+harness and the only one that prints no usage, so that pair never arbitrates;
+the native-log tap is the fallback for a harness whose CLI prints nothing and
+routes through no proxy, and it reads only logs a run already preserved. This
+field is complementary to `harness_stdout_dialect`, not parallel: that one names
+which CLI grammar was parsed and is non-null whenever a CLI printed anything at
+all (turns included), while this one names which tap measured the tokens when no
+CLI did. So a stdout-sourced usage block leaves it `null`. Read together:
+dialect set and this `null` means the tokens (if any) are the CLI's own; this
+set means they are the wire's or the native logs'; both `null` means they are
+the engine's own. A native-log trial that recovered only a turn count (no
+tokens) folds that count into `turns` and leaves this `null`, since no tokens
+were measured. Absence is routine and silent — a harness with no middleware, a
+CLI that made no provider call, a run that preserved no native output — all
+leave the trial's accounting exactly as it was, and a malformed record is
+skipped rather than failing the trial. The wire records are read back out of the
+trial container while it is still up, because the runtime mounts the directory
+they are written into from a per-trial context copy it deletes at teardown; the
+native logs are the same bytes written under `native/`. Either read is engine
+instrumentation and is never part of `tool_calls` or
+[`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
 `pricing_basis` and `pricing_key` record what that price was computed *from*:
 the four per-million rates the row carried, and the key that actually decided
@@ -2035,13 +2079,40 @@ refusal never buys a trial out of it, whatever the trial terminated as: it is
 evidence about us, and our own defects stay counted. See
 [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
 
+## `metadata_slices.json`
+
+A mapping of slice dimension to `{slice_key: aggregate}`, where each aggregate
+has the same shape as `aggregate.json`'s body. Dimensions:
+
+| Dimension | Keyed by |
+|---|---|
+| `by_benchmark_type` | the task's benchmark type |
+| `by_complexity` | the task's complexity |
+| `by_tag` | each task tag |
+| `by_expected_failure_mode` | each expected failure mode |
+| `by_harness_entry` | the harness bucket: `native` for the engine loop (and for a single-adapter run), a named entry for a delegated harness such as `terminal_bench` |
+| `by_execution_mode` | how the entry's trials were driven (`engine_loop` / `delegated`) |
+| `by_harness_and_task_family` | the flat `"<harness>::<family>"` composite, pairing each harness bucket with each benchmark type |
+
+The three per-harness dimensions carry one bucket on a single-adapter run and
+one per entry on a [multi-harness run](CONFIG.md#harnesses--run-multiple-adapters-in-one-run).
+
+**Comparing harnesses.** Across harness buckets, `success_rate`, `avg_score`,
+`pass@k` and the wall-time averages are directly comparable. `total_cost_usd` and
+`avg_turns` are **per-harness quantities and not directly comparable**: a
+delegated harness's cost is the engine's price for the tokens its CLI reports,
+and its turn count is the CLI's own, so each is defined against a different
+accounting. A run that mixes the engine loop with at least one other harness also
+logs this comparison as a labelled table beside the run's aggregate-results line,
+with the per-harness columns tagged accordingly.
+
 ## Schema Version Stamps
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator's built-in prompt body or the conversation context it sees. The context `actors.user.tool_turns: isolated` builds is identified by `user_actor.tool_turns`, not by this stamp; a non-built-in simulator (`actors.user.simulator`) writes its own prompt, recorded in `prompts.yaml` |
 | `metrics.yaml` | `schema_version` | `7` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `4` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, or the per-role spend plane. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
+| `aggregate.json` | `schema_version` | `5` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, the `outcomes_by_reason` class vocabulary, the per-role spend plane, or the set of `metadata_slices.json` dimensions. A new termination reason only adds an `outcomes_by_reason` key under an existing class, and does not bump it |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |

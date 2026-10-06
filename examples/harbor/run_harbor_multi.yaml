@@ -1,0 +1,62 @@
+# Compare "our loop" against "the Harbor harness" in one run.
+#
+# The `harnesses:` block dispatches one adapter per entry, each pulling its own
+# tasks through its own adapter and graded by that adapter's contract. Here:
+#   - a `native` leg runs a tolokaforge task on the ENGINE LOOP (our own agent
+#     turn loop), and
+#   - a `harbor` leg DELEGATES a TB2 task to the real Harbor harness (Harbor runs
+#     its own agent + verifier inside a sandbox it builds).
+# The run report's per-harness comparison then contrasts the two execution paths
+# side by side (cost / turns / pass-rate per harness). `harnesses:` is mutually
+# exclusive with `evaluation.harness_adapter`.
+#
+# Requirements:
+#   - A running Docker daemon, the adapter installed (pip install
+#     "tolokaforge[harbor]"), and --image-source build.
+#   - The harbor leg below uses the keyless `oracle` agent, so IT needs no key.
+#     The native leg runs the engine loop and DOES need a provider key in .env
+#     (the models block routes it through OpenRouter). Swap the harbor leg's
+#     `agent` to "terminus-2" + an `agent_model` + `agent_provider_env` to put a
+#     real model on the Harbor side too.
+#
+# Invoke:
+#   scripts/with_env.sh uv run tolokaforge run \
+#     --config examples/harbor/run_harbor_multi.yaml --image-source build
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4.6"
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  queue_backend: sqlite
+  strict_task_load: true
+  timeouts:
+    episode_s: 1800
+
+evaluation:
+  output_dir: "results/harbor/multi"
+
+harnesses:
+  entries:
+    - name: "native"
+      adapter: "native"
+      projects: ["examples/native/tool_use/dataset"]
+      tasks_glob: "**/task.yaml"
+    - name: "harbor"
+      adapter: "harbor"
+      projects: ["examples/harbor"]
+      tasks_glob: "write-release-note/task.toml"
+      task_ids: ["write-release-note"]
+      params:
+        harbor_tasks_dir: "examples/harbor"
+        task_ids: ["write-release-note"]
+        agent: "oracle"
+        sandbox_backend: "docker"

@@ -1052,4 +1052,6 @@ def test_the_clean_run_reaches_its_trials_with_every_description_already_built(
 
     assert len(conductor.call_log.runs) == 4
     assert sorted(built) == ["TASK-A", "TASK-B"]
-    assert cached_at_each_spec[0] == frozenset({"TASK-A", "TASK-B"})
+    # The cache keys on ``(entry, task_id)``; a single-adapter run has no
+    # harness entry, so the entry component is the empty-string sentinel.
+    assert cached_at_each_spec[0] == frozenset({("", "TASK-A"), ("", "TASK-B")})

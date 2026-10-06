@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -33,6 +33,7 @@ from tolokaforge.adapters._task_loader import (
     uses_search,
     validate_grading_yaml,
 )
+from tolokaforge.core.adapter_registry import CompositeAdapter, build_composite_adapter
 from tolokaforge.core.budgets import (
     LIMIT_HIT_MARKER_FILENAME,
     BudgetHit,
@@ -52,6 +53,7 @@ from tolokaforge.core.engine_run_state import (
     write_engine_run_state,
 )
 from tolokaforge.core.env_var import parse_env_positive_float
+from tolokaforge.core.execution_mode import ExecutionMode, select_execution_mode
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     attribute_failure,
@@ -97,6 +99,10 @@ from tolokaforge.core.output.artifacts import (
     TrialArtifactWriter,
     read_report_trajectory,
 )
+from tolokaforge.core.output.harness_comparison import (
+    build_harness_comparison_slices,
+    format_harness_comparison_table,
+)
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.plugin_registry import (
     RAG_SERVICE_STACK_SERVICE,
@@ -129,6 +135,7 @@ from tolokaforge.core.trial import (
     TrialSpec,
 )
 from tolokaforge.core.trial_executor import TrialExecutor
+from tolokaforge.core.trial_identity import format_trial_id, trial_output_subpath
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.observability.factory import (
     RunIdentity,
@@ -322,9 +329,13 @@ def _configured_harness(config: Any) -> str | None:
     and the legacy param is what this repo's own matrix workflow and the
     terminal-bench recipes still write. A guard reading only the canonical
     field silently never runs on the shipped configuration.
+
+    The ``engine-loop`` sentinel is "no harness" on both addresses: it names
+    the engine's own turn loop, not a delegated coding-harness CLI, so it
+    returns ``None`` and never trips the delegated-mode gate.
     """
     agent = config.models.get("agent") if getattr(config, "models", None) else None
-    if agent is not None and getattr(agent, "harness", None):
+    if agent is not None and getattr(agent, "harness", None) and agent.harness != ENGINE_LOOP:
         return str(agent.harness)
     adapter = getattr(config.evaluation, "harness_adapter", None)
     params = getattr(adapter, "params", None) or {}
@@ -332,6 +343,31 @@ def _configured_harness(config: Any) -> str | None:
     if selected and selected != ENGINE_LOOP:
         return str(selected)
     return None
+
+
+def adapter_supported_modes(adapter: Any) -> frozenset[ExecutionMode]:
+    """The execution modes *adapter* runs, honouring the legacy flag one release.
+
+    Reads the adapter's ``supported_execution_modes`` capability. An adapter
+    that has not overridden it (it inherits :class:`BaseAdapter`'s default, or
+    carries no such attribute at all) but sets the legacy
+    ``supports_coding_harness = True`` — an external or private adapter from
+    before the capability shipped — is treated as also running
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`, so the
+    gate stays back-compatible for the deprecation window. An adapter that
+    declares no capability defaults to
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.ENGINE_LOOP`.
+    """
+    overrides_capability = any(
+        "supported_execution_modes" in klass.__dict__
+        for klass in type(adapter).__mro__
+        if klass is not BaseAdapter and issubclass(klass, BaseAdapter)
+    )
+    if overrides_capability:
+        return frozenset(adapter.supported_execution_modes)
+    if getattr(adapter, "supports_coding_harness", False):
+        return frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})
+    return frozenset({ExecutionMode.ENGINE_LOOP})
 
 
 def _harness_provider_probe(
@@ -816,6 +852,18 @@ class Orchestrator:
         # enclosing ``project.yaml``.
         self.project = project
         self.tasks: list[TaskConfig] = []
+        # Multi-harness dispatch state, empty for single-adapter runs. A run
+        # declaring a ``harnesses:`` block builds a CompositeAdapter and fills
+        # these: ``task_units`` carries the (entry name, entry adapter, task)
+        # tuples the run dispatches — the entry-aware spine every per-task
+        # identity decision iterates (see :meth:`_entry_task_units`). The same
+        # task id may appear under two entries (a real tasks×harnesses matrix);
+        # it is the ``(entry, task_id)`` pair, not the bare task id, that is
+        # unique. ``_entry_of_task`` keeps a last-writer-wins task→entry map for
+        # the convenience accessors a non-matrix run uses; matrix-correct paths
+        # carry the entry explicitly from the lease / spine instead.
+        self.task_units: list[tuple[str, BaseAdapter, TaskConfig]] = []
+        self._entry_of_task: dict[str, str] = {}
         self.results: list[Trajectory] = []
         self._previous_report_results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
@@ -871,13 +919,20 @@ class Orchestrator:
         # — repeating that K times for ``repeats=K`` trials of the same
         # task is wasted work. Populated by whichever resolver runs first
         # (the pre-run grading gate, backend selection, or trial-spec
-        # building) and held for the life of the run.
-        self._task_desc_cache: dict[str, TaskDescription] = {}
-        # Run-wide trial ordering: ``(task_id, trial_index) → total_index``
+        # building) and held for the life of the run. Keyed by
+        # ``(entry, task_id)``: a multi-harness run resolves the owning adapter
+        # per entry, so the entry name is part of the identity; a single-adapter
+        # run uses the empty-string entry sentinel.
+        self._task_desc_cache: dict[tuple[str, str], TaskDescription] = {}
+        # Execution mode classified once per ``(entry, task_id)`` from the
+        # task description's ``agent_harness_command`` metadata, carried onto
+        # every trial spec that unit produces. Mirrors ``_task_desc_cache``.
+        self._unit_mode_cache: dict[tuple[str, str], ExecutionMode] = {}
+        # Run-wide trial ordering: ``(entry, task_id, trial_index) → total_index``
         # (0..total-1). Populated by :meth:`_build_pending_trials` and
         # read at the ``trial_started`` emission site so the panel can
         # render a global ``[N/M]`` prefix.
-        self._total_index_by_key: dict[tuple[str, int], int] = {}
+        self._total_index_by_key: dict[tuple[str, str, int], int] = {}
         # Handle on the TypeSense server this process started for the run —
         # ``None`` for a remote plane, no plane, or a run handed pre-loaded
         # tasks so ``load_tasks()`` never ran. A server of ours is also a
@@ -904,6 +959,10 @@ class Orchestrator:
         """
         if self.adapter is None:
             return {}
+        if self.config.harnesses is not None:
+            # One fingerprint per distinct adapter type across entries — the
+            # explicit union, never a single entry's answer.
+            return cast(CompositeAdapter, self.adapter).fingerprints_by_type()
         payload = self.adapter.fingerprint()
         if payload is None:
             return {}
@@ -911,36 +970,39 @@ class Orchestrator:
         adapter_type = adapter_config.type if adapter_config else AdapterType.NATIVE.value
         return {adapter_type: payload}
 
-    def _create_adapter(self) -> BaseAdapter:
-        """Create adapter based on configuration"""
-        adapter_config = self.config.evaluation.harness_adapter
+    def _assemble_adapter_params(
+        self,
+        *,
+        base_params: dict[str, Any],
+        agent_model: ModelConfig | None,
+        tasks_glob: str,
+        projects: list[str],
+    ) -> dict[str, Any]:
+        """Assemble one adapter's construction params from the run's context.
 
-        if adapter_config:
-            adapter_type = adapter_config.type
-            params = adapter_config.params.copy()
-        else:
-            adapter_type = AdapterType.NATIVE
-            params = {}
+        Shared by the single-adapter path (:meth:`_create_adapter`) and the
+        per-entry path (:meth:`_create_composite_adapter`), so a multi-harness
+        entry resolves tasks, task-pack roots, TypeSense, and project defaults
+        the same way a single run does — scoped to that entry's ``base_params``,
+        ``agent_model``, ``tasks_glob`` and ``projects``.
+        """
+        params = dict(base_params)
 
         # Coding-harness selector: canonical home is ``models.agent.harness``
         # (adapter-agnostic). Inject it into adapter params here so adapters
-        # that already read ``params["agent_harness"]`` keep working; the
-        # legacy ``harness_adapter.params.agent_harness`` shape is lifted to
-        # ``models.agent`` at parse time, so nothing else in this method sees
-        # the old location. ``models.agent.name`` doubles as the model the
-        # CLI receives — the same field the engine loop reads.
-        agent_model_config = self.config.models.get("agent") if self.config.models else None
-        if agent_model_config is not None and agent_model_config.harness is not None:
-            params.setdefault("agent_harness", agent_model_config.harness)
-            params.setdefault("agent_model", agent_model_config.name)
+        # that already read ``params["agent_harness"]`` keep working.
+        # ``models.agent.name`` doubles as the model the CLI receives — the
+        # same field the engine loop reads.
+        if agent_model is not None and agent_model.harness is not None:
+            params.setdefault("agent_harness", agent_model.harness)
+            params.setdefault("agent_model", agent_model.name)
 
         # Add tasks_glob to params for both native and other adapters
-        params["tasks_glob"] = self.config.evaluation.tasks_glob
-        # ``evaluation.projects`` is the canonical field; the deprecated
-        # ``evaluation.task_packs`` alias is coerced by
-        # ``EvaluationConfig`` so ``projects`` always carries the
+        params["tasks_glob"] = tasks_glob
+        # ``projects`` is the canonical field; the deprecated ``task_packs``
+        # alias is coerced upstream so ``projects`` always carries the
         # effective list here.
-        task_packs = list(self.config.evaluation.projects)
+        task_packs = list(projects)
 
         # In Docker flows, TASK_PACKS_DIRS can override config paths to container-visible mounts.
         env_task_packs = os.environ.get("TASK_PACKS_DIRS", "").strip()
@@ -967,13 +1029,153 @@ class Orchestrator:
             if self.project.default_environment is not None:
                 params["project_default_environment"] = self.project.default_environment
 
+        return params
+
+    def _merge_entry_models(
+        self, entry_models: dict[str, ModelConfig] | None
+    ) -> dict[str, ModelConfig]:
+        """Merge an entry's per-role model overrides over the run-level map.
+
+        The entry wins per role; roles it does not name fall back to
+        ``config.models``. ``None`` (no entry map) returns the run-level map
+        verbatim.
+        """
+        if not entry_models:
+            return dict(self.config.models)
+        merged = dict(self.config.models)
+        merged.update(entry_models)
+        return merged
+
+    def _entry_agent_model(self, entry_config: Any) -> ModelConfig | None:
+        """The effective agent model for a harness entry (entry merged over run)."""
+        return self._merge_entry_models(entry_config.model).get("agent")
+
+    def _create_adapter(self) -> BaseAdapter:
+        """Create adapter based on configuration"""
+        adapter_config = self.config.evaluation.harness_adapter
+
+        if adapter_config:
+            adapter_type = adapter_config.type
+            base_params = adapter_config.params.copy()
+        else:
+            adapter_type = AdapterType.NATIVE
+            base_params = {}
+
+        agent_model_config = self.config.models.get("agent") if self.config.models else None
+        params = self._assemble_adapter_params(
+            base_params=base_params,
+            agent_model=agent_model_config,
+            tasks_glob=self.config.evaluation.tasks_glob,
+            projects=list(self.config.evaluation.projects),
+        )
+
         # The record factory scrubs message text, not extras, so a key in
         # this dump would render verbatim regardless of the redaction set.
         log_params = params
-        if typesense_config is not None:
-            log_params = {**params, "typesense": typesense_config.model_dump(exclude={"api_key"})}
+        if "typesense" in params:
+            typesense_config = self.config.orchestrator.effective_typesense()
+            if typesense_config is not None:
+                log_params = {
+                    **params,
+                    "typesense": typesense_config.model_dump(exclude={"api_key"}),
+                }
         self.logger.info("Creating adapter", type=adapter_type, params=log_params)
         return get_adapter(adapter_type, params)
+
+    def _create_composite_adapter(self) -> CompositeAdapter:
+        """Build the multi-harness :class:`CompositeAdapter` from ``harnesses``.
+
+        One adapter per entry, each assembled with the same per-adapter param
+        logic a single run uses, scoped to the entry's selection and its
+        effective (entry-over-run) agent model. The builder enumerates each
+        entry's tasks; a task id shared by two entries runs under each.
+        """
+        harnesses = self.config.harnesses
+        assert harnesses is not None  # guarded by the caller
+
+        def params_for_entry(entry_config: Any) -> dict[str, Any]:
+            return self._assemble_adapter_params(
+                base_params=dict(entry_config.params),
+                agent_model=self._entry_agent_model(entry_config),
+                tasks_glob=entry_config.tasks_glob,
+                projects=list(entry_config.projects),
+            )
+
+        self.logger.info(
+            "Creating composite adapter",
+            entries=[entry.name for entry in harnesses.entries],
+        )
+        return build_composite_adapter(harnesses.entries, params_for_entry)
+
+    def _entry_task_units(self) -> list[tuple[str, TaskConfig]]:
+        """The run's ``(entry, task)`` dispatch spine.
+
+        A multi-harness run reads it from ``task_units`` so the same task id
+        under two entries yields two independent pairs; a single-adapter run
+        pairs every task with the empty-string entry sentinel. Every per-task
+        identity decision (output path, resume key, env-manifest agreement,
+        report row) iterates this instead of ``self.tasks`` so a matrix does
+        not collapse two entries into one.
+        """
+        if self.task_units:
+            return [(entry, task) for entry, _adapter, task in self.task_units]
+        return [("", task) for task in self.tasks]
+
+    def _adapter_for_task(self, task_id: str, entry: str | None = None) -> BaseAdapter:
+        """The adapter that owns *task_id* under harness *entry*.
+
+        When *entry* is given (the matrix-correct callers pass it from the lease
+        or the dispatch spine) it routes directly; when it is ``None`` the owning
+        entry is looked up by task id (single-adapter and non-matrix paths).
+        ``BaseAdapter.for_entry`` on a single adapter returns self, so the
+        single-adapter path is unchanged.
+        """
+        if self.adapter is None:
+            raise RuntimeError("Adapter is not loaded; call load_tasks() first.")
+        resolved = entry if entry is not None else self._entry_of_task.get(task_id)
+        if not resolved:
+            return self.adapter
+        return self.adapter.for_entry(resolved)
+
+    def _run_selects_coding_harness(self) -> bool:
+        """Whether the run selects a coding-harness CLI on any adapter it runs.
+
+        Single-adapter: the run-level ``models.agent.harness``. Multi-harness:
+        any entry whose effective (entry-over-run) agent model declares a
+        ``harness``. Read from the config, so it needs no adapter-identity
+        branch.
+        """
+        if self.config.harnesses is not None:
+            return any(
+                (agent := self._entry_agent_model(entry)) is not None and agent.harness is not None
+                for entry in self.config.harnesses.entries
+            )
+        return _run_uses_coding_harness(self.config)
+
+    def _run_needs_docker_cli_effective(self) -> bool:
+        """Whether the runner needs the host Docker CLI, across every adapter.
+
+        Single-adapter: today's predicate unchanged — the adapter's class flag
+        (resolved from its config type via :func:`adapter_class`) or a
+        compose-variant tool, OR the run's coding-harness selection.
+        Multi-harness: the same predicate OR'd across entries — each entry's
+        adapter-type class flag, the shared compose-variant check, and a
+        coding-harness selection on any entry.
+        """
+        if self.config.harnesses is not None:
+            return (
+                cast(CompositeAdapter, self.adapter).any_requires_docker_cli()
+                or _tasks_use_compose_variant_tools(self.tasks)
+                or self._run_selects_coding_harness()
+            )
+        adapter_type = (
+            self.config.evaluation.harness_adapter.type
+            if self.config.evaluation.harness_adapter
+            else None
+        )
+        return _run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
+            self.config
+        )
 
     def _resolve_budget(self, *, initial_cost_usd: float) -> CompositeBudget | None:
         """Return the budget composite driving graceful shutdown.
@@ -1049,7 +1251,14 @@ class Orchestrator:
                 return 0.0
             return float(judge_usage.get("cost_usd", 0.0) or 0.0)
 
-        for metrics_path in trials_root.glob("*/*/metrics.yaml"):
+        # Two bundle depths coexist: single-adapter trials live at
+        # ``trials/<task>/<idx>/`` and harness-entry trials at
+        # ``trials/<entry>/<task>/<idx>/``. Seed from both so a resumed harness
+        # run counts its prior spend.
+        metrics_paths = sorted(
+            {*trials_root.glob("*/*/metrics.yaml"), *trials_root.glob("*/*/*/metrics.yaml")}
+        )
+        for metrics_path in metrics_paths:
             try:
                 with open(metrics_path) as f:
                     metrics = yaml.safe_load(f) or {}
@@ -1141,6 +1350,7 @@ class Orchestrator:
         self,
         *,
         agent_client: LLMClient,
+        agent_clients_by_entry: Mapping[str, LLMClient] | None = None,
         runtime_backend: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
@@ -1186,9 +1396,16 @@ class Orchestrator:
         # without a second config lookup. Absent block keeps every existing
         # run's behaviour.
         grader_config = self.config.grader
-        grader_name = (
-            grader_config.name if grader_config and grader_config.name else None
-        ) or self.adapter.trial_grader_name
+        if grader_config and grader_config.name:
+            grader_name = grader_config.name
+        elif self.config.harnesses is not None:
+            # A mixed run has one grading transport: with no explicit
+            # ``grader.name`` the entries must agree on their adapter-default
+            # ``trial_grader_name``; a disagreement is refused naming the
+            # entries.
+            grader_name = cast(CompositeAdapter, self.adapter).agreed_trial_grader_name()
+        else:
+            grader_name = self.adapter.trial_grader_name
         # In-process routing shim: only populated when the backend has no
         # static runner endpoint (``PerTrialRuntimeBackend`` — each trial
         # owns its own endpoint). Shared-stack keeps its address-only,
@@ -1219,6 +1436,7 @@ class Orchestrator:
             verbose=self.verbose,
             strict=self.strict,
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry or {},
             runtime_backend=runtime_backend,
             trial_grader=trial_grader,
             output_dir=output_dir,
@@ -1239,8 +1457,14 @@ class Orchestrator:
         )
         return conductor
 
-    def _task_description(self, task_id: str) -> TaskDescription:
+    def _task_description(self, task_id: str, entry: str | None = None) -> TaskDescription:
         """The task's wire-format description, resolved once per adapter configuration.
+
+        *entry* names the owning harness entry (the matrix-correct callers pass
+        it from the dispatch spine or the lease); ``None`` falls back to the
+        task→entry lookup for single-adapter and non-matrix paths. The cache is
+        keyed ``(entry, task_id)`` so the same task id under two entries resolves
+        each entry's own description.
 
         The registration check runs on the build, so every description in the
         cache has had its declared backend verified against the host registry —
@@ -1252,13 +1476,84 @@ class Orchestrator:
         """
         if self.adapter is None:
             raise RuntimeError("Task descriptions cannot be resolved before the adapter is loaded.")
-        cached = self._task_desc_cache.get(task_id)
+        resolved_entry = entry if entry is not None else (self._entry_of_task.get(task_id) or "")
+        cache_key = (resolved_entry, task_id)
+        cached = self._task_desc_cache.get(cache_key)
         if cached is not None:
             return cached
-        description = self.adapter.to_task_description(task_id)
+        description = self._adapter_for_task(task_id, resolved_entry).to_task_description(task_id)
         ensure_registered_adapter(description.adapter_type)
-        self._task_desc_cache[task_id] = description
+        self._task_desc_cache[cache_key] = description
         return description
+
+    def _unit_execution_mode(self, entry: str, task_id: str) -> ExecutionMode:
+        """Classify how the ``(entry, task_id)`` unit runs, once, and cache it.
+
+        Calls :func:`select_execution_mode` over the unit's task-description
+        metadata — the authoritative ``agent_harness_command`` signal that
+        drives the container — and memoises the result keyed ``(entry,
+        task_id)`` so the same unit is never reclassified. The carried value
+        flows onto every trial spec that unit produces.
+
+        A broken ``agent_harness_command`` raises from the classifier; the
+        unit coordinates are prepended so a multi-entry run names which unit
+        emitted the bad metadata.
+        """
+        cache_key = (entry, task_id)
+        cached = self._unit_mode_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            mode = select_execution_mode(self._task_description(task_id, entry).metadata)
+        except RuntimeError as exc:
+            raise RuntimeError(f"unit {cache_key}: {exc}") from exc
+        self._unit_mode_cache[cache_key] = mode
+        return mode
+
+    def _adapter_type_label(self, entry: str) -> str:
+        """The config adapter-type name for *entry*, for gate refusal messages.
+
+        A multi-harness entry names its own ``adapter``; the single-adapter run
+        (the empty-string entry) names ``evaluation.harness_adapter.type``,
+        defaulting to the built-in ``native``.
+        """
+        if entry and self.config.harnesses is not None:
+            for entry_config in self.config.harnesses.entries:
+                if entry_config.name == entry:
+                    return str(entry_config.adapter)
+        harness_adapter = self.config.evaluation.harness_adapter
+        return str(harness_adapter.type) if harness_adapter is not None else "native"
+
+    def _gate_execution_mode_capability(self) -> None:
+        """Refuse any ``(entry, task)`` whose adapter cannot run its mode.
+
+        The single capability gate for both single-adapter and multi-harness
+        runs. It walks the dispatch spine, classifies each unit's execution
+        mode from the same per-unit metadata decision the conductor dispatches
+        off (:meth:`_unit_execution_mode`), and refuses a unit whose owning
+        adapter does not run that mode — naming the unit, the adapter, the
+        classified mode, and the modes the adapter runs.
+
+        Runs in the pre-flight window: after every task description is
+        materialised and before any container is provisioned, so a capability
+        mismatch fails loud before a run is paid for.
+        """
+        for entry, task in self._entry_task_units():
+            mode = self._unit_execution_mode(entry, task.task_id)
+            supported = adapter_supported_modes(self._adapter_for_task(task.task_id, entry))
+            if mode in supported:
+                continue
+            raise RuntimeError(
+                f"task {task.task_id!r} (harness entry {entry!r}) runs in the "
+                f"{mode.value!r} execution mode, but adapter "
+                f"{self._adapter_type_label(entry)!r} runs only "
+                f"{sorted(supported_mode.value for supported_mode in supported)}. "
+                "An adapter declares the delegated mode by overriding "
+                "``supported_execution_modes`` to include "
+                "``ExecutionMode.DELEGATED``. Either drop the task's "
+                "coding-harness selection to run the engine's LLM loop, or "
+                "switch to an adapter that runs that mode."
+            )
 
     def _build_trial_spec(
         self,
@@ -1268,6 +1563,7 @@ class Orchestrator:
         attempt_id: int,
         worker_id: str,
         run_id: str,
+        entry: str,
         agent_client: LLMClient,
         user_config: ModelConfig,
         judge_config: ModelConfig | None,
@@ -1278,14 +1574,21 @@ class Orchestrator:
         ``run_id`` is supplied by the caller (computed once at the top of
         ``run()`` / read from the engine run-state file in ``run_worker()``)
         so trial identity is independent of where artifacts are written.
+        ``entry`` is the owning harness entry (empty for a single-adapter run),
+        carried by the lease so the spec, its ``trial_id`` label, and its task
+        description all route to the right adapter in a matrix.
         """
-        task_desc = self._task_description(task.task_id)
+        task_desc = self._task_description(task.task_id, entry)
         return TrialSpec(
-            trial_id=f"{task.task_id}:{trial_idx}",
+            trial_id=format_trial_id(entry, task.task_id, trial_idx),
             run_id=run_id,
             attempt_id=attempt_id,
             worker_id=worker_id,
+            entry=entry,
+            task_id=task.task_id,
+            trial_index=trial_idx,
             task=task_desc,
+            execution_mode=self._unit_execution_mode(entry, task.task_id),
             agent_model_config=agent_client.config,
             user_model_config=user_config,
             judge_model_config=judge_config,
@@ -1322,6 +1625,7 @@ class Orchestrator:
         runtime_backend: RuntimeBackend,
         task_id: str,
         trial_idx: int,
+        entry: str = "",
     ) -> None:
         """Forget the prior attempt's runner-side trial registration before retry.
 
@@ -1334,7 +1638,7 @@ class Orchestrator:
         failing cleanup never blocks the retry attempt itself (the
         re-registration will surface a clearer error if state is unrecoverable).
         """
-        trial_id = f"{task_id}:{trial_idx}"
+        trial_id = format_trial_id(entry, task_id, trial_idx)
         try:
             result = runtime_backend.cleanup_trial(trial_id)
         except Exception as e:
@@ -1400,29 +1704,41 @@ class Orchestrator:
         override = self.config.orchestrator.runtime
         if override == "per_trial":
             return None
+        units = self._entry_task_units()
         if override is None and self.adapter is not None:
             task_manifests = [
-                self._task_description(task.task_id).environment_manifest for task in self.tasks
+                self._task_description(task.task_id, entry).environment_manifest
+                for entry, task in units
             ]
             present = [m for m in task_manifests if m is not None]
             if present and all(m.plan_shape == PlanShape.TRIAL_SCOPED_ONLY for m in present):
                 return None
 
-        if not self.tasks:
+        if not units:
             return None
 
+        # Keyed by ``(entry, task_id)`` so two entries sharing a task id are
+        # compared independently — a real run-scope disagreement between them is
+        # not silently collapsed into one agreeing entry.
         project_env = self.project.default_environment if self.project is not None else None
-        resolved_by_task: dict[str, EnvironmentManifest | None] = {}
-        for task in self.tasks:
-            resolved_by_task[task.task_id] = resolve(project_env, task.environment_manifest)
+        resolved_by_task: dict[tuple[str, str], EnvironmentManifest | None] = {}
+        for entry, task in units:
+            resolved_by_task[(entry, task.task_id)] = resolve(
+                project_env, task.environment_manifest
+            )
 
-        signatures_by_task: dict[str, tuple[_RunScopeStackSignature, ...]] = {
-            task_id: _run_scope_signature(manifest)
-            for task_id, manifest in resolved_by_task.items()
+        def _key_label(key: tuple[str, str]) -> str:
+            entry, task_id = key
+            return f"{entry}:{task_id}" if entry else task_id
+
+        signatures_by_task: dict[tuple[str, str], tuple[_RunScopeStackSignature, ...]] = {
+            key: _run_scope_signature(manifest) for key, manifest in resolved_by_task.items()
         }
         distinct_signatures = set(signatures_by_task.values())
         if len(distinct_signatures) > 1:
-            digests = {task_id: _hash_signature(sig) for task_id, sig in signatures_by_task.items()}
+            digests = {
+                _key_label(key): _hash_signature(sig) for key, sig in signatures_by_task.items()
+            }
             offending_stack_ids = sorted(
                 {stack_id for sig in distinct_signatures for stack_id, *_ in sig}
             )
@@ -1457,8 +1773,8 @@ class Orchestrator:
         """
         if self.adapter is None:
             return False
-        for task in self.tasks:
-            if self._task_description(task.task_id).environment_manifest is not None:
+        for entry, task in self._entry_task_units():
+            if self._task_description(task.task_id, entry).environment_manifest is not None:
                 return True
         return False
 
@@ -1487,8 +1803,8 @@ class Orchestrator:
         target_scope: StackScope = "run" if override == "shared" else "trial"
         if self.adapter is None:
             return
-        for task in self.tasks:
-            manifest = self._task_description(task.task_id).environment_manifest
+        for entry, task in self._entry_task_units():
+            manifest = self._task_description(task.task_id, entry).environment_manifest
             if manifest is None:
                 continue
             if len(manifest.stacks) > 1:
@@ -1626,11 +1942,6 @@ class Orchestrator:
             source = f"override:{override}"
 
         factory = load_runtime_backend(runtime_choice)
-        adapter_type = (
-            self.config.evaluation.harness_adapter.type
-            if self.config.evaluation.harness_adapter
-            else None
-        )
         # No run-scope manifest survives extraction when the plan is fully
         # trial-scoped (automatic short-circuit) or when the operator coerced
         # to ``per_trial``. In that case the composer still owns provisioning
@@ -1653,8 +1964,7 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks)
-                or _run_uses_coding_harness(self.config),
+                mount_docker_socket=self._run_needs_docker_cli_effective(),
                 expose_substrate=(
                     self.config.grader is not None and self.config.grader.expose_substrate
                 ),
@@ -1893,8 +2203,8 @@ class Orchestrator:
         available_labels = frozenset(dispatcher_registry.keys())
 
         violations: list[tuple[str, str, str, str, str]] = []
-        for task in self.tasks:
-            manifest = self._task_description(task.task_id).environment_manifest
+        for entry, task in self._entry_task_units():
+            manifest = self._task_description(task.task_id, entry).environment_manifest
             if manifest is None:
                 continue
             for decl in manifest.stacks:
@@ -2013,26 +2323,32 @@ class Orchestrator:
 
     def _build_pending_trials(
         self,
-        tasks: list[TaskConfig],
         repeats: int,
-        skip_completed: Callable[[str, int], bool] | None = None,
-    ) -> list[tuple[str, int]]:
-        """Build pending (task_id, trial_index) pairs in enqueue order.
+        skip_completed: Callable[[str, int, str], bool] | None = None,
+    ) -> list[tuple[str, str, int]]:
+        """Build pending (entry, task_id, trial_index) triples in enqueue order.
 
-        Order is (task, trial_index) lexicographic. With
-        ``orchestrator.shuffle_trials`` set, the order is randomized —
-        diagnostic only, does not eliminate state leakage between trials.
+        The entry is the harness entry that owns the task, drawn from the
+        entry-aware ``task_units`` spine; a single-adapter run has no entry and
+        resolves to the empty-string sentinel. The same task id under two entries
+        yields two independent sets of triples. Order is (entry, task,
+        trial_index) over the spine. With ``orchestrator.shuffle_trials`` set, the
+        order is randomized — diagnostic only, does not eliminate state leakage
+        between trials.
+
+        ``skip_completed`` is called ``(task_id, trial_index, entry)`` so a
+        resume skips only the completed ``(entry, task, idx)``.
 
         Populates :attr:`_total_index_by_key` as a side effect so the
         ``trial_started`` emission site can render a run-wide
         ``[N/M]`` prefix without recomputing.
         """
-        pending_trials: list[tuple[str, int]] = []
-        for task in tasks:
+        pending_trials: list[tuple[str, str, int]] = []
+        for entry, task in self._entry_task_units():
             for trial_idx in range(repeats):
-                if skip_completed and skip_completed(task.task_id, trial_idx):
+                if skip_completed and skip_completed(task.task_id, trial_idx, entry):
                     continue
-                pending_trials.append((task.task_id, trial_idx))
+                pending_trials.append((entry, task.task_id, trial_idx))
 
         if self.config.orchestrator.shuffle_trials:
             random.shuffle(pending_trials)
@@ -2359,39 +2675,14 @@ class Orchestrator:
         # This allows the adapter to get resolved port/api_key
         self._ensure_typesense_started()
 
-        # Create adapter if not already created
+        # Create adapter if not already created. A ``harnesses:`` block builds a
+        # CompositeAdapter (one adapter per entry); otherwise the single-adapter
+        # path is exactly as before.
         if self.adapter is None:
-            self.adapter = self._create_adapter()
-
-        # Coding-harness capability gate: refuse a run declaring
-        # ``models.agent.harness`` on an adapter that has not opted into the
-        # harness surface (``supports_coding_harness`` class attr from
-        # ``CodingHarnessAdapterMixin``). Fail here — before any container
-        # work — with a message that names the adapter and the harness slug
-        # so the operator sees which side of the pair does not match.
-        agent_model_config = self.config.models.get("agent") if self.config.models else None
-        if agent_model_config is not None and agent_model_config.harness is not None:
-            if not getattr(self.adapter, "supports_coding_harness", False):
-                adapter_type_name = (
-                    getattr(
-                        self.config.evaluation.harness_adapter,
-                        "type",
-                        "native",
-                    )
-                    if self.config.evaluation.harness_adapter
-                    else "native"
-                )
-                raise RuntimeError(
-                    f"models.agent.harness={agent_model_config.harness!r} but "
-                    f"adapter {adapter_type_name!r} does not opt into coding-"
-                    "harness mode. An adapter opts in by inheriting "
-                    "``tolokaforge_coding_harnesses.adapter_support."
-                    "CodingHarnessAdapterMixin`` (which sets "
-                    "``supports_coding_harness = True``). Either drop "
-                    "``models.agent.harness`` to run the engine's LLM loop, "
-                    "or switch to an adapter that supports the harness "
-                    "surface (currently: terminal_bench, native)."
-                )
+            if self.config.harnesses is not None:
+                self.adapter = self._create_composite_adapter()
+            else:
+                self.adapter = self._create_adapter()
 
         self._warn_on_unreliable_pricing()
         self._refuse_an_unregistered_agent_loop()
@@ -2399,29 +2690,61 @@ class Orchestrator:
         self._refuse_prices_it_cannot_vouch_for()
         self._refuse_an_unenforceable_cost_limit()
 
-        # Get task IDs from adapter
-        task_ids = self.adapter.get_task_ids()
-
-        # Load each task
         strict = self.config.orchestrator.strict_task_load
         loaded: list[TaskConfig] = []
-        for task_id in task_ids:
-            try:
-                loaded.append(self.adapter.get_task(task_id))
-            except Exception as e:
-                if strict:
-                    raise RuntimeError(
-                        f"Failed to load task {task_id!r}: {e} "
-                        "(orchestrator.strict_task_load=true — the run refuses "
-                        "to start with a silently shorter task list)"
-                    ) from e
-                if _is_a_malformed_search_declaration(e):
-                    raise RuntimeError(
-                        f"Failed to load task {task_id!r}: {e} (a malformed "
-                        "initial_state.rag refuses the run whatever "
-                        "orchestrator.strict_task_load says)"
-                    ) from e
-                self.logger.error("Failed to load task", task_id=task_id, error=str(e))
+        if self.config.harnesses is not None:
+            # Multi-harness: load each entry's tasks through its own adapter and
+            # build the dispatch matrix. ``task_units`` is the entry-aware spine;
+            # the same task id may appear under two entries, so ``_entry_of_task``
+            # (last-writer-wins) is only for the non-matrix convenience accessors.
+            composite = cast(CompositeAdapter, self.adapter)
+            for entry in composite.entries.values():
+                for task_id in entry.task_ids:
+                    try:
+                        task = entry.adapter.get_task(task_id)
+                    except Exception as e:
+                        if strict:
+                            raise RuntimeError(
+                                f"Failed to load task {task_id!r} (entry "
+                                f"{entry.name!r}): {e} "
+                                "(orchestrator.strict_task_load=true — the run "
+                                "refuses to start with a silently shorter task list)"
+                            ) from e
+                        if _is_a_malformed_search_declaration(e):
+                            raise RuntimeError(
+                                f"Failed to load task {task_id!r}: {e} (a malformed "
+                                "initial_state.rag refuses the run whatever "
+                                "orchestrator.strict_task_load says)"
+                            ) from e
+                        self.logger.error(
+                            "Failed to load task",
+                            task_id=task_id,
+                            entry=entry.name,
+                            error=str(e),
+                        )
+                        continue
+                    loaded.append(task)
+                    self._entry_of_task[task_id] = entry.name
+                    self.task_units.append((entry.name, entry.adapter, task))
+        else:
+            # Single adapter: load every discovered task exactly as before.
+            for task_id in self.adapter.get_task_ids():
+                try:
+                    loaded.append(self.adapter.get_task(task_id))
+                except Exception as e:
+                    if strict:
+                        raise RuntimeError(
+                            f"Failed to load task {task_id!r}: {e} "
+                            "(orchestrator.strict_task_load=true — the run refuses "
+                            "to start with a silently shorter task list)"
+                        ) from e
+                    if _is_a_malformed_search_declaration(e):
+                        raise RuntimeError(
+                            f"Failed to load task {task_id!r}: {e} (a malformed "
+                            "initial_state.rag refuses the run whatever "
+                            "orchestrator.strict_task_load says)"
+                        ) from e
+                    self.logger.error("Failed to load task", task_id=task_id, error=str(e))
         self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
@@ -2776,7 +3099,9 @@ class Orchestrator:
                 "Ensure load_tasks() has run successfully."
             )
         offending = [
-            task.task_id for task in self.tasks if self.adapter.requires_judge_model(task.task_id)
+            task.task_id
+            for entry, task in self._entry_task_units()
+            if self._adapter_for_task(task.task_id, entry).requires_judge_model(task.task_id)
         ]
         if offending:
             raise ValueError(
@@ -2816,8 +3141,8 @@ class Orchestrator:
         """
         fail_on = self.config.evaluation.grading_validation.fail_on
         rejected: list[str] = []
-        for task in self.tasks:
-            failure = self._grading_rejection(task, fail_on=fail_on)
+        for entry, task in self._entry_task_units():
+            failure = self._grading_rejection(task, fail_on=fail_on, entry=entry)
             if failure is not None:
                 rejected.append(failure)
         if not rejected:
@@ -2832,7 +3157,7 @@ class Orchestrator:
         )
 
     def _grading_rejection(
-        self, task: TaskConfig, *, fail_on: GradingFindingSeverity
+        self, task: TaskConfig, *, fail_on: GradingFindingSeverity, entry: str = ""
     ) -> str | None:
         """What one task's grading block costs the run, or ``None`` if nothing.
 
@@ -2855,8 +3180,9 @@ class Orchestrator:
         otherwise finds out while the trial's artifacts are written, with every
         token already spent.
         """
-        adapter_type = self._task_description(task.task_id).adapter_type
-        task_dir = self.adapter.get_task_dir(task.task_id)
+        adapter_type = self._task_description(task.task_id, entry).adapter_type
+        task_adapter = self._adapter_for_task(task.task_id, entry)
+        task_dir = task_adapter.get_task_dir(task.task_id)
         source = grading_source_under_adapter(task, task_dir, adapter_type)
         if source.kind is GradingSourceKind.WITHHELD:
             return f"* {task.task_id} — {source.reason}"
@@ -2868,9 +3194,9 @@ class Orchestrator:
                 source.path,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
                 replay_world=replay_world_under_adapter(task, task_dir, adapter_type),
-                hash_sources=self.adapter.grading_hash_source_layer(task, task_dir),
+                hash_sources=task_adapter.grading_hash_source_layer(task, task_dir),
                 seeded_tables=seeded_tables_under_adapter(task, task_dir, adapter_type),
-                combine_layer=self.adapter.grading_combine_layer(),
+                combine_layer=task_adapter.grading_combine_layer(),
                 fail_on=fail_on,
             )
         except (ValueError, RuntimeError, OSError) as exc:
@@ -2936,6 +3262,34 @@ class Orchestrator:
             return self._agent_client_factory(agent_config)
         return LLMClient(agent_config, rate_limit_probe=probe)
 
+    def _build_agent_clients_by_entry(self) -> dict[str, LLMClient]:
+        """Per-entry agent clients for a multi-harness run, keyed by entry name.
+
+        For each harness entry whose effective (entry-over-run) agent
+        :class:`ModelConfig` differs from the run-level agent config, build a
+        client through :meth:`_build_agent_client` so the same fallback/probe
+        wiring applies per entry. An entry equal to the run-level model is left
+        out of the map and reuses the run-level client; two entries resolving to
+        the same model share one client (dedup by resolved ``ModelConfig``). A
+        single-adapter run has no ``harnesses`` block and returns ``{}``.
+        """
+        harnesses = self.config.harnesses
+        if harnesses is None:
+            return {}
+        run_level = self.config.models.get("agent")
+        by_entry: dict[str, LLMClient] = {}
+        built: list[tuple[ModelConfig, LLMClient]] = []
+        for entry_config in harnesses.entries:
+            agent_model = self._entry_agent_model(entry_config)
+            if agent_model is None or agent_model == run_level:
+                continue
+            client = next((c for model, c in built if model == agent_model), None)
+            if client is None:
+                client = self._build_agent_client(agent_model)
+                built.append((agent_model, client))
+            by_entry[entry_config.name] = client
+        return by_entry
+
     def run(
         self,
         *,
@@ -2983,15 +3337,23 @@ class Orchestrator:
         # Check for existing run state
         run_state = None
         if self.resume:
-            run_state = self.state_manager.load_state()
+            # A harnesses run keys resume state by (entry, task_id, trial_index);
+            # a state file written before that keying is refused on load.
+            run_state = self.state_manager.load_state(
+                require_identity_marker=self.config.harnesses is not None
+            )
             if run_state:
                 self._canonicalise_resumed_run_id(run_state, run_id)
                 self._previous_report_results = []
                 for trial in run_state.get_completed_trials():
                     if self.state_manager.is_completed(
-                        trial.task_id, trial.trial_index, run_state=run_state
+                        trial.task_id, trial.trial_index, trial.entry, run_state=run_state
                     ):
-                        bundle = output_dir / "trials" / trial.task_id / str(trial.trial_index)
+                        bundle = (
+                            output_dir
+                            / "trials"
+                            / trial_output_subpath(trial.entry, trial.task_id, trial.trial_index)
+                        )
                         previous = read_report_trajectory(bundle)
                         if (previous.task_id, previous.trial_index) != (
                             trial.task_id,
@@ -3015,13 +3377,14 @@ class Orchestrator:
 
         # Initialize new run state if not resuming
         if not run_state:
-            task_ids = [task.task_id for task in self.tasks]
+            units = [(entry, task.task_id) for entry, task in self._entry_task_units()]
             run_state = self.state_manager.initialize_run(
                 run_id=run_id,
                 config_path=str(self._config_path) if self._config_path is not None else "",
-                task_ids=task_ids,
+                units=units,
                 repeats=self.config.orchestrator.repeats,
             )
+            task_ids = [task_id for _entry, task_id in units]
             self.logger.info(
                 "Starting new run",
                 run_id=run_id,
@@ -3061,6 +3424,7 @@ class Orchestrator:
         )
 
         agent_client = self._build_agent_client(agent_config)
+        agent_clients_by_entry = self._build_agent_clients_by_entry()
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -3075,6 +3439,12 @@ class Orchestrator:
         # the extract sees the coerced plan.
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
 
+        # Execution-mode capability gate: refuse any (entry, task) whose adapter
+        # cannot run the mode its metadata classifies, keyed off the same
+        # per-unit decision the conductor dispatches on. Fires here — after the
+        # descriptions are materialised, before any container is provisioned.
+        self._gate_execution_mode_capability()
+
         # Task-declared shared-stack manifest: if the run's tasks declare an
         # environment_manifest, extract the shared manifest here — mixed / divergent
         # declarations fail loud before we touch docker.
@@ -3087,9 +3457,16 @@ class Orchestrator:
                 from tolokaforge.docker.stacks import core_stack, full_stack
 
                 self.logger.info("Auto-starting Docker services via EngineStack")
-                stack_requirements = (
-                    self.adapter.docker_stack_requirements() if self.adapter is not None else None
-                )
+                if self.config.harnesses is not None:
+                    # Merged union across entries, failing loud on an
+                    # irreconcilable conflict — never one entry's answer.
+                    stack_requirements = cast(
+                        CompositeAdapter, self.adapter
+                    ).union_docker_stack_requirements()
+                elif self.adapter is not None:
+                    stack_requirements = self.adapter.docker_stack_requirements()
+                else:
+                    stack_requirements = None
                 core_stack_kwargs = (
                     stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
                 )
@@ -3109,14 +3486,7 @@ class Orchestrator:
                 # The runner container is created knowing where TypeSense is,
                 # so nothing has to rewrite a task's address after the fact.
                 core_stack_kwargs.update(self._typesense_stack_kwargs())
-                adapter_type = (
-                    self.config.evaluation.harness_adapter.type
-                    if self.config.evaluation.harness_adapter
-                    else None
-                )
-                if _run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
-                    self.config
-                ):
+                if self._run_needs_docker_cli_effective():
                     self.logger.info(
                         "Docker CLI required in runner image "
                         "(terminal-bench adapter, compose-variant tools, "
@@ -3325,6 +3695,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
@@ -3343,13 +3714,16 @@ class Orchestrator:
             executor_healthy = runtime_backend.health_check()
             self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
-            # Build pending task/trial pairs and initialize durable queue.
-            task_by_id = {task.task_id: task for task in self.tasks}
+            # Build pending task/trial pairs and initialize durable queue. Keyed
+            # by (entry, task_id) so the same task under two harness entries is
+            # dispatched independently.
+            task_by_entry_task = {
+                (entry, task.task_id): task for entry, task in self._entry_task_units()
+            }
             pending_trials = self._build_pending_trials(
-                self.tasks,
                 self.config.orchestrator.repeats,
-                skip_completed=lambda task_id, trial_idx: self.resume
-                and self.state_manager.is_completed(task_id, trial_idx),
+                skip_completed=lambda task_id, trial_idx, entry: self.resume
+                and self.state_manager.is_completed(task_id, trial_idx, entry),
             )
 
             run_queue = create_run_queue(
@@ -3410,7 +3784,7 @@ class Orchestrator:
                     lease = run_queue.lease_next(worker_id=lease_owner, lease_seconds=lease_seconds)
                     if lease is None:
                         return False
-                    task = task_by_id.get(lease.task_id)
+                    task = task_by_entry_task.get((lease.entry, lease.task_id))
                     if task is None:
                         # Should never happen; fail-fast and continue scheduling.
                         run_queue.mark_failed(
@@ -3419,24 +3793,30 @@ class Orchestrator:
                             retryable=False,
                         )
                         run_state.mark_failed(
-                            lease.task_id, lease.trial_index, f"Task not found: {lease.task_id}"
+                            lease.task_id,
+                            lease.trial_index,
+                            f"Task not found: {lease.task_id}",
+                            entry=lease.entry,
                         )
                         self.state_manager.save_state(run_state)
                         return True
 
                     # Mark as running
                     run_queue.mark_running(lease.id, lease_owner)
-                    run_state.mark_running(lease.task_id, lease.trial_index)
+                    run_state.mark_running(lease.task_id, lease.trial_index, entry=lease.entry)
                     self.state_manager.save_state(run_state)
 
+                    entry_client = agent_clients_by_entry.get(lease.entry) or agent_client
+                    entry_agent_config = entry_client.config
+
                     self._events.trial_started(
-                        trial_id=f"{lease.task_id}:{lease.trial_index}",
+                        trial_id=format_trial_id(lease.entry, lease.task_id, lease.trial_index),
                         task_id=lease.task_id,
                         trial_index=lease.trial_index,
                         total_index=self._total_index_by_key.get(
-                            (lease.task_id, lease.trial_index), 0
+                            (lease.entry, lease.task_id, lease.trial_index), 0
                         ),
-                        agent_model=f"{agent_config.provider}/{agent_config.name}",
+                        agent_model=f"{entry_agent_config.provider}/{entry_agent_config.name}",
                         user_model=f"{user_config.provider}/{user_config.name}",
                     )
 
@@ -3447,7 +3827,8 @@ class Orchestrator:
                             attempt_id=lease.retry_count,
                             worker_id=lease_owner,
                             run_id=run_id,
-                            agent_client=agent_client,
+                            entry=lease.entry,
+                            agent_client=entry_client,
                             user_config=user_config,
                             judge_config=judge_config,
                             env_endpoints=env_endpoints,
@@ -3460,10 +3841,12 @@ class Orchestrator:
                             error=str(e),
                         )
                         run_queue.mark_failed(lease.id, f"Spec build failed: {e}", retryable=False)
-                        run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
+                        run_state.mark_failed(
+                            lease.task_id, lease.trial_index, str(e), entry=lease.entry
+                        )
                         self.state_manager.save_state(run_state)
                         self._events.trial_failed(
-                            trial_id=f"{lease.task_id}:{lease.trial_index}",
+                            trial_id=format_trial_id(lease.entry, lease.task_id, lease.trial_index),
                             error=str(e),
                             retryable=False,
                         )
@@ -3481,6 +3864,7 @@ class Orchestrator:
                         lease = active_futures.pop(future)
                         task_id = lease.task_id
                         trial_idx = lease.trial_index
+                        entry = lease.entry
                         try:
                             trial_result = future.result()
                             trajectory = trial_result.trajectory
@@ -3504,7 +3888,7 @@ class Orchestrator:
                                 )
                                 if should_retry:
                                     self._cleanup_runner_state_for_retry(
-                                        runtime_backend, task_id, trial_idx
+                                        runtime_backend, task_id, trial_idx, entry
                                     )
                                     self.logger.warning(
                                         "Retrying trial after transient failure",
@@ -3519,10 +3903,11 @@ class Orchestrator:
                                         task_id,
                                         trial_idx,
                                         f"Retry limit reached after transient failure: {reason}",
+                                        entry=entry,
                                     )
                                     self.state_manager.save_state(run_state)
                                     self._events.trial_failed(
-                                        trial_id=f"{task_id}:{trial_idx}",
+                                        trial_id=format_trial_id(entry, task_id, trial_idx),
                                         error=f"Retry limit reached after transient failure: {reason}",
                                         retryable=True,
                                     )
@@ -3544,11 +3929,12 @@ class Orchestrator:
                                     trial_idx,
                                     trajectory.grade.binary_pass if trajectory.grade else None,
                                     trajectory.grade.score if trajectory.grade else None,
+                                    entry=entry,
                                 )
                                 self.state_manager.save_state(run_state)
 
                                 self._events.trial_completed(
-                                    trial_id=f"{task_id}:{trial_idx}",
+                                    trial_id=format_trial_id(entry, task_id, trial_idx),
                                     binary_pass=(
                                         trajectory.grade.binary_pass if trajectory.grade else None
                                     ),
@@ -3577,14 +3963,14 @@ class Orchestrator:
                             )
                             if should_retry:
                                 self._cleanup_runner_state_for_retry(
-                                    runtime_backend, task_id, trial_idx
+                                    runtime_backend, task_id, trial_idx, entry
                                 )
                             else:
                                 # Mark as failed only when retries are exhausted.
-                                run_state.mark_failed(task_id, trial_idx, str(e))
+                                run_state.mark_failed(task_id, trial_idx, str(e), entry=entry)
                                 self.state_manager.save_state(run_state)
                                 self._events.trial_failed(
-                                    trial_id=f"{task_id}:{trial_idx}",
+                                    trial_id=format_trial_id(entry, task_id, trial_idx),
                                     error=str(e),
                                     retryable=True,
                                 )
@@ -3775,6 +4161,7 @@ class Orchestrator:
         )
 
         agent_client = self._build_agent_client(agent_config)
+        agent_clients_by_entry = self._build_agent_clients_by_entry()
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -3785,6 +4172,12 @@ class Orchestrator:
         # ``_extract_run_env_manifest`` fires, so worker and parent agree on
         # what the plan looks like.
         self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
+
+        # Execution-mode capability gate: refuse any (entry, task) whose adapter
+        # cannot run the mode its metadata classifies, keyed off the same
+        # per-unit decision the conductor dispatches on. Fires here — after the
+        # descriptions are materialised, before any container is provisioned.
+        self._gate_execution_mode_capability()
 
         # Workers join an already-materialised run; if the run's tasks declare
         # env_manifest, the parent orchestrator materialised a task-declared
@@ -3823,6 +4216,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
+            agent_clients_by_entry=agent_clients_by_entry,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
@@ -3831,7 +4225,9 @@ class Orchestrator:
             runtime_backend, conductor, output_dir=output_dir
         )
 
-        task_by_id = {task.task_id: task for task in self.tasks}
+        task_by_entry_task = {
+            (entry, task.task_id): task for entry, task in self._entry_task_units()
+        }
         run_queue = create_run_queue(
             self.config.effective_queue_backend,
             sqlite_path=output_dir / "run_queue.sqlite",
@@ -3884,7 +4280,7 @@ class Orchestrator:
                 if lease is None:
                     break
 
-                task = task_by_id.get(lease.task_id)
+                task = task_by_entry_task.get((lease.entry, lease.task_id))
                 if task is None:
                     run_queue.mark_failed(
                         lease.id, f"Task not found in loaded set: {lease.task_id}", retryable=False
@@ -3902,7 +4298,8 @@ class Orchestrator:
                         attempt_id=lease.retry_count,
                         worker_id=lease_owner,
                         run_id=run_id,
-                        agent_client=agent_client,
+                        entry=lease.entry,
+                        agent_client=agent_clients_by_entry.get(lease.entry) or agent_client,
                         user_config=user_config,
                         judge_config=judge_config,
                         env_endpoints=env_endpoints,
@@ -3923,7 +4320,7 @@ class Orchestrator:
                             lease.id, f"Retryable failure: {reason}", retryable=True
                         ):
                             self._cleanup_runner_state_for_retry(
-                                runtime_backend, lease.task_id, lease.trial_index
+                                runtime_backend, lease.task_id, lease.trial_index, lease.entry
                             )
                             requeued += 1
                         else:
@@ -3934,7 +4331,7 @@ class Orchestrator:
                 except Exception as e:
                     if run_queue.mark_failed(lease.id, str(e), retryable=True):
                         self._cleanup_runner_state_for_retry(
-                            runtime_backend, lease.task_id, lease.trial_index
+                            runtime_backend, lease.task_id, lease.trial_index, lease.entry
                         )
                         requeued += 1
                     else:
@@ -4004,7 +4401,7 @@ class Orchestrator:
         if reset_queue:
             run_queue.clear_all()
 
-        items = self._build_pending_trials(self.tasks, self.config.orchestrator.repeats)
+        items = self._build_pending_trials(self.config.orchestrator.repeats)
         existing_counts = run_queue.get_counts()
         if existing_counts.get("total", 0) > 0:
             self.logger.warning(
@@ -4180,20 +4577,45 @@ class Orchestrator:
             self.logger.warning("No results to report")
             return
 
-        # Group trajectories by task
-        task_trajectories = {}
+        # Group trajectories by (entry, task_id) so two harness entries running
+        # the same task id produce one metrics row each instead of merging into
+        # one. A single-adapter trajectory carries no entry (``harness_entry is
+        # None``) and groups by task id alone, unchanged. ``results`` folds in the
+        # retained reports of trials completed on a prior run, so a resume keeps
+        # their rows in the denominator and cost totals.
+        task_trajectories: dict[tuple[str, str], list[Trajectory]] = {}
         for traj in results:
-            if traj.task_id not in task_trajectories:
-                task_trajectories[traj.task_id] = []
-            task_trajectories[traj.task_id].append(traj)
-        task_by_id = {task.task_id: task for task in self.tasks}
+            key = (traj.harness_entry or "", traj.task_id)
+            task_trajectories.setdefault(key, []).append(traj)
+        task_by_entry_task = {
+            (entry, task.task_id): task for entry, task in self._entry_task_units()
+        }
 
         # Calculate metrics per task
         all_task_metrics = []
-        for task_id, trajectories in task_trajectories.items():
+        for (entry, task_id), trajectories in task_trajectories.items():
             task_metrics = calculate_task_metrics(trajectories)
             task_metrics["task_id"] = task_id
-            task_cfg = task_by_id.get(task_id)
+            # Recorded only for a harness entry, so a single-adapter run's rows
+            # are byte-unchanged.
+            if entry:
+                task_metrics["harness_entry"] = entry
+            # Every trial in one (entry, task_id) group ran in a single mode —
+            # the entry fixes the adapter and the task fixes the metadata the
+            # mode is classified from. A disagreement is a wiring defect, not a
+            # value to average over.
+            modes = {traj.execution_mode for traj in trajectories}
+            if len(modes) > 1:
+                raise RuntimeError(
+                    f"task {task_id!r} (entry {entry!r}) has trajectories with "
+                    f"disagreeing execution modes {sorted(str(mode) for mode in modes)}; "
+                    "all trials in one (entry, task_id) group run in a single mode."
+                )
+            execution_mode = next(iter(modes))
+            task_metrics["execution_mode"] = (
+                execution_mode.value if execution_mode is not None else None
+            )
+            task_cfg = task_by_entry_task.get((entry, task_id))
             if task_cfg is not None:
                 task_metrics["benchmark_type"] = task_cfg.category
                 task_metrics["complexity"] = task_cfg.metadata.complexity
@@ -4246,6 +4668,12 @@ class Orchestrator:
             metadata_slices["by_expected_failure_mode"][key] = calculate_aggregate_metrics(
                 group, weighted=True
             )
+
+        # Per-harness slices — keyed by harness bucket, execution mode, and the
+        # flat ``"<harness>::<family>"`` composite. The leaf values are the same
+        # raw aggregate dicts the task-metadata slices above carry.
+        harness_comparison = build_harness_comparison_slices(all_task_metrics)
+        metadata_slices.update(harness_comparison)
 
         reasoning_transport = self._reasoning_transport_rollup()
         self._warn_on_reasoning_transport(reasoning_transport)
@@ -4307,3 +4735,10 @@ class Orchestrator:
                 "deterministic_attribution_coverage"
             ),
         )
+
+        # On a multi-harness run, print the labelled comparison beside the
+        # aggregate line. A single-adapter / single-bucket run has nothing to
+        # compare and the formatter returns None, so its output is unchanged.
+        comparison_table = format_harness_comparison_table(harness_comparison)
+        if comparison_table is not None:
+            self.logger.info(comparison_table)

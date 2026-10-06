@@ -341,9 +341,52 @@ def _run_orchestrator(
     adapter.trial_grader_name = "runner_rpc"
     adapter.get_grading_config.return_value = None
     adapter.fingerprint.return_value = None
+    # Single-adapter double: ``for_entry`` returns the same configured adapter,
+    # mirroring ``BaseAdapter.for_entry``'s no-op default, so the conductor's
+    # per-trial ``_adapter_for`` resolution reaches the configured seams instead
+    # of an unconfigured child mock.
+    adapter.for_entry.return_value = adapter
     orch.adapter = adapter
 
     return _CompletedRun(run_dir=orch.run(), completeness=orch.grading_completeness)
+
+
+class TestSingleAdapterRoutingIsEntryLess:
+    """Behaviour lock for the invariant the full-run tests below rely on.
+
+    A single-adapter run has no harness entries, so every task routes to the one
+    configured adapter under the entry-less key, and each trial spec carries the
+    empty ``entry``. That is what keeps the completion event (and the output
+    paths) on the bare ``task_id:trial_index`` identity. This pins it at unit
+    tier — no orchestrator run, no runner service — so a future change that
+    routes the single-adapter path through a different adapter object or an
+    entry-prefixed key is caught here in milliseconds rather than only by the
+    full-run tests (which need the real grading servicer).
+    """
+
+    @staticmethod
+    def _single_adapter_orchestrator(tmp_path: Path) -> Orchestrator:
+        orch = Orchestrator(
+            make_run_config(tmp_path / "results"),
+            deps=OrchestratorDeps(
+                events=_RecordingEvents(),
+                runtime_backend=InMemoryRuntimeBackend(),
+                conductor_factory=lambda ctx: MagicMock(),
+            ),
+        )
+        orch.adapter = MagicMock()
+        return orch
+
+    def test_no_entries_are_registered(self, tmp_path: Path) -> None:
+        orch = self._single_adapter_orchestrator(tmp_path)
+        assert orch._entry_of_task == {}
+
+    def test_every_task_routes_to_the_one_adapter(self, tmp_path: Path) -> None:
+        orch = self._single_adapter_orchestrator(tmp_path)
+        # Resolution returns the configured adapter itself, not an entry's
+        # adapter — and never consults ``for_entry`` for the entry-less case.
+        assert orch._adapter_for_task("TASK-A") is orch.adapter
+        orch.adapter.for_entry.assert_not_called()
 
 
 class TestTheRunCountsTheUngradeableAttempt:

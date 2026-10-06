@@ -1,0 +1,37 @@
+# Run the example Inspect AI task against a real (cheap) model via OpenRouter.
+#
+#   scripts/with_env.sh uv run tolokaforge run \
+#     --config examples/inspect_ai/run_config_openrouter.yaml --image-source build
+#
+# Needs OPENROUTER_API_KEY in .env (resolved via tolokaforge.secrets) and a
+# running Docker daemon. The key is forwarded into the trial container so
+# Inspect's `openrouter/` provider can authenticate.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/openai/gpt-4o-mini"
+    harness: "inspect_ai"
+  user:
+    provider: "openrouter"
+    name: "openrouter/openai/gpt-4o-mini"
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  queue_backend: sqlite
+  strict_task_load: true
+  timeouts:
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/inspect_ai/tasks"
+  tasks_glob: "*.py"
+  output_dir: "results/inspect_ai_openrouter"
+  harness_adapter:
+    type: "inspect_ai"
+    params:
+      inspect_task_dir: "examples/inspect_ai/tasks"
+      agent_provider_env:
+        OPENROUTER_API_KEY: "${secret:OPENROUTER_API_KEY}"

@@ -125,8 +125,62 @@ def _write_run_config(
     return config_path
 
 
+def _write_harnesses_run_config(root: Path, dataset: Path) -> Path:
+    """Run config with a two-entry ``harnesses:`` block and no ``harness_adapter``.
+
+    Each entry pins one fixture task through its own native adapter — the shape
+    that, before per-entry resolution reached the dry-run, fell through to
+    single-adapter native whole-repo discovery.
+    """
+    config_path = root / "run_harnesses.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "models": {
+                    "agent": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4-6"}
+                },
+                "orchestrator": {"repeats": 1, "auto_start_services": False},
+                "compute": {"workers": 1},
+                "evaluation": {
+                    "projects": [str(dataset)],
+                    "tasks_glob": "**/task.yaml",
+                    "output_dir": str(root / "out"),
+                },
+                "harnesses": {
+                    "entries": [
+                        {"name": "alpha", "adapter": "native", "task_ids": ["fixture_01"]},
+                        {"name": "beta", "adapter": "native", "task_ids": ["fixture_02"]},
+                    ]
+                },
+            }
+        )
+    )
+    return config_path
+
+
 def _count_panels(stderr: str) -> int:
     return len(re.findall(r"Task fixture_\d+ · Trial 0", stderr))
+
+
+class TestDryRunHarnesses:
+    def test_dry_run_resolves_each_harness_entry(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A ``harnesses:`` dry-run renders each entry's first-turn wiring through
+        the composite — both entries, entry-qualified, no native fallthrough and
+        no crash."""
+        dataset = _write_task_pack(tmp_path, ["fixture_01", "fixture_02", "fixture_03"])
+        config = _write_harnesses_run_config(tmp_path, dataset)
+
+        result = runner.invoke(cli, ["run", "--config", str(config), "--dry-run"])
+
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == ""
+        assert "Dry run:" in result.stderr
+        assert "Task alpha/fixture_01 · Trial 0" in result.stderr
+        assert "Task beta/fixture_02 · Trial 0" in result.stderr
+        # Each entry's allow-list is honoured — fixture_03 is pulled by neither,
+        # so no native whole-repo discovery leaked it in.
+        assert "fixture_03" not in result.stderr
+        assert "rendering first 2 sample(s) (of 2 task(s) available)" in result.stderr
 
 
 class TestDryRunExitAndStreams:

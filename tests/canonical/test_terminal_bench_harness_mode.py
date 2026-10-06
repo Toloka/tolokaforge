@@ -28,12 +28,14 @@ import pytest
 
 from tolokaforge.core import plugin_registry
 from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     InitialStateConfig,
     ModelConfig,
+    OutputFormat,
     RateLimitProbeConfig,
     TaskConfig,
     TerminationReason,
@@ -133,6 +135,8 @@ def _spec(metadata: dict[str, Any], tools: list[ToolSchema]) -> TrialSpec:
     return TrialSpec(
         trial_id=f"{_TASK_ID}:0",
         run_id="harness-canon",
+        task_id=_TASK_ID,
+        trial_index=0,
         task=TaskDescription(
             task_id=_TASK_ID,
             name=_TASK_ID,
@@ -143,6 +147,7 @@ def _spec(metadata: dict[str, Any], tools: list[ToolSchema]) -> TrialSpec:
             agent_tools=tools,
             metadata=metadata,
         ),
+        execution_mode=select_execution_mode(metadata),
         agent_model_config=ModelConfig(provider="anthropic", name="stub"),
         env_endpoints=EnvEndpoints(db_url="http://db:8000", runner_url="http://runner:50051"),
     )
@@ -194,6 +199,9 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # the trial-end producer seam on a stub runtime backend that lacks
         # ``remember_trial_inputs`` / ``build_grade_bundle``.
         config.grader = None
+        # The artifact-write phase fails loud on an unknown output format; a
+        # MagicMock is not a member, so return the default the enum resolves to.
+        config.effective_output_format.return_value = OutputFormat.TOLOKAFORGE
 
         runtime = _RecordingRuntime(tools)
         # Exposed on the fixture callable so a case whose conductor call raises

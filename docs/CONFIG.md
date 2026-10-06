@@ -82,9 +82,13 @@ evaluation:
   # block. Omit the whole block for the default below.
   grading_validation:
     fail_on: "advisory"       # "advisory" | "error"
+
+output:                       # optional; omit for the tolokaforge default
+  format: "tolokaforge"       # "tolokaforge" | "native" | "both"
 ```
 
 Notes:
+- `output.format` (default `tolokaforge`) chooses what each trial writes to disk. `tolokaforge` writes the engine's own normalised trial bundle only. `native` and `both` write that same bundle **plus** the underlying harness's own files under the trial's `native/` directory (for example `native/logs/…` for a [delegated harness](ADAPTERS.md)) — they are identical today; the reduced-skeleton `native` variant is deferred so the full bundle stays available for resume and observers. A trial that produced no native files — an engine-loop trial, or a harness whose adapter names none — writes no `native/` directory under any format, so its output is the normalised bundle regardless. When a delegated harness's CLI prints no turn or token totals of its own, those inner counts are recovered from its native logs and folded into the trial's metrics labelled as harness-reported (not engine-measured); see [OUTPUT_FORMAT.md § `metrics.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexmetricsyaml) and § `native/`.
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `evaluation.grading_validation.fail_on` (default `advisory`) names the least severe finding class the pre-run gate refuses the run over. `advisory` fails on both classes; `error` fails on errors alone. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). `unchecked` is not a value here: it is a channel rather than a severity, and is logged rather than enforced so a gate that could check nothing does not read as a clean bill of health.
 - **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
@@ -120,6 +124,147 @@ Notes:
   `tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir>`
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
+
+### `harnesses:` — run multiple adapters in one run
+
+A single run normally loads one adapter: `evaluation.harness_adapter` (or the
+`native` default). To run several adapters side by side in one run — each
+pulling its own tasks — declare a `harnesses:` block with one entry per
+adapter. Each entry is dispatched independently.
+
+```yaml
+harnesses:
+  entries:
+    - adapter: native            # registered adapter type (default "native")
+      projects:                  # project roots this entry pulls from
+        - "/abs/path/pack-a"
+      tasks_glob: "**/task.yaml" # optional; inherits evaluation.tasks_glob
+      task_ids: []               # optional explicit allow-list
+    - name: tau-leg              # optional; derived from adapter (+ mode) if omitted
+      adapter: tau
+      mode: delegated            # optional execution-mode override
+      model:                     # optional per-entry model map, merged over `models`
+        agent:                   # per-entry agent model, honored in every mode
+          provider: openrouter
+          name: "anthropic/claude-sonnet-4.6"
+      params: {}                 # adapter-specific params for this entry
+```
+
+- **`harnesses` and `evaluation.harness_adapter` are mutually exclusive.** A
+  config naming both fails loud at load — `harnesses` dispatches one adapter per
+  entry, `harness_adapter` names a single run-wide adapter, so naming both has
+  not decided which shape the run is. A single-adapter run keeps using
+  `evaluation.harness_adapter` (or the `native` default) and is unaffected: with
+  no `harnesses` block nothing about today's behaviour changes.
+- **Entry names.** `name` identifies the entry everywhere downstream (and will
+  become an output path segment). Omit it and the name is derived
+  deterministically from `adapter` — and `mode` when set — as `native`,
+  `native-delegated`, …, with a numeric suffix (`native-2`) on collision.
+  Names must be unique and filesystem-safe (letters, digits, `.`, `-`, `_`,
+  starting with a letter or digit); an unsafe or duplicate name is refused.
+- **Entries are strict (`extra="forbid"`).** A typo'd key inside an entry — or a
+  typo'd key on the `harnesses` block itself — fails the load rather than being
+  silently dropped. This is stricter than the surrounding run-config blocks on
+  purpose: an entry is small and hand-written.
+- **Precedence.** A blank `projects` / `tasks_glob` on an entry inherits the
+  run-level `evaluation.projects` / `evaluation.tasks_glob`; set them on the
+  entry to override. A per-entry `model` map is merged role-wise over the
+  run-level `models` (the entry wins per role; roles it does not name fall back
+  to `models`). A per-entry `agent` model is honored in every execution mode: a
+  delegated entry carries it through the harness command, and an engine-loop
+  entry drives the engine's own loop against its own declared agent client. Two
+  entries that resolve to the same agent model share one client; an entry that
+  names no `agent` (or names the run-level one) reuses the run-level client.
+- **`task_packs`** on an entry is the deprecated alias for `projects`, coerced
+  with a `DeprecationWarning` exactly as on `evaluation`.
+- A `task_id` may appear under more than one entry — a real tasks×harnesses
+  matrix. Resolution is by entry, and trial identity is
+  `(entry, task_id, trial_index)` end to end: the `trial_id` label, the
+  `trials/<entry>/<task_id>/<idx>/` output path (empty entry → the two-level
+  `trials/<task_id>/<idx>/`), the durable queue rows, and the resume state are
+  all keyed by the triple, so two entries sharing a task id never collide.
+- Each entry's execution mode is gated per entry before any task enumeration or
+  container work: the mode (the entry's `mode`, or inferred from its harness) is
+  checked against the modes its adapter runs, and a mismatch is refused naming
+  the entry, its adapter, the mode, and the supported set. (The config-side and
+  conductor-side mode classification are unified under #1758.)
+
+#### Worked example — one task across two harnesses
+
+Run the same task under two harness entries in one run: one entry runs the task
+under the engine's own loop, the other runs it under `terminal_bench` (further
+harnesses plug in as additional entries the same way). The shared `task_id`
+appears under both entries, so each leg is an independent trial.
+
+```yaml
+harnesses:
+  entries:
+    - name: engine
+      adapter: native
+      projects: ["/abs/path/pack"]
+      task_ids: ["fix-order-sync"]
+    - name: terminal_bench
+      adapter: terminal_bench
+      task_ids: ["fix-order-sync"]
+      params:
+        terminal_bench_dir: "examples/terminal_bench"
+```
+
+With `repeats: 1` this run writes two independent bundles for the one task —
+one per entry, under the `trials/<entry>/<task>/<idx>/` layout:
+
+```
+results/<run>/trials/
+├── engine/fix-order-sync/0/          # the engine-loop leg
+│   ├── trajectory.yaml               # harness_entry: engine
+│   └── grade.yaml
+└── terminal_bench/fix-order-sync/0/  # the terminal_bench leg
+    ├── trajectory.yaml               # harness_entry: terminal_bench
+    └── grade.yaml
+```
+
+The durable queue and the resume state are keyed by the same
+`(entry, task_id, trial_index)` triple, so `--resume` replays only the legs that
+did not finish: a resume after `engine/fix-order-sync/0` completed re-runs
+`terminal_bench/fix-order-sync/0` alone and leaves the completed leg untouched.
+
+#### Worked example — one task, two agent models in the engine loop
+
+Each engine-loop entry runs the engine's own loop against the `agent` model it
+declares, so the same task can be evaluated head-to-head across two models in a
+single run. Both entries set `mode: engine_loop` and share the one `task_id`,
+with a different per-entry `model.agent`:
+
+```yaml
+harnesses:
+  entries:
+    - name: baseline
+      adapter: native
+      mode: engine_loop
+      projects: ["/abs/path/pack"]
+      task_ids: ["fix-order-sync"]
+      model:
+        agent:
+          provider: openai
+          name: gpt-4o
+    - name: challenger
+      adapter: native
+      mode: engine_loop
+      projects: ["/abs/path/pack"]
+      task_ids: ["fix-order-sync"]
+      model:
+        agent:
+          provider: anthropic
+          name: claude-sonnet-4.6
+```
+
+The `baseline` leg drives the engine loop with `gpt-4o`, the `challenger` leg
+with `claude-sonnet-4.6`. Each leg's trajectory records its own
+`agent_model_config`, and the two legs are independent trials keyed by
+`(entry, task_id, trial_index)`, written under
+`trials/baseline/fix-order-sync/0/` and `trials/challenger/fix-order-sync/0/`.
+Two entries that name the same `agent` model share one agent client; an entry
+with no per-entry `agent` reuses the run-level `models.agent`.
 
 ### `rate_limit_probe:` — measure a provider's served throughput
 

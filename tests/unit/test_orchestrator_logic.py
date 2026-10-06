@@ -190,17 +190,17 @@ class TestOrchestratorConstruction:
 
         config = _make_run_config(orchestrator=OrchestratorConfig(shuffle_trials=False))
         orch = Orchestrator(config)
-        tasks = [_make_task_config("TASK-1"), _make_task_config("TASK-2")]
+        orch.tasks = [_make_task_config("TASK-1"), _make_task_config("TASK-2")]
 
-        pending = orch._build_pending_trials(tasks, repeats=3)
+        pending = orch._build_pending_trials(repeats=3)
 
         assert pending == [
-            ("TASK-1", 0),
-            ("TASK-1", 1),
-            ("TASK-1", 2),
-            ("TASK-2", 0),
-            ("TASK-2", 1),
-            ("TASK-2", 2),
+            ("", "TASK-1", 0),
+            ("", "TASK-1", 1),
+            ("", "TASK-1", 2),
+            ("", "TASK-2", 0),
+            ("", "TASK-2", 1),
+            ("", "TASK-2", 2),
         ]
 
     def test_build_pending_trials_shuffle_changes_order(self) -> None:
@@ -210,11 +210,11 @@ class TestOrchestratorConstruction:
         orch = Orchestrator(config)
         # Enough items that an accidental identity permutation is implausible
         # (10! = 3.6M).
-        tasks = [_make_task_config(f"TASK-{i}") for i in range(5)]
-        lexicographic = [(t.task_id, idx) for t in tasks for idx in range(2)]
+        orch.tasks = [_make_task_config(f"TASK-{i}") for i in range(5)]
+        lexicographic = [("", t.task_id, idx) for t in orch.tasks for idx in range(2)]
 
         random.seed(0)
-        pending = orch._build_pending_trials(tasks, repeats=2)
+        pending = orch._build_pending_trials(repeats=2)
 
         assert sorted(pending) == sorted(lexicographic)
         assert pending != lexicographic
@@ -224,28 +224,26 @@ class TestOrchestratorConstruction:
 
         config = _make_run_config()
         orch = Orchestrator(config)
-        tasks = [_make_task_config("TASK-1"), _make_task_config("TASK-2")]
+        orch.tasks = [_make_task_config("TASK-1"), _make_task_config("TASK-2")]
         completed: set[tuple[str, int]] = {("TASK-1", 0), ("TASK-2", 1)}
 
         pending = orch._build_pending_trials(
-            tasks,
             repeats=2,
-            skip_completed=lambda task_id, trial_idx: (task_id, trial_idx) in completed,
+            skip_completed=lambda task_id, trial_idx, entry: (task_id, trial_idx) in completed,
         )
 
-        assert pending == [("TASK-1", 1), ("TASK-2", 0)]
+        assert pending == [("", "TASK-1", 1), ("", "TASK-2", 0)]
 
     def test_build_pending_trials_skip_completed_all_returns_empty(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
 
         config = _make_run_config()
         orch = Orchestrator(config)
-        tasks = [_make_task_config("TASK-1")]
+        orch.tasks = [_make_task_config("TASK-1")]
 
         pending = orch._build_pending_trials(
-            tasks,
             repeats=3,
-            skip_completed=lambda task_id, trial_idx: True,
+            skip_completed=lambda task_id, trial_idx, entry: True,
         )
 
         assert pending == []
@@ -421,6 +419,27 @@ class TestCollectExistingCost:
             trial_dir = trials_root / task_id / str(trial_idx)
             trial_dir.mkdir(parents=True)
             (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": cost}))
+
+        total = Orchestrator._collect_existing_cost(tmp_path)
+        assert abs(total - 0.10) < 1e-9
+
+    def test_seeds_from_both_single_and_harness_bundle_depths(self, tmp_path: Path) -> None:
+        # A resumed harness run has bundles at the 3-level
+        # ``trials/<entry>/<task>/<idx>/`` depth; a single-adapter resume has
+        # them at the 2-level ``trials/<task>/<idx>/`` depth. The cost seed must
+        # pick up both so budget re-entry is correct either way.
+        import yaml
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        trials_root = tmp_path / "trials"
+        two_level = trials_root / "T1" / "0"
+        two_level.mkdir(parents=True)
+        (two_level / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.04}))
+
+        three_level = trials_root / "claude" / "shared" / "0"
+        three_level.mkdir(parents=True)
+        (three_level / "metrics.yaml").write_text(yaml.dump({"cost_usd": 0.06}))
 
         total = Orchestrator._collect_existing_cost(tmp_path)
         assert abs(total - 0.10) < 1e-9
@@ -644,7 +663,7 @@ class TestBuildSystemPrompt:
         task = _make_task_config(
             policies={"agent_system_prompt": "You are a special assistant."},
         )
-        result = orch._build_system_prompt(task, [], Path("/fake/dir"))
+        result = orch._build_system_prompt(task, [], Path("/fake/dir"), orch.agent_client)
         assert result == "You are a special assistant."
 
     def test_system_prompt_file(self, tmp_path: Path) -> None:
@@ -652,13 +671,13 @@ class TestBuildSystemPrompt:
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Custom domain prompt here.")
         task = _make_task_config(system_prompt="prompt.md")
-        result = orch._build_system_prompt(task, [], tmp_path)
+        result = orch._build_system_prompt(task, [], tmp_path, orch.agent_client)
         assert "Custom domain prompt here." in result
 
     def test_default_fallback(self) -> None:
         orch = self._make_orchestrator()
         task = _make_task_config(system_prompt=None)
-        result = orch._build_system_prompt(task, [], Path("/nonexistent"))
+        result = orch._build_system_prompt(task, [], Path("/nonexistent"), orch.agent_client)
         assert result == "You are a helpful assistant."
 
     def test_main_policy_with_additional(self, tmp_path: Path) -> None:
@@ -671,7 +690,7 @@ class TestBuildSystemPrompt:
         (tmp_path / "tasks" / "main_policy.md").write_text("Main policy content.")
         (tmp_path / "tasks" / "additional_policy.md").write_text("Additional policy content.")
         task = _make_task_config(system_prompt="additional_policy.md")
-        result = orch._build_system_prompt(task, [], task_dir)
+        result = orch._build_system_prompt(task, [], task_dir, orch.agent_client)
         assert "Main policy content." in result
         assert "Additional policy content." in result
         assert "<main_policy>" in result
@@ -1581,7 +1600,7 @@ class TestResumeCanonicalisation:
         state_manager.initialize_run(
             run_id="20260626_154233",
             config_path="config.yaml",
-            task_ids=["TASK-001"],
+            units=[("", "TASK-001")],
             repeats=1,
         )
 
@@ -1613,7 +1632,7 @@ class TestResumeCanonicalisation:
         state_manager.initialize_run(
             run_id="coding_example_20260626_154233",
             config_path="config.yaml",
-            task_ids=["TASK-001"],
+            units=[("", "TASK-001")],
             repeats=1,
         )
 

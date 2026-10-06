@@ -35,6 +35,7 @@ from tolokaforge.core.docker_compose_materialiser import (
     DockerComposeMaterialiser,
     _DockerComposeStackHandle,
 )
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.project_loader import _synthesise_composition_plan
@@ -288,16 +289,18 @@ def _make_trial_spec(
         manifest = EnvironmentManifest(compose_file=compose_file, services=services)
     if manifest is not None:
         _synthesise_composition_plan(manifest, {})
+    task_desc = make_task_description(
+        task_id="task-1",
+        name="probe",
+        category="general",
+        description="Per-trial component-log wiring test",
+        environment_manifest=manifest,
+    )
     return TrialSpec(
         trial_id=trial_id,
         run_id="run_component_logs",
-        task=make_task_description(
-            task_id="task-1",
-            name="probe",
-            category="general",
-            description="Per-trial component-log wiring test",
-            environment_manifest=manifest,
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:5432",

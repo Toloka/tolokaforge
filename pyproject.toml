@@ -171,8 +171,14 @@ office = [
 terminal_bench = [
     "tolokaforge-adapter-terminal-bench",
 ]
+inspect_ai = [
+    "tolokaforge-adapter-inspect-ai",
+]
+harbor = [
+    "tolokaforge-adapter-harbor",
+]
 adapters = [
-    "tolokaforge[terminal_bench]",
+    "tolokaforge[terminal_bench,inspect_ai,harbor]",
 ]
 all = [
     "tolokaforge[dx,browser,server,rag,office,adapters,runner]",
@@ -528,6 +534,7 @@ only-include = [
     "tolokaforge/core/_runner_subset.py",
     "tolokaforge/core/deprecations.py",
     "tolokaforge/core/env_var.py",
+    "tolokaforge/core/execution_mode.py",
     "tolokaforge/core/hash.py",
     "tolokaforge/core/judge_prompt.py",
     "tolokaforge/core/logging.py",
@@ -591,6 +598,7 @@ extend-exclude = '''
   | tests/data/projects
   | external_adapters
   | examples/terminal_bench
+  | examples/harbor
 )
 '''
 
@@ -601,9 +609,10 @@ extend-exclude = [
     "**/node_modules",
     "**/__pycache__", 
     "contrib",
-    "tests/data/projects", 
+    "tests/data/projects",
     "external_adapters",
     "examples/terminal_bench",
+    "examples/harbor",
 ]
 
 [tool.ruff.lint]
@@ -801,6 +810,11 @@ dev = [
     "hatchling>=1.31.0",
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
+    # In the dev closure so its canonical delegated-seam test runs with the
+    # engine's suite. The adapter package pulls no Harbor dependency itself —
+    # Harbor lives only in the trial image it builds — so this stays off the
+    # base install (the opt-in boundary test still holds).
+    "tolokaforge-adapter-harbor",
     "dev-mcp",
     "automation",
     # boto3 pulled in for the S3BundleStore stubber tests
@@ -840,6 +854,8 @@ members = [
     "tools/rubric-calibrator",
     "tools/judge-kind-ab",
     "external_adapters/tolokaforge-adapter-terminal-bench",
+    "external_adapters/tolokaforge-adapter-inspect-ai",
+    "external_adapters/tolokaforge-adapter-harbor",
 ]
 
 [tool.uv.sources]
@@ -848,6 +864,8 @@ dev-mcp = { workspace = true }
 judge-kind-ab = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
+tolokaforge-adapter-harbor = { workspace = true }
+tolokaforge-adapter-inspect-ai = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
 tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }

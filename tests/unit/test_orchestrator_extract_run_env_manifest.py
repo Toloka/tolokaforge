@@ -370,3 +370,43 @@ class TestServicesDeclarationsPreserved:
         assert result is not None
         assert result.services["db"].isolation == "shared"
         assert result.services["default"].isolation == "shared"
+
+
+class TestMatrixSameTaskUnderTwoEntries:
+    """The run-scope agreement check keys by ``(entry, task_id)``, so the same
+    task id running under two harness entries is compared independently: a real
+    disagreement between the two entries still raises, and agreement passes.
+
+    (Unit tier, alongside the other ``_extract_run_env_manifest`` agreement
+    tests — the method is pure orchestrator logic with no snapshot.)
+    """
+
+    @staticmethod
+    def _orch_with_units(units: list[tuple[str, Any]]) -> Orchestrator:
+        orch = Orchestrator(_run_config())
+        # The entry-aware dispatch spine: (entry, adapter, task). The adapter is
+        # unused on this path (self.adapter stays None), so None is fine.
+        orch.task_units = [(entry, None, task) for entry, task in units]
+        orch.tasks = [task for _entry, task in units]
+        return orch
+
+    def test_divergent_run_scope_between_two_entries_raises(self) -> None:
+        m1 = _run_scope_patch("safe_one_service.yaml")
+        m2 = _run_scope_patch("safe_two_service.yaml")
+        orch = self._orch_with_units(
+            [("alpha", _task("shared", m1)), ("beta", _task("shared", m2))]
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            orch._extract_run_env_manifest()
+        msg = str(excinfo.value)
+        assert "disagree on the run-scope subset" in msg
+        # Both entries' copies of the shared task id are named.
+        assert "alpha:shared" in msg
+        assert "beta:shared" in msg
+
+    def test_agreeing_run_scope_between_two_entries_passes(self) -> None:
+        p = _run_scope_patch("safe_two_service.yaml")
+        orch = self._orch_with_units([("alpha", _task("shared", p)), ("beta", _task("shared", p))])
+        result = orch._extract_run_env_manifest()
+        assert result is not None
+        assert str(result.compose_file) == str(_FIXTURES / "safe_two_service.yaml")

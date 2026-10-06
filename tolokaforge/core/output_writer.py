@@ -277,6 +277,16 @@ class OutputWriter:
         traj_data = {
             "task_id": trajectory.task_id,
             "trial_index": trajectory.trial_index,
+            # Multi-harness identity: the owning entry (None for a single-adapter
+            # run) and the resolved adapter's registered type, so a bundle on disk
+            # records which (entry, adapter) produced it.
+            "harness_entry": trajectory.harness_entry,
+            "adapter_type": trajectory.adapter_type,
+            # How the trial was driven (engine turn loop vs delegated harness);
+            # None for a bundle written before the field existed.
+            "execution_mode": (
+                trajectory.execution_mode.value if trajectory.execution_mode else None
+            ),
             # the attempt this bundle describes (ADR-0047); None for pre-ADR bundles
             "attempt_id": trajectory.attempt_id,
             "simulator_schema_version": trajectory.simulator_schema_version,

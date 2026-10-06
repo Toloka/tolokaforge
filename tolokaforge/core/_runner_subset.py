@@ -83,6 +83,10 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/_runner_subset.py",
     "tolokaforge/core/deprecations.py",
     "tolokaforge/core/env_var.py",
+    # The ``ExecutionMode`` enum is part of the run-config wire schema
+    # (``HarnessEntryConfig.mode``), so ``core/models/run_config.py`` — itself
+    # in the subset — imports it. Stdlib-only, no orchestrator dependency.
+    "tolokaforge/core/execution_mode.py",
     "tolokaforge/core/hash.py",
     "tolokaforge/core/judge_prompt.py",
     "tolokaforge/core/logging.py",

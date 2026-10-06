@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.core.run_queue import PostgresRunQueue, create_run_queue
+from tolokaforge.core.run_queue import (
+    PostgresRunQueue,
+    QueueSchemaVersionError,
+    create_run_queue,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -30,6 +34,16 @@ def postgres_dsn() -> str:
         pytest.skip(f"Postgres test container unavailable: {exc}")
 
 
+def _drop_queue_tables(dsn: str) -> None:
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS attempt_events")
+            cur.execute("DROP TABLE IF EXISTS attempts")
+            cur.execute("DROP TABLE IF EXISTS queue_meta")
+
+
 @pytest.mark.integration
 @pytest.mark.requires_docker
 @pytest.mark.requires_postgres
@@ -37,7 +51,7 @@ class TestPostgresRunQueue:
     def test_enqueue_lease_complete_counts(self, postgres_dsn: str):
         queue = PostgresRunQueue(postgres_dsn, max_retries=0)
         queue.clear_all()
-        queue.enqueue_many([("task_a", 0), ("task_b", 0), ("task_a", 0)])
+        queue.enqueue_many([("", "task_a", 0), ("", "task_b", 0), ("", "task_a", 0)])
 
         lease = queue.lease_next(worker_id="worker-1", lease_seconds=300)
         assert lease is not None
@@ -57,7 +71,7 @@ class TestPostgresRunQueue:
             postgres_dsn=postgres_dsn,
         )
         queue.clear_all()
-        queue.enqueue("task_retry", 0)
+        queue.enqueue("", "task_retry", 0)
 
         lease_1 = queue.lease_next(worker_id="worker-2", lease_seconds=300)
         assert lease_1 is not None
@@ -76,3 +90,44 @@ class TestPostgresRunQueue:
         counts = queue.get_counts()
         assert counts["failed"] == 1
         assert counts["pending"] == 0
+
+    def test_same_task_under_two_entries_is_two_leasable_rows(self, postgres_dsn: str):
+        queue = PostgresRunQueue(postgres_dsn, max_retries=0)
+        queue.clear_all()
+        queue.enqueue_many([("harness_a", "shared", 0), ("harness_b", "shared", 0)])
+        queue.enqueue("harness_a", "shared", 0)  # duplicate triple — ignored
+
+        counts = queue.get_counts()
+        assert counts["total"] == 2
+        assert counts["pending"] == 2
+
+        lease_1 = queue.lease_next(worker_id="worker-3", lease_seconds=300)
+        lease_2 = queue.lease_next(worker_id="worker-3", lease_seconds=300)
+        assert lease_1 is not None and lease_2 is not None
+        assert lease_1.task_id == lease_2.task_id == "shared"
+        assert {lease_1.entry, lease_2.entry} == {"harness_a", "harness_b"}
+
+    def test_version_guard_refuses_legacy_schema(self, postgres_dsn: str):
+        import psycopg
+
+        _drop_queue_tables(postgres_dsn)
+        # Materialize a pre-change queue: old 2-column UNIQUE, no queue_meta row.
+        with psycopg.connect(postgres_dsn, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE attempts (
+                        id BIGSERIAL PRIMARY KEY,
+                        task_id TEXT NOT NULL,
+                        trial_index INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        created_at DOUBLE PRECISION NOT NULL,
+                        updated_at DOUBLE PRECISION NOT NULL,
+                        UNIQUE(task_id, trial_index)
+                    )
+                    """)
+
+        with pytest.raises(QueueSchemaVersionError):
+            PostgresRunQueue(postgres_dsn, max_retries=0)
+
+        # Clean up so later-ordered tests reopen a fresh, correctly-stamped DB.
+        _drop_queue_tables(postgres_dsn)

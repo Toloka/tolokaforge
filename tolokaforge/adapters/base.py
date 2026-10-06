@@ -3,12 +3,14 @@
 import glob as glob_module
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.adapters._task_loader import GradingSource, GradingSourceKind
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
@@ -20,6 +22,8 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
 
 if TYPE_CHECKING:
+    from tolokaforge_coding_harnesses.native_log import HarnessNativeLogCounts
+
     from tolokaforge.tools.registry import Tool
 
 logger = get_logger(__name__)
@@ -605,6 +609,22 @@ class BaseAdapter(ABC):
     owns the state end-to-end leave it ``False``.
     """
 
+    supported_execution_modes: ClassVar[frozenset[ExecutionMode]] = frozenset(
+        {ExecutionMode.ENGINE_LOOP}
+    )
+    """The :class:`~tolokaforge.core.execution_mode.ExecutionMode` set this adapter runs.
+
+    The default is ``{ENGINE_LOOP}``: an adapter runs the engine's own turn
+    loop unless it declares otherwise. An adapter that can also hand the trial
+    to a task-provided agent (a coding-harness CLI) overrides this to add
+    :attr:`~tolokaforge.core.execution_mode.ExecutionMode.DELEGATED`; a
+    delegated-only adapter that owns its environment replaces it with
+    ``{DELEGATED}``. The orchestrator's capability gate reads it before any
+    container work. Legacy adapters that declare only
+    ``supports_coding_harness = True`` are honoured for one release — see
+    :func:`~tolokaforge.core.orchestrator.adapter_supported_modes`.
+    """
+
     def emit_runner_grading_payload(self, task_id: str) -> dict[str, Any]:
         """The payload this adapter emits for ``RunnerGradingConfig`` construction.
 
@@ -632,6 +652,47 @@ class BaseAdapter(ABC):
         """
         return DockerStackRequirements()
 
+    def native_artifact_container_paths(self, task_id: str) -> list[str]:
+        """Absolute in-container paths whose contents are the harness's native artifacts.
+
+        Returns the files or directories inside the trial container that hold
+        the underlying harness's own output — the artifacts a run preserves when
+        its output format is ``native`` or ``both``. The engine reads these out
+        of the container while it is still up and writes them under the trial's
+        ``native/`` directory, keeping each path's own subtree.
+
+        The default is empty: nothing to preserve. The engine-loop path and any
+        adapter without native artifacts leave it so, and ``native`` / ``both``
+        then collapse to the normalised bundle with no ``native/`` directory.
+        The engine calls this only on the already-resolved adapter instance, so
+        no harness library is imported in core to answer it.
+        """
+        return []
+
+    def ingest_native_logs(
+        self, task_id: str, native_files: Mapping[str, bytes]
+    ) -> "HarnessNativeLogCounts | None":
+        """Inner turn/token counts a harness reported in its staged native logs.
+
+        Given the trial's staged native artifacts (the ``relative path -> bytes``
+        mapping the engine read out of the container, the same bytes written
+        under ``native/``), recover the harness's own turn count and token usage
+        — the accounting the engine never measured, because a harness trial is
+        one tool call that issues no LLM request. The engine folds the result
+        into the trial's metrics as harness-reported, at the lowest precedence
+        behind the CLI's stdout totals and any wire-usage records.
+
+        The default is ``None``: no ingestion. The engine-loop path and any
+        adapter whose harness leaves no recoverable logs return it, so their
+        metrics are untouched. An adapter that can recover counts returns them
+        (or partial counts, with the fields it could not recover left ``None``);
+        it never raises, because folding native logs may not cost a trial its
+        result. The return is a plain counts record, not the engine's
+        :class:`~tolokaforge.core.llm.usage.Usage`, so an adapter shipped by a
+        harness package that imports no engine type can answer it.
+        """
+        return None
+
     def fingerprint(self) -> dict[str, Any] | None:
         """What this adapter reports about the resolved inputs it ran on.
 
@@ -643,6 +704,17 @@ class BaseAdapter(ABC):
         resolved inputs worth naming.
         """
         return None
+
+    def for_entry(self, name: str) -> "BaseAdapter":
+        """The adapter that runs harness entry *name*.
+
+        A single-adapter run has no harness entries, so the default returns
+        ``self`` and the conductor's per-trial resolution is a no-op — the
+        single-adapter path is byte-for-byte unchanged.
+        :class:`~tolokaforge.core.adapter_registry.CompositeAdapter` overrides
+        this to route each entry to its own adapter instance.
+        """
+        return self
 
     def convert_to_native(self, task_id: str) -> NativeTaskBundle:
         """Convert an external task to native TolokaForge format.

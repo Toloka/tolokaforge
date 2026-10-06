@@ -8,7 +8,13 @@ For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`. For th
 
 The engine exposes two disjoint families of adapters. Each family is a Protocol with an entry-point group; downstream code depends on the Protocol shape, not the concrete class.
 
-- **Harness adapters** (this document) — task loaders. `BaseAdapter` translates an adapter-specific on-disk format into `TaskConfig` / `AdapterEnvironment`. Discovered through `tolokaforge.adapters`. Consumed by the orchestrator, one adapter per run.
+- **Harness adapters** (this document) — task loaders. `BaseAdapter` translates an adapter-specific on-disk format into `TaskConfig` / `AdapterEnvironment`. Discovered through `tolokaforge.adapters`. Consumed by the orchestrator — one adapter per run by default, or one per `harnesses.entries` entry in a multi-harness run (see below).
+
+### Multi-harness runs (`harnesses:`)
+
+A run that declares a [`harnesses:`](CONFIG.md#harnesses--run-multiple-adapters-in-one-run) block builds one adapter per entry and wraps them in a `CompositeAdapter` (`tolokaforge/core/adapter_registry.py`). The composite resolves each trial to its entry's adapter via `BaseAdapter.for_entry(<entry name>)` — the single-adapter default returns `self`, so nothing changes for a run with no `harnesses` block.
+
+Run-level decisions that a single adapter answers alone become explicit unions on the composite, so the choice is never a silent single-pick: `any_requires_docker_cli()` (OR across entries), `union_docker_stack_requirements()` (merged, failing loud on an irreconcilable conflict), `fingerprints_by_type()` (one per distinct adapter type), and `agreed_trial_grader_name()` (the name all entries agree on, else a raise). The composite's bare single-adapter surfaces (`trial_grader_name`, `requires_docker_cli_in_runner`, `docker_stack_requirements()`, `fingerprint()`, and every per-task method) raise rather than return a default, pointing callers at the union accessor or `for_entry`. The same task id may appear under two entries; each `(entry, task_id)` pair is an independent trial, and identity is the triple `(entry, task_id, trial_index)`.
 - **Composition-plan adapters** (ADR-0044) — compose-mode runtime seams. Three Protocols shipped in `tolokaforge/core/composition_runtime.py`:
   - **`ComposeMaterialiser`** — brings one `StackDecl` up as a live compose project and tears it down; shipped as `DockerComposeMaterialiser` (`tolokaforge/core/docker_compose_materialiser.py`). Ports to K8s / remote sandbox substrates land as new implementations against the same Protocol.
   - **`ServiceLifecycleDispatcher`** — cycles one service between trials for a `ServiceIsolation` label; three built-in dispatchers (`shared`, `reset`, `ephemeral`) register into `DISPATCHER_REGISTRY` at import in `tolokaforge/core/service_lifecycle_dispatchers.py`.

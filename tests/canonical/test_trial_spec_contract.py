@@ -18,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.canonical._factories import make_env_endpoints, make_task_description
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -58,10 +59,12 @@ def _make_env_endpoints(rag: bool = False) -> EnvEndpoints:
 
 class TestTrialSpecContract:
     def test_required_fields_minimal_construction(self) -> None:
+        task = _make_task_description()
         spec = TrialSpec(
             trial_id="airline_001:0",
             run_id="run_2026_06_18",
-            task=_make_task_description(),
+            task=task,
+            execution_mode=select_execution_mode(task.metadata),
             agent_model_config=_make_model_config(),
             env_endpoints=_make_env_endpoints(),
         )
@@ -79,11 +82,13 @@ class TestTrialSpecContract:
     def test_env_endpoints_is_required(self) -> None:
         """The orchestrator must resolve service URLs before constructing
         a spec — there is no implicit empty default any longer."""
+        task = _make_task_description()
         with pytest.raises(ValidationError):
             TrialSpec(
                 trial_id="airline_001:0",
                 run_id="run_2026_06_18",
-                task=_make_task_description(),
+                task=task,
+                execution_mode=select_execution_mode(task.metadata),
                 agent_model_config=_make_model_config(),
             )
 
@@ -92,22 +97,26 @@ class TestTrialSpecContract:
         not a meaningful run name. Pinned because the value used to be
         derived from ``output_dir.name``, which is empty for ``Path('.')``
         and ``Path('/')``."""
+        task = _make_task_description()
         with pytest.raises(ValidationError):
             TrialSpec(
                 trial_id="airline_001:0",
                 run_id="",
-                task=_make_task_description(),
+                task=task,
+                execution_mode=select_execution_mode(task.metadata),
                 agent_model_config=_make_model_config(),
                 env_endpoints=_make_env_endpoints(),
             )
 
     def test_json_round_trip_is_identity(self) -> None:
+        task = _make_task_description()
         spec = TrialSpec(
             trial_id="airline_001:3",
             run_id="run_2026_06_18",
             attempt_id=2,
             worker_id="worker-7",
-            task=_make_task_description(),
+            task=task,
+            execution_mode=select_execution_mode(task.metadata),
             agent_model_config=_make_model_config(),
             user_model_config=_make_model_config(),
             max_turns=20,
@@ -127,6 +136,7 @@ class TestTrialSpecContract:
                     "trial_id": "x:0",
                     "run_id": "r",
                     "task": _make_task_description().model_dump(),
+                    "execution_mode": "engine_loop",
                     "agent_model_config": _make_model_config().model_dump(),
                     "env_endpoints": _make_env_endpoints().model_dump(),
                     "this_field_does_not_exist": True,
@@ -135,10 +145,12 @@ class TestTrialSpecContract:
 
     def test_wire_shape_top_level_keys(self) -> None:
         """Lock the top-level field set so any addition or removal is reviewed."""
+        task = _make_task_description()
         spec = TrialSpec(
             trial_id="x:0",
             run_id="r",
-            task=_make_task_description(),
+            task=task,
+            execution_mode=select_execution_mode(task.metadata),
             agent_model_config=_make_model_config(),
             env_endpoints=_make_env_endpoints(),
         )
@@ -147,10 +159,14 @@ class TestTrialSpecContract:
         # silently — adding a new top-level field requires updating this list.
         assert set(spec.model_dump().keys()) == {
             "trial_id",
+            "task_id",
+            "trial_index",
             "run_id",
             "attempt_id",
             "worker_id",
+            "entry",
             "task",
+            "execution_mode",
             "agent_model_config",
             "user_model_config",
             "judge_model_config",

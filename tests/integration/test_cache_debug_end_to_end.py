@@ -56,6 +56,7 @@ from tests.integration.docker.test_per_trial_log_capture_integration import (
 from tests.utils.docker_helpers import is_docker_daemon_available
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig, SeedRef
 from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
@@ -126,16 +127,18 @@ class TestCacheDebugRedGradeCapture:
     outcome is deterministic."""
 
     def _trial_spec(self, manifest: EnvironmentManifest) -> TrialSpec:
+        task_desc = make_task_description(
+            task_id=_TASK_ID,
+            name="cache-debug",
+            category="multi_service",
+            description="cache-debug red-grade capture integration test",
+            environment_manifest=manifest,
+        )
         return TrialSpec(
             trial_id=f"{_TASK_ID}:0",
             run_id="cache-debug-red-capture",
-            task=make_task_description(
-                task_id=_TASK_ID,
-                name="cache-debug",
-                category="multi_service",
-                description="cache-debug red-grade capture integration test",
-                environment_manifest=manifest,
-            ),
+            task=task_desc,
+            execution_mode=select_execution_mode(task_desc.metadata),
             agent_model_config=ModelConfig(name="claude-haiku-4-5", provider="anthropic"),
             env_endpoints=EnvEndpoints(
                 db_url="http://placeholder:5432",

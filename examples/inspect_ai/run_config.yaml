@@ -1,0 +1,47 @@
+# Run the example Inspect AI task through tolokaforge.
+#
+# Requirements:
+#   - Docker daemon running (the task runs inside a container)
+#   - Adapter plugin installed:
+#       uv pip install -e external_adapters/tolokaforge-adapter-inspect-ai
+#   - Locally-built runner image (the runner shells out to `docker exec`):
+#       pass --image-source build
+#
+# Invoke:
+#   scripts/with_env.sh uv run tolokaforge run --config examples/inspect_ai/run_config.yaml \
+#     --image-source build
+#
+# This example uses `mockllm/model`, so it runs offline at $0 and needs no key.
+# For a real model, set params.agent_model to an inspect model (e.g.
+# `openai/gpt-4o`) and supply provider credentials via params.agent_provider_env
+# (values may be `${secret:NAME}` refs resolved by tolokaforge.secrets).
+
+models:
+  # `harness` makes the trial's agent step a single command the adapter emits
+  # (`inspect eval`) instead of the engine LLM loop; `name` is the model Inspect
+  # runs (the orchestrator lifts it into the adapter as the model under test).
+  agent:
+    provider: "openai"
+    name: "mockllm/model"
+    harness: "inspect_ai"
+  user:
+    provider: "openai"
+    name: "mockllm/model"
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  queue_backend: sqlite
+  strict_task_load: true
+  timeouts:
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/inspect_ai/tasks"
+  tasks_glob: "*.py"
+  output_dir: "results/inspect_ai"
+  harness_adapter:
+    type: "inspect_ai"
+    params:
+      inspect_task_dir: "examples/inspect_ai/tasks"

@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help cbm-onboard cbm-offboard
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-build-orchestrator docker-up docker-down docker-status help cbm-onboard cbm-offboard
 
 # =============================================================================
 # Installation (using uv)
@@ -68,6 +68,15 @@ docker-build:
 
 docker-build-core:
 	uv run tolokaforge docker build --core
+
+# Standalone orchestrator image — the full `tolokaforge run` batch driver.
+# Builds the engine wheel + the image via the build script (see
+# docs/ORCHESTRATOR_IMAGE.md). ORCHESTRATOR_TAG/ORCHESTRATOR_EXTRAS override the
+# defaults (tolokaforge-orchestrator:local, dx).
+ORCHESTRATOR_TAG ?= tolokaforge-orchestrator:local
+ORCHESTRATOR_EXTRAS ?= dx
+docker-build-orchestrator:
+	scripts/docker/build-orchestrator.sh -t $(ORCHESTRATOR_TAG) -e $(ORCHESTRATOR_EXTRAS)
 
 docker-up:
 	uv run tolokaforge docker up --profile core
@@ -152,6 +161,7 @@ help:
 	@echo "Docker:"
 	@echo "  make docker-build       - Build all Docker images"
 	@echo "  make docker-build-core  - Build core images only (db-service + runner)"
+	@echo "  make docker-build-orchestrator - Build the standalone orchestrator image (full tolokaforge run)"
 	@echo "  make docker-up          - Start Docker services (core stack)"
 	@echo "  make docker-down        - Stop and remove Docker services"
 	@echo "  make docker-status      - Show Docker service status"

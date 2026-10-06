@@ -6,12 +6,15 @@ the first ``generate`` call, plus the resolved agent / judge / runtime
 identifiers. The rendering layer consumes these; the CLI's dry-run
 branch stitches them together.
 
-Two helpers:
+Three helpers:
 
-* :func:`load_tasks_for_dry_run` — build the adapter from a
-  :class:`RunConfig` and enumerate every declared :class:`TaskConfig`.
-  Deliberately skips the TypeSense preflight ``Orchestrator.load_tasks``
-  performs.
+* :func:`load_tasks_for_dry_run` — build the adapter through the
+  orchestrator's own :meth:`Orchestrator._create_adapter` and enumerate
+  every declared :class:`TaskConfig`. Deliberately skips the TypeSense
+  preflight ``Orchestrator.load_tasks`` performs.
+* :func:`load_harness_entry_units_for_dry_run` — resolve each
+  ``harnesses:`` entry's ``(entry, task)`` legs through the orchestrator's
+  composite adapter, the same resolution a real run uses.
 * :func:`materialize_dry_run_sample` — assemble the first-turn payload
   for one task without instantiating :class:`LLMClient` or opening a
   socket.
@@ -20,11 +23,10 @@ Two helpers:
 from __future__ import annotations
 
 import copy
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.adapters import BaseAdapter, get_adapter
+from tolokaforge.adapters import BaseAdapter
 from tolokaforge.core.llm.presets import build_capabilities, resolve_effective_preset
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.tools.registry import sanitize_schema_properties
@@ -35,6 +37,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DryRunSample",
+    "DryRunUnit",
+    "load_harness_entry_units_for_dry_run",
     "load_tasks_for_dry_run",
     "materialize_dry_run_sample",
     "tool_schema_to_openai_dict",
@@ -62,6 +66,10 @@ class DryRunSample:
     # ``actors.user.first_agent_message``: the agent's own first turn, which the
     # first request carries ahead of the user's message. ``None`` when unset.
     agent_opening_line: str | None = None
+    # Owning ``harnesses:`` entry for a multi-harness dry-run; ``None`` for a
+    # single-adapter run. Disambiguates the same task id rendered under two
+    # entries (trial identity is ``(entry, task_id, trial_index)``).
+    entry: str | None = None
 
 
 def tool_schema_to_openai_dict(tool_schema: ToolSchema) -> dict[str, Any]:
@@ -111,48 +119,6 @@ def _model_line(model: ModelConfig) -> str:
     return f"{model.provider}/{model.name} · preset: {preset}"
 
 
-def _build_dry_run_adapter_params(
-    run_config: RunConfig,
-    project: ProjectConfig | None,
-) -> tuple[str | None, dict[str, Any]]:
-    """Return ``(adapter_type, params)`` for adapter construction.
-
-    Mirrors :meth:`Orchestrator._create_adapter` — same param assembly,
-    same env-override for ``TASK_PACKS_DIRS``, same project-defaults
-    forwarding — minus every Docker / TypeSense side effect. The
-    typesense config *is* forwarded for a run that has a plane, so
-    adapters that embed it in :class:`TaskDescription` render the config
-    verbatim (unresolved port / api_key) for the operator to inspect.
-    """
-    adapter_config = run_config.evaluation.harness_adapter
-    if adapter_config:
-        adapter_type: str | None = adapter_config.type
-        params: dict[str, Any] = dict(adapter_config.params)
-    else:
-        adapter_type = None
-        params = {}
-
-    params["tasks_glob"] = run_config.evaluation.tasks_glob
-    task_packs = list(run_config.evaluation.projects)
-    env_task_packs = os.environ.get("TASK_PACKS_DIRS", "").strip()
-    if env_task_packs:
-        task_packs = [part.strip() for part in env_task_packs.split(",") if part.strip()]
-    params["task_packs"] = task_packs
-
-    typesense_config = run_config.orchestrator.effective_typesense()
-    if typesense_config is not None:
-        params["typesense"] = typesense_config.model_dump()
-
-    if project is not None:
-        defaults = project.task_defaults.model_dump(exclude_defaults=True)
-        if defaults:
-            params["project_task_defaults"] = defaults
-        if project.default_environment is not None:
-            params["project_default_environment"] = project.default_environment
-
-    return adapter_type, params
-
-
 def load_tasks_for_dry_run(
     *,
     run_config: RunConfig,
@@ -160,20 +126,89 @@ def load_tasks_for_dry_run(
 ) -> tuple[BaseAdapter, list[TaskConfig]]:
     """Instantiate the adapter and load every declared task.
 
-    Skips the TypeSense preflight :meth:`Orchestrator.load_tasks` runs
-    (dry-run must not start Docker containers). Constructs the adapter
-    via the shared :func:`get_adapter` factory using the same parameter
-    assembly the orchestrator uses at run start. Failed task loads
-    propagate as exceptions — surfacing config errors here is the
+    Builds the adapter through the orchestrator's own
+    :meth:`Orchestrator._create_adapter`, so a single-adapter dry-run
+    resolves the exact construction params a real run assembles —
+    including the ``agent_harness`` / ``agent_model`` injection a
+    coding-harness (delegated) run performs. Skips the TypeSense preflight
+    :meth:`Orchestrator.load_tasks` runs (dry-run must not start Docker
+    containers), which :meth:`Orchestrator.__init__` never triggers. Failed
+    task loads propagate as exceptions — surfacing config errors here is the
     point of ``--dry-run``.
     """
-    adapter_type, params = _build_dry_run_adapter_params(run_config, project)
-    adapter = get_adapter(adapter_type, params)
+    # Local import: keeps the orchestrator's heavy import chain (docker, grpc,
+    # the runtime stack) out of this module's load cost.
+    from tolokaforge.core.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator(run_config, project=project)
+    adapter = orchestrator._create_adapter()
 
     tasks: list[TaskConfig] = []
     for task_id in adapter.get_task_ids():
         tasks.append(adapter.get_task(task_id))
     return adapter, tasks
+
+
+@dataclass(frozen=True)
+class DryRunUnit:
+    """One ``(harness entry, task)`` of a multi-harness dry-run.
+
+    Carries the owning entry's adapter and its effective (entry-over-run)
+    agent / judge models, so each entry materialises its first-turn wiring
+    through the adapter and models that own it.
+    """
+
+    entry: str
+    adapter: BaseAdapter
+    task: TaskConfig
+    agent_config: ModelConfig
+    judge_config: ModelConfig | None
+
+
+def load_harness_entry_units_for_dry_run(
+    *,
+    run_config: RunConfig,
+    project: ProjectConfig | None = None,
+) -> list[DryRunUnit]:
+    """Resolve every ``(entry, task)`` of a ``harnesses:`` run for the dry-run.
+
+    Builds the run's :class:`~tolokaforge.core.adapter_registry.CompositeAdapter`
+    through the orchestrator's own per-entry resolution — one adapter per entry,
+    the entry-over-run model merge, the same per-entry execution-mode gate — then
+    pairs each entry's tasks with the adapter and effective models that own them.
+    This is the resolution a real run uses; the dry-run does not rediscover tasks
+    natively. No Docker, no TypeSense stack, no run directory: adapter
+    construction and task enumeration only. An entry whose effective
+    ``models.agent`` is unset fails loud rather than rendering a partial unit.
+    """
+    # Local import: keeps the orchestrator's heavy import chain (docker, grpc,
+    # the runtime stack) out of this module's load cost.
+    from tolokaforge.core.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator(run_config, project=project)
+    composite = orchestrator._create_composite_adapter()
+
+    units: list[DryRunUnit] = []
+    for entry in composite.entries.values():
+        models = orchestrator._merge_entry_models(entry.config.model)
+        agent_config = models.get("agent")
+        if agent_config is None:
+            raise RuntimeError(
+                f"harness entry {entry.name!r}: no effective models.agent — set one "
+                "on the entry's model map or at the run level."
+            )
+        judge_config = models.get("judge")
+        for task_id in entry.task_ids:
+            units.append(
+                DryRunUnit(
+                    entry=entry.name,
+                    adapter=entry.adapter,
+                    task=entry.adapter.get_task(task_id),
+                    agent_config=agent_config,
+                    judge_config=judge_config,
+                )
+            )
+    return units
 
 
 def _sanitized_tool_spec(
@@ -213,6 +248,7 @@ def materialize_dry_run_sample(
     agent_config: ModelConfig,
     judge_config: ModelConfig | None,
     runtime_choice: str,
+    entry: str | None = None,
 ) -> DryRunSample:
     """Produce a :class:`DryRunSample` for one task.
 
@@ -255,4 +291,5 @@ def materialize_dry_run_sample(
             if task.interaction_mode == "conversational"
             else None
         ),
+        entry=entry,
     )

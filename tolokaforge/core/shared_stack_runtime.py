@@ -1468,7 +1468,9 @@ class SharedStackRuntimeBackend:
             return {}
         from tolokaforge.core.compose_materialisation import trial_services_dir
 
-        dest_dir = trial_services_dir(self.log_capture.output_root, handle.trial_id)
+        dest_dir = trial_services_dir(
+            self.log_capture.output_root, handle.entry, handle.task_id, handle.trial_index
+        )
         totals: dict[str, int] = {}
         materialiser = getattr(self.composer, "materialiser", None)
         if materialiser is None:

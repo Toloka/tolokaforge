@@ -23,7 +23,7 @@ body.
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -38,6 +38,10 @@ from tolokaforge.core.actors.user_stop import UserStopRule
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
+from tolokaforge.core.execution_mode import (
+    HARNESS_COMMAND_METADATA_KEY,
+    ExecutionMode,
+)
 from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, build_capabilities
 from tolokaforge.core.llm.presets import (
@@ -50,6 +54,7 @@ from tolokaforge.core.models import (
     GradeComponents,
     Metrics,
     ModelConfig,
+    OutputFormat,
     RateLimitProbeConfig,
     RunConfig,
     SnapshotStatus,
@@ -67,12 +72,13 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
     _NullRunDisplayEvents,
 )
-from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.runner import HarnessNativeLogIngest, TrialRunner
 from tolokaforge.core.runtime import ProvisionError, RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, TrialGrader
+from tolokaforge.core.trial_identity import format_trial_id, trial_output_subpath
 from tolokaforge.observability.factory import RunIdentity
 from tolokaforge.observability.observer import (
     LoopObserverBinding,
@@ -165,6 +171,10 @@ class ConductorContext:
     trial_grader: TrialGrader
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
+    # Per-entry agent clients, keyed by harness entry name. An entry absent
+    # from the map (including the empty-string single-adapter entry) reuses
+    # ``agent_client``; see :meth:`InProcessConductor._agent_client_for`.
+    agent_clients_by_entry: Mapping[str, LLMClient] = field(default_factory=dict)
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
     # Live tracing seam (ADR-0047): the run's observer and the identity its trials trace under.
     trial_observer: TrialObserver = field(default_factory=NullTrialObserver)
@@ -415,10 +425,7 @@ class InMemoryConductor:
         self._factory = trajectory_factory or _default_success_trajectory
 
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
-        # ``spec.trial_id`` is canonical (``"{task_id}:{trial_idx}"``); derive
-        # ``trial_idx`` from it so the call log entry shape matches what tests
-        # established under the pre-reshape signature.
-        trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
+        trial_idx = spec.trial_index
         self.call_log.runs.append(
             {
                 "trial_id": spec.trial_id,
@@ -493,6 +500,7 @@ class InProcessConductor:
         trial_grader: TrialGrader,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
+        agent_clients_by_entry: Mapping[str, LLMClient] | None = None,
         events: RunDisplayEvents = _NULL_EVENTS,
         trial_observer: TrialObserver | None = None,
         run_identity: RunIdentity | None = None,
@@ -504,6 +512,7 @@ class InProcessConductor:
         self.verbose = verbose
         self.strict = strict
         self.agent_client = agent_client
+        self._agent_clients_by_entry: Mapping[str, LLMClient] = agent_clients_by_entry or {}
         self.runtime_backend = runtime_backend
         self.trial_grader = trial_grader
         self.output_dir = output_dir
@@ -511,6 +520,26 @@ class InProcessConductor:
         self.events = events
         self.trial_observer: TrialObserver = trial_observer or NullTrialObserver()
         self.run_identity = run_identity
+
+    def _adapter_for(self, spec: TrialSpec) -> BaseAdapter:
+        """The adapter that owns this trial's entry.
+
+        Multi-harness: routes to the entry's adapter via
+        ``adapter.for_entry(spec.entry)``. Single-adapter:
+        :meth:`BaseAdapter.for_entry` ignores the (empty) name and returns the
+        one adapter, so the single path is unchanged.
+        """
+        return self.adapter.for_entry(spec.entry)
+
+    def _agent_client_for(self, spec: TrialSpec) -> LLMClient:
+        """The agent-side wire client for this trial's entry.
+
+        A multi-harness entry whose effective agent model differs from the
+        run-level one has its own client in the per-entry map; every other
+        trial (single-adapter, the empty-string entry, a non-overriding entry)
+        reuses the run-level ``agent_client``.
+        """
+        return self._agent_clients_by_entry.get(spec.entry) or self.agent_client
 
     def run(
         self,
@@ -545,6 +574,14 @@ class InProcessConductor:
             )
             # Every bundle, including the snapshot grader's, records the traced attempt.
             trajectory.attempt_id = spec.attempt_id
+            # Stamp multi-harness identity: the entry (``None`` for a single
+            # adapter), the resolved adapter's registered type, and how the
+            # trial was driven. The mode is a record-only stamp read from the
+            # carried spec field — the producer classified it once from the
+            # same metadata that dispatch branched on.
+            trajectory.harness_entry = spec.entry or None
+            trajectory.adapter_type = spec.task.adapter_type
+            trajectory.execution_mode = spec.execution_mode
             self._capture_final_state(spec, setup, trajectory)
             self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
             self._produce_grade_bundle(spec, setup, trajectory)
@@ -580,10 +617,14 @@ class InProcessConductor:
         everything downstream phases need.
         """
         task = task_config
-        trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
-        trial_id = f"{task.task_id}:{trial_idx}"
+        trial_idx = spec.trial_index
+        trial_id = format_trial_id(spec.entry, task.task_id, trial_idx)
 
-        task_dir = self.adapter.get_task_dir(task.task_id)
+        # Resolve the owning adapter once for this trial's per-task calls. For a
+        # single-adapter run this is the one adapter; for a multi-harness run it
+        # is the trial's entry's adapter.
+        adapter = self._adapter_for(spec)
+        task_dir = adapter.get_task_dir(task.task_id)
 
         env_state = EnvironmentState(task_dir, task.initial_state)
         env_state.hydrate()
@@ -643,16 +684,18 @@ class InProcessConductor:
                                 self.logger.debug("Retrieved updated state after initialization")
 
         # Create trial directory early for video recording
-        trial_dir = self.output_dir / "trials" / task.task_id / str(trial_idx)
+        trial_dir = (
+            self.output_dir / "trials" / trial_output_subpath(spec.entry, task.task_id, trial_idx)
+        )
         trial_dir.mkdir(parents=True, exist_ok=True)
 
-        adapter_env = self.adapter.create_environment(task.task_id)
+        adapter_env = adapter.create_environment(task.task_id)
 
         # Adapters that opt in via ``syncs_adapter_env_to_state`` publish their
         # ``AdapterEnvironment.data`` into the runner's ``TrialState`` so the
         # runner can read it back during grading. Tau-family adapters flip the
         # flag; Native and Terminal-bench leave it at the default False.
-        if adapter_env.data and self.adapter.syncs_adapter_env_to_state:
+        if adapter_env.data and adapter.syncs_adapter_env_to_state:
             env_state.db_state = adapter_env.data
             env_state._normalize_db_state()
             self.logger.debug(
@@ -767,23 +810,29 @@ class InProcessConductor:
         safely(self._announce_persisted, spec)
 
     def _announce_persisted(self, spec: TrialSpec) -> None:
-        task_id, _, index = spec.trial_id.rpartition(":")
-        trial_dir = self.output_dir / "trials" / task_id / index
+        trial_dir = (
+            self.output_dir
+            / "trials"
+            / trial_output_subpath(spec.entry, spec.task_id, spec.trial_index)
+        )
         if not (trial_dir / "trajectory.yaml").exists():
             return
         hook = getattr(self.trial_observer, "trial_persisted", None)
         if not callable(hook):
             return
         run = self.run_identity or RunIdentity(run_id=spec.run_id)
-        identity = run.trial(task_id=task_id, trial_index=int(index), attempt_id=spec.attempt_id)
+        identity = run.trial(
+            task_id=spec.task_id, trial_index=spec.trial_index, attempt_id=spec.attempt_id
+        )
         hook(identity, trial_dir=trial_dir)
 
     def _trial_identity(self, spec: TrialSpec, setup: _TrialSetup) -> TrialIdentity:
         """The id-contract identity of this trial: the run's tracing identity (or the engine run
         id when tracing is off) plus task, trial index and the attempt being executed."""
         run = self.run_identity or RunIdentity(run_id=spec.run_id)
-        task_id = setup.trial_id.rsplit(":", 1)[0]
-        return run.trial(task_id=task_id, trial_index=setup.trial_idx, attempt_id=spec.attempt_id)
+        return run.trial(
+            task_id=spec.task_id, trial_index=spec.trial_index, attempt_id=spec.attempt_id
+        )
 
     @staticmethod
     def _model_refs(spec: TrialSpec) -> dict[str, ModelRef]:
@@ -817,21 +866,29 @@ class InProcessConductor:
         system prompt string (used by :meth:`_grade` when the runner has
         not yet populated its ``effective_system_prompt``).
 
-        A task whose metadata carries ``agent_harness_command`` brings its own
-        agent and takes the :meth:`_run_harness_trial` branch instead.
+        A trial carrying :attr:`ExecutionMode.DELEGATED` brings its own agent
+        and takes the :meth:`_run_harness_trial` branch instead. The branch
+        reads the carried :attr:`TrialSpec.execution_mode` — the mode the
+        producer classified once and stamped on the spec — so dispatch and the
+        identity stamp read the same field and cannot diverge.
         """
-        harness_command = spec.task.metadata.get("agent_harness_command")
-        if harness_command is not None:
+        if spec.execution_mode is ExecutionMode.DELEGATED:
+            # Read the command the delegated agent runs with. A DELEGATED spec
+            # whose metadata carries no non-blank command is an inconsistent
+            # spec, not a request to run the turn loop; fail loud and name the
+            # trial rather than hand a bogus command to the harness branch.
+            harness_command = spec.task.metadata.get(HARNESS_COMMAND_METADATA_KEY)
             if not isinstance(harness_command, str) or not harness_command.strip():
                 raise RuntimeError(
-                    f"trial {setup.trial_id}: task metadata "
-                    f"'agent_harness_command' must be a non-blank string; got "
-                    f"{harness_command!r}. Omit the key to run the LLM turn loop."
+                    f"trial {setup.trial_id}: execution mode is DELEGATED but task "
+                    f"metadata {HARNESS_COMMAND_METADATA_KEY!r} is not a non-blank "
+                    f"command string; got {harness_command!r}"
                 )
             return self._run_harness_trial(spec, task_config, setup, harness_command)
 
         task = task_config
         user_config = spec.user_model_config
+        agent_client = self._agent_client_for(spec)
 
         # ``interaction_mode='agent_only'`` runs the agent as a monologue —
         # the turn loop never dispatches a user actor, so constructing a
@@ -893,12 +950,14 @@ class InProcessConductor:
                 max_repeated_tool_calls=stuck_cfg.max_repeated_tool_calls
             )
 
-        system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)
+        system_prompt = self._build_system_prompt(
+            task, setup.tool_schemas, setup.task_dir, agent_client
+        )
 
         max_turns = resolve_max_turns(
             task.max_turns,
             self.config.orchestrator.max_turns,
-            self.agent_client.capabilities.default_max_turns,
+            agent_client.capabilities.default_max_turns,
         )
 
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
@@ -948,7 +1007,7 @@ class InProcessConductor:
         runner = TrialRunner(
             task_id=task.task_id,
             trial_index=setup.trial_idx,
-            agent_client=self.agent_client,
+            agent_client=agent_client,
             user_simulator=user_simulator,
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
@@ -1047,11 +1106,14 @@ class InProcessConductor:
                 "cut short without grading a container the CLI is still writing to."
             )
 
-        system_prompt = self._build_system_prompt(task_config, setup.tool_schemas, setup.task_dir)
+        agent_client = self._agent_client_for(spec)
+        system_prompt = self._build_system_prompt(
+            task_config, setup.tool_schemas, setup.task_dir, agent_client
+        )
         runner = TrialRunner(
             task_id=task_config.task_id,
             trial_index=setup.trial_idx,
-            agent_client=self.agent_client,
+            agent_client=agent_client,
             user_simulator=None,
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
@@ -1073,6 +1135,22 @@ class InProcessConductor:
         # absent is the common case and reads as "no wire measurement" — same
         # non-load-bearing treatment as ``agent_harness`` above.
         usage_log = spec.task.metadata.get(HARNESS_USAGE_LOG_METADATA_KEY)
+        # Preserve the harness's own artifacts only when the run's output format
+        # asks for them: the resolved adapter names the in-container paths, the
+        # runner reads them out while the container is up, and the preserve
+        # decision stays here rather than riding into the runner. An adapter with
+        # no native artifacts (the engine-loop default) returns an empty list, so
+        # ``native`` / ``both`` collapse to the normalised bundle. The same
+        # format gate hands the runner the adapter's native-log ingest, so a
+        # harness whose CLI printed no counts recovers them from the logs the run
+        # just preserved — and a ``tolokaforge``-format run stages nothing and
+        # ingests nothing, leaving its metrics identical.
+        native_paths: list[str] | None = None
+        ingest_native_logs: HarnessNativeLogIngest | None = None
+        if self.config.effective_output_format() in (OutputFormat.NATIVE, OutputFormat.BOTH):
+            adapter = self._adapter_for(spec)
+            native_paths = adapter.native_artifact_container_paths(task_config.task_id)
+            ingest_native_logs = adapter.ingest_native_logs
         trajectory = runner.run_harness(
             tool_name=tool.name,
             command=harness_command,
@@ -1082,6 +1160,8 @@ class InProcessConductor:
             usage_log_container_path=(
                 usage_log if isinstance(usage_log, str) and usage_log else None
             ),
+            native_artifact_container_paths=native_paths,
+            ingest_native_logs=ingest_native_logs,
         )
         return trajectory, runner, system_prompt
 
@@ -1341,7 +1421,7 @@ class InProcessConductor:
         """
         task = task_config
         writer = self._artifact_writer
-        grading_config = self.adapter.get_grading_config(task.task_id)
+        grading_config = self._adapter_for(spec).get_grading_config(task.task_id)
 
         # Persist the post-policy tool list inside the trial bundle as
         # ``tools_schemas.yaml`` — the trial's declared tool surface, agent
@@ -1355,8 +1435,9 @@ class InProcessConductor:
         # in the agent provider's dialect rather than in whatever the simulator's own
         # provider was handed — the file records one trial's declared surface, not two
         # providers' wire payloads.
-        agent_config = self.agent_client.config
-        sanitized = self.agent_client.capabilities.schema_sanitizer.sanitize(
+        agent_client = self._agent_client_for(spec)
+        agent_config = agent_client.config
+        sanitized = agent_client.capabilities.schema_sanitizer.sanitize(
             setup.tool_schemas + setup.user_tool_schemas
         )
         writer.write_tools_schemas(setup.trial_dir, sanitized)
@@ -1406,13 +1487,32 @@ class InProcessConductor:
             ),
         }
 
-        writer.write_trial_bundle(
-            setup.trial_dir,
-            trajectory,
-            task_config_dict,
-            trajectory.final_env_state,
-            runner.logger,
-        )
+        # The tolokaforge bundle is the whole output under ``tolokaforge`` and
+        # the engine-side half under ``native`` / ``both`` — so every format
+        # writes it. Native-artifact preservation attaches to the latter two.
+        output_format = self.config.effective_output_format()
+        if output_format in (
+            OutputFormat.TOLOKAFORGE,
+            OutputFormat.NATIVE,
+            OutputFormat.BOTH,
+        ):
+            writer.write_trial_bundle(
+                setup.trial_dir,
+                trajectory,
+                task_config_dict,
+                trajectory.final_env_state,
+                runner.logger,
+            )
+        else:
+            raise ValueError(f"Unsupported output format: {output_format!r}")
+
+        # ``native`` / ``both`` also preserve the harness's own artifacts, which
+        # the runner read out of the trial container while it was up and staged
+        # on :attr:`TrialRunner.harness_native_artifacts`. A trial with none
+        # staged — an engine-loop trial, or a harness whose adapter named no
+        # native paths — creates no ``native/`` directory.
+        if output_format in (OutputFormat.NATIVE, OutputFormat.BOTH):
+            self._write_native_artifacts(setup.trial_dir, runner)
 
         self.logger.info(
             "Trial output saved",
@@ -1420,6 +1520,35 @@ class InProcessConductor:
             trial_index=setup.trial_idx,
             output_dir=str(setup.trial_dir),
         )
+
+    def _write_native_artifacts(self, trial_dir: Path, runner: TrialRunner) -> None:
+        """Write the harness's staged native artifacts under ``trial_dir/native/``.
+
+        Each staged entry is a ``relative path -> bytes`` pair whose relative
+        path keeps the harness's own subtree, so ``logs/verifier/reward.txt``
+        lands at ``native/logs/verifier/reward.txt``. Nothing staged — the
+        common case — writes no ``native/`` directory, so a trial with no native
+        artifacts is byte-for-byte the normalised bundle.
+
+        A write error on one file is logged and skipped: preserving an artifact
+        may not cost a trial its already-graded result.
+        """
+        staged = runner.harness_native_artifacts
+        if not staged:
+            return
+        native_root = trial_dir / "native"
+        for relative_path, data in staged.items():
+            try:
+                destination = native_root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+            except OSError as exc:
+                self.logger.warning(
+                    "Native artifact could not be written",
+                    trial_dir=str(trial_dir),
+                    artifact=relative_path,
+                    error=str(exc),
+                )
 
     def _serialize_model_config(
         self,
@@ -1494,12 +1623,16 @@ class InProcessConductor:
         return result
 
     def _build_system_prompt(
-        self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
+        self,
+        task: TaskConfig,
+        tool_schemas: list[dict[str, Any]],
+        task_dir: Path,
+        agent_client: LLMClient,
     ) -> str:
         return build_system_prompt(
             task=task,
             task_dir=task_dir,
-            default_prompt_contract=self.agent_client.capabilities.default_agent_prompt_contract,
+            default_prompt_contract=agent_client.capabilities.default_agent_prompt_contract,
         )
 
 

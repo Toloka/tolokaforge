@@ -14,8 +14,9 @@
     field list this ADR extends with `credential_gateway`.
   - [ADR-0038](0038-grader-detachment.md) — the pattern (protocol seam,
     two topologies) this ADR reuses for the local-vs-cluster split.
-  - [ADR-0039](0039-coding-harness-adapter-agnostic.md) — the AgentDriver
-    Strategy on which the gateway lifecycle attaches.
+  - [ADR-0039](0039-coding-harness-adapter-agnostic.md) — the
+    execution-mode seam / coding-harness compose synthesis on which the
+    gateway lifecycle attaches.
   - [ADR-0040](0040-standalone-grader.md) — the grading-substrate pattern
     the gateway launcher pattern mirrors.
   - Closes [#1042](https://github.com/Toloka/tolokaforge/issues/1042).
@@ -23,6 +24,15 @@
     (runner-service credential policy).
   - Follow-up: [#1311](https://github.com/Toloka/tolokaforge/issues/1311)
     (shield gemini-cli — config-file pin + prefix path allow-list).
+
+> **Correction (2026-10-02).** This ADR's body describes the gateway
+> lifecycle as hanging off an `AgentDriver`/`CodingHarnessDriver`
+> Strategy. **That driver Strategy never shipped** (see the 2026-10-02
+> correction on [ADR-0039](0039-coding-harness-adapter-agnostic.md)).
+> The live mechanism is the coding-harness compose synthesis plus the
+> `ExecutionMode` seam; read every `CodingHarnessDriver` / `AgentDriver`
+> mention below as the compose-synthesis step that owns the sidecar,
+> not a class. The credential-shielding design is unchanged.
 
 ## Context
 

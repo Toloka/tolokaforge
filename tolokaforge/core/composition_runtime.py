@@ -192,6 +192,15 @@ class ComposedEnvHandle:
     trial_stack_handles: tuple[StackHandle, ...]
     trial_endpoints: EnvEndpoints | None
     trial_runner_client: RunnerClient | None
+    entry: str = ""
+    """The owning harness entry (empty for a single-adapter run). Carried so a
+    service-log capture resolves the trial's bundle dir by explicit identity,
+    without parsing the opaque :attr:`trial_id`."""
+    task_id: str = ""
+    """The trial's task id — the explicit identity counterpart to ``entry`` /
+    ``trial_index``, populated from the spec at provision time."""
+    trial_index: int = 0
+    """The trial's 0-based repeat index."""
 
     @property
     def compose(self) -> Any:

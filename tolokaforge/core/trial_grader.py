@@ -228,7 +228,7 @@ class RunnerRPCTrialGrader:
         trajectory: Trajectory,
         agent_system_prompt: str,
     ) -> Grade | None:
-        task_id, trial_idx = _split_trial_id(spec.trial_id)
+        task_id, trial_idx = spec.task_id, spec.trial_index
 
         if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
             self.logger.info(
@@ -362,12 +362,6 @@ class RunnerRPCTrialGrader:
         """The runner RPC client owns nothing worth explicit teardown at
         grader-scope; the orchestrator closes the runtime backend that owns
         the channel."""
-
-
-def _split_trial_id(trial_id: str) -> tuple[str, int]:
-    """Return ``(task_id, trial_index)`` from a canonical ``"{task_id}:{idx}"`` id."""
-    task_id, idx_s = trial_id.rsplit(":", 1)
-    return task_id, int(idx_s)
 
 
 def _refuse_hash_grading_on_grader_rpc(spec: TrialSpec) -> None:
@@ -655,7 +649,7 @@ class JudgeBackedTrialGrader:
         trajectory: Trajectory,
         agent_system_prompt: str,
     ) -> Grade | None:
-        task_id, trial_idx = _split_trial_id(spec.trial_id)
+        task_id, trial_idx = spec.task_id, spec.trial_index
 
         if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
             self.logger.info(
@@ -791,7 +785,7 @@ class GraderRPCTrialGrader:
         trajectory: Trajectory,
         agent_system_prompt: str,
     ) -> Grade | None:
-        task_id, trial_idx = _split_trial_id(spec.trial_id)
+        task_id, trial_idx = spec.task_id, spec.trial_index
 
         if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
             self.logger.info(
@@ -1017,7 +1011,7 @@ class QueueTrialGrader:
     ) -> Grade | None:
         from tolokaforge.grader.queue import GradeJob, new_job_id
 
-        task_id, trial_idx = _split_trial_id(spec.trial_id)
+        task_id, trial_idx = spec.task_id, spec.trial_index
 
         if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
             self.logger.info(

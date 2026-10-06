@@ -83,6 +83,7 @@ from tolokaforge.core.plugin_registry import (
     load_bundle_store,
 )
 from tolokaforge.core.trial_grader import GradingFailedError
+from tolokaforge.core.trial_identity import trial_identity_from_subpath
 from tolokaforge.dx._display import console
 from tolokaforge.runner.models import RunnerGradingConfig
 
@@ -320,15 +321,23 @@ def grade(
 
 @dataclass(frozen=True)
 class _DiscoveredTrial:
-    """One trajectory-yaml hit under ``<run-dir>/trials/<task>/<idx>/``."""
+    """One trial bundle discovered under ``<run-dir>/trials/``.
 
+    ``subpath`` is the bundle directory relative to ``trials/`` — the
+    single-adapter ``<task>/<idx>`` or the harness ``<entry>/<task>/<idx>`` — and
+    is the identity rendered as both the console label and the per-trial output
+    location, so regrade output mirrors the run's own layout.
+    """
+
+    entry: str
     task_id: str
     trial_idx: str
+    subpath: Path
     trajectory_path: Path
 
     @property
     def label(self) -> str:
-        return f"{self.task_id}/{self.trial_idx}"
+        return str(self.subpath)
 
 
 def _discover_trials(run_dir: Path) -> list[_DiscoveredTrial]:
@@ -337,15 +346,35 @@ def _discover_trials(run_dir: Path) -> list[_DiscoveredTrial]:
         raise click.BadParameter(
             f"{run_dir} does not contain a 'trials/' subdirectory; not a completed run",
         )
-    hits = sorted(trials_root.glob("*/*/trajectory.yaml"))
-    return [
-        _DiscoveredTrial(
-            task_id=path.parent.parent.name,
-            trial_idx=path.parent.name,
-            trajectory_path=path,
+    # A bundle's trajectory.yaml sits at exactly trials/<task>/<idx>/ (single
+    # adapter) or trials/<entry>/<task>/<idx>/ (harness matrix identity). Match
+    # both depths explicitly rather than walking the tree: a trial dir may hold a
+    # native/ or services/ sidecar whose own nested trajectory.yaml an unbounded
+    # rglob would mistake for a bundle.
+    two_level = set(trials_root.glob("*/*/trajectory.yaml"))
+    three_level = set(trials_root.glob("*/*/*/trajectory.yaml"))
+    two_level_dirs = {marker.parent for marker in two_level}
+
+    discovered: list[_DiscoveredTrial] = []
+    for marker in sorted(two_level | three_level):
+        bundle_dir = marker.parent
+        # A three-level hit whose own parent is a two-level bundle is that
+        # bundle's sidecar artifact (e.g. <task>/<idx>/native/trajectory.yaml),
+        # not a harness-entry trial.
+        if bundle_dir.parent in two_level_dirs:
+            continue
+        subpath = bundle_dir.relative_to(trials_root)
+        entry, task_id, trial_idx = trial_identity_from_subpath(subpath)
+        discovered.append(
+            _DiscoveredTrial(
+                entry=entry,
+                task_id=task_id,
+                trial_idx=trial_idx,
+                subpath=subpath,
+                trajectory_path=marker,
+            )
         )
-        for path in hits
-    ]
+    return discovered
 
 
 def _classify_skip_reason(status: SnapshotStatus | None) -> str | None:
@@ -403,8 +432,10 @@ def _classify_skip_reason(status: SnapshotStatus | None) -> str | None:
     required=True,
     type=click.Path(file_okay=False, path_type=Path),
     help=(
-        "Root directory for per-trial grade.json files. Each dispatched "
-        "trial lands at <out>/<task>/<idx>/grade.json; refuses a non-empty --out."
+        "Root directory for per-trial grade.json files. Each dispatched trial "
+        "lands under <out>/ at the same subpath it occupies under the run's "
+        "trials/ (<task>/<idx> single-adapter, <entry>/<task>/<idx> harness); "
+        "refuses a non-empty --out."
     ),
 )
 def grade_run(
@@ -416,10 +447,11 @@ def grade_run(
 ) -> None:
     """Regrade every stored-bundle trial under a completed run.
 
-    Walks RUN_DIR/trials/<task>/<idx>/trajectory.yaml, filters to trials
-    whose snapshot_status.outcome == stored, and dispatches each through
-    the same single-trial pipeline as `tolokaforge grade`. Exits 0 iff no
-    dispatch failed; skips are non-error.
+    Discovers each trial bundle under RUN_DIR/trials/ at both the
+    single-adapter <task>/<idx>/ and the harness <entry>/<task>/<idx>/ layout,
+    filters to trials whose snapshot_status.outcome == stored, and dispatches
+    each through the same single-trial pipeline as `tolokaforge grade`. Exits 0
+    iff no dispatch failed; skips are non-error.
     """
     kind_config = _load_kind_config(grader_config)
     store = _load_store(store_config)
@@ -450,7 +482,7 @@ def grade_run(
                 skipped += 1
                 continue
 
-            trial_out = out / trial.task_id / trial.trial_idx
+            trial_out = out / trial.subpath
             trial_out.mkdir(parents=True, exist_ok=True)
             try:
                 _regrade_bundle(

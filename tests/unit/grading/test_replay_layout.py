@@ -127,3 +127,51 @@ def test_a_bundle_under_a_reserved_directory_is_not_discovered(
     _bundle(tmp_path / nested_under / "refund_task" / "0")
 
     assert discover_trial_bundles(tmp_path) == [live]
+
+
+@pytest.mark.parametrize("sidecar", ["native", "services"], ids=["native", "services"])
+@pytest.mark.parametrize(
+    "bundle_subpath",
+    [
+        pytest.param(Path("trials") / "refund_task" / "0", id="single_adapter_two_level"),
+        pytest.param(
+            Path("trials") / "claude_code" / "refund_task" / "0", id="harness_three_level"
+        ),
+    ],
+)
+def test_a_native_or_services_sidecar_is_not_a_bundle(
+    tmp_path: Path, bundle_subpath: Path, sidecar: str
+) -> None:
+    """A ``native/`` or ``services/`` subtree sits *inside* a bundle, not beside it.
+
+    The conductor writes the harness's own artifacts under ``<bundle>/native/`` and
+    the substrate writes service-capture logs under ``<bundle>/services/``. Either
+    can carry a file named like the bundle marker, yet neither is a recorded trial.
+    The subtree is reserved by name, so a marker nested anywhere under it — one
+    level down or several — is never returned, under the single-adapter two-level
+    layout and the harness three-level layout alike.
+    """
+    live = _bundle(tmp_path / bundle_subpath)
+    sidecar_root = tmp_path / bundle_subpath / sidecar
+    _bundle(sidecar_root)
+    _bundle(sidecar_root / "logs" / "verifier")
+
+    assert discover_trial_bundles(tmp_path) == [live]
+
+
+def test_real_bundles_survive_sidecars_across_both_layouts(tmp_path: Path) -> None:
+    """Every real bundle is still discovered once the sidecars are excluded.
+
+    One single-adapter bundle and one harness bundle, each wrapped in its own
+    ``native/`` and ``services/`` sidecars, plus the run-level ``services/`` capture
+    a shared stack writes beside ``trials/``. Discovery returns exactly the two real
+    bundles and neither sidecar.
+    """
+    single = _bundle(tmp_path / "trials" / "refund_task" / "0")
+    harness = _bundle(tmp_path / "trials" / "claude_code" / "refund_task" / "0")
+    for bundle in (single, harness):
+        _bundle(bundle / "native" / "logs")
+        _bundle(bundle / "services")
+    _bundle(tmp_path / "services")
+
+    assert discover_trial_bundles(tmp_path) == sorted([single, harness])

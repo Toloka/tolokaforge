@@ -15,11 +15,13 @@ shapes coexist. See ``docs/GRADER_SERVICE.md`` § Extension points.
 from tolokaforge.core.grading.kinds._protocol import GraderKind, GraderKindRefusedError
 from tolokaforge.core.grading.kinds.composite import CompositeGraderKind
 from tolokaforge.core.grading.kinds.test_execution import (
+    UNGRADEABLE_SENTINEL,
     TestExecutionGraderKind,
     TestExecutionKindConfig,
 )
 
 __all__ = [
+    "UNGRADEABLE_SENTINEL",
     "CompositeGraderKind",
     "GraderKind",
     "GraderKindRefusedError",

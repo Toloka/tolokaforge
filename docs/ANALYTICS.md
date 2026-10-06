@@ -6,9 +6,9 @@ This guide explains Tolokaforge metrics outputs, failure attribution, and progra
 
 After a run, Tolokaforge writes analytics artifacts in `evaluation.output_dir`:
 
-- `aggregate.json`: run-level aggregate metrics (`schema_version: 4`)
+- `aggregate.json`: run-level aggregate metrics (`schema_version: 5`)
 - `per_task_metrics.json`: per-task metrics across trials
-- `metadata_slices.json`: aggregates sliced by benchmark type, complexity, tags, expected failure modes
+- `metadata_slices.json`: aggregates sliced by benchmark type, complexity, tags, expected failure modes, and — for a multi-harness run — harness entry, execution mode, and harness×task-family (see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `metadata_slices.json`)
 - `failure_attribution.json`: failed-attempt attribution summary + per-attempt evidence
 
 ### `aggregate.json` → `reasoning_transport`

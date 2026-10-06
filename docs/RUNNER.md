@@ -9,6 +9,11 @@ execution — the `prepare` / `worker` / `status` batch flow.
 > subprocess CLI — see [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md). This guide
 > is the different tool for the different job of running a whole batch.
 
+> **Want to run that whole batch from a container** on a clean machine with
+> only Docker + credentials — no checkout, no Python toolchain — see
+> [ORCHESTRATOR_IMAGE.md](ORCHESTRATOR_IMAGE.md). It packages this `run` flow
+> as a standalone image with a one-command job template.
+
 ## Execution Modes
 
 Tolokaforge supports two queue backends:
@@ -20,7 +25,7 @@ Tolokaforge supports two queue backends:
 
 ## Lifecycle
 
-1. `prepare`: discovers tasks and enqueues `(task_id, trial_index)` attempts.
+1. `prepare`: discovers tasks and enqueues `(entry, task_id, trial_index)` attempts, where `entry` is the owning harness entry (empty for a single-adapter run).
 2. `worker`: leases attempts, executes them, and marks `completed`/`failed`/`requeued`.
 3. `status`: shows queue counts, ETA, estimated cost, and token totals from artifacts.
 
@@ -711,12 +716,16 @@ Each refusal names the failing condition and terminates the run before any trial
 
 ## Output Artifacts
 
-Queue state + per-attempt artifacts are written under `run_dir`:
+Queue state + per-attempt artifacts are written under `run_dir`. A trial's
+bundle lives at `trials/<entry>/<task_id>/<trial>/`, where `<entry>` is the
+owning harness entry; a single-adapter run has no entry and keeps the two-level
+`trials/<task_id>/<trial>/`. The same `task_id` running under two harness entries
+therefore lands in two distinct subtrees.
 
 - `run_queue.sqlite` (sqlite backend only)
-- `trials/<task_id>/<trial>/trajectory.yaml`
-- `trials/<task_id>/<trial>/metrics.yaml`
-- `trials/<task_id>/<trial>/grade.yaml` — **only when the trial produced a
+- `trials/<entry>/<task_id>/<trial>/trajectory.yaml`
+- `trials/<entry>/<task_id>/<trial>/metrics.yaml`
+- `trials/<entry>/<task_id>/<trial>/grade.yaml` — **only when the trial produced a
   grade.** A trial the infrastructure aborted has no verdict to write, so a reader
   must not assume the file is there
 - `aggregate.json`
@@ -725,3 +734,15 @@ Queue state + per-attempt artifacts are written under `run_dir`:
 - `failure_attribution.json`
 
 See [ANALYTICS.md](ANALYTICS.md) for interpretation.
+
+### Resuming a harnesses run
+
+A run that declares a `harnesses:` block keys its durable queue and resume state
+by `(entry, task_id, trial_index)`. A `run_state.json` or `run_queue.sqlite`
+written before this keying cannot be matched to those triples, so `--resume` on a
+harnesses run against such a directory is **refused** with an actionable message
+naming the run dir (start a fresh run directory, or resume with the engine
+version that wrote it). Single-adapter runs resume an older `run_state.json`
+unchanged, but the sqlite queue's schema-version guard is unconditional, so an
+old-format `run_queue.sqlite` (its table lacks the `entry` column) is refused
+for a single-adapter run too — start a fresh run directory.

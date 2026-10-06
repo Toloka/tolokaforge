@@ -19,7 +19,7 @@ import warnings
 import pytest
 from pydantic import ValidationError
 
-from tolokaforge.core.models import RunConfig
+from tolokaforge.core.models import OutputConfig, OutputFormat, RunConfig
 
 pytestmark = pytest.mark.unit
 
@@ -275,3 +275,33 @@ class TestDeprecatedTaskScopeFields:
             issubclass(w.category, DeprecationWarning) and "stuck_heuristics" in str(w.message)
             for w in caught
         )
+
+
+class TestOutputFormatConfig:
+    """The run-level output-format switch: a forbid-extra sub-object with a
+    single enum field, read through ``RunConfig.effective_output_format``."""
+
+    def test_each_format_value_parses(self) -> None:
+        for value, member in (
+            ("native", OutputFormat.NATIVE),
+            ("tolokaforge", OutputFormat.TOLOKAFORGE),
+            ("both", OutputFormat.BOTH),
+        ):
+            assert OutputConfig(format=value).format is member
+
+    def test_format_defaults_to_tolokaforge(self) -> None:
+        assert OutputConfig().format is OutputFormat.TOLOKAFORGE
+
+    def test_unknown_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            OutputConfig(formta="native")
+
+    def test_effective_format_defaults_when_output_absent(self) -> None:
+        cfg = RunConfig(**_base())
+        assert cfg.output is None
+        assert cfg.effective_output_format() is OutputFormat.TOLOKAFORGE
+
+    def test_effective_format_returns_the_set_value(self) -> None:
+        cfg = RunConfig(**_base(output={"format": "both"}))
+        assert cfg.output is not None
+        assert cfg.effective_output_format() is OutputFormat.BOTH

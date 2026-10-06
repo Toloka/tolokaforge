@@ -13,6 +13,133 @@ flags — is `AdapterGradingContract` in
 
 ---
 
+## Installing adapters — opt-in, never by default
+
+The default install is the engine loop only:
+
+```bash
+pip install tolokaforge          # engine loop; no other-harness dependencies
+```
+
+Adapters for other harnesses ship as separate out-of-tree packages, installed
+only through extras. Installing one never changes the engine; it just makes that
+adapter discoverable (via the `tolokaforge.adapters` entry point):
+
+```bash
+pip install "tolokaforge[terminal_bench]"   # Terminal-Bench tasks
+pip install "tolokaforge[inspect_ai]"       # Inspect AI tasks
+pip install "tolokaforge[harbor]"           # Harbor harness (harbor run + Terminus 2)
+pip install "tolokaforge[adapters]"         # all shipped adapters
+```
+
+`pip install tolokaforge` must never pull in an adapter package or a third-party
+harness distribution — that boundary is enforced by
+`tests/canonical/test_default_install_opt_in_boundary.py`. We do not overflow the
+engine's dependencies with other harnesses by default.
+
+---
+
+## Execution modes
+
+Every trial runs in one of two shapes, named by `ExecutionMode` in
+`tolokaforge/core/execution_mode.py`:
+
+- **`ENGINE_LOOP`** — the engine's own LLM turn loop drives the agent. This
+  is the default mode an adapter declares, not one every adapter runs: a
+  delegated-only adapter replaces it.
+- **`DELEGATED`** — the task brings its own agent (a coding-harness CLI named
+  on `TaskDescription.metadata["agent_harness_command"]`); the engine
+  provisions and grades the trial but does not run the turn loop.
+
+`select_execution_mode(metadata)` classifies a trial at dispatch time: a
+non-blank `agent_harness_command` selects `DELEGATED`, its absence selects
+`ENGINE_LOOP`, and a present-but-blank or non-string command is a broken
+adapter and raises. The mode is classified, never stored — it is written into
+no metadata or wire artefact, so canonical snapshots are unaffected.
+
+An adapter declares which modes it runs through the
+`supported_execution_modes: ClassVar[frozenset[ExecutionMode]]` capability on
+`BaseAdapter` (default `{ENGINE_LOOP}`). Before any container work, the
+orchestrator refuses a run that selects `DELEGATED` against an adapter whose
+capability does not include it, naming both sides and the adapter's accepted
+modes. `supports_coding_harness = True` is retained as a back-compat surface
+for one release: an external adapter that sets only that legacy flag is
+treated as also running `DELEGATED` (see
+`adapter_supported_modes()` in `tolokaforge/core/orchestrator.py`).
+
+### How to add a harness / delegated adapter
+
+Two shapes exist. An adapter that runs a vendor coding-agent CLI from the
+registry inherits the mixin (step 1). An adapter that delegates to an external
+harness by emitting its own command skips the mixin and declares its mode
+directly (step 2), supplying its own command assembly and grading.
+
+1. **Registry CLI: inherit the mixin.** Add `CodingHarnessAdapterMixin`
+   (`tolokaforge_coding_harnesses.adapter_support`) alongside `BaseAdapter`.
+   It supplies the six wire-artefact helpers — registry resolution, command
+   assembly, the four-key metadata handshake, the `bash` tool schema, the
+   `test_execution` grading payload, and the install-script Dockerfile layer —
+   and keeps `supports_coding_harness = True`. The mixin imports no engine
+   module, so the package boundary stays intact. A delegated adapter that owns
+   its environment and emits its own command does not use the mixin.
+2. **Declare the mode.** Override `supported_execution_modes` on the
+   engine-facing adapter class so the orchestrator gate lets the run through —
+   `frozenset({ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED})` for a
+   registry adapter, or `frozenset({ExecutionMode.DELEGATED})` for a
+   delegated-only adapter. (`ExecutionMode` lives engine-side only — never
+   import it into the coding-harnesses package.)
+3. **Emit the handshake.** In `to_task_description`, when a harness is
+   selected, emit `agent_harness_command` (and the sibling `agent_harness*`
+   keys) via the mixin helpers, register the single `bash` agent tool, and
+   route grading through `emit_test_execution_grading` (or compose with any
+   grading method — see [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md)
+   § "State-checks composability").
+4. **Lock it.** Subclass `AdapterGradingContractSuite`
+   (`tolokaforge.testing.adapters`) and set
+   `expected_supported_execution_modes` to the set your adapter declares.
+
+`NativeAdapter` (the engine's own loop) and `TerminalBenchAdapter` ship in
+the tree; additional delegated-harness adapters install through their extras.
+
+---
+
+## `harbor` — HarborAdapter (delegated, external plugin)
+
+Opt-in plugin from the `tolokaforge-adapter-harbor` distribution
+(`pip install "tolokaforge[harbor]"`); selected via
+`evaluation.harness_adapter.type: harbor`. The **delegated** kind (step 2 above,
+not the registry mixin): it declares `supported_execution_modes =
+{DELEGATED}` directly, owns its own environment, and emits its own command.
+
+Runs Terminal-Bench 2.0 task packs by delegating execution to the real Harbor
+harness — the trial's agent step is a single `harbor run -p /app/task -a
+terminus-2 -m <model> -e docker --jobs-dir <host-identity-path> --job-name
+tf-<trial> --agent-setup-timeout-multiplier 10 -k 1 -y`, and Harbor drives its
+own Terminus 2 agent + verifier inside a sandbox it builds via
+Docker-out-of-Docker. The job name is unique per trial, so concurrent trials of
+one task do not collide. Grading is `test_execution`: a generated `tests/test.sh`
+reads `verifier_result.rewards.reward` from this trial's exact Harbor
+`result.json`, and — because `harbor run` exits 0 even when the agent never
+started — surfaces an infra-failure (recorded exception, missing/off-schema
+result, no verifier result) as a **grading error** rather than a `0.0` score.
+This is **delegation, not task-reuse** — to run the same TB2 pack on
+tolokaforge's own loop, use the `terminal_bench` adapter instead.
+
+Because Harbor owns the sandbox, tolokaforge's per-trial `TaskIsolation`,
+spend-cap, and crash-restart guarantees do **not** apply inside Harbor's run, and
+the DooD sibling containers Harbor spins up are cleaned up by Harbor (a Harbor
+crash can orphan them on the host). See the package
+[`README.md`](../external_adapters/tolokaforge-adapter-harbor/README.md) §
+Forfeitures and the examples under [`examples/harbor/`](../examples/harbor/).
+
+### Open Issues
+
+No issues found. The keyless `oracle` end-to-end path (agent image build → `harbor
+run -a oracle` over the mounted socket → `result.json` → `test_execution`) is
+covered by the adapter's integration test.
+
+---
+
 ## `frozen_mcp_core` — FrozenMcpCoreAdapter
 
 Entry-point plugin registered by the `tolokaforge-tools` distribution (not

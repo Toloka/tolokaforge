@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import (
     ActorSpec,
     InitialStateConfig,
@@ -31,6 +32,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.models.task_config import InteractionMode
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
+from tolokaforge.core.trial_identity import format_trial_id
 from tolokaforge.runner.models import TaskDescription
 
 
@@ -43,6 +45,7 @@ def make_task_description(
     adapter_type: str = "native",
     system_prompt: str = "",
     environment_manifest: EnvironmentManifest | None = None,
+    metadata: dict | None = None,
 ) -> TaskDescription:
     return TaskDescription(
         task_id=task_id,
@@ -52,6 +55,7 @@ def make_task_description(
         adapter_type=adapter_type,
         system_prompt=system_prompt,
         environment_manifest=environment_manifest,
+        metadata=metadata or {},
     )
 
 
@@ -104,16 +108,21 @@ def make_task_config(
 
 def make_trial_spec(
     *,
-    trial_id: str = "task-1:0",
+    trial_id: str | None = None,
     run_id: str = "run-1",
     task_id: str = "task-1",
+    trial_index: int = 0,
     agent_model_config: ModelConfig | None = None,
     env_endpoints: EnvEndpoints | None = None,
 ) -> TrialSpec:
+    task_desc = make_task_description(task_id=task_id)
     return TrialSpec(
-        trial_id=trial_id,
+        trial_id=trial_id if trial_id is not None else format_trial_id("", task_id, trial_index),
         run_id=run_id,
-        task=make_task_description(task_id=task_id),
+        task_id=task_id,
+        trial_index=trial_index,
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=agent_model_config or ModelConfig(provider="openai", name="gpt-4"),
         env_endpoints=env_endpoints or make_env_endpoints(),
     )

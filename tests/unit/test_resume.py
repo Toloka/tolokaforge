@@ -130,7 +130,10 @@ class TestRunStateManager:
             manager = RunStateManager(Path(tmpdir))
 
             run_state = manager.initialize_run(
-                run_id="test_run", config_path="test.yaml", task_ids=["task1", "task2"], repeats=2
+                run_id="test_run",
+                config_path="test.yaml",
+                units=[("", _t) for _t in ["task1", "task2"]],
+                repeats=2,
             )
 
             assert run_state.run_id == "test_run"
@@ -165,7 +168,7 @@ class TestRunStateManager:
                 run_state = manager.initialize_run(
                     run_id="r0",
                     config_path=str(config_file.resolve()),
-                    task_ids=["t1"],
+                    units=[("", _t) for _t in ["t1"]],
                     repeats=1,
                 )
             finally:
@@ -194,7 +197,7 @@ class TestRunStateManager:
                     run_state = manager.initialize_run(
                         run_id="r1",
                         config_path=str(outside),
-                        task_ids=["t1"],
+                        units=[("", _t) for _t in ["t1"]],
                         repeats=1,
                     )
                 finally:
@@ -209,7 +212,10 @@ class TestRunStateManager:
 
             # Initialize run
             manager.initialize_run(
-                run_id="test_run", config_path="test.yaml", task_ids=["task1"], repeats=1
+                run_id="test_run",
+                config_path="test.yaml",
+                units=[("", _t) for _t in ["task1"]],
+                repeats=1,
             )
 
             # Load state
@@ -224,7 +230,10 @@ class TestRunStateManager:
             manager = RunStateManager(Path(tmpdir))
 
             run_state = manager.initialize_run(
-                run_id="test_run", config_path="test.yaml", task_ids=["task1"], repeats=2
+                run_id="test_run",
+                config_path="test.yaml",
+                units=[("", _t) for _t in ["task1"]],
+                repeats=2,
             )
 
             # Mark one trial as completed
@@ -239,7 +248,7 @@ class TestRunStateManager:
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = RunStateManager(Path(tmpdir))
             run_state = manager.initialize_run(
-                run_id="test_run", config_path="test.yaml", task_ids=["task1"], repeats=2
+                run_id="test_run", config_path="test.yaml", units=[("", "task1")], repeats=2
             )
             run_state.mark_completed("task1", 0, True, 0.9)
             manager.save_state(run_state)
@@ -256,7 +265,10 @@ class TestRunStateManager:
             manager = RunStateManager(Path(tmpdir))
 
             run_state = manager.initialize_run(
-                run_id="test_run", config_path="test.yaml", task_ids=["task1", "task2"], repeats=2
+                run_id="test_run",
+                config_path="test.yaml",
+                units=[("", _t) for _t in ["task1", "task2"]],
+                repeats=2,
             )
 
             # Mark some trials as completed
@@ -294,7 +306,9 @@ class TestDescribeResumePlan:
 
     def test_all_pending_reports_zero_done(self, tmp_path: Path) -> None:
         manager = RunStateManager(tmp_path)
-        manager.initialize_run(run_id="fresh", config_path="c.yaml", task_ids=["a", "b"], repeats=1)
+        manager.initialize_run(
+            run_id="fresh", config_path="c.yaml", units=[("", _t) for _t in ["a", "b"]], repeats=1
+        )
 
         plan = manager.describe_resume_plan()
 
@@ -310,7 +324,7 @@ class TestDescribeResumePlan:
     def test_all_passed_is_complete(self, tmp_path: Path) -> None:
         manager = RunStateManager(tmp_path)
         run_state = manager.initialize_run(
-            run_id="done", config_path="c.yaml", task_ids=["a", "b"], repeats=1
+            run_id="done", config_path="c.yaml", units=[("", _t) for _t in ["a", "b"]], repeats=1
         )
         run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
         run_state.mark_completed("b", 0, binary_pass=True, score=1.0)
@@ -328,7 +342,7 @@ class TestDescribeResumePlan:
     def test_behavioural_failure_counts_as_already_done(self, tmp_path: Path) -> None:
         manager = RunStateManager(tmp_path)
         run_state = manager.initialize_run(
-            run_id="mixed", config_path="c.yaml", task_ids=["a"], repeats=2
+            run_id="mixed", config_path="c.yaml", units=[("", _t) for _t in ["a"]], repeats=2
         )
         run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
         # Second trial completed but did not pass, and has no infra-error
@@ -349,13 +363,13 @@ class TestDescribeResumePlan:
     ) -> None:
         manager = RunStateManager(tmp_path)
         run_state = manager.initialize_run(
-            run_id="infra", config_path="c.yaml", task_ids=["a"], repeats=2
+            run_id="infra", config_path="c.yaml", units=[("", _t) for _t in ["a"]], repeats=2
         )
         run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
         run_state.mark_completed("a", 1, binary_pass=False, score=0.0)
         manager.save_state(run_state)
 
-        def _fake_infra(_self, task_id: str, trial_index: int) -> bool:
+        def _fake_infra(_self, task_id: str, trial_index: int, entry: str = "") -> bool:
             return task_id == "a" and trial_index == 1
 
         monkeypatch.setattr(RunStateManager, "_has_infrastructure_error", _fake_infra)
@@ -372,7 +386,10 @@ class TestDescribeResumePlan:
         """One passed + one behavioural-failed + one infra-failed + one pending."""
         manager = RunStateManager(tmp_path)
         run_state = manager.initialize_run(
-            run_id="mixed4", config_path="c.yaml", task_ids=["a", "b", "c", "d"], repeats=1
+            run_id="mixed4",
+            config_path="c.yaml",
+            units=[("", _t) for _t in ["a", "b", "c", "d"]],
+            repeats=1,
         )
         run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
         run_state.mark_completed("b", 0, binary_pass=False, score=0.0)  # behavioural
@@ -380,7 +397,7 @@ class TestDescribeResumePlan:
         # d:0 stays pending
         manager.save_state(run_state)
 
-        def _fake_infra(_self, task_id: str, trial_index: int) -> bool:
+        def _fake_infra(_self, task_id: str, trial_index: int, entry: str = "") -> bool:
             return task_id == "c"
 
         monkeypatch.setattr(RunStateManager, "_has_infrastructure_error", _fake_infra)
@@ -394,3 +411,102 @@ class TestDescribeResumePlan:
         assert plan.already_done == 2  # a (pass) + b (behavioural)
         assert plan.to_retry == 2  # c (infra) + d (pending)
         assert plan.is_complete is False
+
+
+class TestHarnessEntryKeying:
+    """Resume state is keyed by ``(entry, task_id, trial_index)`` so the same
+    task id runs independently under two harness entries, while a single-adapter
+    run's keys stay the two-part ``"{task_id}:{trial_index}"`` form unchanged."""
+
+    def test_same_task_under_two_entries_gets_two_independent_states(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            run_state = manager.initialize_run(
+                run_id="matrix",
+                config_path="c.yaml",
+                units=[("alpha", "shared"), ("beta", "shared")],
+                repeats=1,
+            )
+            assert run_state.total_trials == 2
+            assert set(run_state.trials) == {"alpha:shared:0", "beta:shared:0"}
+            assert run_state.trials["alpha:shared:0"].entry == "alpha"
+            assert run_state.trials["beta:shared:0"].entry == "beta"
+
+    def test_single_adapter_key_format_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            run_state = manager.initialize_run(
+                run_id="single", config_path="c.yaml", units=[("", "t")], repeats=2
+            )
+            assert set(run_state.trials) == {"t:0", "t:1"}
+            assert run_state.trials["t:0"].entry == ""
+
+    def test_resume_skips_only_the_completed_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            run_state = manager.initialize_run(
+                run_id="matrix",
+                config_path="c.yaml",
+                units=[("alpha", "shared"), ("beta", "shared")],
+                repeats=1,
+            )
+            # Only the alpha copy passed; beta is untouched.
+            run_state.mark_completed("shared", 0, binary_pass=True, score=1.0, entry="alpha")
+            manager.save_state(run_state)
+
+            assert manager.is_completed("shared", 0, "alpha") is True
+            assert manager.is_completed("shared", 0, "beta") is False
+
+    def test_mark_running_and_failed_are_entry_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            run_state = manager.initialize_run(
+                run_id="matrix",
+                config_path="c.yaml",
+                units=[("alpha", "shared"), ("beta", "shared")],
+                repeats=1,
+            )
+            run_state.mark_running("shared", 0, entry="alpha")
+            run_state.mark_failed("shared", 0, "boom", entry="beta")
+            assert run_state.trials["alpha:shared:0"].status == "running"
+            assert run_state.trials["beta:shared:0"].status == "failed"
+
+
+class TestResumeIdentityFormatGuard:
+    """A harnesses run refuses to resume a pre-marker state file; a
+    single-adapter run keeps loading one unchanged."""
+
+    @staticmethod
+    def _strip_marker(manager: RunStateManager) -> None:
+        import json
+
+        data = json.loads(manager.state_file.read_text())
+        data.pop("identity_format", None)
+        manager.state_file.write_text(json.dumps(data))
+
+    def test_harnesses_resume_refuses_pre_marker_state(self) -> None:
+        from tolokaforge.core.resume import ResumeIdentityFormatError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            manager.initialize_run(run_id="r", config_path="c.yaml", units=[("", "t")], repeats=1)
+            self._strip_marker(manager)
+            with pytest.raises(ResumeIdentityFormatError, match="identity_format"):
+                manager.load_state(require_identity_marker=True)
+
+    def test_single_adapter_still_loads_pre_marker_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            manager.initialize_run(run_id="r", config_path="c.yaml", units=[("", "t")], repeats=1)
+            self._strip_marker(manager)
+            loaded = manager.load_state()
+            assert loaded is not None
+            assert loaded.run_id == "r"
+
+    def test_fresh_state_carries_the_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = RunStateManager(Path(tmpdir))
+            manager.initialize_run(run_id="r", config_path="c.yaml", units=[("", "t")], repeats=1)
+            # A harnesses run resuming a state this build wrote is accepted.
+            loaded = manager.load_state(require_identity_marker=True)
+            assert loaded is not None

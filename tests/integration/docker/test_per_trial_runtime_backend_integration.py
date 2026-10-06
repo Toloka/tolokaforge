@@ -32,6 +32,7 @@ from tests.canonical._factories import make_task_description
 from tests.utils.docker_helpers import is_docker_daemon_available
 from tolokaforge.core.composition_runtime import ComposedEnvHandle
 from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
+from tolokaforge.core.execution_mode import select_execution_mode
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.project_loader import _synthesise_composition_plan
@@ -75,16 +76,18 @@ def _make_trial_spec(trial_id: str) -> TrialSpec:
         compose_file=_FIXTURE, bridged_services=frozenset({"db-service"})
     )
     _synthesise_composition_plan(manifest, {})
+    task_desc = make_task_description(
+        task_id="task-1",
+        name="probe",
+        category="general",
+        description="PerTrialRuntimeBackend integration test",
+        environment_manifest=manifest,
+    )
     return TrialSpec(
         trial_id=trial_id,
         run_id="local-runtime-integration",
-        task=make_task_description(
-            task_id="task-1",
-            name="probe",
-            category="general",
-            description="PerTrialRuntimeBackend integration test",
-            environment_manifest=manifest,
-        ),
+        task=task_desc,
+        execution_mode=select_execution_mode(task_desc.metadata),
         agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
         env_endpoints=EnvEndpoints(
             db_url="http://placeholder:5432",

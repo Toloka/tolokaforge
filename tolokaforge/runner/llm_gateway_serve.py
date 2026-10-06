@@ -2,9 +2,9 @@
 
 Runs :class:`~tolokaforge.runner.llm_gateway._GatewayHTTPServer` on a
 fixed port inside the ``tolokaforge-llm-gateway`` compose service the
-:class:`~tolokaforge.core.drivers.coding_harness.CodingHarnessDriver`
-adds to every shielded trial stack. Config comes from environment
-variables the driver bakes into the sidecar service's ``environment:``:
+coding-harness compose synthesis adds to every shielded trial stack.
+Config comes from environment variables that synthesis bakes into the
+sidecar service's ``environment:``:
 
 * ``TF_GATEWAY_UPSTREAM_URL`` — provider base URL. Required.
 * ``TF_GATEWAY_UPSTREAM_TOKEN`` — the real credential the sidecar swaps

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
+from tolokaforge.core.execution_mode import ExecutionMode
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.testing.adapters import AdapterGradingContractSuite
 
@@ -31,6 +32,9 @@ _TASK_ID = "fix-airline-segmentation"
 class TestTerminalBenchAdapterGradingContract(AdapterGradingContractSuite):
     expected_requires_docker_cli_in_runner = True
     expected_preferred_grader_kind = "test_execution"
+    expected_supported_execution_modes = frozenset(
+        {ExecutionMode.ENGINE_LOOP, ExecutionMode.DELEGATED}
+    )
 
     @pytest.fixture
     def adapter(self) -> TerminalBenchAdapter:

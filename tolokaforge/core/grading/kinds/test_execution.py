@@ -18,6 +18,14 @@ shapes:
   :class:`GraderKindRefusedError` with the substrate's actionable message.
   The runner's dispatcher maps this to ``GradeTrialResponse(success=False,
   error=exc.reason)``.
+- **Ungradeable sentinel** — the verifier wrote :data:`UNGRADEABLE_SENTINEL`
+  as the reward instead of a number, declaring that no real evaluation
+  happened (the trial errored before producing a verdict, so there is no
+  reward to read). The kind raises :class:`GraderKindRefusedError` so the
+  trial is booked as an errored grade rather than a legitimate ``0.0``. A
+  verifier uses this when "absent reward" and "zero reward" must stay
+  distinct — e.g. a delegating adapter whose underlying harness exited
+  cleanly but never ran the agent.
 
 Per-task configuration rides ``kind_config`` — validated into
 :class:`TestExecutionKindConfig` (``extra="forbid"``). Defaults are
@@ -42,9 +50,18 @@ if TYPE_CHECKING:
     from tolokaforge.runner.models import RunnerGradingConfig
 
 __all__ = [
+    "UNGRADEABLE_SENTINEL",
     "TestExecutionGraderKind",
     "TestExecutionKindConfig",
 ]
+
+UNGRADEABLE_SENTINEL = "TOLOKAFORGE_TEST_EXECUTION_UNGRADEABLE"
+"""Reward-file marker a verifier writes in place of a number to declare that no
+evaluation happened, so the kind refuses the trial instead of scoring it ``0.0``.
+
+An absent reward is not a zero reward: a verifier that cannot measure the trial
+(e.g. the delegated harness exited cleanly but never ran the agent) writes this
+line to the reward file and the kind surfaces it as a grading error."""
 
 
 class TestExecutionKindConfig(BaseModel):
@@ -96,8 +113,15 @@ class TestExecutionGraderKind:
                 components=GradeComponents(custom_checks=0.0),
                 reasons=f"test.sh execution failed: {result.script_exec_error}",
             )
+        reward_text = result.reward_bytes.decode(errors="ignore").strip()
+        if reward_text.split("\n")[-1:] == [UNGRADEABLE_SENTINEL]:
+            raise GraderKindRefusedError(
+                "test-execution verifier declared the trial ungradeable: no numeric "
+                "reward was produced (an absent reward is not a zero reward).\n\n"
+                f"test output (truncated):\n{result.stdout[: cfg.output_truncation_chars]}"
+            )
         try:
-            reward = float(result.reward_bytes.decode(errors="ignore").strip().split("\n")[-1])
+            reward = float(reward_text.split("\n")[-1])
             reward = max(0.0, min(1.0, reward))
         except (ValueError, IndexError):
             reward = 0.0
