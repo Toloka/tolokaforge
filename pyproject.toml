@@ -810,6 +810,11 @@ dev = [
     "hatchling>=1.31.0",
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
+    # In the dev closure so its canonical delegated-seam test runs with the
+    # engine's suite. The adapter package pulls no Harbor dependency itself —
+    # Harbor lives only in the trial image it builds — so this stays off the
+    # base install (the opt-in boundary test still holds).
+    "tolokaforge-adapter-harbor",
     "dev-mcp",
     "automation",
     # boto3 pulled in for the S3BundleStore stubber tests
