@@ -28,7 +28,6 @@ _FORBIDDEN_HARNESS_DISTS = {"inspect-ai", "harbor"}
 # Adapter packages the repo ships; each must be reachable only via an extra.
 _SHIPPED_ADAPTER_DISTS = {
     "tolokaforge-adapter-terminal-bench",
-    "tolokaforge-adapter-harbor",
     "tolokaforge-adapter-inspect-ai",
 }
 

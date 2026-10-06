@@ -228,8 +228,6 @@ The durable queue and the resume state are keyed by the same
 did not finish: a resume after `engine/fix-order-sync/0` completed re-runs
 `terminal_bench/fix-order-sync/0` alone and leaves the completed leg untouched.
 
-A shipped multi-harness run config lives at `examples/harbor/run_harbor_multi.yaml`.
-
 #### Worked example — one task, two agent models in the engine loop
 
 Each engine-loop entry runs the engine's own loop against the `agent` model it
