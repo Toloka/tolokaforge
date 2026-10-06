@@ -7,17 +7,25 @@ declared install floor: every package's ``requires-python``, its version classif
 and the ``requires-python`` lines in documented TOML snippets must name it. Runs under
 the ``canonical`` marker so it participates in the existing CI smoke job without
 dedicated workflow wiring.
+
+Code that runs inside a task image runs on that image's ``python3``, not on the pin.
+Each such path carries a ``[tool.ruff.per-file-target-version]`` entry naming the
+lowest interpreter it supports, and the sandbox checks keep those entries tied to
+real paths and to the images they describe.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import tomllib
 import yaml
+
+from tests.utils.ruff_targets import per_file_target_versions
 
 pytestmark = pytest.mark.canonical
 
@@ -205,3 +213,59 @@ def test_documented_toml_snippets_require_the_floor() -> None:
                 if match.group(1) != _EXPECTED_REQUIRES_PYTHON
             )
     assert not violations, "\n".join(violations)
+
+
+_MIDDLEWARE_PROXY = (
+    "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/middleware_proxy.py"
+)
+_CODING_HARNESS_ENVIRONMENT = "examples/native/coding_harness/environment"
+_DOCKERFILE_FROM_PYTHON_RE = re.compile(r"^FROM python:(\d+\.\d+)\S*", re.MULTILINE)
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _python_files_matching(pattern: str) -> Iterator[Path]:
+    for path in _REPO_ROOT.glob(pattern):
+        if path.is_dir():
+            yield from path.rglob("*.py")
+        elif path.suffix == ".py":
+            yield path
+
+
+def test_the_middleware_proxy_declares_a_sandbox_target_at_or_below_the_floor() -> None:
+    version = per_file_target_versions().get(_MIDDLEWARE_PROXY)
+    assert version is not None, (
+        f"pyproject.toml: [tool.ruff.per-file-target-version] has no entry for {_MIDDLEWARE_PROXY} "
+        f"— the proxy runs on the task image's python3, so lint must target its lowest supported "
+        f"version rather than the {_FLOOR} floor"
+    )
+    assert _version_tuple(version) <= _version_tuple(_FLOOR), (
+        f"pyproject.toml: [tool.ruff.per-file-target-version] {_MIDDLEWARE_PROXY} is {version} "
+        f"— expected a version at or below the {_FLOOR} floor"
+    )
+
+
+def test_the_coding_harness_example_target_matches_its_image() -> None:
+    pattern = f"{_CODING_HARNESS_ENVIRONMENT}/**"
+    dockerfile = _REPO_ROOT / _CODING_HARNESS_ENVIRONMENT / "Dockerfile"
+    image = _DOCKERFILE_FROM_PYTHON_RE.search(dockerfile.read_text())
+    assert image is not None, f"{dockerfile.relative_to(_REPO_ROOT)}: no `FROM python:X.Y` line"
+    version = per_file_target_versions().get(pattern)
+    assert version == image.group(1), (
+        f"pyproject.toml: [tool.ruff.per-file-target-version] {pattern!r} is {version!r} "
+        f"— expected {image.group(1)!r}, the `FROM python:` of {dockerfile.relative_to(_REPO_ROOT)}"
+    )
+
+
+def test_every_sandbox_target_names_an_existing_path() -> None:
+    entries = per_file_target_versions()
+    assert entries, "pyproject.toml declares no [tool.ruff.per-file-target-version] entries"
+    stale = [
+        f"pyproject.toml: [tool.ruff.per-file-target-version] {pattern!r} matches no Python file "
+        "— a rename dropped the sandbox lint target"
+        for pattern in sorted(entries)
+        if not any(_python_files_matching(pattern))
+    ]
+    assert not stale, "\n".join(stale)
