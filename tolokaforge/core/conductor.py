@@ -25,7 +25,7 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -536,7 +536,7 @@ class InProcessConductor:
             self.trial_observer.trial_started,
             identity,
             models=self._model_refs(spec),
-            started_at=datetime.now(tz=timezone.utc),
+            started_at=datetime.now(tz=UTC),
         )
         trajectory: Trajectory | None = None
         try:

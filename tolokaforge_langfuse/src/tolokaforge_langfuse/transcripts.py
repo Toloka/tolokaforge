@@ -63,7 +63,7 @@ import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -614,7 +614,7 @@ def _ended(
             return stamps[-1] if stamps else None
         try:
             end = base.timestamp() + result.duration_ms / 1000.0
-            ended = datetime.fromtimestamp(end, tz=timezone.utc)
+            ended = datetime.fromtimestamp(end, tz=UTC)
         except (OverflowError, OSError, ValueError) as exc:
             raise TranscriptRefused(f"{origin}: the result's duration_ms is out of range") from exc
         return ended.isoformat().replace("+00:00", "Z")
@@ -1148,7 +1148,7 @@ def _envelope(event_type: str, body: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": uuid.uuid4().hex,
         "type": event_type,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "body": body,
     }
 
@@ -1191,11 +1191,11 @@ def _normalize_ts(value: object) -> str | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return aware.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return aware.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
         return (
-            datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+            datetime(value.year, value.month, value.day, tzinfo=UTC)
             .isoformat()
             .replace("+00:00", "Z")
         )

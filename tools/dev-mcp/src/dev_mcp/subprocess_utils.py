@@ -153,7 +153,7 @@ async def run_command(
                     timeout=timeout,
                 )
                 await proc.wait()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timed_out = True
                 proc.kill()
                 # Drain any remaining output after kill
@@ -163,7 +163,7 @@ async def run_command(
                         log_file.write(remaining)
                         log_file.flush()
                         chunks.append(remaining)
-                except (asyncio.TimeoutError, Exception):
+                except (TimeoutError, Exception):
                     pass
                 await proc.wait()
     except Exception:

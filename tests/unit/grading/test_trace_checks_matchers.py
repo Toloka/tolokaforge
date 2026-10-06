@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -752,15 +753,15 @@ def test_a_Z_suffix_datetime_parses_on_python_3_10() -> None:
     ``Z`` before it hands the literal off. On 3.11+ this is a correctness
     assertion rather than a portability one; the test runs the same on both.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from tolokaforge.core.grading.predicates import date_comparison_key
 
     plain = date_comparison_key("2026-03-01T12:00:00Z")
-    assert plain == datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert plain == datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
 
     fractional = date_comparison_key("2026-03-01T12:00:00.123456Z")
-    assert fractional == datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc)
+    assert fractional == datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=UTC)
 
 
 # --------------------------------------------------------------------------

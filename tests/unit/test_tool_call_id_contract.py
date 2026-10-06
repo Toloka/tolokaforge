@@ -16,7 +16,7 @@ recorded history — is locked in ``tests/unit/test_runner_pipeline.py``.
 from __future__ import annotations
 
 import inspect
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -81,7 +81,7 @@ class _Echo(Tool):
 
 def _trajectory_payload(call_id: str) -> dict[str, Any]:
     """A recorded-bundle payload shaped like ``trajectory.yaml``."""
-    ts = datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()
+    ts = datetime(2026, 1, 1, tzinfo=UTC).isoformat()
     return {
         "task_id": "call-id-contract",
         "trial_index": 0,

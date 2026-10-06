@@ -27,7 +27,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Collection
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -722,7 +722,7 @@ class TrialContextRuntime:
                 output=output,
                 status=status,
                 latency_seconds=latency_seconds,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
         )
 
@@ -1706,7 +1706,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
                 logger.debug(f"ExecuteTool: {tool_name} completed with status {status}")
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 status = pb2.EXECUTION_STATUS_TIMEOUT
                 logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
                 error_message = await self._reset_backstopped_tool(

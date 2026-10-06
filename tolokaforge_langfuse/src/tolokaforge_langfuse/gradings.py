@@ -23,7 +23,7 @@ import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -95,11 +95,11 @@ def _normalize_ts(value: object) -> str | None:
     if not value:
         return None
     if isinstance(value, datetime):
-        aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-        return aware.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return aware.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
         return (
-            datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+            datetime(value.year, value.month, value.day, tzinfo=UTC)
             .isoformat()
             .replace("+00:00", "Z")
         )
@@ -703,7 +703,7 @@ def build_grading_events(
         result.scores = sum(kind == "score-create" for kind, _ in grading_typed) + len(mirror)
         result.judge_observations = sum(kind != "score-create" for kind, _ in grading_typed) - 1
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     result.events = [
         {"id": uuid.uuid4().hex, "type": kind, "timestamp": now, "body": body}
         for kind, body in typed

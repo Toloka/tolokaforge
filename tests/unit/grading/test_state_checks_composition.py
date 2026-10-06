@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -48,7 +48,7 @@ from tolokaforge.runner.models import RunnerStateChecksConfig
 
 pytestmark = pytest.mark.unit
 
-_TS = datetime(2025, 1, 1, tzinfo=timezone.utc)
+_TS = datetime(2025, 1, 1, tzinfo=UTC)
 
 # A wrapped final environment state, the shape every grading path receives.
 _DB_STATE = {"widgets": [{"id": "W1", "status": "closed"}, {"id": "W2", "status": "open"}]}

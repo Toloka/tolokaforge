@@ -20,7 +20,7 @@ load refuses one that is not.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +91,7 @@ def _manifest(criterion: str) -> str:
             criterion=criterion,
             task_ids=[],
             curated_from=[],
-            curated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            curated_at=datetime(2026, 1, 1, tzinfo=UTC),
             bundles=[],
             excluded=[],
         ).model_dump(mode="json"),

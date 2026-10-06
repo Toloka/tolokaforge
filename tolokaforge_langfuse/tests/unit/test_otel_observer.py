@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -25,7 +25,7 @@ from tolokaforge.tools.registry import ToolResult  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
-T0 = datetime(2026, 9, 15, 10, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 9, 15, 10, 0, 0, tzinfo=UTC)
 IDENTITY = TrialIdentity(run_id="acme/pilot/v1/123/1", task_id="T-1", trial_index=0, attempt_id=0)
 
 

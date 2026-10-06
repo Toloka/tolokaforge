@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -126,7 +126,7 @@ class TestObserverSeam:
         null.trial_started(
             self.identity,
             models={"agent": ModelRef("openrouter", "acme/agent-1")},
-            started_at=datetime.now(tz=timezone.utc),
+            started_at=datetime.now(tz=UTC),
         )
         null.generation(self.identity, role="agent", index=1)
         null.trial_finished(self.identity, trajectory=None)
@@ -167,7 +167,7 @@ class TestObserverSeam:
             }
         )
         composite = CompositeTrialObserver([bad, good])
-        composite.trial_started(self.identity, models={}, started_at=datetime.now(tz=timezone.utc))
+        composite.trial_started(self.identity, models={}, started_at=datetime.now(tz=UTC))
         composite.trial_finished(self.identity, trajectory=None)
         assert [name for name, _ in good.call_log.calls] == ["trial_started", "trial_finished"]
         receipt = composite.run_finished()

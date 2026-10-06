@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -37,7 +37,7 @@ def _spec(attempt: int = 0) -> MagicMock:
 
 
 def _trajectory() -> Trajectory:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     return Trajectory(task_id="T-1", trial_index=0, start_ts=now, end_ts=now, messages=[])
 
 

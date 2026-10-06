@@ -1190,7 +1190,7 @@ class BrowserTool(Tool):
                 metadata=metadata,
                 content_blocks=content_blocks,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult(
                 success=False,
                 output="",

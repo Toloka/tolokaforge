@@ -27,16 +27,14 @@ attribute, so a key a dump leaves out is censused as emitted only by a pack decl
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import BaseModel, SerializerFunctionWrapHandler
 
 __all__ = ["leave_out_absent_fields", "schema_from_the_fields"]
 
-_Serializer = TypeVar("_Serializer", bound=Callable[..., Any])
 
-
-def schema_from_the_fields(serializer: _Serializer) -> _Serializer:
+def schema_from_the_fields[Serializer: Callable[..., Any]](serializer: Serializer) -> Serializer:
     """Drop a model serializer's runtime return annotation, so the model keeps its schema."""
     serializer.__annotations__.pop("return", None)
     return serializer

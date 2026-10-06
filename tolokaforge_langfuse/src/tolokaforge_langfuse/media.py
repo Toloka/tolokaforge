@@ -29,7 +29,7 @@ import urllib.request
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -568,7 +568,7 @@ class LangfuseAttachments:
             "PATCH",
             f"/api/public/media/{media_id}",
             {
-                "uploadedAt": datetime.now(timezone.utc).isoformat(),
+                "uploadedAt": datetime.now(UTC).isoformat(),
                 # any 2xx is "stored": Azure answers 201, Langfuse dedups only on 200
                 "uploadHttpStatus": 200,
                 "uploadHttpError": None,
@@ -619,13 +619,13 @@ class LangfuseAttachments:
         the spans set them (the trial start is re-sent as the timestamp when known)."""
         body: dict[str, Any] = {"id": trace_id, "metadata": manifest}
         if trace_timestamp is not None:
-            body["timestamp"] = trace_timestamp.astimezone(timezone.utc).isoformat()
+            body["timestamp"] = trace_timestamp.astimezone(UTC).isoformat()
         if self._environment is not None:
             body["environment"] = self._environment
         event = {
             "id": uuid.uuid4().hex,
             "type": "trace-create",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "body": body,
         }
         self.ingest([event])

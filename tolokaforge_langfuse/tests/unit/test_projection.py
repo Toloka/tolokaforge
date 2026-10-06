@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import parity_bundle as pb
@@ -452,7 +452,7 @@ class TestObserverProjection:
         observer.trial_started(
             IDENTITY,
             models={"agent": ModelRef(*pb.AGENT_MODEL), "judge": ModelRef(*pb.JUDGE_MODEL)},
-            started_at=datetime(2026, 9, 17, 9, tzinfo=timezone.utc),
+            started_at=datetime(2026, 9, 17, 9, tzinfo=UTC),
         )
         observer.trial_finished(IDENTITY, trajectory=None)
         observer.trial_persisted(IDENTITY, trial_dir=trial_dir)
@@ -520,9 +520,7 @@ class TestObserverProjection:
                 environment="development", release="tolokaforge-0.0.0", version="v"
             ),
         )
-        observer.trial_started(
-            IDENTITY, models={}, started_at=datetime(2026, 9, 17, tzinfo=timezone.utc)
-        )
+        observer.trial_started(IDENTITY, models={}, started_at=datetime(2026, 9, 17, tzinfo=UTC))
         observer.run_finished()
         (span,) = exporter.get_finished_spans()
         attributes = dict(span.attributes)

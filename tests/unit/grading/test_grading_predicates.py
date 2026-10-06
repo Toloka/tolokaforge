@@ -16,7 +16,7 @@ evaluator no longer calls answers for nothing.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import product
 from typing import Any
 
@@ -174,21 +174,21 @@ def test_the_table_answers_for_exactly_the_operators_a_predicate_may_bind() -> N
 @pytest.mark.parametrize(
     ("literal", "expected"),
     [
-        ("2026-03-01", datetime(2026, 3, 1, tzinfo=timezone.utc)),
-        ("2026-03-01T12:00:00Z", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
-        ("2026-03-01T12:00:00+00:00", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
+        ("2026-03-01", datetime(2026, 3, 1, tzinfo=UTC)),
+        ("2026-03-01T12:00:00Z", datetime(2026, 3, 1, 12, tzinfo=UTC)),
+        ("2026-03-01T12:00:00+00:00", datetime(2026, 3, 1, 12, tzinfo=UTC)),
         (
             "2026-03-01T12:00:00+02:00",
-            datetime(2026, 3, 1, 10, tzinfo=timezone.utc),
+            datetime(2026, 3, 1, 10, tzinfo=UTC),
         ),
-        ("2026-03-01T12:00:00", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
+        ("2026-03-01T12:00:00", datetime(2026, 3, 1, 12, tzinfo=UTC)),
         (
             "2026-03-01T12:00:00.123456Z",
-            datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc),
+            datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=UTC),
         ),
         (
             "2026-03-01T12:00:00.1Z",
-            datetime(2026, 3, 1, 12, 0, 0, 100000, tzinfo=timezone.utc),
+            datetime(2026, 3, 1, 12, 0, 0, 100000, tzinfo=UTC),
         ),
     ],
     ids=[

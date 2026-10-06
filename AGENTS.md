@@ -97,20 +97,22 @@ uv pip list
 
 ### Linting and Formatting
 
-We use `ruff` for linting and formatting Python code.
+We use `ruff` for linting and `black` plus `ruff format` for formatting Python code. The scope is the Makefile's `LINT_DIRS` (`make lint`, `make lint-fix`, `make format`, `make format-check`):
 
 ```bash
 # Check for linting issues
-uv run ruff check tolokaforge tests scripts tools
+uv run ruff check tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
 
 # Auto-fix linting issues
-uv run ruff check . --fix
+uv run ruff check --fix tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
 
 # Format code
-uv run ruff format .
+uv run black tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
+uv run ruff format tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
 
 # Format check (CI)
-uv run ruff format --check tolokaforge tests scripts tools
+uv run black --check tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
+uv run ruff format --check tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
 ```
 
 ### Testing
@@ -290,7 +292,7 @@ Recommended MCP servers for AI agents working on this project:
 - `ruff` for linting and formatting
 - `pytest` for testing
 
-The runtime Python version is single-sourced in `.python-version`; changing it propagates to dev, CI, the devcontainer (via uv), and all runtime Docker images. Its `major.minor` is also the declared install floor: every package's `requires-python` is `>=` that version and its version classifiers name only it. A canonical guard (`tests/canonical/test_python_version_single_source.py`) fails CI if a workflow or runtime Dockerfile hardcodes a version, or if a package's `requires-python`, its classifiers, or a documented TOML snippet diverge from the floor.
+The runtime Python version is single-sourced in `.python-version`; changing it propagates to dev, CI, the devcontainer (via uv), and all runtime Docker images. Its `major.minor` is also the declared install floor: every package's `requires-python` is `>=` that version and its version classifiers name only it. It is also the ruff, black and mypy target (`[tool.ruff].target-version`, `[tool.black].target-version`, `[tool.mypy].python_version`); code that runs on a task image's `python3` instead carries a lower `[tool.ruff.per-file-target-version]` entry. A canonical guard (`tests/canonical/test_python_version_single_source.py`) fails CI if a workflow or runtime Dockerfile hardcodes a version, or if a package's `requires-python`, its classifiers, a documented TOML snippet, or a lint/type-check target diverge from the floor.
 
 **Don't suppress warnings** — update code to use actual functionality instead.
 

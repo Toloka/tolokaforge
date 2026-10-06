@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -77,7 +77,7 @@ def _make_trajectory(
     ``judge_cost`` attaches a :class:`JudgeUsage` carrying that rubric-judge
     spend to the grade, so a caller can exercise cross-role accounting.
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     return Trajectory(
         task_id=task_id,
         trial_index=trial_index,

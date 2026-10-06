@@ -33,7 +33,7 @@ The console is the shared stderr one, so ``CliRunner`` captures it in ``result.o
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +75,7 @@ _WIRE_TOOLS = [{"type": "function", "function": {"name": "list_notes", "paramete
 
 
 def _trajectory(calls: list[RecordedToolCall]) -> Trajectory:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Trajectory(
         task_id=_TASK_ID,
         trial_index=0,

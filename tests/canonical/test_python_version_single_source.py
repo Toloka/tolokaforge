@@ -3,8 +3,9 @@
 A regression that re-hardcodes a version — in a workflow's ``uv python install``
 line, an ``actions/setup-python`` pin, or a runtime Dockerfile ``FROM`` — must fail
 CI rather than silently drift from the pin. The pin's ``major.minor`` is also the
-declared install floor: every package's ``requires-python``, its version classifiers,
-and the ``requires-python`` lines in documented TOML snippets must name it. Runs under
+declared install floor and the lint/type-check target: every package's
+``requires-python``, its version classifiers, the ``requires-python`` lines in
+documented TOML snippets, and the ruff, black and mypy targets must name it. Runs under
 the ``canonical`` marker so it participates in the existing CI smoke job without
 dedicated workflow wiring.
 
@@ -18,11 +19,11 @@ from __future__ import annotations
 
 import os
 import re
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import tomllib
 import yaml
 
 from tests.utils.ruff_targets import per_file_target_versions
@@ -173,6 +174,22 @@ def test_every_package_requires_the_pinned_floor() -> None:
         f"— expected {_EXPECTED_REQUIRES_PYTHON!r} (the .python-version floor)"
         for rel, doc in sorted(_package_pyprojects().items())
         if doc.get("project", {}).get("requires-python") != _EXPECTED_REQUIRES_PYTHON
+    ]
+    assert not violations, "\n".join(violations)
+
+
+def test_lint_and_type_check_targets_name_the_floor() -> None:
+    tool = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())["tool"]
+    floor_tag = "py" + _FLOOR.replace(".", "")
+    found = {
+        "[tool.ruff].target-version": (tool["ruff"].get("target-version"), floor_tag),
+        "[tool.black].target-version": (tool["black"].get("target-version"), [floor_tag]),
+        "[tool.mypy].python_version": (tool["mypy"].get("python_version"), _FLOOR),
+    }
+    violations = [
+        f"pyproject.toml: {field} is {actual!r} — expected {expected!r} (the .python-version floor)"
+        for field, (actual, expected) in found.items()
+        if actual != expected
     ]
     assert not violations, "\n".join(violations)
 

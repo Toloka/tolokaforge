@@ -32,7 +32,7 @@ import logging
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -504,7 +504,7 @@ def envelope(event_type: str, body: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": uuid.uuid4().hex,
         "type": event_type,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "body": body,
     }
 

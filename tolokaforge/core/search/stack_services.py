@@ -37,7 +37,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 if TYPE_CHECKING:
     from tolokaforge.runner.rag_client import Document, IndexResponse, SearchResponse
@@ -109,11 +109,8 @@ class RagServiceHandle(Protocol):
         ...
 
 
-_Handle = TypeVar("_Handle")
-
-
 @dataclass(frozen=True)
-class StackService(Generic[_Handle]):
+class StackService[Handle]:
     """One declared stack service: the name a backend declares, and its handle's Protocol.
 
     ``protocol`` is the runtime-checkable Protocol a handle satisfies; the type
@@ -201,7 +198,7 @@ class StackServices:
                     f"API version {STACK_SERVICES_API_VERSION} declares for it"
                 )
 
-    def get(self, service: StackService[_Handle]) -> _Handle:
+    def get[Handle](self, service: StackService[Handle]) -> Handle:
         """This runner's handle on ``service``, typed by its Protocol.
 
         Raises:
@@ -214,4 +211,4 @@ class StackServices:
         handle = getattr(self, service.name)
         if handle is None:
             raise StackServiceUnavailableError(service)
-        return cast("_Handle", handle)
+        return cast(Handle, handle)

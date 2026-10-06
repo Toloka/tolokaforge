@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -40,7 +40,7 @@ HOOKS = (
     "run_finished",
 )
 IDENTITY = TrialIdentity(run_id="run-1", task_id="T-1", trial_index=0, attempt_id=2)
-AT = datetime(2026, 9, 18, tzinfo=timezone.utc)
+AT = datetime(2026, 9, 18, tzinfo=UTC)
 
 
 def _calls():

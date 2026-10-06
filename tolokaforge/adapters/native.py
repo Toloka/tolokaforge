@@ -3,6 +3,7 @@
 import base64
 import glob as glob_module
 import json
+from datetime import UTC
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -857,7 +858,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """
         if self.agent_harness != ENGINE_LOOP:
             return self._to_harness_task_description(task_id)
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from tolokaforge.runner.models import (
             AdapterType,
@@ -1170,7 +1171,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             search=search_config,
             grading=grading_config,
             source_files=source_files,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             metadata={
                 "mcp_server_ref": mcp_server_ref,
             },
@@ -1199,7 +1200,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         environment manifest pointing at the synthesised per-task compose
         file that layers the CLI on the pack's own image.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from tolokaforge.runner.models import (
             AdapterType,
@@ -1292,7 +1293,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
             grading=grading_config,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             metadata=metadata,
             environment_manifest=environment_manifest,
         )

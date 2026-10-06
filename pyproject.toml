@@ -582,7 +582,7 @@ exclude = [
 
 [tool.black]
 line-length = 100
-target-version = ['py310']
+target-version = ['py312']
 extend-exclude = '''
 (
   contrib
@@ -594,7 +594,7 @@ extend-exclude = '''
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 extend-exclude = [
     "**/node_modules",
     "**/__pycache__", 
@@ -626,6 +626,7 @@ ignore = [
     "SIM116",  # if-else-block-instead-of-dict-lookup (not always applicable)
     "SIM117",  # multiple-with-statements (sometimes more readable separated)
     "UP007",  # non-pep604-annotation-union (Union[] style for recursive types)
+    "UP040",  # non-pep695-type-alias (a `type` alias is a lazy TypeAliasType: get_args() and pydantic see the alias, not its value)
 ]
 fixable = ["ALL"]
 

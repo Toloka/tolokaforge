@@ -8,7 +8,7 @@ import base64
 import gzip
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -43,7 +43,7 @@ V1_FILES = (
     "trajectory.yaml",
 )
 V3_FILES = V1_FILES + ("judge_inputs.yaml", "judge_trajectory.yaml", "tool_log.yaml")
-T0 = datetime(2026, 9, 16, 10, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 9, 16, 10, 0, 0, tzinfo=UTC)
 
 
 def write_trial(trial_dir: Path, names: tuple[str, ...]) -> Path:
