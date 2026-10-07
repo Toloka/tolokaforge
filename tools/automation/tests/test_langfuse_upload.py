@@ -847,6 +847,7 @@ class TestTheReport:
         markdown = report.as_markdown()
         assert "1** transcript(s), 3 span(s)" in markdown
         assert "b.jsonl" in markdown and "unknown type 'x'" in markdown
+        assert "posted again" not in markdown  # nothing was retried
         assert not report.ok
 
     def test_it_writes_the_job_summary_when_the_runner_offers_one(self, tmp_path: Path) -> None:
@@ -1454,3 +1455,119 @@ class TestWhatReachesTheWire:
         assert report.ok
         assert "x-github-runner-key" not in headers
         assert headers.get("authorization", "").startswith("Basic ")
+
+
+# the external gateway's refusal page (its marker is what the retry policy reads)
+GATEWAY_PAGE = b"<html><body><center>Microsoft-Azure-Application-Gateway/v2</center></body></html>"
+
+
+class _FakeTime:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class RetryingExporter:
+    """Stands in for ``make_otlp_exporter`` and the exporter it builds: every batch goes through
+    the retrier the upload hands over, against scripted answers (then 200). ``post_s`` is how
+    long a post takes on the test's clock."""
+
+    def __init__(self, *answers: int | tuple[int, bytes], post_s: float = 0.0) -> None:
+        self.answers = list(answers)
+        self.post_s = post_s
+        self.time: _FakeTime | None = None
+        self.posts = 0
+        self.kwargs: dict[str, Any] = {}
+
+    def __call__(self, *args: Any, **kwargs: Any) -> RetryingExporter:
+        self.kwargs = kwargs
+        return self
+
+    def export(self, spans: Any) -> Any:
+        from tolokaforge_langfuse.retry import Answer
+
+        def attempt() -> Answer:
+            self.posts += 1
+            if self.post_s and self.time is not None:
+                self.time.now += self.post_s
+            answer = self.answers.pop(0) if self.answers else 200
+            status, body = answer if isinstance(answer, tuple) else (answer, b"")
+            return Answer(status, body)
+
+        answer = self.kwargs["retrier"].run(attempt, what="span export")
+        return type("Result", (), {"name": "SUCCESS" if answer.ok else "FAILURE"})()
+
+
+class TestTheRetryPolicy:
+    """The transcripts leave through the wheel's transport under its retry policy: a batch the
+    gateway refused without reading it goes again after the schedule's wait, and all the upload's
+    waits together take at most one grace. Time is faked."""
+
+    @staticmethod
+    def _send(directory: Path, exporter: RetryingExporter, monkeypatch) -> tuple:
+        import functools
+
+        import tolokaforge_langfuse.otlp_transport as transport
+        import tolokaforge_langfuse.retry as retry
+
+        time = _FakeTime()
+        exporter.time = time
+        monkeypatch.setattr(
+            retry,
+            "Retrier",
+            functools.partial(retry.Retrier, clock=time.clock, sleep=time.sleep, draw=lambda: 0.0),
+        )
+        monkeypatch.setattr(transport, "make_otlp_exporter", exporter)
+        receiver = lu.Receiver(endpoint="https://h/v1/traces", headers={"Authorization": "Basic x"})
+        return upload(directory, dry_run=False, receiver=receiver), time
+
+    def test_a_transcript_the_gateway_refused_once_is_sent_and_the_report_says_so(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
+        exporter = RetryingExporter((403, GATEWAY_PAGE))
+        report, time = self._send(tmp_path, exporter, monkeypatch)
+        assert report.ok and len(report.sent) == 1 and exporter.posts == 2
+        assert time.sleeps == [1.0]
+        assert report.as_dict()["retries"] == {
+            "retried_requests": 1,
+            "retry_attempts": 1,
+            "retries_recovered": 1,
+            "retries_exhausted": 0,
+            "retry_wait_s": 1,
+            "retry_breaker_trips": 0,
+        }
+        assert "posted again after a refusal: **1** transcript(s), 1 recovered" in (
+            report.as_markdown()
+        )
+
+    def test_the_whole_upload_waits_at_most_one_grace(self, tmp_path: Path, monkeypatch) -> None:
+        """A gateway that keeps refusing costs two whole schedules (186 s, within the 240 s
+        grace), after which the breaker stops the waiting for the rest of the upload."""
+        for index in range(1, 6):
+            write(tmp_path, f"agent_iter_{index}.jsonl", CLEAN_EVENTS)
+        exporter = RetryingExporter(*[(403, GATEWAY_PAGE)] * 100)
+        report, time = self._send(tmp_path, exporter, monkeypatch)
+        assert len(report.failed) == 5 and report.sent == []
+        assert time.sleeps == [1.0, 3.0, 9.0, 20.0, 30.0, 30.0] * 2 and sum(time.sleeps) <= 240
+        assert report.retries["retries_exhausted"] == 5
+        assert report.retries["retry_breaker_trips"] == 1
+
+    def test_a_long_upload_without_refusals_keeps_its_retries(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Only the time spent waiting counts towards the grace: transcripts that took 300 s to
+        send leave the last one its whole schedule."""
+        for index in range(1, 5):
+            write(tmp_path, f"agent_iter_{index}.jsonl", CLEAN_EVENTS)
+        exporter = RetryingExporter(200, 200, 200, (403, GATEWAY_PAGE), post_s=100.0)
+        report, time = self._send(tmp_path, exporter, monkeypatch)
+        assert report.ok and len(report.sent) == 4
+        assert time.now - 1000.0 >= 300 and time.sleeps == [1.0]

@@ -16,6 +16,7 @@ from tolokaforge_langfuse.profile import (
     check_environment,
     profile_from_mapping,
 )
+from tolokaforge_langfuse.retry import RetryPolicy
 
 ACCEPTS_TRIAL = "trial"
 ACCEPTS_TRANSCRIPT = "transcript"
@@ -68,6 +69,9 @@ class LangfuseConfig(BaseModel):
     """Per-request timeout of the attachment step and project check."""
     attach_budget_s: float = Field(default=120.0, gt=0)
     """Whole-trial attachment budget; three consecutive unreachable trials open the breaker."""
+    retry: RetryPolicy = Field(default_factory=RetryPolicy)
+    """Which refusals of a write are waited out and posted again: the span export of the
+    write-once layout and the trial-end calls (``tolokaforge_langfuse.retry``)."""
     profile: str | dict[str, Any] | None = None
     """The deployment profile: a TOML or YAML path, or the profile itself inline; defaults to
     ``TOLOKAFORGE_TRACING_PROFILE``. Relative paths anchor to the supplying ``project.yaml``."""

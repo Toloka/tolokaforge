@@ -10,7 +10,9 @@ event under the same trace id the OTLP spans used; metadata keys merge, so the u
 manifest and touches nothing the spans wrote). The base URL derives from the OTLP endpoint, the
 headers are the OTLP exporter's own (the Basic credential of ``OTEL_EXPORTER_OTLP_HEADERS``), the
 transport is the standard library. Every request is bounded by one timeout, a failing file is
-counted and leaves ``attachments_complete: false``; nothing here raises into the trial.
+counted and leaves ``attachments_complete: false``; nothing here raises into the trial. With a
+:class:`~tolokaforge_langfuse.retry.Retrier`, a write the receiver refused without reading it is
+posted again within what is left of the trial's budget.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from tolokaforge_langfuse.attachments import (
     build_manifest,
     plan_attachments,
 )
+from tolokaforge_langfuse.retry import Answer, Retrier
 
 _log = logging.getLogger(__name__)
 
@@ -68,21 +71,26 @@ def iter_batches(
         yield batch
 
 
-# method, url, headers, body, timeout -> (status, response body)
-Opener = Callable[[str, str, Mapping[str, str], "bytes | None", float], "tuple[int, bytes]"]
+# method, url, headers, body, timeout -> (status, response body[, response headers]); the headers
+# are optional, and without them a Retry-After cannot be honoured
+Opener = Callable[
+    [str, str, Mapping[str, str], "bytes | None", float],
+    "tuple[int, bytes] | tuple[int, bytes, Mapping[str, str]]",
+]
 
 
 def urllib_opener(
     method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float
-) -> tuple[int, bytes]:
-    """The default transport: one request, one timeout, the status and body back (an HTTP error
-    status is a result, not an exception; connection errors propagate)."""
+) -> tuple[int, bytes, dict[str, str]]:
+    """The default transport: one request, one timeout, the status, body and headers back (an
+    HTTP error status is a result, not an exception; connection errors propagate)."""
     request = urllib.request.Request(url, data=body, method=method, headers=dict(headers))
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return int(response.status), response.read()
+            return int(response.status), response.read(), dict(response.headers.items())
     except urllib.error.HTTPError as exc:
-        return int(exc.code), exc.read()
+        answered = dict(exc.headers.items()) if exc.headers is not None else {}
+        return int(exc.code), exc.read(), answered
 
 
 def api_base_from_endpoint(endpoint: str) -> str:
@@ -109,9 +117,12 @@ def list_projects(
     /api/public/projects``; a project key lists exactly one). Raises ``LangfuseApiError`` on a
     non-2xx answer and lets connection errors propagate: the caller decides what an unreachable
     receiver means."""
-    status, raw = (opener or urllib_opener)(
-        "GET", f"{api_base.rstrip('/')}/api/public/projects", dict(headers), None, timeout_s
+    answer = Answer.of(
+        (opener or urllib_opener)(
+            "GET", f"{api_base.rstrip('/')}/api/public/projects", dict(headers), None, timeout_s
+        )
     )
+    status, raw = answer.status, answer.body
     if not 200 <= status < 300:
         raise LangfuseApiError(f"GET /api/public/projects: HTTP {status}", status=status)
     try:
@@ -162,13 +173,16 @@ def detect_server_family(
     probe: nothing is written into the destination project. Any other answer is reported as the
     v3 family, which is what every deployment runs today, and the caller logs it.
     """
-    status, body = (opener or urllib_opener)(
-        "GET",
-        f"{api_base.rstrip('/')}{V2_OBSERVATIONS_PATH}?limit=1",
-        dict(headers),
-        None,
-        timeout_s,
+    answer = Answer.of(
+        (opener or urllib_opener)(
+            "GET",
+            f"{api_base.rstrip('/')}{V2_OBSERVATIONS_PATH}?limit=1",
+            dict(headers),
+            None,
+            timeout_s,
+        )
     )
+    status, body = answer.status, answer.body
     if 200 <= status < 300:
         # a 2xx alone is not the answer: an authenticating proxy or an SSO portal answers 200
         # with an HTML page on any path, and taking that for a v4 receiver would put a whole run
@@ -211,7 +225,8 @@ class LangfuseAttachments:
     materially): every request gets the smaller of ``timeout_s`` and what is left of the
     trial's ``budget_s``, and after ``breaker_failures`` consecutive trials whose step failed
     entirely (a receiver that is down or blackholed) the step switches itself off for the rest
-    of the run and only counts.
+    of the run and only counts. A ``retrier`` posts a write again after a refusal its policy
+    names; no wait ends past the trial's budget.
     """
 
     def __init__(
@@ -228,6 +243,7 @@ class LangfuseAttachments:
         clock: Callable[[], float] | None = None,
         environment: str | None = None,
         send_manifest_event: bool = True,
+        retrier: Retrier | None = None,
     ) -> None:
         self._api_base = api_base.rstrip("/")
         self._headers = dict(headers or {})
@@ -238,6 +254,8 @@ class LangfuseAttachments:
         self._breaker_failures = max(1, breaker_failures)
         self._open: Opener = opener or urllib_opener
         self._clock = clock or time.monotonic
+        # the writes' retry policy (None: one attempt per request); its deadline is the trial's
+        self._retrier = retrier
         # the current trial's budget end, per thread: trials persist from parallel workers
         self._local = threading.local()
         self._consecutive_failures = 0
@@ -487,7 +505,30 @@ class LangfuseAttachments:
         if body is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body).encode("utf-8")
-        return self._open(method, f"{self._api_base}{path}", headers, data, self._remaining())
+        answer = self._send(
+            method, f"{self._api_base}{path}", headers, data, self._remaining, f"{method} {path}"
+        )
+        return answer.status, answer.body
+
+    def _send(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        data: bytes | None,
+        timeout: Callable[[], float],
+        what: str,
+    ) -> Answer:
+        """One request, under the retry policy when there is one: each attempt gets ``timeout()``
+        at the moment it starts, and no wait reaches past the trial's budget. ``what`` is what
+        the log names, never the URL (a presigned one carries its signature)."""
+
+        def attempt() -> Answer:
+            return Answer.of(self._open(method, url, headers, data, timeout()))
+
+        if self._retrier is None:
+            return attempt()
+        return self._retrier.run(attempt, what=what, deadline=self._deadline)
 
     def _register_and_upload(
         self,
@@ -553,12 +594,14 @@ class LangfuseAttachments:
         # no credential header: the URL carries its own signature; the PUT gets the remaining
         # budget (a large trajectory needs more than one API timeout, never more than the trial)
         try:
-            status, _ = self._open("PUT", url, headers, file.payload, self._remaining_put())
+            answer = self._send(
+                "PUT", url, headers, file.payload, self._remaining_put, "presigned PUT"
+            )
         except AttachBudgetExceeded:
             raise
         except (OSError, ValueError) as exc:
             raise LangfuseApiError(f"presigned PUT to {host} failed: {type(exc).__name__}") from exc
-        return status
+        return answer.status
 
     def _remaining_put(self) -> float:
         if self._deadline is None:

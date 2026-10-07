@@ -551,7 +551,12 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   not set them. A prompt file is never read as a transcript nor listed as not read, one without
   its transcript is not read, and anything under that name that is not a regular file of UTF-8
   text (a directory, a dangling link, a named pipe, a device) refuses its transcript, the
-  irregular ones unopened. Without one the trace has no input. The receiver is
+  irregular ones unopened. Without one the trace has no input. Each transcript leaves as one OTLP
+  batch under the wheel's default retry policy ([`OBSERVABILITY.md`](OBSERVABILITY.md) § Retries):
+  a batch the receiver refused without reading it (a gateway's own 403 page, 429, 503) goes again
+  after a wait, all the upload's waits together take at most 240 s, and the report's `retries`
+  counts them.
+  The receiver is
   `LANGFUSE_BASE_URL` (or `LANGFUSE_OTLP_ENDPOINT`); the key pair and
   `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A
   file it did not send is a line in the report (`--receipt`, the job summary) and exit 1; a setup

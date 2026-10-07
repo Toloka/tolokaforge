@@ -23,8 +23,9 @@ SHARED = (
     "tolokaforge_langfuse.otlp_spans",
     # the cost rules: which figure a generation shows
     "tolokaforge_langfuse.costs",
-    # the single-attempt transport shared by the v4 producers
+    # the single-attempt transport shared by the v4 producers, and the retry policy it can take
     "tolokaforge_langfuse.otlp_transport",
+    "tolokaforge_langfuse.retry",
     # the outbound sentinel and the coding-agent transcript path: read, gate and project agent
     # output, which an offline uploader does with no engine installed at all
     "tolokaforge_langfuse.safety",

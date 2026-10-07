@@ -32,6 +32,7 @@ def test_langfuse_settings_wire_shape(canon_snapshot):
         "attach_api_base",
         "attach_timeout_s",
         "attach_budget_s",
+        "retry",
         "profile",
         "environment",
         "model_name_normalizer",
