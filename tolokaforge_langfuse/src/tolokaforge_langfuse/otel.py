@@ -35,7 +35,7 @@ import logging
 import threading
 import time
 from collections import Counter, deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -78,6 +78,7 @@ from tolokaforge_langfuse.projection import (
     ProjectionContext,
     build_projection,
 )
+from tolokaforge_langfuse.retry import Retrier, RetryStats
 from tolokaforge_langfuse.safety import Finding, SafetyGate, strings_in
 from tolokaforge_langfuse.vocabulary import (
     ALL_DERIVED_GROUPS,
@@ -100,6 +101,11 @@ TRACE_TIME_SOURCE = "live"
 # without looking the id up
 PREVIEW_METADATA_KEY = "preview"
 PREVIEW_NAME_PREFIX = "preview: "
+# how often a flush looks again while the worker still exports a batch; it polls because its
+# deadline is read on the retrier's clock, which a lock's real-time timeout would not follow
+FLUSH_POLL_S = 0.05
+# the least a shutdown waits for the worker to let go of its batch once the flush has ended
+SHUTDOWN_JOIN_MIN_S = 0.1
 
 
 @dataclass(frozen=True)
@@ -134,9 +140,17 @@ class SpanQueue:
     """Bounded, counted, background-exported span queue (ADR-0047 delivery contract).
 
     ``put`` never blocks: a full queue drops the span and counts it. The worker exports batches
-    as they fill or every ``interval_s``; :meth:`flush` drains synchronously in the caller's
-    thread (bounded by the exporter's own timeout per batch); :meth:`shutdown` flushes, stops the
-    worker and closes the exporter. Counters are read by :meth:`receipt`.
+    as they fill or every ``interval_s``; :meth:`flush` drains in the caller's thread within its
+    timeout, and waits for a batch the worker is exporting no longer than that; :meth:`shutdown`
+    flushes, stops the worker and closes the exporter. Counters are read by :meth:`receipt`.
+
+    With the exporter's ``retrier`` (:mod:`tolokaforge_langfuse.retry`) a flush during which the
+    receiver refuses with an answer the retry policy waits out (a batch already waiting one out
+    when the flush starts included) goes on for up to ``flush_grace_s`` more, in total over all
+    the queue's flushes, and no wait of the exporter's outlasts it. The extension ends once a
+    batch fails in another way (a timeout, a lost connection, a status the policy does not wait
+    out) or the retry breaker opens. A flush without such a refusal ends at its timeout.
+    ``clock`` must be the retrier's.
 
     A span may be handed a ``track`` key: the queue then reports whether that span reached the
     exporter (:meth:`lost_tracked`). Only the write-once roots are tracked, so the set stays one
@@ -152,6 +166,10 @@ class SpanQueue:
         batch_size: int = 64,
         interval_s: float = 1.0,
         name: str = "otlp",
+        retrier: Retrier | None = None,
+        flush_grace_s: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._exporter = exporter
         self._max_size = max(1, max_size)
@@ -164,6 +182,15 @@ class SpanQueue:
         # unwritten, the second may have been written and lost its answer (ADR-0048)
         self._unsent_tracked: set[str] = set()
         self._failed_tracked: set[str] = set()
+        self._retrier = retrier
+        self._grace_left = max(0.0, flush_grace_s) if retrier is not None else 0.0
+        self._clock = clock
+        self._sleep = sleep
+        # the batch the exporter holds now; once closed, shutdown has counted it and a late
+        # answer is not counted again
+        self._in_flight: list[tuple[ReadableSpan, str | None]] = []
+        self._closed = False
+        self._flush_end: float | None = None
         self._lock = threading.Lock()
         self._drain_lock = threading.Lock()
         self._wake = threading.Event()
@@ -179,7 +206,7 @@ class SpanQueue:
 
     def put(self, span: ReadableSpan, *, track: str | None = None) -> bool:
         with self._lock:
-            if len(self._items) >= self._max_size:
+            if self._closed or len(self._items) >= self._max_size:
                 self.dropped += 1
                 if track is not None:
                     self._unsent_tracked.add(track)
@@ -208,8 +235,11 @@ class SpanQueue:
 
     def _take_batch(self) -> list[tuple[ReadableSpan, str | None]]:
         with self._lock:
+            if self._closed:
+                return []
             count = min(self._batch_size, len(self._items))
-            return [self._items.popleft() for _ in range(count)]
+            self._in_flight = [self._items.popleft() for _ in range(count)]
+            return self._in_flight
 
     def _export(self, batch: list[tuple[ReadableSpan, str | None]]) -> None:
         spans = [span for span, _ in batch]
@@ -219,6 +249,9 @@ class SpanQueue:
             _log.warning("span export raised: %s", exc)
             result = SpanExportResult.FAILURE
         with self._lock:
+            self._in_flight = []
+            if self._closed:
+                return  # shutdown counted this batch as posted and unconfirmed already
             if result is SpanExportResult.SUCCESS:
                 self.exported += len(batch)
             else:
@@ -226,14 +259,29 @@ class SpanQueue:
                 self.dropped += len(batch)
                 self._failed_tracked.update(track for _, track in batch if track is not None)
 
-    def _drain(self, deadline: float | None = None) -> None:
-        """Export batches until the queue is empty or ``deadline`` (``time.monotonic``) passes."""
-        with self._drain_lock:
-            while deadline is None or time.monotonic() < deadline:
+    def _drain(self, deadline: Callable[[], float] | None = None) -> None:
+        """Export batches until the queue is empty or ``deadline()`` (``clock`` time, read before
+        each batch) passes; the worker's batch in hand is awaited within it too."""
+        if deadline is None:
+            self._drain_lock.acquire()
+        elif not self._acquire_before(deadline):
+            return
+        try:
+            while deadline is None or self._clock() < deadline():
                 batch = self._take_batch()
                 if not batch:
                     return
                 self._export(batch)
+        finally:
+            self._drain_lock.release()
+
+    def _acquire_before(self, deadline: Callable[[], float]) -> bool:
+        """The drain lock, unless the worker holds it past the deadline."""
+        while not self._drain_lock.acquire(blocking=False):
+            if self._clock() >= deadline():
+                return False
+            self._sleep(FLUSH_POLL_S)
+        return True
 
     def _worker(self) -> None:
         while not self._stop.is_set():
@@ -243,31 +291,73 @@ class SpanQueue:
         self._drain()
 
     def flush(self, timeout_s: float | None = None) -> bool:
-        """Export what is queued, in the caller's thread, within ``timeout_s``; whatever the budget
-        did not cover is dropped and counted, so a receiver that is down cannot hold the run
-        open. True when everything left."""
-        deadline = None if timeout_s is None else time.monotonic() + max(0.0, timeout_s)
+        """Export what is queued, in the caller's thread, within ``timeout_s`` (and the grace left,
+        while the receiver refuses with an answer the retry policy waits out); whatever that did
+        not cover is dropped and counted, so a receiver that is down cannot hold the run open.
+        True when everything left the queue and no batch is still with the worker."""
+        if timeout_s is None:
+            self._drain()
+            return self._everything_left()
+        base = self._clock() + max(0.0, timeout_s)
+        grace_end = base + self._grace_left
+        retrier = self._retrier
+        # a batch already waiting out a refusal when the flush starts counts as refused in it
+        mark = retrier.refusal_mark() if retrier is not None else 0
+        if retrier is not None:
+            # a refused batch waits within the grace, never past it
+            retrier.set_deadline(grace_end)
+
+        def deadline() -> float:
+            if retrier is not None and retrier.refusing_since(mark):
+                return grace_end
+            return base
+
         self._drain(deadline)
+        self._grace_left = max(0.0, self._grace_left - max(0.0, self._clock() - base))
+        self._flush_end = deadline()
+        return self._everything_left()
+
+    def _everything_left(self) -> bool:
+        """Drop and count what is still queued; True when nothing was, and the worker holds no
+        batch (a batch that finished after the deadline still left)."""
+        left = self._drop_the_rest()
+        with self._lock:
+            return left == 0 and not self._in_flight
+
+    def _drop_the_rest(self) -> int:
+        """Count what is still queued as dropped (never sent); returns how many."""
         with self._lock:
             left = len(self._items)
             if left:
                 self._unsent_tracked.update(track for _, track in self._items if track is not None)
                 self._items.clear()
                 self.dropped += left
-        return left == 0
+        return left
 
     def shutdown(self, timeout_s: float = 30.0) -> bool:
-        """Flush within the budget, stop the worker, close the exporter; True when nothing was lost."""
-        started = time.monotonic()
+        """Flush within the budget, stop the worker, close the exporter; True when nothing was lost.
+
+        A batch the worker still holds once the budget is spent counts as posted and not
+        confirmed, so the receipt accounts for every span the queue took."""
         flushed = self.flush(timeout_s)
         self._stop.set()
         self._wake.set()
-        self._thread.join(timeout=max(0.1, timeout_s - (time.monotonic() - started)))
+        if self._retrier is not None:
+            self._retrier.cancel()  # the run is over: no refused batch waits any longer
+        end = self._flush_end if self._flush_end is not None else self._clock()
+        self._thread.join(timeout=max(SHUTDOWN_JOIN_MIN_S, end - self._clock()))
+        alive = self._thread.is_alive()
+        with self._lock:
+            if alive and self._in_flight:
+                self.failures += 1
+                self.dropped += len(self._in_flight)
+                self._failed_tracked.update(t for _, t in self._in_flight if t is not None)
+            self._closed = True
         try:
             self._exporter.shutdown()
         except Exception as exc:  # noqa: BLE001
             _log.warning("span exporter shutdown raised: %s", exc)
-        return flushed and not self._thread.is_alive()
+        return flushed and not alive
 
     def receipt(self, *, flushed: bool) -> ExportReceipt:
         return ExportReceipt(
@@ -364,9 +454,12 @@ class OTelTrialObserver:
         previews: bool = False,
         gate: SafetyGate | None = None,
         ambient: Sequence[str] = (),
+        retry_stats: RetryStats | None = None,
     ) -> None:
         self._queue = queue
         self._attachments = attachments
+        # what the retry policy did on every write route of the run (the plugin shares one)
+        self._retry_stats = retry_stats if retry_stats is not None else RetryStats()
         self._gradings = gradings
         self._projection = projection or ProjectionSettings()
         # the receiver family this run writes for: on v4 every observation is written
@@ -1102,12 +1195,15 @@ class OTelTrialObserver:
             self._grading_counts["users"] += built.user_generations
 
     def run_finished(self) -> ExportReceipt:
+        decided: set[str] = set()
         if self._write_once:
             # the queue is drained first: a root that never reached the exporter is only known
             # afterwards, and an error root for it still has to get out
             self._queue.flush(self._flush_timeout_s)
-            self._write_error_roots()
+            decided = self._write_error_roots()
         flushed = self._queue.shutdown(self._flush_timeout_s)
+        if self._write_once:
+            self._count_roots_left_unconfirmed(decided)
         self._warn_of_what_was_withheld()
         with self._states_lock:
             self._persist.clear()  # trials that were never announced
@@ -1143,6 +1239,8 @@ class OTelTrialObserver:
                 # live spans the data-safety gate withheld (neither queued nor dropped); a
                 # trial-end pass it withheld is counted as ``*_refused_secret``, not ``*_failed``
                 "langfuse.spans_refused_secret": self._spans_withheld,
+                # what the retry policy did, over the span export and the trial-end calls
+                **{f"langfuse.{key}": value for key, value in self._retry_stats.counts().items()},
             },
             details=(
                 {
@@ -1158,11 +1256,12 @@ class OTelTrialObserver:
             ),
         )
 
-    def _write_error_roots(self) -> None:
+    def _write_error_roots(self) -> set[str]:
         """One minimal root for every trace whose real root can no longer come: the trial died
         before its bundle was written, the bundle pass wrote no root, or the root span never
         reached the receiver. Written once, at run end, so every trace of the run is in the
-        trace list and the broken ones say so. Carries no manifest and no verdict."""
+        trace list and the broken ones say so. Carries no manifest and no verdict. Returns the
+        traces it decided about (an error root, or a root counted as unconfirmed)."""
         unsent = self._queue.unsent_tracked()
         unconfirmed = self._queue.failed_tracked()
         with self._states_lock:
@@ -1228,6 +1327,26 @@ class OTelTrialObserver:
             if written:
                 with self._states_lock:
                     self._write_once_counts["error_roots"] += 1
+        return {trace_id for trace_id, _ in pending} | set(ambiguous)
+
+    def _count_roots_left_unconfirmed(self, decided: set[str]) -> None:
+        """A root whose batch was still with the exporter when the error roots were written (a
+        refused batch waiting out its retry) and failed after: posted and not confirmed, counted
+        and warned about like the roots counted then."""
+        failed = self._queue.failed_tracked()
+        with self._states_lock:
+            late = sorted(
+                trace_id
+                for trace_id, context in self._roots_pending.items()
+                if context.root_sent and trace_id in failed and trace_id not in decided
+            )
+            self._write_once_counts["roots_unconfirmed"] += len(late)
+        for trace_id in late:
+            _log.warning(
+                "the root observation of trace %s was posted but not confirmed before the run "
+                "ended; no error root is written for it, because the receiver may hold it already",
+                trace_id,
+            )
 
     # -- helpers ------------------------------------------------------------------------------------
 

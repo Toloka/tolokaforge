@@ -1,3 +1,3 @@
 {
-  "wire": "{\"expect_project\":null,\"project\":null,\"project_id\":null,\"environments\":null,\"attach\":\"all\",\"gradings\":true,\"projection\":\"full\",\"server_api\":\"auto\",\"attach_api_base\":null,\"attach_timeout_s\":60.0,\"attach_budget_s\":120.0,\"profile\":null,\"environment\":null,\"model_name_normalizer\":\"none\",\"model_name_rules\":null}"
+  "wire": "{\"expect_project\":null,\"project\":null,\"project_id\":null,\"environments\":null,\"attach\":\"all\",\"gradings\":true,\"projection\":\"full\",\"server_api\":\"auto\",\"attach_api_base\":null,\"attach_timeout_s\":60.0,\"attach_budget_s\":120.0,\"retry\":{\"statuses\":[403,429,503],\"gateway_markers\":[\"Microsoft-Azure-Application-Gateway\"],\"max_retries\":6,\"delays_s\":[1.0,3.0,9.0,20.0,30.0],\"jitter\":0.2,\"retry_after_max_s\":60.0,\"breaker_after\":2,\"flush_grace_s\":240.0},\"profile\":null,\"environment\":null,\"model_name_normalizer\":\"none\",\"model_name_rules\":null}"
 }

@@ -21,7 +21,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTrace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from otlp_receiver import DROP, STALL, Receiver
+from otlp_receiver import DROP, LANGFUSE_403, STALL, Receiver, Reply, gateway_refusal
 from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER, make_otlp_exporter
 
 pytestmark = pytest.mark.unit
@@ -45,8 +45,23 @@ def spans():
     return memory.get_finished_spans()
 
 
-def _write_once(receiver: Receiver):
-    return make_otlp_exporter(receiver.url(), {"Authorization": AUTHORIZATION}, retry=False)
+@pytest.fixture(params=[None, "default"], ids=["alone", "with-retrier"])
+def retrier(request):
+    """The single-attempt exporter alone, and with a retrier under the default policy: what the
+    policy does not name stays one post either way. The retrier's waits are faked."""
+    if request.param is None:
+        return None
+    from fake_time import FakeTime
+    from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+    time = FakeTime()
+    return Retrier(RetryPolicy(jitter=0.0), clock=time.clock, sleep=time.sleep)
+
+
+def _write_once(receiver: Receiver, retrier=None):
+    return make_otlp_exporter(
+        receiver.url(), {"Authorization": AUTHORIZATION}, retry=False, retrier=retrier
+    )
 
 
 def _span_names(body: bytes) -> list[str]:
@@ -76,11 +91,11 @@ class TestOnePostPerBatch:
         assert post.headers["content-type"] == "application/x-protobuf"
         assert post.headers["user-agent"].startswith("tolokaforge-langfuse/")
 
-    def test_a_lost_answer_is_not_posted_again(self, receiver, spans) -> None:
+    def test_a_lost_answer_is_not_posted_again(self, receiver, spans, retrier) -> None:
         """The case the guarantee exists for: the receiver took the body and the answer never
         came back. The SDK's own request path posts the same bytes again here."""
         receiver.answer = DROP
-        assert _write_once(receiver).export(spans) is SpanExportResult.FAILURE
+        assert _write_once(receiver, retrier).export(spans) is SpanExportResult.FAILURE
         assert len(receiver.requests) == 1
 
     def test_an_answer_that_never_comes_is_not_awaited_twice(
@@ -91,12 +106,20 @@ class TestOnePostPerBatch:
         assert _write_once(receiver).export(spans) is SpanExportResult.FAILURE
         assert len(receiver.requests) == 1
 
-    @pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
+    @pytest.mark.parametrize(
+        ("status_code", "retrier"),
+        [
+            *(pytest.param(code, None, id=f"{code}-alone") for code in (429, 500, 502, 503, 504)),
+            # the default policy names 429 and 503; the others stay one post under it
+            *(pytest.param(code, "default", id=f"{code}-with-retrier") for code in (500, 502, 504)),
+        ],
+        indirect=["retrier"],
+    )
     def test_a_refusal_the_sdk_would_retry_is_not_posted_again(
-        self, receiver, spans, status_code: int
+        self, receiver, spans, status_code: int, retrier
     ) -> None:
         receiver.answer = status_code
-        assert _write_once(receiver).export(spans) is SpanExportResult.FAILURE
+        assert _write_once(receiver, retrier).export(spans) is SpanExportResult.FAILURE
         assert len(receiver.requests) == 1
 
     @pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
@@ -120,17 +143,20 @@ class TestOnePostPerBatch:
         assert post.headers["content-encoding"] == compression
         assert _span_names(decompress(post.body)) == ["generation"]
 
-    def test_each_answer_reaches_a_response_hook_on_its_session(self, receiver, spans) -> None:
+    def test_each_answer_reaches_a_response_hook_on_its_session(
+        self, receiver, spans, retrier
+    ) -> None:
         """A caller reads each answer through ``_session``'s response hooks (the offline
-        connector tells a rate limit apart this way), whichever SDK built the request path."""
-        exporter = _write_once(receiver)
+        connector tells a rate limit apart this way), whichever SDK built the request path, a
+        post the retrier repeats included."""
+        exporter = _write_once(receiver, retrier)
         seen: list[int] = []
         exporter._session.hooks["response"].append(
             lambda response, **_: seen.append(response.status_code)
         )
-        receiver.answer = 429
-        assert exporter.export(spans) is SpanExportResult.FAILURE
-        assert seen == [429]
+        receiver.script = [429]
+        exporter.export(spans)
+        assert seen == ([429] if retrier is None else [429, 200])
 
     def test_the_traces_variable_wins_over_the_generic_one(
         self, receiver, spans, monkeypatch
@@ -156,6 +182,98 @@ class TestOnePostPerBatch:
             pytest.skip("this SDK's stock exporter raises on a lost connection, posts no repeat")
         assert result is SpanExportResult.FAILURE
         assert len(receiver.requests) >= 2
+
+
+class TestRefusalsTheReceiverNeverRead:
+    """With a retrier the same bytes go again after an answer that proves the receiver did not
+    read them, and after nothing else. Real posts to a local receiver; the waits are faked."""
+
+    @staticmethod
+    def _exporter(receiver: Receiver, time, **policy):
+        from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+        retrier = Retrier(
+            RetryPolicy(**{"jitter": 0.0, **policy}), clock=time.clock, sleep=time.sleep
+        )
+        exporter = make_otlp_exporter(
+            receiver.url(), {"Authorization": AUTHORIZATION}, retry=False, retrier=retrier
+        )
+        return exporter, retrier
+
+    def test_the_gateway_page_is_posted_again_and_then_lands(self, receiver, spans) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter, retrier = self._exporter(receiver, time)
+        receiver.script = [gateway_refusal()]
+        assert exporter.export(spans) is SpanExportResult.SUCCESS
+        first, second = receiver.posts
+        assert first.body == second.body and _span_names(second.body) == ["generation"]
+        assert time.sleeps == [1.0]
+        assert retrier.stats.counts()["retries_recovered"] == 1
+
+    def test_a_403_langfuse_answers_itself_is_posted_once(self, receiver, spans) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter, _ = self._exporter(receiver, time)
+        receiver.answer = Reply(403, LANGFUSE_403, (("Content-Type", "application/json"),))
+        assert exporter.export(spans) is SpanExportResult.FAILURE
+        assert len(receiver.posts) == 1 and time.sleeps == []
+
+    @pytest.mark.parametrize(("asked", "waited"), [("30", 30.0), ("600", 60.0)])
+    def test_a_429_waits_as_long_as_its_retry_after_asks_up_to_the_cap(
+        self, receiver, spans, asked: str, waited: float
+    ) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter, _ = self._exporter(receiver, time)
+        receiver.script = [Reply(429, b"", (("Retry-After", asked),))]
+        assert exporter.export(spans) is SpanExportResult.SUCCESS
+        assert len(receiver.posts) == 2 and time.sleeps == [waited]
+
+    def test_a_batch_still_refused_after_its_schedule_fails(self, receiver, spans) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        exporter, retrier = self._exporter(receiver, time)
+        receiver.answer = 503
+        assert exporter.export(spans) is SpanExportResult.FAILURE
+        # the first post and max_retries (6) re-sends, the schedule's waits between them
+        assert len(receiver.posts) == 7 and time.sleeps == [1.0, 3.0, 9.0, 20.0, 30.0, 30.0]
+        assert retrier.stats.counts()["retries_exhausted"] == 1
+
+    def test_shutdown_ends_a_wait_in_progress(self, receiver, spans) -> None:
+        """No injected sleep: the exporter's own wait is cut short when it shuts down."""
+        import threading
+
+        from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+        exporter = make_otlp_exporter(
+            receiver.url(),
+            {"Authorization": AUTHORIZATION},
+            retry=False,
+            retrier=Retrier(RetryPolicy(delays_s=[60])),
+        )
+        receiver.answer = gateway_refusal()
+        results: list[SpanExportResult] = []
+        worker = threading.Thread(target=lambda: results.append(exporter.export(spans)))
+        worker.start()
+        for _ in range(100):
+            if receiver.posts:
+                break
+            worker.join(0.05)
+        exporter.shutdown()
+        worker.join(5)
+        assert not worker.is_alive() and results == [SpanExportResult.FAILURE]
+        assert len(receiver.posts) == 1
+
+    def test_the_sdks_exporter_takes_no_retrier(self, receiver) -> None:
+        from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+        with pytest.raises(ValueError, match="single-attempt exporter"):
+            make_otlp_exporter(receiver.url(), retrier=Retrier(RetryPolicy()))
 
 
 # The SDK's HTTP exporter packages made unimportable, in a process of its own (the exporter, and
