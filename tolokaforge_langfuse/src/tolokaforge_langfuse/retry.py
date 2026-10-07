@@ -2,21 +2,23 @@
 
 The v4 producer posts a body once (ADR-0048): a re-sent observation id is an update on that
 receiver, last write wins, so a body the receiver may already hold is not sent again by default.
-Some answers prove that the receiver never read the body, and only those are posted again
-(ADR-0048, amendment 2026-10-07):
+Only a refusal that comes before the receiver reads the body is posted again (ADR-0048,
+amendment 2026-10-07):
 
-- the gateway's own refusal page: a 403 whose body names ``Microsoft-Azure-Application-Gateway``.
-  The gateway answers it without forwarding the request. The page does not say why: the usual
-  reason is a write limit the gateway shares among its clients, but a block rule of its own looks
-  the same, which is why :class:`RetryBreaker` stops the waiting once refusals outlast whole
-  schedules. A 403 Langfuse answers itself is JSON and is never posted again;
-- 429 and 503.
+- a gateway's own refusal page: a 403 whose body carries one of ``gateway_markers`` (by default
+  the Azure Application Gateway's). The gateway answers it without forwarding the request. The
+  page does not say why: the usual reason is a write limit the gateway shares among its clients,
+  but a block rule of its own looks the same, which is why :class:`RetryBreaker` stops the waiting
+  once refusals outlast whole schedules. A 403 Langfuse answers itself is JSON and is never posted
+  again;
+- 429, and 503, which a service answers before it processes the request. A proxy may answer 503
+  after forwarding the request; on a v4 receiver that re-send is an update with the same content.
 
 All of them follow one schedule of waits, ``delays_s``, whose last step repeats, for at most
 ``max_retries`` re-sends; a longer ``Retry-After`` is honoured up to a cap. A lost answer, a
-timeout and every status the policy does not list stay one attempt. An operator may list more statuses: listing 500, 502 or 504 can re-send
-a body the receiver may already have read and written, which on a v4 receiver is an update with
-the same content (the ADR-0048 trade-off).
+timeout and every status the policy does not list stay one attempt. An operator may list more
+statuses: listing 500, 502 or 504 can re-send a body the receiver may already have read and
+written, which on a v4 receiver is an update with the same content (the ADR-0048 trade-off).
 
 :class:`RetryPolicy` is the configuration (``options.langfuse.retry``), :class:`Retrier` runs a
 request under it within a deadline and a wait budget, :class:`RetryBreaker` stops the waiting for
@@ -32,38 +34,42 @@ import math
 import random
 import threading
 import time
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from enum import Enum
 from typing import Any, Final
 
-from pydantic import BaseModel, Field, StrictInt, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 _log = logging.getLogger(__name__)
 
-# the marker on an Azure Application Gateway's own refusal page; a 403 Langfuse answers is JSON
-GATEWAY_PAGE_MARKER: Final = "Microsoft-Azure-Application-Gateway"
 GATEWAY_STATUS: Final = 403
 # a re-post is started only when its wait leaves at least this long before the deadline
 MIN_ATTEMPT_S: Final = 1.0
 
-# how a request ended, as far as the run-end flush and the breaker care
-_OK: Final = "ok"
-_REFUSED: Final = "refused"
-_FAILED: Final = "failed"
 _BREAKER_OPEN: Final = (
     "the breaker is open (refusals outlasted whole schedules), so they fail at once until a "
     "write is accepted again"
 )
 
 
-def is_gateway_page(body: bytes | str | None) -> bool:
-    """Whether an answer's body is the gateway's own refusal page."""
+class _Ending(str, Enum):
+    """How a request ended, as far as the run-end flush and the breaker care."""
+
+    OK = "ok"
+    REFUSED = "refused"
+    FAILED = "failed"
+
+
+def is_gateway_page(body: bytes | str | None, markers: Sequence[str]) -> bool:
+    """Whether an answer's body is a gateway's own refusal page: it carries one of ``markers``."""
     if not body:
         return False
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
-    return GATEWAY_PAGE_MARKER in text
+    return any(marker in text for marker in markers)
 
 
 def parse_retry_after(value: str | None, *, now: datetime | None = None) -> float | None:
@@ -110,17 +116,20 @@ class Answer:
 class RetryPolicy(BaseModel):
     """``options.langfuse.retry``: which refusals a write waits out and posts again, and how long.
 
-    ``docs/OBSERVABILITY.md`` ("Retries") gives the reason for every default; ADR-0048's amendment
-    of 2026-10-07 says when a re-send is safe.
+    ``docs/OBSERVABILITY.md`` ("Retries") gives the reason for every default.
     """
 
     model_config = {"extra": "forbid", "frozen": True, "allow_inf_nan": False}
 
     statuses: tuple[StrictInt, ...] = (403, 429, 503)
-    """The HTTP statuses posted again. 403 stands for the gateway's refusal page alone: a 403 whose
-    body is not that page is never posted again. 500, 502 and 504 can come after the receiver read
-    and wrote the body, so listing one can write a batch a second time (an update with the same
-    content). ``[]`` turns retries off."""
+    """The HTTP statuses posted again. 403 stands for a gateway's refusal page alone
+    (``gateway_markers``): a 403 whose body is not that page is never posted again. 500, 502 and
+    504 can come after the receiver read and wrote the body, so listing one can write a batch a
+    second time (an update with the same content). ``[]`` turns retries off."""
+    gateway_markers: tuple[str, ...] = ("Microsoft-Azure-Application-Gateway",)
+    """Text that marks a 403's body as the refusal page of the gateway in front of the receiver,
+    which it sends without forwarding the request; the default is the Azure Application
+    Gateway's. A 403 that carries none of them is the receiver's own and fails at once."""
     max_retries: int = Field(default=6, ge=0, le=100, strict=True)
     """The most re-sends of one request after its first post. ``0`` turns retries off."""
     delays_s: tuple[float, ...] = (1.0, 3.0, 9.0, 20.0, 30.0)
@@ -149,6 +158,16 @@ class RetryPolicy(BaseModel):
             raise ValueError(f"statuses lists a status twice: {list(value)}")
         return value
 
+    @field_validator("gateway_markers")
+    @classmethod
+    def _check_markers(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not marker.strip() for marker in value):
+            raise ValueError(
+                "gateway_markers holds a blank marker: almost every body carries it, Langfuse's "
+                "own 403 included"
+            )
+        return value
+
     @field_validator("delays_s", mode="before")
     @classmethod
     def _numbers_only(cls, value: Any) -> Any:
@@ -164,17 +183,32 @@ class RetryPolicy(BaseModel):
     def _check_delays(cls, value: tuple[float, ...]) -> tuple[float, ...]:
         if not value:
             raise ValueError("delays_s needs at least one wait (max_retries: 0 turns retries off)")
-        if any(not math.isfinite(step) or step <= 0 for step in value):
-            raise ValueError(f"every wait in delays_s is a finite number above 0 s: {list(value)}")
+        if any(step <= 0 for step in value):
+            raise ValueError(f"every wait in delays_s is above 0 s: {list(value)}")
         if any(later < earlier for earlier, later in zip(value, value[1:])):
             raise ValueError(f"delays_s never gets shorter: {list(value)}")
         return value
+
+    @model_validator(mode="after")
+    def _a_listed_403_has_a_marker(self) -> RetryPolicy:
+        if GATEWAY_STATUS in self.statuses and not self.gateway_markers:
+            raise ValueError(
+                "statuses lists 403, which is posted again only when its body carries one of "
+                "gateway_markers, and gateway_markers is empty"
+            )
+        return self
 
     def retries(self, answer: Answer) -> bool:
         """Whether this answer's request is posted again (when time allows)."""
         if answer.status not in self.statuses:
             return False
-        return answer.status != GATEWAY_STATUS or is_gateway_page(answer.body)
+        return answer.status != GATEWAY_STATUS or self.is_gateway_page(answer)
+
+    def is_gateway_page(self, answer: Answer) -> bool:
+        """Whether the answer is a 403 refusal page of the gateway (``gateway_markers``)."""
+        return answer.status == GATEWAY_STATUS and is_gateway_page(
+            answer.body, self.gateway_markers
+        )
 
     def delay_s(self, retry: int) -> float:
         """The schedule's wait before the ``retry``-th re-post (1-based)."""
@@ -235,18 +269,29 @@ class RetryBreaker:
     The gateway's page does not tell its shared limit, which lifts, from a rule of its own, which
     does not; this bounds what such a rule costs. Only a schedule run out to its end counts, and
     only from a retrier that counts towards it; a write that lands closes the breaker, and every
-    route of a producer obeys the one it shares. Thread-safe; ``after=0`` never opens."""
+    route of a producer obeys the one it shares, a wait in progress included. Thread-safe;
+    ``after=0`` never opens."""
 
     def __init__(self, after: int) -> None:
         self._after = after
         self._lock = threading.Lock()
         self._outlasted = 0
         self._open = False
+        # what ends the waits in progress of the retriers that obey it, held weakly
+        self._wakers: list[weakref.WeakMethod[Callable[[], None]]] = []
 
     @property
     def open(self) -> bool:
         with self._lock:
             return self._open
+
+    def obeyed_by(self, wake: Callable[[], None]) -> None:
+        """Register a retrier's ``wake``, which the breaker calls when it opens, to end the waits in
+        progress. It must be a bound method: the breaker holds it weakly, so it never keeps the
+        retrier alive, and ``weakref.WeakMethod`` refuses anything else."""
+        with self._lock:
+            self._wakers = [ref for ref in self._wakers if ref() is not None]
+            self._wakers.append(weakref.WeakMethod(wake))
 
     def outlasted(self) -> bool:
         """A request ran out its whole schedule still refused; True when this opened the breaker."""
@@ -255,6 +300,7 @@ class RetryBreaker:
             opened = bool(self._after) and not self._open and self._outlasted >= self._after
             self._open = self._open or opened
             count = self._outlasted
+            wakers = [ref() for ref in self._wakers] if opened else []
         if opened:
             _log.warning(
                 "%d request(s) in a row were still refused when their whole retry schedule ran "
@@ -263,6 +309,9 @@ class RetryBreaker:
                 "(retry.breaker_after)",
                 count,
             )
+        for wake in wakers:
+            if wake is not None:
+                wake()
         return opened
 
     def accepted(self) -> None:
@@ -288,8 +337,8 @@ class Retrier:
     towards the breaker, which it still obeys (a run's parallel trial ends would otherwise open
     it within one schedule of a long refusal).
 
-    ``sleep`` replaces the default wait, which wakes early when the deadline moves or the retrier
-    is cancelled; ``clock`` must then be the time ``sleep`` advances.
+    ``sleep`` replaces the default wait, which wakes early when the deadline moves, the retrier
+    is cancelled or the breaker opens; ``clock`` must then be the time ``sleep`` advances.
     """
 
     def __init__(
@@ -322,6 +371,7 @@ class Retrier:
         self._refused_requests = 0
         self._in_schedule = 0
         self._failed_since_refusal = False
+        self.breaker.obeyed_by(self._wake)
 
     # -- the run end's controls ------------------------------------------------------------------
 
@@ -367,13 +417,14 @@ class Retrier:
         last answer. ``what`` names the request in the log (a method and a path, never a URL or a
         header)."""
         schedule = _Schedule()
-        ending = _FAILED  # an exception from the attempt is a failure that is not a refusal
+        # an exception from the attempt is a failure that is not a refusal
+        ending = _Ending.FAILED
         try:
             while True:
                 schedule.posts += 1
                 answer = attempt()
                 if not self.policy.retries(answer):
-                    ending = _OK if answer.ok else _FAILED
+                    ending = _Ending.OK if answer.ok else _Ending.FAILED
                     return answer
                 self._note_refusal(first=not schedule.refused)
                 schedule.refused = True
@@ -382,7 +433,7 @@ class Retrier:
                     _log.info(
                         "%s: %s; posting again in %.1f s (retry %d of at most %d)",
                         what,
-                        _describe(answer),
+                        self._describe(answer),
                         wait,
                         schedule.posts,
                         self.policy.max_retries,
@@ -391,7 +442,7 @@ class Retrier:
                     stop = self._pause(wait, deadline)
                     self._spend(schedule, max(0.0, self._clock() - started))
                 if stop is not None:
-                    ending = _REFUSED
+                    ending = _Ending.REFUSED
                     self._give_up(what, answer, schedule, stop)
                     return answer
         finally:
@@ -437,6 +488,8 @@ class Retrier:
                 if self._cancelled:
                     return "the producer is shutting down"
                 effective = self._earliest(deadline)
+            if self.breaker.open:
+                return _BREAKER_OPEN
             if effective is not None and end + MIN_ATTEMPT_S > effective:
                 return "the deadline moved before the wait's end"
             if remaining <= 0:
@@ -450,6 +503,12 @@ class Retrier:
             return
         with self._condition:
             self._condition.wait_for(lambda: self._version != version, timeout=seconds)
+
+    def _wake(self) -> None:
+        """A wait in progress looks again at what ends it: the breaker opened."""
+        with self._condition:
+            self._version += 1
+            self._condition.notify_all()
 
     def _earliest(self, deadline: float | None) -> float | None:
         if deadline is None:
@@ -474,12 +533,12 @@ class Retrier:
     def _give_up(self, what: str, answer: Answer, schedule: _Schedule, stop: str) -> None:
         if stop == _BREAKER_OPEN:
             # the breaker said so once at WARNING; each request it stops is a plain line
-            _log.info("%s: %s; not waited out: %s", what, _describe(answer), stop)
+            _log.info("%s: %s; not waited out: %s", what, self._describe(answer), stop)
             return
         _log.warning(
             "%s: %s; giving up after %d post(s) and %.1f s of waiting: %s",
             what,
-            _describe(answer),
+            self._describe(answer),
             schedule.posts,
             schedule.waited,
             stop,
@@ -487,20 +546,25 @@ class Retrier:
         if schedule.spent and self._trips_breaker and self.breaker.outlasted():
             self.stats.note_breaker_trip()
 
-    def _end(self, schedule: _Schedule, ending: str) -> None:
+    def _end(self, schedule: _Schedule, ending: _Ending) -> None:
         with self._condition:
             if schedule.refused:
                 self._in_schedule -= 1
-            if ending == _FAILED:
+            if ending is _Ending.FAILED:
                 self._failed_since_refusal = True
-        if ending == _OK:
+        if ending is _Ending.OK:
             self.breaker.accepted()
         self.stats.record(
             posts=schedule.posts,
             waited_s=schedule.waited,
-            recovered=ending == _OK and schedule.posts > 1,
-            exhausted=ending == _REFUSED,
+            recovered=ending is _Ending.OK and schedule.posts > 1,
+            exhausted=ending is _Ending.REFUSED,
         )
+
+    def _describe(self, answer: Answer) -> str:
+        if self.policy.is_gateway_page(answer):
+            return f"HTTP {answer.status}, the gateway's refusal page"
+        return f"HTTP {answer.status}"
 
 
 @dataclass
@@ -512,9 +576,3 @@ class _Schedule:
     refused: bool = False
     # the request ran out the whole schedule after waiting (what the breaker counts)
     spent: bool = False
-
-
-def _describe(answer: Answer) -> str:
-    if answer.status == GATEWAY_STATUS and is_gateway_page(answer.body):
-        return f"HTTP {answer.status}, the gateway's refusal page"
-    return f"HTTP {answer.status}"

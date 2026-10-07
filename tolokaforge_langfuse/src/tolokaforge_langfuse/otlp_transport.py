@@ -24,8 +24,8 @@ It reads nothing an SDK keeps private: the encoder's public module is all it tak
 exporter packages, and an install without it refuses the run at start rather than retrying.
 
 A caller may hand it a :class:`~tolokaforge_langfuse.retry.Retrier`: the same bytes are then
-posted again after an answer that proves the receiver did not read them (a gateway's own
-refusal page, 429, 503 by default), and after nothing else (ADR-0048, amendment 2026-10-07).
+posted again after a refusal that comes before the receiver reads them (a gateway's own
+refusal page, 429, 503 by default), and after nothing else.
 Without one it stays at one POST per batch.
 
 Engine-free by construction: both producers need this guarantee, and the offline connector imports

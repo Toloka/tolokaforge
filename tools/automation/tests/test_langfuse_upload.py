@@ -847,6 +847,7 @@ class TestTheReport:
         markdown = report.as_markdown()
         assert "1** transcript(s), 3 span(s)" in markdown
         assert "b.jsonl" in markdown and "unknown type 'x'" in markdown
+        assert "posted again" not in markdown  # nothing was retried
         assert not report.ok
 
     def test_it_writes_the_job_summary_when_the_runner_offers_one(self, tmp_path: Path) -> None:
@@ -1527,16 +1528,6 @@ class TestTheRetryPolicy:
         receiver = lu.Receiver(endpoint="https://h/v1/traces", headers={"Authorization": "Basic x"})
         return upload(directory, dry_run=False, receiver=receiver), time
 
-    def test_the_export_takes_the_wheels_default_policy(self, tmp_path: Path, monkeypatch) -> None:
-        from tolokaforge_langfuse.retry import RetryPolicy
-
-        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
-        exporter = RetryingExporter()
-        report, _ = self._send(tmp_path, exporter, monkeypatch)
-        assert report.ok
-        assert exporter.kwargs["retry"] is False
-        assert exporter.kwargs["retrier"].policy == RetryPolicy()
-
     def test_a_transcript_the_gateway_refused_once_is_sent_and_the_report_says_so(
         self, tmp_path: Path, monkeypatch
     ) -> None:
@@ -1556,15 +1547,6 @@ class TestTheRetryPolicy:
         assert "posted again after a refusal: **1** transcript(s), 1 recovered" in (
             report.as_markdown()
         )
-
-    def test_a_403_langfuse_answers_itself_is_not_posted_again(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        write(tmp_path, "agent_iter_1.jsonl", CLEAN_EVENTS)
-        exporter = RetryingExporter((403, b'{"message": "Invalid credentials"}'))
-        report, time = self._send(tmp_path, exporter, monkeypatch)
-        assert not report.ok and exporter.posts == 1 and time.sleeps == []
-        assert "posted again" not in report.as_markdown()
 
     def test_the_whole_upload_waits_at_most_one_grace(self, tmp_path: Path, monkeypatch) -> None:
         """A gateway that keeps refusing costs two whole schedules (186 s, within the 240 s

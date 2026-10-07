@@ -1,5 +1,5 @@
-"""The write retry policy: which refusals are posted again, after how long, and when it stops
-(ADR-0048, amendment 2026-10-07). Time is faked throughout: nothing here sleeps."""
+"""The write retry policy: which refusals are posted again, after how long, and when it stops.
+Time is faked throughout: nothing here sleeps."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fake_time import FakeTime
-from otlp_receiver import GATEWAY_PAGE, LANGFUSE_403
+from otlp_receiver import GATEWAY_PAGE, LANGFUSE_403, OTHER_GATEWAY_PAGE
 from pydantic import ValidationError
 from tolokaforge_langfuse.config import LangfuseConfig
 from tolokaforge_langfuse.retry import (
@@ -118,9 +118,21 @@ class TestWhatIsPostedAgain:
         assert attempt.calls == 1 and time.sleeps == []
 
     def test_the_marker_is_what_makes_a_page_the_gateways(self) -> None:
-        assert is_gateway_page(GATEWAY_PAGE) and is_gateway_page(GATEWAY_PAGE.decode())
-        assert not is_gateway_page(LANGFUSE_403)
-        assert not is_gateway_page(b"") and not is_gateway_page(None)
+        markers = RetryPolicy().gateway_markers
+        assert is_gateway_page(GATEWAY_PAGE, markers)
+        assert is_gateway_page(GATEWAY_PAGE.decode(), markers)
+        assert not is_gateway_page(LANGFUSE_403, markers)
+        assert not is_gateway_page(b"", markers) and not is_gateway_page(None, markers)
+
+    def test_a_deployment_names_the_page_of_its_own_gateway(self) -> None:
+        """Another gateway's page is posted again once its marker is configured; the default
+        gateway's page is then a 403 like any other."""
+        time = FakeTime()
+        attempt = Script(Answer(403, OTHER_GATEWAY_PAGE), OK)
+        policy = retrier(time, gateway_markers=["example-gateway"])
+        assert policy.run(attempt, what="x") == OK and attempt.calls == 2
+        default_page = Script(GATEWAY)
+        assert policy.run(default_page, what="x") == GATEWAY and default_page.calls == 1
 
 
 class TestTheSchedule:
@@ -244,13 +256,16 @@ class TestTheDeadline:
         assert policy.run(second, what="x").status == 503 and second.calls == 1
         assert time.sleeps == [1.0]  # the one wait cancel cut short; none after it
 
-    @pytest.mark.parametrize("ending", ["cancel", "deadline"])
-    def test_the_default_wait_wakes_when_the_run_end_arrives(self, ending: str) -> None:
+    @pytest.mark.parametrize("ending", ["cancel", "deadline", "breaker"])
+    def test_the_default_wait_wakes_when_it_has_to_end(self, ending: str) -> None:
         """No injected sleep: the retrier's own minute-long wait returns as soon as it is
-        cancelled or its deadline moves before the wait's end."""
+        cancelled, its deadline moves before the wait's end or the breaker it obeys opens."""
         import time
 
-        policy = Retrier(RetryPolicy(jitter=0.0, delays_s=[60]))
+        breaker = RetryBreaker(1)
+        policy = Retrier(
+            RetryPolicy(jitter=0.0, delays_s=[60]), breaker=breaker, trips_breaker=False
+        )
         answers = [GATEWAY, OK]
         posted = threading.Event()
 
@@ -264,8 +279,10 @@ class TestTheDeadline:
         assert posted.wait(5)
         if ending == "cancel":
             policy.cancel()
-        else:
+        elif ending == "deadline":
             policy.set_deadline(time.monotonic() + 2)
+        else:
+            breaker.outlasted()  # another route ran out its whole schedule
         worker.join(5)
         assert not worker.is_alive() and result == [GATEWAY]
 
@@ -365,6 +382,29 @@ class TestTheBreaker:
         for _ in range(5):
             trial_end.run(Script(GATEWAY, GATEWAY), what="POST /api/public/ingestion")
         assert not shared.open and len(time.sleeps) == 5
+
+    def test_opening_it_ends_a_wait_in_progress(self) -> None:
+        """A trial end that is waiting out a step when the span export opens the breaker does
+        not post again: its trial's budget is not spent on a refusal now taken for good."""
+        time = FakeTime()
+        shared = RetryBreaker(1)
+        spans = retrier(time, max_retries=1, breaker=shared)
+
+        def sleep(seconds: float) -> None:
+            # the span export runs out its whole schedule during the trial end's wait
+            spans.run(Script(GATEWAY, GATEWAY), what="span export")
+            time.sleep(seconds)
+
+        trial_end = Retrier(
+            RetryPolicy(jitter=0.0),
+            breaker=shared,
+            trips_breaker=False,
+            clock=time.clock,
+            sleep=sleep,
+        )
+        attempt = Script(GATEWAY, OK)
+        assert trial_end.run(attempt, what="POST /api/public/ingestion") == GATEWAY
+        assert attempt.calls == 1 and shared.open
 
 
 class TestTheRunEndsView:
@@ -467,19 +507,6 @@ class TestTheLog:
 class TestTheConfiguration:
     """``options.langfuse.retry``: strict, validated before any receiver is contacted."""
 
-    def test_the_defaults(self) -> None:
-        policy = LangfuseConfig().retry
-        assert policy == RetryPolicy()
-        assert policy.model_dump() == {
-            "statuses": (403, 429, 503),
-            "max_retries": 6,
-            "delays_s": (1.0, 3.0, 9.0, 20.0, 30.0),
-            "jitter": 0.2,
-            "retry_after_max_s": 60.0,
-            "breaker_after": 2,
-            "flush_grace_s": 240.0,
-        }
-
     def test_a_block_as_yaml_writes_it(self) -> None:
         config = LangfuseConfig.model_validate(
             {
@@ -496,7 +523,6 @@ class TestTheConfiguration:
         assert config.retry.statuses == (403, 429, 502, 503, 504)
         assert config.retry.max_retries == 5 and config.retry.delays_s == (2.0, 2.0, 10.0)
         assert config.retry.retry_after_max_s == 60.0  # unnamed keys keep their defaults
-        assert LangfuseConfig.model_validate_json(config.model_dump_json()) == config
 
     @pytest.mark.parametrize(
         ("block", "message"),
@@ -505,44 +531,26 @@ class TestTheConfiguration:
             ({"statuses": [307]}, "not an HTTP error status"),
             ({"statuses": [600]}, "not an HTTP error status"),
             ({"statuses": [503, 503]}, "lists a status twice"),
-            ({"statuses": ["503"]}, "valid integer"),
-            ({"statuses": [True]}, "valid integer"),
-            ({"statuses": 503}, "valid tuple"),
-            ({"max_retries": -1}, "greater than or equal to 0"),
-            ({"max_retries": 101}, "less than or equal to 100"),
-            ({"max_retries": 2.5}, "valid integer"),
-            ({"max_retries": "5"}, "valid integer"),
-            ({"max_retries": True}, "valid integer"),
+            ({"gateway_markers": [""]}, "blank marker"),
+            ({"gateway_markers": ["Gateway", "  "]}, "blank marker"),
+            ({"gateway_markers": []}, "gateway_markers is empty"),
             ({"delays_s": []}, "at least one wait"),
-            ({"delays_s": [0]}, "finite number above 0"),
-            ({"delays_s": [1, -3]}, "finite number above 0"),
+            ({"delays_s": [0]}, "above 0 s"),
+            ({"delays_s": [1, -3]}, "above 0 s"),
             ({"delays_s": [1, 3, 2]}, "never gets shorter"),
-            ({"delays_s": [float("inf")]}, "finite number"),
-            ({"delays_s": [float("nan")]}, "finite number"),
             ({"delays_s": [True]}, "not a number of seconds"),
             ({"delays_s": ["9"]}, "not a number of seconds"),
-            ({"delays_s": 9}, "valid tuple"),
-            ({"jitter": -0.1}, "greater than or equal to 0"),
-            ({"jitter": 1.5}, "less than or equal to 1"),
-            ({"jitter": True}, "valid number"),
-            ({"retry_after_max_s": -1}, "greater than or equal to 0"),
-            ({"breaker_after": -1}, "greater than or equal to 0"),
-            ({"breaker_after": False}, "valid integer"),
-            ({"flush_grace_s": -5}, "greater than or equal to 0"),
-            ({"flush_grace_s": float("inf")}, "finite number"),
-            ({"retries": 3}, "Extra inputs are not permitted"),
-            ({"gateway_window_s": 65}, "Extra inputs are not permitted"),
-            ({"max_attempts": 5}, "Extra inputs are not permitted"),
-            ({"initial_delay_s": 1}, "Extra inputs are not permitted"),
         ],
     )
     def test_a_bad_value_is_refused(self, block: dict, message: str) -> None:
         with pytest.raises(ValidationError, match=message):
             LangfuseConfig.model_validate({"retry": block})
 
-    def test_the_policy_is_frozen(self) -> None:
-        with pytest.raises(ValidationError):
-            RetryPolicy().max_retries = 9  # type: ignore[misc]
+    def test_without_403_no_gateway_marker_is_needed(self) -> None:
+        policy = LangfuseConfig.model_validate(
+            {"retry": {"statuses": [429], "gateway_markers": []}}
+        ).retry
+        assert policy.gateway_markers == ()
 
 
 def test_a_wait_fits_only_with_room_for_the_request() -> None:

@@ -75,10 +75,12 @@ A receiver setting left at the engine's tracing top level is rejected, not silen
 Defaults and environment precedence are unchanged. A second backend need not declare any
 Langfuse fields.
 
-`retry` is the writes' retry policy (`retry.RetryPolicy`): a write is posted again only after an
-answer that proves the receiver did not read it, by default a gateway's own 403 refusal page, 429
-and 503, never after Langfuse's own JSON 403, a lost answer or a timeout; listing 500, 502 or 504
-can re-send a body the receiver has already read. Every retried answer follows one schedule,
+`retry` is the writes' retry policy (`retry.RetryPolicy`): a write is posted again only after a
+refusal that comes before the receiver reads it, by default a gateway's own 403 refusal page (a
+403 whose body carries one of `gateway_markers`, by default the Azure Application Gateway's), 429
+and 503 (a proxy may also answer 503 after forwarding; on a v4 receiver the second post is then an
+update with the same content), never after Langfuse's own JSON 403, a lost answer or a timeout;
+listing 500, 502 or 504 can re-send a body the receiver has already read. Every retried answer follows one schedule,
 `delays_s` (1, 3, 9, 20, 30 s, the last repeating) for at most `max_retries` (6) re-sends, 93 s of
 waiting that fits a trial's default `attach_budget_s`, a longer `Retry-After` honoured up to 60 s,
 and a jitter that only lengthens a wait. A breaker stops the waiting once two span batches in a
@@ -96,6 +98,7 @@ observability:
       langfuse:
         retry:
           statuses: [403, 429, 503]     # 403: the gateway's page only; [] turns retries off
+          gateway_markers: [Microsoft-Azure-Application-Gateway]  # what marks that page
           delays_s: [1, 3, 9, 20, 30]   # the last value repeats
           max_retries: 6                # re-sends after the first post; 0 turns retries off
           breaker_after: 2

@@ -177,8 +177,8 @@ def build(
         retry_stats=retry_stats,
         retry_breaker=retry_breaker,
     )
-    # the v4 producer posts a batch once, and again only after a refusal that proves the
-    # receiver did not read it (ADR-0048); a v3 receiver keeps the SDK's retrying exporter
+    # the v4 producer posts a batch once, and again only after a refusal that comes before the
+    # receiver reads it (ADR-0048); a v3 receiver keeps the SDK's retrying exporter
     span_retrier = (
         Retrier(settings.retry, stats=retry_stats, breaker=retry_breaker)
         if server_api == SERVER_V4

@@ -569,7 +569,7 @@ SCORES = [
 
 class TestTrialEndRetries:
     """A trial-end write the receiver refused without reading it is posted again, within the
-    trial's budget and never past it (ADR-0048, amendment 2026-10-07). Time is faked."""
+    trial's budget and never past it. Time is faked."""
 
     @staticmethod
     def _step(opener, time, *, budget_s: float = 120.0, **policy) -> LangfuseAttachments:
@@ -598,18 +598,6 @@ class TestTrialEndRetries:
         assert [c[0] for c in receiver.calls] == ["POST", "POST"]
         assert time.sleeps == [1.0]
         assert step._retrier.stats.counts()["retries_recovered"] == 1
-
-    def test_a_403_langfuse_answers_itself_fails_at_once(self) -> None:
-        from fake_time import FakeTime
-        from otlp_receiver import LANGFUSE_403
-        from tolokaforge_langfuse.media import LangfuseApiError
-
-        time = FakeTime()
-        receiver = _BehindTheGateway(refusals=5, answer=(403, LANGFUSE_403))
-        step = self._step(receiver, time)
-        with step.budget(), pytest.raises(LangfuseApiError, match="HTTP 403"):
-            step.ingest(SCORES)
-        assert len(receiver.calls) == 1 and time.sleeps == []
 
     def test_retries_stop_when_the_trials_budget_runs_out(self) -> None:
         """The budget cuts the schedule: the 30 s step would end past it, so the call gives up

@@ -19,12 +19,14 @@ DROP = "drop"
 STALL = "stall"
 REDIRECT_TARGET = "/redirected"
 
-# the page the external gateway answered every refused request with in CI (2026-10-01)
+# a gateway's own 403 refusal page
 GATEWAY_PAGE = (
     b"<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n"
     b"<center><h1>403 Forbidden</h1></center>\r\n"
     b"<hr><center>Microsoft-Azure-Application-Gateway/v2</center>\r\n</body>\r\n</html>\r\n"
 )
+# another gateway's refusal page, which a deployment names in ``retry.gateway_markers``
+OTHER_GATEWAY_PAGE = b"<html><body><h1>403</h1><p>refused by example-gateway</p></body></html>"
 # Langfuse's own refusal is JSON
 LANGFUSE_403 = b'{"message": "Invalid credentials"}'
 

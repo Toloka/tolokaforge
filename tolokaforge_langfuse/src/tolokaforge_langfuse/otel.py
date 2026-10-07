@@ -101,8 +101,11 @@ TRACE_TIME_SOURCE = "live"
 # without looking the id up
 PREVIEW_METADATA_KEY = "preview"
 PREVIEW_NAME_PREFIX = "preview: "
-# how often a flush looks again while the worker still exports a batch
+# how often a flush looks again while the worker still exports a batch; it polls because its
+# deadline is read on the retrier's clock, which a lock's real-time timeout would not follow
 FLUSH_POLL_S = 0.05
+# the least a shutdown waits for the worker to let go of its batch once the flush has ended
+SHUTDOWN_JOIN_MIN_S = 0.1
 
 
 @dataclass(frozen=True)
@@ -146,9 +149,8 @@ class SpanQueue:
     when the flush starts included) goes on for up to ``flush_grace_s`` more, in total over all
     the queue's flushes, and no wait of the exporter's outlasts it. The extension ends once a
     batch fails in another way (a timeout, a lost connection, a status the policy does not wait
-    out) or the retry breaker opens. A flush without such a refusal ends at its timeout as
-    before, so a receiver that is down holds the run no longer than it did. ``clock`` must be
-    the retrier's.
+    out) or the retry breaker opens. A flush without such a refusal ends at its timeout.
+    ``clock`` must be the retrier's.
 
     A span may be handed a ``track`` key: the queue then reports whether that span reached the
     exporter (:meth:`lost_tracked`). Only the write-once roots are tracked, so the set stays one
@@ -343,7 +345,7 @@ class SpanQueue:
         if self._retrier is not None:
             self._retrier.cancel()  # the run is over: no refused batch waits any longer
         end = self._flush_end if self._flush_end is not None else self._clock()
-        self._thread.join(timeout=max(0.1, end - self._clock()))
+        self._thread.join(timeout=max(SHUTDOWN_JOIN_MIN_S, end - self._clock()))
         alive = self._thread.is_alive()
         with self._lock:
             if alive and self._in_flight:

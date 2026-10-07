@@ -288,8 +288,8 @@ refused at run start.
 **One POST per batch, and what happens when one fails.** The stock OTLP exporter re-posts a batch
 that failed with a connection error or a retryable status. The v4 producer makes one POST attempt
 per batch to avoid unnecessary requests and unintended overwrites, and posts the same bytes again
-only after an answer that proves the receiver did not read them: a gateway's own refusal page,
-429 or 503 (§ Retries). This does not guarantee
+only after a refusal that normally comes before the receiver reads them: a gateway's own
+refusal page, 429 or 503 (§ Retries). This does not guarantee
 delivery or prevent an undeletable duplicate. It takes more than disabling the exporter's retry
 loop: the SDK posts a second time on a lost connection (`_export` up to OpenTelemetry 1.44, its
 OTLP client from 1.45), `requests` follows a 307 or 308 by re-sending the body, and a session's
@@ -698,18 +698,17 @@ repeat receipt merges idempotent.
 
 A receiver can sit behind a gateway that answers a shared write limit with its own block page: a
 403 the gateway sends without forwarding the request, in bursts that can last minutes while other
-clients spend the same limit. With one POST per batch every such refusal lost its batch, although
-the receiver never read it. The writes therefore follow one retry policy,
-`options.langfuse.retry` (`tolokaforge_langfuse.retry`).
+clients spend the same limit. The receiver never reads a body refused this way, so the writes
+follow one retry policy, `options.langfuse.retry` (`tolokaforge_langfuse.retry`).
 
-**What is posted again.** Only an answer that proves the receiver did not read the body
+**What is posted again.** Only a refusal that comes before the receiver reads the body
 (ADR-0048, amendment 2026-10-07):
 
 | Answer | Why the body was not read |
 |---|---|
-| 403 whose body names `Microsoft-Azure-Application-Gateway` | the gateway refused it without forwarding it (the offline connector recognises the page the same way) |
+| 403 whose body carries one of `gateway_markers` | the gateway in front of the receiver refused it without forwarding it (the offline connector recognises the Azure Application Gateway's page the same way) |
 | 429 | a limit refuses before processing |
-| 503 | the service refused the request |
+| 503 | a service answers it before it processes the request; a proxy may also answer it after forwarding the request, and on a v4 receiver the second post is then an update with the same content |
 
 A 403 Langfuse answers itself is JSON and fails at once: a key Langfuse rejects is never waited
 on. The gateway's page does not say why it refused, though: a rule of its own (an admission header
@@ -731,7 +730,8 @@ most 7 posts. A `Retry-After` longer than the step is honoured instead, up to
 
 | Key | Default | Why |
 |---|---|---|
-| `statuses` | `[403, 429, 503]` | the answers that prove the body unread (above); 403 stands for the gateway's page alone; `[]` turns retries off |
+| `statuses` | `[403, 429, 503]` | the refusals that come before the receiver reads the body (above; 503 with the exception its row names); 403 stands for the gateway's page alone; `[]` turns retries off |
+| `gateway_markers` | `[Microsoft-Azure-Application-Gateway]` | the text that marks a 403's body as the refusal page of the gateway in front of the receiver. The default is the text of the Azure Application Gateway's page; a deployment behind another gateway names the text of its page. A 403 that carries none of them is the receiver's own and fails at once |
 | `delays_s` | `[1, 3, 9, 20, 30]` | a refusal that passes in seconds is caught by the short first waits; the steps grow about threefold up to 30 s, which repeats, so a lasting refusal costs about two posts a minute; a value that is not a positive finite number, or that is shorter than the one before it, is refused |
 | `max_retries` | `6` | the most re-sends of one request after its first post: waits of 1 + 3 + 9 + 20 + 30 + 30 = 93 s before the jitter, which fit inside the default 120 s `attach_budget_s`, so a trial-end call can run the whole schedule; a refusal that lasts longer than about 93 s still costs the batches it refuses throughout; `0` turns retries off |
 | `jitter` | `0.2` | each wait grows by a random 0 to 20 % of itself and never shrinks: a run's parallel trials are refused together and would otherwise post again together, while a `Retry-After` never ends early |
@@ -749,6 +749,7 @@ run_defaults:
         langfuse:
           retry:
             statuses: [403, 429, 503]     # 403: the gateway's page only
+            gateway_markers: [Microsoft-Azure-Application-Gateway]
             delays_s: [1, 3, 9, 20, 30]   # the last value repeats
             max_retries: 6                # re-sends after the first post; 0 turns retries off
             jitter: 0.2
@@ -757,10 +758,11 @@ run_defaults:
             flush_grace_s: 240
 ```
 
-An unknown key or a bad value (a status outside 400-599 or listed twice, a `max_retries` that is
-not a whole number from 0 to 100, an empty or shrinking `delays_s` or one with a value that is
-not a positive finite number, a negative or non-finite number elsewhere, a jitter above 1, a
-boolean where a number belongs) refuses the run at start. The offline connector reads the same
+An unknown key or a bad value (a status outside 400-599 or listed twice, a blank gateway marker,
+no gateway marker while `statuses` lists 403, a `max_retries` that is not a whole number from 0
+to 100, an empty or shrinking `delays_s` or one with a value that is not a positive finite
+number, a negative or non-finite number elsewhere, a jitter above 1, a boolean where a number
+belongs) refuses the run at start. The offline connector reads the same
 block through the wheel's reader, so a deployment that sets `retry` needs a connector whose wheel
 knows the key.
 
@@ -772,12 +774,11 @@ knows the key.
 - **The trial-end calls** of either family: the media registration, its confirmation and the
   presigned upload, the manifest, the gradings and the scores. They run in the trial's own
   thread, and a wait starts only if it ends, with a second to spare for the request, before the
-  trial's `attach_budget_s` runs out; each request gets what is left of the budget. A trial never
-  waits longer than it could without retries. The whole default schedule (93 s) fits the default
-  budget, so the first call of a pass that meets a refusal can wait it out to the end; calls after
-  it in the same pass have only what is left. A deployment that would rather ride out a longer
-  refusal at the trial's end raises `attach_budget_s` and `max_retries`, at the cost of the
-  trial's wall time.
+  trial's `attach_budget_s` runs out; each request gets what is left of the budget. The whole
+  default schedule (93 s) fits the default budget, so the first call of a pass that meets a
+  refusal can wait it out to the end; calls after it in the same pass have only what is left. A
+  deployment that would rather ride out a longer refusal at the trial's end raises
+  `attach_budget_s` and `max_retries`, at the cost of the trial's wall time.
 - **The breaker.** The span export's requests count towards `breaker_after`: once that many in a
   row ran out their whole schedule still refused, a refusal fails at once, without a wait, until
   the first write accepted afterwards closes it. The trial-end calls obey it but do not count
@@ -785,16 +786,19 @@ knows the key.
   long refusal. A gateway rule that refuses for good therefore costs the span export two
   schedules in its background thread, and each trial end its schedule until the breaker opens
   (or the attachment step's own breaker switches the step off after three trials that reached
-  nothing). The transcript upload has a breaker of its own.
-- **The run's end.** The flush ends at `flush_timeout_s` as before unless the receiver refuses it
-  with an answer the policy waits out (a batch already waiting one out when the flush starts
-  counts too); then it may go on, by `flush_grace_s` at most in total over its flushes (two on a
-  v4 receiver: before and after the error roots). It stops going on once a batch fails in another
+  nothing). Opening the breaker also ends the waits in progress. On a v3 receiver nothing counts
+  towards it, since the span export keeps the SDK's exporter: there a gateway rule that refuses
+  for good costs each trial end its schedule within `attach_budget_s`, until the attachment
+  step's own breaker switches the step off. The transcript upload has a breaker of its own.
+- **The run's end.** The flush ends at `flush_timeout_s` unless the receiver refuses it with an
+  answer the policy waits out (a batch already waiting one out when the flush starts counts too);
+  then it may go on, by `flush_grace_s` at most in total over its flushes (two on a v4 receiver:
+  before and after the error roots). It stops going on once a batch fails in another
   way (a timeout, a lost connection, a status the policy does not wait out) or the breaker opens.
   No wait ends past the grace, and whatever did not get out is counted (`spans_dropped`,
   `export_failures`), so a v4 run's end takes at most 2 x `flush_timeout_s` + `flush_grace_s`
-  (300 s with the defaults), plus the timeout of a request in flight. `flush_grace_s: 0` keeps
-  every wait within the timeout.
+  (300 s with the defaults), plus, per flush, the timeout of one request in flight.
+  `flush_grace_s: 0` keeps every wait within the timeout.
 - **The agent transcripts** (`automation langfuse-upload`) leave through the same transport with
   the default policy. All the upload's waits together take at most `flush_grace_s` (only the time
   spent waiting counts, so a long upload keeps its retries), and the report's `retries` holds the

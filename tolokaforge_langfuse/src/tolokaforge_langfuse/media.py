@@ -12,7 +12,7 @@ headers are the OTLP exporter's own (the Basic credential of ``OTEL_EXPORTER_OTL
 transport is the standard library. Every request is bounded by one timeout, a failing file is
 counted and leaves ``attachments_complete: false``; nothing here raises into the trial. With a
 :class:`~tolokaforge_langfuse.retry.Retrier`, a write the receiver refused without reading it is
-posted again within what is left of the trial's budget (ADR-0048, amendment 2026-10-07).
+posted again within what is left of the trial's budget.
 """
 
 from __future__ import annotations
@@ -226,7 +226,7 @@ class LangfuseAttachments:
     trial's ``budget_s``, and after ``breaker_failures`` consecutive trials whose step failed
     entirely (a receiver that is down or blackholed) the step switches itself off for the rest
     of the run and only counts. A ``retrier`` posts a write again after a refusal its policy
-    names, never past the trial's budget, so a trial waits no longer than it could without it.
+    names; no wait ends past the trial's budget.
     """
 
     def __init__(

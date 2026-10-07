@@ -1458,7 +1458,7 @@ class TestEverySpanIsScannedBeforeItLeaves:
         assert any("were not re-read: ValueError" in w for w in self._warnings(caplog))
 
 
-# -- retries at the run end and in the receipt (ADR-0048, amendment 2026-10-07) -----------------
+# -- retries at the run end and in the receipt -------------------------------------------------
 #
 # Fake time throughout: the retrier's waits and the flush's polls move a FakeTime, nothing
 # sleeps. A queue whose batch size exceeds what a test puts keeps its worker asleep, so the
@@ -1579,7 +1579,7 @@ class _Held:
 class TestTheRunEndLeavesRoomForRetries:
     """The run-end flush gives a batch the receiver refused without reading it its retry
     schedule, within ``flush_timeout_s`` plus the grace, and reports what it could not
-    deliver; a flush that meets no such refusal ends at its timeout as before."""
+    deliver; a flush that meets no such refusal ends at its timeout."""
 
     def test_the_flush_waits_for_a_refused_batch_within_the_grace(self) -> None:
         from fake_time import FakeTime

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+from otlp_receiver import GATEWAY_PAGE, OTHER_GATEWAY_PAGE, Reply, gateway_refusal
 from tolokaforge_langfuse.config import LangfuseConfig
 from tolokaforge_langfuse.model_names import (
     ModelNameResolverError,
@@ -647,7 +648,7 @@ class TestTheReceiverFamily:
 
     def test_the_v4_family_asks_for_the_direct_path_and_posts_once(self, monkeypatch) -> None:
         """One POST for an answer the retry policy does not name: a 502 may come after the
-        receiver took the body (ADR-0048, amendment 2026-10-07)."""
+        receiver took the body."""
         pytest.importorskip("opentelemetry.sdk")
         from otlp_receiver import Receiver
         from tolokaforge_langfuse.otlp_transport import INGESTION_VERSION_HEADER
@@ -696,10 +697,11 @@ class TestTheReceiverFamily:
 
 
 class TestTheRetryPolicy:
-    """``options.langfuse.retry`` reaches every write route of the run under one count (ADR-0048,
-    amendment 2026-10-07)."""
+    """``options.langfuse.retry`` reaches every write route of the run under one count."""
 
-    def _build(self, monkeypatch, family_answer, options=None, endpoint=None, writes=None):
+    def _build(
+        self, monkeypatch, family_answer, options=None, endpoint=None, writes=None, tracing=None
+    ):
         from tolokaforge_langfuse import media
 
         def opener(method, url, headers, body, timeout):
@@ -718,82 +720,59 @@ class TestTheRetryPolicy:
                 exporter="otlp",
                 endpoint=endpoint or "http://127.0.0.1:9/api/public/otel/v1/traces",
                 options={"langfuse": options or {}},
+                # the worker stays asleep: the run's end exports the spans, after the trial ends
+                **{"export_interval_s": 3600, **(tracing or {})},
             )
         )
         return build_trial_observer(config, engine_run_id="run-1")[0]
 
-    def test_a_v4_run_retries_its_span_export_and_its_trial_end_calls_under_one_policy(
-        self, monkeypatch
-    ) -> None:
-        pytest.importorskip("opentelemetry.sdk")
-        block = {"max_retries": 2, "statuses": [403, 429, 503, 504], "flush_grace_s": 100}
-        observer = self._build(
-            monkeypatch, (200, b'{"data": []}'), options={"attach": "core", "retry": block}
-        )
-        try:
-            exporter = observer._queue._exporter
-            assert type(exporter).__name__ == "SingleAttemptSpanExporter"
-            expected = LangfuseConfig(retry=block).retry
-            assert exporter._retrier.policy == observer._attachments._retrier.policy == expected
-            stats = observer._retry_stats
-            assert exporter._retrier.stats is stats
-            assert observer._attachments._retrier.stats is stats
-            assert observer._queue._retrier is exporter._retrier
-            assert observer._queue._grace_left == 100.0
-            # one breaker: the span export trips it, the trial ends only obey it
-            assert observer._attachments._retrier.breaker is exporter._retrier.breaker
-            assert exporter._retrier._trips_breaker
-            assert not observer._attachments._retrier._trips_breaker
-        finally:
-            observer.run_finished()
-
-    def test_a_v3_run_keeps_the_sdks_exporter_and_retries_its_trial_end_calls(
-        self, monkeypatch
-    ) -> None:
-        pytest.importorskip("opentelemetry.sdk")
-        observer = self._build(monkeypatch, (404, b""), options={"attach": "core"})
-        try:
-            assert type(observer._queue._exporter).__name__ == "OTLPSpanExporter"
-            assert observer._queue._retrier is None and observer._queue._grace_left == 0.0
-            from tolokaforge_langfuse.retry import RetryPolicy
-
-            assert observer._attachments._retrier.policy == RetryPolicy()
-        finally:
-            observer.run_finished()
-
-    def test_a_live_run_delivers_what_the_gateway_refused_first(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
-        """End to end on a v4 receiver: the batch of final spans and the score batch each meet
-        the gateway's refusal page once, are posted again after the schedule's first wait, and
-        land; the receipt says so. Real posts to a local receiver, fake time."""
-        pytest.importorskip("opentelemetry.sdk")
+    def _live_run(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        *,
+        family=(200, b'{"data": []}'),
+        retry: dict | None = None,
+        tracing: dict | None = None,
+        span_answers=(),
+        span_default=None,
+        ingestion_answers=(),
+        before_ingestion=None,
+    ):
+        """One trial through the plugin, then the run's end. The spans go to a local receiver
+        that answers ``span_answers`` first, then ``span_default`` (200 unless given); the
+        ingestion route calls ``before_ingestion``, then answers ``ingestion_answers`` first and
+        accepts after them. The retries and the run-end flush share one fake time. Returns the
+        receipt, the span posts, the ingestion bodies and the fake time."""
         import functools
         from datetime import datetime, timedelta, timezone
 
         import parity_bundle as pb
         from fake_time import FakeTime
-        from otlp_receiver import GATEWAY_PAGE, Receiver, gateway_refusal
+        from otlp_receiver import Receiver
         from tolokaforge_langfuse.retry import Retrier
 
         from tolokaforge.observability.observer import TrialIdentity
-        from tolokaforge_langfuse import plugin
+        from tolokaforge_langfuse import otel, plugin
 
         time = FakeTime()
         monkeypatch.setattr(
             plugin,
             "Retrier",
             functools.partial(Retrier, clock=time.clock, sleep=time.sleep, draw=lambda: 0.0),
-            raising=False,
         )
+        monkeypatch.setattr(
+            otel, "SpanQueue", functools.partial(otel.SpanQueue, clock=time.clock, sleep=time.sleep)
+        )
+        answers = list(ingestion_answers)
         ingestion: list[bytes] = []
 
         def writes(method, url, headers, body, timeout):
             if url.endswith("/api/public/ingestion"):
+                if before_ingestion is not None:
+                    before_ingestion()
                 ingestion.append(body)
-                if len(ingestion) == 1:
-                    return (403, GATEWAY_PAGE)
-                return (207, b'{"successes": [], "errors": []}')
+                return answers.pop(0) if answers else (207, b'{"successes": [], "errors": []}')
             return (404, b"")
 
         started = datetime(2026, 10, 7, 10, 0, tzinfo=timezone.utc)
@@ -810,20 +789,51 @@ class TestTheRetryPolicy:
             attempt_id=pb.ATTEMPT_ID,
             run_tag=pb.RUN_TAG,
         )
+        options: dict = {"attach": "none"}
+        if retry is not None:
+            options["retry"] = retry
         with Receiver() as receiver:
-            receiver.script = [gateway_refusal()]
+            receiver.script = list(span_answers)
+            if span_default is not None:
+                receiver.answer = span_default
             observer = self._build(
                 monkeypatch,
-                (200, b'{"data": []}'),
-                options={"attach": "none"},
+                family,
+                options=options,
                 endpoint=receiver.url(),
                 writes=writes,
+                tracing=tracing,
             )
             observer.trial_started(identity, models={}, started_at=started)
             observer.trial_finished(identity, trajectory=_Done())
             observer.trial_persisted(identity, trial_dir=pb.write_parity_bundle(tmp_path / "run"))
             receipt = observer.run_finished()
-        first, second = receiver.posts
+        return receipt, receiver.posts, ingestion, time
+
+    @pytest.mark.parametrize(
+        ("retry", "page", "wait"),
+        [
+            (None, GATEWAY_PAGE, 1.0),
+            ({"gateway_markers": ["example-gateway"], "delays_s": [2]}, OTHER_GATEWAY_PAGE, 2.0),
+        ],
+        ids=["default-policy", "configured-policy"],
+    )
+    def test_a_live_run_delivers_what_the_gateway_refused_first(
+        self, monkeypatch, tmp_path: Path, retry, page: bytes, wait: float
+    ) -> None:
+        """End to end on a v4 receiver: the batch of final spans and the score batch each meet
+        the gateway's refusal page once, are posted again after the schedule's first wait, and
+        land; the receipt says so. The run's ``retry`` block reaches both routes: which page is
+        the gateway's and how long the wait is. Real posts to a local receiver, fake time."""
+        pytest.importorskip("opentelemetry.sdk")
+        receipt, posts, ingestion, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            retry=retry,
+            span_answers=[Reply(403, page, (("Content-Type", "text/html"),))],
+            ingestion_answers=[(403, page)],
+        )
+        first, second = posts
         assert first.body == second.body
         assert len(ingestion) == 2 and ingestion[0] == ingestion[1]
         extra = receipt.extra
@@ -833,8 +843,98 @@ class TestTheRetryPolicy:
         assert extra["langfuse.retried_requests"] == 2
         assert extra["langfuse.retries_recovered"] == 2
         assert extra["langfuse.retries_exhausted"] == 0
-        assert extra["langfuse.retry_wait_s"] == 2
+        assert extra["langfuse.retry_wait_s"] == 2 * wait
+        assert time.sleeps == [wait, wait]
+
+    def test_the_trial_ends_obey_the_breaker_without_opening_it(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """A score batch that runs out its whole schedule does not open the breaker, even with
+        ``breaker_after: 1``: the span export after it still waits its refusal out."""
+        pytest.importorskip("opentelemetry.sdk")
+        receipt, posts, ingestion, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            retry={"max_retries": 1, "breaker_after": 1},
+            span_answers=[gateway_refusal()],
+            ingestion_answers=[(403, GATEWAY_PAGE)] * 2,
+        )
+        assert len(ingestion) == 2 and receipt.extra["langfuse.gradings_failed"] == 1
+        first, second = posts
+        assert first.body == second.body and receipt.export_failures == 0
+        assert receipt.extra["langfuse.retry_breaker_trips"] == 0
         assert time.sleeps == [1.0, 1.0]
+
+    def test_the_breaker_the_span_export_opens_stops_the_trial_ends(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """One breaker for the run's routes: the span export runs out its schedule against a
+        gateway that keeps refusing (``max_retries: 1``, ``breaker_after: 1``), and the score
+        batch the gateway refuses after that is not waited out. The background worker posts
+        each span as it is queued; the score batch is answered once the breaker has opened."""
+        pytest.importorskip("opentelemetry.sdk")
+        import logging
+        import threading
+
+        opened = threading.Event()
+
+        class _BreakerWatch(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if "refusals now fail at once" in record.getMessage():
+                    opened.set()
+
+        watch = _BreakerWatch()
+        retry_log = logging.getLogger("tolokaforge_langfuse.retry")
+        retry_log.addHandler(watch)
+        try:
+            receipt, _, ingestion, _ = self._live_run(
+                monkeypatch,
+                tmp_path,
+                retry={"max_retries": 1, "breaker_after": 1},
+                tracing={"export_batch_size": 1},
+                span_default=gateway_refusal(),
+                ingestion_answers=[(403, GATEWAY_PAGE)],
+                before_ingestion=lambda: opened.wait(10),
+            )
+        finally:
+            retry_log.removeHandler(watch)
+        assert opened.is_set()
+        assert len(ingestion) == 1 and receipt.extra["langfuse.gradings_failed"] == 1
+        assert receipt.extra["langfuse.retry_breaker_trips"] == 1
+
+    def test_the_run_end_waits_within_the_configured_grace(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """``flush_grace_s: 0``: a span batch the gateway refuses at the run's end is not waited
+        out past ``flush_timeout_s`` (30 s), and the receipt counts it as not delivered."""
+        pytest.importorskip("opentelemetry.sdk")
+        receipt, posts, _, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            retry={"delays_s": [45], "flush_grace_s": 0},
+            span_answers=[gateway_refusal()],
+        )
+        assert time.sleeps == []
+        assert receipt.export_failures >= 1 and receipt.extra["langfuse.retries_exhausted"] >= 1
+        assert len({post.body for post in posts}) == len(posts)  # nothing was posted twice
+
+    def test_a_v3_run_retries_its_trial_end_calls_and_leaves_its_spans_to_the_sdk(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """On a v3 receiver the trial-end calls follow the run's policy, while the spans keep
+        the SDK's exporter, which does not post the gateway's page again."""
+        pytest.importorskip("opentelemetry.sdk")
+        _, posts, ingestion, time = self._live_run(
+            monkeypatch,
+            tmp_path,
+            family=(404, b""),
+            retry={"delays_s": [2]},
+            span_answers=[gateway_refusal()],
+            ingestion_answers=[(403, GATEWAY_PAGE)],
+        )
+        assert len(ingestion) == 2 and ingestion[0] == ingestion[1]
+        assert time.sleeps == [2.0]
+        assert posts and len({post.body for post in posts}) == len(posts)
 
 
 class TestSecretManagerBoundary:
@@ -901,11 +1001,7 @@ class TestPluginOptions:
             {"attach_timeout_s": 0},
             {"attach_budget_s": -1},
             {"model_name_rules": "rules.toml"},
-            {"retry": {"max_retries": -1}},
             {"retry": {"statuses": [200]}},
-            {"retry": {"jitter": 2}},
-            {"retry": {"delays_s": []}},
-            {"retry": {"max_attempts": 5}},
             "not a mapping",
             None,
         ],
