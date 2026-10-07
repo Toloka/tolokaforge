@@ -70,6 +70,7 @@ from tolokaforge_langfuse.preflight import (
     resolve_plan,
 )
 from tolokaforge_langfuse.projection import PROJECTION_FULL
+from tolokaforge_langfuse.retry import Retrier, RetryStats
 from tolokaforge_langfuse.safety import SafetyGate, looks_secret
 
 if TYPE_CHECKING:
@@ -160,6 +161,8 @@ def build(
     producer = producer_identity()
     version = producer_version(producer, plan.resolver.rules_version, plan.profile)
     gate = live_gate(headers)
+    # one count of what the retry policy did, over the span export and the trial-end calls
+    retry_stats = RetryStats()
     attachments = build_attachments(
         settings,
         endpoint=endpoint,
@@ -169,15 +172,19 @@ def build(
         # trace-create update would be refused anyway
         send_manifest_event=server_api == SERVER_V3,
         gate=gate,
+        retry_stats=retry_stats,
     )
+    # the v4 producer posts a batch once, and again only after a refusal that proves the
+    # receiver did not read it (ADR-0048); a v3 receiver keeps the SDK's retrying exporter
+    span_retrier = Retrier(settings.retry, stats=retry_stats) if server_api == SERVER_V4 else None
     try:
         exporter = make_otlp_exporter(
             endpoint,
             headers=headers,
             # the direct ingestion path is a v4 route; the v3 family is written exactly as before
             ingestion_version=INGESTION_VERSION if server_api == SERVER_V4 else None,
-            # the v4 producer policy avoids automatic repeats and unintended overwrites
             retry=server_api != SERVER_V4,
+            retrier=span_retrier,
         )
     except SingleAttemptUnavailable as exc:
         raise TracingConfigError(
@@ -188,6 +195,8 @@ def build(
         max_size=tracing.queue_size,
         batch_size=tracing.export_batch_size,
         interval_s=tracing.export_interval_s,
+        retrier=span_retrier,
+        flush_grace_s=settings.retry.flush_grace_s,
     )
     return OTelTrialObserver(
         queue=queue,
@@ -221,6 +230,7 @@ def build(
         previews=langfuse_previews(),
         gate=gate,
         ambient=(run_id, identity.run_tag),
+        retry_stats=retry_stats,
     )
 
 
@@ -443,6 +453,7 @@ def build_attachments(
     environment: str | None = None,
     send_manifest_event: bool = True,
     gate: SafetyGate | None = None,
+    retry_stats: RetryStats | None = None,
 ) -> Any:
     """The post-trial step (the attachments and the ingestion route of the trial-end pass) for
     ``observability.tracing.options.langfuse.attach`` / ``projection``; ``None`` only when nothing
@@ -453,7 +464,8 @@ def build_attachments(
     secret-like names, where URL, path and name values are not credentials and a bundle may
     legitimately quote them), and ``environment`` rides on the manifest update too.
     ``send_manifest_event`` is false in the v4 layout, where the manifest is part of the root
-    observation instead of a ``trace-create`` update."""
+    observation instead of a ``trace-create`` update. Its writes follow ``settings.retry`` within
+    each trial's budget, counted in ``retry_stats``."""
     from tolokaforge_langfuse.attachments import ATTACH_NONE, SecretScan
     from tolokaforge_langfuse.media import (
         LangfuseAttachments,
@@ -473,6 +485,7 @@ def build_attachments(
         budget_s=settings.attach_budget_s,
         environment=environment,
         send_manifest_event=send_manifest_event,
+        retrier=Retrier(settings.retry, stats=retry_stats),
     )
 
 

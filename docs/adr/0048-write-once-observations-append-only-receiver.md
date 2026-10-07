@@ -176,6 +176,63 @@ is paid in every count-based view of the receiver. A deployment that wants to wa
 turns previews on and accepts the double counts in the receiver's own views, or reads the views
 through a filter on the `preview` metadata marker.
 
+## Amendment 2026-10-07: a refusal that proves the body unread is posted again
+
+**Context.** Since 2026-10-05 the gateway in front of a production receiver (an Azure Application
+Gateway) holds a write limit shared by all its clients, about 1,500 requests a minute, and answers
+anything over it with its own 403 page, in bursts of up to about three minutes. It refused this
+producer at 13 requests a second, because others spend the same limit. With one POST per batch, a
+CI round on 2026-10-07 lost 21 to 36 % of each leg's spans, 41 gradings and 5 of 15 agent
+transcripts to those pages. The single attempt was chosen so that a body the receiver may already
+hold is never sent again; these refusals say the receiver never saw the body.
+
+**Decision.** The producers keep one POST per batch, with one exception: an answer that proves the
+receiver did not read the body is posted again, the same bytes, after a wait. By default those are
+the gateway's own 403 page (recognised by the `Microsoft-Azure-Application-Gateway` marker in its
+body; the gateway answers it without forwarding the request), 429 (a rate limit refuses before
+processing) and 503 (the service refused the request). A 403 the receiver answers itself is JSON
+and is never posted again, so a wrong key fails at once. A lost answer, a timeout and every other
+status keep the single attempt: 502 and 504 in particular are what a gateway answers when the
+receiver broke off or did not answer in time, possibly after it wrote the batch.
+
+The policy is one setting of the plugin, `options.langfuse.retry`, read like every other receiver
+setting and shared by the routes that write: the statuses, the most posts per request (5), an
+exponential backoff for 429 and 503 (1 s doubling to at most 16 s) that honours a longer
+`Retry-After` up to 60 s, the gateway's page waited out one window at a time (65 s, at most three
+windows), and a jitter that only lengthens a wait (up to 20 %), so a window or a `Retry-After`
+never ends early while the parallel trials spread their second posts. The schedule and the
+gateway rule are the offline connector's, so both producers wait a refusal out alike; the
+connector also re-sends after any 5xx and a lost connection, which the live producer leaves out
+(an operator may list the statuses, a lost connection never goes again). `docs/OBSERVABILITY.md`
+("Retries") gives the reason for each default.
+
+Every bound stays: the span export retries in its background thread and the trials never wait for
+it; a trial-end call starts no wait that would end past the trial's attachment budget, so a trial
+waits no longer than before; the run-end flush ends at `flush_timeout_s` unless the receiver
+refuses it with such an answer, and then goes on for at most `flush_grace_s` (240 s) more in total.
+A transcript upload waits at most one such grace in all. The receipt counts the retried requests,
+the extra posts, the requests that landed after a retry, those still refused when the policy, a
+deadline or the run's end stopped them, and the seconds waited; every other counter keeps its
+meaning. A v3 receiver keeps the SDK's exporter, whose own retries cover 429, 502, 503 and 504;
+its trial-end calls follow the policy.
+
+**Consequences.**
+
+- A re-sent body is one the receiver never read, so the overwrite this ADR guards against cannot
+  happen on the default list. An operator may list ambiguous statuses (502, 504, 500); a batch
+  posted again after one of them is, on a v4 receiver, an update with the same content (same ids,
+  same rows, last write wins): the trade-off the single attempt avoided, now an explicit choice.
+- A refusal that outlasts the schedule still loses the batch, counted as before. At a trial's end
+  the default budget leaves room for one gateway window, so a longer burst fails those writes
+  unless a deployment raises `attach_budget_s` and accepts the longer trials.
+- A v4 run's end takes at most twice `flush_timeout_s` plus `flush_grace_s` (300 s by default)
+  while the receiver refuses, instead of `flush_timeout_s` twice. `flush_grace_s: 0` restores the
+  old bound, `max_attempts: 1` or an empty status list the single attempt.
+- The run-end flush now holds its bound while the background thread still exports a batch (it
+  used to wait for the thread's whole drain). A root batch still with the exporter when the error
+  roots are decided, and not landed when the run ends, counts in `roots_unconfirmed`, like any
+  root posted and not confirmed.
+
 ## Links
 
 - Related ADRs: [ADR-0047](0047-live-tracing-trial-observer-otel.md) (the seam, the projection, the
@@ -183,8 +240,9 @@ through a filter on the `preview` metadata marker.
 - Related code: `tolokaforge/observability/ids.py` (the preview kinds),
   `tolokaforge/observability/factory.py` (the plugin API version),
   `tolokaforge_langfuse/src/tolokaforge_langfuse/otlp_spans.py` (the engine-free converter),
-  `otel.py` (the preview rows, the single write, the error roots), `gradings.py` (the score
-  timestamps and the primary pointer), `docs/OBSERVABILITY.md`
+  `otel.py` (the preview rows, the single write, the error roots, the run-end flush), `gradings.py`
+  (the score timestamps and the primary pointer), `retry.py` and `otlp_transport.py` (the retry
+  policy and the single-attempt exporter that takes it), `docs/OBSERVABILITY.md`
 - External references: Langfuse v4 write modes and the OpenTelemetry ingestion attribute
   conventions;
   [Migrate custom ingestion to Langfuse v4](https://langfuse.com/integrations/native/opentelemetry/migration-to-v4)

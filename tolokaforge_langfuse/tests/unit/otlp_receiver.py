@@ -19,6 +19,28 @@ DROP = "drop"
 STALL = "stall"
 REDIRECT_TARGET = "/redirected"
 
+# the page the external gateway answered every refused request with in CI (2026-10-01)
+GATEWAY_PAGE = (
+    b"<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n"
+    b"<center><h1>403 Forbidden</h1></center>\r\n"
+    b"<hr><center>Microsoft-Azure-Application-Gateway/v2</center>\r\n</body>\r\n</html>\r\n"
+)
+# Langfuse's own refusal is JSON
+LANGFUSE_403 = b'{"message": "Invalid credentials"}'
+
+
+@dataclass(frozen=True)
+class Reply:
+    """An answer with a body and headers, beyond a bare status."""
+
+    status: int
+    body: bytes = b""
+    headers: tuple[tuple[str, str], ...] = ()
+
+
+def gateway_refusal() -> Reply:
+    return Reply(403, GATEWAY_PAGE, (("Content-Type", "text/html"),))
+
 
 @dataclass(frozen=True)
 class Request:
@@ -40,7 +62,7 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         headers = {name.lower(): value for name, value in self.headers.items()}
         receiver.requests.append(Request(self.command, self.path, headers, body))
-        answer = 200 if self.path == REDIRECT_TARGET else receiver.answer
+        answer = 200 if self.path == REDIRECT_TARGET else receiver.next_answer()
         if answer == DROP:
             self.close_connection = True
             self.connection.shutdown(socket.SHUT_RDWR)
@@ -48,13 +70,17 @@ class _Handler(BaseHTTPRequestHandler):
         if answer == STALL:
             receiver.closing.wait(30)
             answer = 200
-        self.send_response(int(answer))
-        if 300 <= int(answer) < 400:
+        reply = answer if isinstance(answer, Reply) else Reply(int(answer))
+        self.send_response(reply.status)
+        if 300 <= reply.status < 400:
             self.send_header("Location", REDIRECT_TARGET)
-        self.send_header("Content-Length", "0")
+        for name, value in reply.headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(reply.body)))
         # one request per connection: no client reuses a socket this receiver is about to close
         self.send_header("Connection", "close")
         self.end_headers()
+        self.wfile.write(reply.body)
 
     do_GET = _take
     do_POST = _take
@@ -75,7 +101,9 @@ class Receiver:
     """``with Receiver() as receiver:`` serves on a free local port until the block ends."""
 
     def __init__(self) -> None:
-        self.answer: int | str = 200
+        self.answer: int | str | Reply = 200
+        # answered in order before ``answer``, one per request
+        self.script: list[int | str | Reply] = []
         self.requests: list[Request] = []
         self.errors: list[str] = []
         self.closing = threading.Event()
@@ -92,6 +120,9 @@ class Receiver:
     @property
     def posts(self) -> list[Request]:
         return [request for request in self.requests if request.method == "POST"]
+
+    def next_answer(self) -> int | str | Reply:
+        return self.script.pop(0) if self.script else self.answer
 
     def __enter__(self) -> Receiver:
         self._thread.start()

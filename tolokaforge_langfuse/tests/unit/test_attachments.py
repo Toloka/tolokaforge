@@ -415,7 +415,10 @@ class TestLangfuseAttachments:
         assert counts.failed == 1
         assert "SECRETSIG" not in caplog.text
 
-    def test_urllib_opener_returns_status_and_body_for_success_and_http_errors(self) -> None:
+    def test_urllib_opener_returns_status_body_and_headers_for_success_and_http_errors(
+        self,
+    ) -> None:
+        """The headers come back too, an HTTP error's included: a ``Retry-After`` is read there."""
         import threading
         from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -425,8 +428,10 @@ class TestLangfuseAttachments:
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length)
-                status = 201 if self.path == "/ok" else 404
+                status = 201 if self.path == "/ok" else 429
                 self.send_response(status)
+                if status == 429:
+                    self.send_header("Retry-After", "7")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -438,11 +443,10 @@ class TestLangfuseAttachments:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             base = f"http://127.0.0.1:{server.server_port}"
-            assert urllib_opener("POST", base + "/ok", {"X": "y"}, b"payload", 5) == (
-                201,
-                b"payload",
-            )
-            assert urllib_opener("POST", base + "/missing", {}, b"x", 5) == (404, b"x")
+            status, body, headers = urllib_opener("POST", base + "/ok", {"X": "y"}, b"payload", 5)
+            assert (status, body, headers["Content-Length"]) == (201, b"payload", "7")
+            status, body, headers = urllib_opener("POST", base + "/busy", {}, b"x", 5)
+            assert (status, body, headers["Retry-After"]) == (429, b"x", "7")
         finally:
             server.shutdown()
             server.server_close()
@@ -531,3 +535,153 @@ class TestTrialEndStepExtras:
         step = _attachments(_FakeLangfuse())
         assert step.scan_events([{"body": {"when": datetime.date(2026, 9, 17)}}]) == []
         assert step.scan_events([{"body": {"k": "sk-or-v1-" + "a" * 40}}])
+
+
+class _BehindTheGateway:
+    """The fake receiver behind the external gateway: the first ``refusals`` requests get
+    ``answer`` (the gateway's page by default), the rest reach ``then``."""
+
+    def __init__(self, refusals: int, answer: tuple | None = None, then=None) -> None:
+        from otlp_receiver import GATEWAY_PAGE
+
+        self.refusals = refusals
+        self.answer = answer or (403, GATEWAY_PAGE)
+        self.then = then or _FakeLangfuse()
+        self.calls: list[tuple[str, str, float]] = []
+
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls.append((method, url, timeout))
+        if self.refusals:
+            self.refusals -= 1
+            return self.answer
+        return self.then(method, url, headers, body, timeout)
+
+
+SCORES = [
+    {
+        "id": "e1",
+        "type": "score-create",
+        "timestamp": "2026-10-07T10:00:00+00:00",
+        "body": {"id": "s1", "traceId": "a" * 32, "name": "pass", "value": 1},
+    }
+]
+
+
+class TestTrialEndRetries:
+    """A trial-end write the receiver refused without reading it is posted again, within the
+    trial's budget and never past it (ADR-0048, amendment 2026-10-07). Time is faked."""
+
+    @staticmethod
+    def _step(opener, time, *, budget_s: float = 120.0, **policy) -> LangfuseAttachments:
+        from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+        retrier = Retrier(
+            RetryPolicy(**{"jitter": 0.0, **policy}), clock=time.clock, sleep=time.sleep
+        )
+        return LangfuseAttachments(
+            api_base="https://langfuse.example",
+            headers={"Authorization": "Basic dGVzdDp0ZXN0"},
+            opener=opener,
+            budget_s=budget_s,
+            clock=time.clock,
+            retrier=retrier,
+        )
+
+    def test_a_score_batch_the_gateway_refused_is_posted_again(self) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        receiver = _BehindTheGateway(refusals=1)
+        step = self._step(receiver, time)
+        with step.budget():
+            step.ingest(SCORES)
+        assert [c[0] for c in receiver.calls] == ["POST", "POST"]
+        assert time.sleeps == [65.0]
+        assert step._retrier.stats.counts()["retries_recovered"] == 1
+
+    def test_a_403_langfuse_answers_itself_fails_at_once(self) -> None:
+        from fake_time import FakeTime
+        from otlp_receiver import LANGFUSE_403
+        from tolokaforge_langfuse.media import LangfuseApiError
+
+        time = FakeTime()
+        receiver = _BehindTheGateway(refusals=5, answer=(403, LANGFUSE_403))
+        step = self._step(receiver, time)
+        with step.budget(), pytest.raises(LangfuseApiError, match="HTTP 403"):
+            step.ingest(SCORES)
+        assert len(receiver.calls) == 1 and time.sleeps == []
+
+    def test_retries_stop_when_the_trials_budget_runs_out(self) -> None:
+        """The second window would end past the budget: the call gives up instead of waiting."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.media import LangfuseApiError
+
+        time = FakeTime()
+        receiver = _BehindTheGateway(refusals=10)
+        step = self._step(receiver, time, budget_s=100.0)
+        started = time.now
+        with step.budget(), pytest.raises(LangfuseApiError, match="HTTP 403"):
+            step.ingest(SCORES)
+        assert len(receiver.calls) == 2 and time.sleeps == [65.0]
+        assert time.now - started <= 100.0
+        # the request after the wait got what was left of the budget, not the full timeout
+        assert receiver.calls[1][2] == pytest.approx(35.0)
+        assert step._retrier.stats.counts()["retries_exhausted"] == 1
+
+    def test_a_whole_trial_waits_no_longer_than_its_budget(self, tmp_path: Path) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        receiver = _BehindTheGateway(refusals=1000)
+        step = self._step(receiver, time, budget_s=120.0)
+        trial = write_trial(tmp_path / "trials" / "T" / "0", V1_FILES)
+        started = time.now
+        counts = step.attach("a" * 32, trial)
+        assert counts.failed == 8 and counts.manifests_failed == 1
+        assert time.now - started <= 120.0
+        assert time.sleeps == [65.0]  # one window fitted; every later refusal fails at once
+
+    def test_a_retry_after_on_the_ingestion_route_is_honoured(self) -> None:
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        receiver = _BehindTheGateway(refusals=1, answer=(429, b"", {"retry-after": "7"}))
+        step = self._step(receiver, time)
+        with step.budget():
+            step.ingest(SCORES)
+        assert time.sleeps == [7.0] and len(receiver.calls) == 2
+
+    def test_the_presigned_put_is_posted_again_after_the_store_was_busy(
+        self, tmp_path: Path
+    ) -> None:
+        from fake_time import FakeTime
+
+        class _BusyOnce(_FakeLangfuse):
+            def __init__(self) -> None:
+                super().__init__()
+                self.busy = 1
+
+            def __call__(self, method, url, headers, body, timeout):
+                if method == "PUT" and self.busy:
+                    self.busy -= 1
+                    self.calls.append((method, url, dict(headers), body))
+                    return 503, b"<Error><Code>ServerBusy</Code></Error>"
+                return super().__call__(method, url, headers, body, timeout)
+
+        time = FakeTime()
+        store = _BusyOnce()
+        step = self._step(store, time)
+        trial = write_trial(tmp_path / "trials" / "T" / "0", ("task.yaml",))
+        counts = step.attach("a" * 32, trial)
+        assert counts.uploaded == 1 and counts.failed == 0
+        assert [c[0] for c in store.calls if c[0] == "PUT"] == ["PUT", "PUT"]
+        assert time.sleeps == [1.0]
+
+    def test_without_a_retrier_a_refusal_is_one_attempt(self) -> None:
+        from tolokaforge_langfuse.media import LangfuseApiError
+
+        receiver = _BehindTheGateway(refusals=1)
+        step = LangfuseAttachments(api_base="https://langfuse.example", opener=receiver)
+        with pytest.raises(LangfuseApiError, match="HTTP 403"):
+            step.ingest(SCORES)
+        assert len(receiver.calls) == 1

@@ -23,6 +23,11 @@ compression and the certificates (``OTEL_EXPORTER_OTLP_TRACES_*``, then ``OTEL_E
 It reads nothing an SDK keeps private: the encoder's public module is all it takes from the SDK's
 exporter packages, and an install without it refuses the run at start rather than retrying.
 
+A caller may hand it a :class:`~tolokaforge_langfuse.retry.Retrier`: the same bytes are then
+posted again after an answer that proves the receiver did not read them (the gateway's block
+page, 429, 503 by default), and after nothing else (ADR-0048, amendment 2026-10-07). Without one
+it stays at one POST per batch.
+
 Engine-free by construction: both producers need this guarantee, and the offline connector imports
 it next to any engine pin, or with none.
 """
@@ -40,6 +45,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from tolokaforge_langfuse import __version__
+from tolokaforge_langfuse.retry import Answer, Retrier
 
 _log = logging.getLogger(__name__)
 
@@ -129,10 +135,18 @@ def _single_attempt_exporter_class() -> type | None:
         return request
 
     class SingleAttemptSpanExporter(SpanExporter):
-        """One POST attempt per batch, without automatic repeats or overwrites."""
+        """One POST attempt per batch, without automatic repeats or overwrites; with a
+        ``retrier``, the same bytes again after a refusal its policy names, and only then."""
 
-        def __init__(self, endpoint: str, headers: Mapping[str, str] | None = None) -> None:
+        def __init__(
+            self,
+            endpoint: str,
+            headers: Mapping[str, str] | None = None,
+            *,
+            retrier: Retrier | None = None,
+        ) -> None:
             self._endpoint = endpoint
+            self._retrier = retrier
             self._timeout = _timeout()
             self._compression = _compression()
             self._verify, self._cert = _certificates()
@@ -162,30 +176,47 @@ def _single_attempt_exporter_class() -> type | None:
         def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
             if self._shutdown:
                 return SpanExportResult.FAILURE
+            retrier = self._retrier
             try:
-                # the one request: no redirect is followed (that would re-send the body) and the
-                # adapter above makes no attempt of its own, so this is the only POST
-                answer = self._session.post(
-                    self._endpoint,
-                    data=self._body(spans),
-                    headers=self._headers,
-                    timeout=self._timeout,
-                    verify=self._verify,
-                    cert=self._cert,
-                    allow_redirects=False,
-                )
+                body = self._body(spans)
+                if retrier is None:
+                    answer = self._post(body)
+                else:
+                    answer = retrier.run(lambda: self._post(body), what="span export")
             except Exception as exc:  # noqa: BLE001 - the queue counts and reports a failure
                 # the receiver may still have written this batch: the caller treats a failure as
                 # unconfirmed, never as "certainly not written" (ADR-0048)
                 _log.warning("span export failed: %s", type(exc).__name__)
                 return SpanExportResult.FAILURE
-            if 200 <= answer.status_code < 300:
+            if answer.ok:
                 return SpanExportResult.SUCCESS
-            _log.warning("span export refused: HTTP %s", answer.status_code)
+            if retrier is None or not retrier.retries(answer):
+                # a refusal the retrier gave up on has said so already
+                _log.warning("span export refused: HTTP %s", answer.status)
             return SpanExportResult.FAILURE
+
+        def _post(self, body: bytes) -> Answer:
+            """One POST: no redirect is followed (that would re-send the body) and the adapter
+            above makes no attempt of its own, so this is one request on the wire."""
+            response = self._session.post(
+                self._endpoint,
+                data=body,
+                headers=self._headers,
+                timeout=self._timeout,
+                verify=self._verify,
+                cert=self._cert,
+                allow_redirects=False,
+            )
+            return Answer(
+                response.status_code,
+                b"" if response.ok else response.content,
+                response.headers.get("Retry-After"),
+            )
 
         def shutdown(self) -> None:
             self._shutdown = True
+            if self._retrier is not None:
+                self._retrier.cancel()
             self._session.close()
 
         def force_flush(self, timeout_millis: int = 30_000) -> bool:
@@ -201,6 +232,7 @@ def make_otlp_exporter(
     *,
     ingestion_version: str | None = INGESTION_VERSION,
     retry: bool = True,
+    retrier: Retrier | None = None,
 ) -> SpanExporter:
     """The OTLP/HTTP span exporter for one receiver.
 
@@ -219,6 +251,9 @@ def make_otlp_exporter(
     without ``requests`` or the SDK's OTLP encoder. A timeout that is not a positive number of
     seconds, or an unknown compression, raises ``ValueError``.
 
+    ``retrier`` (``retry=False`` only) posts a batch again after a refusal its policy names, the
+    same bytes each time (:mod:`tolokaforge_langfuse.retry`); without one every batch is one POST.
+
     ``ingestion_version`` adds Langfuse's ``x-langfuse-ingestion-version`` header, which selects
     the receiver's direct ingestion path; the v3 family is not sent it at all. It joins
     caller-supplied headers only: with none, ``retry=True`` leaves the header set to the SDK's
@@ -227,6 +262,11 @@ def make_otlp_exporter(
     if merged and ingestion_version:
         merged.setdefault(INGESTION_VERSION_HEADER, ingestion_version)
     if retry:
+        if retrier is not None:
+            raise ValueError(
+                "a retrier drives the single-attempt exporter (retry=False); the SDK's exporter "
+                "repeats batches on its own terms"
+            )
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
         return OTLPSpanExporter(endpoint=endpoint, headers=merged or None)
@@ -245,7 +285,7 @@ def make_otlp_exporter(
     single = _single_attempt_exporter_class()
     if single is None:
         raise SingleAttemptUnavailable(_REFUSAL)
-    exporter: SpanExporter = single(endpoint, merged or None)
+    exporter: SpanExporter = single(endpoint, merged or None, retrier=retrier)
     return exporter
 
 

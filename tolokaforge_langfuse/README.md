@@ -69,11 +69,34 @@ before configuring a run on that family: `projection` must be `full`, because th
 observation comes from the bundle, and the current verdict lives in the `scope: primary` scores
 (the trace metadata is frozen at its single write). `config.LangfuseConfig` also owns
 `project`, `project_id`, `environments`, `attach_api_base`, `attach_timeout_s`, `attach_budget_s`,
-`environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
+`retry`, `environment`, `model_name_normalizer` and `model_name_rules`. It rejects unknown keys and
 invalid values before any receiver work starts; other plugins' namespaces remain opaque.
 A receiver setting left at the engine's tracing top level is rejected, not silently ignored.
 Defaults and environment precedence are unchanged. A second backend need not declare any
 Langfuse fields.
+
+`retry` is the writes' retry policy (`retry.RetryPolicy`): a write is posted again only after an
+answer that proves the receiver did not read it, by default the external gateway's 403 block page
+(waited out one 65 s window at a time, at most three), 429 and 503 (a backoff of 1, 2, 4, 8 s that
+honours `Retry-After` up to 60 s), never after Langfuse's own JSON 403, a lost answer or a 502 or
+504. It covers the span export of the write-once layout, the trial-end calls (within the trial's
+`attach_budget_s`) and the agent transcripts; the run end may wait `flush_grace_s` (240 s) beyond
+`flush_timeout_s` while the receiver refuses, and the receipt counts every retry. Each default and
+its reason: `docs/OBSERVABILITY.md`, "Retries"; when a re-send is safe: ADR-0048, amendment
+2026-10-07.
+
+```yaml
+observability:
+  tracing:
+    options:
+      langfuse:
+        retry:
+          statuses: [403, 429, 503]   # 403: the gateway's page only; [] turns retries off
+          max_attempts: 5
+          gateway_window_s: 65
+          gateway_waits: 3
+          flush_grace_s: 240
+```
 
 A launcher can also supply settings through these variables:
 
@@ -118,7 +141,8 @@ profile".
 | `projection.py` | the default projection of a persisted trial bundle (the connector's `mapping.py` is the reference) |
 | `gradings.py` | the grading observation, its judge transcript and scores |
 | `otlp_spans.py` | the projection's ingestion bodies as OTLP spans (the write-once layout of a v4 receiver); engine-free, imported by the offline connector too |
-| `otlp_transport.py` | the OTLP/HTTP span exporter: the SDK's own for a v3 receiver, and for the write-once layout one that builds each request itself (the SDK's public OTLP encoder, one POST through its own `requests` session) and reads nothing the SDK keeps private; engine-free, imported by the offline connector too |
+| `otlp_transport.py` | the OTLP/HTTP span exporter: the SDK's own for a v3 receiver, and for the write-once layout one that builds each request itself (the SDK's public OTLP encoder, one POST through its own `requests` session) and reads nothing the SDK keeps private; with a retrier it posts the same bytes again after a refusal the policy names; engine-free, imported by the offline connector too |
+| `retry.py` | the writes' retry policy (`options.langfuse.retry`): which refusals are posted again, the backoff, the gateway's windows, the deadlines that bound a wait, the counts for the receipt; engine-free |
 | `media.py` | the ingestion and media REST calls, the receiver-family probe, the budget and the breaker |
 | `attachments.py` | attachment manifest v2 and the data-safety scan |
 | `vocabulary.py` | the default trace vocabulary: prefixes, derived tags, the environment rule (shared with the offline uploader) |
