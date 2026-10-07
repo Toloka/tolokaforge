@@ -141,11 +141,14 @@ class SpanQueue:
     timeout, and waits for a batch the worker is exporting no longer than that; :meth:`shutdown`
     flushes, stops the worker and closes the exporter. Counters are read by :meth:`receipt`.
 
-    With the exporter's ``retrier`` (:mod:`tolokaforge_langfuse.retry`) a flush that meets a
-    refusal the retry policy waits out goes on for up to ``flush_grace_s`` more (in total, over
-    all the queue's flushes), and no wait of the exporter's outlasts it. A flush that meets no
-    such refusal ends at its timeout as before, so a receiver that is down holds the run no
-    longer than it did.
+    With the exporter's ``retrier`` (:mod:`tolokaforge_langfuse.retry`) a flush during which the
+    receiver refuses with an answer the retry policy waits out (a batch already waiting one out
+    when the flush starts included) goes on for up to ``flush_grace_s`` more, in total over all
+    the queue's flushes, and no wait of the exporter's outlasts it. The extension ends once a
+    batch fails in another way (a timeout, a lost connection, a status the policy does not wait
+    out) or the retry breaker opens. A flush without such a refusal ends at its timeout as
+    before, so a receiver that is down holds the run no longer than it did. ``clock`` must be
+    the retrier's.
 
     A span may be handed a ``track`` key: the queue then reports whether that span reached the
     exporter (:meth:`lost_tracked`). Only the write-once roots are tracked, so the set stays one
@@ -254,20 +257,19 @@ class SpanQueue:
                 self.dropped += len(batch)
                 self._failed_tracked.update(track for _, track in batch if track is not None)
 
-    def _drain(self, deadline: Callable[[], float] | None = None) -> bool:
-        """Export batches until the queue is empty (True) or ``deadline()`` (``clock`` time, read
-        before each batch) passes; the worker's batch in hand is awaited within it too."""
+    def _drain(self, deadline: Callable[[], float] | None = None) -> None:
+        """Export batches until the queue is empty or ``deadline()`` (``clock`` time, read before
+        each batch) passes; the worker's batch in hand is awaited within it too."""
         if deadline is None:
             self._drain_lock.acquire()
         elif not self._acquire_before(deadline):
-            return False
+            return
         try:
             while deadline is None or self._clock() < deadline():
                 batch = self._take_batch()
                 if not batch:
-                    return True
+                    return
                 self._export(batch)
-            return False
         finally:
             self._drain_lock.release()
 
@@ -288,31 +290,37 @@ class SpanQueue:
 
     def flush(self, timeout_s: float | None = None) -> bool:
         """Export what is queued, in the caller's thread, within ``timeout_s`` (and the grace left,
-        while the receiver answers with a refusal the retry policy waits out); whatever that did
+        while the receiver refuses with an answer the retry policy waits out); whatever that did
         not cover is dropped and counted, so a receiver that is down cannot hold the run open.
-        True when everything left."""
+        True when everything left the queue and no batch is still with the worker."""
         if timeout_s is None:
-            drained = self._drain()
-            return self._drop_the_rest() == 0 and drained
+            self._drain()
+            return self._everything_left()
         base = self._clock() + max(0.0, timeout_s)
         grace_end = base + self._grace_left
         retrier = self._retrier
-        refused_before = retrier.refused_requests if retrier is not None else 0
+        # a batch already waiting out a refusal when the flush starts counts as refused in it
+        mark = retrier.refusal_mark() if retrier is not None else 0
         if retrier is not None:
             # a refused batch waits within the grace, never past it
             retrier.set_deadline(grace_end)
 
         def deadline() -> float:
-            if retrier is not None and (
-                retrier.in_schedule or retrier.refused_requests > refused_before
-            ):
+            if retrier is not None and retrier.refusing_since(mark):
                 return grace_end
             return base
 
-        drained = self._drain(deadline)
+        self._drain(deadline)
         self._grace_left = max(0.0, self._grace_left - max(0.0, self._clock() - base))
         self._flush_end = deadline()
-        return self._drop_the_rest() == 0 and drained
+        return self._everything_left()
+
+    def _everything_left(self) -> bool:
+        """Drop and count what is still queued; True when nothing was, and the worker holds no
+        batch (a batch that finished after the deadline still left)."""
+        left = self._drop_the_rest()
+        with self._lock:
+            return left == 0 and not self._in_flight
 
     def _drop_the_rest(self) -> int:
         """Count what is still queued as dropped (never sent); returns how many."""

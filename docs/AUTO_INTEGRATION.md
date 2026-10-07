@@ -553,8 +553,9 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   text (a directory, a dangling link, a named pipe, a device) refuses its transcript, the
   irregular ones unopened. Without one the trace has no input. Each transcript leaves as one OTLP
   batch under the wheel's default retry policy ([`OBSERVABILITY.md`](OBSERVABILITY.md) § Retries):
-  a batch the receiver refused without reading it (the gateway's 403 page, 429, 503) goes again
-  after a wait, the upload as a whole waits at most 240 s, and the report's `retries` counts it.
+  a batch the receiver refused without reading it (a gateway's own 403 page, 429, 503) goes again
+  after a wait, all the upload's waits together take at most 240 s, and the report's `retries`
+  counts them.
   The receiver is
   `LANGFUSE_BASE_URL` (or `LANGFUSE_OTLP_ENDPOINT`); the key pair and
   `LANGFUSE_EXTRA_HEADERS` come from the step's own environment through the `SecretManager`. A

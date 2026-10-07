@@ -70,7 +70,7 @@ from tolokaforge_langfuse.preflight import (
     resolve_plan,
 )
 from tolokaforge_langfuse.projection import PROJECTION_FULL
-from tolokaforge_langfuse.retry import Retrier, RetryStats
+from tolokaforge_langfuse.retry import Retrier, RetryBreaker, RetryStats
 from tolokaforge_langfuse.safety import SafetyGate, looks_secret
 
 if TYPE_CHECKING:
@@ -161,8 +161,10 @@ def build(
     producer = producer_identity()
     version = producer_version(producer, plan.resolver.rules_version, plan.profile)
     gate = live_gate(headers)
-    # one count of what the retry policy did, over the span export and the trial-end calls
+    # one count of what the retry policy did, and one breaker that stops its waiting, over the
+    # span export and the trial-end calls
     retry_stats = RetryStats()
+    retry_breaker = RetryBreaker(settings.retry.breaker_after)
     attachments = build_attachments(
         settings,
         endpoint=endpoint,
@@ -173,10 +175,15 @@ def build(
         send_manifest_event=server_api == SERVER_V3,
         gate=gate,
         retry_stats=retry_stats,
+        retry_breaker=retry_breaker,
     )
     # the v4 producer posts a batch once, and again only after a refusal that proves the
     # receiver did not read it (ADR-0048); a v3 receiver keeps the SDK's retrying exporter
-    span_retrier = Retrier(settings.retry, stats=retry_stats) if server_api == SERVER_V4 else None
+    span_retrier = (
+        Retrier(settings.retry, stats=retry_stats, breaker=retry_breaker)
+        if server_api == SERVER_V4
+        else None
+    )
     try:
         exporter = make_otlp_exporter(
             endpoint,
@@ -454,6 +461,7 @@ def build_attachments(
     send_manifest_event: bool = True,
     gate: SafetyGate | None = None,
     retry_stats: RetryStats | None = None,
+    retry_breaker: RetryBreaker | None = None,
 ) -> Any:
     """The post-trial step (the attachments and the ingestion route of the trial-end pass) for
     ``observability.tracing.options.langfuse.attach`` / ``projection``; ``None`` only when nothing
@@ -465,7 +473,8 @@ def build_attachments(
     legitimately quote them), and ``environment`` rides on the manifest update too.
     ``send_manifest_event`` is false in the v4 layout, where the manifest is part of the root
     observation instead of a ``trace-create`` update. Its writes follow ``settings.retry`` within
-    each trial's budget, counted in ``retry_stats``."""
+    each trial's budget, counted in ``retry_stats``; while ``retry_breaker`` (the span export's)
+    is open they wait no more, and they never count towards it."""
     from tolokaforge_langfuse.attachments import ATTACH_NONE, SecretScan
     from tolokaforge_langfuse.media import (
         LangfuseAttachments,
@@ -485,7 +494,11 @@ def build_attachments(
         budget_s=settings.attach_budget_s,
         environment=environment,
         send_manifest_event=send_manifest_event,
-        retrier=Retrier(settings.retry, stats=retry_stats),
+        # the trial ends obey the span export's breaker without counting towards it: a run's
+        # parallel trials would otherwise open it within one schedule of a long refusal
+        retrier=Retrier(
+            settings.retry, stats=retry_stats, breaker=retry_breaker, trips_breaker=False
+        ),
     )
 
 

@@ -596,7 +596,7 @@ class TestTrialEndRetries:
         with step.budget():
             step.ingest(SCORES)
         assert [c[0] for c in receiver.calls] == ["POST", "POST"]
-        assert time.sleeps == [65.0]
+        assert time.sleeps == [1.0]
         assert step._retrier.stats.counts()["retries_recovered"] == 1
 
     def test_a_403_langfuse_answers_itself_fails_at_once(self) -> None:
@@ -612,21 +612,23 @@ class TestTrialEndRetries:
         assert len(receiver.calls) == 1 and time.sleeps == []
 
     def test_retries_stop_when_the_trials_budget_runs_out(self) -> None:
-        """The second window would end past the budget: the call gives up instead of waiting."""
+        """The budget cuts the schedule: the 30 s step would end past it, so the call gives up
+        instead of waiting."""
         from fake_time import FakeTime
         from tolokaforge_langfuse.media import LangfuseApiError
 
         time = FakeTime()
         receiver = _BehindTheGateway(refusals=10)
-        step = self._step(receiver, time, budget_s=100.0)
+        step = self._step(receiver, time, budget_s=50.0)
         started = time.now
         with step.budget(), pytest.raises(LangfuseApiError, match="HTTP 403"):
             step.ingest(SCORES)
-        assert len(receiver.calls) == 2 and time.sleeps == [65.0]
-        assert time.now - started <= 100.0
-        # the request after the wait got what was left of the budget, not the full timeout
-        assert receiver.calls[1][2] == pytest.approx(35.0)
+        assert len(receiver.calls) == 5 and time.sleeps == [1.0, 3.0, 9.0, 20.0]
+        assert time.now - started <= 50.0
+        # the request after the last wait got what was left of the budget, not the full timeout
+        assert receiver.calls[-1][2] == pytest.approx(17.0)
         assert step._retrier.stats.counts()["retries_exhausted"] == 1
+        assert not step._retrier.breaker.open  # a schedule cut short does not count
 
     def test_a_whole_trial_waits_no_longer_than_its_budget(self, tmp_path: Path) -> None:
         from fake_time import FakeTime
@@ -639,7 +641,36 @@ class TestTrialEndRetries:
         counts = step.attach("a" * 32, trial)
         assert counts.failed == 8 and counts.manifests_failed == 1
         assert time.now - started <= 120.0
-        assert time.sleeps == [65.0]  # one window fitted; every later refusal fails at once
+        # the whole default schedule fits the default budget: the first call runs it out, the
+        # later ones get what is left
+        assert time.sleeps[:6] == [1.0, 3.0, 9.0, 20.0, 30.0, 30.0]
+        assert sum(time.sleeps) <= 120.0
+
+    def test_an_open_breaker_stops_the_waits_of_a_trial_end(self) -> None:
+        """The span export opened the breaker they share: a trial end waits no more."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.media import LangfuseApiError
+        from tolokaforge_langfuse.retry import Retrier, RetryBreaker, RetryPolicy
+
+        time = FakeTime()
+        shared = RetryBreaker(1)
+        shared.outlasted()
+        receiver = _BehindTheGateway(refusals=10)
+        step = LangfuseAttachments(
+            api_base="https://langfuse.example",
+            opener=receiver,
+            clock=time.clock,
+            retrier=Retrier(
+                RetryPolicy(),
+                breaker=shared,
+                trips_breaker=False,
+                clock=time.clock,
+                sleep=time.sleep,
+            ),
+        )
+        with step.budget(), pytest.raises(LangfuseApiError, match="HTTP 403"):
+            step.ingest(SCORES)
+        assert len(receiver.calls) == 1 and time.sleeps == []
 
     def test_a_retry_after_on_the_ingestion_route_is_honoured(self) -> None:
         from fake_time import FakeTime

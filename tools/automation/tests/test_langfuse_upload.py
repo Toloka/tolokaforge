@@ -1475,10 +1475,13 @@ class _FakeTime:
 
 class RetryingExporter:
     """Stands in for ``make_otlp_exporter`` and the exporter it builds: every batch goes through
-    the retrier the upload hands over, against scripted answers (then 200)."""
+    the retrier the upload hands over, against scripted answers (then 200). ``post_s`` is how
+    long a post takes on the test's clock."""
 
-    def __init__(self, *answers: int | tuple[int, bytes]) -> None:
+    def __init__(self, *answers: int | tuple[int, bytes], post_s: float = 0.0) -> None:
         self.answers = list(answers)
+        self.post_s = post_s
+        self.time: _FakeTime | None = None
         self.posts = 0
         self.kwargs: dict[str, Any] = {}
 
@@ -1491,6 +1494,8 @@ class RetryingExporter:
 
         def attempt() -> Answer:
             self.posts += 1
+            if self.post_s and self.time is not None:
+                self.time.now += self.post_s
             answer = self.answers.pop(0) if self.answers else 200
             status, body = answer if isinstance(answer, tuple) else (answer, b"")
             return Answer(status, body)
@@ -1501,8 +1506,8 @@ class RetryingExporter:
 
 class TestTheRetryPolicy:
     """The transcripts leave through the wheel's transport under its retry policy: a batch the
-    gateway refused without reading it goes again after a window, and the upload as a whole
-    waits at most one grace. Time is faked."""
+    gateway refused without reading it goes again after the schedule's wait, and all the upload's
+    waits together take at most one grace. Time is faked."""
 
     @staticmethod
     def _send(directory: Path, exporter: RetryingExporter, monkeypatch) -> tuple:
@@ -1512,6 +1517,7 @@ class TestTheRetryPolicy:
         import tolokaforge_langfuse.retry as retry
 
         time = _FakeTime()
+        exporter.time = time
         monkeypatch.setattr(
             retry,
             "Retrier",
@@ -1538,13 +1544,14 @@ class TestTheRetryPolicy:
         exporter = RetryingExporter((403, GATEWAY_PAGE))
         report, time = self._send(tmp_path, exporter, monkeypatch)
         assert report.ok and len(report.sent) == 1 and exporter.posts == 2
-        assert time.sleeps == [65.0]
+        assert time.sleeps == [1.0]
         assert report.as_dict()["retries"] == {
             "retried_requests": 1,
             "retry_attempts": 1,
             "retries_recovered": 1,
             "retries_exhausted": 0,
-            "retry_wait_s": 65,
+            "retry_wait_s": 1,
+            "retry_breaker_trips": 0,
         }
         assert "posted again after a refusal: **1** transcript(s), 1 recovered" in (
             report.as_markdown()
@@ -1560,11 +1567,25 @@ class TestTheRetryPolicy:
         assert "posted again" not in report.as_markdown()
 
     def test_the_whole_upload_waits_at_most_one_grace(self, tmp_path: Path, monkeypatch) -> None:
-        """A gateway that keeps refusing costs one grace (240 s), not a schedule per file."""
+        """A gateway that keeps refusing costs two whole schedules (186 s, within the 240 s
+        grace), after which the breaker stops the waiting for the rest of the upload."""
         for index in range(1, 6):
             write(tmp_path, f"agent_iter_{index}.jsonl", CLEAN_EVENTS)
         exporter = RetryingExporter(*[(403, GATEWAY_PAGE)] * 100)
         report, time = self._send(tmp_path, exporter, monkeypatch)
         assert len(report.failed) == 5 and report.sent == []
-        assert time.sleeps == [65.0, 65.0, 65.0] and sum(time.sleeps) <= 240
+        assert time.sleeps == [1.0, 3.0, 9.0, 20.0, 30.0, 30.0] * 2 and sum(time.sleeps) <= 240
         assert report.retries["retries_exhausted"] == 5
+        assert report.retries["retry_breaker_trips"] == 1
+
+    def test_a_long_upload_without_refusals_keeps_its_retries(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Only the time spent waiting counts towards the grace: transcripts that took 300 s to
+        send leave the last one its whole schedule."""
+        for index in range(1, 5):
+            write(tmp_path, f"agent_iter_{index}.jsonl", CLEAN_EVENTS)
+        exporter = RetryingExporter(200, 200, 200, (403, GATEWAY_PAGE), post_s=100.0)
+        report, time = self._send(tmp_path, exporter, monkeypatch)
+        assert report.ok and len(report.sent) == 4
+        assert time.now - 1000.0 >= 300 and time.sleeps == [1.0]

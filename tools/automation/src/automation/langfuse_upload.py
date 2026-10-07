@@ -19,8 +19,8 @@ What it does, in order, per file:
    this very process holds: the shapes read the serialised JSON, the values also the raw strings.
    A hit sends nothing;
 5. **export** one batch per transcript, under the wheel's retry policy (its defaults): a batch the
-   receiver refused without reading it (the gateway's block page, 429, 503) is posted again after
-   a wait, and nothing else is. The upload as a whole waits at most the policy's
+   receiver refused without reading it (the gateway's refusal page, 429, 503) is posted again
+   after a wait, and nothing else is. All the upload's waits together take at most the policy's
    ``flush_grace_s``, so a receiver that keeps refusing costs one grace, not one per transcript.
 
 Nothing here fails the pipeline on its own: the command reports what it refused, what it blocked
@@ -412,9 +412,10 @@ def upload(
     verified = _project_verified(receiver, project)
     gate = _sentinel(receiver)
     contract = tr.id_contract(engine_ids)
-    retrier = Retrier(RetryPolicy())
-    # the whole upload waits for refusals at most one grace, the bound a live run's end has
-    retrier.set_deadline_after(retrier.policy.flush_grace_s)
+    policy = RetryPolicy()
+    # all the upload's waits together take at most one grace, the bound a live run's end has;
+    # only time spent waiting counts, so a long upload keeps its retries
+    retrier = Retrier(policy, wait_budget_s=policy.flush_grace_s)
     exporter = (
         otlp_transport.make_otlp_exporter(
             receiver.endpoint, receiver.headers, retry=False, retrier=retrier

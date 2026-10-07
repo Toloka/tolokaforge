@@ -1470,6 +1470,7 @@ RETRY_KEYS = (
     "retries_recovered",
     "retries_exhausted",
     "retry_wait_s",
+    "retry_breaker_trips",
 )
 
 
@@ -1494,20 +1495,24 @@ def _gateway():
     return Answer(403, GATEWAY_PAGE)
 
 
-def _retrier(time, stats=None, sleep=None):
+def _retrier(time, stats=None, sleep=None, breaker=None, **policy):
     from tolokaforge_langfuse.retry import Retrier, RetryPolicy
 
     return Retrier(
-        RetryPolicy(jitter=0.0), stats=stats, clock=time.clock, sleep=sleep or time.sleep
+        RetryPolicy(**{"jitter": 0.0, **policy}),
+        stats=stats,
+        breaker=breaker,
+        clock=time.clock,
+        sleep=sleep or time.sleep,
     )
 
 
 class _ScriptedExporter(InMemorySpanExporter):
     """The single-attempt exporter's use of its retrier, without HTTP: each export runs through
-    the retrier against the scripted answers, then ``then``. ``request`` (seconds) is called as
-    each post is made, standing for the time the request takes."""
+    the retrier against the scripted answers, then ``then`` (200 by default). ``request`` is
+    called as each post is made, standing for the request itself (its time, a lost answer)."""
 
-    def __init__(self, retrier, answers=(), *, request=None) -> None:
+    def __init__(self, retrier, answers=(), *, then=None, request=None) -> None:
         import threading
 
         from tolokaforge_langfuse.retry import Answer
@@ -1515,7 +1520,7 @@ class _ScriptedExporter(InMemorySpanExporter):
         super().__init__()
         self.retrier = retrier
         self.answers = list(answers)
-        self.then = Answer(200)
+        self.then = then if then is not None else Answer(200)
         self.request = request
         self.posts = 0
         self.done = threading.Event()
@@ -1580,14 +1585,15 @@ class TestTheRunEndLeavesRoomForRetries:
         from fake_time import FakeTime
 
         time = FakeTime()
-        exporter = _ScriptedExporter(_retrier(time), [_gateway()])
+        exporter = _ScriptedExporter(_retrier(time), [_gateway()] * 5)
         queue = _queue(exporter, time)
         for span in _finished_spans(3):
             queue.put(span)
         started = time.now
         assert queue.flush(30) is True
-        assert time.now - started == 65.0  # past the flush timeout, inside the grace
-        assert exporter.posts == 2 and len(exporter.get_finished_spans()) == 3
+        # 1 + 3 + 9 + 20 + 30 s: past the flush timeout, inside the grace
+        assert time.now - started == 63.0
+        assert exporter.posts == 6 and len(exporter.get_finished_spans()) == 3
         receipt = queue.receipt(flushed=True)
         assert (receipt.spans_exported, receipt.spans_dropped, receipt.export_failures) == (3, 0, 0)
 
@@ -1613,35 +1619,214 @@ class TestTheRunEndLeavesRoomForRetries:
 
         time = FakeTime()
         exporter = _ScriptedExporter(_retrier(time), [_gateway()] * 10)
-        queue = _queue(exporter, time, grace=100.0)
+        queue = _queue(exporter, time, grace=50.0)
         for span in _finished_spans(4):
             queue.put(span)
         started = time.now
         assert queue.flush(30) is True  # the batch left the queue and was not delivered
-        # one window fitted before the grace ran out; the second would have ended past it
-        assert time.sleeps == [65.0] and time.now - started <= 30 + 100
+        # the waits that fit before the grace ran out; the next 30 s would have ended past it
+        assert time.sleeps == [1.0, 3.0, 9.0, 20.0, 30.0] and time.now - started <= 30 + 50
         receipt = queue.receipt(flushed=True)
         assert (receipt.spans_exported, receipt.spans_dropped, receipt.export_failures) == (0, 4, 1)
         assert exporter.retrier.stats.counts()["retries_exhausted"] == 1
         # the run end's second flush (after the error roots) has only the rest of the grace
-        assert queue._grace_left == pytest.approx(100.0 - 35.0)
+        assert queue._grace_left == pytest.approx(50.0 - (63.0 - 30.0))
 
-    def test_without_a_grace_a_refused_batch_is_given_up_at_the_timeout(self) -> None:
+    def test_without_a_grace_the_waits_stay_within_the_timeout(self) -> None:
         from fake_time import FakeTime
 
         time = FakeTime()
-        exporter = _ScriptedExporter(_retrier(time), [_gateway()])
+        exporter = _ScriptedExporter(_retrier(time), [_gateway()] * 10)
         queue = _queue(exporter, time, grace=0.0)
         queue.put(_finished_spans(1)[0])
         assert queue.flush(30) is True
-        assert time.sleeps == [] and exporter.get_finished_spans() == ()
+        assert time.sleeps == [1.0, 3.0, 9.0] and exporter.get_finished_spans() == ()
         assert queue.receipt(flushed=True).spans_dropped == 1
+
+    def test_a_refusal_that_began_before_the_flush_keeps_its_grace_after_it_ends(self) -> None:
+        """The worker is waiting out a refusal when the run ends, and its batch lands after
+        ``flush_timeout_s``. The receiver was refusing in this flush, so the batches queued
+        behind it are delivered, not dropped."""
+        import threading
+
+        from fake_time import FakeTime
+
+        time = FakeTime()
+        held = _Held(time)  # the refused batch's wait, held until the flush is past its timeout
+        gate, at_gate = threading.Event(), threading.Event()
+        started: list[float] = []
+
+        def request() -> None:
+            # the first batch behind the refused one waits here, so the flush looks at its
+            # deadline while the rest of the backlog is still queued
+            if exporter.posts == 3:
+                at_gate.set()
+                assert gate.wait(10)
+
+        def poll(seconds: float) -> None:
+            time.sleep(seconds)
+            if not held.release.is_set() and time.now - started[0] > 35:
+                held.release.set()
+                assert at_gate.wait(10)
+            elif held.release.is_set() and not gate.is_set():
+                gate.set()
+                # the worker drains the backlog before the flush looks again
+                assert queue._drain_lock.acquire(timeout=10)
+                queue._drain_lock.release()
+
+        exporter = _ScriptedExporter(
+            _retrier(time, sleep=held.sleep), [_gateway()], request=request
+        )
+        queue = SpanQueue(
+            exporter,
+            max_size=500,
+            batch_size=1,
+            interval_s=3600,
+            retrier=exporter.retrier,
+            flush_grace_s=240,
+            clock=time.clock,
+            sleep=poll,
+        )
+        spans = _finished_spans(21)
+        queue.put(spans[0])  # a full batch: the worker takes it and is refused
+        assert held.holding.wait(10)
+        for span in spans[1:]:
+            queue.put(span)  # queued behind it
+        started.append(time.now)
+        try:
+            flushed = queue.flush(30)
+        finally:
+            held.release.set()
+            gate.set()
+        assert flushed is True
+        receipt = queue.receipt(flushed=True)
+        assert (receipt.spans_exported, receipt.spans_dropped, receipt.export_failures) == (
+            21,
+            0,
+            0,
+        )
+        assert 30 < time.now - started[0] <= 30 + 240
+
+    def test_a_failure_that_is_not_a_refusal_ends_the_grace(self) -> None:
+        """One 429 passes after a second, then every post times out: the receiver is down, not
+        refusing, so the flush ends at its timeout instead of running into the grace."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import Answer
+
+        time = FakeTime()
+
+        def request() -> None:
+            if exporter.posts > 2:
+                time.sleep(10.0)
+                raise ConnectionError("timed out")
+
+        exporter = _ScriptedExporter(_retrier(time), [Answer(429)], request=request)
+        queue = _queue(exporter, time)
+        for span in _finished_spans(60):
+            queue.put(span)
+        queue._batch_size = 1  # set after the puts, which therefore left the worker asleep
+        started = time.now
+        assert queue.flush(30) is False
+        assert time.now - started == 31.0  # the post in flight at the timeout, and no further
+        receipt = queue.receipt(flushed=False)
+        assert (receipt.spans_exported, receipt.export_failures, receipt.spans_dropped) == (
+            1,
+            3,
+            59,
+        )
+        assert queue._grace_left == 239.0
+
+    def test_an_open_breaker_gives_the_flush_no_grace(self) -> None:
+        """Refusals that fail at once leave nothing to wait for: the flush ends at its timeout."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import RetryBreaker
+
+        time = FakeTime()
+        breaker = RetryBreaker(1)
+        breaker.outlasted()
+        exporter = _ScriptedExporter(
+            _retrier(time, breaker=breaker), then=_gateway(), request=lambda: time.sleep(10.0)
+        )
+        queue = _queue(exporter, time)
+        for span in _finished_spans(10):
+            queue.put(span)
+        queue._batch_size = 1
+        started = time.now
+        assert queue.flush(30) is False
+        assert time.now - started == 30.0 and exporter.posts == 3
+        assert queue.receipt(flushed=False).spans_dropped == 10
+
+    @pytest.mark.parametrize("with_retrier", [True, False])
+    def test_a_batch_that_finished_past_the_timeout_has_left(self, with_retrier: bool) -> None:
+        """Every span was exported, the last batch just past the timeout: the queue is flushed,
+        as it always was, and nothing is reported lost."""
+        from fake_time import FakeTime
+
+        time = FakeTime()
+
+        class _Slow(InMemorySpanExporter):
+            def export(self, spans):
+                time.sleep(10.0)
+                return super().export(spans)
+
+        if with_retrier:
+            queue = _queue(
+                _ScriptedExporter(_retrier(time), request=lambda: time.sleep(10.0)), time
+            )
+        else:
+            queue = SpanQueue(
+                _Slow(),
+                max_size=500,
+                batch_size=100,
+                interval_s=3600,
+                clock=time.clock,
+                sleep=time.sleep,
+            )
+        for span in _finished_spans(3):
+            queue.put(span)
+        queue._batch_size = 1  # set after the puts, which therefore left the worker asleep
+        started = time.now
+        assert queue.flush(25) is True
+        assert time.now - started == 30.0
+        receipt = queue.receipt(flushed=True)
+        assert (receipt.spans_exported, receipt.spans_dropped) == (3, 0)
+
+    @pytest.mark.parametrize("draw", [0.0, 0.999999])
+    def test_the_run_end_takes_at_most_twice_the_timeout_plus_the_grace(self, draw: float) -> None:
+        """A gateway that refuses every post, each post taking 2 s, and no breaker (the worst
+        case): the write-once run end (a flush, the error roots, the shutdown's flush) stays within
+        2 x flush_timeout_s + flush_grace_s, plus one post in flight per flush."""
+        from fake_time import FakeTime
+        from tolokaforge_langfuse.retry import Retrier, RetryPolicy
+
+        time = FakeTime()
+        retrier = Retrier(
+            RetryPolicy(breaker_after=0),
+            clock=time.clock,
+            sleep=time.sleep,
+            draw=lambda: draw,
+        )
+        exporter = _ScriptedExporter(retrier, then=_gateway(), request=lambda: time.sleep(2.0))
+        queue = _queue(exporter, time, batch_size=10_000)
+        for span in _finished_spans(200):
+            queue.put(span)
+        queue._batch_size = 64
+        started = time.now
+        queue.flush(30)
+        first_flush_posts = exporter.posts
+        for span in _finished_spans(5):  # the error roots
+            queue.put(span)
+        queue.shutdown(30)
+        assert exporter.posts > first_flush_posts > 0  # both flushes waited refusals out
+        assert time.now - started <= 2 * 30 + 240 + 2 * 2.0
+        receipt = queue.receipt(flushed=False)
+        assert receipt.spans_exported == 0 and receipt.spans_dropped == receipt.spans_queued
 
     @pytest.mark.parametrize("refused", [True, False])
     def test_a_batch_the_worker_holds_is_awaited_within_the_bound_and_no_longer(
         self, refused: bool
     ) -> None:
-        """The worker took a batch just before the run end and waits: out a gateway window
+        """The worker took a batch just before the run end and waits: out a refusal
         (``refused``, so the flush may use the grace) or for a slow answer (it may not)."""
         from fake_time import FakeTime
 
@@ -1760,7 +1945,8 @@ class TestTheReceiptCountsRetries:
             "retry_attempts": 2,
             "retries_recovered": 2,
             "retries_exhausted": 0,
-            "retry_wait_s": 65 + 5,
+            "retry_wait_s": 1 + 5,
+            "retry_breaker_trips": 0,
         }
 
     def test_a_refusal_that_outlasts_the_schedule_is_counted_as_given_up(self, tmp_path) -> None:
@@ -1770,7 +1956,7 @@ class TestTheReceiptCountsRetries:
         # the root left with its batch and was never confirmed: no second root is written
         assert extra["langfuse.roots_unconfirmed"] == 1 and extra["langfuse.error_roots_sent"] == 0
         assert extra["langfuse.retries_exhausted"] == 1
-        assert extra["langfuse.retry_attempts"] == 3 and extra["langfuse.retry_wait_s"] == 195
+        assert extra["langfuse.retry_attempts"] == 6 and extra["langfuse.retry_wait_s"] == 93
 
     def test_a_run_without_refusals_reports_zeros(self, tmp_path) -> None:
         receipt, _ = self._run(tmp_path, [], [])

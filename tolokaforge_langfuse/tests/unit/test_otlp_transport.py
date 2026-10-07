@@ -184,7 +184,7 @@ class TestRefusalsTheReceiverNeverRead:
         assert exporter.export(spans) is SpanExportResult.SUCCESS
         first, second = receiver.posts
         assert first.body == second.body and _span_names(second.body) == ["generation"]
-        assert time.sleeps == [65.0]
+        assert time.sleeps == [1.0]
         assert retrier.stats.counts()["retries_recovered"] == 1
 
     def test_a_403_langfuse_answers_itself_is_posted_once(self, receiver, spans) -> None:
@@ -236,7 +236,8 @@ class TestRefusalsTheReceiverNeverRead:
         exporter, retrier = self._exporter(receiver, time)
         receiver.answer = 503
         assert exporter.export(spans) is SpanExportResult.FAILURE
-        assert len(receiver.posts) == 5 and time.sleeps == [1.0, 2.0, 4.0, 8.0]
+        # the first post and max_retries (6) re-sends, the schedule's waits between them
+        assert len(receiver.posts) == 7 and time.sleeps == [1.0, 3.0, 9.0, 20.0, 30.0, 30.0]
         assert retrier.stats.counts()["retries_exhausted"] == 1
 
     def test_every_attempt_reaches_a_response_hook_on_its_session(self, receiver, spans) -> None:
@@ -262,7 +263,7 @@ class TestRefusalsTheReceiverNeverRead:
             receiver.url(),
             {"Authorization": AUTHORIZATION},
             retry=False,
-            retrier=Retrier(RetryPolicy()),
+            retrier=Retrier(RetryPolicy(delays_s=[60])),
         )
         receiver.answer = gateway_refusal()
         results: list[SpanExportResult] = []

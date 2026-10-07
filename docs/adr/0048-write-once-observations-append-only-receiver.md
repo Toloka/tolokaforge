@@ -178,56 +178,65 @@ through a filter on the `preview` metadata marker.
 
 ## Amendment 2026-10-07: a refusal that proves the body unread is posted again
 
-**Context.** Since 2026-10-05 the gateway in front of a production receiver (an Azure Application
-Gateway) holds a write limit shared by all its clients, about 1,500 requests a minute, and answers
-anything over it with its own 403 page, in bursts of up to about three minutes. It refused this
-producer at 13 requests a second, because others spend the same limit. With one POST per batch, a
-CI round on 2026-10-07 lost 21 to 36 % of each leg's spans, 41 gradings and 5 of 15 agent
-transcripts to those pages. The single attempt was chosen so that a body the receiver may already
-hold is never sent again; these refusals say the receiver never saw the body.
+**Context.** A receiver may sit behind a gateway that answers a shared write limit with its own
+block page: a 403 the gateway sends without forwarding the request, in bursts that can last
+minutes while other clients spend the same limit. With one POST per batch every such refusal lost
+its batch, so spans, trial-end scores and agent transcripts went missing although the receiver
+never saw those bodies. The single attempt exists so that a body the receiver may already hold is
+never sent again; these refusals say the receiver never read the body.
 
 **Decision.** The producers keep one POST per batch, with one exception: an answer that proves the
 receiver did not read the body is posted again, the same bytes, after a wait. By default those are
 the gateway's own 403 page (recognised by the `Microsoft-Azure-Application-Gateway` marker in its
-body; the gateway answers it without forwarding the request), 429 (a rate limit refuses before
-processing) and 503 (the service refused the request). A 403 the receiver answers itself is JSON
-and is never posted again, so a wrong key fails at once. A lost answer, a timeout and every other
-status keep the single attempt: 502 and 504 in particular are what a gateway answers when the
-receiver broke off or did not answer in time, possibly after it wrote the batch.
+body, as the offline connector recognises it), 429 (a limit refuses before processing) and 503
+(the service refused the request). A 403 the receiver answers itself is JSON and is never posted
+again, so a key the receiver rejects fails at once. A lost answer, a timeout and every other
+status keep the single attempt: 500, 502 and 504 in particular can come after the receiver read
+and wrote the batch.
 
 The policy is one setting of the plugin, `options.langfuse.retry`, read like every other receiver
-setting and shared by the routes that write: the statuses, the most posts per request (5), an
-exponential backoff for 429 and 503 (1 s doubling to at most 16 s) that honours a longer
-`Retry-After` up to 60 s, the gateway's page waited out one window at a time (65 s, at most three
-windows), and a jitter that only lengthens a wait (up to 20 %), so a window or a `Retry-After`
-never ends early while the parallel trials spread their second posts. The schedule and the
-gateway rule are the offline connector's, so both producers wait a refusal out alike; the
-connector also re-sends after any 5xx and a lost connection, which the live producer leaves out
-(an operator may list the statuses, a lost connection never goes again). `docs/OBSERVABILITY.md`
-("Retries") gives the reason for each default.
+setting and shared by the routes that write. Every retried answer follows one schedule: waits of
+1, 3, 9, 20 and 30 s, the last one repeating, for at most 6 re-sends per request (7 posts, 93 s of
+waiting, which fits inside a trial's default 120 s attachment budget), a longer `Retry-After`
+honoured up to 60 s in place of the step, and a jitter that only lengthens a wait (up to 20 %), so
+a run's parallel trials spread their next posts and a `Retry-After` never ends early.
+`docs/OBSERVABILITY.md` ("Retries") gives the reason for each default.
 
-Every bound stays: the span export retries in its background thread and the trials never wait for
-it; a trial-end call starts no wait that would end past the trial's attachment budget, so a trial
-waits no longer than before; the run-end flush ends at `flush_timeout_s` unless the receiver
-refuses it with such an answer, and then goes on for at most `flush_grace_s` (240 s) more in total.
-A transcript upload waits at most one such grace in all. The receipt counts the retried requests,
-the extra posts, the requests that landed after a retry, those still refused when the policy, a
-deadline or the run's end stopped them, and the seconds waited; every other counter keeps its
-meaning. A v3 receiver keeps the SDK's exporter, whose own retries cover 429, 502, 503 and 504;
-its trial-end calls follow the policy.
+The gateway's page does not say why it refused: a block rule of its own looks like its shared
+limit. A breaker therefore stops the waiting once two span batches in a row ran out their whole
+schedule still refused; from then on a refusal fails at once, without a wait, until a write is
+accepted again (`breaker_after`). The trial-end calls obey it without counting towards it: a
+run's parallel trials would otherwise open it within one schedule of any long refusal.
+
+Every bound stays. The span export retries in its background thread and the trials never wait
+for it. A trial-end call starts no wait that would end past the trial's attachment budget, so a
+trial waits no longer than it could before. The run-end flush ends at `flush_timeout_s` unless
+the receiver refuses it with such an answer (a batch already waiting one out when the flush
+starts included); then it goes on for at most `flush_grace_s` (240 s) more in total, and it stops
+going on once a batch fails in another way or the breaker opens. A transcript upload waits at
+most one such grace in all. The receipt counts the retried requests, the extra posts, the
+requests that landed after a retry, those still refused when the policy, a deadline, the breaker
+or the run's end stopped them, the seconds waited and the times the breaker opened; every other
+counter keeps its meaning. A v3 receiver keeps the SDK's exporter, whose own retries cover 429,
+502, 503 and 504; its trial-end calls follow the policy.
 
 **Consequences.**
 
 - A re-sent body is one the receiver never read, so the overwrite this ADR guards against cannot
-  happen on the default list. An operator may list ambiguous statuses (502, 504, 500); a batch
-  posted again after one of them is, on a v4 receiver, an update with the same content (same ids,
-  same rows, last write wins): the trade-off the single attempt avoided, now an explicit choice.
-- A refusal that outlasts the schedule still loses the batch, counted as before. At a trial's end
-  the default budget leaves room for one gateway window, so a longer burst fails those writes
-  unless a deployment raises `attach_budget_s` and accepts the longer trials.
+  happen on the default list. An operator may list 500, 502 or 504: then a body the receiver may
+  already have read is sent again, which on a v4 receiver is an update with the same content (same
+  ids, same rows, last write wins), the trade-off the single attempt avoided, now an explicit
+  choice.
+- A refusal that outlasts the schedule still loses the batch, counted as before: a gateway burst
+  longer than about 93 s costs the batches it refuses throughout. At a trial's end the whole
+  schedule fits the default budget; a deployment that wants to ride out longer refusals there
+  raises `attach_budget_s` and `max_retries` and accepts the longer trials.
+- A gateway rule that refuses for good costs the span export two schedules in its background
+  thread before the breaker opens, and each trial end its schedule until then (the attachment
+  step's own breaker switches the step off after three trials that reached nothing).
 - A v4 run's end takes at most twice `flush_timeout_s` plus `flush_grace_s` (300 s by default)
-  while the receiver refuses, instead of `flush_timeout_s` twice. `flush_grace_s: 0` restores the
-  old bound, `max_attempts: 1` or an empty status list the single attempt.
+  while the receiver refuses, instead of twice `flush_timeout_s`. `flush_grace_s: 0` restores the
+  old bound, `max_retries: 0` or an empty status list the single attempt.
 - The run-end flush now holds its bound while the background thread still exports a batch (it
   used to wait for the thread's whole drain). A root batch still with the exporter when the error
   roots are decided, and not landed when the run ends, counts in `roots_unconfirmed`, like any

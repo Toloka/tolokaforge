@@ -726,7 +726,7 @@ class TestTheRetryPolicy:
         self, monkeypatch
     ) -> None:
         pytest.importorskip("opentelemetry.sdk")
-        block = {"max_attempts": 3, "statuses": [403, 429, 503, 504], "flush_grace_s": 100}
+        block = {"max_retries": 2, "statuses": [403, 429, 503, 504], "flush_grace_s": 100}
         observer = self._build(
             monkeypatch, (200, b'{"data": []}'), options={"attach": "core", "retry": block}
         )
@@ -740,6 +740,10 @@ class TestTheRetryPolicy:
             assert observer._attachments._retrier.stats is stats
             assert observer._queue._retrier is exporter._retrier
             assert observer._queue._grace_left == 100.0
+            # one breaker: the span export trips it, the trial ends only obey it
+            assert observer._attachments._retrier.breaker is exporter._retrier.breaker
+            assert exporter._retrier._trips_breaker
+            assert not observer._attachments._retrier._trips_breaker
         finally:
             observer.run_finished()
 
@@ -761,8 +765,8 @@ class TestTheRetryPolicy:
         self, monkeypatch, tmp_path: Path
     ) -> None:
         """End to end on a v4 receiver: the batch of final spans and the score batch each meet
-        the gateway's block page once, are posted again a window later, and land; the receipt
-        says so. Real posts to a local receiver, fake time."""
+        the gateway's refusal page once, are posted again after the schedule's first wait, and
+        land; the receipt says so. Real posts to a local receiver, fake time."""
         pytest.importorskip("opentelemetry.sdk")
         import functools
         from datetime import datetime, timedelta, timezone
@@ -829,8 +833,8 @@ class TestTheRetryPolicy:
         assert extra["langfuse.retried_requests"] == 2
         assert extra["langfuse.retries_recovered"] == 2
         assert extra["langfuse.retries_exhausted"] == 0
-        assert extra["langfuse.retry_wait_s"] == 130
-        assert time.sleeps == [65.0, 65.0]
+        assert extra["langfuse.retry_wait_s"] == 2
+        assert time.sleeps == [1.0, 1.0]
 
 
 class TestSecretManagerBoundary:
@@ -897,10 +901,11 @@ class TestPluginOptions:
             {"attach_timeout_s": 0},
             {"attach_budget_s": -1},
             {"model_name_rules": "rules.toml"},
-            {"retry": {"max_attempts": 0}},
+            {"retry": {"max_retries": -1}},
             {"retry": {"statuses": [200]}},
             {"retry": {"jitter": 2}},
-            {"retry": {"max_retries": 3}},
+            {"retry": {"delays_s": []}},
+            {"retry": {"max_attempts": 5}},
             "not a mapping",
             None,
         ],
