@@ -20,7 +20,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.dx.cli.main import cli
@@ -92,7 +92,7 @@ class TestFallbackFromConfig:
             ],
         )
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,
@@ -138,7 +138,7 @@ class TestFallbackFromConfig:
             )
         )
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,
@@ -161,7 +161,7 @@ class TestFallbackFromConfig:
         no factory installed, orchestrator builds a bare LLMClient."""
         config_path = _config_with_fallbacks(tmp_path, [])
         expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         captured: dict[str, Any] = {}
         monkeypatch.setattr(
             cli_main,

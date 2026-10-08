@@ -22,7 +22,7 @@ from click.testing import CliRunner
 
 import tolokaforge.core.orchestrator as orchestrator_module
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.logging import (
     _TOLOKAFORGE_ROOT_HANDLER_SENTINEL,
     LogFormat,
@@ -107,7 +107,7 @@ class _RecordingOrchestrator:
         return None
 
     def run(self, **_: object) -> Path:
-        return Path("/tmp/tolokaforge-stub-run").resolve()
+        return fidelity_clean_run_dir(Path("/tmp/tolokaforge-stub-run").resolve())
 
     def prepare_run(self, run_dir: Path, reset_queue: bool = False) -> dict:
         return {

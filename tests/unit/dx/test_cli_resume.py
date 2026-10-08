@@ -23,7 +23,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.engine_run_state import write_engine_run_state
 from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.resume import RunStateManager
@@ -67,7 +67,7 @@ def _seed_run_dir(
 ) -> RunStateManager:
     """Materialise a resumable run directory with a persisted engine
     state and a ``run_state.json`` reflecting *completed*."""
-    run_dir.mkdir(parents=True, exist_ok=True)
+    fidelity_clean_run_dir(run_dir)
     write_engine_run_state(
         run_dir,
         run_id=run_id,
@@ -102,7 +102,7 @@ class _RecordingOrchestrator:
     def run(self, **kwargs: Any) -> Path:
         type(self).captured["run_kwargs"] = kwargs
         output_dir = Path(kwargs["output_dir"])
-        output_dir.mkdir(parents=True, exist_ok=True)
+        fidelity_clean_run_dir(output_dir)
         return output_dir
 
 
