@@ -533,7 +533,8 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   expert's id, say), or the identity of `--user-model`, the model the agents worked on (an arena
   config stem reads under the arena's rules); none without either. The CLI writes a response with
   several content blocks as one stream event per block, each repeating the response's usage: the
-  events of one message id are one generation (`agent`, its position as `message_index`,
+  events of one message id are one generation (`analyzer`, so a view by observation name keeps
+  the automation agents' cost apart from the trial agents' `agent`; its position as `message_index`,
   `stream_events` the count) and the usage counts once. A generation runs from the event before it
   to its last event, a tool from the turn that called it to its result. Each generation states its
   share of what the CLI reported the run cost (`total_cost_usd`, shared out by the turns' tokens at
