@@ -17,6 +17,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import fidelity_clean_run_dir
 from tolokaforge.core.orchestrator import GradingCompleteness
 from tolokaforge.dx.cli.main import cli
 
@@ -79,7 +80,7 @@ def _invoke(
     env: dict[str, str] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     expected_dir = (tmp_path / "results" / "run").resolve()
-    expected_dir.mkdir(parents=True, exist_ok=True)
+    fidelity_clean_run_dir(expected_dir)
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
         cli_main,
