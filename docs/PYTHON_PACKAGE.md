@@ -4,6 +4,8 @@ Tolokaforge supports both CLI-driven runs and programmatic runs via Python impor
 
 ## Install
 
+Requires Python 3.12+.
+
 Core package:
 
 ```bash

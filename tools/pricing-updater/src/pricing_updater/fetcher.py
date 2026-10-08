@@ -8,7 +8,7 @@ tokens* which is the format used by ``tolokaforge_models/src/tolokaforge_models/
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -225,7 +225,7 @@ def write_pricing_json(
         "_meta": {
             "description": "Model pricing in USD per 1M tokens. Source: OpenRouter API.",
             "source_url": OPENROUTER_MODELS_URL,
-            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "updated_at": datetime.now(tz=UTC).isoformat(),
             "notes": "Run `uv run pricing-updater update` to refresh from OpenRouter API.",
         },
         "models": dict(sorted(merged.items())),

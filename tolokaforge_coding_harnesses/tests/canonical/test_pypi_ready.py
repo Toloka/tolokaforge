@@ -24,11 +24,11 @@ from __future__ import annotations
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
-import tomllib
 
 pytestmark = pytest.mark.canonical
 

@@ -29,7 +29,7 @@ def _find_repo_root() -> Path:
 REPO_ROOT = _find_repo_root()
 
 # Default lint/format target directories (matches Makefile LINT_DIRS)
-DEFAULT_LINT_DIRS = "tolokaforge tests scripts tools"
+DEFAULT_LINT_DIRS = "tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses"
 
 # ---------------------------------------------------------------------------
 # Environment helpers
@@ -199,7 +199,7 @@ async def lint_check(
 
     Args:
         paths: Space-separated paths to check.
-               Defaults to "tolokaforge tests scripts tools".
+               Defaults to the Makefile's LINT_DIRS.
     """
     _reload_dotenv()
 
@@ -222,7 +222,7 @@ async def lint_fix(
 
     Args:
         paths: Space-separated paths to fix.
-               Defaults to "tolokaforge tests scripts tools".
+               Defaults to the Makefile's LINT_DIRS.
     """
     _reload_dotenv()
 
@@ -247,7 +247,7 @@ async def format_code(
 
     Args:
         paths: Space-separated paths to format.
-               Defaults to "tolokaforge tests scripts tools".
+               Defaults to the Makefile's LINT_DIRS.
     """
     _reload_dotenv()
 
@@ -286,7 +286,7 @@ async def format_check(
 
     Args:
         paths: Space-separated paths to check.
-               Defaults to "tolokaforge tests scripts tools".
+               Defaults to the Makefile's LINT_DIRS.
     """
     _reload_dotenv()
 

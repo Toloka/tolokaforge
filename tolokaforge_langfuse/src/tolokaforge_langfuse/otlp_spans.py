@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from opentelemetry.sdk.resources import Resource
@@ -259,11 +259,11 @@ def _nanos(value: str | None, *, fallback: int | None = None) -> int | None:
         return fallback
     text = str(value)
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return fallback
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return int(parsed.timestamp() * 1_000_000_000)
 
 
@@ -293,7 +293,7 @@ def _span(
         if parent_id
         else None
     )
-    now = int(datetime.now(tz=timezone.utc).timestamp() * 1_000_000_000)
+    now = int(datetime.now(tz=UTC).timestamp() * 1_000_000_000)
     start = _nanos(body.get("startTime"), fallback=now)
     end = _nanos(body.get("endTime"), fallback=start)
     assert start is not None and end is not None  # the fallbacks above are never None

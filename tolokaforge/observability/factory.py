@@ -23,7 +23,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -221,7 +221,7 @@ def write_run_identity(
     document = RunIdentityDocument(
         run_id=identity.run_id,
         run_tag=identity.run_tag,
-        written_at=datetime.now(tz=timezone.utc).isoformat(),
+        written_at=datetime.now(tz=UTC).isoformat(),
         engine_version=engine_version or None,
     )
     path.write_text(document.model_dump_json(indent=1, exclude_none=True) + "\n", encoding="utf-8")

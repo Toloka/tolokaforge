@@ -2,7 +2,7 @@
 name = "rubric-calibrator"
 version = "0.1.0"
 description = "Calibrate rubric judges against golden human-labelled fixtures and gate trust on per-criterion agreement."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "tolokaforge",
     "pydantic>=2.0",

@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "tolokaforge-adapter-demo"
 version = "0.1.0"
 description = "Demo conversion adapter — canonical-test fixture, never shipped in the tolokaforge wheel"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 dependencies = ["tolokaforge"]
 

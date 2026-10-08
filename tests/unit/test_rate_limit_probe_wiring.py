@@ -27,7 +27,7 @@ What is load-bearing beyond the retry controller itself
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -754,7 +754,7 @@ class TestGoodputReachesMetrics:
     _AGENT = "openrouter/deepseek/deepseek-v3.2-exp"
     _USER = "openrouter/anthropic/claude-sonnet-4.6"
     _EPOCH = 1_700_000_000.0
-    _BUCKET = datetime(2023, 11, 14, 22, 13, tzinfo=timezone.utc)
+    _BUCKET = datetime(2023, 11, 14, 22, 13, tzinfo=UTC)
     """``1_699_999_980`` — the 30 s window ``_EPOCH`` falls in, as UTC."""
 
     def _runner(self, probe_stats: RateLimitProbeStats | None) -> TrialRunner:

@@ -37,11 +37,11 @@ PyPI. The published surface remains one ``tolokaforge`` wheel.
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-import tomllib
 from hatchling.builders.wheel import WheelBuilder
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name

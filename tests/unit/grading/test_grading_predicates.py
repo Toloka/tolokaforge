@@ -16,7 +16,7 @@ evaluator no longer calls answers for nothing.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import product
 from typing import Any
 
@@ -174,21 +174,21 @@ def test_the_table_answers_for_exactly_the_operators_a_predicate_may_bind() -> N
 @pytest.mark.parametrize(
     ("literal", "expected"),
     [
-        ("2026-03-01", datetime(2026, 3, 1, tzinfo=timezone.utc)),
-        ("2026-03-01T12:00:00Z", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
-        ("2026-03-01T12:00:00+00:00", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
+        ("2026-03-01", datetime(2026, 3, 1, tzinfo=UTC)),
+        ("2026-03-01T12:00:00Z", datetime(2026, 3, 1, 12, tzinfo=UTC)),
+        ("2026-03-01T12:00:00+00:00", datetime(2026, 3, 1, 12, tzinfo=UTC)),
         (
             "2026-03-01T12:00:00+02:00",
-            datetime(2026, 3, 1, 10, tzinfo=timezone.utc),
+            datetime(2026, 3, 1, 10, tzinfo=UTC),
         ),
-        ("2026-03-01T12:00:00", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
+        ("2026-03-01T12:00:00", datetime(2026, 3, 1, 12, tzinfo=UTC)),
         (
             "2026-03-01T12:00:00.123456Z",
-            datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc),
+            datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=UTC),
         ),
         (
             "2026-03-01T12:00:00.1Z",
-            datetime(2026, 3, 1, 12, 0, 0, 100000, tzinfo=timezone.utc),
+            datetime(2026, 3, 1, 12, 0, 0, 100000, tzinfo=UTC),
         ),
     ],
     ids=[
@@ -198,17 +198,16 @@ def test_the_table_answers_for_exactly_the_operators_a_predicate_may_bind() -> N
         "east-two-normalized-to-utc",
         "naive-read-as-utc",
         "microseconds",
-        "one-fractional-digit-padded",
+        "one-fractional-digit",
     ],
 )
 def test_date_comparison_key_normalizes_an_iso_shape(literal: str, expected: datetime) -> None:
     """Every accepted shape reads through the same UTC datetime.
 
-    Six rows span the policy: a date-only string is midnight UTC of that day;
+    The rows span the policy: a date-only string is midnight UTC of that day;
     the Z suffix and an explicit ``+00:00`` are the same instant; a naive
-    datetime reads as UTC; a non-UTC offset converts; a fractional second
-    passes through — including the one-digit shape Python 3.10's
-    ``fromisoformat`` would reject without the helper's padding.
+    datetime reads as UTC; a non-UTC offset converts; a fractional second of
+    any digit count reads as microseconds.
     """
     assert date_comparison_key(literal) == expected
 

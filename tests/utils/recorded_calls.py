@@ -13,7 +13,7 @@ being scored rather than the record's own shape.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from tolokaforge.core.models import (
@@ -24,7 +24,7 @@ from tolokaforge.core.models import (
     ToolExecutorIdentity,
 )
 
-_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def recorded_call(

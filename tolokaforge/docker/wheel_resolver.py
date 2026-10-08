@@ -75,6 +75,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,6 +85,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -241,61 +243,57 @@ def _hash_file(path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# pyproject.toml helpers (stdlib-only, no tomli)
+# pyproject.toml helpers
 # ---------------------------------------------------------------------------
+
+
+_UNPARSABLE_PYPROJECT_ERRORS = (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError)
+
+
+def _project_table(path: Path) -> dict[str, Any]:
+    """The ``[project]`` table of *path*; raises if the file is not readable UTF-8 TOML."""
+    project = tomllib.loads(path.read_text(encoding="utf-8")).get("project")
+    return project if isinstance(project, dict) else {}
 
 
 def _is_engine_pyproject(path: Path) -> bool:
     """``True`` if *path* is a ``pyproject.toml`` for the tolokaforge engine."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    in_project = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped == "[project]":
-            in_project = True
-            continue
-        if in_project and stripped.startswith("["):
-            break
-        if in_project:
-            m = re.match(r"""name\s*=\s*["']([^"']+)["']""", stripped)
-            if m and m.group(1) == _ENGINE_PKG:
-                return True
-    return False
+    return path.is_file() and _project_table(path).get("name") == _ENGINE_PKG
 
 
 def _read_pyproject_version(root: Path) -> str | None:
-    """Extract ``project.version`` from a ``pyproject.toml``."""
-    path = root / "pyproject.toml"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    in_project = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped == "[project]":
-            in_project = True
-            continue
-        if in_project and stripped.startswith("["):
-            break
-        if in_project:
-            m = re.match(r"""version\s*=\s*["']([^"']+)["']""", stripped)
-            if m:
-                return m.group(1)
-    return None
+    """``project.version`` from *root*'s ``pyproject.toml``; ``None`` if absent."""
+    version_value = _project_table(root / "pyproject.toml").get("version")
+    return version_value if isinstance(version_value, str) else None
 
 
-def _find_engine_source_root() -> Path | None:
-    """Walk up from this module's file looking for the engine checkout."""
-    candidate = Path(__file__).resolve()
-    for parent in candidate.parents:
+@dataclass(frozen=True)
+class _EngineSourceSearch:
+    """The engine checkout found walking up from this module, and the ancestors it skipped.
+
+    ``unparsable`` holds one ``"<path>: <error>"`` entry per ancestor ``pyproject.toml``
+    that could not be read as TOML; such a file counts as "not the engine".
+    """
+
+    root: Path | None
+    unparsable: tuple[str, ...] = ()
+
+
+def _find_engine_source_root() -> _EngineSourceSearch:
+    unparsable: list[str] = []
+    for parent in Path(__file__).resolve().parents:
         pyproj = parent / "pyproject.toml"
-        if pyproj.is_file() and _is_engine_pyproject(pyproj):
-            return parent
-    return None
+        try:
+            if _is_engine_pyproject(pyproj):
+                return _EngineSourceSearch(parent, tuple(unparsable))
+        except _UNPARSABLE_PYPROJECT_ERRORS as exc:
+            logger.warning(
+                "%s: skipping unparsable pyproject.toml while locating the engine checkout: %s",
+                pyproj,
+                exc,
+            )
+            unparsable.append(f"{pyproj}: {exc}")
+    return _EngineSourceSearch(None, tuple(unparsable))
 
 
 # ---------------------------------------------------------------------------
@@ -598,12 +596,15 @@ class LocalSourceWheelProvider(WheelProvider):
     priority = 10
 
     def provide(self, cache_dir: Path) -> WheelArtifact | None:
-        source_root = _find_engine_source_root()
+        search = _find_engine_source_root()
+        source_root = search.root
         if source_root is None:
             self.last_failure = (
                 f"no engine source tree walking up from {Path(__file__).parent} "
                 "(wheel-only install: source tree not present in site-packages)"
             )
+            if search.unparsable:
+                self.last_failure += "; skipped unparsable " + "; ".join(search.unparsable)
             return None
 
         ver = _read_pyproject_version(source_root) or "0.0.0"

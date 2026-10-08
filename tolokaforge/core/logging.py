@@ -15,7 +15,7 @@ import json
 import logging
 import sys
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, TextIO
@@ -315,7 +315,7 @@ class StructuredLogger:
         full_context = self._sanitize_extra(raw_context)
 
         log_entry = {
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "level": level,
             "module": self.name,
             "message": message,

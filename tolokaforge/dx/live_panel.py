@@ -30,7 +30,7 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, TextIO
@@ -312,7 +312,7 @@ class _StderrProbe:
             stack_lines = "".join(
                 f"    {frm.filename}:{frm.lineno} in {frm.name}\n" for frm in stack
             )
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             log_fh.write(f"{timestamp} | {caller_loc} | {repr(chunk)[:200]}\n{stack_lines}")
             log_fh.flush()
             return original_write(chunk)
@@ -842,7 +842,7 @@ def _render_boot_log_tail(
     lines: list[str] = []
     for record in tail:
         short_name = record.name.rsplit(".", 1)[-1]
-        stamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%H:%M:%S")
+        stamp = datetime.fromtimestamp(record.created, tz=UTC).strftime("%H:%M:%S")
         stamp = f"{stamp}.{int(record.msecs):03d}"
         lines.append(f"{stamp} | {short_name} | {record.getMessage()}")
     return Panel(
@@ -951,7 +951,7 @@ def _render_trial_log_tail(records: list[logging.LogRecord], *, width: int) -> R
         return Text("(no log records yet for this trial)", style="muted")
     lines: list[Text] = []
     for record in records[-_TRIAL_LOG_TAIL_MAX:]:
-        stamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%H:%M:%S")
+        stamp = datetime.fromtimestamp(record.created, tz=UTC).strftime("%H:%M:%S")
         line = f"{stamp}  {record.levelname}  {record.name}  {record.getMessage()}"
         if len(line) > width:
             line = line[: width - 1] + "…"

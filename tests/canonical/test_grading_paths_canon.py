@@ -25,7 +25,7 @@ No LLM, no network, no Docker: ``GradingEngine`` is built with no ``judge_model`
 and no ``task_dir``, so the judge and custom-checks paths never run.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -47,7 +47,7 @@ from tolokaforge.core.models import (
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
 # Fixed timestamps — construction only; they do not feed grading.
-_TS = datetime(2025, 1, 1, tzinfo=timezone.utc)
+_TS = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 def _trajectory(

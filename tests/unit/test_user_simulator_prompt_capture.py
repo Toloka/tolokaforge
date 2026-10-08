@@ -18,7 +18,7 @@ Uses ``provider="mock"`` to avoid any live API traffic.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -43,7 +43,7 @@ def test_llm_simulator_captures_system_prompt() -> None:
     )
     assert sim.last_system_prompt is None  # Not yet fired.
 
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     context = [Message(role=MessageRole.ASSISTANT, content="Hi!", ts=ts)]
 
     result = sim.reply(context)
@@ -60,7 +60,7 @@ def test_scripted_simulator_never_sets_last_system_prompt() -> None:
     sim = BuiltinUserSimulator(mode="scripted", scripted_flow=[{"user": "hello"}])
     assert sim.last_system_prompt is None
 
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     context = [Message(role=MessageRole.ASSISTANT, content="Hi!", ts=ts)]
 
     result = sim.reply(context)

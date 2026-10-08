@@ -16,7 +16,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -274,7 +274,7 @@ def test_file_artifact_writer_satisfies_protocol() -> None:
 
 
 def _sample_trajectory() -> Trajectory:
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     return Trajectory(
         task_id="artifacts-test",
         trial_index=0,

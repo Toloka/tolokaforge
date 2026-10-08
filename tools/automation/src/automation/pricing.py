@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import math
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -102,7 +102,7 @@ def _insert(pricing_file: Path, name: str, entry: dict) -> None:
     data = json.loads(pricing_file.read_text())
     data.setdefault("models", {})[name] = entry
     data["models"] = dict(sorted(data["models"].items()))
-    data.setdefault("_meta", {})["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+    data.setdefault("_meta", {})["updated_at"] = datetime.now(tz=UTC).isoformat()
     pricing_file.write_text(json.dumps(data, indent=2) + "\n")
 
 

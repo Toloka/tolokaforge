@@ -8,10 +8,10 @@ milestone's byte-identical acceptance test.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -352,11 +353,6 @@ def test_no_textual_module_in_dx_extras() -> None:
     must not carry it — a regression here would pull ~30 MB of terminal
     library into every ``pip install 'tolokaforge[dx]'`` for no consumer.
     """
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10 fallback
-        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-
     pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
     with pyproject.open("rb") as handle:
         parsed = tomllib.load(handle)

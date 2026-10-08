@@ -23,7 +23,7 @@ Run with:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -41,7 +41,7 @@ pytestmark = [
     pytest.mark.llm,
 ]
 
-_TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+_TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 _OPENING = (
     "Hi, this is Alex Quill, customer number 55001234. I just wanted to check "

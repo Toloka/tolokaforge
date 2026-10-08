@@ -32,7 +32,7 @@ import logging
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -504,7 +504,7 @@ def envelope(event_type: str, body: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": uuid.uuid4().hex,
         "type": event_type,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "body": body,
     }
 
@@ -546,7 +546,7 @@ def _end_from_latency(started: str | None, latency: object) -> str | None:
     if not started or latency in (None, "") or not isinstance(latency, (int, float, str)):
         return None
     try:
-        base = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        base = datetime.fromisoformat(started)
         ended: str = (base + timedelta(seconds=float(latency))).isoformat()
         return ended.replace("+00:00", "Z") if started.endswith("Z") else ended
     except (TypeError, ValueError):

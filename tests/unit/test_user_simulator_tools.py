@@ -5,7 +5,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from tolokaforge.core.llm import BuiltinUserSimulator, GenerationResult
 from tolokaforge.core.models import Message, MessageRole
@@ -36,7 +36,7 @@ def test_user_simulator_tools():
         Message(
             role=MessageRole.ASSISTANT,
             content="Hi! How can I help?",
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
         )
     ]
 

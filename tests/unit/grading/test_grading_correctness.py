@@ -10,7 +10,7 @@ PROJECT RULES: Tests use real behavior, no mocks.
 """
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -1294,8 +1294,8 @@ class TestCoreEngineTranscriptComponent:
             Trajectory(
                 task_id="transcript_component",
                 trial_index=0,
-                start_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
-                end_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                start_ts=datetime(2026, 1, 1, tzinfo=UTC),
+                end_ts=datetime(2026, 1, 1, tzinfo=UTC),
                 messages=messages,
             ),
             {},

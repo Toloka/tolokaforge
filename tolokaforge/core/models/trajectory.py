@@ -10,7 +10,7 @@ census (:class:`RateLimitProbeRoleMetrics`,
 """
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal, Self, get_args
 
@@ -206,7 +206,7 @@ class Message(BaseModel):
     # routing decision behind it. Set on assistant messages produced by an
     # OpenRouter-routed call; None on every other message and every other route.
     openrouter_generation_id: str | None = None
-    ts: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    ts: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
     @field_validator("reasoning", mode="before")
     @classmethod

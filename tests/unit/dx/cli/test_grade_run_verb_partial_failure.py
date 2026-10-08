@@ -12,7 +12,7 @@ without stopping mid-batch.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -60,7 +60,7 @@ def _make_stored_uri(tmp_path: Path, store: LocalDiskBundleStore) -> str:
 def _write_trajectory(
     run_dir: Path, task_id: str, trial_idx: str, snapshot_status: SnapshotStatus
 ) -> None:
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     trajectory = Trajectory(
         task_id=task_id,
         trial_index=int(trial_idx),

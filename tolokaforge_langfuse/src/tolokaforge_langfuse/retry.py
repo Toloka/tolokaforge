@@ -37,7 +37,7 @@ import time
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from enum import Enum
 from typing import Any, Final
@@ -84,8 +84,8 @@ def parse_retry_after(value: str | None, *, now: datetime | None = None) -> floa
     except (TypeError, ValueError, IndexError):
         return None
     if at.tzinfo is None:
-        at = at.replace(tzinfo=timezone.utc)
-    return max((at - (now or datetime.now(timezone.utc))).total_seconds(), 0.0)
+        at = at.replace(tzinfo=UTC)
+    return max((at - (now or datetime.now(UTC))).total_seconds(), 0.0)
 
 
 @dataclass(frozen=True)

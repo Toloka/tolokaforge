@@ -10,7 +10,7 @@ A silent drift fails this test.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -51,7 +51,7 @@ _EXPECTED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
 
 
 def _full_trajectory() -> Trajectory:
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     return Trajectory(
         task_id="writer-shape-full",
         trial_index=7,
