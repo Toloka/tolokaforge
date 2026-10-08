@@ -139,6 +139,9 @@ _PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 NAME_TRIAL = "trial"
 NAME_TRANSCRIPT = "transcript"
 NAME_AGENT = "agent"
+# an agent transcript's model calls: an automation agent working on the arena, not in it, so a
+# view by observation name keeps its cost apart from the trial agents'
+NAME_ANALYZER = "analyzer"
 NAME_USER_SIMULATOR = "user simulator"
 NAME_JUDGE = "judge"
 NAME_GRADING = "grading"

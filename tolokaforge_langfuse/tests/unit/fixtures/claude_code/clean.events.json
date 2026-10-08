@@ -90,7 +90,7 @@
       "id": "622c29ced67f5f8c",
       "traceId": "ca2169a027825e0d80337532cab6f80f",
       "parentObservationId": "cdb1c2f21e835547",
-      "name": "agent",
+      "name": "analyzer",
       "startTime": "2026-09-20T10:00:00Z",
       "endTime": "2026-09-20T10:00:01Z",
       "input": [],
@@ -138,7 +138,7 @@
       "id": "3fcf98a78a9e54a7",
       "traceId": "ca2169a027825e0d80337532cab6f80f",
       "parentObservationId": "cdb1c2f21e835547",
-      "name": "agent",
+      "name": "analyzer",
       "startTime": "2026-09-20T10:00:02Z",
       "endTime": "2026-09-20T10:00:03Z",
       "input": [

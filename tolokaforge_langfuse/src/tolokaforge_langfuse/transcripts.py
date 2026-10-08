@@ -25,7 +25,7 @@ Three steps, in order, each usable on its own:
 
 ``build_events``
     The transcript as ingestion bodies: the trace, its root (an ``agent`` observation), one
-    generation per assistant turn, one ``tool`` observation per tool result. The same bodies the
+    ``analyzer`` generation per assistant turn, one ``tool`` observation per tool result. The same bodies the
     trial projection builds, so :mod:`tolokaforge_langfuse.otlp_spans` turns them into v4 spans
     unchanged. The prompt the agent was given is not in its output, so it is the caller's to pass
     (``TranscriptOptions.input``); it becomes the trace's input.
@@ -78,7 +78,7 @@ from tolokaforge_langfuse.model_names import (
 from tolokaforge_langfuse.vocabulary import (
     EVENT_AGENT,
     EVENT_TOOL,
-    NAME_AGENT,
+    NAME_ANALYZER,
     NAME_TRANSCRIPT,
     SOURCE_TRANSCRIPT,
     TRANSCRIPT_CALLER_PREFIXES,
@@ -811,7 +811,7 @@ def build_events(
             "id": ids.observation(trace_id, "gen", turn.index),
             "traceId": trace_id,
             "parentObservationId": root_id,
-            "name": NAME_AGENT,
+            "name": NAME_ANALYZER,
             "startTime": started,
             "endTime": turn.timestamp or started,
             "input": context[-CONTEXT_MESSAGES:],
