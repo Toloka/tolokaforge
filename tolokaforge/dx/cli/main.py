@@ -76,6 +76,7 @@ from tolokaforge.core.orchestrator import (
     resolve_run_directory,
 )
 from tolokaforge.core.output.artifacts import RedactedBundleError
+from tolokaforge.core.output.measurement_fidelity import check_run_bundle
 from tolokaforge.core.output_writer import GRADE_FILENAME, METRICS_FILENAME
 from tolokaforge.core.project_loader import (
     construct_config,
@@ -211,6 +212,7 @@ class _GroupedCommandsGroup(click.Group):
         "prepare": "Runs",
         "worker": "Runs",
         "status": "Runs",
+        "check-run": "Runs",
         "analyze": "Runs",
         "browse": "Runs",
         "curate": "Runs",
@@ -498,6 +500,43 @@ _UNGRADEABLE_TRIALS_NAMED = 5
 """How many ungradeable trial ids the error line names before it stops counting
 and states the total. A lossy run can lose hundreds; the ids are all in
 ``aggregate.json`` and the operator needs the shape, not the list."""
+
+
+_FIDELITY_VIOLATIONS_NAMED = 10
+"""How many violations the console names before it states the total.
+
+A systematically broken write site produces one violation per trial, and the
+operator needs the shape and the rule id, not several hundred lines. The full
+list is one ``tolokaforge check-run`` away.
+"""
+
+
+def _fail_on_measurement_fidelity(run_dir: Path) -> None:
+    """Exit ``3`` when the bundle reports a number nothing measured.
+
+    Runs ahead of the completeness gates and outranks them: those report what
+    the run honestly failed to measure, this reports what it measured
+    dishonestly. A run can be complete and still be wrong, and the wrong
+    number is the one that reaches a conclusion. See
+    :mod:`tolokaforge.core.output.measurement_fidelity` for the rules and
+    docs/CLI.md for the precedence.
+    """
+    violations = check_run_bundle(run_dir)
+    if not violations:
+        return
+    named = violations[:_FIDELITY_VIOLATIONS_NAMED]
+    console.print(
+        f"[red]Run reports unmeasured numbers:[/red] {len(violations)} "
+        f"measurement-fidelity violation{'' if len(violations) == 1 else 's'} in "
+        f"{run_dir}. The bundle's scores and denominators do not describe what ran."
+    )
+    for violation in named:
+        console.print(f"  [red]{escape(str(violation))}[/red]")
+    trailing = len(violations) - len(named)
+    if trailing:
+        console.print(f"  [red]… and {trailing} more[/red]")
+    console.print("Run 'tolokaforge check-run <run-dir>' for the full list.")
+    raise SystemExit(3)
 
 
 def _fail_on_completeness_gates(
@@ -1019,6 +1058,7 @@ def run(
             stopped_reason=stopped_reason,
         )
     emit_artifact_path(output_dir)
+    _fail_on_measurement_fidelity(output_dir if output_dir is not None else run_dir)
     _fail_on_completeness_gates(
         orchestrator.grading_completeness,
         fail_on_zero_coverage=(
@@ -2064,6 +2104,29 @@ def _format_eta(seconds: float | None) -> str:
     if m > 0:
         return f"{m}m {s}s"
     return f"{s}s"
+
+
+@cli.command(name="check-run")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def check_run(run_dir: Path):
+    """Check a finished run bundle for numbers nothing measured.
+
+    The same rules `tolokaforge run` gates on, over a bundle that already
+    exists — a shard collected from CI, a merged bundle, or a run from before
+    the gate shipped. Exits 3 with one line per violation, 0 when every number
+    in the bundle is backed by something that happened.
+    """
+    violations = check_run_bundle(run_dir)
+    if not violations:
+        console.print(f"[green]No measurement-fidelity violations[/green] in {run_dir}")
+        return
+    console.print(
+        f"[red]{len(violations)} measurement-fidelity "
+        f"violation{'' if len(violations) == 1 else 's'}[/red] in {run_dir}"
+    )
+    for violation in violations:
+        console.print(f"  [red]{escape(str(violation))}[/red]")
+    raise SystemExit(3)
 
 
 @cli.command()

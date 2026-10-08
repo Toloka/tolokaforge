@@ -21,7 +21,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.orchestrator import GradingCompleteness
 from tolokaforge.dx.cli.main import cli
 
@@ -131,7 +131,7 @@ class TestRunStdoutContract:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
 
         monkeypatch.setattr(
             cli_main,
@@ -155,7 +155,7 @@ class TestRunStdoutContract:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
 
         monkeypatch.setattr(
             cli_main,
@@ -225,7 +225,7 @@ class TestRunStdoutContract:
         make the failure less diagnosable than the success.
         """
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
 
         monkeypatch.setattr(
             cli_main,
@@ -256,7 +256,7 @@ class TestRunStdoutContract:
         """The discriminating half: a run reporting attempts and no refusal is
         not failed by the gate, so exit 1 above is the count and not the wiring."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
 
         monkeypatch.setattr(
             cli_main,
@@ -281,7 +281,7 @@ class TestRunStdoutContract:
         """A lossy run can lose hundreds of trials, and the ids are all in
         ``aggregate.json``; the console line carries the shape, not the list."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         refused = tuple(f"TASK-A:{index}" for index in range(8))
 
         monkeypatch.setattr(
@@ -313,7 +313,7 @@ class TestRunStdoutContract:
         Digit-leading brackets like ``[0]`` stay literal on their own, so only
         a letter-leading bracket discriminates."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
 
         monkeypatch.setattr(
             cli_main,
@@ -350,7 +350,7 @@ class TestRunCompletenessGates:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -383,7 +383,7 @@ class TestRunCompletenessGates:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -420,7 +420,7 @@ class TestRunCompletenessGates:
         still exits ``0``, preserving the shipped "infra aborts do not fail
         the run" contract."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -449,7 +449,7 @@ class TestRunCompletenessGates:
     ) -> None:
         """A mixed run where some grades errored but not all does not fire the gate."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -483,7 +483,7 @@ class TestRunCompletenessGates:
         must not fire ``--fail-on-zero-judge-graded``: the failure mode is a judge
         that errored on scoring attempts, not the absence of scoring."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -516,7 +516,7 @@ class TestRunCompletenessGates:
         """With both flags set and ``measured_trials == 0``, only ``zero_coverage``
         fires — ``zero_judge_graded`` cannot be true when nothing was scored."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -557,7 +557,7 @@ class TestRunCompletenessGates:
         """Exit 2 dominates exit 1: with ``--fail-on-zero-coverage`` set and both
         ``zero_coverage`` and ``ungradeable > 0``, the zero-coverage line fires."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -592,7 +592,7 @@ class TestRunCompletenessGates:
         """Exit 2 dominates exit 1: with ``--fail-on-zero-judge-graded`` set,
         ``zero_judge_graded`` fires ahead of any ``ungradeable > 0`` state."""
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
@@ -644,7 +644,7 @@ class TestRunCompletenessGates:
             )
         )
         expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
-        expected_dir.mkdir(parents=True)
+        fidelity_clean_run_dir(expected_dir)
         monkeypatch.setattr(
             cli_main,
             "Orchestrator",
