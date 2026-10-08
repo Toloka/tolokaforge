@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fake_time import FakeTime
@@ -178,7 +178,7 @@ class TestTheSchedule:
         assert time.sleeps == [45.0, 45.0]
 
     def test_a_retry_after_given_as_a_date(self) -> None:
-        now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 10, 7, 12, 0, 0, tzinfo=UTC)
         later = (now + timedelta(seconds=20)).strftime("%a, %d %b %Y %H:%M:%S GMT")
         assert parse_retry_after(later, now=now) == 20.0
         assert parse_retry_after("12") == 12.0

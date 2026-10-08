@@ -746,7 +746,7 @@ class TestTheRetryPolicy:
         accepts after them. The retries and the run-end flush share one fake time. Returns the
         receipt, the span posts, the ingestion bodies and the fake time."""
         import functools
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         import parity_bundle as pb
         from fake_time import FakeTime
@@ -776,7 +776,7 @@ class TestTheRetryPolicy:
                 return answers.pop(0) if answers else (207, b'{"successes": [], "errors": []}')
             return (404, b"")
 
-        started = datetime(2026, 10, 7, 10, 0, tzinfo=timezone.utc)
+        started = datetime(2026, 10, 7, 10, 0, tzinfo=UTC)
 
         class _Done:
             status = "completed"
