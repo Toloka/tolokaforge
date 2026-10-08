@@ -38,7 +38,7 @@ from collections import Counter, deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -810,8 +810,7 @@ class OTelTrialObserver:
         if state is None:
             state = _TrialState(
                 identity=identity,
-                started_at=_as_utc(getattr(trajectory, "start_ts", None))
-                or datetime.now(tz=timezone.utc),
+                started_at=_as_utc(getattr(trajectory, "start_ts", None)) or datetime.now(tz=UTC),
             )
         status = getattr(trajectory, "status", None)
         status_value = _enum_value(status) if trajectory is not None else "error"
@@ -825,8 +824,7 @@ class OTelTrialObserver:
             user_id=self._user_id(state),
             identity=identity,
             error=error,
-            finished_at=_as_utc(getattr(trajectory, "end_ts", None))
-            or datetime.now(tz=timezone.utc),
+            finished_at=_as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=UTC),
         )
         with self._states_lock:
             self._persist[identity.trace_id] = context
@@ -886,7 +884,7 @@ class OTelTrialObserver:
         }
         for key, value in metadata.items():
             attributes[f"langfuse.trace.metadata.{key}"] = _attribute_value(value)
-        end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=timezone.utc)
+        end = _as_utc(getattr(trajectory, "end_ts", None)) or datetime.now(tz=UTC)
         self._emit(
             name=NAME_TRIAL,
             identity=identity,
@@ -1299,7 +1297,7 @@ class OTelTrialObserver:
                 )
                 if context.error:
                     reason = f"{reason}: {context.error}"
-            started = context.started_at or datetime.now(tz=timezone.utc)
+            started = context.started_at or datetime.now(tz=UTC)
             # the trace's duration is its root's duration on this receiver, so a trial that died
             # in the fifth minute of a four-hour run must not be dated as a four-hour trace
             ended = context.finished_at or started
@@ -1368,7 +1366,7 @@ class OTelTrialObserver:
             if state is None:
                 state = _TrialState(
                     identity=identity,
-                    started_at=datetime.now(tz=timezone.utc),
+                    started_at=datetime.now(tz=UTC),
                     tags=(HARNESS_TAG, SOURCE_TAG, *self._tags),
                 )
                 self._states[identity.trace_id] = state
@@ -1495,7 +1493,7 @@ class OTelTrialObserver:
             if parent_id
             else None
         )
-        end_dt = _as_utc(end) or datetime.now(tz=timezone.utc)
+        end_dt = _as_utc(end) or datetime.now(tz=UTC)
         start_dt = _as_utc(start) or end_dt
         if start_dt > end_dt:
             start_dt = end_dt
@@ -1697,7 +1695,7 @@ def _attribute_value(value: Any) -> Any:
 def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _nanos(value: datetime) -> int:

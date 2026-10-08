@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -140,7 +140,7 @@ def _agent_turn() -> list[Message]:
         Message(
             role=MessageRole.ASSISTANT,
             content=AGENT_GREETING,
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
         )
     ]
 
@@ -335,7 +335,7 @@ class TestARefusedTurnCountsAsOurDefect:
         decision = classify_loop_error(excinfo.value, ())
         assert decision.reason is TerminationReason.ERROR
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         trajectory = Trajectory(
             task_id="t",
             trial_index=0,

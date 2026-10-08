@@ -43,7 +43,7 @@ suffix is as much a change as a missing description is.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +65,7 @@ from tolokaforge.core.models import (
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
-_TIMESTAMP = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_TIMESTAMP = datetime(2026, 1, 1, tzinfo=UTC)
 
 _TRAJECTORY = Trajectory(
     task_id="state-hash-block-typing",

@@ -44,6 +44,7 @@ from typing import Any
 import pytest
 
 from tests.utils.docker_helpers import is_docker_daemon_available
+from tests.utils.ruff_targets import REPO_ROOT, per_file_target_versions
 from tolokaforge.core.models import TrialStatus
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.tools.registry import ToolResult
@@ -57,7 +58,11 @@ from tolokaforge_coding_harnesses import (
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker, pytest.mark.requires_docker]
 
-IMAGE = "python:3.12-slim"
+# The proxy runs on the task image's python3; this is the lowest one it supports.
+_PROXY_PYTHON = per_file_target_versions()[
+    MIDDLEWARE_PROXY_SCRIPT.relative_to(REPO_ROOT).as_posix()
+]
+IMAGE = f"python:{_PROXY_PYTHON}-slim"
 STUB_PORT = 9101
 CONTAINER_LOGS_DIR = "/logs"
 UPSTREAM_RECORD_CONTAINER_PATH = f"{CONTAINER_LOGS_DIR}/upstream_requests.ndjson"

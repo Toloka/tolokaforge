@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -319,8 +319,8 @@ def _base_trajectory(*, grading_error: str | None = None) -> Trajectory:
     return Trajectory(
         task_id="task_x",
         trial_index=0,
-        start_ts=datetime.now(tz=timezone.utc),
-        end_ts=datetime.now(tz=timezone.utc),
+        start_ts=datetime.now(tz=UTC),
+        end_ts=datetime.now(tz=UTC),
         messages=[Message(role=MessageRole.USER, content="hello")],
         metrics=Metrics(),
         grade=(

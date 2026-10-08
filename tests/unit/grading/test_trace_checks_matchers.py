@@ -744,25 +744,6 @@ def test_a_valid_date_literal_is_admitted_at_load() -> None:
         assert loaded.date_gte == literal
 
 
-def test_a_Z_suffix_datetime_parses_on_python_3_10() -> None:
-    """The one behaviour ``date_comparison_key``'s normalization exists for.
-
-    ``datetime.fromisoformat("2026-03-01T12:00:00Z")`` raises on Python 3.10 —
-    Z-suffix support landed in 3.11 — so the helper must rewrite the trailing
-    ``Z`` before it hands the literal off. On 3.11+ this is a correctness
-    assertion rather than a portability one; the test runs the same on both.
-    """
-    from datetime import datetime, timezone
-
-    from tolokaforge.core.grading.predicates import date_comparison_key
-
-    plain = date_comparison_key("2026-03-01T12:00:00Z")
-    assert plain == datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    fractional = date_comparison_key("2026-03-01T12:00:00.123456Z")
-    assert fractional == datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc)
-
-
 # --------------------------------------------------------------------------
 # The engine a pattern runs on: the block's, unless its predicate or bound value
 # names its own. ``\d`` against an Arabic-Indic digit is the probe, because both

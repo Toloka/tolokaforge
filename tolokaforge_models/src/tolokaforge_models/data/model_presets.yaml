@@ -332,7 +332,8 @@ presets:
   anthropic_claude_sonnet_5_5:
     match:
       - "anthropic/claude-sonnet-5.5*"
-      - "*claude-sonnet-5.5*"
+      - "claude-sonnet-5.5*"
+      - "*/claude-sonnet-5.5*"
     content_policy: anthropic
     reasoning_codec: anthropic
     cache_policy: anthropic_ephemeral

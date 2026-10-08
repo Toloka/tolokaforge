@@ -6,7 +6,6 @@ import logging
 import pickle
 import uuid
 from pathlib import Path
-from typing import TypeVar
 
 import click
 import litellm
@@ -97,10 +96,7 @@ def _invoke(command: list[str], config: Path, tmp_path: Path):
     return CliRunner().invoke(cli, [args[0], "--config", str(config), *args[1:]])
 
 
-E = TypeVar("E", bound=Exception)
-
-
-def _refusal(result, error_type: type[E]) -> E:
+def _refusal[E: Exception](result, error_type: type[E]) -> E:
     """The typed error behind a command's one-line `Error:` refusal."""
     assert result.exit_code == 1, result.output
     assert "Traceback" not in result.output, result.output

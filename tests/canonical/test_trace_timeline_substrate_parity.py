@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -352,7 +352,7 @@ def _wrapped_failing_tool() -> BuiltinGenericToolWrapper:
 
 def _wire_round_trip(messages: list[Message]) -> list[Message]:
     """The message view as ``GradeTrial`` receives it on the runner substrate."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     payload = encode_transcript_wire(
         Trajectory(
             task_id="trace_timeline_parity",

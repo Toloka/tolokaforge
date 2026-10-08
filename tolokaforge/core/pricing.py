@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -109,7 +109,7 @@ class PricingTableMetadata:
         """How long ago the table was fetched, or ``None`` when it does not say."""
         if self.updated_at is None:
             return None
-        return datetime.now(timezone.utc) - self.updated_at
+        return datetime.now(UTC) - self.updated_at
 
 
 def pricing_table_metadata(path: Path | None = None) -> PricingTableMetadata:
@@ -138,7 +138,7 @@ def pricing_table_metadata(path: Path | None = None) -> PricingTableMetadata:
             parsed = None
         else:
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
     return PricingTableMetadata(
         source_url=source if isinstance(source, str) else None, updated_at=parsed
     )

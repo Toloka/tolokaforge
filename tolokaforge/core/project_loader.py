@@ -34,7 +34,7 @@ import re
 import warnings
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 import yaml
 from pydantic import BaseModel
@@ -60,12 +60,10 @@ from tolokaforge.core.unknown_keys import suggest_closest_field
 
 # ── Config construction ─────────────────────────────────────────────────
 
-_ConfigT = TypeVar("_ConfigT", bound=BaseModel)
 
-
-def construct_config(
-    model: type[_ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
-) -> _ConfigT:
+def construct_config[ConfigT: BaseModel](
+    model: type[ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
+) -> ConfigT:
     """Construct a Project-layer config model, warning on each unknown
     top-level key before the model's ``extra="ignore"`` config drops it.
 

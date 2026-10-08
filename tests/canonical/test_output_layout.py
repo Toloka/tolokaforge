@@ -45,7 +45,7 @@ Spot-checks (content — not full snapshot; that lives in
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -131,7 +131,7 @@ def _trajectory(task_id: str, trial_index: int) -> Trajectory:
     therefore takes only the identifiers; the per-trial prompts are
     handed to ``write_prompts`` directly inside :func:`_drive_trial`.
     """
-    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     return Trajectory(
         task_id=task_id,
         trial_index=trial_index,
@@ -321,12 +321,8 @@ def test_trajectory_yaml_does_not_carry_prompts(tmp_path: Path) -> None:
     traj_yaml = tmp_path / "trials" / "task_A" / "0" / "trajectory.yaml"
     data = yaml.safe_load(traj_yaml.read_text())
 
-    assert (
-        "system_prompt" not in data
-    ), "trajectory.yaml must not carry the agent system prompt — moved to prompts.yaml"
-    assert (
-        "user_system_prompt" not in data
-    ), "trajectory.yaml must not carry the user simulator prompt — moved to prompts.yaml"
+    for key in ("system_prompt", "user_system_prompt"):
+        assert key not in data, f"trajectory.yaml carries {key}; it belongs in prompts.yaml"
     # ``simulator_schema_version`` stays — it's metadata about the
     # message-trace shape, not a prompt itself.
     assert data["simulator_schema_version"] == 4

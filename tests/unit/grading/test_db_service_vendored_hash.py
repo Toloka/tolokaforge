@@ -17,7 +17,7 @@ the vendored copy goes, leaving this as a one-implementation check.
 from __future__ import annotations
 
 import inspect
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -69,7 +69,7 @@ _SCALARS = st.one_of(
     _NUMERIC_STRINGS.map(lambda s: f" {s} "),
     st.sampled_from(["007", "-0", "+5", ".5", "5.", "1e3", "0.0", "\x00tf-num:5", "\x00x"]),
     st.text(max_size=8),
-    st.datetimes(timezones=st.none() | st.just(timezone.utc)),
+    st.datetimes(timezones=st.none() | st.just(UTC)),
 )
 
 _VALUES = st.recursive(
@@ -159,7 +159,7 @@ def test_the_vendored_filter_is_cores(
         pytest.param({"t": [{"x": "\x00tf-num:5"}, {"x": 5}]}, None, id="reserved-prefix"),
         pytest.param({"ü": [{"ключ": "значение", "数": 1.5}]}, None, id="unicode-keys"),
         pytest.param({"t": [{"a": [[1, 2.0], {"b": None}]}]}, None, id="nested-lists"),
-        pytest.param({"t": [{"at": datetime(2026, 1, 1, tzinfo=timezone.utc)}]}, None, id="dt"),
+        pytest.param({"t": [{"at": datetime(2026, 1, 1, tzinfo=UTC)}]}, None, id="dt"),
         pytest.param({"t": [{"x": float("nan")}, {"y": float("inf")}]}, None, id="non-finite"),
     ],
 )

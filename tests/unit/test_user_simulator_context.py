@@ -29,7 +29,7 @@ Uses a stub client capturing ``generate`` kwargs — no live API traffic.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -39,7 +39,7 @@ from tolokaforge.core.models import Message, MessageRole, ModelConfig
 
 pytestmark = pytest.mark.unit
 
-_TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+_TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 class _CapturingClient:

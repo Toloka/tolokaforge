@@ -4,6 +4,7 @@ environment, the project check and the attachment step (ADR-0047)."""
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -326,7 +327,7 @@ class TestTheLiveGate:
         self, tmp_path: Path
     ) -> None:
         pytest.importorskip("opentelemetry.sdk")
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from tolokaforge.core.models import ToolCall
         from tolokaforge.observability.observer import TrialIdentity
@@ -340,7 +341,7 @@ class TestTheLiveGate:
             )
         )
         observer, run = build_trial_observer(config, engine_run_id="run-1", output_dir=tmp_path)
-        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        now = datetime(2026, 10, 1, tzinfo=UTC)
         trial = TrialIdentity(
             run_id=run.run_id, task_id="T-1", trial_index=0, attempt_id=0, run_tag=run.run_tag
         )
@@ -745,7 +746,7 @@ class TestTheRetryPolicy:
         accepts after them. The retries and the run-end flush share one fake time. Returns the
         receipt, the span posts, the ingestion bodies and the fake time."""
         import functools
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         import parity_bundle as pb
         from fake_time import FakeTime
@@ -775,7 +776,7 @@ class TestTheRetryPolicy:
                 return answers.pop(0) if answers else (207, b'{"successes": [], "errors": []}')
             return (404, b"")
 
-        started = datetime(2026, 10, 7, 10, 0, tzinfo=timezone.utc)
+        started = datetime(2026, 10, 7, 10, 0, tzinfo=UTC)
 
         class _Done:
             status = "completed"

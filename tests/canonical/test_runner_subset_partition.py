@@ -39,6 +39,7 @@ import ast
 import json
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -399,15 +400,7 @@ def test_declared_excluded_files_exist() -> None:
 
 
 def _load_pyproject() -> dict[str, Any]:
-    """Read the repo-root ``pyproject.toml``.
-
-    Uses ``tomllib`` on 3.11+, ``tomli`` on 3.10 (already a transitive dev
-    dependency)."""
-    try:
-        import tomllib  # type: ignore[import-not-found]
-    except ModuleNotFoundError:  # Python 3.10 branch
-        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-
+    """Read the repo-root ``pyproject.toml``."""
     with (REPO_ROOT / "pyproject.toml").open("rb") as f:
         return tomllib.load(f)
 

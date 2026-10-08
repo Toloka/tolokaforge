@@ -16,7 +16,7 @@ and an :class:`InMemoryConductor` stands in for the (never-invoked) trial body.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -219,8 +219,8 @@ class TestErrorStageIsAbsentOffTheProvisionFailurePath:
         trajectory = Trajectory(
             task_id="task-completed",
             trial_index=0,
-            start_ts=datetime.now(tz=timezone.utc),
-            end_ts=datetime.now(tz=timezone.utc),
+            start_ts=datetime.now(tz=UTC),
+            end_ts=datetime.now(tz=UTC),
             status=TrialStatus.COMPLETED,
             termination_reason=TerminationReason.AGENT_DONE,
             messages=[Message(role=MessageRole.USER, content="hello")],

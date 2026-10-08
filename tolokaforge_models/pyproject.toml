@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "tolokaforge-models"
 version = "1.8.0"
 description = "Model data and per-model policy subclasses for tolokaforge."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "Renaud de la Gueronniere"},
@@ -19,8 +19,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
