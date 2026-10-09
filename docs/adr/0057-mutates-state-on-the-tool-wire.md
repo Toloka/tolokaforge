@@ -1,6 +1,6 @@
 # 0057. Carry `mutates_state` on the tool wire schema, declared by the tool's author
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-09
 - **Deciders:** — (proposed by @rsmtnn)
 - **Supersedes:** —

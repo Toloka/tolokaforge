@@ -1479,6 +1479,11 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             "description": tool.get("description", f"Tool: {name}"),
             "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
         }
+        # ADR-0057: the server's ``readOnlyHint`` is the author's declaration; a tool
+        # carrying no hint stays undeclared rather than defaulting either way.
+        read_only = (tool.get("annotations") or {}).get("readOnlyHint")
+        if read_only is not None:
+            schemas[name]["mutates_state"] = not read_only
     if not schemas:
         raise RuntimeError(
             f"MCP server {mcp_server_path} returned no tools from tools/list "
