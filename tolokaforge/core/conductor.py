@@ -1507,10 +1507,12 @@ class InProcessConductor:
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
     ) -> str:
+        capabilities = self.agent_client.capabilities
         return build_system_prompt(
             task=task,
             task_dir=task_dir,
-            default_prompt_contract=self.agent_client.capabilities.default_agent_prompt_contract,
+            default_prompt_contract=capabilities.default_agent_prompt_contract,
+            observation_window=capabilities.observation_window,
         )
 
 

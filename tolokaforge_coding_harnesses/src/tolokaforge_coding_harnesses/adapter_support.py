@@ -276,10 +276,16 @@ class CodingHarnessAdapterMixin:
         """Batching sibling of :meth:`emit_harness_tool_schema`.
 
         The parameter is a ``commands`` array rather than a ``command`` string,
-        so a turn carries as many shell commands as the model has independent
-        work for. Each command still runs as its own ``docker exec`` against a
-        fresh shell, exactly as the single-command tool does — the array changes
-        how many run per turn, not how any one of them behaves.
+        so a turn carries every shell command the model can choose without
+        first reading another's output. Each command still runs as its own
+        ``docker exec`` against a fresh shell, exactly as the single-command
+        tool does — the array changes how many run per turn, not how any one
+        of them behaves — and the description states what that means for the
+        model: files persist, shell state resets, a failure does not halt the
+        rest. A required ``note`` string rides the call so the per-turn note
+        the reply contract asks for is a schema slot the model fills rather
+        than prose it may skip; it reaches ``tool_log.yaml`` and the assistant
+        message's ``tool_calls`` with the other arguments and runs nothing.
 
         *timeout_s* is the per-command ceiling, the same one the single-command
         tool applies. The declared budget is that ceiling times
@@ -290,27 +296,41 @@ class CodingHarnessAdapterMixin:
         return {
             "name": "bash_batch",
             "description": (
-                "Run bash commands inside the task container. Commands run in "
-                "order, each in its own fresh shell, and every command's output "
-                "comes back in one result."
+                "Run bash commands inside the task container, in order. Each "
+                "command gets its own shell: the working directory, shell "
+                "variables and `cd` reset for every command, while files, "
+                "installed packages and running services persist across "
+                "commands and across calls. A command that fails does not stop "
+                "the ones after it, and every command's output comes back "
+                "labelled in one result. Put commands in one call whenever you "
+                "do not need to read one's output before choosing the next — "
+                "editing a file and then running its tests is one call."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "A sentence or two: what the last output actually "
+                            "showed, what is still left, and what you expect "
+                            "these commands to produce."
+                        ),
+                    },
                     "commands": {
                         "type": "array",
                         "items": {"type": "string"},
                         "minItems": 1,
                         "maxItems": MAX_BATCH_COMMANDS,
                         "description": (
-                            "Shell commands to run, in order, at most "
-                            f"{MAX_BATCH_COMMANDS} per call. Include every "
-                            "command whose input does not depend on another "
-                            "command's output in the same call."
+                            "Shell commands to run in order, at most "
+                            f"{MAX_BATCH_COMMANDS} per call. Start a new call "
+                            "only when the next command depends on reading "
+                            "this call's output."
                         ),
-                    }
+                    },
                 },
-                "required": ["commands"],
+                "required": ["note", "commands"],
             },
             "category": "compute",
             "timeout_s": timeout_s * MAX_BATCH_COMMANDS,

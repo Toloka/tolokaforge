@@ -1365,10 +1365,13 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             command = arguments.get("command", "")
             return await loop.run_in_executor(None, self.exec_in_env, command, self.own_budget_s)
         if not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
-            return (
-                "ERROR: `commands` must be an array of strings, one shell command per "
+            # Raised, not returned: a returned string is a successful call to the
+            # recorder, and a malformed argument is a failed one.
+            raise ToolExecutionError(
+                self.name,
+                "`commands` must be an array of strings, one shell command per "
                 f"element — got {type(commands).__name__}. Nothing was run. Re-send the "
-                'call with a JSON array, e.g. {"commands": ["ls -la", "cat f.txt"]}.'
+                'call with a JSON array, e.g. {"commands": ["ls -la", "cat f.txt"]}.',
             )
         return await loop.run_in_executor(
             None, self._exec_batch_in_env, commands, self.own_budget_s

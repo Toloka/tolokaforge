@@ -5,7 +5,8 @@ Locks the properties the batching tool rests on at
 ``commands`` array runs in order, each command is its own ``docker exec`` with
 the same per-command budget the one-shot tool applies, every command's output is
 labelled with the command that produced it, a spent budget reports the remainder
-as unrun rather than dropping it, and a malformed argument runs nothing.
+as unrun rather than dropping it, and a malformed argument runs nothing and is a
+failed call, not a successful one carrying an error string.
 
 The single-``command`` path is covered here too, because the array is additive:
 a caller that sends ``command`` must reach the same argv it always did.
@@ -19,7 +20,7 @@ import time
 import pytest
 
 from tolokaforge.runner.models import ToolSchema, ToolSource
-from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
+from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper, ToolExecutionError
 
 pytestmark = pytest.mark.unit
 
@@ -123,11 +124,42 @@ def test_a_non_array_commands_argument_runs_nothing_and_says_so(monkeypatch) -> 
     monkeypatch.setattr("tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", fail)
     wrapper = _wrapper()
 
-    # A string would otherwise be iterated into one exec per character.
+    # A string would otherwise be iterated into one exec per character. The
+    # wrapper raises rather than returning a string: a returned string is a
+    # successful call to the recorder (``tool_status: success``, nothing in
+    # ``parser_errors``), so the model's mistake would cost a turn and leave
+    # no mark in the metrics.
     for bad in ("ls -la", 7, [{"cmd": "ls"}], [None]):
-        result = asyncio.run(wrapper.execute({"commands": bad}))
-        assert result.startswith("ERROR: `commands` must be an array of strings")
-        assert "Nothing was run" in result
+        with pytest.raises(ToolExecutionError) as excinfo:
+            asyncio.run(wrapper.execute({"commands": bad}))
+        assert excinfo.value.tool_name == "bash_batch"
+        assert excinfo.value.message.startswith("`commands` must be an array of strings")
+        assert "Nothing was run" in excinfo.value.message
+        assert type(bad).__name__ in excinfo.value.message
+
+
+def test_a_note_argument_is_recorded_input_not_a_command(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_run(argv: list[str], timeout_s: float, **_: object) -> str:
+        seen.append(argv[-1])
+        return "ok"
+
+    monkeypatch.setattr(
+        "tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", fake_run
+    )
+    wrapper = _wrapper()
+
+    # The schema requires ``note`` beside ``commands``; it rides the call for
+    # the record and must neither run nor change what does.
+    result = asyncio.run(
+        wrapper.execute(
+            {"note": "tests passed; running the linter next", "commands": ["ruff check ."]}
+        )
+    )
+
+    assert seen == ["ruff check ."]
+    assert result == "$ ruff check .\nok"
 
 
 def test_single_command_path_is_unchanged(monkeypatch) -> None:

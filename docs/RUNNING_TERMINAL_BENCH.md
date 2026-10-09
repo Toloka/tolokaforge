@@ -119,7 +119,7 @@ Engine-loop mode gives the agent one shell, and `agent_tool` picks which:
 |---|---|---|
 | `bash` (default) | `bash` | One `docker exec` per call. Working directory, exported variables and shell state are discarded after every command. |
 | `bash_session` | `bash_session` | One `docker exec` bash session held for the trial. Working directory, environment and shell functions persist across calls; `restart: true` resets them. |
-| `bash_batch` | `bash_batch` | An array of up to 10 commands per call, each its own `docker exec`, run in order. State is discarded between commands exactly as under `bash`; the array changes how many run per turn. Each command gets the same per-command budget `bash` applies, and the call stops once the whole band is spent — commands it did not reach are named in the output. |
+| `bash_batch` | `bash_batch` | An array of up to 10 commands per call, each its own `docker exec`, run in order. State is discarded between commands exactly as under `bash`; the array changes how many run per turn. A failing command does not stop the ones after it. Each command gets the same per-command budget `bash` applies, and the call stops once the whole band is spent — commands it did not reach are named in the output. The call also carries a required `note` string, the agent's per-turn note; nothing executes it, and it is recorded with the other arguments in `tool_log.yaml`. |
 
 ```yaml
   harness_adapter:

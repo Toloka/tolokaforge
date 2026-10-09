@@ -208,7 +208,7 @@ class TestEmitHarnessToolSchema:
 
         assert payload["name"] == "bash_batch"
         params = payload["parameters"]
-        assert params["required"] == ["commands"]
+        assert params["required"] == ["note", "commands"]
         assert params["properties"]["commands"]["type"] == "array"
         assert params["properties"]["commands"]["items"] == {"type": "string"}
         assert params["properties"]["commands"]["minItems"] == 1
@@ -226,6 +226,42 @@ class TestEmitHarnessToolSchema:
         # a full batch gets what the same commands would have got one call at a
         # time rather than sharing one command's worth of budget.
         assert payload["timeout_s"] == 600.0 * MAX_BATCH_COMMANDS
+
+    def test_batch_payload_carries_a_required_note_ahead_of_the_commands(
+        self, adapter: _Adapter
+    ) -> None:
+        # The per-turn note is a schema slot, not prose: a model fills required
+        # arguments where it follows a standing instruction about half the
+        # time. ``note`` precedes ``commands`` so it is written before them.
+        payload = adapter.emit_harness_batch_tool_schema(
+            service="agent", compose_project_prefix="p", timeout_s=60.0
+        )
+        params = payload["parameters"]
+
+        assert list(params["properties"]) == ["note", "commands"]
+        note = params["properties"]["note"]
+        assert note["type"] == "string"
+        for question in ("what the last output", "what is still left", "what you expect"):
+            assert question in note["description"]
+
+    def test_batch_description_states_what_persists_what_resets_and_when_to_stop(
+        self, adapter: _Adapter
+    ) -> None:
+        # One ``docker exec … bash -c`` per element on one container: files
+        # persist, shell state does not, a non-zero exit stops nothing, and the
+        # only reason to split a batch is needing to read an output first.
+        payload = adapter.emit_harness_batch_tool_schema(
+            service="agent", compose_project_prefix="p", timeout_s=60.0
+        )
+        description = payload["description"]
+        commands = payload["parameters"]["properties"]["commands"]["description"]
+
+        assert "files, installed packages and running services persist" in description
+        assert "working directory, shell variables and `cd` reset" in description
+        assert "A command that fails does not stop the ones after it" in description
+        assert "read one's output before choosing the next" in description
+        assert "depends on reading this call's output" in commands
+        assert "does not depend on another" not in commands
 
     def test_toolset_override_reaches_the_source(self, adapter: _Adapter) -> None:
         payload = adapter.emit_harness_tool_schema(

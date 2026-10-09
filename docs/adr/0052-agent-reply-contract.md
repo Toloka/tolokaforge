@@ -2,6 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-29
+- **Amended:** 2026-10-09 — contract generation 3. The per-turn note is a
+  required `note` argument on `bash_batch`, which also states its own batching
+  rule; the contract routes the note there when the slot exists. The statement
+  about output not being kept is composed in only when `observation_window`
+  is set, and the final turn asks for no summary.
 - **Deciders:** @CiroGamboa
 - **Supersedes:** none
 - **Relates to:** [ADR-0011](0011-seam-and-declaration-conventions.md) § "Do not
