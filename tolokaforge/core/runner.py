@@ -778,9 +778,15 @@ class TrialRunner:
                 # work. Left as a completed trial this scores against an
                 # untouched repository, and on these packs that is worth
                 # 0.42-0.58 of partial credit: a dead agent reported as a weak
-                # one. ERROR routes it to a synthesized grade instead.
+                # one.
+                #
+                # The reason is its own, not the ``API_ERROR`` catch-all: this
+                # branch fires on the proxy's own per-request records, which is
+                # typed evidence that the trial never reached the model, and
+                # only a typed reason may excuse a trial from the measured
+                # denominator.
                 status = TrialStatus.ERROR
-                termination_reason = TerminationReason.API_ERROR
+                termination_reason = TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS
                 self.logger.error(
                     "Harness trial made no successful provider request; not scoring it",
                     requests=refused.requests,

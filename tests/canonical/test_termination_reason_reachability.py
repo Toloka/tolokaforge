@@ -3,8 +3,9 @@ that excuse a trial from the benchmark are earned by typed evidence.
 
 Four locks over one observation. All rest on the ``observed_outcomes`` fixture,
 which drives the real termination paths — the dialogue runner, the tool-calling
-loop's error classifier and wall-clock check, and the provisioning bracket — and
-reports the ``(status, reason)`` pairs it saw. Nothing here is a hand-written
+loop's error classifier and wall-clock check, the provisioning bracket, and the
+harness path's read of the request middleware's records — and reports the
+``(status, reason)`` pairs it saw. Nothing here is a hand-written
 table of what the code is believed to do.
 
 1. Every member of the enum is produced by one of those paths. A reason no path
@@ -34,6 +35,7 @@ while a change to *which* reasons are answered that way fails them.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -98,11 +100,12 @@ GRADED_REASONS = frozenset(
 # The reasons that answer a trial with no grade at all. Each one means no verdict
 # can be computed: the agent never got its turn — the provider refused, the call
 # never came back, the environment never came up — or the runner that would
-# compute the verdict is the one that lost the trial. The first three excuse the
-# trial from the denominator as well; ``trial_lost`` does not, which is why "no
-# grade" and "excluded" are two questions here rather than one.
+# compute the verdict is the one that lost the trial. All but ``trial_lost``
+# excuse the trial from the denominator as well, which is why "no grade" and
+# "excluded" are two questions here rather than one.
 UNGRADED_REASONS = frozenset(
     {
+        TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS,
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_TIMEOUT,
         TerminationReason.EMPTY_COMPLETION,
@@ -132,6 +135,10 @@ PROSE_IMPOSTORS: dict[TerminationReason, Exception] = {
     TerminationReason.REASONING_WITHOUT_ACTION: RuntimeError(
         "LLM API call failed: the model spent its whole output budget on "
         "reasoning and returned no action (reasoning_without_action)"
+    ),
+    TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS: RuntimeError(
+        "LLM API call failed: the gateway refused every request this trial "
+        "made (provider_refused_all_requests)"
     ),
 }
 
@@ -297,6 +304,68 @@ def _user_tool_loop_trajectory() -> Trajectory:
     ).run("You are an agent.", "Do the task.")
 
 
+_HARNESS_USAGE_LOG_PATH = "/logs/agent/tolokaforge_usage.ndjson"
+"""Where the request middleware writes, inside the trial container."""
+
+
+class _RefusingHarnessContainer:
+    """The trial container of a harness run the provider served none of.
+
+    Answers the two executions a harness trial makes: the CLI's own invocation,
+    which succeeds and prints nothing, and the engine's read of the proxy's
+    records, which hands back three refused completions.
+    """
+
+    _RECORD = {
+        "timestamp": "2026-09-18T10:00:00+00:00",
+        "path": "/v1beta/models/gemini-3.6-flash:streamGenerateContent",
+        "status": 403,
+        "model": "gemini-3.6-flash",
+    }
+
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict | None = None,
+        *,
+        call_id: str = "",
+        validation_schema: dict | None = None,
+    ) -> ToolResult:
+        command = (arguments or {}).get("command", "")
+        if command.startswith("cat "):
+            return ToolResult(
+                success=True, output="".join(f"{json.dumps(self._RECORD)}\n" for _ in range(3))
+            )
+        return ToolResult(success=True, output="")
+
+
+class _HarnessAgentClient:
+    """The agent seam on the harness path: the CLI ran the model itself, so
+    only the model identity is ever read."""
+
+    model_name = "openrouter/moonshotai/kimi-k2"
+
+
+def _provider_refused_trajectory() -> Trajectory:
+    """Drive a harness trial whose every provider request the gateway refused."""
+    return TrialRunner(
+        task_id="reachability",
+        trial_index=0,
+        agent_client=_HarnessAgentClient(),  # type: ignore[arg-type]
+        user_simulator=None,
+        tool_executor=_RefusingHarnessContainer(),
+        tool_schemas=[],
+        episode_timeout_s=600,
+    ).run_harness(
+        tool_name="bash",
+        command="kimi --print",
+        instruction="Fix the failing tests.",
+        timeout_s=600,
+        harness="kimi-code",
+        usage_log_container_path=_HARNESS_USAGE_LOG_PATH,
+    )
+
+
 def _provision_failure_trajectory() -> Trajectory:
     """Drive the provisioning bracket with an environment that never comes up."""
     result = ProvisioningTrialExecutor(
@@ -344,6 +413,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         ),
         _run_trial(ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")),
         _user_tool_loop_trajectory(),
+        _provider_refused_trajectory(),
         _provision_failure_trajectory(),
         drive_lost_trial()[0],
     ]

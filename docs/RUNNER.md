@@ -576,12 +576,14 @@ independent by design:
 
 - **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
   Anything transient — a rate limit, an API error, a timeout, a bare error, a
-  `trial_lost` registration — is requeued until `max_attempt_retries` is spent. A
-  deterministic fault (`provision_error`, an auth-shaped `api_error`) is not: the
-  next attempt fails the same way.
+  `trial_lost` registration, a gateway that refused every request — is requeued
+  until `max_attempt_retries` is spent. A deterministic fault
+  (`provision_error`, an auth-shaped `api_error` or
+  `provider_refused_all_requests`) is not: the next attempt fails the same way.
 - **Did the attempt measure the agent?** `classify_trial_outcome`. Only a trial
   killed by a *typed* infrastructure condition — `rate_limit`, `api_timeout`,
-  `provision_error` — leaves the rate denominators.
+  `provision_error`, `empty_completion`, `reasoning_without_action`,
+  `provider_refused_all_requests` — leaves the rate denominators.
 
 They disagree, and the disagreements are the point. A wall-clock `timeout`, an
 `api_error`, a bare `error` and a `trial_lost` are all retried *and* counted:

@@ -64,6 +64,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.COMPLETED, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
@@ -83,6 +84,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.FAILED, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
@@ -102,6 +104,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
@@ -121,6 +124,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.REASONING_WITHOUT_ACTION, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
@@ -210,7 +214,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 152
+        assert len(_OUTCOME_CELLS) == len(expected) == 160
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,
@@ -295,6 +299,23 @@ class TestRetryabilityIsIndependentOfCountability:
         assert Orchestrator._is_retryable_trajectory(traj) is False
         # Countability does not consult the message, so it is unmoved.
         assert classify_trial_outcome(traj) is _MEASURED
+
+    def test_an_auth_shaped_refusal_of_every_request_is_not_retried(self) -> None:
+        """The same message-dependent answer on the typed-outage reason. A
+        gateway rejecting bad credentials refuses every request, which is the
+        evidence this reason is produced from — and it fails the same way on
+        every attempt, so another one buys nothing."""
+        traj = _cell_trajectory(TrialStatus.ERROR, TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS)
+        traj.messages = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="AuthenticationError: 401 from the credential gateway",
+            )
+        ]
+        assert Orchestrator._is_retryable_trajectory(traj) is False
+        # Countability does not consult the message: the trial still never
+        # reached the model, so it is still excluded.
+        assert classify_trial_outcome(traj) is _ABORT
 
     def test_the_two_answers_disagree_where_the_table_says_they_do(self) -> None:
         """A guard on the table itself: if these cells ever agree, one column

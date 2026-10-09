@@ -4545,6 +4545,9 @@ from matching prose against an exception message:
 | `rate_limit` | `openai.RateLimitError` (which `litellm.RateLimitError` subclasses, so one check covers every provider litellm routes) or `status_code == 429`, found on the exception or on its `__cause__` chain |
 | `api_timeout` | `LLMApiTimeoutError` |
 | `provision_error` | `ProvisionError` raised by the runtime backend's `provision` / `await_ready` |
+| `empty_completion` | A `GenerationResult` whose `text` is empty and whose `tool_calls` list is empty after retries, with no reasoning tokens billed |
+| `reasoning_without_action` | The same observation, where the provider billed reasoning tokens and still returned no text and no tool call |
+| `provider_refused_all_requests` | The request middleware's own per-request records: a positive count of completion requests, every one of them answered outside 2xx |
 
 Everything else is **counted**, including the cases that look like
 infrastructure:
@@ -4553,7 +4556,7 @@ infrastructure:
 |---|---|---|
 | `user_tool_loop_limit` | measured | A declared budget, like `max_turns`, over the user's tool steps in one `isolated` turn. The dialogue it cuts off is graded as it stands |
 | `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
-| `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
+| `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug). The one typed case that used to share this value — a harness trial whose every provider request was refused — has its own reason, `provider_refused_all_requests`, and is excluded |
 | `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)). So does an `isolated` simulator that takes more than `max_tool_steps` tool steps before its opening message: the agent has not spoken, so nothing of its is there to grade |
 | `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
 | `stuck_detected` | measured | The agent issued the identical tool call and got the same result back over and over. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |

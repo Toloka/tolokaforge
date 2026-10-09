@@ -1084,9 +1084,15 @@ class Orchestrator:
         way on retry — so they classify as non-retryable regardless of the
         broader ``API_ERROR`` bucket. Signal comes from the trailing SYSTEM
         message the loop appends on ``TerminationReason.API_ERROR``:
-        ``"API error: LLM API call failed: … AuthenticationError …"``.
+        ``"API error: LLM API call failed: … AuthenticationError …"``, or from
+        the harness CLI's own output on a trial whose every request the
+        provider refused — a gateway rejecting bad credentials refuses all of
+        them, and that is not transient either.
         """
-        if trajectory.termination_reason != TerminationReason.API_ERROR:
+        if trajectory.termination_reason not in (
+            TerminationReason.API_ERROR,
+            TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS,
+        ):
             return False
         messages = getattr(trajectory, "messages", None) or []
         for msg in reversed(messages):
