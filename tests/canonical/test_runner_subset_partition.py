@@ -151,6 +151,12 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # scripts against the orchestrator side.
         "tolokaforge/runner/llm_gateway.py",
         "tolokaforge/runner/llm_gateway_serve.py",
+        # The task-side MCP server registry. A pack's ``mcp_server.py`` imports
+        # ``create_server`` from it inside the subprocess the runner starts with
+        # the image's interpreter (``MCPServerProcess``), so the runner's own
+        # boot closure never names it; without it the tool calls of every
+        # pack built on it fail inside the container (#1834).
+        "tolokaforge/core/tools_interface.py",
     }
 )
 
@@ -267,6 +273,36 @@ def test_subset_files_are_reachable(runner_boot_closure: frozenset[str]) -> None
         "subset ships files that neither the runner boot closure nor the "
         "lazy-loadable dispatch surface reaches — dead weight in the "
         "runner image:\n" + "\n".join(f"  - {d}" for d in dead)
+    )
+
+
+def test_pack_server_imports_are_covered_by_subset() -> None:
+    """Every first-party module an example pack's ``mcp_server.py`` imports is
+    shipped in the subset.
+
+    The runner starts a pack's MCP server as a subprocess on the image's
+    interpreter, so those imports never appear in the runner's own boot
+    closure: a module they need that the subset omits fails only inside the
+    container (#1834).
+    """
+    servers = sorted(REPO_ROOT.glob("examples/**/mcp_server.py"))
+    assert servers, "no example mcp_server.py found — the probe would pass vacuously"
+    missing: list[str] = []
+    for server in servers:
+        tree = ast.parse(server.read_text(), filename=str(server))
+        for node in _collect_runtime_imports(tree):
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            else:
+                targets = [node.module or ""] if node.level == 0 else []
+            for dotted in targets:
+                rel = _target_to_path(dotted)
+                if rel is not None and not is_in_runner_subset(rel):
+                    missing.append(f"{server.relative_to(REPO_ROOT)}: {dotted} -> {rel}")
+    assert not missing, (
+        "an example pack's MCP server imports first-party modules the subset "
+        "omits — its tool calls would fail inside the runner container:\n"
+        + "\n".join(f"  - {m}" for m in missing)
     )
 
 
