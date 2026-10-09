@@ -2029,7 +2029,7 @@ to be readable:
 
 | Key | Meaning |
 |---|---|
-| `total_trials` | Every attempt the run made |
+| `total_trials` | Every trial the run recorded — one per directory under `trials/<task_id>/`. A trial directory carries no attempt component, so a retried attempt overwrites the one it supersedes and replaces it here rather than being counted beside it |
 | `measured_trials` | The denominator the run holds itself accountable for — every rate in the row except `avg_score` is over it |
 | `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses. Below `measured_trials` on any run that hit an `ungradeable` attempt or a `trial_lost` one |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. Every excluded reason's key is always present, zero or not — a zero is a fact about the run, a missing key only a fact about the writer |

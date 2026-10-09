@@ -726,6 +726,11 @@ class GradingCompleteness:
     ``ungradeable_trial_ids`` is the whole of the state; the count derives from
     it rather than being carried beside it, so the two cannot disagree.
 
+    ``total_attempts`` counts the trials this process recorded, one per trial
+    directory: a retried attempt replaces the one it supersedes rather than
+    being counted beside it, because only the last attempt leaves evidence on
+    disk.
+
     ``measured_trials`` / ``scored_trials`` / ``judge_errored_trials`` carry
     the three counts the two completion gates read (see
     ``docs/adr/0041-zero-coverage-exit-signal.md``). ``scored_trials`` is the
@@ -817,6 +822,9 @@ class Orchestrator:
         self.project = project
         self.tasks: list[TaskConfig] = []
         self.results: list[Trajectory] = []
+        # Position of each (task_id, trial_index) in ``self.results``, so
+        # ``_record_attempt`` can replace a superseded attempt in place.
+        self._result_positions: dict[tuple[str, int], int] = {}
         self._previous_report_results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
@@ -3490,7 +3498,7 @@ class Orchestrator:
                         try:
                             trial_result = future.result()
                             trajectory = trial_result.trajectory
-                            self.results.append(trajectory)
+                            self._record_attempt(trajectory)
                             trial_cost = self._trial_total_spend_usd(trajectory)
                             total_cost_usd += trial_cost
                             if budget is not None:
@@ -3915,7 +3923,7 @@ class Orchestrator:
                     )
                     trial_result = trial_executor.execute(spec, task)
                     trajectory = trial_result.trajectory
-                    self.results.append(trajectory)
+                    self._record_attempt(trajectory)
                     trial_cost = self._trial_total_spend_usd(trajectory)
                     total_cost_usd += trial_cost
 
@@ -4073,6 +4081,28 @@ class Orchestrator:
                 pass_at_k_without_coverage=lost_k,
             )
 
+    def _record_attempt(self, trajectory: Trajectory) -> None:
+        """Record *trajectory* as this trial's result, replacing any earlier attempt.
+
+        A trial's directory is ``trials/<task_id>/<trial_index>`` and carries no
+        attempt component, so a retried attempt overwrites the one before it and
+        only the last attempt leaves evidence on disk. ``self.results`` is what
+        ``aggregate.json`` and ``per_task_metrics.json`` are computed from, so
+        appending every attempt made those files count trials that are not
+        there — and an abandoned attempt that ended ERROR or TIMEOUT carries a
+        harness-synthesised 0.0 that entered the mean.
+
+        Spend is accounted separately and keeps every attempt: a retried trial
+        cost what both attempts cost.
+        """
+        key = (trajectory.task_id, trajectory.trial_index)
+        position = self._result_positions.get(key)
+        if position is None:
+            self._result_positions[key] = len(self.results)
+            self.results.append(trajectory)
+            return
+        self.results[position] = trajectory
+
     def _reasoning_transport_rollup(self) -> dict[str, int]:
         """How the run's reasoning actually travelled, counted over trials.
 
@@ -4181,7 +4211,15 @@ class Orchestrator:
 
     def _generate_reports(self, output_dir: Path) -> None:
         """Generate aggregate reports with pass@k"""
-        results = [*self._previous_report_results, *self.results]
+        # One row per trial directory. A resumed bundle and this process can
+        # both hold the same trial, and only one of them is what is on disk:
+        # the attempt this process just wrote. Keyed rather than concatenated
+        # so the per-task counts reconcile against the directories.
+        by_trial: dict[tuple[str, int], Trajectory] = {
+            (trajectory.task_id, trajectory.trial_index): trajectory
+            for trajectory in (*self._previous_report_results, *self.results)
+        }
+        results = list(by_trial.values())
         if not results:
             self.logger.warning("No results to report")
             return
