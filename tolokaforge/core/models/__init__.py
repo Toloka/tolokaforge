@@ -113,6 +113,7 @@ from tolokaforge.core.models.task_config import (
     TaskInventoryConfig,
     TaskMetadata,
     TimeoutDefaults,
+    ToolLibraryPin,
     ToolsConfig,
     UserSimulatorConfig,
 )
@@ -300,6 +301,7 @@ __all__ = [
     "TaskInventoryConfig",
     "TaskMetadata",
     "TimeoutDefaults",
+    "ToolLibraryPin",
     "ToolsConfig",
     "UserSimulatorConfig",
     # Cross-package re-exports (runner.models canonical wire types)

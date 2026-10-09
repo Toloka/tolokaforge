@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, final
 
 from tolokaforge.adapters._task_loader import GradingSource, GradingSourceKind
 from tolokaforge.core.grading.config_validation import (
@@ -18,6 +18,7 @@ from tolokaforge.core.grading.config_validation import (
 )
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
+from tolokaforge.runner.models import TaskDescription
 
 if TYPE_CHECKING:
     from tolokaforge.tools.registry import Tool
@@ -574,6 +575,28 @@ class BaseAdapter(ABC):
             NotImplementedError: If adapter does not support Docker runtime
         """
         pass
+
+    @final
+    def describe_task(self, task_id: str) -> TaskDescription:
+        """The task's wire description, with its pinned tool libraries merged in.
+
+        The one path the engine builds a description on — the orchestrator,
+        :func:`~tolokaforge.core.run_trial.run_trial` and the dry run all call
+        it. :meth:`to_task_description` is the adapter's part; the bundles of
+        the task's ``tool_libraries`` (ADR-0056) are added here for every
+        adapter alike, so an adapter never bundles a library itself.
+
+        Raises:
+            ToolLibraryError: A pin names a library that is not installed, is
+                installed at another version, or bundles a path the adapter's
+                own artefacts already hold.
+        """
+        # Imported here: the resolver reaches the plug-in registry, whose closure
+        # (agent loop, LLM client) a module importing an adapter must not pay for.
+        from tolokaforge.core.tool_libraries import merge_tool_libraries
+
+        description = self.to_task_description(task_id)
+        return merge_tool_libraries(description, self.get_task(task_id).tool_libraries)
 
     # Adapters shipping a custom TrialGrader (registered under the
     # tolokaforge.trial_graders entry-point group) override this; the default

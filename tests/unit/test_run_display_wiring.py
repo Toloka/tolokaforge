@@ -791,7 +791,7 @@ def _adapter_for_run(task_dir: Path) -> Any:
         )
     )
     adapter = MagicMock()
-    adapter.to_task_description.side_effect = _make_task_description_for_run
+    adapter.describe_task.side_effect = _make_task_description_for_run
     adapter.requires_judge_model.return_value = False
     adapter.docker_stack_requirements.return_value = None
     adapter.trial_grader_name = "runner_rpc"

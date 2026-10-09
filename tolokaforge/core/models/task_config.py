@@ -197,6 +197,23 @@ class InitialStateConfig(BaseModel):
     initialization_actions: list[InitializationAction] | None = None
 
 
+class ToolLibraryPin(BaseModel):
+    """One shared tool library a task pins (ADR-0056).
+
+    The engine resolves ``name`` among the libraries installed next to it
+    (entry-point group ``tolokaforge.tool_libraries``), refuses an installed
+    version other than ``version``, and merges the library's bundle for
+    ``apps`` (every application the library ships when unset) into the
+    trial's ``tool_artifacts``, whatever the adapter.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    apps: list[str] | None = Field(default=None, min_length=1)
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration for task"""
 
@@ -590,6 +607,13 @@ class TaskConfig(BaseModel):
     entry-point registry (see ADR-0027)."""
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    tool_libraries: list[ToolLibraryPin] = Field(default_factory=list)
+    """Shared tool libraries whose bundles travel with the trial (ADR-0056).
+
+    Declared on the task, on a shared ``domain.yaml`` or in a project's
+    ``task_defaults``, like ``tools``. ``BaseAdapter.describe_task`` merges
+    each pinned bundle into ``tool_artifacts`` after the adapter has built the
+    description, so no adapter bundles a library itself."""
     actors: dict[str, ActorSpec] | None = None
     """Named actor map. ``actors.user`` configures the user simulator
     (:meth:`resolve_user_simulator`); the loader lifts a legacy top-level
@@ -1095,6 +1119,10 @@ class TaskDefaults(BaseModel):
     metadata: TaskMetadata | None = None
     adapter_settings: dict[str, Any] = Field(default_factory=dict)
     tools: ToolsConfig | None = None
+    tool_libraries: list[ToolLibraryPin] | None = None
+    """Project-side default for :attr:`TaskConfig.tool_libraries`, layered like
+    ``tools``: it replaces a shared domain config's list, and a task that
+    declares its own list replaces it."""
     grading_defaults: GradingDefaults | None = None
     timeouts: TimeoutDefaults | None = None
     stuck_heuristics: StuckHeuristicsDefaults | None = None

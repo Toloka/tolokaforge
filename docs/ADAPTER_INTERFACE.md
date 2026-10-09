@@ -32,6 +32,25 @@ Each adapter must subclass `BaseAdapter` and implement:
 9. `reset_environment(env: AdapterEnvironment) -> None`
 10. `compute_golden_hash(task_id: str, env: AdapterEnvironment) -> str | None`
 
+### The description the engine sends: `describe_task`
+
+`to_task_description(task_id)` is the adapter's part of the wire description: its
+tools, state, grading and its own `tool_artifacts`. The engine never calls it
+directly. It calls `BaseAdapter.describe_task(task_id)` — concrete and `@final` —
+which takes that description and merges in the bundles of the shared tool
+libraries the task pins (`TaskConfig.tool_libraries`,
+[ADR-0056](adr/0056-shared-tool-libraries-through-tool-artifacts.md)). The
+orchestrator, `run_trial` and the dry run all go through it, so an adapter never
+bundles a library itself: it only needs `get_task` to return the `TaskConfig` that
+carries the pins the author declared. Its own artefacts must not include a file a
+pinned library bundles; `describe_task` refuses the collision instead of
+overwriting either copy. The refusals are listed in
+[`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins).
+
+An adapter that generates native packs from its own source format forwards a
+domain's `tool_libraries` into the generated `task.yaml` (or `domain.yaml`)
+rather than copying a library's files into the pack.
+
 ## Optional Methods
 
 11. `convert_to_native(task_id: str) -> NativeTaskBundle`

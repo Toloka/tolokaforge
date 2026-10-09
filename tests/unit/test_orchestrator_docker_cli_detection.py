@@ -324,9 +324,7 @@ class TestConstructRuntimeBackendMountSocket:
         task.tools = None
         orch.tasks = [task]
         orch.adapter = MagicMock()
-        orch.adapter.to_task_description.side_effect = lambda tid: make_task_description(
-            task_id=tid
-        )
+        orch.adapter.describe_task.side_effect = lambda tid: make_task_description(task_id=tid)
         return orch, captured
 
     def test_terminal_bench_run_with_no_compose_variant_tools_mounts_socket(
