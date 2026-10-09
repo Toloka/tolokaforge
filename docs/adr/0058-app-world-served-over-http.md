@@ -83,7 +83,7 @@ We will adopt **Option 1**.
 initial_state:
   json_db: initial_state.json          # the world as tables
   app_world:
-    url: http://appmocks:80            # a service of the task's stack
+    url: http://appmocks:8080          # a service of the task's stack
     hosts:                             # vendor hosts this service answers for
       - aldermere.zendesk.com
       - gmail.googleapis.com
@@ -115,10 +115,10 @@ state should use `app_world`.
 The service answers, behind `X-Admin-Token`:
 
 - `PUT /_admin/tokens` (`{token: caller}`);
-- `PUT /_admin/tables`, `GET /_admin/tables` (the world as tables);
-- `GET /_health`.
+- `PUT /_admin/tables`, `GET /_admin/tables` (the world as tables).
 
-Without loaded tables it answers `503`.
+`GET /_health` answers without a token, so the stack's health check can reach
+it. Until tables are loaded, every vendor request is answered `503`.
 
 | Stage | What the runner does |
 |---|---|
@@ -136,6 +136,21 @@ and therefore under the agent's own credentials.
   one bearer token per declared actor. It admits each value with
   `register_runtime_secret`, so the global log redactor masks them, and loads
   `{token: caller}` into the service.
+- **Delivering the admin token.** The compose stack starts before
+  `RegisterTrial`, so a token minted then cannot be written into the
+  service's command or environment. The service therefore starts with no
+  admin token and **claims the first one presented**: the first
+  `PUT /_admin/tokens` that carries `X-Admin-Token` binds that value, and from
+  then on every `/_admin/*` call must present it (`403` otherwise). The
+  runner's `RegisterTrial` is that first call. The agent cannot win the race:
+  `http_request` drops `X-Admin-Token` like every other header, and the agent
+  takes no turn before `RegisterTrial` returns. A claim the runner loses
+  (another container of the stack claimed first) fails the registration
+  instead of grading a world someone else controls. The alternative, minting
+  on the host before `compose up` and passing the token through
+  `container_secrets_env`, closes even that window but needs the compose
+  materialisation to know which service receives it. It stays open as a
+  follow-up if the window proves to matter.
 - **Attaching.** `http_request` is built once per actor. It first drops the
   agent's headers, as today. It then sets `Authorization: Bearer <token>` only
   on requests whose host is in `app_world.hosts`. Requests to any other host
@@ -198,7 +213,11 @@ that does not declare it.
   URL-encoded form is not masked, so the runtime must never log request
   headers.
 - A world service must accept the runtime bearer on every host it serves, in
-  addition to the vendor's scheme.
+  addition to the vendor's scheme, and must support the first-claim admin
+  token. `appmocks` does neither in full today; both are library changes.
+- Between `compose up` and `RegisterTrial`, any container of the stack could
+  claim the admin token first. The runner then fails the registration, so the
+  window costs a failed trial, not a wrong grade.
 
 ### Follow-ups
 
@@ -210,11 +229,16 @@ that does not declare it.
   - credential attachment in `tools/builtin/http_request.py`;
   - `RunnerInitialStateConfig.app_world` with conditional serialisation;
   - the authoring gate counting `app_world` as a replayable world.
-- Found by a prototype, and needed whatever is decided here:
+- Found by a prototype, needed whatever is decided here, and filed as
+  separate bugs:
   - the `no_internet` network policy must keep service aliases, otherwise a
     vendor hostname that a world service answers for resolves to the real
-    vendor;
-  - `http_request` must return the body of a 4xx/5xx response to the agent.
+    vendor ([#1835](https://github.com/Toloka/tolokaforge/issues/1835));
+  - `http_request` must return the body of a 4xx/5xx response to the agent
+    ([#1836](https://github.com/Toloka/tolokaforge/issues/1836));
+  - the runner image must ship `core/tools_interface.py`, which every MCP
+    pack built on `create_server` imports
+    ([#1834](https://github.com/Toloka/tolokaforge/issues/1834)).
 - Documentation to update: `PROJECTS.md`, `MULTI_CONTAINER_GUIDE.md`,
   `TOOLS.md`, `TASK_DESCRIPTION_SCHEMA.md`.
 - Tests to add:
