@@ -1248,3 +1248,86 @@ class TestInjectSubstrateEnvIntoRunner:
         inject_substrate_env_into_runner(compose_file, "runner")
 
         assert compose_file.read_text() == before
+
+
+_ISOLATING_POLICIES = [NetworkPolicy.NO_INTERNET, NetworkPolicy.LIMITED_INTERNET]
+
+
+def _enforce(
+    doc: dict, policy: NetworkPolicy, restricted_services: frozenset[str] = frozenset()
+) -> dict:
+    allowlist = ["example.com"] if policy is NetworkPolicy.LIMITED_INTERNET else []
+    return enforce_network_policy(
+        doc, policy, "runner", allowlist, restricted_services=restricted_services
+    )
+
+
+@pytest.mark.parametrize("policy", _ISOLATING_POLICIES)
+def test_a_services_aliases_stay_resolvable_from_the_runner(policy: NetworkPolicy) -> None:
+    """The runner joins only the injected networks, so a declared alias rides them too."""
+    doc = {
+        "services": {
+            "runner": {"image": "tolokaforge-runner:local"},
+            "mocks": {
+                "image": "mocks:1",
+                "networks": {"default": {"aliases": ["api.vendor.test", "mail.vendor.test"]}},
+            },
+        }
+    }
+    result = _enforce(doc, policy)
+    mocks = result["services"]["mocks"]["networks"]
+    assert mocks["default"] == {"aliases": ["api.vendor.test", "mail.vendor.test"]}
+    assert mocks[NETPOLICY_INTERNAL_NETWORK] == {"aliases": ["api.vendor.test", "mail.vendor.test"]}
+    assert NETPOLICY_INTERNAL_NETWORK in result["services"]["runner"]["networks"]
+
+
+@pytest.mark.parametrize("policy", _ISOLATING_POLICIES)
+def test_an_alias_two_services_declare_is_not_carried(policy: NetworkPolicy) -> None:
+    """On the shared injected network a duplicated alias would resolve to both services."""
+    doc = {
+        "services": {
+            "runner": {"image": "tolokaforge-runner:local"},
+            "db_a": {"image": "pg:16", "networks": {"net_a": {"aliases": ["db", "a.internal"]}}},
+            "db_b": {"image": "pg:16", "networks": {"net_b": {"aliases": ["db"]}}},
+        },
+        "networks": {"net_a": {}, "net_b": {}},
+    }
+    result = _enforce(doc, policy)
+    services = result["services"]
+    assert services["db_a"]["networks"][NETPOLICY_INTERNAL_NETWORK] == {"aliases": ["a.internal"]}
+    assert services["db_b"]["networks"][NETPOLICY_INTERNAL_NETWORK] is None
+    assert services["db_a"]["networks"]["net_a"] == {"aliases": ["db", "a.internal"]}
+
+
+@pytest.mark.parametrize("policy", _ISOLATING_POLICIES)
+def test_an_alias_a_restricted_service_shares_is_still_carried(policy: NetworkPolicy) -> None:
+    """A restricted service never joins the injected network, so the alias cannot collide
+    there; dropping it would send the runner's lookup out through the edge network."""
+    doc = {
+        "services": {
+            "runner": {"image": "tolokaforge-runner:local"},
+            "mocks": {"image": "mocks:1", "networks": {"default": {"aliases": ["example.com"]}}},
+            "sandbox": {
+                "image": "sandbox:1",
+                "networks": {"default": {"aliases": ["example.com"]}},
+            },
+        }
+    }
+    result = _enforce(doc, policy, restricted_services=frozenset({"sandbox"}))
+    services = result["services"]
+    assert services["mocks"]["networks"][NETPOLICY_INTERNAL_NETWORK] == {"aliases": ["example.com"]}
+    assert NETPOLICY_INTERNAL_NETWORK not in services["sandbox"]["networks"]
+
+
+@pytest.mark.parametrize("policy", _ISOLATING_POLICIES)
+def test_a_service_without_aliases_joins_plainly(policy: NetworkPolicy) -> None:
+    doc = {
+        "services": {
+            "runner": {"image": "tolokaforge-runner:local"},
+            "api": {"image": "api:1", "networks": {"default": None}},
+            "worker": {"image": "worker:1", "networks": ["default"]},
+        }
+    }
+    result = _enforce(doc, policy)
+    assert result["services"]["api"]["networks"][NETPOLICY_INTERNAL_NETWORK] is None
+    assert NETPOLICY_INTERNAL_NETWORK in result["services"]["worker"]["networks"]
