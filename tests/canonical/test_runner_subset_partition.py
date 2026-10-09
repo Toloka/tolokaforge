@@ -289,12 +289,15 @@ def test_pack_server_imports_are_covered_by_subset() -> None:
     assert servers, "no example mcp_server.py found — the probe would pass vacuously"
     missing: list[str] = []
     for server in servers:
-        tree = ast.parse(server.read_text(), filename=str(server))
+        tree = ast.parse(server.read_text(encoding="utf-8"), filename=str(server))
         for node in _collect_runtime_imports(tree):
             if isinstance(node, ast.Import):
                 targets = [alias.name for alias in node.names]
+            elif node.level == 0 and node.module:
+                # ``from tolokaforge.core import tools_interface`` names the module as an alias
+                targets = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
             else:
-                targets = [node.module or ""] if node.level == 0 else []
+                targets = []
             for dotted in targets:
                 rel = _target_to_path(dotted)
                 if rel is not None and not is_in_runner_subset(rel):
