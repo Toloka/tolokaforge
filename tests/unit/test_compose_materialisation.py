@@ -1253,14 +1253,18 @@ class TestInjectSubstrateEnvIntoRunner:
 _ISOLATING_POLICIES = [NetworkPolicy.NO_INTERNET, NetworkPolicy.LIMITED_INTERNET]
 
 
-def _enforce(doc: dict, policy: NetworkPolicy) -> dict:
+def _enforce(
+    doc: dict, policy: NetworkPolicy, restricted_services: frozenset[str] = frozenset()
+) -> dict:
     allowlist = ["example.com"] if policy is NetworkPolicy.LIMITED_INTERNET else []
-    return enforce_network_policy(doc, policy, "runner", allowlist)
+    return enforce_network_policy(
+        doc, policy, "runner", allowlist, restricted_services=restricted_services
+    )
 
 
 @pytest.mark.parametrize("policy", _ISOLATING_POLICIES)
 def test_a_services_aliases_stay_resolvable_from_the_runner(policy: NetworkPolicy) -> None:
-    """The runner joins only the injected networks, so a declared alias rides them too (#1835)."""
+    """The runner joins only the injected networks, so a declared alias rides them too."""
     doc = {
         "services": {
             "runner": {"image": "tolokaforge-runner:local"},
@@ -1293,6 +1297,26 @@ def test_an_alias_two_services_declare_is_not_carried(policy: NetworkPolicy) -> 
     assert services["db_a"]["networks"][NETPOLICY_INTERNAL_NETWORK] == {"aliases": ["a.internal"]}
     assert services["db_b"]["networks"][NETPOLICY_INTERNAL_NETWORK] is None
     assert services["db_a"]["networks"]["net_a"] == {"aliases": ["db", "a.internal"]}
+
+
+@pytest.mark.parametrize("policy", _ISOLATING_POLICIES)
+def test_an_alias_a_restricted_service_shares_is_still_carried(policy: NetworkPolicy) -> None:
+    """A restricted service never joins the injected network, so the alias cannot collide
+    there; dropping it would send the runner's lookup out through the edge network."""
+    doc = {
+        "services": {
+            "runner": {"image": "tolokaforge-runner:local"},
+            "mocks": {"image": "mocks:1", "networks": {"default": {"aliases": ["example.com"]}}},
+            "sandbox": {
+                "image": "sandbox:1",
+                "networks": {"default": {"aliases": ["example.com"]}},
+            },
+        }
+    }
+    result = _enforce(doc, policy, restricted_services=frozenset({"sandbox"}))
+    services = result["services"]
+    assert services["mocks"]["networks"][NETPOLICY_INTERNAL_NETWORK] == {"aliases": ["example.com"]}
+    assert NETPOLICY_INTERNAL_NETWORK not in services["sandbox"]["networks"]
 
 
 @pytest.mark.parametrize("policy", _ISOLATING_POLICIES)
