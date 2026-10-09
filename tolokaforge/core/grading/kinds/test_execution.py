@@ -11,13 +11,18 @@ shapes:
   gate on ``exit_code``: a script that legitimately exits non-zero but
   wrote a valid reward is scored by the reward.
 - **Script exec error** — the substrate's ``script_exec_error`` field is
-  populated (subprocess timeout, OSError, ...); the kind returns
-  ``Grade(score=0.0, reasons=f"test.sh execution failed: {msg}")``.
+  populated (subprocess timeout, OSError, ...). The tests never ran, so the
+  kind has no verdict to report and raises :class:`GraderKindRefusedError`
+  with ``f"test.sh execution failed: {msg}"``. ``Grade.score`` is a
+  non-nullable float, so a refusal is the only way to say "nothing was
+  measured" here; the trial lands in ``ungradeable`` rather than carrying a
+  ``custom_checks: 0.0`` that asserts the suite ran and scored nothing.
 - **Tool absent** — the substrate's ``tool_absent`` flag is set (the
   adapter shipped no exec-capable lifecycle tool); the kind raises
   :class:`GraderKindRefusedError` with the substrate's actionable message.
-  The runner's dispatcher maps this to ``GradeTrialResponse(success=False,
-  error=exc.reason)``.
+
+Both refusals are mapped by the runner's dispatcher to
+``GradeTrialResponse(success=False, error=exc.reason)``.
 
 Per-task configuration rides ``kind_config`` — validated into
 :class:`TestExecutionKindConfig` (``extra="forbid"``). Defaults are
@@ -90,12 +95,7 @@ class TestExecutionGraderKind:
         if result.tool_absent:
             raise GraderKindRefusedError(result.tool_absent_reason)
         if result.script_exec_error:
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(custom_checks=0.0),
-                reasons=f"test.sh execution failed: {result.script_exec_error}",
-            )
+            raise GraderKindRefusedError(f"test.sh execution failed: {result.script_exec_error}")
         try:
             reward = float(result.reward_bytes.decode(errors="ignore").strip().split("\n")[-1])
             reward = max(0.0, min(1.0, reward))

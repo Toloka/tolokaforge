@@ -888,10 +888,11 @@ message RunTestSuiteResponse {
   string tool_absent_reason = 5;
   // Populated iff the script call itself raised (subprocess timeout,
   // OSError, or any Exception from the exec helper). Empty when the script
-  // ran to completion (regardless of exit_code). Callers map a populated
-  // ``script_exec_error`` to ``Grade(score=0.0, reasons="test.sh execution
-  // failed: {msg}")`` — no gRPC status is set (the trial completed; the
-  // script's failure is a first-class outcome the grade renders).
+  // ran to completion (regardless of exit_code). No gRPC status is set: the
+  // trial completed and the script's failure is a first-class outcome. A
+  // populated ``script_exec_error`` means the suite produced no verdict, so
+  // callers refuse the trial ("test.sh execution failed: {msg}") instead of
+  // reporting a score for tests that never ran.
   string script_exec_error = 6;
 }
 

@@ -16,8 +16,9 @@ Locks every observable outcome cell of the reference-suite kind:
 - **Tool absent** — the substrate reports ``tool_absent=True``; the kind
   raises :class:`GraderKindRefusedError` with the substrate's message.
 - **Script exec error** — the substrate reports ``script_exec_error``;
-  the kind returns ``Grade(score=0.0, reasons="test.sh execution failed:
-  {msg}")``.
+  the suite never ran, so the kind raises :class:`GraderKindRefusedError`
+  with ``"test.sh execution failed: {msg}"`` rather than reporting a score
+  for tests nobody executed.
 - **``kind_config`` validation** — override reaches the substrate;
   ``extra="forbid"`` refuses unknown keys with ``ValidationError``.
 """
@@ -181,25 +182,45 @@ def test_tool_absent_raises_grader_kind_refused_with_reason() -> None:
     assert exc_info.value.reason == reason
 
 
-def test_script_exec_error_returns_grade_with_execution_failed_reasons() -> None:
-    """A populated ``script_exec_error`` on the substrate result renders
-    exactly ``Grade(0.0, "test.sh execution failed: {msg}")`` — NOT the
-    "test-execution reward" reasons format. ``script_exec_error`` carries
-    ``str(exception)`` verbatim (no class-name prefix) so the reasons
-    string matches the ``{e}`` interpolation shape the wire consumer
-    expects."""
-    substrate = _ScriptedSubstrate(
-        _result(script_exec_error="Command 'bash test.sh' timed out after 300.0 seconds"),
-    )
-    grade = _evaluate(substrate)
+def test_script_exec_error_refuses_rather_than_scoring_the_unrun_suite() -> None:
+    """A populated ``script_exec_error`` means the suite never ran, so the kind
+    produces no grade at all.
 
-    assert grade is not None
-    assert grade.binary_pass is False
-    assert grade.score == pytest.approx(0.0)
-    assert grade.components.custom_checks == pytest.approx(0.0)
-    assert grade.reasons == (
-        "test.sh execution failed: Command 'bash test.sh' timed out after 300.0 seconds"
+    The refusal message is ``f"test.sh execution failed: {msg}"`` — NOT the
+    "test-execution reward" reasons format. ``script_exec_error`` carries
+    ``str(exception)`` verbatim (no class-name prefix) so the message matches
+    the ``{e}`` interpolation shape the wire consumer expects.
+    """
+    substrate = _ScriptedSubstrate(
+        _result(script_exec_error="Command 'bash test.sh' timed out after 120.0 seconds"),
     )
+
+    with pytest.raises(GraderKindRefusedError) as exc_info:
+        _evaluate(substrate)
+
+    assert exc_info.value.reason == (
+        "test.sh execution failed: Command 'bash test.sh' timed out after 120.0 seconds"
+    )
+
+
+def test_a_verifier_timeout_never_produces_a_custom_checks_zero() -> None:
+    """Regression for the measurement defect: a verifier the subprocess killed
+    used to be recorded as ``custom_checks: 0.0``, which asserts the tests ran
+    and every check failed. Nothing ran, so there is no component to carry a
+    number and no ``Grade`` to carry a score."""
+    substrate = _ScriptedSubstrate(
+        _result(
+            exit_code=-1,
+            reward_bytes=b"",
+            stdout="",
+            script_exec_error="Command 'bash test.sh' timed out after 120.0 seconds",
+        ),
+    )
+
+    with pytest.raises(GraderKindRefusedError) as exc_info:
+        _evaluate(substrate)
+
+    assert "timed out after 120.0 seconds" in exc_info.value.reason
 
 
 def test_kind_config_overrides_reach_substrate_and_extra_keys_are_refused() -> None:
