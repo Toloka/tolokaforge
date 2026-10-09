@@ -99,7 +99,7 @@ def _orchestrator_ready_for_fresh_run(
     )
     orch.tasks = [make_task_config(task_id)]
     adapter = MagicMock()
-    adapter.to_task_description.side_effect = _stub_task_description
+    adapter.describe_task.side_effect = _stub_task_description
     adapter.fingerprint.return_value = None
     orch.adapter = adapter
     return orch

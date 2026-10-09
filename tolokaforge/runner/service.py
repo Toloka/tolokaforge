@@ -1240,6 +1240,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 id_fields=id_fields,
                 search_tool_name=search_config.tool_name,
                 search_index=search_index,
+                artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve

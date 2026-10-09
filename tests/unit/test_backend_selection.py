@@ -72,7 +72,7 @@ def _make_orchestrator(
     orch = Orchestrator(_run_config(**(run_config_kwargs or {})))
     orch.tasks = tasks
     orch.adapter = MagicMock()
-    orch.adapter.to_task_description.side_effect = lambda tid: task_descs[tid]
+    orch.adapter.describe_task.side_effect = lambda tid: task_descs[tid]
     return orch
 
 

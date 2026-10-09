@@ -21,7 +21,8 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.search.backend.SearchBackend`,
 :class:`~tolokaforge.core.composition_runtime.ComposeMaterialiser`,
 :class:`~tolokaforge.core.composition_runtime.ServiceLifecycleDispatcher`,
-and :class:`~tolokaforge.core.composition_runtime.SubstrateComposer`
+:class:`~tolokaforge.core.composition_runtime.SubstrateComposer`,
+and :class:`~tolokaforge.core.tool_libraries.ToolLibrary`
 Protocols through ``importlib.metadata`` entry-point groups — no in-tree
 edit, no monkey-patch. Each holistic seam resolves to a *factory callable*,
 mirroring the existing :data:`~tolokaforge.core.conductor.ConductorFactory`
@@ -76,6 +77,7 @@ The groups:
 * ``tolokaforge.trace_check_operators`` → :data:`TraceCheckOperator`
 * ``tolokaforge.comparison_view_rules`` → ``type[ComparisonViewRule]``
 * ``tolokaforge.bundle_stores`` → ``type[BundleStore]``
+* ``tolokaforge.tool_libraries`` → ``ToolLibrary`` (the library object itself)
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -158,6 +160,7 @@ if TYPE_CHECKING:
     from tolokaforge.core.models import SeedRef
     from tolokaforge.core.runtime import RuntimeBackend
     from tolokaforge.core.service_readiness import ServiceReadinessProbe
+    from tolokaforge.core.tool_libraries import ToolLibrary
     from tolokaforge.core.trial import EnvironmentManifest
     from tolokaforge.core.trial_grader import TrialGrader
 
@@ -223,6 +226,7 @@ __all__ = [
     "available_service_lifecycle_dispatchers",
     "available_state_check_backends",
     "available_substrate_composers",
+    "available_tool_libraries",
     "available_trace_check_operators",
     "available_transcript_rule_matchers",
     "available_trial_graders",
@@ -247,6 +251,7 @@ __all__ = [
     "load_service_lifecycle_dispatcher",
     "load_state_check_backend",
     "load_substrate_composer",
+    "load_tool_library",
     "load_trace_check_operator",
     "load_transcript_rule_matcher",
     "load_trial_grader",
@@ -277,6 +282,7 @@ COMPARISON_VIEW_RULES_GROUP = "tolokaforge.comparison_view_rules"
 COMPOSE_MATERIALISERS_GROUP = "tolokaforge.compose_materialisers"
 SERVICE_LIFECYCLE_DISPATCHERS_GROUP = "tolokaforge.service_lifecycle_dispatchers"
 SUBSTRATE_COMPOSERS_GROUP = "tolokaforge.substrate_composers"
+TOOL_LIBRARIES_GROUP = "tolokaforge.tool_libraries"
 
 _RESERVED_SEARCH_BACKEND_REASONS: Mapping[str, str] = {
     SearchPlane.TYPESENSE.value: (
@@ -846,6 +852,17 @@ def load_substrate_composer(name: str) -> type[SubstrateComposer]:
     return cast("type[SubstrateComposer]", _load(SUBSTRATE_COMPOSERS_GROUP, name))
 
 
+def load_tool_library(name: str) -> ToolLibrary:
+    """Resolve a registered shared-tool-library name to the library object (ADR-0056).
+
+    The entry point names the object itself — ``name``, ``version`` and
+    ``bundle(apps)`` — not a factory. Whether it satisfies the
+    :class:`~tolokaforge.core.tool_libraries.ToolLibrary` Protocol is checked
+    by the caller, :func:`tolokaforge.core.tool_libraries.resolve_tool_libraries`.
+    """
+    return cast("ToolLibrary", _load(TOOL_LIBRARIES_GROUP, name))
+
+
 def available_runtime_backends() -> list[str]:
     """Sorted names registered in the ``tolokaforge.runtime_backends`` group."""
     return sorted(discover_entry_points(RUNTIME_BACKENDS_GROUP))
@@ -964,3 +981,8 @@ def available_service_lifecycle_dispatchers() -> list[str]:
 def available_substrate_composers() -> list[str]:
     """Sorted names registered in the ``tolokaforge.substrate_composers`` group."""
     return sorted(discover_entry_points(SUBSTRATE_COMPOSERS_GROUP))
+
+
+def available_tool_libraries() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.tool_libraries`` group."""
+    return sorted(discover_entry_points(TOOL_LIBRARIES_GROUP))

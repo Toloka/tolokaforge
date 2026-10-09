@@ -54,6 +54,7 @@
   "system_prompt": null,
   "task_id": "calc_basic",
   "timeouts": null,
+  "tool_libraries": [],
   "tools": {
     "agent": {
       "enabled": [

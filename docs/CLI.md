@@ -563,6 +563,8 @@ Each task loads under its enclosing project. `validate` walks up from the `task.
 
 `project.default_environment` is not layered: it binds into a `TaskDescription`'s `EnvironmentManifest`, and `validate` builds no `TaskDescription`.
 
+A task's `tool_libraries` pins are resolved against the libraries installed in this environment, as a run resolves them before any container starts: a library that is not installed, or is installed at another version than the pin names, is a `✗` line carrying the same message the run would refuse the task with ([ADR-0056](adr/0056-shared-tool-libraries-through-tool-artifacts.md)). `validate` does not build the bundles, so a path collision with the pack's own files is reported only by a run.
+
 `make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
 
 ### `--strict-authoring`

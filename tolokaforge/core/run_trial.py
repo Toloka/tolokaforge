@@ -132,7 +132,7 @@ def run_trial(
 
     logger = get_logger(_RUN_ID)
     adapter = _build_single_task_adapter(task)
-    task_desc = adapter.to_task_description(task.task_id)
+    task_desc = adapter.describe_task(task.task_id)
 
     runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
     log_capture = _build_log_capture(output_dir)

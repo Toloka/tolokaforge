@@ -73,7 +73,7 @@ def _orch(tasks: list[Any], descriptions: dict[str, TaskDescription]) -> Orchest
     orch = Orchestrator(_run_config())
     orch.tasks = tasks
     orch.adapter = MagicMock()
-    orch.adapter.to_task_description.side_effect = lambda tid: descriptions[tid]
+    orch.adapter.describe_task.side_effect = lambda tid: descriptions[tid]
     return orch
 
 
