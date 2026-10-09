@@ -2939,8 +2939,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # (the MCP subprocess holds state in memory), so sync first.
         # The sync is the grading call's one sync, so the reads that follow the
         # golden replay do not pull the golden state back into the mirror.
-        if mcp_wrapper is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (trial)")
         await live_state.ensure()
 
         # Fast path: hash server-side. Slow path (compare_columns declared):
@@ -3285,7 +3283,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"Trial {trial_id!r}: the live state of its MCP server could not be "
                 f"synchronised to the DB mirror ({type(exc).__name__}: {exc})"
             ) from exc
-        logger.debug(f"Synced MCP subprocess state to the DB mirror for {trial_id}")
+        logger.info(f"Synced MCP subprocess state to the DB mirror for {trial_id}")
 
     async def _sync_mcp_state_to_db(
         self,
