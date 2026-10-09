@@ -141,7 +141,7 @@ class HTTPRequestTool(Tool):
 
             # A 4xx/5xx is an answer the caller must read: the runner shows a
             # failed call's ``error`` to the agent and records it for grading,
-            # never its ``output`` (#1836).
+            # never its ``output``.
             return ToolResult(
                 success=response.is_success,
                 output=output,
