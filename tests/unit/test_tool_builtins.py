@@ -8,14 +8,21 @@ wrapper, locked in ``tests/unit/runner/test_json_db_builtins_trial_scope.py``.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
+from tolokaforge.runner.tool_factory import BuiltinGenericToolWrapper, ToolExecutionError
 from tolokaforge.tools.builtin.db_json import DBQueryTool, DBUpdateTool
 from tolokaforge.tools.builtin.http_request import HTTPRequestTool
-from tolokaforge.tools.registry import ToolCategory
+from tolokaforge.tools.registry import (
+    TOOL_FAILURE_WITHOUT_MESSAGE,
+    ToolCategory,
+    resolve_tool_output,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -250,6 +257,45 @@ class TestHTTPRequestTool:
 
         assert result.success is False
         assert "failed" in result.error.lower()
+
+    @patch("tolokaforge.tools.builtin.http_request.httpx.request")
+    def test_execute_error_status_reports_the_body(self, mock_request: MagicMock) -> None:
+        """A 4xx/5xx answer reaches ``error`` with its status and body (#1836)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.is_success = False
+        mock_response.headers = {"content-type": "application/json"}
+        mock_response.json.return_value = {"error": "RecordNotFound"}
+        mock_request.return_value = mock_response
+
+        result = HTTPRequestTool().execute(method="GET", url="http://mock-web:8080/tickets/42")
+
+        assert result.success is False
+        assert result.error == result.output
+        assert "404" in result.error
+        assert "RecordNotFound" in result.error
+        assert resolve_tool_output(result) == result.error
+
+    @patch("tolokaforge.tools.builtin.http_request.httpx.request")
+    def test_runner_wrapper_shows_the_error_body(self, mock_request: MagicMock) -> None:
+        """The runner raises the failed call's ``error``, so the agent reads the body."""
+        mock_response = MagicMock()
+        mock_response.status_code = 422
+        mock_response.is_success = False
+        mock_response.headers = {"content-type": "text/plain"}
+        mock_response.text = "status: invalid transition"
+        mock_request.return_value = mock_response
+        schema = SimpleNamespace(name="http_request", timeout_s=30.0, tool_config={})
+
+        with pytest.raises(ToolExecutionError) as exc_info:
+            asyncio.run(
+                BuiltinGenericToolWrapper(schema).execute(
+                    {"method": "PUT", "url": "http://mock-web:8080/tickets/42"}
+                )
+            )
+
+        assert TOOL_FAILURE_WITHOUT_MESSAGE not in str(exc_info.value)
+        assert "invalid transition" in str(exc_info.value)
 
     @patch("tolokaforge.tools.builtin.http_request.httpx.request")
     def test_execute_metadata(self, mock_request: MagicMock) -> None:
