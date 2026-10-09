@@ -28,7 +28,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import _NULL_EVENTS
 from tolokaforge.dx._display import DisplayMode
@@ -167,7 +167,7 @@ def _install_recording_stub(
 
     run_return = (tmp_path / "results" / "run_20260715_120000").resolve()
     if run_raises is None:
-        run_return.mkdir(parents=True)
+        fidelity_clean_run_dir(run_return)
 
     events_recorder: list[Any] = []
     ordering: list[str] = []
