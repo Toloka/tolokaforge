@@ -754,13 +754,20 @@ class TestTheRetryPolicy:
         from tolokaforge_langfuse.retry import Retrier
 
         from tolokaforge.observability.observer import TrialIdentity
-        from tolokaforge_langfuse import otel, plugin
+        from tolokaforge_langfuse import media, otel, plugin
 
         time = FakeTime()
         monkeypatch.setattr(
             plugin,
             "Retrier",
             functools.partial(Retrier, clock=time.clock, sleep=time.sleep, draw=lambda: 0.0),
+        )
+        # the trial's budget sets the deadline its retrier reads, so both run on one clock;
+        # on the real one the deadline would depend on how long the machine has been up
+        monkeypatch.setattr(
+            media,
+            "LangfuseAttachments",
+            functools.partial(media.LangfuseAttachments, clock=time.clock),
         )
         monkeypatch.setattr(
             otel, "SpanQueue", functools.partial(otel.SpanQueue, clock=time.clock, sleep=time.sleep)
