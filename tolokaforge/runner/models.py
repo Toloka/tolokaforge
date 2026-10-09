@@ -190,7 +190,28 @@ class ToolSchema(BaseModel):
     the per-model cap passes the tool message through verbatim.
     """
 
+    mutates_state: bool | None = None
+    """Whether a call can change the graded state, as the tool's author declares it
+    (ADR-0057).
+
+    ``None`` is unknown and reads as ``True`` wherever the engine needs an answer.
+    An MCP server declares it through the ``readOnlyHint`` tool annotation
+    (``DomainToolRegistry.tool(..., mutates_state=...)``), which the native adapter
+    reads back; an adapter that knows it from its own sources sets it directly.
+    Left out of the dump while ``None``, so an image predating the field accepts
+    every pack that does not declare it. ``category`` is not read for it.
+    """
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"mutates_state"})
+
     model_config = {"extra": "forbid"}
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_an_undeclared_mutates_state(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
 
 
 # =============================================================================

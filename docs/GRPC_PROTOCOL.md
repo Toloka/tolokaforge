@@ -241,6 +241,10 @@ message ToolSchema {
   // min(tool_cap, capability_cap). Optional (proto3): unset arrives as
   // Python None on the host and reads as "no per-tool cap".
   optional int32 output_max_chars = 6;
+  // Whether a call can change the graded state, as the tool's author declares
+  // it (ADR-0057). Optional (proto3): unset arrives as Python None on the host
+  // and means unknown, which reads as mutating; an older runner never sets it.
+  optional bool mutates_state = 7;
 }
 
 // =============================================================================

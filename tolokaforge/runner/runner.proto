@@ -125,6 +125,12 @@ message ToolSchema {
   // this field, or a tool whose policy does not name a cap in a pack with no
   // override, sends nothing and the harness reads that as no per-tool cap.
   optional int32 output_max_chars = 6;
+
+  // Whether a call can change the graded state, as the tool's author declares
+  // it (ADR-0057). Optional (proto3): unset means unknown, which reads as
+  // mutating wherever the engine needs an answer; a runner predating this
+  // field never sets it.
+  optional bool mutates_state = 7;
 }
 
 // =============================================================================

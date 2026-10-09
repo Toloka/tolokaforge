@@ -466,6 +466,9 @@ class GrpcRunnerClient:
                         "output_max_chars": (
                             schema.output_max_chars if schema.HasField("output_max_chars") else None
                         ),
+                        "mutates_state": (
+                            schema.mutates_state if schema.HasField("mutates_state") else None
+                        ),
                     }
                 )
 

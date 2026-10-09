@@ -97,6 +97,9 @@ class ToolSchema(BaseModel):
 
     # Per-tool cap on the role=tool message content the engine loop appends.
     output_max_chars: Optional[int] = None        # see below
+
+    # Whether a call can change the graded state, as the tool's author declares it.
+    mutates_state: Optional[bool] = None          # see below; left out of the dump while None
 ```
 
 `ToolSchema.timeout_s` is the backstop the runner bands a call with **only for a
@@ -121,6 +124,19 @@ override at `tools.<actor>.<tool_name>.output_max_chars`, as `min` of whichever
 are set. `None` (the default) defers to the per-model cap; a tool that declares
 no cap in a pack that overrides no cap, run under a preset that declares no cap,
 passes its message content through verbatim.
+
+`ToolSchema.mutates_state` ([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md))
+is the tool author's declaration of whether a call can change the graded state.
+`None` means unknown and reads as `True` wherever the engine needs an answer. The
+field is left out of the serialised schema while it is `None`, so an image that
+predates it accepts every pack that does not declare it. An MCP server declares it
+through the `readOnlyHint` tool annotation
+(`DomainToolRegistry.tool(..., mutates_state=False)`), which the native adapter reads
+back from `tools/list` and caches in `fixtures/tools.json`; an adapter that knows the
+flag from its own sources sets it directly. The proto `ToolSchema` that
+`RegisterTrialResponse` returns carries the same flag as `optional bool
+mutates_state = 7`, set only when declared. `category` is not read for it and is
+retired in a later release.
 
 ```python
 # =============================================================================

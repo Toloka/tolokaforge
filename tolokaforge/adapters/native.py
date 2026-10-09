@@ -252,6 +252,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 source=source,
                 tool_config=configs.get(tool_name, {}),
                 output_max_chars=emitted_cap,
+                mutates_state=rich.get("mutates_state"),
             )
         )
     return schemas

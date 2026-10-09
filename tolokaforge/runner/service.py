@@ -163,6 +163,7 @@ from tolokaforge.runner.models import (
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
+    ToolSchema,
     TraceChecksConfig,
     TraceChecksResult,
     TranscriptEvaluationResult,
@@ -525,6 +526,26 @@ def _unreachable_state_checks_refusal(
             "trial's database (rooted at db or tables), or drop the assertion."
         )
     return None
+
+
+def _wire_tool_schema(tool: ToolSchema) -> pb2.ToolSchema:
+    """``tool`` as ``RegisterTrialResponse`` returns it to the engine.
+
+    The proto3-optional fields are set only when the description declares them,
+    so the engine reads an unset one as "not declared" (``HasField`` is false).
+    """
+    schema = pb2.ToolSchema(
+        name=tool.name,
+        description=tool.description,
+        parameters_json=json.dumps(tool.parameters),
+        category=tool.category,
+        timeout_s=tool.timeout_s,
+    )
+    if tool.output_max_chars is not None:
+        schema.output_max_chars = tool.output_max_chars
+    if tool.mutates_state is not None:
+        schema.mutates_state = tool.mutates_state
+    return schema
 
 
 def _backstop_seconds(tool: Any, trial_default: float) -> float:
@@ -1313,31 +1334,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         error=f"Tool lifecycle start failed: {e}",
                     )
 
-        # Build tool schemas for response
-        tool_schemas = []
-        for tool in task_description.agent_tools:
-            schema = pb2.ToolSchema(
-                name=tool.name,
-                description=tool.description,
-                parameters_json=json.dumps(tool.parameters),
-                category=tool.category,
-                timeout_s=tool.timeout_s,
-            )
-            if tool.output_max_chars is not None:
-                schema.output_max_chars = tool.output_max_chars
-            tool_schemas.append(schema)
-
-        for tool in task_description.user_tools:
-            schema = pb2.ToolSchema(
-                name=tool.name,
-                description=tool.description,
-                parameters_json=json.dumps(tool.parameters),
-                category=tool.category,
-                timeout_s=tool.timeout_s,
-            )
-            if tool.output_max_chars is not None:
-                schema.output_max_chars = tool.output_max_chars
-            tool_schemas.append(schema)
+        # Agent slice first, then the user's: the engine partitions at num_agent_tools.
+        tool_schemas = [
+            _wire_tool_schema(tool)
+            for tool in (*task_description.agent_tools, *task_description.user_tools)
+        ]
 
         logger.info(
             f"RegisterTrial: {trial_id} - {len(task_description.agent_tools)} agent tools, "
