@@ -347,7 +347,7 @@ class TestPerTrialRuntimeReturnsNone:
         task_desc = MagicMock()
         task_desc.environment_manifest = per_trial_manifest
         task_desc.adapter_type = "native"
-        adapter.to_task_description.return_value = task_desc
+        adapter.describe_task.return_value = task_desc
         orch.adapter = adapter
         assert orch._extract_run_env_manifest() is None
 

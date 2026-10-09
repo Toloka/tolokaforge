@@ -186,7 +186,7 @@ def _sanitized_tool_spec(
 
     Runs the same three-step pipeline the production path uses:
 
-    1. ``adapter.to_task_description(task_id).agent_tools`` — the
+    1. ``adapter.describe_task(task_id).agent_tools`` — the
        orchestrator-side authoring source for tool schemas.
     2. Convert each :class:`ToolSchema` to the OpenAI ``function`` shape
        and apply property-name sanitisation (matches
@@ -195,7 +195,7 @@ def _sanitized_tool_spec(
        model's preset — the same pass :meth:`LLMClient.generate` runs at
        wire time.
     """
-    task_description = adapter.to_task_description(task_id)
+    task_description = adapter.describe_task(task_id)
     raw_tool_schemas = list(task_description.agent_tools)
     openai_shape = [tool_schema_to_openai_dict(ts) for ts in raw_tool_schemas]
     capabilities = build_capabilities(

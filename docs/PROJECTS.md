@@ -1019,6 +1019,14 @@ sharing task-level fields across every task in a project:
   [Actor composition](#actor-composition)).
 - `max_turns`, `policies`, `grading_defaults`, `adapter_settings`
   — shared knobs.
+- `tool_libraries` — the shared tool libraries every task pins,
+  `[{name, version, apps}]`. The engine resolves each pin among the
+  libraries installed next to it and delivers the library's sources
+  with every trial, so the project carries no copy of them
+  ([ADR-0056](adr/0056-shared-tool-libraries-through-tool-artifacts.md),
+  [`TASK_DESCRIPTION_SCHEMA.md` § `tool_artifacts`](TASK_DESCRIPTION_SCHEMA.md#tool_artifacts-tool-code-and-the-shared-libraries-a-task-pins)).
+  An adapter's shared `domain.yaml` may pin them the same way; the
+  layering is the one `tools` follows.
 
 This covers the great majority of cross-task sharing needs. A project
 with three hundred customer-support tasks declares the shared

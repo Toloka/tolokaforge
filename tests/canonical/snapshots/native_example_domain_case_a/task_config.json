@@ -46,6 +46,7 @@
   "system_prompt": "_shared/system_prompt.md",
   "task_id": "example_domain_case_a",
   "timeouts": null,
+  "tool_libraries": [],
   "tools": {
     "agent": {
       "enabled": [

@@ -1,6 +1,6 @@
 # 0056. Shared tool libraries reach the trial through `tool_artifacts`, pinned by the task and added by the engine
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-09
 - **Deciders:** — (proposed by @rsmtnn)
 - **Supersedes:** —

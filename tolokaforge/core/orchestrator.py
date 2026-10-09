@@ -866,7 +866,7 @@ class Orchestrator:
         # runs that reached natural completion.
         self._stopped_reason: str | None = None
         # Per-run cache of resolved ``TaskDescription`` objects keyed by
-        # task_id. ``adapter.to_task_description()`` reads the system
+        # task_id. ``adapter.describe_task()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
         # — repeating that K times for ``repeats=K`` trials of the same
         # task is wasted work. Populated by whichever resolver runs first
@@ -1255,7 +1255,7 @@ class Orchestrator:
         cached = self._task_desc_cache.get(task_id)
         if cached is not None:
             return cached
-        description = self.adapter.to_task_description(task_id)
+        description = self.adapter.describe_task(task_id)
         ensure_registered_adapter(description.adapter_type)
         self._task_desc_cache[task_id] = description
         return description

@@ -528,6 +528,12 @@ class MCPServerProcess(BaseModel):
     """Manages an MCP server subprocess."""
 
     script_path: str
+    python_path: tuple[str, ...] = ()
+    """Directories put ahead of the inherited ``PYTHONPATH`` of the subprocess.
+
+    The runner passes the trial's artefact root, so a server under ``_shared/``
+    imports the packages delivered at that root — a pinned tool library
+    (ADR-0056) among them — as the runner process itself does."""
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0
     _start_lock: Any = PrivateAttr(default_factory=threading.Lock)
@@ -563,6 +569,7 @@ class MCPServerProcess(BaseModel):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=self._subprocess_environment(),
         )
         if self._closed:
             self.stop()
@@ -583,6 +590,20 @@ class MCPServerProcess(BaseModel):
         self.process.stdin.flush()
 
         logger.info(f"Started MCP server: {self.script_path}")
+
+    def _subprocess_environment(self) -> dict[str, str] | None:
+        """The runner's environment with :attr:`python_path` ahead of ``PYTHONPATH``.
+
+        ``None`` — inherit the environment unchanged — when there is nothing to add.
+        """
+        if not self.python_path:
+            return None
+        env = dict(os.environ)
+        inherited = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = os.pathsep.join(
+            [*self.python_path, inherited] if inherited else self.python_path
+        )
+        return env
 
     def stop(self) -> None:
         """Stop the MCP server subprocess."""
@@ -709,9 +730,14 @@ class MCPServerProcess(BaseModel):
 
 
 class MCPServerPool:
-    """Lazy MCP processes owned by one trial's reconstructed tools."""
+    """Lazy MCP processes owned by one trial's reconstructed tools.
 
-    def __init__(self) -> None:
+    Every server the pool starts gets ``python_path`` ahead of its inherited
+    ``PYTHONPATH`` (see :attr:`MCPServerProcess.python_path`).
+    """
+
+    def __init__(self, python_path: tuple[str, ...] = ()) -> None:
+        self._python_path = python_path
         self._servers: dict[str, MCPServerProcess] = {}
         self._lock = threading.Lock()
         self._cleanup_lock = threading.Lock()
@@ -722,7 +748,9 @@ class MCPServerPool:
             if self._closed:
                 raise RuntimeError("Trial MCP servers have been closed")
             if script not in self._servers:
-                self._servers[script] = MCPServerProcess(script_path=script)
+                self._servers[script] = MCPServerProcess(
+                    script_path=script, python_path=self._python_path
+                )
             server = self._servers[script]
         server.start()
         return server
@@ -1618,6 +1646,7 @@ class ToolFactory:
         *,
         search_tool_name: str = DEFAULT_SEARCH_TOOL_NAME,
         search_index: SearchIndex | None = None,
+        artifacts_dir: str | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1641,6 +1670,9 @@ class ToolFactory:
                               ``search_index`` rather than looked up as a builtin.
             search_index: The trial's search index, built by the backend
                           ``search.plane`` names; ``None`` when the trial has none.
+            artifacts_dir: The trial's extracted ``tool_artifacts`` root; ``None``
+                           when the trial ships no artefacts. MCP server
+                           subprocesses get it ahead of ``PYTHONPATH``.
         """
         self.db_client = db_client
         self.trial_id = trial_id
@@ -1650,7 +1682,9 @@ class ToolFactory:
         self._initial_state_data = initial_state_data or {}
         self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
-        self._mcp_server_pool = MCPServerPool()
+        self._mcp_server_pool = MCPServerPool(
+            python_path=(artifacts_dir,) if artifacts_dir is not None else ()
+        )
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models
