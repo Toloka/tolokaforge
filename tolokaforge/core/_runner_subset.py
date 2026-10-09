@@ -99,6 +99,12 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
+    # The task-side MCP server registry (``create_server`` /
+    # ``DomainToolRegistry``). A pack's ``mcp_server.py`` built on it imports
+    # it inside the subprocess the runner starts on the image's interpreter,
+    # so no boot-side import names it; without it every tool call of such a
+    # pack fails inside the container (#1834).
+    "tolokaforge/core/tools_interface.py",
     "tolokaforge/core/trial.py",
     "tolokaforge/core/unknown_keys.py",
 )
