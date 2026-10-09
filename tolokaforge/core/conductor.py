@@ -41,6 +41,7 @@ from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, build_capabilities
 from tolokaforge.core.llm.presets import (
+    resolve_context_controls,
     resolve_effective_preset,
     resolve_policy_names,
 )
@@ -181,8 +182,15 @@ def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
 
     Shape: ``{"effective_preset": ..., "schema_sanitizer": ..., ...}``.
     See :func:`tolokaforge.core.llm.presets.resolve_policy_names` for the
-    named policy slots included in the fingerprint. Analytics tools diff
-    this across runs to detect preset / capability drift.
+    named policy slots and
+    :func:`tolokaforge.core.llm.presets.resolve_context_controls` for the
+    scalar context-control values included in the fingerprint. Analytics tools
+    diff this across runs to detect preset / capability drift.
+
+    The block records what the run resolved to, not what the config asked for:
+    the requested values are already on ``model_config.<role>.capabilities``,
+    and a setting a route overrode is only visible as the difference between
+    the two.
     """
     capabilities = build_capabilities(
         model_config.name,
@@ -192,6 +200,7 @@ def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
     return {
         "effective_preset": resolve_effective_preset(model_config.name, model_config.provider),
         **resolve_policy_names(capabilities),
+        **resolve_context_controls(capabilities),
     }
 
 
@@ -1430,8 +1439,10 @@ class InProcessConductor:
         """Serialize model config for trial output.
 
         Each role's block carries a ``resolved:`` sub-block with the preset
-        fingerprint (effective preset name plus the six registered-policy
-        names from :func:`tolokaforge.core.llm.presets.resolve_policy_names`).
+        fingerprint (effective preset name, the registered-policy names from
+        :func:`tolokaforge.core.llm.presets.resolve_policy_names`, and the
+        context-control values from
+        :func:`tolokaforge.core.llm.presets.resolve_context_controls`).
         Analytics tools diff this across runs to detect config drift without
         having to re-match the preset YAML.
 

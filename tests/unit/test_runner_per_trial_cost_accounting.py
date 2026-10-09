@@ -23,6 +23,7 @@ import pytest
 from pydantic import ValidationError
 
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.llm.usage import ProviderRawCall, Usage
 from tolokaforge.core.models import (
@@ -102,12 +103,11 @@ def _run_trial(results: list[GenerationResult]) -> Trajectory:
     """
     agent = MagicMock()
     agent.generate.side_effect = results
-    # Pin new-capability numeric slots to None so the loop's opt-in branches
-    # (empty_retry_count, tool_output_max_chars, default_max_turns,
-    # max_context_tokens, context_watermark) short-circuit to their pre-opt-in
-    # code paths instead of consuming MagicMock instances as ints.
-    agent.capabilities.max_context_tokens = None
-    agent.capabilities.context_watermark = None
+    # Real capabilities rather than Mock attributes: the loop reads these as
+    # ints on every turn, and a Mock reaches a comparison and raises. Pinning
+    # each new slot by hand breaks again every time a capability is added, so
+    # take the defaults production guarantees.
+    agent.capabilities = ModelCapabilities()
     runner = TrialRunner(
         task_id="trial-001",
         trial_index=0,
@@ -314,8 +314,7 @@ def _user_result(cost_usd: float, gen_id: str) -> GenerationResult:
 
 def _make_runner(user_simulator: MagicMock) -> TrialRunner:
     agent = MagicMock()
-    agent.capabilities.max_context_tokens = None
-    agent.capabilities.context_watermark = None
+    agent.capabilities = ModelCapabilities()
     return TrialRunner(
         task_id="trial-001",
         trial_index=0,
@@ -391,8 +390,7 @@ class TestSimulatorSpendReachesTrialMetrics:
         sim.reply.return_value = _user_result(0.02, "gen-user-1")
         agent = MagicMock()
         agent.generate.side_effect = [_result(0.10, "litellm"), _final_result()]
-        agent.capabilities.max_context_tokens = None
-        agent.capabilities.context_watermark = None
+        agent.capabilities = ModelCapabilities()
         runner = TrialRunner(
             task_id="trial-001",
             trial_index=0,

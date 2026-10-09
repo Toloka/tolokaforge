@@ -71,6 +71,10 @@ from tolokaforge.core.llm.providers import (
 )
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
+from tolokaforge.core.llm.reasoning_history import (
+    replayed_reasoning_payload,
+    resolve_reasoning_history,
+)
 from tolokaforge.core.llm.reasoning_transport import (
     PermissiveReasoningReader,
     arriving_reasoning,
@@ -1548,17 +1552,14 @@ class LLMClient:
                         content = "I understand."
                 litellm_msg["content"] = content
 
-            # P4b — splice reasoning-codec replay payload (e.g. Anthropic
+            # Splice the reasoning-codec replay payload (e.g. Anthropic
             # ``thinking_blocks``) onto assistant dicts. Zero provider-specific
-            # branching: the codec Protocol is the only abstraction.
-            if (
-                msg.role == MessageRole.ASSISTANT
-                and msg.reasoning is not None
-                and not msg.reasoning.capture_only
-            ):
-                replay_payload = self.capabilities.reasoning_codec.encode_for_replay(msg.reasoning)
-                if replay_payload:
-                    litellm_msg.update(replay_payload)
+            # branching: the codec Protocol is the only abstraction, and
+            # ``replayed_reasoning_payload`` is the same predicate the
+            # reasoning-history policy counts turns with.
+            replay_payload = replayed_reasoning_payload(msg, self.capabilities.reasoning_codec)
+            if replay_payload:
+                litellm_msg.update(replay_payload)
 
             litellm_messages.append(litellm_msg)
 
@@ -1919,7 +1920,13 @@ class LLMClient:
         A synthetic-envelope detection raises :class:`RuntimeError` so the
         outer :class:`Retrying` controller re-attempts the call — see
         :func:`_detect_synthetic_envelope`.
+
+        The reasoning-history policy is applied here rather than inside
+        :meth:`_build_kwargs` so that the dropped-replay check below sees the
+        same list the provider will: reasoning an operator deliberately dropped
+        is not reasoning the route refused to carry.
         """
+        messages = resolve_reasoning_history(messages, self.capabilities)
         wire_system, sanitized_tools, effective_system_prompt = self._prepare_prompt_and_tools(
             system, tools
         )

@@ -104,6 +104,10 @@ EXEMPT: dict[str, str] = {
     "analyze": "renders one --trajectory file and grades nothing",
     "assets": "stamps a project's asset seeds; reads no trial bundle",
     "browse": "opens a run directory in the OS handler; reads nothing itself",
+    "check-run": (
+        "reconciles a bundle's counts and grade shapes; derives no verdict from trial "
+        "content, so a redacted bundle is checkable like any other"
+    ),
     "config": "inspects and edits configuration; reads no trial bundle",
     "docker": "manages images and service stacks; reads no trial bundle",
     "grade": "regrades a grade-bundle-v1.0 artifact by URI; reads no recorded trial bundle",

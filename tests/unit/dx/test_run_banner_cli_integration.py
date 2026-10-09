@@ -35,7 +35,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.utils.orchestrator_stubs import complete_run
+from tests.utils.orchestrator_stubs import complete_run, fidelity_clean_run_dir
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.dx._display import DisplayMode
 from tolokaforge.dx.cli.main import cli
@@ -131,7 +131,7 @@ def _install_stub_orchestrator(
             if run_raises is not None:
                 raise run_raises
             output_dir = kwargs["output_dir"]
-            output_dir.mkdir(parents=True, exist_ok=True)
+            fidelity_clean_run_dir(output_dir)
             return output_dir.resolve()
 
     monkeypatch.setattr(cli_main, "Orchestrator", _StubOrchestrator)

@@ -44,6 +44,14 @@ from .protocols import PathResolver
 
 __all__ = ["HARNESS_USAGE_LOG_METADATA_KEY", "CodingHarnessAdapterMixin"]
 
+MAX_BATCH_COMMANDS = 10
+"""Commands one ``bash_batch`` call may carry.
+
+Bounds the tool's budget band: the declared ``timeout_s`` is the per-command
+ceiling times this number, so a full batch gets what the same commands would
+have got one call at a time, and a single turn still cannot run unbounded.
+"""
+
 
 HARNESS_USAGE_LOG_METADATA_KEY = "agent_harness_usage_log"
 """Metadata key carrying the *container* path of a trial's wire usage records.
@@ -249,6 +257,67 @@ class CodingHarnessAdapterMixin:
                 "toolset": toolset,
                 "module_path": "",
                 "class_name": "bash",
+                "invocation_style": "docker_compose_exec",
+                "extra": {
+                    "service": service,
+                    "compose_project_prefix": compose_project_prefix,
+                },
+            },
+        }
+
+    def emit_harness_batch_tool_schema(
+        self,
+        *,
+        service: str,
+        compose_project_prefix: str,
+        timeout_s: float,
+        toolset: str = "coding_harness",
+    ) -> dict[str, Any]:
+        """Batching sibling of :meth:`emit_harness_tool_schema`.
+
+        The parameter is a ``commands`` array rather than a ``command`` string,
+        so a turn carries as many shell commands as the model has independent
+        work for. Each command still runs as its own ``docker exec`` against a
+        fresh shell, exactly as the single-command tool does — the array changes
+        how many run per turn, not how any one of them behaves.
+
+        *timeout_s* is the per-command ceiling, the same one the single-command
+        tool applies. The declared budget is that ceiling times
+        :data:`MAX_BATCH_COMMANDS`, so a full batch gets what the same commands
+        would have got one call at a time; the wrapper divides it back out and
+        stops the array once the whole band is spent.
+        """
+        return {
+            "name": "bash_batch",
+            "description": (
+                "Run bash commands inside the task container. Commands run in "
+                "order, each in its own fresh shell, and every command's output "
+                "comes back in one result."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "commands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": MAX_BATCH_COMMANDS,
+                        "description": (
+                            "Shell commands to run, in order, at most "
+                            f"{MAX_BATCH_COMMANDS} per call. Include every "
+                            "command whose input does not depend on another "
+                            "command's output in the same call."
+                        ),
+                    }
+                },
+                "required": ["commands"],
+            },
+            "category": "compute",
+            "timeout_s": timeout_s * MAX_BATCH_COMMANDS,
+            "source": {
+                "toolset": toolset,
+                "module_path": "",
+                "class_name": "bash_batch",
                 "invocation_style": "docker_compose_exec",
                 "extra": {
                     "service": service,
