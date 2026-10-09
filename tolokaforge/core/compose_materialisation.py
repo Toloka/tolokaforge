@@ -167,7 +167,7 @@ def _enforce_no_internet(
 ) -> dict[str, Any]:
     _inject_isolation_networks(doc)
     services: dict[str, Any] = doc["services"]
-    contested = _contested_aliases(services)
+    contested = _contested_aliases(services, restricted_services)
     for service_name, service in services.items():
         if service_name in restricted_services:
             continue
@@ -194,7 +194,7 @@ def _enforce_limited_internet(
         )
     _inject_isolation_networks(doc)
     services: dict[str, Any] = doc["services"]
-    contested = _contested_aliases(services)
+    contested = _contested_aliases(services, restricted_services)
     no_proxy = ",".join([*services, NETPOLICY_PROXY_SERVICE, "localhost", "127.0.0.1"])
     proxy_url = f"http://{NETPOLICY_PROXY_SERVICE}:{NETPOLICY_PROXY_PORT}"
     for service_name, service in services.items():
@@ -379,7 +379,7 @@ def _merge_service_networks(
     a name already present is left untouched.
 
     The aliases a service declares on its own networks are carried onto every
-    added attachment (#1835). The policy moves the runner onto the injected
+    added attachment. The policy moves the runner onto the injected
     networks only, and Docker resolves an alias only on the network it is
     declared on: without the copy a service reachable as ``api.vendor.test`` in
     the task's compose is unreachable by that name from the runner, and a name
@@ -411,11 +411,18 @@ def _declared_aliases(networks: dict[str, Any]) -> list[str]:
     return aliases
 
 
-def _contested_aliases(services: dict[str, Any]) -> frozenset[str]:
-    """Aliases declared by more than one service, which no injected network may carry."""
+def _contested_aliases(
+    services: dict[str, Any], restricted_services: frozenset[str]
+) -> frozenset[str]:
+    """Aliases declared by more than one service that joins the injected networks, which
+    those networks may not carry. A restricted service never joins them, so an alias it
+    shares cannot collide there — counting it would drop the alias from the service that
+    does join, and the name would resolve through the edge network instead."""
     seen: set[str] = set()
     contested: set[str] = set()
-    for service in services.values():
+    for name, service in services.items():
+        if name in restricted_services:
+            continue
         networks = service.get("networks") if isinstance(service, dict) else None
         if not isinstance(networks, dict):
             continue
