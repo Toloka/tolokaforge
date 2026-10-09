@@ -123,6 +123,7 @@ from tolokaforge.core.search.stack_services import (
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
+from tolokaforge.runner.app_world import AppWorldClient, AppWorldError, open_app_world
 from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
 from tolokaforge.runner.db_client import (
     DBServiceClient,
@@ -618,6 +619,9 @@ class TrialContextRuntime:
         # tool whose session the backstop poisoned is rebuilt against the same
         # artifacts_dir and work_dir rather than a reconstruction of them.
         self.lifecycle_ctx: ToolLifecycleContext | None = None
+        # The service holding the trial's world when the task declares
+        # ``initial_state.app_world`` (ADR-0058); None otherwise.
+        self.app_world: AppWorldClient | None = None
         self._unusable_tools: dict[tuple[ToolExecutorIdentity, str], str] = {}
 
     def mark_tool_unusable(
@@ -1333,6 +1337,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         success=False,
                         error=f"Tool lifecycle start failed: {e}",
                     )
+
+        app_world_error = self._open_app_world(trial_context)
+        if app_world_error is not None:
+            return pb2.RegisterTrialResponse(success=False, error=app_world_error)
 
         # Agent slice first, then the user's: the engine partitions at num_agent_tools.
         tool_schemas = [
@@ -2868,22 +2876,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             match=_tool_registered_for_trial,
         )
 
-        # Detect MCP server wrappers — their state lives in a subprocess, not
-        # in the db-service, so we must sync before hashing and reset the MCP
-        # subprocess state when the db-service is reset.
-        mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
+        # An MCP server subprocess or an app world service holds the state
+        # rather than the db-service, so we must sync before hashing and reset
+        # the holder when the db-service is reset.
+        state_holder = self._state_holder(trial_context)
 
         # 1. Get current trial stable hash
-        # For MCP_SERVER tasks the db-service was never updated during the trial
-        # (the MCP subprocess holds state in memory), so sync first.
-        if mcp_wrapper is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (trial)")
+        # With a state holder the db-service was never updated during the
+        # trial, so sync first.
+        if state_holder is not None:
+            logger.info(f"GradeTrial: {trial_id} - Syncing the held state to db-service (trial)")
             try:
-                loop = asyncio.get_event_loop()
-                mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                await self._sync_mcp_state_to_db(trial_id, mcp_state)
+                await self._sync_held_state_to_db(trial_id, state_holder)
             except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
+                logger.error(f"GradeTrial: Failed to sync the held state before trial_hash: {e}")
                 raise
 
         # Fast path: hash server-side. Slow path (compare_columns declared):
@@ -2912,20 +2918,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.reset_trial(trial_id)
         logger.debug("GradeTrial: Reset to initial state")
 
-        # For MCP_SERVER tasks also reset the subprocess state so golden actions
-        # execute from a clean initial state (not from the agent's final state).
-        if mcp_wrapper is not None:
+        # Also reset the state holder so golden actions execute from a clean
+        # initial state (not from the agent's final state).
+        if state_holder is not None:
             initial_tables = (
                 trial_context.task_description.initial_state.tables
                 if trial_context.task_description and trial_context.task_description.initial_state
                 else {}
             )
-            logger.info(f"GradeTrial: {trial_id} - Resetting MCP server state to initial")
+            logger.info(f"GradeTrial: {trial_id} - Resetting the held state to initial")
             try:
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, lambda: mcp_wrapper.reset_state(initial_tables))
+                await loop.run_in_executor(None, lambda: state_holder.reset_state(initial_tables))
             except Exception as e:
-                logger.error(f"GradeTrial: Failed to reset MCP state: {e}")
+                logger.error(f"GradeTrial: Failed to reset the held state: {e}")
                 raise
 
         # 4. Execute golden path actions
@@ -2979,16 +2985,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             replay_failures.append(FailedGoldenAction.from_reported_failure(i, tool_name, reported))
 
-        # For MCP_SERVER tasks: sync subprocess state to db-service so the
-        # hash reflects what the golden actions actually produced.
-        if mcp_wrapper is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (golden)")
+        # Sync the holder's state to db-service so the hash reflects what the
+        # golden actions actually produced.
+        if state_holder is not None:
+            logger.info(f"GradeTrial: {trial_id} - Syncing the held state to db-service (golden)")
             try:
-                loop = asyncio.get_event_loop()
-                golden_mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                await self._sync_mcp_state_to_db(trial_id, golden_mcp_state)
+                await self._sync_held_state_to_db(trial_id, state_holder)
             except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync MCP state after golden actions: {e}")
+                logger.error(f"GradeTrial: Failed to sync the held state after golden actions: {e}")
                 raise
 
         # 5. Snapshot golden state (for diff if mismatch)
@@ -3179,15 +3183,62 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # MCP-server grading helpers
     # =========================================================================
 
+    def _open_app_world(self, trial_context: TrialContextRuntime) -> str | None:
+        """Claim and load the trial's app world (ADR-0058); the refusal, or ``None``.
+
+        A refusal cleans the trial up: the world is not this trial's to grade.
+        """
+        trial_id = trial_context.trial_id
+        initial_state = trial_context.task_description.initial_state
+        if initial_state.app_world is None:
+            return None
+        try:
+            trial_context.app_world = open_app_world(
+                initial_state.app_world,
+                initial_state.tables,
+                {"agent": trial_context.agent_tools, "user": trial_context.user_tools},
+            )
+        except AppWorldError as e:
+            error = f"App world load failed: {e}"
+            logger.error(f"RegisterTrial: {trial_id} - {error}")
+            try:
+                self._run_async(self.cleanup_trial(trial_id))
+            except Exception as cleanup_error:
+                logger.error(
+                    f"RegisterTrial: Cleanup after the failed app world load of {trial_id} "
+                    f"also failed: {cleanup_error}"
+                )
+            return error
+        logger.info(
+            f"RegisterTrial: {trial_id} - loaded the app world at "
+            f"{initial_state.app_world.url} ({len(initial_state.tables)} tables)"
+        )
+        return None
+
     @staticmethod
-    def _find_mcp_server_wrapper(
+    def _state_holder(
         trial_context: "TrialContextRuntime",
-    ) -> MCPServerToolWrapper | None:
-        """Return the first MCPServerToolWrapper found in agent_tools, or None."""
+    ) -> AppWorldClient | MCPServerToolWrapper | None:
+        """What holds the trial's state instead of the db-service, or ``None``.
+
+        The app world service (ADR-0058), else the first MCP server among the agent's
+        tools. Both answer ``get_state()`` and ``reset_state(tables)``; task validation
+        refuses a task declaring both.
+        """
+        if trial_context.app_world is not None:
+            return trial_context.app_world
         for wrapper in trial_context.agent_tools.values():
             if isinstance(wrapper, MCPServerToolWrapper):
                 return wrapper
         return None
+
+    async def _sync_held_state_to_db(
+        self, trial_id: str, holder: AppWorldClient | MCPServerToolWrapper
+    ) -> None:
+        """Read the holder's state back and write it into the trial's db-service."""
+        loop = asyncio.get_event_loop()
+        held_state = await loop.run_in_executor(None, holder.get_state)
+        await self._sync_mcp_state_to_db(trial_id, held_state)
 
     async def _sync_mcp_state_to_db(
         self,
@@ -3290,13 +3341,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # the trial (the subprocess holds state in memory).  Sync first so the
         # caller gets the real final state instead of the stale initial state.
         trial_context = self.trials.get(trial_id)
-        if trial_context is not None:
-            mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
+        if trial_context is not None and trial_context.app_world is not None:
+            # The app world is the trial's only state: a state not read back is no answer.
+            await self._sync_held_state_to_db(trial_id, trial_context.app_world)
+        elif trial_context is not None:
+            mcp_wrapper = self._state_holder(trial_context)
             if mcp_wrapper is not None:
                 try:
-                    loop = asyncio.get_event_loop()
-                    mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                    await self._sync_mcp_state_to_db(trial_id, mcp_state)
+                    await self._sync_held_state_to_db(trial_id, mcp_wrapper)
                     logger.debug(f"GetState: synced MCP subprocess state for {trial_id}")
                 except Exception as e:
                     logger.warning(f"GetState: could not sync MCP state for {trial_id}: {e}")
@@ -3375,6 +3427,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Reset state in DB Service
         reset_response = await self.db_client.reset_trial(trial_id)
+
+        # An app world holds the state the agent acts on; restore it too.
+        trial_context = self.trials.get(trial_id)
+        if trial_context is not None and trial_context.app_world is not None:
+            app_world = trial_context.app_world
+            initial_tables = trial_context.task_description.initial_state.tables
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: app_world.reset_state(initial_tables)
+            )
 
         # Clear tool call history in trial context
         if trial_id in self.trials:
@@ -3547,6 +3608,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 cleanup_tools, trial_context.agent_tools, trial_context.user_tools
             )
             trial_context.tools_released = True
+        if trial_context is not None and trial_context.app_world is not None:
+            trial_context.app_world.close()
+            trial_context.app_world = None
 
         # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's

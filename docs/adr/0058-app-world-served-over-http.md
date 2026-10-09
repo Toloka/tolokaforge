@@ -1,6 +1,6 @@
 # 0058. An application world served over HTTP holds one trial's state: `initial_state.app_world`, runtime-minted credentials, engine-side grading
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-09
 - **Deciders:** — (proposed by @rsmtnn)
 - **Supersedes:** —
