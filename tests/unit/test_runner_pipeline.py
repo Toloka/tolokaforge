@@ -130,6 +130,69 @@ class TestRunnerPipeline:
         assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
         assert "not found" in response.error_message.lower()
 
+    def test_a_malformed_bash_batch_argument_is_a_failed_call_not_a_success(
+        self, runner_service, mock_grpc_context, simple_task_description
+    ):
+        """``{"commands": "ls -la"}`` — the shape a model sends when it treats the
+        array as a string — is recorded as an error, with nothing executed.
+
+        The wrapper used to return its own ``ERROR:`` string, which this path
+        records as ``EXECUTION_STATUS_SUCCESS``: the turn was lost and the
+        metrics said nothing had gone wrong.
+        """
+        from tolokaforge.runner.models import ToolSchema, ToolSource
+        from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
+
+        trial_id = "malformed_batch_test:0"
+        registration = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+        )
+        assert runner_service.RegisterTrial(registration, mock_grpc_context).success is True
+
+        schema = ToolSchema(
+            name="bash_batch",
+            description="stub",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string"},
+                    "commands": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            category="compute",
+            timeout_s=30.0,
+            source=ToolSource(
+                toolset="terminal_bench",
+                module_path="",
+                class_name="bash_batch",
+                invocation_style="docker_compose_exec",
+                extra={"service": "agent", "compose_project_prefix": "tbench"},
+            ),
+        )
+        wrapper = DockerComposeExecToolWrapper(
+            schema, service="agent", compose_project_prefix="tbench"
+        )
+        wrapper._container = "tbench_task_0_agent"
+        runner_service.trials[trial_id].agent_tools["bash_batch"] = wrapper
+
+        for bad_arguments in ({"commands": "ls -la"}, {"commands": [{"cmd": "ls"}]}):
+            response = runner_service.ExecuteTool(
+                execute_request(trial_id, "bash_batch", json.dumps(bad_arguments)),
+                mock_grpc_context,
+            )
+
+            assert response.status == pb2.EXECUTION_STATUS_ERROR
+            assert "`commands` must be an array of strings" in response.error_message
+            assert "Nothing was run" in response.error_message
+            assert response.output == ""
+
+        history = runner_service.trials[trial_id].tool_call_history
+        assert [call.status for call in history] == [
+            ToolExecutionStatus.ERROR,
+            ToolExecutionStatus.ERROR,
+        ]
+        assert all("`commands` must be an array of strings" in call.output for call in history)
+
     def test_execute_tool_with_mock_tool(
         self, runner_service, mock_grpc_context, simple_task_description
     ):

@@ -228,12 +228,14 @@ def materialize_dry_run_sample(
     # The preset default is threaded here for the same reason the conductor
     # threads it: a dry run that printed a different system prompt from the
     # one the trial sends would be showing the wrong thing.
+    capabilities = build_capabilities(
+        agent_config.name, agent_config.provider, overrides=agent_config.capabilities
+    )
     system_prompt = build_system_prompt(
         task=task,
         task_dir=task_dir,
-        default_prompt_contract=build_capabilities(
-            agent_config.name, agent_config.provider, overrides=agent_config.capabilities
-        ).default_agent_prompt_contract,
+        default_prompt_contract=capabilities.default_agent_prompt_contract,
+        observation_window=capabilities.observation_window,
     )
     user_prompt_text, user_prompt_is_literal = _resolve_user_prompt(task)
     tool_spec = _sanitized_tool_spec(

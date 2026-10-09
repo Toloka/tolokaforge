@@ -10,6 +10,7 @@ from tolokaforge.adapters._task_loader import load_task
 from tolokaforge.core.agent_prompt_contract import (
     CONTRACTS,
     UnknownAgentPromptContractError,
+    observation_window_clause,
     resolve_agent_prompt_contract,
 )
 from tolokaforge.core.llm import build_capabilities, presets
@@ -173,11 +174,30 @@ class TestWhatTheShippedContractMustSay:
     def test_it_describes_completion_structurally_and_names_no_token(self) -> None:
         contract = CONTRACTS["reasoning_agent"]
 
-        assert "make no tool" in contract
+        assert "reply with no tool call" in contract
         assert "###STOP###" not in contract, "the exit token belongs to the user simulator"
 
+    def test_it_asks_for_no_closing_summary(self) -> None:
+        """The grader reads the container, so prose on the final turn is paid for and unread."""
+        assert "summary" not in CONTRACTS["reasoning_agent"]
+
     def test_it_asks_the_model_to_reconcile_against_what_it_expected(self) -> None:
-        assert "what you expect it to produce" in CONTRACTS["reasoning_agent"]
+        assert "what you expect the next command to produce" in CONTRACTS["reasoning_agent"]
+
+    def test_it_routes_the_note_to_a_tool_argument_when_one_exists(self) -> None:
+        """``bash_batch`` carries a required ``note``; a single-command tool does not."""
+        contract = CONTRACTS["reasoning_agent"]
+
+        assert "`note` argument when it has one" in contract
+        assert "otherwise in your message" in contract
+
+    def test_it_makes_no_claim_about_output_retention(self) -> None:
+        """By default every observation is replayed in full; the claim lives in the
+        clause :func:`build_system_prompt` composes in only when a window is set."""
+        contract = CONTRACTS["reasoning_agent"]
+
+        assert "not kept" not in contract
+        assert "scrolls away" not in contract
 
     def test_it_separates_the_note_from_a_planning_step(self) -> None:
         """A task may forbid a plan; a model reads that as covering the note too."""
@@ -186,6 +206,68 @@ class TestWhatTheShippedContractMustSay:
     def test_it_stays_short_enough_not_to_spend_the_cost_advantage(self) -> None:
         """Re-sent every turn, so length is a per-turn tax on every trial."""
         assert len(CONTRACTS["reasoning_agent"]) < 2_000
+
+
+class TestTheObservationWindowClause:
+    """The contract says output is dropped only when the loop drops it."""
+
+    def test_no_window_adds_nothing(self, tmp_path: Path) -> None:
+        built = build_system_prompt(
+            task=_task(agent_prompt_contract="reasoning_agent"),
+            task_dir=tmp_path,
+            observation_window=None,
+        )
+
+        assert built.startswith(CONTRACTS["reasoning_agent"])
+        assert "most recent command outputs" not in built
+
+    def test_a_window_names_its_size_after_the_contract(self, tmp_path: Path) -> None:
+        built = build_system_prompt(
+            task=_task(agent_prompt_contract="reasoning_agent"),
+            task_dir=tmp_path,
+            observation_window=8,
+        )
+
+        assert built.startswith(CONTRACTS["reasoning_agent"] + "\n\n")
+        assert observation_window_clause(8) in built
+        assert "Only your 8 most recent command outputs stay in your history" in built
+
+    def test_a_pack_supplied_contract_is_told_the_same_truth(self, tmp_path: Path) -> None:
+        (tmp_path / "house.md").write_text("House rules.")
+
+        built = build_system_prompt(
+            task=_task(agent_prompt_contract="house.md"),
+            task_dir=tmp_path,
+            observation_window=3,
+        )
+
+        assert built.startswith("House rules.\n\n" + observation_window_clause(3))
+
+    def test_the_clause_sits_before_the_task_body(self, tmp_path: Path) -> None:
+        (tmp_path / "task.md").write_text("Fix the build.")
+
+        built = build_system_prompt(
+            task=_task(agent_prompt_contract="reasoning_agent", system_prompt="task.md"),
+            task_dir=tmp_path,
+            observation_window=5,
+        )
+
+        assert built.index(observation_window_clause(5)) < built.index("Fix the build.")
+
+    def test_a_zero_window_says_nothing_is_kept(self) -> None:
+        assert observation_window_clause(0).startswith(
+            "Command outputs do not stay in your history"
+        )
+
+    def test_a_negative_window_is_refused(self) -> None:
+        with pytest.raises(ValueError):
+            observation_window_clause(-1)
+
+    def test_without_a_contract_the_window_adds_nothing(self, tmp_path: Path) -> None:
+        """The clause is contract text; the authoring chain is left alone."""
+        built = build_system_prompt(task=_task(), task_dir=tmp_path, observation_window=8)
+
+        assert built == "You are a helpful assistant."
 
 
 class TestThePresetKnob:
