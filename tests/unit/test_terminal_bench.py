@@ -27,6 +27,7 @@ from tolokaforge.runner.models import (
     ToolSource,
 )
 from tolokaforge.runner.tool_factory import (
+    _STAGED_STDIO_SCRIPT,
     DockerComposeExecToolWrapper,
     ToolConfigurationError,
     ToolExecutionError,
@@ -179,15 +180,9 @@ class TestDockerComposeExecWrapperExec:
             result = wrapper.exec_in_env("echo hello world", 30.0)
             assert result == "hello world\n"
             argv = mock_popen.call_args.args[0]
-            assert argv == [
-                "docker",
-                "exec",
-                "-i",
-                "tbench_task-1_0_main",
-                "bash",
-                "-c",
-                "echo hello world",
-            ]
+            assert argv[:6] == ["docker", "exec", "-i", "tbench_task-1_0_main", "bash", "-c"]
+            assert argv[6] == _STAGED_STDIO_SCRIPT
+            assert argv[-1] == "echo hello world"
 
     def test_exec_in_env_nonzero_exit(self, wrapper):
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))

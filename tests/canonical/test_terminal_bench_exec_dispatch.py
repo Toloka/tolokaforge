@@ -30,6 +30,7 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 from tolokaforge.runner.compose_naming import compose_container_name, compose_trial_slug
 from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.tool_factory import (
+    _STAGED_STDIO_SCRIPT,
     DockerComposeExecToolWrapper,
     ToolLifecycleContext,
 )
@@ -62,9 +63,11 @@ def _fake_popen(stdout: str = "", stderr: str = "", returncode: int = 0) -> Magi
 
 
 def test_exec_argv_pins_docker_exec_shape():
-    """Argv is exactly ``docker exec -i <container> bash -c <cmd>`` — no
-    ``docker compose``, no ``-p``/``-f``, no ``exec -T``. Any drift would
-    break the equivalence with the host-side compose project."""
+    """Argv is ``docker exec -i <container> bash -c <stdio-staging script> …
+    <cmd>`` — no ``docker compose``, no ``-p``/``-f``, no ``exec -T``, no
+    ``-t``. Any drift would break the equivalence with the host-side compose
+    project (or, for ``-t``, hang up every service the command left running
+    when the pty closes)."""
     wrapper = _wrapper()
     wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
 
@@ -73,15 +76,10 @@ def test_exec_argv_pins_docker_exec_shape():
 
     assert popen_mock.call_count == 1
     argv = popen_mock.call_args.args[0]
-    assert argv == [
-        "docker",
-        "exec",
-        "-i",
-        "tbench_task-1_0_main",
-        "bash",
-        "-c",
-        "echo hi",
-    ]
+    assert argv[:6] == ["docker", "exec", "-i", "tbench_task-1_0_main", "bash", "-c"]
+    assert argv[6] == _STAGED_STDIO_SCRIPT
+    assert argv[-1] == "echo hi"
+    assert "-t" not in argv
 
 
 def test_container_name_matches_host_side_synthesis():

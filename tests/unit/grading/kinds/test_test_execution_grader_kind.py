@@ -259,10 +259,10 @@ def test_kind_config_defaults_map_to_standard_verifier_paths() -> None:
 
 def test_stdout_truncated_at_configured_char_cap() -> None:
     """The kind truncates ``result.stdout`` for the reasons string at
-    ``output_truncation_chars`` (default 2000). The servicer already
-    wire-caps at 65_536 bytes; the reasons-side cap is a separate
-    guard for grade rendering readability."""
-    big = "X" * 5000
+    ``output_truncation_chars``. The default matches the servicer's 65_536
+    wire cap, so a verifier traceback the runner shipped is quoted whole in
+    the grade rather than cut mid-way."""
+    big = "X" * 70_000
     substrate = _ScriptedSubstrate(_result(reward_bytes=b"1.0\n", stdout=big))
     grade = _evaluate(substrate)
 
@@ -270,5 +270,5 @@ def test_stdout_truncated_at_configured_char_cap() -> None:
     output_marker = "test output (truncated):\n"
     idx = grade.reasons.index(output_marker) + len(output_marker)
     tail = grade.reasons[idx:]
-    assert len(tail) == 2000
-    assert tail == big[:2000]
+    assert len(tail) == 65_536
+    assert tail == big[:65_536]

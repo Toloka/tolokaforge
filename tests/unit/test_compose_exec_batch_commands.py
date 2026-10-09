@@ -50,7 +50,7 @@ def _wrapper(timeout_s: float = 30.0, max_items: int | None = None) -> DockerCom
 def test_commands_array_runs_in_order_and_labels_each_output(monkeypatch) -> None:
     seen: list[list[str]] = []
 
-    def fake_run(argv: list[str], timeout_s: float) -> str:
+    def fake_run(argv: list[str], timeout_s: float, **_: object) -> str:
         seen.append(argv)
         return f"out::{argv[-1]}"
 
@@ -73,7 +73,7 @@ def test_commands_array_runs_in_order_and_labels_each_output(monkeypatch) -> Non
 def test_spent_budget_reports_the_remainder_as_unrun(monkeypatch) -> None:
     calls: list[str] = []
 
-    def slow_first(argv: list[str], timeout_s: float) -> str:
+    def slow_first(argv: list[str], timeout_s: float, **_: object) -> str:
         calls.append(argv[-1])
         time.sleep(0.15)
         return "ok"
@@ -98,7 +98,7 @@ def test_spent_budget_reports_the_remainder_as_unrun(monkeypatch) -> None:
 def test_each_command_gets_the_per_command_ceiling_not_a_share(monkeypatch) -> None:
     budgets: list[float] = []
 
-    def record_budget(argv: list[str], timeout_s: float) -> str:
+    def record_budget(argv: list[str], timeout_s: float, **_: object) -> str:
         budgets.append(timeout_s)
         return "ok"
 
@@ -117,7 +117,7 @@ def test_each_command_gets_the_per_command_ceiling_not_a_share(monkeypatch) -> N
 
 
 def test_a_non_array_commands_argument_runs_nothing_and_says_so(monkeypatch) -> None:
-    def fail(argv: list[str], timeout_s: float) -> str:  # pragma: no cover - must not run
+    def fail(argv: list[str], timeout_s: float, **_: object) -> str:  # pragma: no cover
         raise AssertionError("a malformed commands argument must not reach docker exec")
 
     monkeypatch.setattr("tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", fail)
@@ -133,7 +133,7 @@ def test_a_non_array_commands_argument_runs_nothing_and_says_so(monkeypatch) -> 
 def test_single_command_path_is_unchanged(monkeypatch) -> None:
     seen: list[list[str]] = []
 
-    def fake_run(argv: list[str], timeout_s: float) -> str:
+    def fake_run(argv: list[str], timeout_s: float, **_: object) -> str:
         seen.append(argv)
         return "plain output"
 
@@ -151,7 +151,7 @@ def test_single_command_path_is_unchanged(monkeypatch) -> None:
 
 
 def test_empty_commands_array_runs_nothing(monkeypatch) -> None:
-    def fail(argv: list[str], timeout_s: float) -> str:  # pragma: no cover - must not run
+    def fail(argv: list[str], timeout_s: float, **_: object) -> str:  # pragma: no cover
         raise AssertionError("no docker exec should be issued for an empty array")
 
     monkeypatch.setattr("tolokaforge.runner.tool_factory._run_argv_preserving_partial_output", fail)
