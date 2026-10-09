@@ -334,6 +334,94 @@ class TestCaptureFinalState:
 
         conductor.runtime_backend.get_state.assert_not_called()
 
+    @staticmethod
+    def _db_spec() -> TrialSpec:
+        spec = _make_spec()
+        initial_state = spec.task.initial_state.model_copy(
+            update={"tables": {"users": [{"id": "u1", "balance": 100}]}}
+        )
+        spec = spec.model_copy(
+            update={"task": spec.task.model_copy(update={"initial_state": initial_state})}
+        )
+        assert provisions_database(spec.task.initial_state)
+        return spec
+
+    def _db_setup(self) -> MagicMock:
+        setup = self._setup()
+        setup.adapter_env.data = {"users": [{"id": "u1", "balance": 100}]}
+        return setup
+
+    @pytest.mark.parametrize(
+        ("answer", "cause"),
+        [
+            ({"success": False, "error": "MCP server closed connection"}, "closed connection"),
+            ({"success": False}, "no cause reported"),
+            ({"success": True, "state_json": ""}, "unreadable state"),
+            ({"success": True, "state_json": "[]"}, "not a state object"),
+        ],
+    )
+    def test_an_unreadable_runner_state_is_reported_not_replaced(
+        self, answer: dict[str, Any], cause: str
+    ) -> None:
+        """The pre-trial snapshot is not the final state of a trial whose DB is the Runner's."""
+        conductor = self._conductor()
+        conductor.runtime_backend.get_state.return_value = answer
+        setup = self._db_setup()
+        trajectory = _default_success_trajectory("t1", 0)
+
+        error = conductor._capture_final_state(self._db_spec(), setup, trajectory)
+
+        assert error is not None and cause in error
+        assert "db" not in trajectory.final_env_state
+        assert "agent" not in trajectory.final_env_state
+        setup.env_state.get_final_state.assert_not_called()
+
+    def test_a_raising_get_state_is_reported_not_replaced(self) -> None:
+        conductor = self._conductor()
+        conductor.runtime_backend.get_state.side_effect = ConnectionError("runner gone")
+        trajectory = _default_success_trajectory("t1", 0)
+
+        error = conductor._capture_final_state(self._db_spec(), self._db_setup(), trajectory)
+
+        assert error is not None and "ConnectionError: runner gone" in error
+
+    def test_an_empty_runner_state_is_the_final_state(self) -> None:
+        conductor = self._conductor()
+        conductor.runtime_backend.get_state.return_value = {"success": True, "state_json": "{}"}
+        setup = self._db_setup()
+
+        error = conductor._capture_final_state(
+            self._db_spec(), setup, _default_success_trajectory("t1", 0)
+        )
+
+        assert error is None
+        assert setup.env_state.db_state == {}
+
+    def test_a_lost_final_state_leaves_the_trial_ungraded(self) -> None:
+        """Acting status stands; the evaluation carries the cause and no grade."""
+        conductor = self._conductor()
+        conductor.runtime_backend.get_state.return_value = {
+            "success": False,
+            "error": "the live state of its MCP server could not be synchronised",
+        }
+        setup = self._db_setup()
+        setup.trial_id = "t1:0"
+        setup.trial_idx = 0
+        trajectory = _default_success_trajectory("t1", 0).model_copy(update={"grade": None})
+        conductor._setup_trial = MagicMock(return_value=setup)
+        conductor._run_agent_loop = MagicMock(return_value=(trajectory, MagicMock(), "sys"))
+        conductor._produce_grade_bundle = MagicMock()
+        conductor._write_artifacts = MagicMock()
+
+        conductor.run(self._db_spec(), MagicMock())
+
+        conductor.trial_grader.grade.assert_not_called()
+        assert trajectory.grade is None
+        assert trajectory.status == TrialStatus.COMPLETED
+        assert trajectory.grading_error is not None
+        assert "could not be synchronised" in trajectory.grading_error
+        conductor._write_artifacts.assert_called_once()
+
 
 class TestResolveMaxTurns:
     def test_orchestrator_default_is_50(self) -> None:

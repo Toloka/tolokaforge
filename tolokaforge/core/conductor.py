@@ -22,6 +22,7 @@ body.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -344,6 +345,10 @@ class _TrialSetup:
     """
 
 
+class FinalStateUnavailableError(Exception):
+    """The Runner could not report the final state of a trial that provisions a database."""
+
+
 @dataclass
 class ConductorCallLog:
     """Records what an :class:`InMemoryConductor` was asked to do.
@@ -545,8 +550,11 @@ class InProcessConductor:
             )
             # Every bundle, including the snapshot grader's, records the traced attempt.
             trajectory.attempt_id = spec.attempt_id
-            self._capture_final_state(spec, setup, trajectory)
-            self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
+            state_capture_error = self._capture_final_state(spec, setup, trajectory)
+            if state_capture_error is None:
+                self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
+            else:
+                self._refuse_grade(task_config, setup, trajectory, state_capture_error)
             self._produce_grade_bundle(spec, setup, trajectory)
         except BaseException as exc:
             # A trial that dies here (a hard raise, strict mode, a lost registration) still
@@ -1101,7 +1109,7 @@ class InProcessConductor:
         spec: TrialSpec,
         setup: _TrialSetup,
         trajectory: Trajectory,
-    ) -> None:
+    ) -> str | None:
         """Sync the trial's final environment state from the Runner DB
         service and stash it on ``trajectory.final_env_state``.
 
@@ -1115,48 +1123,41 @@ class InProcessConductor:
         :meth:`BaseAdapter.create_environment` — is available for the
         final-state stash.
 
+        For a task that provisions a database the Runner's answer is the only
+        final state there is, an empty one included. When it cannot be read —
+        the RPC raises, reports failure, or answers with no state object — the
+        cause is returned and no DB state is stashed: the pre-trial snapshot
+        would grade the agent on a world its tool calls never touched.
+
         When the trial's task carries an ``environment_manifest`` (a
         Project-layer / multi-container substrate), the resolved
         environment identity is recorded under the ``environment`` key so a
         post-mortem can read which services, images, DSNs, and mounts backed
         the trial. Manifest-less trials keep the JSON-DB-only shape.
+
+        Returns:
+            ``None`` once the final state is captured, else why it could not be.
         """
-        runner_state: dict[str, Any] | None = None
+        capture_error: str | None = None
         if provisions_database(spec.task.initial_state):
             try:
-                state_result = self.runtime_backend.get_state(setup.trial_id)
-                if state_result.get("success") and state_result.get("state_json"):
-                    import json as _json
-
-                    decoded = _json.loads(state_result["state_json"])
-                    if isinstance(decoded, dict) and decoded:
-                        runner_state = decoded
-                    else:
-                        self.logger.debug("Runner DB state empty, falling back to adapter env data")
-                else:
-                    self.logger.debug(
-                        "Failed to fetch Runner DB state, falling back to adapter env data",
-                        error=state_result.get("error"),
-                    )
-            except Exception as e:
-                self.logger.warning(
-                    "Could not fetch state from Runner, using adapter env data",
-                    error=str(e),
+                runner_state = self._read_runner_state(setup.trial_id)
+            except FinalStateUnavailableError as e:
+                capture_error = str(e)
+                self.logger.error("Could not capture the trial's final state", error=capture_error)
+            else:
+                setup.env_state.db_state = runner_state
+                setup.env_state._normalize_db_state()
+                self.logger.debug(
+                    "Synced final state from Runner DB service",
+                    tables_count=len(runner_state),
+                    tables_sample=list(runner_state.keys())[:5],
                 )
-
-        if runner_state is not None:
-            setup.env_state.db_state = runner_state
-            setup.env_state._normalize_db_state()
-            self.logger.debug(
-                "Synced final state from Runner DB service",
-                tables_count=len(runner_state),
-                tables_sample=list(runner_state.keys())[:5],
-            )
         elif setup.adapter_env.data:
             setup.env_state.db_state = setup.adapter_env.data
             setup.env_state._normalize_db_state()
 
-        final_state = setup.env_state.get_final_state()
+        final_state = setup.env_state.get_final_state() if capture_error is None else {}
         # Pass agent_visible_dir so the agentic judge can read files from disk.
         final_state["agent_visible_dir"] = str(setup.env_state.agent_visible_dir)
 
@@ -1167,6 +1168,54 @@ class InProcessConductor:
             )
 
         trajectory.final_env_state = final_state
+        return capture_error
+
+    def _read_runner_state(self, trial_id: str) -> dict[str, Any]:
+        """The trial's final DB state as the Runner's ``GetState`` reports it.
+
+        Raises:
+            FinalStateUnavailableError: the RPC raised, reported failure, or
+                answered with something other than a state object.
+        """
+        try:
+            state_result = self.runtime_backend.get_state(trial_id)
+        except Exception as e:
+            raise FinalStateUnavailableError(f"GetState raised {type(e).__name__}: {e}") from e
+        if not state_result.get("success"):
+            raise FinalStateUnavailableError(
+                f"GetState failed: {state_result.get('error') or 'no cause reported'}"
+            )
+        try:
+            decoded = json.loads(state_result.get("state_json") or "")
+        except (TypeError, ValueError) as e:
+            raise FinalStateUnavailableError(f"GetState returned unreadable state: {e}") from e
+        if not isinstance(decoded, dict):
+            raise FinalStateUnavailableError(
+                f"GetState returned {type(decoded).__name__}, not a state object"
+            )
+        return decoded
+
+    def _refuse_grade(
+        self,
+        task_config: TaskConfig,
+        setup: _TrialSetup,
+        trajectory: Trajectory,
+        state_capture_error: str,
+    ) -> None:
+        """Book a trial whose final state was lost as ungradeable.
+
+        The same outcome :meth:`_grade` gives a :class:`GradingFailedError`:
+        the cause lands on ``trajectory.grading_error``, ``grade`` stays unset,
+        and the trial keeps its own ``status`` and ``termination_reason``. No
+        grader runs — every one of them would read state that was never captured.
+        """
+        trajectory.grading_error = f"Final state could not be captured: {state_capture_error}"
+        self.logger.error(
+            "Trial could not be graded",
+            task_id=task_config.task_id,
+            trial_index=setup.trial_idx,
+            error=trajectory.grading_error,
+        )
 
     def _grade(
         self,

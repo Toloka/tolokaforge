@@ -814,6 +814,30 @@ touch. A grading failure that a second attempt would have got past is therefore
 recorded ungradeable on the first: the price of never fabricating a verdict and
 never counting one attempt twice.
 
+#### A trial whose final state could not be captured
+
+A trial whose tools run in an MCP subprocess keeps its state in that process; the
+DB service only mirrors it. Every read of its final state — `GetState`, each
+`GradeTrial`, and `SubstrateService`'s `ReadFinalDBState` / `ReadFinalDBStateStable`
+— first syncs the mirror from the subprocess. `GradeTrial` syncs once per call,
+before any component reads, so an earlier `GetState` never stands in for state the
+agent changed after it, and hash grading's golden replay (which runs in the same
+subprocess, and hands it the trial's state back once scored) is never read as the
+agent's.
+
+When that sync fails — the subprocess is gone, `_tolokaforge_get_state_` declares
+failure or answers without a state object, or the mirror refuses the update — the
+read fails with the cause instead of answering from the mirror: `GetState` returns
+`success = false`, `GradeTrial` returns `success = false`, `SubstrateService`
+answers `UNAVAILABLE`. For a task whose `initial_state` provisions a database, a
+failed DB read during grading fails the same way rather than grading against empty
+state. The conductor, for its part, takes the runner's answer as the trial's final
+state — an empty one included — and never substitutes the adapter's pre-trial
+snapshot: when `GetState` fails, raises or answers with no state object, no grader
+runs, `Trajectory.grading_error` reads `Final state could not be captured: <cause>`,
+and `final_env_state` carries no DB state. The trial is then ungradeable exactly as
+above.
+
 #### A component the config declared that produced no verdict
 
 The same fail-loud shape covers any component the config declared and the trial
