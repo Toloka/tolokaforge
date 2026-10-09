@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -1157,7 +1158,9 @@ def _decode_partial_output(buf: bytes | str | None) -> str:
     return buf
 
 
-def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> str:
+def _run_argv_preserving_partial_output(
+    argv: list[str], timeout_s: float, *, partial_output_argv: list[str] | None = None
+) -> str:
     """Run *argv* and return its output, never raising on a deadline overrun.
 
     Body of :meth:`~tolokaforge.runner.env_exec.SupportsEnvExec.exec_in_env`,
@@ -1167,6 +1170,11 @@ def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> st
     surfaces whatever the child had already written. ``subprocess.run``'s
     capture_output path discards buffered stdout on ``TimeoutExpired``, which
     turns a slow-agent run into an opaque "nothing happened".
+
+    *partial_output_argv* is for an *argv* whose command writes to staged
+    files rather than to the pipes (see :func:`_docker_exec_plan`): nothing
+    reaches the pipes until the command finishes, so on a timeout it is run to
+    read the files back, and its output replaces the pipes' when it succeeds.
     """
     proc = subprocess.Popen(
         argv,
@@ -1196,6 +1204,10 @@ def _run_argv_preserving_partial_output(argv: list[str], timeout_s: float) -> st
             # Best-effort drain; the primary timeout is already surfaced in
             # the timed-out footer below.
             pass
+        if partial_output_argv is not None:
+            staged = _read_staged_output(partial_output_argv)
+            if staged is not None:
+                stdout, stderr = staged
         timed_out = True
     output = stdout
     if timed_out:
@@ -1225,18 +1237,82 @@ def _run_argv_with_exit_code(argv: list[str], timeout_s: float) -> tuple[int, st
     return proc.returncode, merged
 
 
-def _docker_exec_argv(container: str, command: str, user: str | None = None) -> list[str]:
-    """``docker exec`` argv running *command* under bash inside *container*.
+def _read_staged_output(argv: list[str]) -> tuple[str, str] | None:
+    """Run the read-back half of an :class:`_ExecPlan`; ``None`` when the
+    staged files are already gone or the read itself does not come back."""
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=_STAGED_STDIO_READ_TIMEOUT_S
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout, proc.stderr
+
+
+@dataclass(frozen=True)
+class _ExecPlan:
+    """One fresh exec into a trial environment.
+
+    ``argv`` runs the command. ``partial_output_argv``, when set, reads back
+    what the command has written so far after ``argv`` was killed on its
+    deadline; it is ``None`` when the command's output streams straight
+    through ``argv``'s pipes.
+    """
+
+    argv: list[str]
+    partial_output_argv: list[str] | None = None
+
+
+# ``bash -c <script> tolokaforge-exec <out> <err> <command>``: the command runs
+# under its own bash with stdout/stderr on the two files and stdin from
+# /dev/null, then the files are relayed on the exec's streams and removed. The
+# command's exit code is the exec's. The command is the last positional so it
+# needs no quoting, whatever it contains.
+_STAGED_STDIO_SCRIPT = (
+    'bash -c "$3" >"$1" 2>"$2" </dev/null; rc=$?; cat "$1"; cat "$2" >&2; rm -f "$1" "$2"; exit $rc'
+)
+# Read-back for a command still running (or killed) after its exec's deadline:
+# relays the files as they stand; exit 3 once the command has removed them.
+_STAGED_STDIO_READ_SCRIPT = '[ -e "$1" ] || exit 3; cat "$1"; cat "$2" >&2'
+_STAGED_STDIO_READ_TIMEOUT_S = 10.0
+
+
+def _docker_exec_plan(container: str, command: str, user: str | None = None) -> _ExecPlan:
+    """``docker exec`` running *command* under bash inside *container*, with the
+    command's stdio staged in files inside the container.
+
+    A process the command leaves behind — a service started with ``&`` —
+    inherits the command's stdio. If that were the exec's own pipes, the
+    engine stops reading them once the exec returns and the process's next
+    write fails with EPIPE, which kills a Go or Node service outright. With
+    :data:`_STAGED_STDIO_SCRIPT` only the wrapper shell ever holds the pipes;
+    the command and anything it leaves running hold files under ``/tmp``.
+    (``docker exec -t`` is not an alternative: closing the pty hangs up the
+    whole foreground process group.)
 
     ``--user`` before ``-i``: matches ``docker exec --help`` order and the argv
     :class:`~tolokaforge.tools.persistent_shell.DockerComposeBashSession` builds
     for the same container.
     """
-    argv = ["docker", "exec"]
+    token = uuid.uuid4().hex
+    out_path = f"/tmp/.tolokaforge-exec-{token}.out"
+    err_path = f"/tmp/.tolokaforge-exec-{token}.err"
+    prefix = ["docker", "exec"]
     if user is not None:
-        argv.extend(["--user", user])
-    argv.extend(["-i", container, "bash", "-c", command])
-    return argv
+        prefix.extend(["--user", user])
+    prefix.extend(["-i", container, "bash", "-c"])
+    return _ExecPlan(
+        argv=[*prefix, _STAGED_STDIO_SCRIPT, "tolokaforge-exec", out_path, err_path, command],
+        partial_output_argv=[
+            *prefix,
+            _STAGED_STDIO_READ_SCRIPT,
+            "tolokaforge-exec",
+            out_path,
+            err_path,
+        ],
+    )
 
 
 class DockerComposeExecToolWrapper(ToolWrapper):
@@ -1247,9 +1323,9 @@ class DockerComposeExecToolWrapper(ToolWrapper):
     project lifecycle. ``start()`` records the trial id (its only reason to
     live) and resolves the target container via
     :func:`~tolokaforge.runner.compose_naming.compose_container_name`, the same
-    resolver the host-side materialiser uses to name the project — so the argv
-    ``docker exec -i <container> bash -c <command>`` targets the container the
-    per-trial runtime brought up.
+    resolver the host-side materialiser uses to name the project — so the
+    ``docker exec -i <container> …`` argv targets the container the per-trial
+    runtime brought up.
     """
 
     # Runner-managed per-trial lifecycle: start() is how the wrapper learns
@@ -1321,7 +1397,10 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
         Satisfies :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
         """
-        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+        plan = self._exec_plan(command)
+        return _run_argv_preserving_partial_output(
+            plan.argv, timeout_s, partial_output_argv=plan.partial_output_argv
+        )
 
     def _exec_batch_in_env(self, commands: list[str], timeout_s: float) -> str:
         """Run *commands* in order against one deadline, labelling each output.
@@ -1347,8 +1426,11 @@ class DockerComposeExecToolWrapper(ToolWrapper):
                 )
                 sections.extend(f"$ {later}\n[not run]" for later in commands[index + 1 :])
                 break
+            plan = self._exec_plan(command)
             output = _run_argv_preserving_partial_output(
-                self._exec_argv(command), min(per_command_s, remaining)
+                plan.argv,
+                min(per_command_s, remaining),
+                partial_output_argv=plan.partial_output_argv,
             )
             sections.append(f"$ {command}\n{output}")
         return "\n\n".join(sections)
@@ -1362,15 +1444,15 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         the substrate's test-suite RPC that ships the exit code on the wire)
         without gating on it.
         """
-        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+        return _run_argv_with_exit_code(self._exec_plan(command).argv, timeout_s)
 
-    def _exec_argv(self, command: str) -> list[str]:
+    def _exec_plan(self, command: str) -> _ExecPlan:
         if self._container is None:
             raise ToolExecutionError(
                 self.name,
                 "docker_compose_exec tool executed before start() — container name unresolved",
             )
-        return _docker_exec_argv(self._container, command)
+        return _docker_exec_plan(self._container, command)
 
 
 # =============================================================================
@@ -1461,17 +1543,20 @@ class PersistentShellToolWrapper(ToolWrapper):
         capability, and a trial that ran on the session-lifetime shell would
         otherwise present no executor at all.
         """
-        return _run_argv_preserving_partial_output(self._exec_argv(command), timeout_s)
+        plan = self._exec_plan(command)
+        return _run_argv_preserving_partial_output(
+            plan.argv, timeout_s, partial_output_argv=plan.partial_output_argv
+        )
 
     def exec_in_env_with_exit_code(self, command: str, timeout_s: float) -> tuple[int, str]:
         """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
 
         Second half of :class:`~tolokaforge.runner.env_exec.SupportsEnvExec`.
         """
-        return _run_argv_with_exit_code(self._exec_argv(command), timeout_s)
+        return _run_argv_with_exit_code(self._exec_plan(command).argv, timeout_s)
 
-    def _exec_argv(self, command: str) -> list[str]:
-        """Argv for a fresh one-shot exec into the environment the session targets.
+    def _exec_plan(self, command: str) -> _ExecPlan:
+        """A fresh one-shot exec into the environment the session targets.
 
         Deliberately not routed through :attr:`_session`. Grading runs after an
         agent has had the shell for a whole trial, and that shell carries the
@@ -1485,7 +1570,7 @@ class PersistentShellToolWrapper(ToolWrapper):
         tool replaces did.
         """
         if self._service is None:
-            return ["bash", "-c", command]
+            return _ExecPlan(argv=["bash", "-c", command])
         if self._trial_id is None or self._project_prefix is None:
             raise ToolExecutionError(
                 self.name,
@@ -1494,7 +1579,7 @@ class PersistentShellToolWrapper(ToolWrapper):
         container = self._resolve_container_name(
             self._trial_id, self._service, self._project_prefix
         )
-        return _docker_exec_argv(container, command, user=self._user)
+        return _docker_exec_plan(container, command, user=self._user)
 
     def _new_session(self) -> BashSession:
         """Construct (but do not open) the backend session from config."""

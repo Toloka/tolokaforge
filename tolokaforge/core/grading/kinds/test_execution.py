@@ -27,7 +27,7 @@ Both refusals are mapped by the runner's dispatcher to
 Per-task configuration rides ``kind_config`` — validated into
 :class:`TestExecutionKindConfig` (``extra="forbid"``). Defaults are
 ``/tests/test.sh`` (script), ``/logs/verifier/reward.txt`` (reward), 300s
-script timeout, 10s reward-cat timeout, 2000-char output truncation.
+script timeout, 10s reward-cat timeout, 65536-char output truncation.
 """
 
 from __future__ import annotations
@@ -57,8 +57,9 @@ class TestExecutionKindConfig(BaseModel):
 
     Defaults preserve the runner-side pre-move behaviour: verifier at
     ``/tests/test.sh``, reward file at ``/logs/verifier/reward.txt``, 300s
-    script timeout, 10s reward-cat timeout, 2000-char output truncation
-    for the reasons string.
+    script timeout, 10s reward-cat timeout, 65536-char output truncation
+    for the reasons string — the runner's wire cap on verifier stdout, so
+    the grade keeps the whole traceback the runner shipped.
     """
 
     model_config = {"extra": "forbid"}
@@ -67,7 +68,7 @@ class TestExecutionKindConfig(BaseModel):
     reward_path: str = "/logs/verifier/reward.txt"
     timeout_s: float = Field(default=300.0, gt=0.0)
     reward_read_timeout_s: float = Field(default=10.0, gt=0.0)
-    output_truncation_chars: int = Field(default=2000, ge=0)
+    output_truncation_chars: int = Field(default=65_536, ge=0)
 
 
 class TestExecutionGraderKind:
