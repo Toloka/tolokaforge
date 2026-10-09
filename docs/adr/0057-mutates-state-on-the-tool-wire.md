@@ -47,12 +47,17 @@ change. It is independent of ADR-0056 and ADR-0058.
 We will adopt **Option 1** now, and retire `category` in a later release once
 every adapter has moved.
 
-- `ToolSchema.mutates_state: bool | None = None`. `None` means unknown and
-  reads as `True` wherever the engine needs an answer, which is today's
-  behaviour.
-- The field is left out of the serialised schema while it is `None`. An
-  engine image that predates the field therefore accepts every pack that does
-  not set it.
+- `ToolSchema` exists twice on the wire, and both carry the flag:
+  - **The Pydantic model** (`runner/models.py`), which the task description
+    carries to the runner as JSON, gains `mutates_state: bool | None = None`.
+    `None` means unknown and reads as `True` wherever the engine needs an
+    answer, which is today's behaviour. The field is left out of the
+    serialised schema while it is `None`, so an engine image that predates it
+    accepts every pack that does not set it.
+  - **The proto message** (`runner.proto`), which `RegisterTrialResponse`
+    returns to the engine, gains `optional bool mutates_state = 7`. Like
+    `output_max_chars`, it is proto3-optional: unset means unknown, and an
+    older runner simply never sets it.
 - MCP servers declare the flag through the protocol's own tool annotation,
   `readOnlyHint`. `DomainToolRegistry.tool(description, mutates_state=…)` sets
   the annotation. The native adapter's `tools/list` introspection reads it back
@@ -83,17 +88,21 @@ mode.
 
 ### Follow-ups
 
-- Code changes required: the `ToolSchema` field and its conditional
-  serialisation; the `mutates_state` argument and annotation in
+- Code changes required: the Pydantic `ToolSchema` field and its conditional
+  serialisation; the proto field and its regenerated stubs, set by the runner
+  in `RegisterTrialResponse` when the flag is known; the `mutates_state` argument and annotation in
   `DomainToolRegistry.tool`; reading the annotation in the native adapter's
   introspection and its cache; τ²-based adapters forwarding `__mutates_state__`;
-  later, the deprecation of `category`.
+  later, the deprecation of `category`. Retiring `category` is a proto wire
+  change, not only a Pydantic edit: field 4 of the proto `ToolSchema` becomes
+  `reserved 4; reserved "category";` in the release that drops it.
 - Documentation to update: `TASK_DESCRIPTION_SCHEMA.md`, `MCP_INTEGRATION.md`.
 - Tests to add: the annotation's round trip through a real MCP server; an
-  undeclared tool serialises without the field.
+  undeclared tool serialises without the field on both wires; a declared flag
+  reaches the engine in `RegisterTrialResponse.tool_schemas`.
 
 ## Links
 
-- Related ADRs: [0017](0017-tool-lifecycle.md), [0056](0056-shared-tool-libraries-through-tool-artifacts.md).
-- Related code: `runner/models.py::ToolSchema`, `core/tools_interface.py::DomainToolRegistry.tool`, `adapters/_task_loader.py::_fetch_mcp_tool_schemas`.
+- Related ADRs: [0017](0017-persistent-agent-shell-and-editor-tools.md), [0056](0056-shared-tool-libraries-through-tool-artifacts.md).
+- Related code: `runner/models.py::ToolSchema`, `runner/runner.proto` (`message ToolSchema`), `core/tools_interface.py::DomainToolRegistry.tool`, `adapters/_task_loader.py::_fetch_mcp_tool_schemas`.
 - External references: MCP tool annotations (`readOnlyHint`).
