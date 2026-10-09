@@ -210,6 +210,7 @@ from tolokaforge.runner.models import (
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
+    _LiveStateSync,
 )
 
 pytestmark = pytest.mark.canonical
@@ -827,7 +828,9 @@ def _runner_custom_checks_score(
         trial_id = f"{task_description.task_id}:0"
         servicer._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
         context = TrialContextRuntime(trial_id=trial_id, task_description=task_description)
-        substrate = servicer._build_grading_substrate(trial_id, context)
+        substrate = servicer._build_grading_substrate(
+            trial_id, context, _LiveStateSync(servicer, trial_id, context)
+        )
         score, _, _ = servicer._run_async(
             servicer._grade_custom_checks(
                 trial_id, context, case.runner_messages, substrate=substrate

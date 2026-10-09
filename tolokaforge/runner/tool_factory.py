@@ -679,16 +679,28 @@ class MCPServerProcess(BaseModel):
 
         Returns:
             Current state dict (table_name -> list[record]).
+
+        Raises:
+            RuntimeError: the tool declared failure or answered without a
+                state object. An empty object is a real (empty) state; an
+                absent or malformed one is not, so it is never read as ``{}``.
         """
         result = self.send_request(
             "tools/call",
             {"name": "_tolokaforge_get_state_", "arguments": {}},
         )
-        content = result.get("content", [])
-        if content and isinstance(content, list):
-            text = content[0].get("text", "{}")
-            return json.loads(text)
-        return {}
+        content = result.get("content")
+        text = content[0].get("text") if content and isinstance(content, list) else None
+        if result.get("isError"):
+            raise RuntimeError(f"_tolokaforge_get_state_ declared failure: {text!r}")
+        if not isinstance(text, str):
+            raise RuntimeError("_tolokaforge_get_state_ returned no state text")
+        state = json.loads(text)
+        if not isinstance(state, dict):
+            raise RuntimeError(
+                f"_tolokaforge_get_state_ returned {type(state).__name__}, not a state object"
+            )
+        return state
 
     def reset_state(self, initial_state: dict[str, Any]) -> None:
         """Replace the MCP subprocess's _STATE with ``initial_state``.

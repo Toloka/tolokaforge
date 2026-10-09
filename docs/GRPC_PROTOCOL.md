@@ -970,6 +970,11 @@ touched. Nothing has been written at that point: the MCP state sync, the `pre_go
 snapshot and the reset all follow resolution, so the trial's database still holds
 exactly what the agent left behind and the host can retry or re-grade it.
 
+For a trial whose tools run in an MCP subprocess, `GetState` and `GradeTrial` sync
+the DB mirror from it before reading, and a sync that fails answers
+`success = false` with the cause rather than the stale mirror — see
+[GRADING.md § A trial whose final state could not be captured](GRADING.md#a-trial-whose-final-state-could-not-be-captured).
+
 The host does not fill the gap either: `RunnerRPCTrialGrader.grade` raises
 `GradingFailedError` on any `success = false`, so the trial is published with no
 score rather than with one the runner never computed. The conductor catches that

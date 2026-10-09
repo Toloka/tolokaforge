@@ -77,6 +77,7 @@ from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
     InProcessGradingSubstrate,
     RunTestSuiteResult,
+    SubstrateUnreachableError,
 )
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
@@ -734,6 +735,39 @@ class TrialContextRuntime:
     def clear_history(self) -> None:
         """Clear tool call history (used on reset)."""
         self.tool_call_history.clear()
+
+
+class _LiveStateSync:
+    """One MCP-subprocess → DB-mirror sync shared by every read of one grading call.
+
+    A trial whose tools run in an MCP subprocess keeps its state in that
+    process; the db-service only mirrors it. Each grading read of the mirror
+    awaits :meth:`ensure` first, so the grade sees what the subprocess holds
+    now rather than whatever an earlier ``GetState`` left in the mirror. The
+    sync runs once per call: hash grading replays the golden path into the
+    same subprocess, and a resync after that would grade the golden state.
+
+    A failed sync is kept and re-raised to every later reader as
+    :class:`SubstrateUnreachableError` — the mirror is stale, so nothing in
+    this call may be graded from it.
+    """
+
+    def __init__(
+        self, service: "RunnerServiceImpl", trial_id: str, trial_context: TrialContextRuntime
+    ) -> None:
+        self._service = service
+        self._trial_id = trial_id
+        self._wrapper = service._find_mcp_server_wrapper(trial_context)
+        self._sync: asyncio.Future[None] | None = None
+
+    async def ensure(self) -> None:
+        if self._wrapper is None:
+            return
+        if self._sync is None:
+            self._sync = asyncio.ensure_future(
+                self._service._sync_live_state(self._trial_id, self._wrapper)
+            )
+        await self._sync
 
 
 # =============================================================================
@@ -1831,7 +1865,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
     def _build_grading_substrate(
-        self, trial_id: str, trial_context: TrialContextRuntime
+        self, trial_id: str, trial_context: TrialContextRuntime, live_state: _LiveStateSync
     ) -> GradingSubstrate:
         """The single :class:`InProcessGradingSubstrate` the composite reads.
 
@@ -1848,26 +1882,51 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         snapshotted from inside its own container via the exec-wrapper;
         every other trial reads back the runner's own ``AGENT_WORK_DIR``
         via :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`.
+
+        Every DB read awaits ``live_state`` first, so a trial whose state lives
+        in an MCP subprocess is graded on that state, not on the mirror an
+        earlier ``GetState`` left. For a trial that provisions a database, a
+        failed sync or read raises :class:`SubstrateUnreachableError` — the
+        trial is ungradeable, never graded on empty or stale tables. A trial
+        that provisions none keeps the DB client's own errors, which the
+        evaluators already read as "no database".
         """
         loop = self._loop
         db_client = self.db_client
+        provisions_db = provisions_database(trial_context.task_description.initial_state)
+
+        async def _read_mirror(read: Callable[[], Any]) -> Any:
+            await live_state.ensure()
+            try:
+                return await read()
+            except Exception as exc:
+                if not provisions_db:
+                    raise
+                raise SubstrateUnreachableError(
+                    f"Trial {trial_id!r}: its DB state could not be read for grading "
+                    f"({type(exc).__name__}: {exc})"
+                ) from exc
 
         class _LoopBridgeDBReader:
             """Sync :class:`DBReader` seam bridging to the async DB client on ``loop``."""
 
             def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.get_state(trial_id, tables), loop)
+                fut = asyncio.run_coroutine_threadsafe(
+                    _read_mirror(lambda: db_client.get_state(trial_id, tables)), loop
+                )
                 return fut.result(timeout=30.0).data
 
             def query(self, jsonpath: str) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.query(trial_id, jsonpath), loop)
+                fut = asyncio.run_coroutine_threadsafe(
+                    _read_mirror(lambda: db_client.query(trial_id, jsonpath)), loop
+                )
                 return {"results": fut.result(timeout=30.0).results}
 
         def _get_raw_state() -> dict[str, Any]:
-            return self._run_async(self.db_client.get_state(trial_id)).data
+            return self._run_async(_read_mirror(lambda: db_client.get_state(trial_id))).data
 
         def _get_stable_state() -> dict[str, Any]:
-            return self._run_async(self.db_client.get_stable_state(trial_id)).data
+            return self._run_async(_read_mirror(lambda: db_client.get_stable_state(trial_id))).data
 
         def _get_filesystem_state() -> dict[str, str]:
             return self._read_filesystem_for_state(trial_id)
@@ -2004,7 +2063,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         parity with the pre-move tool-absent shape.
         """
         kind_cls = load_grader_kind(method_name)
-        substrate = self._build_grading_substrate(trial_id, trial_context)
+        substrate = self._build_grading_substrate(
+            trial_id, trial_context, _LiveStateSync(self, trial_id, trial_context)
+        )
         try:
             evaluate_call = partial(
                 kind_cls().evaluate,
@@ -2150,7 +2211,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # config never reaches for costs no DB round-trip and no filesystem
         # walk (jsonpath scoring reads STABLE, judge state-diff + custom_checks
         # read RAW, jsonpath reshaping merges the filesystem in).
-        substrate = self._build_grading_substrate(trial_id, trial_context)
+        live_state = _LiveStateSync(self, trial_id, trial_context)
+        substrate = self._build_grading_substrate(trial_id, trial_context, live_state)
 
         # Get state_checks config (may name a hash source)
         state_checks_config = grading_config.state_checks
@@ -2178,7 +2240,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             try:
                 hash_result = await self._execute_hash_grading(
-                    trial_id, trial_context, state_checks_config
+                    trial_id, trial_context, state_checks_config, live_state
                 )
                 components.hash_match = hash_result.hash_match
                 if not hash_result.hash_unscorable:
@@ -2787,6 +2849,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id: str,
         trial_context: TrialContextRuntime,
         state_checks: RunnerStateChecksConfig,
+        live_state: _LiveStateSync,
     ) -> HashGradingResult:
         """
         Execute hash-based grading algorithm.
@@ -2874,15 +2937,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # 1. Get current trial stable hash
         # For MCP_SERVER tasks the db-service was never updated during the trial
         # (the MCP subprocess holds state in memory), so sync first.
+        # The sync is the grading call's one sync, so the reads that follow the
+        # golden replay do not pull the golden state back into the mirror.
         if mcp_wrapper is not None:
             logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (trial)")
-            try:
-                loop = asyncio.get_event_loop()
-                mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                await self._sync_mcp_state_to_db(trial_id, mcp_state)
-            except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
-                raise
+        await live_state.ensure()
 
         # Fast path: hash server-side. Slow path (compare_columns declared):
         # fetch raw state now and defer hashing until we hold both sides.
@@ -3045,6 +3104,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # 7. Restore trial state
         await self.db_client.restore_snapshot(trial_id, "pre_golden")
         logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
+        if mcp_wrapper is not None:
+            # The replay ran in the trial's own child: hand it back the trial's
+            # state, or a later read would sync the golden world as the agent's.
+            trial_tables = (await self.db_client.get_state(trial_id)).data
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: mcp_wrapper.reset_state(trial_tables)
+            )
 
         golden_replay_record = GoldenReplayRecord(
             authored=len(golden_actions), failures=tuple(replay_failures)
@@ -3187,6 +3253,40 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 return wrapper
         return None
 
+    async def _refresh_db_mirror(self, trial_id: str) -> None:
+        """Sync the mirror of a registered trial whose state lives in an MCP subprocess.
+
+        The db-service is never updated during such a trial, so every read of
+        its final state comes after this. A failed sync raises
+        :class:`SubstrateUnreachableError` rather than leaving the stale
+        mirror to be read.
+        """
+        trial_context = self.trials.get(trial_id)
+        if trial_context is None:
+            return
+        mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
+        if mcp_wrapper is not None:
+            await self._sync_live_state(trial_id, mcp_wrapper)
+
+    async def _sync_live_state(self, trial_id: str, mcp_wrapper: MCPServerToolWrapper) -> None:
+        """Bring the db-service mirror up to the MCP subprocess's live state.
+
+        Raises :class:`SubstrateUnreachableError` carrying the cause when the
+        subprocess cannot answer or the mirror cannot take the update — a
+        mirror that missed the sync still holds an earlier state, and handing
+        that out would grade the trial on evidence its tool calls never left.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
+            await self._sync_mcp_state_to_db(trial_id, mcp_state)
+        except Exception as exc:
+            raise SubstrateUnreachableError(
+                f"Trial {trial_id!r}: the live state of its MCP server could not be "
+                f"synchronised to the DB mirror ({type(exc).__name__}: {exc})"
+            ) from exc
+        logger.debug(f"Synced MCP subprocess state to the DB mirror for {trial_id}")
+
     async def _sync_mcp_state_to_db(
         self,
         trial_id: str,
@@ -3266,6 +3366,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 success=False,
                 error=f"Trial '{trial_id}' not found in DB Service",
             )
+        except SubstrateUnreachableError as e:
+            logger.error(f"GetState: {e}")
+            return pb2.GetStateResponse(success=False, error=str(e))
         except DBServiceError as e:
             logger.error(f"GetState: DB Service error: {e}")
             return pb2.GetStateResponse(
@@ -3284,20 +3387,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         tables = list(request.tables) if request.tables else None
 
-        # For native MCP-server tasks the db-service is never updated during
-        # the trial (the subprocess holds state in memory).  Sync first so the
-        # caller gets the real final state instead of the stale initial state.
-        trial_context = self.trials.get(trial_id)
-        if trial_context is not None:
-            mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
-            if mcp_wrapper is not None:
-                try:
-                    loop = asyncio.get_event_loop()
-                    mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                    await self._sync_mcp_state_to_db(trial_id, mcp_state)
-                    logger.debug(f"GetState: synced MCP subprocess state for {trial_id}")
-                except Exception as e:
-                    logger.warning(f"GetState: could not sync MCP state for {trial_id}: {e}")
+        await self._refresh_db_mirror(trial_id)
 
         if request.include_unstable:
             # Get full state
