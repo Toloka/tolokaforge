@@ -13,8 +13,9 @@ adapter, and nothing reads it except two pass-throughs. The platform does
 depend on one tool property: does a call change the graded state? That
 property lives only in adapter- or domain-local code:
 
-- τ²'s `@is_tool(mutates_state=)` drives replay inside the τ³ host;
-- the frozen adapter infers a write surface by static analysis;
+- an adapter built on τ²-bench drives replay from τ²'s own
+  `@is_tool(mutates_state=)`;
+- another adapter infers a write surface by static analysis of tool modules;
 - the native `DomainToolRegistry` has no marker at all, so state sync and
   golden replay re-execute every call.
 
@@ -58,8 +59,8 @@ every adapter has moved.
   into the schema and into the `fixtures/tools.json` cache. A server written
   for another engine declares the same annotation the same way. A tool that
   declares nothing gets no annotation.
-- Adapters that know the flag from their own sources (τ³ from
-  `__mutates_state__`) set it directly. Nothing reads `category` for it.
+- Adapters that know the flag from their own sources (a τ²-based adapter
+  from `__mutates_state__`) set it directly. Nothing reads `category` for it.
 
 Consumers follow in their own changes, each with its own review: replay and
 state sync that skip non-mutating calls, read/write metrics, a read-only trial
@@ -85,7 +86,7 @@ mode.
 - Code changes required: the `ToolSchema` field and its conditional
   serialisation; the `mutates_state` argument and annotation in
   `DomainToolRegistry.tool`; reading the annotation in the native adapter's
-  introspection and its cache; the τ³ adapter forwarding `__mutates_state__`;
+  introspection and its cache; τ²-based adapters forwarding `__mutates_state__`;
   later, the deprecation of `category`.
 - Documentation to update: `TASK_DESCRIPTION_SCHEMA.md`, `MCP_INTEGRATION.md`.
 - Tests to add: the annotation's round trip through a real MCP server; an
