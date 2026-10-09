@@ -13,15 +13,14 @@ them into the trial's directory and puts that directory on `sys.path`
 (`runner/service.py`). The grader extracts the same set for `custom_checks`
 (`core/grading/tool_artifacts.py`). The mechanism does not depend on the
 adapter, but each adapter decides what goes into `tool_artifacts`. The native
-adapter bundles the task directory, or the domain root with `_shared/`. The τ³
-adapter in `tolokaforge-tools` bundles its own host package and the case.
+adapter bundles the task directory, or the domain root with `_shared/`. An
+external adapter bundles its own host package and the case.
 
-No adapter can add a library installed next to the engine. So every OTS pack
-carries a byte-identical copy of `mcp_core` and
-`mcp_tools_library/connectors`, and the forks of `zendesk`, `d365` and
-`salesforce` have diverged. A shared library of vendor-shaped service mocks
-(`appmocks`, consumed by tolokaforge and two other benchmarks) would have to be
-copied into every pack the same way.
+No adapter can add a library installed next to the engine. Packs that share
+tool code therefore carry byte-identical copies of it, and copies of the same
+service mock in different packs drift apart. A shared library of
+vendor-shaped service mocks, maintained once and reused across packs and
+benchmarks, would have to be copied into every pack the same way.
 
 A pack can already use such a library without any engine change: it vendors a
 generated copy of the library's bundle (Option 1 below). This ADR is about
@@ -92,8 +91,8 @@ does not serve in-process tools.
 ### Negative / Trade-offs
 
 - Every trial still carries the bundle's sources. A library bundles only the
-  selected applications to keep this small: two `appmocks` applications take
-  about 350 KiB.
+  selected applications to keep this small: a bundle of two mocked
+  applications measured about 350 KiB.
 - The runner's dependency set becomes a contract for installed libraries.
   Adding or removing a runner dependency can break a library.
 
@@ -102,8 +101,8 @@ does not serve in-process tools.
 - Code changes required: the entry-point group and resolver;
   `tool_libraries` in `TaskConfig` and the shared-domain config; the merge into
   `tool_artifacts` on the single description path; provenance; `PYTHONPATH` for
-  MCP subprocesses; `tolokaforge validate` reporting unresolvable pins; the τ³
-  converter in `tolokaforge-tools` forwarding a domain's `tool_libraries`.
+  MCP subprocesses; `tolokaforge validate` reporting unresolvable pins; external
+  adapters that generate packs forwarding a domain's `tool_libraries`.
 - Documentation to update: `PROJECTS.md`, `ADAPTER_INTERFACE.md`,
   `TASK_DESCRIPTION_SCHEMA.md`.
 - Tests to add: a missing library and a version mismatch are refused; the
@@ -114,4 +113,3 @@ does not serve in-process tools.
 
 - Related ADRs: [0011](0011-seam-and-declaration-conventions.md) (entry-point registries), [0057](0057-mutates-state-on-the-tool-wire.md), [0058](0058-app-world-served-over-http.md).
 - Related code: `runner/service.py` (artefact extraction), `core/grading/tool_artifacts.py`, `adapters/native.py` (`_bundle_task_artifacts`), `core/plugin_registry.py`.
-- External references: `appmocks` (`toloka-partners/app-mocks`, private) and its integration package `tolokaforge-tools/libraries/tolokaforge-appmocks`.

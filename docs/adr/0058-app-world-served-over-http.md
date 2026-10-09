@@ -8,8 +8,9 @@
 
 ## Context and Problem Statement
 
-Vendor-shaped mocks of real services (Zendesk, Gmail, Mambu, …) are shared as a
-library (ADR-0056). A native pack reaches them through its MCP server. The
+Vendor-shaped mocks of real services (a help desk, a mail API, a core banking
+system, …) are shared as a library (ADR-0056). A native pack reaches them
+through its MCP server. The
 server's subprocess holds the world and belongs to the trial: the runner reads
 the world back with `_tolokaforge_get_state_` before grading and restores it
 with `_tolokaforge_set_state_` before the golden replay. That path needs none
@@ -83,10 +84,10 @@ We will adopt **Option 1**.
 initial_state:
   json_db: initial_state.json          # the world as tables
   app_world:
-    url: http://appmocks:8080          # a service of the task's stack
+    url: http://mocks:8080             # a service of the task's stack
     hosts:                             # vendor hosts this service answers for
-      - aldermere.zendesk.com
-      - gmail.googleapis.com
+      - helpdesk.vendor.example
+      - mail.vendor.example
     actors:                            # tool actor -> world caller (null: the seed's default caller)
       agent: null
       user: customer
@@ -214,7 +215,7 @@ that does not declare it.
   headers.
 - A world service must accept the runtime bearer on every host it serves, in
   addition to the vendor's scheme, and must support the first-claim admin
-  token. `appmocks` does neither in full today; both are library changes.
+  token. An existing mock server may need changes for both.
 - Between `compose up` and `RegisterTrial`, any container of the stack could
   claim the admin token first. The runner then fails the registration, so the
   window costs a failed trial, not a wrong grade.
@@ -252,4 +253,3 @@ that does not declare it.
 
 - Related ADRs: [0018](0018-multi-container-under-shared-runtime.md) and [0044](0044-composition-plan-runtime.md) (compose stacks, isolation), [0029](0029-build-check-builtin-tool.md) (peer-service probes), [0053](0053-comparison-view-before-the-state-hash.md) (comparison view), [0056](0056-shared-tool-libraries-through-tool-artifacts.md), [0057](0057-mutates-state-on-the-tool-wire.md).
 - Related code: `tools/builtin/http_request.py` (`_scrub_headers`), `core/tools_interface.py` (`_tolokaforge_get_state_`/`_tolokaforge_set_state_`), `secrets/manager.py` (`register_runtime_secret`), `secrets/expand.py` (`${secret:NAME}`), `env/mock_web_service/app.py`.
-- External references: `appmocks serve` (`toloka-partners/app-mocks`), whose HTTP facade answers this protocol.
