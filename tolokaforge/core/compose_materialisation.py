@@ -167,13 +167,16 @@ def _enforce_no_internet(
 ) -> dict[str, Any]:
     _inject_isolation_networks(doc)
     services: dict[str, Any] = doc["services"]
+    contested = _contested_aliases(services)
     for service_name, service in services.items():
         if service_name in restricted_services:
             continue
         attachments = [NETPOLICY_INTERNAL_NETWORK]
         if service_name == runner_service or service_name in bridged_services:
             attachments.append(NETPOLICY_EDGE_NETWORK)
-        service["networks"] = _merge_service_networks(service.get("networks"), attachments)
+        service["networks"] = _merge_service_networks(
+            service.get("networks"), attachments, contested
+        )
     return doc
 
 
@@ -191,6 +194,7 @@ def _enforce_limited_internet(
         )
     _inject_isolation_networks(doc)
     services: dict[str, Any] = doc["services"]
+    contested = _contested_aliases(services)
     no_proxy = ",".join([*services, NETPOLICY_PROXY_SERVICE, "localhost", "127.0.0.1"])
     proxy_url = f"http://{NETPOLICY_PROXY_SERVICE}:{NETPOLICY_PROXY_PORT}"
     for service_name, service in services.items():
@@ -198,11 +202,13 @@ def _enforce_limited_internet(
             continue
         if service_name == runner_service or service_name in bridged_services:
             service["networks"] = _merge_service_networks(
-                service.get("networks"), [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK]
+                service.get("networks"),
+                [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK],
+                contested,
             )
             continue
         service["networks"] = _merge_service_networks(
-            service.get("networks"), [NETPOLICY_INTERNAL_NETWORK]
+            service.get("networks"), [NETPOLICY_INTERNAL_NETWORK], contested
         )
         service["environment"] = _merge_proxy_env(service.get("environment"), proxy_url, no_proxy)
     services[NETPOLICY_PROXY_SERVICE] = _proxy_service_definition()
@@ -364,22 +370,58 @@ def _squid_dstdomain(entry: str) -> str:
     return entry
 
 
-def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
+def _merge_service_networks(
+    existing: Any, additions: list[str], contested: frozenset[str] = frozenset()
+) -> Any:
     """Add each name in ``additions`` to a service-level ``networks:`` value,
     preserving its declared shape (list or mapping) and any per-network config
     (aliases, static IPs). Absent ``existing`` yields a plain list. Idempotent:
-    a name already present is left untouched."""
+    a name already present is left untouched.
+
+    The aliases a service declares on its own networks are carried onto every
+    added attachment (#1835). The policy moves the runner onto the injected
+    networks only, and Docker resolves an alias only on the network it is
+    declared on: without the copy a service reachable as ``api.vendor.test`` in
+    the task's compose is unreachable by that name from the runner, and a name
+    that also exists publicly resolves through the edge network to the real
+    host. An alias in ``contested`` (declared by more than one service) is not
+    carried: on the shared injected network it would resolve to all of them."""
     if isinstance(existing, dict):
         merged = dict(existing)
+        aliases = [a for a in _declared_aliases(existing) if a not in contested]
         for name in additions:
             if name not in merged:
-                merged[name] = None
+                merged[name] = {"aliases": aliases} if aliases else None
         return merged
     current = list(existing) if isinstance(existing, list) else []
     for name in additions:
         if name not in current:
             current.append(name)
     return current
+
+
+def _declared_aliases(networks: dict[str, Any]) -> list[str]:
+    """The aliases a service declares across its own networks, in declaration order."""
+    aliases: list[str] = []
+    for config in networks.values():
+        if isinstance(config, dict):
+            for alias in config.get("aliases") or []:
+                if alias not in aliases:
+                    aliases.append(alias)
+    return aliases
+
+
+def _contested_aliases(services: dict[str, Any]) -> frozenset[str]:
+    """Aliases declared by more than one service, which no injected network may carry."""
+    seen: set[str] = set()
+    contested: set[str] = set()
+    for service in services.values():
+        networks = service.get("networks") if isinstance(service, dict) else None
+        if not isinstance(networks, dict):
+            continue
+        for alias in _declared_aliases(networks):
+            (contested if alias in seen else seen).add(alias)
+    return frozenset(contested)
 
 
 def apply_network_policy_to_compose_file(
