@@ -98,6 +98,12 @@ _ABSENT_INITIAL_STATE: Mapping[InitialStateSource, str | None] = {
 
 _NO_MCP_SERVER = "task.yaml declares no tools.agent.mcp_server"
 
+_A_SERVED_WORLD = (
+    "task.yaml declares initial_state.app_world, so the world lives in the service {url} "
+    "of the trial's stack, which only the runner replays against; grade the trial through "
+    "the runner"
+)
+
 _NO_INITIAL_STATE_TO_COMPARE = (
     "state_checks.hash.expect_initial_state compares the trial against the state its task "
     "starts in, and {because}. So there is no expected state, no hash verdict and no grade — "
@@ -285,8 +291,13 @@ def require_golden_replay_world(
     task_dir: Path | None,
     initial_state_json_db: str | dict[str, Any] | None,
     mcp_server: str | None,
+    app_world_url: str | None = None,
 ) -> GoldenReplayWorld:
     """The world the authored golden actions are replayed against, or raise.
+
+    A world served over HTTP (``initial_state.app_world``, ADR-0058) is refused
+    outright: it lives in a service of the trial's stack, which this replay cannot
+    reach, so only the runner builds its golden world.
 
     Every absent fact is named in one raise rather than only the first one found, for
     the reason :func:`resolve_golden_action_names` names every offending action: an
@@ -298,6 +309,10 @@ def require_golden_replay_world(
     present — the replay loads a file under ``task_dir``, so a mapping there is a world
     it cannot build.
     """
+    if app_world_url is not None:
+        raise UnbuildableGoldenReplayWorld(
+            _UNBUILDABLE_WORLD.format(absent=_A_SERVED_WORLD.format(url=app_world_url))
+        )
     if (
         task_dir is not None
         and isinstance(initial_state_json_db, str)

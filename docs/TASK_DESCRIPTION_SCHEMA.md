@@ -183,6 +183,29 @@ class InitialStateConfig(BaseModel):
     # Unstable fields: single source of truth for hash exclusion
     unstable_fields: List[UnstableFieldSpec] = Field(default_factory=list)
 
+    # Agent-visible files: dest_path → text content
+    filesystem: Dict[str, str] = Field(default_factory=dict)
+
+    # A world served over HTTP by a service of the trial's stack (ADR-0058).
+    # Left out of the dump while absent, so an image predating the field
+    # accepts every pack that does not declare it.
+    app_world: Optional[AppWorldConfig] = None
+
+
+class AppWorldConfig(BaseModel):
+    """
+    The service holding the trial's world; `tables` above is that world.
+
+    The runner mints an admin token and one bearer token per actor at
+    RegisterTrial, claims the service with PUT /_admin/tokens ({token: caller}),
+    loads `tables` with PUT /_admin/tables, reads GET /_admin/tables back into the
+    DB service before GetState / GradeTrial, and restores `tables` before the
+    golden replay and on ResetTrial. No credential crosses the wire.
+    """
+    url: str                                      # "http://world:8080"; its host is a stack service
+    hosts: List[str]                              # vendor hosts; only these get an actor's bearer
+    actors: Dict[Literal["agent", "user"], Optional[str]]  # tool actor → world caller (None: default)
+
 
 # =============================================================================
 # Pre-Trial Actions

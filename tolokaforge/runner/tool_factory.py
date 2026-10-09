@@ -981,6 +981,15 @@ class BuiltinGenericToolWrapper(ToolWrapper):
             ) from exc
 
     @property
+    def builtin_tool(self) -> Any:
+        """The builtin instance this wrapper delegates to.
+
+        The runtime arms it with what no schema may carry, such as the bearer
+        token an app world mints for an actor's ``http_request`` (ADR-0058).
+        """
+        return self._tool
+
+    @property
     def own_budget_s(self) -> float:
         """The budget the wrapped builtin applies to its own I/O.
 

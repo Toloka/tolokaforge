@@ -47,6 +47,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal, Protocol
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import (
@@ -271,6 +272,117 @@ class TableSchema(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+AppWorldActor = Literal["agent", "user"]
+"""A tool actor whose ``http_request`` reaches an app world as one of its callers."""
+
+
+class AppWorldConfig(BaseModel):
+    """An application world a service of the trial's stack serves over HTTP (ADR-0058).
+
+    The service holds the trial's state, as an MCP server subprocess does for a
+    pack that declares one. The runner administers it under ``url`` with a
+    protocol behind ``X-Admin-Token``: ``PUT /_admin/tokens`` (``{token: caller}``),
+    ``PUT /_admin/tables`` and ``GET /_admin/tables`` (the world as tables). It
+    loads the task's tables at registration, reads them back before grading and
+    restores them before the golden replay and on reset.
+
+    No credential is declared here. The runner mints the admin token and one
+    bearer token per actor for each trial, and ``http_request`` attaches an
+    actor's token only to requests whose host is in ``hosts``.
+    """
+
+    url: str
+    """Where the runner administers the service, e.g. ``http://world:8080``.
+    Its host is the name of the service in the task's stack."""
+
+    hosts: list[str]
+    """The vendor hosts (``host`` or ``host:port``) the service answers for. Only
+    requests to these carry an actor's bearer token."""
+
+    actors: dict[AppWorldActor, str | None]
+    """Tool actor → the caller the world resolves its token to (``None``: the
+    world's default caller)."""
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("url")
+    @classmethod
+    def _an_http_url_naming_a_host(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(
+                "initial_state.app_world.url must be an http(s) URL whose host is a service "
+                f"of the task's stack, e.g. http://world:8080; got {value!r}"
+            )
+        return value.rstrip("/")
+
+    @field_validator("hosts")
+    @classmethod
+    def _bare_hosts(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError(
+                "initial_state.app_world.hosts is empty: list the vendor hosts the world "
+                "service answers for, or no request would ever carry a credential"
+            )
+        malformed = [host for host in value if not host or "/" in host or host != host.strip()]
+        if malformed:
+            raise ValueError(
+                "initial_state.app_world.hosts entries are bare hosts (host or host:port), "
+                f"without a scheme or path; got {malformed!r}"
+            )
+        duplicated = sorted({host for host in value if value.count(host) > 1})
+        if duplicated:
+            raise ValueError(f"initial_state.app_world.hosts repeats {duplicated!r}")
+        return value
+
+    @field_validator("actors")
+    @classmethod
+    def _some_actor(cls, value: dict[AppWorldActor, str | None]) -> dict[AppWorldActor, str | None]:
+        if not value:
+            raise ValueError(
+                "initial_state.app_world.actors is empty: map each tool actor that calls "
+                "the world (agent, user) to its caller, null for the world's default caller"
+            )
+        return value
+
+    @property
+    def service(self) -> str:
+        """The stack service ``url`` names."""
+        hostname = urlparse(self.url).hostname
+        assert hostname is not None  # the url validator refuses a url without one
+        return hostname
+
+    def isolation_refusal(self, manifest: EnvironmentManifest | None) -> str | None:
+        """Why :attr:`service` could hold more than one trial's world, or ``None``.
+
+        The service must be one of the task's stack labelled ``ephemeral`` or
+        ``reset``: under either the runtime gives each trial a world of its own,
+        while a ``shared`` one would let concurrent trials act on, and be graded
+        against, one world.
+        """
+        service = self.service
+        if manifest is None:
+            return (
+                f"initial_state.app_world.url names the service {service!r}, and the task "
+                "resolves no environment stack to run it in. Declare it in the compose file "
+                "of the task's (or the project's) environment_manifest"
+            )
+        spec = manifest.services.get(service)
+        if spec is None:
+            return (
+                f"initial_state.app_world.url names the service {service!r}, which is not a "
+                f"service of the task's stack (services: {sorted(manifest.services)})"
+            )
+        if spec.isolation == "shared":
+            return (
+                f"initial_state.app_world.url names the service {service!r}, whose isolation "
+                "is 'shared': concurrent trials would act on and be graded against one world. "
+                f"Declare environment_manifest.services.{service}.isolation as 'ephemeral' or "
+                "'reset'"
+            )
+        return None
+
+
 class RunnerInitialStateConfig(BaseModel):
     """
     Complete initial state specification.
@@ -292,7 +404,20 @@ class RunnerInitialStateConfig(BaseModel):
     # Files are written to the Runner's agent-visible directory during RegisterTrial.
     filesystem: dict[str, str] = Field(default_factory=dict)
 
+    # An application world served over HTTP by a service of the trial's stack
+    # (ADR-0058). ``tables`` above is that world as the runner loads it.
+    app_world: AppWorldConfig | None = None
+
     model_config = {"extra": "forbid"}
+
+    omitted_when_absent: ClassVar[frozenset[str]] = frozenset({"app_world"})
+    """Left out of the dump while absent, so an image that predates the field
+    accepts every pack that does not declare it."""
+
+    @model_serializer(mode="wrap")
+    @schema_from_the_fields
+    def _leave_out_absent_fields(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return leave_out_absent_fields(self, handler)
 
 
 def provisions_database(initial_state: RunnerInitialStateConfig) -> bool:

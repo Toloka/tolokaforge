@@ -604,6 +604,61 @@ Substrate state is one of four grader families these packs blend:
 Full field reference for all four in [`docs/GRADING.md`](GRADING.md) §
 Substrate Grading; the `multi_service_lot_ops` pack below is the worked example.
 
+## App worlds served over HTTP
+
+A service of the stack can hold the trial's whole state, the way an MCP server
+subprocess does for an MCP pack, while the agent calls the vendors' REST APIs with
+`http_request` ([ADR-0058](adr/0058-app-world-served-over-http.md)). Declare it
+in `task.yaml`:
+
+```yaml
+initial_state:
+  json_db: initial_state.json          # the world as tables
+  app_world:
+    url: http://world:8080             # a service of the task's stack
+    hosts: [helpdesk.vendor.example]   # vendor hosts the service answers for
+    actors:                            # tool actor -> world caller (null: the default caller)
+      agent: null
+      user: customer
+tools:
+  agent:
+    enabled: [http_request]
+    http_request: {allowed_hosts: [helpdesk.vendor.example]}
+  user:
+    enabled: [http_request]
+    http_request: {allowed_hosts: [helpdesk.vendor.example]}
+```
+
+The runner then grades the world exactly like an MCP pack's: the tables are read
+back into the db-service, so `state_checks.hash` with `golden_actions` (here
+`http_request` calls, replayed through the agent's own tool and credential),
+`compare_columns`, `comparison_view` and `jsonpaths` apply unchanged.
+
+| Stage | What the runner does |
+|---|---|
+| `RegisterTrial` | Mints an admin token and one bearer token per actor, admits each to the log redactor, claims the service with `PUT /_admin/tokens` (`{token: caller}`), then loads `json_db` with `PUT /_admin/tables`. A refusal fails the registration. |
+| `GetState`, `GradeTrial` | `GET /_admin/tables` into the db-service before reading or grading. |
+| Golden replay | `PUT /_admin/tables` restores the initial world first. |
+| `ResetTrial` | `PUT /_admin/tables` restores the initial world. |
+
+The service must answer that protocol behind `X-Admin-Token`, answer
+`GET /_health` without one (for the stack's health check, which must pass before
+the runner registers the trial), answer vendor requests `503` until tables are
+loaded, accept the runtime bearer on every host it serves, and start **unclaimed**:
+the first `PUT /_admin/tokens` carrying `X-Admin-Token` binds that token, and every
+later admin call without it is answered `403`. A `403` on the runner's first call
+means another container claimed the world first, and the registration fails rather
+than grading a world the trial does not own.
+
+Refused at load or at `validate`: `app_world` without `json_db`, beside a
+`tools.<actor>.mcp_server` (one state holder per trial), an `actors` entry whose
+`http_request` is not enabled, and a host outside that actor's `allowed_hosts`.
+Refused when the adapter binds the task to its (and its project's) environment: a
+`url` whose host is not a service of the stack, or a service whose isolation is
+`shared` — declare it `ephemeral` or `reset` so concurrent trials never share a
+world. No credential appears in the task; the vendor hosts must resolve to the
+world service on the trial's network (a compose network alias).
+
 ## Further reading
 
 - [`examples/native/multi_service_postgres_reset/README.md`](../examples/native/multi_service_postgres_reset/README.md)

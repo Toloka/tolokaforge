@@ -656,11 +656,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         ``initial_state.json_db`` gives the shape of the state the replay loads and
         ``tools.agent.mcp_server`` gives whether the pack ships the module those
         actions call — the two facts :func:`require_replayable_golden_actions` reads
-        at grade time, read here at authoring.
+        at grade time, read here at authoring. ``initial_state.app_world`` holds the
+        world in a service of the stack instead, which the runner replays against
+        through the agent's own ``http_request`` (ADR-0058).
         """
         return ReplayWorld(
             initial_state=classify_initial_state(task.initial_state.json_db),
             mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
+            app_world=task.initial_state.app_world is not None,
         )
 
     @classmethod
@@ -1082,6 +1085,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             schemas=[],
             unstable_fields=read_unstable_field_specs(task_dir),
             filesystem=initial_filesystem,
+            app_world=task.initial_state.app_world,
         )
         if state_checks is not None:
             err = check_wire_comparison_view(
@@ -1155,6 +1159,10 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             self._project_default_environment,
             task.environment_manifest,
         )
+        if task.initial_state.app_world is not None:
+            refusal = task.initial_state.app_world.isolation_refusal(environment_manifest)
+            if refusal is not None:
+                raise ValueError(f"{task_id}: {refusal}")
 
         # Create TaskDescription
         task_description = TaskDescription(
