@@ -12,7 +12,11 @@ enumerates the public method set against the generated
 verb (``set_`` / ``insert`` / ``update`` / ``write`` / ``delete`` / ``mutate``).
 
 Every RPC delegates to the ``RunnerServiceImpl`` that owns the trial. No
-substrate-side state accumulation; the servicer is a thin adapter.
+substrate-side state accumulation; the servicer is a thin adapter. The one
+write a read triggers is the runner's own mirror refresh: a trial whose state
+lives in an MCP subprocess has its DB mirror synced from it before a final
+state is read, and a failed sync answers ``UNAVAILABLE`` instead of the stale
+mirror.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +35,7 @@ from tolokaforge.core.grading.filesystem_view import (
     iter_agent_visible_rel_paths,
     read_agent_visible_filesystem,
 )
+from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
 from tolokaforge.runner.db_client import (
@@ -39,6 +45,7 @@ from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
 from tolokaforge.runner.env_exec import first_env_exec_tool
+from tolokaforge.runner.models import StableStateResponse, StateResponse
 
 if TYPE_CHECKING:
     from tolokaforge.runner.service import RunnerServiceImpl
@@ -88,29 +95,43 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         context: grpc.ServicerContext,
     ) -> pb2.ReadStateResponse:
         tables = list(request.tables) if request.tables else None
-        try:
-            state = self._runner._run_async(
-                self._runner.db_client.get_state(request.trial_id, tables)
-            )
-        except DBTrialNotFoundError:
-            return pb2.ReadStateResponse(state_json="{}", trial_not_found=True)
-        except DBServiceError as exc:
-            context.set_code(grpc.StatusCode.UNAVAILABLE)
-            context.set_details(f"DB Service error: {exc.message}")
-            return pb2.ReadStateResponse()
-        return pb2.ReadStateResponse(state_json=json.dumps(state.data))
+        return self._read_final_state(
+            request.trial_id,
+            context,
+            lambda: self._runner.db_client.get_state(request.trial_id, tables),
+        )
 
     def ReadFinalDBStateStable(  # noqa: N802
         self,
         request: pb2.ReadFinalDBStateStableRequest,
         context: grpc.ServicerContext,
     ) -> pb2.ReadStateResponse:
+        return self._read_final_state(
+            request.trial_id,
+            context,
+            lambda: self._runner.db_client.get_stable_state(request.trial_id),
+        )
+
+    def _read_final_state(
+        self,
+        trial_id: str,
+        context: grpc.ServicerContext,
+        read: Callable[[], Awaitable[StateResponse | StableStateResponse]],
+    ) -> pb2.ReadStateResponse:
+        """Read the trial's final DB state after refreshing its mirror."""
+
+        async def _refreshed_read() -> StateResponse | StableStateResponse:
+            await self._runner._refresh_db_mirror(trial_id)
+            return await read()
+
         try:
-            state = self._runner._run_async(
-                self._runner.db_client.get_stable_state(request.trial_id)
-            )
+            state = self._runner._run_async(_refreshed_read())
         except DBTrialNotFoundError:
             return pb2.ReadStateResponse(state_json="{}", trial_not_found=True)
+        except SubstrateUnreachableError as exc:
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(str(exc))
+            return pb2.ReadStateResponse()
         except DBServiceError as exc:
             context.set_code(grpc.StatusCode.UNAVAILABLE)
             context.set_details(f"DB Service error: {exc.message}")

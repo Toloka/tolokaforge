@@ -491,8 +491,8 @@ The eight RPCs:
 | RPC | What it returns |
 | --- | --- |
 | `ReadInitialState` | The trial's pre-execution state (`{table: [rows]}` JSON) — same shape `TaskDescription.initial_state.tables` carries. |
-| `ReadFinalDBState` | RAW final DB state, mirroring `db_client.get_state`. The shape judge state-diff and custom_checks read; unfiltered rows. |
-| `ReadFinalDBStateStable` | STABLE final DB state, mirroring `db_client.get_stable_state`. The shape jsonpath state-checks grading reads; unstable fields filtered server-side by the DB service. |
+| `ReadFinalDBState` | RAW final DB state, mirroring `db_client.get_state`. The shape judge state-diff and custom_checks read; unfiltered rows. A trial whose state lives in an MCP subprocess has its mirror synced from it first; a failed sync answers `UNAVAILABLE`. |
+| `ReadFinalDBStateStable` | STABLE final DB state, mirroring `db_client.get_stable_state`. The shape jsonpath state-checks grading reads; unstable fields filtered server-side by the DB service. Synced like `ReadFinalDBState`. |
 | `ReadFilesystemPath` | One file under `AGENT_WORK_DIR`; `is_file` + `content_utf8` for text, `is_file` + `content_bytes_b64` for binary. Symlinks / non-files / missing paths return `exists=false`. |
 | `ListFilesystemDir` | Relative POSIX paths of every non-symlink UTF-8-decodable file under `AGENT_WORK_DIR`, alphabetically sorted. Same filter and exclusion policy as `tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem` — prunes `.git`, `.venv`, `node_modules`, `dist`, `.next` subtrees at any depth. |
 | `KBSearch` | Trial's per-trial KB hits. `kb_available: false` is a first-class "this trial has no KB" signal; the callback substrate returns `None` from `knowledge_search()` when it is false. |
