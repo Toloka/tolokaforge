@@ -32,6 +32,11 @@ class TerminationReason(str, Enum):
     RATE_LIMIT = "rate_limit"  # API rate limit error
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
+    PROVIDER_REFUSED_ALL_REQUESTS = (
+        # Every provider request the trial made was refused, read off the
+        # proxy's own per-request records
+        "provider_refused_all_requests"
+    )
     EMPTY_COMPLETION = "empty_completion"  # Provider returned no text and no tool calls
     REASONING_WITHOUT_ACTION = (
         "reasoning_without_action"  # Billed reasoning tokens but returned no text and no tool call

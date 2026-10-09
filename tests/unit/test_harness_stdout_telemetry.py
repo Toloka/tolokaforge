@@ -27,6 +27,8 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tolokaforge.core.metrics import calculate_task_metrics
 from tolokaforge.core.models import Trajectory, TrialStatus
 from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.core.pricing import get_pricing_info
@@ -853,7 +855,32 @@ class TestATrialTheProviderNeverServedIsNotScored:
         )
 
         assert trajectory.status is TrialStatus.ERROR
-        assert trajectory.termination_reason is TerminationReason.API_ERROR
+        assert trajectory.termination_reason is TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS
+
+    def test_a_trial_the_provider_never_served_leaves_the_denominator(self) -> None:
+        """Regression: this trial used to carry the ``api_error`` catch-all,
+        which ``classify_trial_outcome`` reads as ``MEASURED`` because that
+        value is also set from prose. A trial that reached no model, spent
+        nothing, and produced no grade then counted as one the agent failed.
+
+        Its own reason is typed — the proxy's per-request statuses — so it
+        earns exclusion, and ``infrastructure_aborts`` can report it.
+        """
+        trajectory = _run(
+            "",
+            harness="kimi-code",
+            model=_KIMI_MODEL,
+            usage_log_container_path=_USAGE_LOG_CONTAINER_PATH,
+            usage_records=self._records(403, 403, 403),
+        )
+
+        assert trajectory.metrics.cost_usd is None
+        assert classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT
+
+        metrics = calculate_task_metrics([trajectory])
+        assert metrics["total_trials"] == 1
+        assert metrics["measured_trials"] == 0
+        assert metrics["infrastructure_aborts"]["provider_refused_all_requests"] == 1
 
     def test_one_served_request_leaves_the_trial_alone(self) -> None:
         """A trial that reached the provider at all is the agent's own work,

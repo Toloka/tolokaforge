@@ -125,8 +125,9 @@ The counts that say which is which sit in the same row:
   reaches grading and comes back without a verdict, and a `trial_lost` one is not
   graded at all, so `scored_trials < measured_trials` on any run that hit either
 - `infrastructure_aborts`: per reason, the attempts excluded from that
-  denominator (`{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`). All
-  three keys are always present, so a zero is distinguishable from a missing key
+  denominator (`{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`).
+  Every excluded reason's key is always present, so a zero is distinguishable
+  from a missing key
 - `harness_errors`: attempts that failed on a defect of ours. **Inside**
   `measured_trials`, not excluded from it — our own bugs stay in the denominator.
   A non-zero value is a run-health signal

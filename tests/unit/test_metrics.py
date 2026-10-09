@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
 from tolokaforge.core.llm.usage import ProviderRawCall, Usage
 from tolokaforge.core.metrics import (
     calculate_aggregate_metrics,
@@ -251,11 +252,8 @@ class TestInfrastructureAbortsLeaveTheDenominator:
         assert metrics["total_trials"] == 4
         assert metrics["measured_trials"] == 2
         assert metrics["infrastructure_aborts"] == {
-            "api_timeout": 0,
-            "empty_completion": 0,
-            "provision_error": 0,
+            **{reason.value: 0 for reason in EXCLUDED_TYPED_REASONS},
             "rate_limit": 2,
-            "reasoning_without_action": 0,
         }
         assert metrics["harness_errors"] == 0
         assert metrics["successful_trials"] == 1
