@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 # ---------------------------------------------------------------------------
 # ToolError — typed business-logic error
@@ -136,6 +137,13 @@ def _tool_error_to_dict(exc: ToolError) -> dict[str, Any]:
     return result
 
 
+def _annotations(mutates_state: bool | None) -> ToolAnnotations | None:
+    """The MCP annotation declaring ``mutates_state``; none for a tool that declares nothing."""
+    if mutates_state is None:
+        return None
+    return ToolAnnotations(readOnlyHint=not mutates_state)
+
+
 # ---------------------------------------------------------------------------
 # DomainToolRegistry
 # ---------------------------------------------------------------------------
@@ -186,7 +194,7 @@ class DomainToolRegistry:
         self._mcp.tool(description="Internal: get state snapshot")(_tolokaforge_get_state_)
         self._mcp.tool(description="Internal: replace state")(_tolokaforge_set_state_)
 
-    def tool(self, description: str) -> Callable:
+    def tool(self, description: str, *, mutates_state: bool | None = None) -> Callable:
         """Decorator factory — registers ``func`` in both TOOLS and FastMCP.
 
         The decorated function **must** have ``data: dict`` as its first
@@ -199,6 +207,12 @@ class DomainToolRegistry:
         description:
             Human-readable description forwarded to FastMCP and shown to the
             LLM agent as the tool description.
+        mutates_state:
+            Whether a call can change the state (ADR-0057). Declared on the MCP
+            tool as the ``readOnlyHint`` annotation (``readOnlyHint = not
+            mutates_state``), which the native adapter reads back into
+            ``ToolSchema.mutates_state``. Left ``None``, the tool carries no
+            annotation and the engine treats it as possibly mutating.
 
         Example
         -------
@@ -283,7 +297,9 @@ class DomainToolRegistry:
             _mcp_fn.__signature__ = new_sig
             _mcp_fn.__annotations__ = new_annotations
 
-            self._mcp.tool(description=description)(_mcp_fn)
+            self._mcp.tool(description=description, annotations=_annotations(mutates_state))(
+                _mcp_fn
+            )
 
             return func
 
