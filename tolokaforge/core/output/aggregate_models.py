@@ -68,6 +68,7 @@ from tolokaforge.core.failure_attribution import TrialOutcomeClass
 from tolokaforge.core.models import CostByRoleMetrics, TerminationReason
 
 __all__ = [
+    "ABORT_KEY_CONTRACT_HISTORY",
     "AGGREGATE_SCHEMA_VERSION",
     "AggregateMetrics",
     "CapturedServiceLogsRollup",
@@ -83,7 +84,7 @@ __all__ = [
     "ServiceLogCaptureSource",
 ]
 
-AGGREGATE_SCHEMA_VERSION = 4
+AGGREGATE_SCHEMA_VERSION = 5
 """The ``aggregate.json`` wire generation.
 
 Rates are over ``measured_trials`` — the trials that measured the agent,
@@ -99,6 +100,60 @@ summed from the trials' ``cost_by_role``, plus a synthesized ``judge`` row from
 ``grade.judge_usage``) and the grand total ``total_cost_incl_all_usd``. Only
 agent, user and judge roles exist today, so ``total_cost_incl_all_usd`` equals
 the legacy ``total_cost_incl_judge_usd``.
+
+Version 5 adds ``provider_refused_all_requests`` to the ``infrastructure_aborts``
+keys. The key set is part of this wire generation — which is why adding an
+excluded termination reason bumps the version — so a reader knows from the stamp
+alone which reasons a file could have reported, rather than inferring it from
+which keys happen to be present. :data:`ABORT_KEY_CONTRACT_HISTORY` records the
+set per generation and is what enforces the pairing.
+"""
+
+ABORT_KEY_CONTRACT_HISTORY: tuple[tuple[int, frozenset[str]], ...] = (
+    (
+        4,
+        frozenset(
+            {
+                "api_timeout",
+                "empty_completion",
+                "provision_error",
+                "rate_limit",
+                "reasoning_without_action",
+            }
+        ),
+    ),
+    (
+        5,
+        frozenset(
+            {
+                "api_timeout",
+                "empty_completion",
+                "provider_refused_all_requests",
+                "provision_error",
+                "rate_limit",
+                "reasoning_without_action",
+            }
+        ),
+    ),
+)
+"""Which ``infrastructure_aborts`` keys each wire generation requires, append-only.
+
+Literal strings rather than :class:`TerminationReason` members: a past
+generation's key set cannot be derived from today's enum, and this table's job
+is to remember what the enum used to be.
+
+The newest row is the contract in force, and
+``tests/canonical/test_abort_key_contract.py`` holds it to equalling
+:data:`~tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` at
+:data:`AGGREGATE_SCHEMA_VERSION`. Adding an excluded reason therefore cannot
+compile past that test without appending a row, and a new row must carry a
+strictly greater version — so the bump is enforced rather than remembered.
+
+The pairing matters because the measurement-fidelity gate's R2 rule demands the
+full key set only of bundles stamped at the current generation. An archived
+bundle is checked for denominator arithmetic but not for keys it could not have
+known about, so a new reason cannot retroactively condemn every run ever
+written. See :mod:`tolokaforge.core.output.measurement_fidelity`.
 """
 
 

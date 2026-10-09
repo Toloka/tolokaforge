@@ -19,7 +19,9 @@ rather than a report.
 ``infrastructure_aborts`` keys are derived from
 :data:`tolokaforge.core.failure_attribution.EXCLUDED_TYPED_REASONS` rather
 than listed here, so a termination reason added there cannot become silently
-uncountable.
+uncountable. That demand is made of bundles stamped at the current
+:data:`~tolokaforge.core.output.aggregate_models.AGGREGATE_SCHEMA_VERSION`
+only — see :func:`_check_denominators`.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import yaml
 
 from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
 from tolokaforge.core.models.grade_components import GradeComponents
+from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
 from tolokaforge.core.output_writer import (
     GRADE_FILENAME,
     METRICS_FILENAME,
@@ -75,7 +78,8 @@ class FidelityRule(str, Enum):
 
     DENOMINATOR_CLOSURE = "R2"
     """``total_trials`` does not decompose into the measured trials plus the
-    infrastructure aborts, or the abort keys are not the excluded reasons."""
+    infrastructure aborts, or a current-generation bundle's abort keys are not
+    the excluded reasons."""
 
     DISK_RECONCILIATION = "R3"
     """A per-task row counts trials that are not on disk."""
@@ -158,7 +162,23 @@ def _check_denominators(
     ``harness_errors`` and ``ungradeable`` overlap ``measured_trials`` by
     design — our own defects stay in the denominator — so the closure is
     ``total_trials == measured_trials + sum(infrastructure_aborts)``, the
-    aborts being the only trials that sit outside it.
+    aborts being the only trials that sit outside it. That arithmetic is asked
+    of every bundle, whatever generation wrote it: it is a statement about the
+    bundle's own numbers and nothing outside it can change the answer.
+
+    The key check is narrower, and deliberately so. It asks whether the bundle
+    could report every reason that excludes a trial, and the answer depends on
+    which reasons existed when it was written. A bundle stamped at the current
+    ``AGGREGATE_SCHEMA_VERSION`` was written by a writer that knew them all, so
+    a missing key there is a live defect. An archived bundle predates them, and
+    the finding would be true but useless: the file cannot be fixed, nothing
+    downstream changes, and at corpus scale it buries the rules that do name
+    fabricated numbers. The reasons are part of the wire generation
+    (``ABORT_KEY_CONTRACT_HISTORY``), so the stamp is what makes the question
+    answerable rather than a guess from which keys happen to be present.
+
+    One vintage per bundle: the per-task rows carry no stamp of their own and
+    were written by the same writer as the aggregate beside them.
     """
     found: list[FidelityViolation] = []
     scopes: list[tuple[str, dict[str, Any]]] = [(AGGREGATE_FILENAME, aggregate)]
@@ -166,7 +186,8 @@ def _check_denominators(
         task_id = row.get("task_id", "<unnamed>")
         scopes.append((f"{PER_TASK_METRICS_FILENAME}[{task_id}]", row))
 
-    expected_keys = expected_infrastructure_abort_keys()
+    current_generation = aggregate.get("schema_version") == AGGREGATE_SCHEMA_VERSION
+    expected_keys = expected_infrastructure_abort_keys() if current_generation else frozenset()
     for where, scope in scopes:
         aborts = scope.get("infrastructure_aborts")
         if not isinstance(aborts, dict):

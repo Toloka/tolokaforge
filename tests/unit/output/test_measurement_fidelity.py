@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from tolokaforge.core.failure_attribution import EXCLUDED_TYPED_REASONS
+from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
 from tolokaforge.core.output.measurement_fidelity import (
     FidelityRule,
     check_run_bundle,
@@ -80,7 +81,7 @@ def _task_yaml(task_id: str, harness: str = "terminus-2") -> dict[str, Any]:
 
 def _aggregate(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "schema_version": 8,
+        "schema_version": AGGREGATE_SCHEMA_VERSION,
         "total_trials": 1,
         "measured_trials": 1,
         "scored_trials": 1,
@@ -201,11 +202,11 @@ def test_r1_allows_a_declared_harness_synthesised_grade(tmp_path: Path) -> None:
 
 
 def test_r2_flags_an_abort_reason_with_no_slot_to_be_counted_in(tmp_path: Path) -> None:
-    """A bundle that cannot report one of the excluded reasons.
+    """A current-generation bundle that cannot report one of the excluded reasons.
 
-    The corpus shape: bundles written before ``reasoning_without_action``
-    existed carry four keys where five are required, so a trial excluded for
-    that reason has nowhere to land and silently leaves the denominator.
+    A trial excluded for that reason has nowhere to land and silently leaves the
+    denominator. The bundle claims the current ``schema_version``, so its writer
+    knew every reason and the omission is a live defect.
     """
     aborts = dict(_ABORT_KEYS)
     dropped = sorted(aborts)[0]
@@ -253,6 +254,48 @@ def test_r2_skips_a_bundle_written_before_the_measured_denominator(tmp_path: Pat
         aggregate={"schema_version": 1, "total_trials": 50, "passed": 31},
     )
     assert check_run_bundle(bundle) == []
+
+
+def test_r2_asks_an_older_generation_for_arithmetic_but_not_for_keys(tmp_path: Path) -> None:
+    """An archived bundle is not condemned for a reason that postdates it.
+
+    The abort keys are part of the wire generation, so a bundle stamped at an
+    older one was written before the reason existed. The finding would be true
+    and useless — the file cannot be fixed, and at corpus scale it buries the
+    rules that do name fabricated numbers. Its own arithmetic is still checked,
+    because that is a statement about numbers it did write.
+    """
+    aborts = dict(_ABORT_KEYS)
+    del aborts[sorted(aborts)[0]]
+    older = AGGREGATE_SCHEMA_VERSION - 1
+
+    (tmp_path / "keys").mkdir()
+    missing_key_only = _write_bundle(
+        tmp_path / "keys",
+        aggregate=_aggregate(schema_version=older, infrastructure_aborts=aborts),
+        rows=[_row("fix-goroutine-leaks", infrastructure_aborts=aborts)],
+    )
+    assert [
+        v for v in check_run_bundle(missing_key_only) if v.rule is FidelityRule.DENOMINATOR_CLOSURE
+    ] == []
+
+    (tmp_path / "sums").mkdir()
+    broken_arithmetic = _write_bundle(
+        tmp_path / "sums",
+        aggregate=_aggregate(
+            schema_version=older,
+            total_trials=50,
+            measured_trials=47,
+            scored_trials=47,
+            infrastructure_aborts=aborts,
+        ),
+        rows=[],
+    )
+    assert any(
+        "total_trials 50" in v.detail
+        for v in check_run_bundle(broken_arithmetic)
+        if v.rule is FidelityRule.DENOMINATOR_CLOSURE
+    )
 
 
 def test_missing_aggregate_is_itself_a_violation(tmp_path: Path) -> None:
