@@ -438,16 +438,21 @@ class ReplayWorld:
     ``known=False``; unused on a resolved world, defaulted to
     :attr:`SkipKind.STRUCTURAL` to keep the constructor uniform.
     """
+    app_world: bool = False
+    """Whether ``initial_state.app_world`` names a service holding the world (ADR-0058).
+
+    The runner replays the golden actions against that service through the agent's
+    own tools, so it stands in for ``mcp_server`` as the place the world is held."""
 
     def __post_init__(self) -> None:
         if not self.known and (
-            self.initial_state is not InitialStateSource.ABSENT or self.mcp_server
+            self.initial_state is not InitialStateSource.ABSENT or self.mcp_server or self.app_world
         ):
             raise ValueError(
                 "an unresolvable replay world carries task facts: the rule that reads them "
                 f"is skipped, so initial_state={self.initial_state.value} / "
-                f"mcp_server={self.mcp_server} would be resolved and then ignored. Report "
-                "the facts with known=True, or report nothing"
+                f"mcp_server={self.mcp_server} / app_world={self.app_world} would be resolved "
+                "and then ignored. Report the facts with known=True, or report nothing"
             )
 
     @classmethod
@@ -2330,7 +2335,7 @@ def _withheld_replay_facts(world: ReplayWorld) -> Iterator[tuple[str, str]]:
     withheld_state = _NO_INITIAL_STATE_FILE[world.initial_state]
     if withheld_state is not None:
         yield withheld_state, "initial_state.json_db"
-    if not world.mcp_server:
+    if not world.mcp_server and not world.app_world:
         yield _NO_MCP_SERVER_MODULE, "tools.agent.mcp_server"
 
 

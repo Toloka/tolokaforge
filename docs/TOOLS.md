@@ -43,7 +43,15 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   Each search is bounded at the tool's own 15 s budget, which the runner hands
   the backend, rather than inheriting whatever the shared RAG client was
   constructed with.
-- `http_request`: Restricted HTTP client for mock web services.
+- `http_request`: Restricted HTTP client for mock web services. It requests only
+  `tools.<actor>.http_request.allowed_hosts` (default `mock-web`, `mock-web:8080`,
+  `localhost:8080`) and drops every caller header except `Content-Type`, `Accept`
+  and `User-Agent`, so the agent presents no credential of its own. Under
+  `initial_state.app_world` (ADR-0058) the tool is built once per actor and sets
+  `Authorization: Bearer <token>` with the token the runner minted for that actor,
+  on requests to `app_world.hosts` only. The token is in no schema, argument,
+  output or trajectory; a response quoting it back reads `***REDACTED***`. See
+  [MULTI_CONTAINER_GUIDE.md § App worlds served over HTTP](MULTI_CONTAINER_GUIDE.md#app-worlds-served-over-http).
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface
   check). See [`build_check`](#build_check) below.
 - `calculator`: Safe arithmetic calculator.
