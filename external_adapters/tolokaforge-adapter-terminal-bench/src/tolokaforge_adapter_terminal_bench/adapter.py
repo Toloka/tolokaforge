@@ -734,9 +734,10 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 # task is the authority on how long its own suite needs, and
                 # substituting a longer budget would score it under a rule its
                 # author did not write. A suite killed by the clock is not
-                # silent: it reaches the grade as ``script_exec_error``, so
-                # ``grade.yaml`` says the verifier ran out of time rather than
-                # that the agent failed.
+                # silent: it reaches the grading kind as
+                # ``script_exec_error``, which refuses the trial as
+                # ungradeable rather than scoring the agent for tests that
+                # never ran.
                 **self.emit_test_execution_grading(meta.verifier_timeout_sec)
             ),
             metadata=self._metadata(meta),
