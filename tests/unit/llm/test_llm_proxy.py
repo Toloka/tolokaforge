@@ -975,3 +975,127 @@ class TestSessionHeaderConflicts:
                 "LLM_PROXY_REQUEST_ID_HEADER",
             )
         ]
+
+
+class TestExtraHeaders:
+    """``ModelConfig.extra_headers`` rides every request of the model that declares it."""
+
+    @pytest.fixture
+    def completion(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[_RecordingCompletion]:
+        recorder = _RecordingCompletion()
+        monkeypatch.setattr(client_module, "completion", recorder)
+        yield recorder
+
+    def _client(
+        self,
+        install_secrets: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        name: str,
+        gateway: str | None,
+        *,
+        extra_headers: dict[str, str] | None,
+        extra_secrets: dict[str, str] | None = None,
+    ) -> LLMClient:
+        secrets = dict(_ROUTING_SECRETS)
+        if gateway is not None:
+            secrets.update(_GATEWAY_ON)
+        if extra_secrets:
+            secrets.update(extra_secrets)
+        if gateway == "resolved":
+            served = frozenset({litellm_model_id(provider, name)})
+            monkeypatch.setattr(client_module, "fetch_gateway_catalog", lambda *_a, **_k: served)
+        install_secrets(secrets)
+        client = LLMClient(ModelConfig(provider=provider, name=name, extra_headers=extra_headers))
+        client._retry_sleep = lambda _s: None
+        return client
+
+    @pytest.mark.parametrize("provider, name, gateway", SESSION_ROUTES)
+    def test_the_header_reaches_every_route(
+        self, install_secrets, monkeypatch, completion, provider, name, gateway
+    ) -> None:
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            provider,
+            name,
+            gateway,
+            extra_headers={"anthropic-beta": "feature-flag"},
+        )
+        _generate(client, _observation("trace-agent"))
+        sent = completion.calls[0]["extra_headers"]
+        assert sent["anthropic-beta"] == "feature-flag"
+
+    def test_a_declared_header_replaces_an_openrouter_default(
+        self, install_secrets, monkeypatch, completion
+    ) -> None:
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            "openrouter",
+            "anthropic/claude-opus-4.7",
+            None,
+            extra_headers={"X-Custom": "mine"},
+        )
+        _generate(client, _observation("trace-agent"))
+        sent = completion.calls[0]["extra_headers"]
+        assert sent["X-Custom"] == "mine"
+        assert "HTTP-Referer" in sent
+
+    def test_gateway_headers_win_over_a_declared_header(
+        self, install_secrets, monkeypatch, completion
+    ) -> None:
+        client = self._client(
+            install_secrets,
+            monkeypatch,
+            "openai",
+            CANARY,
+            "unreadable",
+            extra_headers={"X-Shared": "config"},
+            extra_secrets={"LLM_PROXY_HEADERS": '{"X-Shared": "gateway", "X-Only": "gw"}'},
+        )
+        _generate(client, _observation("trace-agent"))
+        sent = completion.calls[0]["extra_headers"]
+        assert sent["X-Shared"] == "gateway"
+        assert sent["X-Only"] == "gw"
+
+    def test_no_block_adds_nothing(self, install_secrets, monkeypatch, completion) -> None:
+        client = self._client(
+            install_secrets, monkeypatch, "openai", CANARY, None, extra_headers=None
+        )
+        _generate(client, _observation("trace-agent"))
+        assert "anthropic-beta" not in (completion.calls[0].get("extra_headers") or {})
+
+
+class TestExtraHeadersConfig:
+    """What ``ModelConfig.extra_headers`` accepts and refuses at load."""
+
+    def test_a_provider_feature_flag_header_is_accepted(self) -> None:
+        config = ModelConfig(
+            provider="openrouter",
+            name="anthropic/claude-opus-4.7",
+            extra_headers={"anthropic-beta": "feature-flag"},
+        )
+        assert config.extra_headers == {"anthropic-beta": "feature-flag"}
+
+    @pytest.mark.parametrize(
+        "name", ["Authorization", "content-type", "X-Title", "anthropic-version"]
+    )
+    def test_an_engine_owned_header_is_refused(self, name: str) -> None:
+        with pytest.raises(ValueError, match="cannot be overridden"):
+            ModelConfig(provider="openai", name=CANARY, extra_headers={name: "x"})
+
+    def test_a_malformed_name_or_empty_value_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="not an HTTP header name"):
+            ModelConfig(provider="openai", name=CANARY, extra_headers={"bad name": "x"})
+        with pytest.raises(ValueError, match="non-empty string"):
+            ModelConfig(provider="openai", name=CANARY, extra_headers={"X-A": " "})
+
+    def test_the_session_header_name_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="session header"):
+            ModelConfig(
+                provider="openai",
+                name=CANARY,
+                session={"header": "x-session-id"},
+                extra_headers={"X-Session-Id": "x"},
+            )

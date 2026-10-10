@@ -46,6 +46,23 @@ _RESERVED_SESSION_HEADERS = frozenset(
 )
 
 
+#: Headers the engine or litellm sets itself; ``extra_headers`` may not carry them.
+_RESERVED_EXTRA_HEADERS = frozenset(
+    {
+        "authorization",
+        "content-type",
+        "content-length",
+        "host",
+        "x-api-key",
+        "api-key",
+        "anthropic-version",
+        "http-referer",
+        "x-title",
+        "x-data-collection-opt-out",
+    }
+)
+
+
 class _RefusesUndeclaredKeys(BaseModel):
     """Answers an undeclared key with :func:`refuse_undeclared_keys` before ``extra="forbid"`` can."""
 
@@ -139,11 +156,49 @@ class ModelConfig(_RefusesUndeclaredKeys):
     openrouter: OpenRouterConfig | None = None
     # Not inherited by ``fallbacks`` entries: each declares its own or sends none.
     session: ModelSessionConfig | None = None
+    # Extra request headers sent on every call this model makes, by header name;
+    # a provider feature flag such as ``anthropic-beta`` goes here. Not inherited
+    # by ``fallbacks`` entries.
+    extra_headers: dict[str, str] | None = None
     # Ordered fallback chain. When a hard failure hits the primary
     # model, subsequent turns for the affected trial use the next entry
     # in this list. Empty list (default) → no fallback wrapper. See
     # docs/CONFIG.md § Fallback models.
     fallbacks: list["ModelConfig"] = Field(default_factory=list)
+
+    @field_validator("extra_headers")
+    @classmethod
+    def _validate_extra_headers(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        seen: set[str] = set()
+        for name, header_value in value.items():
+            if not isinstance(name, str) or not _HEADER_NAME.fullmatch(name):
+                raise ValueError(
+                    f"extra_headers key {name!r} is not an HTTP header name: use letters, "
+                    f"digits and !#$%&'*+.^_`|~- only, no spaces or colons."
+                )
+            if name.lower() in _RESERVED_EXTRA_HEADERS:
+                raise ValueError(
+                    f"extra_headers key {name!r} names a header the engine or litellm sets "
+                    f"({', '.join(sorted(_RESERVED_EXTRA_HEADERS))}); it cannot be overridden."
+                )
+            if name.lower() in seen:
+                raise ValueError(f"extra_headers names {name!r} more than once (case-insensitive).")
+            seen.add(name.lower())
+            if not isinstance(header_value, str) or not header_value.strip():
+                raise ValueError(f"extra_headers value for {name!r} must be a non-empty string.")
+        return dict(value)
+
+    @model_validator(mode="after")
+    def _reject_extra_header_on_session_name(self) -> "ModelConfig":
+        if self.extra_headers is not None and self.session is not None:
+            if self.session.header.lower() in {k.lower() for k in self.extra_headers}:
+                raise ValueError(
+                    f"extra_headers sets {self.session.header!r}, which is this model's "
+                    f"session header; the session value owns that name."
+                )
+        return self
 
     @model_validator(mode="after")
     def _reject_openrouter_on_other_providers(self) -> "ModelConfig":
