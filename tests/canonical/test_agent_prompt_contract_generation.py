@@ -45,11 +45,6 @@ _DIGESTS: dict[int, dict[str, str]] = {
         _CLAUSE: "e5d5a3ab07c8e1cf5eec0d1dadfc8e8f2a32c8a855591c37bd669c1c0bb231c9",
         _ZERO_CLAUSE: "90db515f763da478ed55ca380393a8e99ce4b4f63e49548d006694c5a2e0b174",
     },
-    4: {
-        "reasoning_agent": "1ba027faae3010798d081b859e476dd7e4274724b8e288e7f6889d28efd3692c",
-        _CLAUSE: "e5d5a3ab07c8e1cf5eec0d1dadfc8e8f2a32c8a855591c37bd669c1c0bb231c9",
-        _ZERO_CLAUSE: "90db515f763da478ed55ca380393a8e99ce4b4f63e49548d006694c5a2e0b174",
-    },
 }
 
 
