@@ -1,7 +1,7 @@
 {
   "model_config": {
     "loc": "models.agent",
-    "msg": "Value error, ModelConfig was given a key it does not declare:\n  - unknown key 'sesion' \u2014 did you mean 'session'? Rename `sesion` to `session` (or remove it if unused).\nModelConfig accepts: provider, name, temperature, max_tokens, seed, parallel_tool_calls, harness, reasoning, top_p, capabilities, openrouter, session, fallbacks."
+    "msg": "Value error, ModelConfig was given a key it does not declare:\n  - unknown key 'sesion' \u2014 did you mean 'session'? Rename `sesion` to `session` (or remove it if unused).\nModelConfig accepts: provider, name, temperature, max_tokens, seed, parallel_tool_calls, harness, reasoning, top_p, capabilities, openrouter, session, extra_headers, fallbacks."
   },
   "openrouter": {
     "loc": "models.agent.openrouter",
