@@ -2202,6 +2202,8 @@ class LLMClient:
                     "allow_fallbacks": allow_fallbacks,
                 }
 
+        self._apply_extra_headers(kwargs)
+
         if self._proxy is not None:
             # The gateway is an OpenAI-compatible endpoint, so speak that dialect
             # and address it by ITS route name. docs/LLM_LAYER.md § Speaking to the
@@ -2249,6 +2251,15 @@ class LLMClient:
 
         self._apply_session_header(kwargs, session_id)
         return kwargs
+
+    def _apply_extra_headers(self, kwargs: dict[str, Any]) -> None:
+        """Add this model's ``extra_headers`` to ``kwargs['extra_headers']``, if it declares any."""
+        extra = self.config.extra_headers
+        if not extra:
+            return
+        # Construction refused the names the engine sets, so this only adds or
+        # replaces the OpenRouter defaults; gateway headers merge after it.
+        kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), **extra}
 
     def _apply_session_header(self, kwargs: dict[str, Any], session_id: str | None) -> None:
         """Add this model's session header to ``kwargs['extra_headers']``, if it declares one."""
