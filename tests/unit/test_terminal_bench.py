@@ -582,6 +582,37 @@ class TestSingleContainerTaskIsRunnable:
         assert td.grading.grading_method == "test_execution"
         assert td.grading.grading_method_config == {"timeout_s": 45.0}
 
+    def test_verifier_timeout_multiplier_scales_the_grading_budget(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(
+                    Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+                ),
+                "staging_root": str(tmp_path),
+                "verifier_timeout_multiplier": 3.0,
+            }
+        )
+        td = adapter.to_task_description("echo-hello-single")
+        assert td.grading.grading_method_config == {"timeout_s": 135.0}
+        assert td.metadata["verifier_timeout_sec"] == 45.0
+        assert td.metadata["verifier_timeout_budget_sec"] == 135.0
+
+    def test_verifier_timeout_multiplier_must_be_positive(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        with pytest.raises(ValueError, match="verifier_timeout_multiplier"):
+            TerminalBenchAdapter(
+                {
+                    "terminal_bench_dir": str(
+                        Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+                    ),
+                    "staging_root": str(tmp_path),
+                    "verifier_timeout_multiplier": 0,
+                }
+            )
+
 
 class TestComposeSynthesisHarborFormat:
     """The canonical ``environment/`` compose shape — 197 of 974 delivered tasks.

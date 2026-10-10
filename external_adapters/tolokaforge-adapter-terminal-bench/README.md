@@ -149,6 +149,13 @@ CLI does not go through litellm; it reaches OpenRouter through the
 direct-vendor handler, read the blank vendor key, and 401. The engine loop
 keeps the prefix, which is what litellm needs to route.
 
+### Verifier budget
+
+`verifier_timeout_multiplier` scales each task's `[verifier] timeout_sec` before
+it becomes the grader's budget (default `1.0`; Harbor's `--timeout-multiplier`
+is the same knob on its side). The task's own value and the scaled budget are
+both recorded in the trial metadata.
+
 ### Turn-loop shape, under the engine loop
 
 `interaction_mode` picks whether a trial dispatches a user simulator.
