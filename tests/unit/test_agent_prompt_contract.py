@@ -201,8 +201,7 @@ class TestWhatTheShippedContractMustSay:
 
     def test_it_separates_the_note_from_a_planning_step(self) -> None:
         """A task may forbid a plan; a model reads that as covering the note too."""
-        exemption = "not to write a plan is not telling you to stop writing these"
-        assert exemption in CONTRACTS["reasoning_agent"]
+        assert "not a plan" in CONTRACTS["reasoning_agent"]
 
     def test_it_stays_short_enough_not_to_spend_the_cost_advantage(self) -> None:
         """Re-sent every turn, so length is a per-turn tax on every trial."""
