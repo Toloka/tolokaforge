@@ -323,6 +323,14 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 f"{ENGINE_LOOP!r} — a coding-harness CLI ends its own trial when the "
                 "process exits, so there is no turn loop for a completion signal to end."
             )
+        self.verifier_timeout_multiplier: float = float(
+            params.get("verifier_timeout_multiplier", 1.0)
+        )
+        if self.verifier_timeout_multiplier <= 0:
+            raise ValueError(
+                f"terminal-bench adapter: verifier_timeout_multiplier must be positive, "
+                f"got {self.verifier_timeout_multiplier!r}."
+            )
         self.interaction_mode: str = str(params.get("interaction_mode", "conversational"))
         if self.interaction_mode not in _INTERACTION_MODES:
             raise ValueError(
@@ -728,7 +736,9 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
             grading=RunnerGradingConfig(
-                # The task's own ``[verifier] timeout_sec``, in both directions.
+                # The task's own ``[verifier] timeout_sec``, in both directions,
+                # scaled by ``verifier_timeout_multiplier`` (1.0 unless the run
+                # says otherwise, the way Harbor's ``--timeout-multiplier`` does).
                 # 613 of the 974 delivered tasks ask for more than the grading
                 # kind's 300s default and 360 ask for less — commonly 180s. A
                 # task is the authority on how long its own suite needs, and
@@ -738,10 +748,16 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 # ``script_exec_error``, which refuses the trial as
                 # ungradeable rather than scoring the agent for tests that
                 # never ran.
-                **self.emit_test_execution_grading(meta.verifier_timeout_sec)
+                **self.emit_test_execution_grading(self._verifier_budget_sec(meta))
             ),
             metadata=self._metadata(meta),
         )
+
+    def _verifier_budget_sec(self, meta: TerminalBenchTask) -> float | None:
+        """The verifier's wall-clock budget: the task's ``timeout_sec`` times the multiplier."""
+        if meta.verifier_timeout_sec is None:
+            return None
+        return meta.verifier_timeout_sec * self.verifier_timeout_multiplier
 
     def _metadata(self, meta: TerminalBenchTask) -> dict[str, Any]:
         """Adapter extras on the runner-side task projection.
@@ -773,6 +789,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         }
         if meta.verifier_timeout_sec is not None:
             metadata["verifier_timeout_sec"] = meta.verifier_timeout_sec
+            metadata["verifier_timeout_budget_sec"] = self._verifier_budget_sec(meta)
         if self.harness_spec is not None:
             command = self.build_harness_command(
                 self.agent_harness,
