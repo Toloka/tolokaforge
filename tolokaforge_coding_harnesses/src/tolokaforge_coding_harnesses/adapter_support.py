@@ -312,9 +312,13 @@ class CodingHarnessAdapterMixin:
                     "note": {
                         "type": "string",
                         "description": (
-                            "A sentence or two: what the last output actually "
-                            "showed, what is still left, and what you expect "
-                            "these commands to produce."
+                            "Where you think before the commands run: what the "
+                            "last output actually showed, what you now believe "
+                            "about the problem and what is still left, and what "
+                            "you expect these commands to produce. Work it out "
+                            "here, at whatever length that takes, rather than "
+                            "spending a command to settle something the output "
+                            "you already have can settle."
                         ),
                     },
                     "commands": {
