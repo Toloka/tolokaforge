@@ -107,6 +107,8 @@ def _record_persistent_shell_budget(
     recorded: list[float] = []
 
     class _RecordingSession:
+        is_open = True
+
         def run(self, command: str, timeout_s: float) -> CommandResult:
             recorded.append(timeout_s)
             return CommandResult(output="", exit_code=0, timed_out=False)
