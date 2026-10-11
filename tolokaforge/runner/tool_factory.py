@@ -1470,6 +1470,12 @@ class PersistentShellToolWrapper(ToolWrapper):
     working directory from :class:`ToolLifecycleContext`), ``execute()`` runs
     commands or restarts the shell, and ``stop()`` tears it down. State (cwd,
     environment, functions) persists across ``execute()`` calls.
+
+    A command that ends the shell itself (``exit``, ``set -e`` and a failure,
+    ``exec``) closes the session; the result says so, and the next command
+    opens a fresh shell before it runs. A compose-engine timeout replaces the
+    shell, and the result says the session was reset and that the command may
+    still be running.
     """
 
     has_lifecycle = True
@@ -1534,6 +1540,8 @@ class PersistentShellToolWrapper(ToolWrapper):
                 self.name, "bash_session requires either 'command' or 'restart'"
             )
         loop = asyncio.get_event_loop()
+        if not self._session.is_open:
+            await loop.run_in_executor(None, self._session.open, self._cwd)
         result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
         return self._format_result(result)
 
@@ -1607,10 +1615,22 @@ class PersistentShellToolWrapper(ToolWrapper):
         self._session = session
         return "Shell session restarted; working directory and environment reset."
 
+    _SESSION_RESET_NOTE = (
+        "The tool's session was reset, so the next call starts clean: working "
+        "directory, environment variables and shell functions are gone"
+    )
+
     def _format_result(self, result: CommandResult) -> str:
+        if result.shell_exited:
+            code = "" if result.exit_code is None else f" with exit code {result.exit_code}"
+            return f"{result.output}\n[the shell exited{code}. {self._SESSION_RESET_NOTE}]"
         if result.timed_out:
-            suffix = f"\n[timed out after {self._timeout_s:g}s; command terminated]"
-            return result.output + suffix
+            if result.session_reset:
+                return (
+                    f"{result.output}\n[timed out after {self._timeout_s:g}s. "
+                    f"{self._SESSION_RESET_NOTE}; the command may still be running]"
+                )
+            return f"{result.output}\n[timed out after {self._timeout_s:g}s; command terminated]"
         if result.exit_code not in (0, None):
             return f"{result.output}\n[exit code: {result.exit_code}]"
         return result.output
