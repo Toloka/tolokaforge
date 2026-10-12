@@ -249,10 +249,8 @@ compute:
   `deploy/standalone/docker-compose.yaml`).
 
 A container fails at startup when the variable is set to anything other than
-a whole number in range; unset means 50. The default is 50 MiB on both sides;
-before this setting existed the runner served 50 MiB while the engine's
-channels accepted at most gRPC's default 4 MiB, so any captured world above
-4 MiB failed. A message above the bound fails the call with
+a whole number in range; unset means 50. The default is 50 MiB on both sides.
+A message above the bound fails the call with
 `RESOURCE_EXHAUSTED`: `RegisterTrial` fails the trial's registration and
 `GetState` reports a failed capture, both with an error naming the limit and
 `compute.grpc_max_message_mb` (see

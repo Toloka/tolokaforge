@@ -7,7 +7,7 @@ transport is stubbed, so these tests show what a large task world meets in
 production:
 
 * a state above gRPC's 4 MiB default but under the configured bound arrives
-  whole (the host channel used to receive at most 4 MiB);
+  whole (gRPC's own default would cap the receive at 4 MiB);
 * a message above the bound fails with ``RESOURCE_EXHAUSTED``, and the
   client's error names the engine's limit and ``compute.grpc_max_message_mb``
   while keeping each call's failure shape.
