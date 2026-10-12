@@ -2620,3 +2620,34 @@ class TestAgentSystemPromptOverride:
                     "agent_system_prompt_file": str(blank),
                 }
             )
+
+    def test_the_override_is_refused_under_a_coding_harness(self, tmp_path: Path) -> None:
+        """Only the engine loop reads it; a CLI harness brings its own prompt, so a
+        run that set it there would look configured and change nothing — refuse it."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Analysis first.\n")
+
+        with pytest.raises(ValueError, match="only read under"):
+            TerminalBenchAdapter(
+                {
+                    "terminal_bench_dir": str(tmp_path),
+                    "agent_harness": "claude-code",
+                    "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+                    "agent_system_prompt_file": str(prompt),
+                }
+            )
+
+    def test_a_utf8_prompt_file_is_read_as_utf8(self, tmp_path: Path) -> None:
+        """A non-ASCII prompt must survive a non-UTF-8 default locale."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Analyse the façade, then résumé the work. 日本語\n", encoding="utf-8")
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tmp_path), "agent_system_prompt_file": str(prompt)}
+        )
+
+        assert adapter.get_system_prompt("any-task") == prompt.read_text(encoding="utf-8")

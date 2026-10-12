@@ -111,6 +111,25 @@ per-task means. Per-trial artifacts live under
   (Gemini schema sanitizers, Claude system prompt shape, etc.).
 - You want honest token / cost accounting through `litellm`.
 
+### Overriding the agent system prompt
+
+The engine loop ships a short built-in agent system prompt. To replace it for a
+run, point `agent_system_prompt_file` at a text file:
+
+```yaml
+      harness_adapter:
+        type: "terminal_bench"
+        params:
+          agent_harness: "engine-loop"
+          agent_system_prompt_file: "prompts/my_agent_prompt.txt"
+```
+
+The file is read once at construction (UTF-8); a missing or empty file fails the
+run immediately, before any image is built. This is **engine-loop only** — a
+coding-harness CLI supplies its own prompt, so setting it under
+`agent_harness` other than `engine-loop` is refused rather than silently
+ignored.
+
 ## Harness mode — a vendor CLI drives the trial
 
 Use when you want to measure a **coding-harness CLI** (Claude Code, Codex,
