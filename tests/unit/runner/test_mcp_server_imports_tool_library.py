@@ -27,7 +27,7 @@ from tolokaforge.core import plugin_registry
 from tolokaforge.core.plugin_registry import TOOL_LIBRARIES_GROUP
 from tolokaforge.core.tool_libraries import InMemoryToolLibrary
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.tool_factory import MCPServerProcess
+from tolokaforge.runner.tool_factory import MCPServerProcess, ToolFactory
 
 pytestmark = pytest.mark.unit
 
@@ -187,3 +187,21 @@ def test_without_an_inherited_pythonpath_the_root_is_the_whole_path(
 
 def test_a_server_without_artefacts_inherits_the_environment_unchanged() -> None:
     assert MCPServerProcess(script_path="mcp_server.py")._subprocess_environment() is None
+
+
+def test_the_tools_directory_joins_the_root_on_the_subprocess_path(tmp_path: Path) -> None:
+    """What extraction put on the runner's ``sys.path``, in that order, reaches the server."""
+    (tmp_path / "tools").mkdir()
+
+    factory = ToolFactory(db_client=None, trial_id="t:0", artifacts_dir=str(tmp_path))
+
+    assert factory._mcp_server_pool._python_path == (str(tmp_path / "tools"), str(tmp_path))
+
+
+def test_without_a_tools_directory_the_root_alone_is_on_the_subprocess_path(
+    tmp_path: Path,
+) -> None:
+    factory = ToolFactory(db_client=None, trial_id="t:0", artifacts_dir=str(tmp_path))
+
+    assert factory._mcp_server_pool._python_path == (str(tmp_path),)
+    assert ToolFactory(db_client=None, trial_id="t:1")._mcp_server_pool._python_path == ()

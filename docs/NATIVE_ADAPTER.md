@@ -346,8 +346,10 @@ called to serialize the task for transfer to the Runner container.
 keyed by relative path (e.g. `"mcp_server.py"`, `"tools/orders.py"`).  The
 Runner extracts these into a temporary directory and launches `mcp_server.py`
 as a subprocess, reconstructing the original layout without any host
-filesystem access. The subprocess starts with the extracted root ahead of `PYTHONPATH`, so a
-server under `_shared/` imports packages that sit at the root.
+filesystem access. The subprocess starts with the extracted root — and its `tools/`
+directory, when the bundle has one — ahead of `PYTHONPATH`, the entries extraction put on
+the Runner's own `sys.path`, so a server under `_shared/` imports packages that sit at
+the root as an in-process tool does.
 
 The bundle is the adapter's part only. A task's pinned `tool_libraries` are
 merged afterwards by `BaseAdapter.describe_task`, and a file of the task

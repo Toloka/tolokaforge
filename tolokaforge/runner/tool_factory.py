@@ -555,9 +555,10 @@ class MCPServerProcess(BaseModel):
     python_path: tuple[str, ...] = ()
     """Directories put ahead of the inherited ``PYTHONPATH`` of the subprocess.
 
-    The runner passes the trial's artefact root, so a server under ``_shared/``
-    imports the packages delivered at that root — a pinned tool library
-    (ADR-0056) among them — as the runner process itself does."""
+    The runner passes the trial's artefact root and its ``tools/`` directory
+    (see :func:`_subprocess_python_path`), so a server under ``_shared/``
+    imports the packages delivered there — a pinned tool library (ADR-0056)
+    among them — as the runner process itself does."""
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0
     _start_lock: Any = PrivateAttr(default_factory=threading.Lock)
@@ -771,6 +772,22 @@ class MCPServerProcess(BaseModel):
         )
         if result.get("isError"):
             raise RuntimeError(f"_tolokaforge_set_state_ declared failure: {_first_text(result)!r}")
+
+
+def _subprocess_python_path(artifacts_dir: str | None) -> tuple[str, ...]:
+    """What an MCP server subprocess gets ahead of ``PYTHONPATH`` for ``artifacts_dir``.
+
+    Mirrors what :func:`~tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts`
+    put on the runner's own ``sys.path``, in the same order: ``tools/`` first
+    when the artefacts have one, then the root. An in-process tool and a
+    server subprocess then resolve the same module to the same file.
+    """
+    if artifacts_dir is None:
+        return ()
+    tools_dir = os.path.join(artifacts_dir, "tools")
+    if os.path.isdir(tools_dir):
+        return (tools_dir, artifacts_dir)
+    return (artifacts_dir,)
 
 
 class MCPServerPool:
@@ -1749,7 +1766,9 @@ class ToolFactory:
                           ``search.plane`` names; ``None`` when the trial has none.
             artifacts_dir: The trial's extracted ``tool_artifacts`` root; ``None``
                            when the trial ships no artefacts. MCP server
-                           subprocesses get it ahead of ``PYTHONPATH``.
+                           subprocesses get it, and its ``tools/`` directory when
+                           there is one, ahead of ``PYTHONPATH`` — the entries
+                           extraction put on this process's ``sys.path``.
         """
         self.db_client = db_client
         self.trial_id = trial_id
@@ -1759,9 +1778,7 @@ class ToolFactory:
         self._initial_state_data = initial_state_data or {}
         self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
-        self._mcp_server_pool = MCPServerPool(
-            python_path=(artifacts_dir,) if artifacts_dir is not None else ()
-        )
+        self._mcp_server_pool = MCPServerPool(python_path=_subprocess_python_path(artifacts_dir))
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models

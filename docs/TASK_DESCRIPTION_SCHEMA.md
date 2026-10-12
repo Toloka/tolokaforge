@@ -480,9 +480,10 @@ each pin and merges the library's bundle into `tool_artifacts`. It refuses:
 `metadata["tool_libraries"]` records each merged library as
 `{name, version, apps, files}` (`apps` is `null` when the pin selects every
 application); a task that pins nothing gets no such key. The runner starts MCP server
-subprocesses with the extracted artefact root ahead of `PYTHONPATH`, so a server under
-`_shared/` imports a library rooted at the artefact directory as the runner process
-does. A library imports only packages the runner already depends on, because its
+subprocesses with the extracted artefact root, and its `tools/` directory when there is
+one, ahead of `PYTHONPATH` — the entries extraction puts on the runner's own `sys.path`
+— so a server under `_shared/` imports a library rooted at the artefact directory as the
+runner process does. A library imports only packages the runner already depends on, because its
 bundle runs on the runner's interpreter. `tolokaforge validate` resolves each pin and
 builds its bundle the same way, so every refusal above but the collision with the
 adapter's own artefacts is a `✗` line before any run. The encoded bundle of a library
