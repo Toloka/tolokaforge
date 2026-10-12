@@ -21,7 +21,7 @@ import yaml
 
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.servicer_runtime import ServicerStub
-from tolokaforge.adapters._task_loader import _fetch_mcp_tool_schemas, _load_rich_tool_schemas
+from tolokaforge.adapters._task_loader import _fetch_mcp_tool_schemas
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
@@ -112,7 +112,12 @@ def test_the_annotation_round_trips_through_a_real_server(records_root: Path) ->
 
     assert schemas["read_record"]["mutates_state"] is False
     assert schemas["write_record"]["mutates_state"] is True
-    assert "mutates_state" not in schemas["legacy_tool"]
+    # The key is always present: null is "declares nothing", which keeps a cache
+    # written today apart from one written before the field existed.
+    assert schemas["legacy_tool"]["mutates_state"] is None
+    # The registry's own state tools are the engine's and declare themselves.
+    assert schemas["_tolokaforge_get_state_"]["mutates_state"] is False
+    assert schemas["_tolokaforge_set_state_"]["mutates_state"] is True
 
 
 class _ListingServer:
@@ -167,8 +172,8 @@ def test_a_malformed_read_only_hint_leaves_the_tool_undeclared(
     with caplog.at_level(logging.WARNING):
         schemas = _fetch_mcp_tool_schemas(Path("/srv/mcp_server.py"))
 
-    assert "mutates_state" not in schemas["odd"]
-    assert "mutates_state" not in schemas["silent"]
+    assert schemas["odd"]["mutates_state"] is None
+    assert schemas["silent"]["mutates_state"] is None
     assert schemas["fine"]["mutates_state"] is False
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("'odd'" in w and "readOnlyHint" in w for w in warnings), warnings
@@ -182,13 +187,23 @@ def _cache(task_dir: Path, entries: list[dict[str, Any]]) -> Path:
     return path
 
 
-def test_a_committed_cache_without_the_key_warns_and_names_the_regeneration_path(
+def _stale_cache_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "predates mutates_state" in r.getMessage()
+    ]
+
+
+def test_a_cache_predating_the_field_warns_once_per_description(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A committed ``fixtures/tools.json`` wins over the server and is never
     refreshed, so adding ``mutates_state=`` to a tool's decorator changes nothing
-    on the wire. The load warns once, naming the file and the tools, and says
-    how to regenerate; the cache is read as it is and left alone.
+    on the wire. An entry without the key was written before the field existed:
+    the description warns once — not once per actor block, although the user
+    block is served by the agent's server and loads the same cache — naming the
+    file, the tools and the regeneration path. The cache is left as it is.
     """
     task_dir = _records_pack(tmp_path)
     before = _cache(
@@ -200,42 +215,45 @@ def test_a_committed_cache_without_the_key_warns_and_names_the_regeneration_path
     ).read_text()
 
     with caplog.at_level(logging.WARNING):
-        schemas = _load_rich_tool_schemas(
-            task_dir, task_dir / "mcp_server.py", allow_subprocess=False
-        )
+        description = _records_adapter(tmp_path).describe_task("records")
 
-    assert "mutates_state" not in schemas["read_record"]
-    assert schemas["write_record"]["mutates_state"] is True
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert {t.name: t.mutates_state for t in description.agent_tools} == {
+        "read_record": None,
+        "write_record": True,
+        "legacy_tool": None,
+    }
+    warnings = _stale_cache_warnings(caplog)
     assert len(warnings) == 1, warnings
     assert str(task_dir / "fixtures" / "tools.json") in warnings[0]
-    assert "read_record" in warnings[0] and "write_record" not in warnings[0].split(";")[0]
+    assert "(read_record)" in warnings[0]
     assert "regenerated" in warnings[0] and "--dry-run" in warnings[0]
     assert (task_dir / "fixtures" / "tools.json").read_text() == before
 
 
-def test_a_committed_cache_declaring_every_tool_loads_silently(
+def test_a_null_entry_is_a_deliberate_non_declaration_and_stays_silent(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """A present ``null`` is what the writer persists for a tool that declares
+    nothing: the wire reads it exactly like an absent field (``None``, left out
+    of the dump) and no warning fires.
+    """
     task_dir = _records_pack(tmp_path)
     _cache(
         task_dir,
         [
-            {"name": "read_record", "description": "d", "parameters": {}, "mutates_state": False},
+            {"name": "read_record", "description": "d", "parameters": {}, "mutates_state": None},
             {"name": "write_record", "description": "d", "parameters": {}, "mutates_state": True},
         ],
     )
 
     with caplog.at_level(logging.WARNING):
-        schemas = _load_rich_tool_schemas(
-            task_dir, task_dir / "mcp_server.py", allow_subprocess=False
-        )
+        description = _records_adapter(tmp_path).describe_task("records")
 
-    assert {n: e["mutates_state"] for n, e in schemas.items()} == {
-        "read_record": False,
-        "write_record": True,
-    }
-    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+    read_record = next(t for t in description.agent_tools if t.name == "read_record")
+    assert read_record.mutates_state is None
+    assert "mutates_state" not in read_record.model_dump()
+    assert next(t for t in description.agent_tools if t.name == "write_record").mutates_state
+    assert _stale_cache_warnings(caplog) == []
 
 
 def test_the_native_adapter_reads_it_into_the_schema_and_the_cache(
@@ -250,15 +268,22 @@ def test_the_native_adapter_reads_it_into_the_schema_and_the_cache(
     by_name = {entry["name"]: entry for entry in cached}
     assert by_name["read_record"]["mutates_state"] is False
     assert by_name["write_record"]["mutates_state"] is True
-    assert "mutates_state" not in by_name["legacy_tool"]
+    assert "mutates_state" in by_name["legacy_tool"]
+    assert by_name["legacy_tool"]["mutates_state"] is None
+    assert by_name["_tolokaforge_get_state_"]["mutates_state"] is False
+    assert by_name["_tolokaforge_set_state_"]["mutates_state"] is True
 
 
 def test_the_cache_answers_a_second_description_the_same_way(
-    records_root: Path, records_description: TaskDescription
+    records_root: Path, records_description: TaskDescription, caplog: pytest.LogCaptureFixture
 ) -> None:
-    again = _records_adapter(records_root).describe_task("records")
+    """The regenerated cache carries the key on every tool, so it is read back
+    identically and never reported as predating the field."""
+    with caplog.at_level(logging.WARNING):
+        again = _records_adapter(records_root).describe_task("records")
 
     assert {tool.name: tool.mutates_state for tool in again.agent_tools} == _DECLARED
+    assert _stale_cache_warnings(caplog) == []
 
 
 def test_an_undeclared_tool_dumps_without_the_field() -> None:

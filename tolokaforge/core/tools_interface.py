@@ -177,6 +177,12 @@ class DomainToolRegistry:
         task's ``enabled`` tool list, so the LLM never sees them.  They are
         callable only via direct JSON-RPC (e.g. from MCPServerProcess.get_state /
         reset_state used by the Runner's hash-based grader).
+
+        They are the engine's own tools, so the engine declares their
+        ``mutates_state`` (ADR-0057): reading the snapshot does not change the
+        state, replacing it does. They show up in ``tools/list`` and so in the
+        ``fixtures/tools.json`` cache, where an undeclared entry would read as a
+        gap in the author's declarations.
         """
         state_getter = self._state
 
@@ -192,8 +198,12 @@ class DomainToolRegistry:
             current.update(new_state)
             return json.dumps({"status": "ok", "tables": list(current.keys())})
 
-        self._mcp.tool(description="Internal: get state snapshot")(_tolokaforge_get_state_)
-        self._mcp.tool(description="Internal: replace state")(_tolokaforge_set_state_)
+        self._mcp.tool(description="Internal: get state snapshot", annotations=_annotations(False))(
+            _tolokaforge_get_state_
+        )
+        self._mcp.tool(description="Internal: replace state", annotations=_annotations(True))(
+            _tolokaforge_set_state_
+        )
 
     def tool(self, description: str, *, mutates_state: bool | None = None) -> Callable:
         """Decorator factory — registers ``func`` in both TOOLS and FastMCP.

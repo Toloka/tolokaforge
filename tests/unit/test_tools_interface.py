@@ -324,6 +324,23 @@ class TestDecoratorSideEffects:
             description="Write.", annotations=ToolAnnotations(readOnlyHint=False)
         )
 
+    def test_the_internal_state_tools_declare_themselves(self):
+        """The engine's own get/set state tools carry the engine's declaration:
+        the snapshot read is read-only, the replace mutates. They reach
+        ``tools/list`` like every other tool, so an undeclared pair would read as
+        a cache predating ADR-0057 on every pack built on the registry.
+        """
+        internal = {
+            c.kwargs["description"]: c.kwargs["annotations"]
+            for c in self.mock_mcp.tool.call_args_list
+            if c.kwargs["description"].startswith("Internal: ")
+        }
+
+        assert internal == {
+            "Internal: get state snapshot": ToolAnnotations(readOnlyHint=True),
+            "Internal: replace state": ToolAnnotations(readOnlyHint=False),
+        }
+
     def test_the_tools_entry_carries_the_same_declaration_in_process(self):
         """One declaration, two readers: the wire gets the annotation, an
         in-process consumer that imports ``TOOLS`` (golden replay) reads the

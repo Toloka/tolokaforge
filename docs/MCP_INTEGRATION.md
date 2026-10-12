@@ -49,8 +49,14 @@ therefore changes nothing on the wire until the cache is regenerated: delete
 `fixtures/tools.json` and describe the task on the run path — a run, or
 `tolokaforge run --dry-run` on a config naming the task — which queries the
 server's `tools/list` again and writes the cache anew; then commit the result.
-A cache with an entry that lacks the key is loaded as it is and logged as a
-warning naming the file and the tools, so the stale declaration is not silent.
+
+The writer persists the key for every tool: `true`, `false`, or `null` for a tool
+that declares nothing (the registry's own `_tolokaforge_get_state_` /
+`_tolokaforge_set_state_` declare `false` / `true`). A `null` is the author's
+deliberate non-declaration — the wire reads it exactly like an absent field — and
+is silent. An entry *without* the key was written before the field existed; a
+description of such a task logs one warning naming the file, the tools and the
+regeneration path. Regenerating the cache silences it.
 
 ## Notes
 

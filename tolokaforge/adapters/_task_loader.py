@@ -1379,10 +1379,10 @@ def _builtin_tool_schemas(
     its ``get_schema()`` output reduced to ``{"description", "parameters"}`` so
     the LLM receives real parameter descriptions, plus the policy-declared
     ``output_max_chars`` and ``timeout_s``. ``mutates_state`` is derived from the
-    policy's category through :func:`builtin_mutates_state` and, like the
-    ``fixtures/tools.json`` cache, carried only when declared. A name the
-    registry does not know, or one whose construction raises, is absent from the
-    result.
+    policy's category through :func:`builtin_mutates_state` and carried only when
+    declared (builtins are never cached, so an absent key here says nothing about
+    the cache's age). A name the registry does not know, or one whose
+    construction raises, is absent from the result.
     """
     from tolokaforge.tools.builtin import registry
 
@@ -1424,24 +1424,21 @@ def _load_rich_tool_schemas(
 
     A readable cache is never refreshed, so it wins over the server: a
     ``mutates_state`` declaration added to the server after the cache was
-    written does not reach the wire until the cache is regenerated. An entry
-    without the key is reported once per load through
-    :func:`_warn_cache_entries_without_mutates_state`, which names the file and
-    the regeneration path; the cache itself is left as it is.
+    written does not reach the wire until the cache is regenerated. The run
+    path reports that once per description through
+    :func:`warn_tool_cache_predating_mutates_state`; this loader stays silent,
+    as it runs once per actor block and for the gates too.
     """
     tools_json_path = task_dir / "fixtures" / "tools.json"
 
     if tools_json_path.exists():
         try:
-            with open(tools_json_path) as f:
-                tools_list = json.load(f)
-            schemas = {t["name"]: t for t in tools_list if isinstance(t, dict) and "name" in t}
+            schemas = _read_tool_cache(tools_json_path)
             logger.info(
                 "Loaded tool schemas from fixtures/tools.json",
                 count=len(schemas),
                 path=str(tools_json_path),
             )
-            _warn_cache_entries_without_mutates_state(tools_json_path, schemas)
             return schemas
         except Exception as exc:
             logger.warning(
@@ -1472,30 +1469,53 @@ def _load_rich_tool_schemas(
     return schemas
 
 
-def _warn_cache_entries_without_mutates_state(
-    tools_json_path: Path, schemas: Mapping[str, Mapping[str, Any]]
-) -> None:
-    """One warning naming the cache file when any of its entries lacks ``mutates_state``.
+def _read_tool_cache(tools_json_path: Path) -> dict[str, dict]:
+    """``fixtures/tools.json`` as ``{name: entry}``; raises as ``json.load`` does."""
+    with open(tools_json_path) as f:
+        tools_list = json.load(f)
+    return {t["name"]: t for t in tools_list if isinstance(t, dict) and "name" in t}
+
+
+def warn_tool_cache_predating_mutates_state(task: TaskConfig, task_dir: Path) -> None:
+    """One warning per description when the task's tool cache predates ADR-0057.
 
     The cache is written once from the server's ``tools/list`` and read ever
-    after, so a ``readOnlyHint`` the server gained later (ADR-0057) is invisible
-    on the wire until the file is regenerated. Deleting it and describing the
-    task on the run path — a run, or ``tolokaforge run --dry-run`` on a config
-    that names the task — queries the server again and writes the cache anew.
-    The warning says so; nothing here touches the file.
+    after, so a ``readOnlyHint`` the server gained later is invisible on the
+    wire until the file is regenerated. Since ADR-0057 the writer persists the
+    key for every tool — ``null`` for one that declares nothing — so an entry
+    *without* the key is unambiguously older than the field, while a present
+    ``null`` is the author's deliberate non-declaration and stays silent.
+    Deleting the file and describing the task on the run path — a run, or
+    ``tolokaforge run --dry-run`` on a config that names the task — queries the
+    server again and writes the cache anew, which silences the warning.
+
+    Called once from the run path after both actor blocks are resolved, because
+    the loader itself runs once per block (the user block is served by the
+    agent's server) and for the gates as well. A task ships one cache, so one
+    check covers every block. An absent or unreadable cache is the loader's
+    concern and is not reported here; nothing here touches the file.
     """
-    undeclared = sorted(name for name, entry in schemas.items() if "mutates_state" not in entry)
-    if not undeclared:
+    if all(effective_mcp_server(task, actor) is None for actor in ToolActor):
+        return
+    tools_json_path = task_dir / "fixtures" / "tools.json"
+    if not tools_json_path.exists():
+        return
+    try:
+        schemas = _read_tool_cache(tools_json_path)
+    except Exception:
+        return
+    stale = sorted(name for name, entry in schemas.items() if "mutates_state" not in entry)
+    if not stale:
         return
     logger.warning(
-        f"{tools_json_path} carries no mutates_state for {len(undeclared)} of "
-        f"{len(schemas)} tools ({', '.join(undeclared)}); a committed cache wins over "
-        "the server, so a readOnlyHint declared since the cache was written does not "
-        "reach the wire until the cache is regenerated: delete the file and describe "
-        "the task on the run path (a run, or `tolokaforge run --dry-run` on a config "
-        "naming it), which queries the server's tools/list and writes the cache anew",
+        f"{tools_json_path} predates mutates_state for {len(stale)} of {len(schemas)} tools "
+        f"({', '.join(stale)}); a committed cache wins over the server, so a readOnlyHint "
+        "declared since the cache was written does not reach the wire until the cache is "
+        "regenerated: delete the file and describe the task on the run path (a run, or "
+        "`tolokaforge run --dry-run` on a config naming it), which queries the server's "
+        "tools/list and writes the cache anew, with the key on every tool",
         path=str(tools_json_path),
-        tools=undeclared,
+        tools=stale,
     )
 
 
@@ -1552,10 +1572,13 @@ def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
             "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
         }
         # ADR-0057: the server's ``readOnlyHint`` is the author's declaration; a tool
-        # carrying no hint stays undeclared rather than defaulting either way. Only
-        # a bool under an ``annotations`` mapping is a declaration: any other shape
-        # is reported and left undeclared, never read as one (a string "false"
-        # would otherwise record the tool as read-only).
+        # carrying no hint stays undeclared (``None``) rather than defaulting either
+        # way. The key is always written, so a cache entry without it is one
+        # written before the field existed (``warn_tool_cache_predating_mutates_state``).
+        # Only a bool under an ``annotations`` mapping is a declaration: any other
+        # shape is reported and left undeclared, never read as one (a string
+        # "false" would otherwise record the tool as read-only).
+        schemas[name]["mutates_state"] = None
         annotations = tool.get("annotations")
         if annotations is None:
             continue
