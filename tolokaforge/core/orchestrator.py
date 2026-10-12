@@ -20,11 +20,8 @@ from pydantic import ValidationError
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
-    ToolActor,
-    actor_tool_block,
     declared_search_backend,
     declared_tool_names,
-    enabled_tool_names,
     grading_source_under_adapter,
     replay_world_under_adapter,
     search_declaration,
@@ -40,7 +37,10 @@ from tolokaforge.core.budgets import (
     CostBudget,
     write_limit_hit_marker,
 )
-from tolokaforge.core.compose_materialisation import LogCaptureConfig
+from tolokaforge.core.compose_materialisation import (
+    LogCaptureConfig,
+    run_needs_docker_cli,
+)
 from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
@@ -195,45 +195,6 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
     return any(_PLAYWRIGHT_TOOL_NAMES & declared_tool_names(task) for task in tasks)
 
 
-# Tools whose compose variant runs inside a sibling compose service via
-# ``docker exec`` from the runner container. Extend this set when a new
-# tool ships a compose variant that needs the same runner-side docker CLI
-# + socket bind-mount treatment (see ``_run_needs_docker_cli`` and the
-# ``mount_docker_socket`` seam threaded through
-# :class:`tolokaforge.core.plugin_registry.RuntimeBackendBuildContext`).
-_COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset({"bash_session", "str_replace_editor"})
-
-
-def _tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:
-    """Return True iff any task routes a shipped tool into a sibling service
-    via the compose variant (``tools.<actor>.<tool>.service: <name>``).
-
-    ``bash_session`` and ``str_replace_editor`` each ship a compose variant
-    that executes inside a sibling compose service by ``docker exec``-ing
-    from the runner container into it. The runner image needs the docker
-    CLI when any enabled tool is in that shape — e.g. the Migration Bench
-    adapter's task packs (``services.mb-server`` running the workload,
-    tools routed there via ``bash_session.service: mb-server``).
-
-    The ``service:`` key is read from the block that enabled the tool, so a
-    user-declared tool is routed by ``tools.user.<tool>.service`` and never by
-    the agent's block for the same name.
-    """
-    return any(
-        _actor_routes_a_compose_variant(task, actor) for task in tasks for actor in ToolActor
-    )
-
-
-def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
-    """Whether *actor*'s block enables a compose-variant tool and names its service."""
-    block = actor_tool_block(task, actor)
-    for tool_name in _COMPOSE_VARIANT_TOOL_NAMES & enabled_tool_names(task, actor):
-        tool_cfg = block.get(tool_name)
-        if isinstance(tool_cfg, dict) and tool_cfg.get("service"):
-            return True
-    return False
-
-
 def _run_uses_coding_harness(config: "RunConfig") -> bool:
     """Return True iff the run config selects a coding-harness CLI.
 
@@ -247,33 +208,6 @@ def _run_uses_coding_harness(config: "RunConfig") -> bool:
     """
     agent_model = config.models.get("agent") if config.models else None
     return agent_model is not None and agent_model.harness is not None
-
-
-def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
-    """Return True iff the run needs the docker CLI baked into the runner image.
-
-    Two triggers today:
-
-    - The adapter declares ``requires_docker_cli_in_runner = True`` — the
-      class-level capability flag says its grading needs to shell out to
-      docker from the runner container (against the host daemon via the
-      mounted socket). Terminal-bench is the shipped example.
-    - Any task that routes a shipped tool through the compose variant (see
-      :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
-      into the sibling service.
-
-    Detected before build so the slim default image ships without the CLI for
-    every other run. Pure function for unit testing — the adapter class is
-    resolved from ``adapter_type`` via the registry, no adapter instance
-    required.
-    """
-    if adapter_type is not None:
-        from tolokaforge.adapters import adapter_class
-
-        cls = adapter_class(adapter_type)
-        if cls is not None and cls.requires_docker_cli_in_runner:
-            return True
-    return _tasks_use_compose_variant_tools(tasks)
 
 
 def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
@@ -1601,7 +1535,7 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks)
+                mount_docker_socket=run_needs_docker_cli(adapter_type, self.tasks)
                 or _run_uses_coding_harness(self.config),
                 expose_substrate=(
                     self.config.grader is not None and self.config.grader.expose_substrate
@@ -3029,7 +2963,7 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
+                if run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
                     self.config
                 ):
                     self.logger.info(
