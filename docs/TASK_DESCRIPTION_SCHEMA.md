@@ -483,8 +483,11 @@ application); a task that pins nothing gets no such key. The runner starts MCP s
 subprocesses with the extracted artefact root ahead of `PYTHONPATH`, so a server under
 `_shared/` imports a library rooted at the artefact directory as the runner process
 does. A library imports only packages the runner already depends on, because its
-bundle runs on the runner's interpreter. `tolokaforge validate` reports a pin the
-engine cannot resolve as a `✗` line.
+bundle runs on the runner's interpreter. `tolokaforge validate` resolves each pin and
+builds its bundle the same way, so every refusal above but the collision with the
+adapter's own artefacts is a `✗` line before any run. The encoded bundle of a library
+is built once per process for a given selection, so the descriptions of tasks sharing
+a pin share it rather than each holding a copy.
 
 ---
 

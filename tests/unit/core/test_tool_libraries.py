@@ -561,6 +561,33 @@ def test_describe_task_without_pins_is_the_adapters_description(
     assert adapter.describe_task("t") == adapter.to_task_description("t")
 
 
+def test_tasks_sharing_a_pin_share_one_encoded_bundle(acme: InMemoryToolLibrary) -> None:
+    """The orchestrator caches every task's description: the bundle is encoded once, not per task."""
+    pins = [ToolLibraryPin(name="acme_tools", version="1.2.0", apps=["billing"])]
+
+    first = merge_tool_libraries(_description(**{"a/mcp_server.py": b"#\n"}), pins)
+    second = merge_tool_libraries(_description(**{"b/mcp_server.py": b"#\n"}), pins)
+
+    assert acme.calls == [("billing",)]
+    for path in (*_SHARED, *_APPS["billing"]):
+        assert first.tool_artifacts[path] is second.tool_artifacts[path]
+    assert (
+        "a/mcp_server.py" in first.tool_artifacts and "a/mcp_server.py" not in second.tool_artifacts
+    )
+
+
+def test_a_fresh_library_under_the_same_pin_gets_its_own_bundle(install: InstallLibraries) -> None:
+    """The memo is keyed on the library object, not the pin: a reinstall is not served stale."""
+    pins = [ToolLibraryPin(name="acme_tools", version="1.2.0")]
+    install(("acme_tools", InMemoryToolLibrary("acme_tools", "1.2.0", shared={"x.py": b"1"})))
+    before = merge_tool_libraries(_description(), pins)
+    install(("acme_tools", InMemoryToolLibrary("acme_tools", "1.2.0", shared={"x.py": b"2"})))
+
+    after = merge_tool_libraries(_description(), pins)
+
+    assert (_decoded(before)["x.py"], _decoded(after)["x.py"]) == (b"1", b"2")
+
+
 # ---------------------------------------------------------------------------
 # tolokaforge validate
 # ---------------------------------------------------------------------------
@@ -591,3 +618,17 @@ def test_validate_passes_a_pin_the_engine_can_honour(
 
     assert result.exit_code == 0, result.stderr
     assert "1 valid, 0 invalid" in result.stderr
+
+
+def test_validate_builds_the_bundle_so_an_unshipped_application_fails(
+    tmp_path: Path, acme: InMemoryToolLibrary
+) -> None:
+    """The pin resolves; only building the bundle, as a run does, finds the bad ``apps``."""
+    _native_pack(tmp_path, [{"name": "acme_tools", "version": "1.2.0", "apps": ["payroll"]}])
+
+    result = _validate(tmp_path / "tasks" / "acme_pack" / "task.yaml")
+
+    assert result.exit_code == 1, result.stderr
+    assert "ships no application ['payroll']" in result.stderr
+    assert "0 valid, 1 invalid" in result.stderr
+    assert acme.calls == [("payroll",)]

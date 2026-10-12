@@ -44,6 +44,7 @@ __all__ = [
     "ResolvedToolLibrary",
     "ToolLibrary",
     "ToolLibraryError",
+    "checked_bundles",
     "merge_tool_libraries",
     "resolve_tool_libraries",
 ]
@@ -206,22 +207,64 @@ def merge_tool_libraries(
     artifacts: dict[str, str] = dict(description.tool_artifacts)
     import_roots = _import_roots(description)
     provenance: list[dict[str, Any]] = []
-    for resolved in resolve_tool_libraries(pins):
-        files = _checked_bundle(resolved)
-        _refuse_collisions(resolved.pin.name, files, artifacts, import_roots)
-        artifacts.update(
-            (path, base64.b64encode(content).decode("ascii")) for path, content in files.items()
-        )
+    for resolved, encoded in checked_bundles(pins):
+        _refuse_collisions(resolved.pin.name, encoded, artifacts, import_roots)
+        artifacts.update(encoded)
         provenance.append(
             {
                 "name": resolved.pin.name,
                 "version": resolved.library.version,
                 "apps": list(resolved.pin.apps) if resolved.pin.apps is not None else None,
-                "files": len(files),
+                "files": len(encoded),
             }
         )
     metadata = {**description.metadata, PROVENANCE_METADATA_KEY: provenance}
     return description.model_copy(update={"tool_artifacts": artifacts, "metadata": metadata})
+
+
+def checked_bundles(
+    pins: Sequence[ToolLibraryPin],
+) -> list[tuple[ResolvedToolLibrary, Mapping[str, str]]]:
+    """Each pin's library with its checked bundle, base64-encoded as ``tool_artifacts`` carries it.
+
+    Everything :func:`merge_tool_libraries` does short of a description:
+    ``tolokaforge validate`` calls it so an application the library does not
+    ship, or a bad bundle path, fails validation with the message a run refuses
+    the task with.
+
+    Raises:
+        ToolLibraryError: Any refusal of :func:`resolve_tool_libraries`, an
+            empty bundle, a bundle path that is absolute, leaves the artefact
+            root or is not normalised, or a non-bytes file.
+    """
+    return [(resolved, _encoded_bundle(resolved)) for resolved in resolve_tool_libraries(pins)]
+
+
+_ENCODED_BUNDLES: dict[tuple[int, tuple[str, ...] | None], tuple[ToolLibrary, dict[str, str]]] = {}
+"""The encoded bundle of each (library object, selection) this process has built.
+
+A run describes every task on the pin, and the orchestrator caches each
+description: without this, every task re-ran ``bundle()``, re-encoded the same
+files and held its own copy of the strings. The entry keeps the library object
+itself, so its ``id`` cannot be reused by another object while the entry lives
+— a test that registers a fresh fake library under the same name gets its own
+bundle, not a predecessor's.
+"""
+
+
+def _encoded_bundle(resolved: ResolvedToolLibrary) -> dict[str, str]:
+    """The checked bundle of ``resolved``, encoded once per library object and selection."""
+    apps = tuple(resolved.pin.apps) if resolved.pin.apps is not None else None
+    key = (id(resolved.library), apps)
+    cached = _ENCODED_BUNDLES.get(key)
+    if cached is not None:
+        return cached[1]
+    encoded = {
+        path: base64.b64encode(content).decode("ascii")
+        for path, content in _checked_bundle(resolved).items()
+    }
+    _ENCODED_BUNDLES[key] = (resolved.library, encoded)
+    return encoded
 
 
 def _checked_bundle(resolved: ResolvedToolLibrary) -> dict[str, bytes]:
@@ -290,7 +333,7 @@ def _import_name(entry: str) -> str:
 
 def _refuse_collisions(
     name: str,
-    files: Mapping[str, bytes],
+    files: Mapping[str, str],
     artifacts: Mapping[str, str],
     import_roots: frozenset[str],
 ) -> None:
