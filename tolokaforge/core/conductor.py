@@ -910,6 +910,14 @@ class InProcessConductor:
             self.agent_client.capabilities.default_max_turns,
         )
 
+        # Opt-in per-trial token ceiling: a task value overrides the run-level
+        # default, and both default to None (uncapped).
+        max_trial_tokens = (
+            task.max_trial_tokens
+            if task.max_trial_tokens is not None
+            else self.config.orchestrator.max_trial_tokens
+        )
+
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
         # is not explicitly pinned.
         if task.max_turns is None:
@@ -966,6 +974,7 @@ class InProcessConductor:
             max_environment_errors=task.max_environment_errors,
             turn_timeout_s=turn_timeout_s,
             episode_timeout_s=episode_timeout_s,
+            max_trial_tokens=max_trial_tokens,
             stuck_detector=stuck_detector,
             user_tool_executor=setup.user_tool_executor,
             request_limiter=self.request_limiter,

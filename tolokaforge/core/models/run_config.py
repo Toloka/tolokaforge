@@ -519,6 +519,14 @@ class OrchestratorConfig(BaseModel):
     A future release will flip this to an opt-in cap (default ``None``);
     tracked as a post-M9 follow-up."""
 
+    max_trial_tokens: int | None = None
+    """Run-level opt-in ceiling on cumulative model tokens (prompt + completion)
+    per trial. ``None`` (the default) leaves trials uncapped on tokens; a value
+    stops a trial that reaches it with
+    :attr:`~tolokaforge.core.models.trial_status.TerminationReason.TRIAL_TOKEN_BUDGET`,
+    bounding a runaway that loops without progress before the wall-clock budget
+    is spent. ``TaskConfig.max_trial_tokens`` overrides this per task."""
+
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
 
     fail_on_zero_coverage: bool = False

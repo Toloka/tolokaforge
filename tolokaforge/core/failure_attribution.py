@@ -175,6 +175,7 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         )
     elif trajectory.termination_reason in (
         TerminationReason.TIMEOUT,
+        TerminationReason.TRIAL_TOKEN_BUDGET,
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_ERROR,
         TerminationReason.PROVIDER_REFUSED_ALL_REQUESTS,

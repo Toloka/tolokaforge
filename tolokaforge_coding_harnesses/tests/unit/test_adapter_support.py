@@ -259,7 +259,8 @@ class TestEmitHarnessToolSchema:
         assert "files, installed packages and running services persist" in description
         assert "working directory, shell variables and `cd` reset" in description
         assert "A command that fails does not stop the ones after it" in description
-        assert "read one's output before choosing the next" in description
+        assert "Default to several commands per call" in description
+        assert "depends on reading this one's output" in description
         assert "depends on reading this call's output" in commands
         assert "does not depend on another" not in commands
 

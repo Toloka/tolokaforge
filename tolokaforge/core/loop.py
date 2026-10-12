@@ -200,10 +200,19 @@ class LoopConfig:
     ``MetricsSink.last_prompt_tokens + context_watermark >=
     max_context_tokens``; any ``None`` leaves the loop's pre-opt-in
     behaviour intact.
+
+    ``max_trial_tokens`` is an opt-in per-trial ceiling on cumulative model
+    tokens (prompt + completion across every call). Checked before each turn
+    against ``MetricsSink.cumulative_tokens``; once the spend to date meets
+    the ceiling the loop stops with
+    :attr:`TerminationReason.TRIAL_TOKEN_BUDGET`, so a trial looping without
+    progress cannot run out the whole wall-clock budget. ``None`` (the
+    default) keeps the loop uncapped on tokens.
     """
 
     max_turns: int = 50
     episode_timeout_s: int = 1200
+    max_trial_tokens: int | None = None
     api_error_retries: int = 1
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
@@ -310,6 +319,15 @@ class MetricsSink(Protocol):
 
     @property
     def last_prompt_tokens(self) -> int | None:
+        return None
+
+    @property
+    def cumulative_tokens(self) -> int | None:
+        """Total model tokens charged so far this trial (prompt + completion).
+
+        The loop reads it to arm the opt-in ``max_trial_tokens`` ceiling. A
+        subclass that never overrides inherits ``None`` and never trips it.
+        """
         return None
 
     def record_tool_output_truncated(self, omitted_chars: int) -> None:
@@ -1228,6 +1246,9 @@ class ToolCallingLoop:
             timeout_decision = self._check_episode_timeout(start_time)
             if timeout_decision is not None:
                 return timeout_decision
+            budget_decision = self._check_trial_token_budget()
+            if budget_decision is not None:
+                return budget_decision
             try:
                 return self._run_turn(turn, system_prompt, messages)
             except Exception as exc:  # noqa: BLE001 — classified, then surfaced via status
@@ -1710,6 +1731,28 @@ class ToolCallingLoop:
 
     def _check_episode_timeout(self, start_time: float) -> TerminationDecision | None:
         return episode_timeout_decision(start_time, self.config.episode_timeout_s, self.logger)
+
+    def _check_trial_token_budget(self) -> TerminationDecision | None:
+        """Stop the trial when cumulative tokens reach ``max_trial_tokens``.
+
+        A no-op unless the ceiling is configured and the sink reports a running
+        total. Checked before a turn runs, so the spend that crosses the line is
+        the turn already recorded, not the one about to start.
+        """
+        limit = self.config.max_trial_tokens
+        if limit is None:
+            return None
+        spent = self.metrics.cumulative_tokens
+        if spent is None or spent < limit:
+            return None
+        self.logger.warning("Per-trial token budget reached", tokens=spent, budget=limit)
+        return TerminationDecision(
+            reason=TerminationReason.TRIAL_TOKEN_BUDGET,
+            system_message=(
+                f"Per-trial token budget reached ({spent} >= {limit} tokens). Dialogue terminated."
+            ),
+            status=TrialStatus.TIMEOUT,
+        )
 
     def _capture_effective_prompt(self, result: GenerationResult) -> None:
         if result.effective_system_prompt and not self._captured:

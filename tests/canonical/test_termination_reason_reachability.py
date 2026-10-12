@@ -227,6 +227,7 @@ def _run_trial(
     user_reply: str = "Please carry on.",
     max_turns: int = 2,
     episode_timeout_s: int = 1200,
+    max_trial_tokens: int | None = None,
     stuck_detector: StuckDetector | None = None,
     interaction_mode: InteractionMode = "conversational",
     tool_schemas: list[dict[str, Any]] | None = None,
@@ -246,6 +247,7 @@ def _run_trial(
         tool_schemas=tool_schemas or [],
         max_turns=max_turns,
         episode_timeout_s=episode_timeout_s,
+        max_trial_tokens=max_trial_tokens,
         stuck_detector=stuck_detector,
         interaction_mode=interaction_mode,
         user_tool_turns=UserToolTurnRule(
@@ -391,6 +393,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
             stuck_detector=StuckDetector(max_repeated_tool_calls=5),
         ),
         _run_trial(_text("Still working."), max_turns=1),
+        _run_trial(_repeated_call(), max_turns=20, max_trial_tokens=1),
         _run_trial(_text("unreached"), max_simulation_steps=1),
         _run_trial(
             _repeated_call(),

@@ -34,6 +34,7 @@
   "interaction_mode": "conversational",
   "max_environment_errors": null,
   "max_simulation_steps": null,
+  "max_trial_tokens": null,
   "max_turns": 14,
   "metadata": {
     "complexity": null,

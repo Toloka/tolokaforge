@@ -259,6 +259,7 @@ class TrialRunner:
         max_environment_errors: int | None = None,
         turn_timeout_s: int = 60,
         episode_timeout_s: int = 1200,
+        max_trial_tokens: int | None = None,
         stuck_detector: StuckDetector | None = None,
         user_tool_executor: ToolExecuting | None = None,
         request_limiter: GlobalRateLimiter | None = None,
@@ -288,6 +289,7 @@ class TrialRunner:
         self._simulation_budget: SimulationBudget | None = None
         self.turn_timeout_s = turn_timeout_s
         self.episode_timeout_s = episode_timeout_s
+        self.max_trial_tokens = max_trial_tokens
         self.stuck_detector = stuck_detector
         # The enabled agent tools whose call ends the episode. Empty unless an
         # operator put a completion tool in ``tools.agent.enabled`` *and* the
@@ -569,6 +571,7 @@ class TrialRunner:
                         config=LoopConfig(
                             max_turns=self.max_turns,
                             episode_timeout_s=self.episode_timeout_s,
+                            max_trial_tokens=self.max_trial_tokens,
                             empty_retry_count=capabilities.empty_retry_count,
                             reasoning_stall_retry_count=capabilities.reasoning_stall_retry_count,
                             reasoning_stall_turn_limit=capabilities.reasoning_stall_turn_limit,
@@ -2371,3 +2374,8 @@ class _TrialMetricsSink(MetricsSink):
     @property
     def last_prompt_tokens(self) -> int | None:
         return self._last_prompt_tokens
+
+    @property
+    def cumulative_tokens(self) -> int | None:
+        usage = self._metrics.usage
+        return usage.prompt_tokens + usage.completion_tokens

@@ -58,6 +58,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.MAX_TURNS, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.MAX_STEPS, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.TOO_MANY_ERRORS, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.TRIAL_TOKEN_BUDGET, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.COMPLETED, TerminationReason.ERROR, _HARNESS, True),
@@ -78,6 +79,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.MAX_TURNS, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.MAX_STEPS, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.TOO_MANY_ERRORS, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.TRIAL_TOKEN_BUDGET, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.FAILED, TerminationReason.ERROR, _HARNESS, True),
@@ -98,6 +100,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.MAX_TURNS, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.MAX_STEPS, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.TOO_MANY_ERRORS, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.TRIAL_TOKEN_BUDGET, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.ERROR, _HARNESS, True),
@@ -118,6 +121,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.MAX_TURNS, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.MAX_STEPS, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.TOO_MANY_ERRORS, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.TRIAL_TOKEN_BUDGET, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.USER_TOOL_LOOP_LIMIT, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.TIMEOUT, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.ERROR, _HARNESS, True),
@@ -214,7 +218,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 160
+        assert len(_OUTCOME_CELLS) == len(expected) == 168
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,

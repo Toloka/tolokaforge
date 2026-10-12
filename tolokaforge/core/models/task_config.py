@@ -572,6 +572,10 @@ class TaskConfig(BaseModel):
     description: str
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
+    max_trial_tokens: int | None = Field(default=None, ge=1)
+    """Per-task override of ``OrchestratorConfig.max_trial_tokens`` — an opt-in
+    ceiling on cumulative model tokens for the trial. ``None`` falls back to the
+    run-level value (itself ``None`` by default, i.e. uncapped)."""
     max_simulation_steps: int | None = Field(default=None, ge=1)
     max_environment_errors: int | None = Field(default=None, ge=1)
     initial_user_message: str | None = None
