@@ -665,6 +665,8 @@ Version 3 is the first that reports completed MCP `isError` replies as `EXECUTIO
 
 Version 4 is the first whose grading regexes run on RE2 by default and whose grading config carries `regex_engine` (on `trace_checks`, `transcript_rules`, and an authored matcher predicate or bound value). An engine below it sends a config with no `regex_engine`, which this runner would read as `linear`: a lookahead the older engine's gate passed would spend the trial's tokens and then raise at grade time, and a `\d`, `\w` or `$` pattern would silently change verdict. An image below it would refuse every pack carrying `trace_checks` or `transcript_rules` at the wire model instead of at the gate. Both pairings are refused at registration, for every pack.
 
+Version 5 is the first that records an MCP tool's typed refusal of its arguments — the JSON-RPC error `-32602`, or an `isError: true` reply whose `_meta` carries `tolokaforge/error_category: invalid_arguments` — as `EXECUTION_STATUS_INVALID_ARGUMENTS` instead of `EXECUTION_STATUS_ENVIRONMENT_ERROR`. An older image would record those calls as environment errors, so a model's correctable input mistake would spend the trial's environment-error budget and could end it as `too_many_errors`; the host refuses such an image before a trial starts.
+
 The runner's request gate is a lower bound, not an equality: a newer engine still sends `call_id`. From version 3 onward the host also checks `runner_protocol_version` in the successful registration response, so an older image cannot silently omit a newer outcome or grading field.
 
 #### Trial spec payload
@@ -767,7 +769,7 @@ The tool execution flow:
 | `ERROR` | Tool raised exception | Return error message to LLM | yes |
 | `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM | yes |
 | `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial | yes |
-| `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM | yes, with empty `arguments` |
+| `INVALID_ARGUMENTS` | Arguments don't match the schema, or an MCP tool refused them in a typed way (JSON-RPC `-32602`, or `isError: true` with `_meta` `tolokaforge/error_category: invalid_arguments`) | Return the feedback to LLM; it does not count as an environment error | yes; with empty `arguments` when the runner refused unparseable JSON |
 | `TRIAL_NOT_FOUND` | Trial ID not registered | Abort the trial as `trial_lost` | no — on either side; the call reached no tool |
 
 A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted. `TRIAL_NOT_FOUND` is the exception, and it is not one: the runner holds no registration, so the call reached no tool and there is no outcome for either side to record. `GrpcRunnerClient` raises `TrialNotRegisteredError` instead of building a `ToolResult`, and the trial ends with `termination_reason: trial_lost` — see [RUNNER.md](RUNNER.md) § Retryability and countability are two questions.

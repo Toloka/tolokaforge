@@ -183,6 +183,7 @@ from tolokaforge.runner.search_plane import (
     resolve_typesense_binding,
 )
 from tolokaforge.runner.tool_factory import (
+    INVALID_ARGUMENTS_CATEGORY,
     MCPServerToolWrapper,
     SearchToolWrapper,
     ToolCallOutcome,
@@ -1689,14 +1690,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
                 # MCP completed the call and reported its own error flag beside
                 # the response text. This is an environment outcome, not a
-                # transport failure or a string-prefix heuristic.
+                # transport failure or a string-prefix heuristic — unless the
+                # substrate declared, in a typed way, that the arguments were
+                # refused (``ToolCallOutcome.category``).
                 if isinstance(result, ToolCallOutcome):
                     output = result.output
-                    status = (
-                        pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
-                        if result.declared_failure
-                        else pb2.EXECUTION_STATUS_SUCCESS
-                    )
+                    if not result.declared_failure:
+                        status = pb2.EXECUTION_STATUS_SUCCESS
+                    elif result.category == INVALID_ARGUMENTS_CATEGORY:
+                        # A refused call, like any INVALID_ARGUMENTS: the host
+                        # renders and records ``error_message`` for a failed
+                        # call, so the server's feedback travels there too.
+                        status = pb2.EXECUTION_STATUS_INVALID_ARGUMENTS
+                        error_message = result.output
+                    else:
+                        status = pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
                 elif isinstance(result, str):
                     output = result
                 elif result is None:

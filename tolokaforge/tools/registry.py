@@ -10,7 +10,7 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from jsonschema import validate
+from jsonschema import SchemaError, ValidationError, validate
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -268,6 +268,79 @@ def resolve_tool_output(result: ToolResult) -> str:
     return result.error or TOOL_FAILURE_WITHOUT_MESSAGE
 
 
+#: Rules whose schema value is a bound worth quoting back (``maxLength 40``).
+_BOUND_RULES = frozenset(
+    {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "format",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minProperties",
+        "maxProperties",
+    }
+)
+
+
+def _schema_location(error: ValidationError) -> str:
+    """Where the rule sits, named from the schema's own path (``items[].quantity``).
+
+    The instance path would name what the caller sent, including keys the schema
+    does not declare; the schema path names only declared properties.
+    """
+    parts: list[str] = []
+    path = list(error.absolute_schema_path)
+    for index, token in enumerate(path):
+        if token == "properties" and index + 1 < len(path):
+            parts.append(f".{path[index + 1]}")
+        elif token == "items":
+            parts.append("[]")
+        elif token == "additionalProperties" and index + 1 < len(path):
+            parts.append(".<undeclared property>")
+    return "".join(parts).lstrip(".") or "arguments"
+
+
+def argument_feedback(error: ValidationError) -> str:
+    """What the model may read about rejected arguments: which argument broke which
+    rule, worded from the schema alone.
+
+    The submitted values never appear: an argument can carry text that must not be
+    echoed back to the model (a credential pasted by mistake, another participant's
+    private data), and ``str(error)`` prints the whole instance.
+    """
+    location = _schema_location(error)
+    rule, expected = error.validator, error.validator_value
+    if rule == "required":
+        present = error.instance if isinstance(error.instance, dict) else {}
+        missing = [name for name in expected if name not in present]
+        return f"{location}: missing required argument(s) {', '.join(map(repr, missing))}"
+    if rule == "additionalProperties":
+        declared = sorted((error.schema.get("properties") or {}).keys())
+        return (
+            f"{location}: unexpected argument(s); only declared arguments are allowed "
+            f"(declared: {', '.join(declared) or 'none'})"
+        )
+    if rule == "type":
+        kinds = expected if isinstance(expected, list) else [expected]
+        return f"{location}: expected type {' or '.join(map(str, kinds))}"
+    if rule == "enum":
+        return f"{location}: must be one of {json.dumps(expected)}"
+    if rule == "const":
+        return f"{location}: must be {json.dumps(expected)}"
+    if rule in ("anyOf", "oneOf"):
+        return f"{location}: does not match any of the allowed shapes"
+    if rule in _BOUND_RULES:
+        return f"{location}: violates {rule} {json.dumps(expected)}"
+    return f"{location}: violates the schema's {rule!r} rule"
+
+
 def raised_tool_failure_text(exc: BaseException) -> str:
     """The text a recorder stores for a call that ended by raising ``exc``.
 
@@ -503,7 +576,7 @@ class ToolExecutor:
                     return ToolResult(
                         success=False,
                         output="",
-                        error=f"Tool '{tool_name}' takes no arguments but received: {unwrapped}",
+                        error=f"Tool '{tool_name}' takes no arguments; call it with an empty object",
                         duration_s=time.time() - start_time,
                         status=ToolExecutionStatus.INVALID_ARGUMENTS,
                     )
@@ -513,11 +586,35 @@ class ToolExecutor:
                 # Convert OpenAPI-style nullable to JSON Schema format before validation
                 converted_parameters = convert_nullable_to_json_schema(parameters)
                 validate(instance=arguments, schema=converted_parameters)
-        except Exception as e:
+        except ValidationError as e:
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Invalid arguments: {e}",
+                error=f"Invalid arguments: {argument_feedback(e)}",
+                duration_s=time.time() - start_time,
+                status=ToolExecutionStatus.INVALID_ARGUMENTS,
+            )
+        except SchemaError as e:
+            # The tool's own schema is broken: a defect of the pack or harness, not
+            # of the call. Its message describes the schema, never the arguments.
+            logger.warning("Tool %s has an invalid parameters schema: %s", tool_name, e.message)
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Invalid arguments for tool '{tool_name}'",
+                duration_s=time.time() - start_time,
+                status=ToolExecutionStatus.INVALID_ARGUMENTS,
+            )
+        except Exception as e:
+            # Not a rule the arguments broke: the reply stays generic and the
+            # warning names only the failure's type; its text, which may quote the
+            # submitted values, stays in the debug log.
+            logger.warning("Argument check for %s failed with %s", tool_name, type(e).__name__)
+            logger.debug("Argument check for %s failed: %r", tool_name, e)
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Invalid arguments for tool '{tool_name}'",
                 duration_s=time.time() - start_time,
                 status=ToolExecutionStatus.INVALID_ARGUMENTS,
             )
