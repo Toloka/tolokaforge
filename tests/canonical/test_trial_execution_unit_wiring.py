@@ -187,7 +187,9 @@ def test_a_failed_conductor_build_closes_the_resolved_grader(
 
 def test_provision_error_policy_propagates_when_asked(tmp_path: Path) -> None:
     backend = MagicMock()
-    backend.provision.side_effect = ProvisionError(stage="provision", reason="no capacity")
+    backend.provision.side_effect = ProvisionError(
+        trial_id="task:0", stage="provision", reason="no capacity"
+    )
     spec = MagicMock()
     spec.trial_id = "task:0"
     executor = ProvisioningTrialExecutor(
