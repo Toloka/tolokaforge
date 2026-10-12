@@ -71,12 +71,6 @@ ARG EMBEDDING_MODEL
 # office/adapters/otel, or layer them post-build (pip is kept in runtime).
 ARG TOLOKAFORGE_EXTRAS="dx,server,rag,runner"
 
-# No .pyc in the shared venv: pip installs below pass --no-compile, and this
-# keeps the embedding-bake import (the one step that imports the venv) from
-# writing bytecode back into it. The runtime stage copies a clean venv and sets
-# PYTHONDONTWRITEBYTECODE to keep it that way (same discipline as runner.Dockerfile).
-ENV PYTHONDONTWRITEBYTECODE=1
-
 # Build-only toolchain — never reaches the runtime stage (which copies only
 # the venv). Covers any sdist-only transitive dep that needs a compiler.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -86,7 +80,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv /opt/venv && \
-    /opt/venv/bin/pip install --no-cache-dir --no-compile --upgrade pip
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
 
 COPY --from=wheel-builder /src/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/tolokaforge_models/dist/*.whl /tmp/wheels/
@@ -94,14 +88,14 @@ COPY --from=wheel-builder /src/tolokaforge_coding_harnesses/dist/*.whl /tmp/whee
 
 # Sibling wheels first so their versions resolve before the base wheel that
 # depends on them (matching runner/grader install order).
-RUN /opt/venv/bin/pip install --no-cache-dir --no-compile \
+RUN /opt/venv/bin/pip install --no-cache-dir \
         /tmp/wheels/tolokaforge_models-*.whl \
         /tmp/wheels/tolokaforge_coding_harnesses-*.whl
 
 # CPU-only torch BEFORE sentence-transformers so the multi-GB CUDA build is
 # never pulled. This is the single biggest size win for the all-in-one image —
 # the rag search deps dominate it otherwise. Pinned to the CPU index.
-RUN /opt/venv/bin/pip install --no-cache-dir --no-compile \
+RUN /opt/venv/bin/pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu torch
 
 # Base wheel with the lean extras, then the rag-service's own search deps
@@ -110,9 +104,9 @@ RUN /opt/venv/bin/pip install --no-cache-dir --no-compile \
 # stack — install it rather than re-listing deps here.
 COPY tolokaforge/env/rag_service/requirements.txt /tmp/rag-requirements.txt
 RUN BASE_WHL="$(ls /tmp/wheels/tolokaforge-*.whl)" && \
-    /opt/venv/bin/pip install --no-cache-dir --no-compile "${BASE_WHL}[${TOLOKAFORGE_EXTRAS}]" && \
-    /opt/venv/bin/pip install --no-cache-dir --no-compile -r /tmp/rag-requirements.txt && \
-    /opt/venv/bin/pip install --no-cache-dir --no-compile "supervisor>=4.2,<5" && \
+    /opt/venv/bin/pip install --no-cache-dir "${BASE_WHL}[${TOLOKAFORGE_EXTRAS}]" && \
+    /opt/venv/bin/pip install --no-cache-dir -r /tmp/rag-requirements.txt && \
+    /opt/venv/bin/pip install --no-cache-dir "supervisor>=4.2,<5" && \
     rm -rf /tmp/wheels /tmp/rag-requirements.txt
 
 # Bake the embedding model into the venv image so the rag-service stands up

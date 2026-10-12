@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -55,6 +56,13 @@ pytestmark = [
 # model; its start-period is 40s and cold model load adds more, so allow headroom
 # over the per-component default.
 _HEALTHY_TIMEOUT_S = 300.0
+
+# The container flips to ``healthy`` on the runner's gRPC probe alone, but
+# rag-service eagerly loads the baked embedding model (torch +
+# sentence-transformers) at startup, so it can begin answering /health seconds
+# after that. Poll each co-located service to this budget rather than probing
+# once, so a slow-booting service is a wait, not a flake.
+_SERVICE_READY_TIMEOUT_S = 180.0
 
 # (service, in-container health URL) for each co-located env service.
 _SERVICE_HEALTH: tuple[tuple[str, str], ...] = (
@@ -107,19 +115,25 @@ def test_standalone_reports_healthy(standalone_container: str) -> None:
 def test_colocated_service_answers_on_loopback(
     standalone_container: str, service: str, url: str
 ) -> None:
-    """Each env service answers /health 200 on localhost inside the container."""
-    probe = docker_exec(
-        standalone_container,
-        [
-            "python",
-            "-c",
-            f"import urllib.request,sys; "
-            f"sys.exit(0 if urllib.request.urlopen('{url}', timeout=5).status==200 else 1)",
-        ],
-    )
+    """Each env service answers /health 200 on localhost inside the container.
+
+    Polled, not single-shot: rag-service loads the embedding model at startup
+    and can lag the runner's healthcheck (see ``_SERVICE_READY_TIMEOUT_S``).
+    """
+    probe_cmd = [
+        "python",
+        "-c",
+        f"import urllib.request,sys; "
+        f"sys.exit(0 if urllib.request.urlopen('{url}', timeout=5).status==200 else 1)",
+    ]
+    deadline = time.monotonic() + _SERVICE_READY_TIMEOUT_S
+    probe = docker_exec(standalone_container, probe_cmd)
+    while probe.returncode != 0 and time.monotonic() < deadline:
+        time.sleep(2)
+        probe = docker_exec(standalone_container, probe_cmd)
     assert probe.returncode == 0, (
         f"{service} did not answer 200 at {url} inside the all-in-one container "
-        f"(rc={probe.returncode}): {probe.stderr.strip()}"
+        f"within {_SERVICE_READY_TIMEOUT_S:.0f}s (rc={probe.returncode}): {probe.stderr.strip()}"
     )
 
 
