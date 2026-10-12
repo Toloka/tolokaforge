@@ -302,12 +302,9 @@ class CodingHarnessAdapterMixin:
                 "installed packages and running services persist across "
                 "commands and across calls. A command that fails does not stop "
                 "the ones after it, and every command's output comes back "
-                "labelled in one result. Default to several commands per call: "
-                "running one at a time when more were already decided wastes a "
-                "turn — editing a file and then running its tests is one call, "
-                "and so is a batch of independent reads. Start a new call only "
-                "when the next command truly depends on reading this one's "
-                "output."
+                "labelled in one result. Put commands in one call whenever you "
+                "do not need to read one's output before choosing the next — "
+                "editing a file and then running its tests is one call."
             ),
             "parameters": {
                 "type": "object",
@@ -327,10 +324,9 @@ class CodingHarnessAdapterMixin:
                         "maxItems": MAX_BATCH_COMMANDS,
                         "description": (
                             "Shell commands to run in order, at most "
-                            f"{MAX_BATCH_COMMANDS} per call. Prefer to send "
-                            "several here at once; start a new call only when "
-                            "the next command depends on reading this call's "
-                            "output."
+                            f"{MAX_BATCH_COMMANDS} per call. Start a new call "
+                            "only when the next command depends on reading "
+                            "this call's output."
                         ),
                     },
                 },
