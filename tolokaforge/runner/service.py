@@ -1378,15 +1378,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool.start(trial_context.lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
-                    try:
-                        self._run_async(self.cleanup_trial(trial_id))
-                    except Exception as cleanup_error:
-                        # The start failure is the answer the caller needs; a
-                        # cleanup that also failed is logged, not returned.
-                        logger.error(
-                            f"RegisterTrial: Cleanup after the failed lifecycle start of "
-                            f"{trial_id} also failed: {cleanup_error}"
-                        )
+                    self._abandon_registration(trial_id, "lifecycle start")
                     return pb2.RegisterTrialResponse(
                         success=False,
                         error=f"Tool lifecycle start failed: {e}",
@@ -3307,19 +3299,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         except AppWorldError as e:
             error = f"App world load failed: {e}"
             logger.error(f"RegisterTrial: {trial_id} - {error}")
-            try:
-                self._run_async(self.cleanup_trial(trial_id))
-            except Exception as cleanup_error:
-                logger.error(
-                    f"RegisterTrial: Cleanup after the failed app world load of {trial_id} "
-                    f"also failed: {cleanup_error}"
-                )
+            self._abandon_registration(trial_id, "app world load")
             return error
         logger.info(
             f"RegisterTrial: {trial_id} - loaded the app world at "
             f"{initial_state.app_world.url} ({len(initial_state.tables)} tables)"
         )
         return None
+
+    def _abandon_registration(self, trial_id: str, failed_step: str) -> None:
+        """Clean a trial up after ``failed_step`` of its registration failed.
+
+        The step's failure is the answer the caller needs; a cleanup that also
+        failed is logged, not raised.
+        """
+        try:
+            self._run_async(self.cleanup_trial(trial_id))
+        except Exception as cleanup_error:
+            logger.error(
+                f"RegisterTrial: Cleanup after the failed {failed_step} of {trial_id} "
+                f"also failed: {cleanup_error}"
+            )
 
     @staticmethod
     def _state_holder(
@@ -3589,13 +3589,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Reset state in DB Service
         reset_response = await self.db_client.reset_trial(trial_id)
 
-        # An app world holds the state the agent acts on; restore it too.
+        # A state holder (an MCP subprocess, an app world service) keeps the
+        # state the agent acts on; restore it too.
         trial_context = self.trials.get(trial_id)
-        if trial_context is not None and trial_context.app_world is not None:
-            app_world = trial_context.app_world
+        holder = self._state_holder(trial_context) if trial_context is not None else None
+        if holder is not None:
             initial_tables = trial_context.task_description.initial_state.tables
             await asyncio.get_event_loop().run_in_executor(
-                None, lambda: app_world.reset_state(initial_tables)
+                None, lambda: holder.reset_state(initial_tables)
             )
 
         # Clear tool call history in trial context

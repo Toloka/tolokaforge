@@ -169,7 +169,15 @@ class AppWorldClient:
     def _call(self, method: str, path: str, payload: Any = None) -> Any:
         response = self._send(method, path, payload)
         self._refuse_failure(method, path, response)
-        return response.json() if method == "GET" else None
+        if method != "GET":
+            return None
+        try:
+            return response.json()
+        except ValueError as error:
+            raise AppWorldError(
+                f"world service {self.config.service!r} at {self.config.url} answered {method} "
+                f"{path} with a body that is not JSON: {error}; body {response.text[:500]!r}"
+            ) from error
 
     def _send(self, method: str, path: str, payload: Any) -> httpx.Response:
         try:

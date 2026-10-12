@@ -18,7 +18,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 
 ADMIN_HEADER = "x-admin-token"
 
@@ -48,6 +48,8 @@ class FakeAppWorld:
     callers: dict[str, str | None] = field(default_factory=dict)
     tables: dict[str, list[dict[str, Any]]] | None = None
     admin_calls: list[str] = field(default_factory=list)
+    read_tables_answer: tuple[int, str] | None = None
+    """What ``GET /_admin/tables`` answers instead of the world: ``(status, body)``."""
 
     def build(self) -> FastAPI:
         app = FastAPI()
@@ -69,8 +71,11 @@ class FakeAppWorld:
             return {"tables": len(self.tables)}
 
         @app.get("/_admin/tables")
-        def read_tables(request: Request) -> dict[str, Any]:
+        def read_tables(request: Request) -> Any:
             self._admit(request)
+            if self.read_tables_answer is not None:
+                status, body = self.read_tables_answer
+                return Response(content=body, status_code=status, media_type="text/plain")
             return self._world()
 
         @app.get("/api/tickets")

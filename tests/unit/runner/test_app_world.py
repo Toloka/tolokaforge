@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from tests.canonical._factories import write_yaml_file
 from tests.utils.fake_app_world import (
     INITIAL_TABLES,
+    MCP_WORLD_SERVER,
     FakeAppWorld,
     HeaderRecorder,
 )
@@ -483,6 +484,76 @@ def test_the_world_is_read_back_graded_restored_and_reset(
     reset = trial.reset()
     assert reset.success, reset.error
     assert world.tables == INITIAL_TABLES
+
+
+@pytest.mark.parametrize(
+    ("answer", "message"),
+    [
+        ((500, "world exploded"), "refused GET /_admin/tables: HTTP 500 world exploded"),
+        ((200, "<html>not json</html>"), "GET /_admin/tables with a body that is not JSON"),
+    ],
+)
+def test_a_world_that_cannot_be_read_back_fails_get_state_loudly(
+    trial: _Trial, world: FakeAppWorld, world_url: str, answer: tuple[int, str], message: str
+) -> None:
+    trial.register(_description(world_url))
+    world.read_tables_answer = answer
+
+    state = trial.state()
+
+    assert state.success is False
+    assert message in state.error
+    service = _host(world_url).split(":")[0]
+    assert f"world service {service!r} at {world_url}" in state.error
+
+
+def _mcp_description(script: str) -> dict[str, Any]:
+    """The same world held by a stdio MCP subprocess, as an MCP pack holds it."""
+    description = _description("http://unused.example")
+    description["agent_tools"] = [
+        {
+            "name": "create_ticket",
+            "description": "File a ticket",
+            "parameters": {"type": "object", "properties": {"subject": {"type": "string"}}},
+            "source": {
+                "toolset": "help_desk",
+                "module_path": "mcp_world_server",
+                "class_name": "create_ticket",
+                "invocation_style": "mcp_server",
+                "mcp_server_script": script,
+            },
+        }
+    ]
+    description["user_tools"] = []
+    description["initial_state"] = {"tables": INITIAL_TABLES}
+    description["grading"]["state_checks"]["golden_actions"] = [
+        {"tool_name": "create_ticket", "arguments": {"subject": "printer on fire"}}
+    ]
+    return description
+
+
+def test_reset_restores_an_mcp_state_holder_as_it_restores_a_world(
+    trial: _Trial, tmp_path: Path
+) -> None:
+    """ResetTrial restores whichever holder keeps the trial's state, not the app world alone."""
+    script = tmp_path / "mcp_world_server.py"
+    script.write_text(MCP_WORLD_SERVER)
+    registered = trial.register(_mcp_description(str(script)))
+    assert registered.success, registered.error
+    try:
+        created = trial.runner.ExecuteTool(
+            execute_request(trial.trial_id, "create_ticket", json.dumps({"subject": "s"})),
+            trial.context,
+        )
+        assert created.status == pb2.EXECUTION_STATUS_SUCCESS, created.error_message
+        assert len(json.loads(trial.state().state_json)["tickets"]) == 2
+
+        reset = trial.reset()
+
+        assert reset.success, reset.error
+        assert json.loads(trial.state().state_json) == INITIAL_TABLES
+    finally:
+        trial.runner.CleanupTrial(pb2.CleanupTrialRequest(trial_id=trial.trial_id), trial.context)
 
 
 def test_a_trial_that_diverged_from_the_golden_path_fails_its_hash(
