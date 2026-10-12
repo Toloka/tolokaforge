@@ -87,19 +87,28 @@ def _records_pack(root: Path) -> Path:
     return task_dir
 
 
-@pytest.fixture
-def records_description(tmp_path: Path) -> TaskDescription:
-    task_dir = _records_pack(tmp_path)
-    adapter = NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
-    description = adapter.describe_task("records")
-    assert (task_dir / "fixtures" / "tools.json").exists()
+@pytest.fixture(scope="module")
+def records_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The module's one records pack: built once, shared by every test that only reads it."""
+    root = tmp_path_factory.mktemp("records")
+    _records_pack(root)
+    return root
+
+
+def _records_adapter(root: Path) -> NativeAdapter:
+    return NativeAdapter({"base_dir": str(root), "tasks_glob": "tasks/**/task.yaml"})
+
+
+@pytest.fixture(scope="module")
+def records_description(records_root: Path) -> TaskDescription:
+    """The module's one live description: spawns the server once and writes the cache."""
+    description = _records_adapter(records_root).describe_task("records")
+    assert (records_root / "tasks" / "records" / "fixtures" / "tools.json").exists()
     return description
 
 
-def test_the_annotation_round_trips_through_a_real_server(tmp_path: Path) -> None:
-    task_dir = _records_pack(tmp_path)
-
-    schemas = _fetch_mcp_tool_schemas(task_dir / "mcp_server.py")
+def test_the_annotation_round_trips_through_a_real_server(records_root: Path) -> None:
+    schemas = _fetch_mcp_tool_schemas(records_root / "tasks" / "records" / "mcp_server.py")
 
     assert schemas["read_record"]["mutates_state"] is False
     assert schemas["write_record"]["mutates_state"] is True
@@ -230,10 +239,12 @@ def test_a_committed_cache_declaring_every_tool_loads_silently(
 
 
 def test_the_native_adapter_reads_it_into_the_schema_and_the_cache(
-    tmp_path: Path, records_description: TaskDescription
+    records_root: Path, records_description: TaskDescription
 ) -> None:
     declared = {tool.name: tool.mutates_state for tool in records_description.agent_tools}
-    cached = json.loads((tmp_path / "tasks" / "records" / "fixtures" / "tools.json").read_text())
+    cached = json.loads(
+        (records_root / "tasks" / "records" / "fixtures" / "tools.json").read_text()
+    )
 
     assert declared == _DECLARED
     by_name = {entry["name"]: entry for entry in cached}
@@ -243,11 +254,9 @@ def test_the_native_adapter_reads_it_into_the_schema_and_the_cache(
 
 
 def test_the_cache_answers_a_second_description_the_same_way(
-    tmp_path: Path, records_description: TaskDescription
+    records_root: Path, records_description: TaskDescription
 ) -> None:
-    adapter = NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
-
-    again = adapter.describe_task("records")
+    again = _records_adapter(records_root).describe_task("records")
 
     assert {tool.name: tool.mutates_state for tool in again.agent_tools} == _DECLARED
 
