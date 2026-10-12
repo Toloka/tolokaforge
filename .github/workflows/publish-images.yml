@@ -178,13 +178,15 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
+          # No build cache here. This anonymous pre-login build exists ONLY to
+          # resolve + pull the python base from the registry *unauthenticated*,
+          # warming it for the authenticated provenance push below (which, with
+          # provenance: true, re-resolves the base metadata). A cache hit would
+          # short-circuit that resolution, so the push would re-fetch the base
+          # metadata under the repo-scoped token — which cannot pull
+          # library/python and 401s. Correctness beats a warm cache here.
           pull: false
           push: false
-          # Persist the layer cache across runs (GitHub Actions cache), so an
-          # unchanged-dependency rebuild reuses the heavy layers instead of
-          # starting cold. Scoped per image so they don't clobber each other.
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
@@ -301,10 +303,10 @@ jobs:
           context: .
           file: tolokaforge/docker/dockerfiles/standalone.Dockerfile
           platforms: ${{ matrix.platform }}
+          # No build cache — see the scale-out publish job's note: a cache hit
+          # skips the anonymous base resolution the push-by-digest step relies on.
           pull: false
           push: false
-          cache-from: type=gha,scope=standalone-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=standalone-${{ matrix.arch }}
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             WHEEL_FILENAME=${{ env.WHEEL_FILENAME }}
@@ -338,7 +340,6 @@ jobs:
           platforms: ${{ matrix.platform }}
           provenance: false
           pull: false
-          cache-from: type=gha,scope=standalone-${{ matrix.arch }}
           outputs: type=image,name=tolokasoft1/tolokaforge-standalone,push-by-digest=true,name-canonical=true,push=true
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
