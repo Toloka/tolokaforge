@@ -199,7 +199,7 @@ imported the harness module directly. `CHANGELOG.md` carries the migration under
 
 The engine's runner-subset wheel force-includes `tolokaforge_models/`'s
 `pyproject.toml` and `src/` because the runner Dockerfile builds that wheel
-in-container and `builder._runner_definition()` needs a mapped context entry.
+in-container and `builder._full_source_definition()` needs a mapped context entry.
 There is no equivalent runner-side consumer of the harness surface — nothing
 under `tolokaforge/` imports it — so force-include entries would ship dead bytes
 and lock nothing. If a runner-side consumer ever lands, that change adds the
@@ -270,7 +270,7 @@ release, not a nice-to-have.
   of the hoist so that the move stayed reviewable as a move; the file is 1100
   lines and three concerns.
 - **A runner-side consumer**, if one materialises, lands the force-include, the
-  `_runner_definition()` context entry and the Dockerfile `COPY` together.
+  `_full_source_definition()` context entry and the Dockerfile `COPY` together.
 
 ## Links
 

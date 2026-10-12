@@ -1,4 +1,4 @@
-# 0057. Detached execution: one control plane, portable trial units
+# 0058. Detached execution: one control plane, portable trial units
 
 - **Status:** Accepted
 - **Date:** 2026-10-12
@@ -130,7 +130,7 @@ portable unit.**
 
 ## References
 
-- [ADR-0056](0056-node-runnable-trial-unit.md) — the node-runnable trial unit and
+- [ADR-0057](0057-node-runnable-trial-unit.md) — the node-runnable trial unit and
   its standalone entry (the mechanism this decision is realized by).
 - [ADR-0015](0015-trial-executor-protocol.md),
   [ADR-0014](0014-trial-grader-protocol.md),

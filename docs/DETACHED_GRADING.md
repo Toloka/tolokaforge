@@ -392,7 +392,7 @@ Now `task.grading.grading_method: my_custom_kind` is a valid selector, and `tolo
 ## Where to look next
 
 - [ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md) — accepted-record for the substrate/kind/transport product.
-- [ADR-0056](adr/0056-node-runnable-trial-unit.md) — the standalone trial entry and its grader contract.
+- [ADR-0057](adr/0057-node-runnable-trial-unit.md) — the standalone trial entry and its grader contract.
 - [ADR-0040](adr/0040-standalone-grader.md) — `GradingSubstrate` Protocol.
 - [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md) — bundle format v1.0 spec (manifest, parts, digests, deterministic-serialisation rules).
 - [`docs/RUNNER.md § Snapshot bundle mode`](RUNNER.md#snapshot-bundle-mode) — the producer side, config detail.

@@ -71,7 +71,7 @@ future work has a reference for what was rejected and why.
   see their edits materialise into the running image. The wheel-vs-
   source discriminator (`(repo_root() / "pyproject.toml").is_file()`)
   is the same one [ADR-0025](0025-runner-wheel-split.md)'s
-  `_runner_definition` already uses; reusing it here keeps the shape
+  `_full_source_definition` already uses; reusing it here keeps the shape
   familiar.
 - **Rate-limit and platform edge cases have to be actionable, not
   silent.** Any failure mode the policy introduces must surface a
