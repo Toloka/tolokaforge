@@ -653,7 +653,7 @@ def test_engine_service_snapshots_falls_back_to_status_when_health_absent() -> N
 
 
 # ---------------------------------------------------------------------------
-# _build_conductor / _build_trial_executor thread events through
+# _build_trial_unit threads events through
 # ---------------------------------------------------------------------------
 
 
@@ -679,10 +679,10 @@ def _build_orch_for_seam_threading(events: Any) -> Any:
     return orch
 
 
-def test_build_conductor_threads_events_into_context(
+def test_build_trial_unit_threads_events_into_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``_build_conductor`` writes the orchestrator's ``self._events`` onto
+    """``_build_trial_unit`` writes the orchestrator's ``self._events`` onto
     :class:`ConductorContext.events` — the conductor factory sees the
     same sink the orchestrator holds."""
     from tolokaforge.core.conductor import ConductorContext
@@ -691,7 +691,7 @@ def test_build_conductor_threads_events_into_context(
     # Grader resolves through the registry; bind the built-in factory directly
     # so the test needs no installed entry-point metadata.
     monkeypatch.setattr(
-        "tolokaforge.core.orchestrator.load_trial_grader",
+        "tolokaforge.core.trial_node.load_trial_grader",
         lambda name: runner_rpc_trial_grader_factory,
     )
 
@@ -705,7 +705,7 @@ def test_build_conductor_threads_events_into_context(
         return MagicMock()
 
     orch._conductor_factory = capture_factory
-    orch._build_conductor(
+    orch._build_trial_unit(
         agent_client=MagicMock(),
         runtime_backend=MagicMock(),
         output_dir=tmp_path,
@@ -716,19 +716,29 @@ def test_build_conductor_threads_events_into_context(
     assert captured_ctx[0].events is events
 
 
-def test_build_trial_executor_threads_events_into_provisioning_executor() -> None:
-    """``_build_trial_executor`` constructs a :class:`ProvisioningTrialExecutor`
+def test_build_trial_executor_threads_events_into_provisioning_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_build_trial_unit`` constructs a :class:`ProvisioningTrialExecutor`
     whose ``events`` attribute is the same sink threaded through the
     orchestrator's deps — no rewrapping, no silent null fallback."""
+    from tolokaforge.core.trial_grader import runner_rpc_trial_grader_factory
+
+    monkeypatch.setattr(
+        "tolokaforge.core.trial_node.load_trial_grader",
+        lambda name: runner_rpc_trial_grader_factory,
+    )
     events = _RecordingEvents()
     orch = _build_orch_for_seam_threading(events)
+    orch._conductor_factory = lambda ctx: MagicMock()
 
-    executor = orch._build_trial_executor(
+    unit = orch._build_trial_unit(
+        agent_client=MagicMock(),
         runtime_backend=MagicMock(),
-        conductor=MagicMock(),
         output_dir=Path("/nonexistent-run-dir"),
+        request_limiter=None,
     )
-    assert executor.events is events
+    assert unit.provisioning_executor.events is events
 
 
 # ---------------------------------------------------------------------------

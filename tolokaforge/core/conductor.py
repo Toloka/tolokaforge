@@ -162,7 +162,7 @@ class ConductorContext:
     strict: bool
     agent_client: LLMClient
     runtime_backend: RuntimeBackend
-    trial_grader: TrialGrader
+    trial_grader: TrialGrader | None
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
@@ -225,7 +225,7 @@ class Conductor(Protocol):
     :data:`SUPPORTS_RATE_LIMIT_PROBE_ATTR`. A conductor that wires all three
     declares the attribute ``True``; anything else (including a conductor
     written before the mode existed) is treated as unsupported and
-    :meth:`Orchestrator._build_conductor` refuses to start such a run rather
+    :func:`~tolokaforge.core.trial_node.build_trial_execution_unit` refuses to start such a run rather
     than emitting artifacts that read all-default while the run really did
     absorb 429s. Deliberately *not* a declared Protocol member: the Protocol is
     ``@runtime_checkable`` and adding a data member would break ``isinstance``
@@ -273,7 +273,7 @@ def require_rate_limit_probe_support(
     """Raise unless *conductor* can support an enabled rate-limit probe *probe*.
 
     No-op while the mode is off. Called from every site that resolves a conductor
-    while holding an already-armed agent client — ``Orchestrator._build_conductor``
+    while holding an already-armed agent client — ``build_trial_execution_unit``
     and :func:`tolokaforge.core.run_trial.run_trial` — because arming and wiring
     live at different layers: the orchestrator owns the agent client, the
     conductor owns the simulator probe, the per-task effective-budget re-check
@@ -490,7 +490,7 @@ class InProcessConductor:
         strict: bool = False,
         agent_client: LLMClient,
         runtime_backend: RuntimeBackend,
-        trial_grader: TrialGrader,
+        trial_grader: TrialGrader | None,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
         events: RunDisplayEvents = _NULL_EVENTS,
@@ -1187,6 +1187,8 @@ class InProcessConductor:
         (per CLOUD_RUNTIME §6.3): assemble the agent's post-policy
         system prompt, delegate.
 
+        A conductor built without a grader leaves ``trajectory.grade`` unset.
+
         An ungraded trial scores nothing: no ``judgment_scored`` event
         fires, because there is no judgment to report.
 
@@ -1196,6 +1198,8 @@ class InProcessConductor:
         ``status`` still say how the trial itself ended, the bundle is written,
         and the run counts the attempt with the cause recoverable from disk.
         """
+        if self.trial_grader is None:
+            return
         agent_system_prompt = runner.effective_system_prompt or system_prompt
         try:
             grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import yaml
 
@@ -53,7 +53,12 @@ if TYPE_CHECKING:
     from tolokaforge.core.output.artifacts import TrialArtifactWriter
     from tolokaforge.core.trial import EnvEndpoints
 
+#: What :class:`ProvisioningTrialExecutor` does with a :class:`ProvisionError`:
+#: ``"synthesize"`` returns a ``PROVISION_ERROR`` result, ``"propagate"`` re-raises.
+ProvisionErrorPolicy = Literal["synthesize", "propagate"]
+
 __all__ = [
+    "ProvisionErrorPolicy",
     "ProvisioningTrialExecutor",
     "TrialExecutor",
 ]
@@ -99,9 +104,8 @@ class ProvisioningTrialExecutor:
     aggregation see a consistent trial-directory shape whether the trial
     completed or failed to provision.
 
-    Instantiated once per run by the orchestrator's
-    ``_build_trial_executor`` helper and submitted to the worker pool
-    per trial. Provisioning parallelism = worker count.
+    Instantiated once per run by ``build_trial_execution_unit`` and
+    submitted to the worker pool per trial. Provisioning parallelism = worker count.
     """
 
     def __init__(
@@ -112,7 +116,13 @@ class ProvisioningTrialExecutor:
         output_dir: Path,
         artifact_writer: TrialArtifactWriter,
         events: RunDisplayEvents = _NULL_EVENTS,
+        provision_error: ProvisionErrorPolicy = "synthesize",
     ) -> None:
+        if provision_error not in ("synthesize", "propagate"):
+            raise ValueError(
+                f"provision_error must be 'synthesize' or 'propagate', got {provision_error!r}"
+            )
+        self.provision_error = provision_error
         self.runtime_backend = runtime_backend
         self.conductor = conductor
         self.logger = logger
@@ -139,9 +149,7 @@ class ProvisioningTrialExecutor:
                 stage=e.stage,
                 error=e.reason,
             )
-            result = _synthesize_provision_failure_result(spec, e)
-            self._write_provision_failure_bundle(result.trajectory, e)
-            return result
+            return self._on_provision_error(spec, e)
 
         try:
             self.runtime_backend.await_ready(handle)
@@ -154,9 +162,7 @@ class ProvisioningTrialExecutor:
                 error=e.reason,
             )
             self._safe_teardown(handle, task_id, trial_idx)
-            result = _synthesize_provision_failure_result(spec, e)
-            self._write_provision_failure_bundle(result.trajectory, e)
-            return result
+            return self._on_provision_error(spec, e)
 
         persisted_spec: TrialSpec | None = None
         try:
@@ -192,9 +198,7 @@ class ProvisioningTrialExecutor:
                     stage=e.stage,
                     error=e.reason,
                 )
-                result = _synthesize_provision_failure_result(spec, e)
-                self._write_provision_failure_bundle(result.trajectory, e)
-                return result
+                return self._on_provision_error(spec, e)
             self._amend_trial_metrics(
                 task_id,
                 trial_idx,
@@ -213,6 +217,18 @@ class ProvisioningTrialExecutor:
             self._safe_teardown(handle, task_id, trial_idx)
             if persisted_spec is not None:
                 self._announce_persisted(persisted_spec, task_id, trial_idx)
+
+    def _on_provision_error(self, spec: TrialSpec, error: ProvisionError) -> TrialResult:
+        """Apply the ``provision_error`` policy to a provisioning failure.
+
+        ``"synthesize"`` turns it into a ``PROVISION_ERROR`` result plus a
+        minimal failure bundle; ``"propagate"`` re-raises it to the caller.
+        """
+        if self.provision_error == "propagate":
+            raise error
+        result = _synthesize_provision_failure_result(spec, error)
+        self._write_provision_failure_bundle(result.trajectory, error)
+        return result
 
     def _announce_persisted(self, spec: TrialSpec, task_id: str, trial_idx: int) -> None:
         announce = getattr(self.conductor, "trial_persisted", None)

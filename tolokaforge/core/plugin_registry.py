@@ -460,7 +460,7 @@ class TrialGraderContext:
     worker-pool sizing and the downstream ``worker_grader`` name.
 
     :attr:`runtime_backend` is an in-process routing shim populated only by
-    ``orchestrator._build_conductor``. When a runtime backend routes grades
+    ``build_trial_execution_unit``. When a runtime backend routes grades
     per-trial (``PerTrialRuntimeBackend``), it exposes no static
     ``runner_address`` because each trial owns its own runner endpoint;
     passing the backend directly lets ``RunnerRPCTrialGrader`` delegate to
