@@ -70,6 +70,12 @@ BUILD_CTX="$(mktemp -d)"
 cp "${DOCKERFILE}" "${BUILD_CTX}/orchestrator.Dockerfile"
 cp "${WHEEL_PATH}" "${BUILD_CTX}/${WHEEL_FILENAME}"
 cp -R "${REPO_ROOT}/tolokaforge_models" "${BUILD_CTX}/tolokaforge_models"
+# The Dockerfile COPYs the adapter-install entrypoint from its in-repo path, so
+# recreate that path inside the temp context (CI builds with context: . and
+# needs no staging here).
+mkdir -p "${BUILD_CTX}/tolokaforge/docker/dockerfiles"
+cp "${REPO_ROOT}/tolokaforge/docker/dockerfiles/orchestrator-entrypoint.sh" \
+    "${BUILD_CTX}/tolokaforge/docker/dockerfiles/orchestrator-entrypoint.sh"
 
 echo "==> docker build ${IMAGE_TAG} (extras: ${EXTRAS})"
 DOCKER_BUILDKIT=1 docker build \

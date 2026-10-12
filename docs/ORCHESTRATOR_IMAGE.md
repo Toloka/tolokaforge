@@ -111,20 +111,46 @@ On **Docker Desktop** (macOS/Windows) the socket is proxied and group-ownership
 differs; the `--group-add` is usually unnecessary and the wrapper's probe
 simply omits it. If a run fails to reach the daemon, check this first.
 
-## Adapter variants
+## Adapters — lean base, add only what a run needs
 
-The default image installs `tolokaforge[dx]` — engine plus CLI — which runs the
-native backend. terminal_bench and the other adapters are opt-in:
+The default image installs `tolokaforge[dx]` — engine plus CLI — and bundles
+**no** harness adapters: it runs the native backend. A run that needs an adapter
+adds just that one, two ways, neither of which rebuilds the image:
+
+- **Mount adapter wheels** — the wrapper's `-A` points at a directory of adapter
+  `*.whl` files, and the entrypoint installs them into the image's venv before
+  the run. This is the zero-index path: it works for an adapter that is not on a
+  public index, because you supply the wheel.
+
+  ```bash
+  scripts/docker/run-orchestrator.sh \
+      -c config/run.yaml -t ./tasks -o ./out \
+      -A ./adapter-wheels          # every *.whl here is installed at start
+  ```
+
+- **Name package specs** — set `TOLOKAFORGE_ADAPTERS` to a whitespace-separated
+  list of requirement specifiers for adapters that live on an index (honoring
+  pip's `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL`):
+
+  ```bash
+  EXTRA_DOCKER_ARGS='-e TOLOKAFORGE_ADAPTERS=tolokaforge-adapter-terminal-bench==1.2.0' \
+    scripts/docker/run-orchestrator.sh -c config/run.yaml -t ./tasks -o ./out
+  ```
+
+An adapter registers its `tolokaforge.adapters` entry point from installed
+distribution metadata, so it must be installed — what the entrypoint does — not
+merely on `PYTHONPATH`. Dependencies resolve from the configured index (PyPI by
+default); for a fully offline run, mount the dependency wheels alongside the
+adapter. With neither channel set, nothing installs and the image stays exactly
+the native base.
+
+To **bake** a fixed adapter set into the image instead (no install at start),
+build with the extras:
 
 ```bash
 scripts/docker/build-orchestrator.sh -e dx,adapters
 # or: make docker-build-orchestrator ORCHESTRATOR_EXTRAS=dx,adapters
 ```
-
-The `adapters` extra pulls the adapter packages from their own distributions.
-In an environment where those are not resolvable (offline, or before they are
-published), build the adapters you need from source into the context instead,
-or stay on the default `[dx]` image for native runs.
 
 ### Running Harbor from the image
 

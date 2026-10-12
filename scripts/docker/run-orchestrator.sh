@@ -12,6 +12,9 @@
 #   * the task-pack directory  -> /work/tasks  (read-only)
 #   * an output directory      -> /work/out    (read-write)
 #   * the .env file            -> /work/.env   (read-only; DotEnvProvider reads it)
+#   * an adapters directory    -> /work/adapters (read-only, optional): drop
+#     adapter wheels here and the entrypoint installs them into the image before
+#     the run, so the lean base carries only the adapters this run needs.
 # and runs ``tolokaforge run --config /work/config/<config> --output-dir
 # /work/out``, so reports land in the mounted output directory without the run
 # config having to name it.
@@ -33,6 +36,9 @@
 #                 (default: ./out). Created if absent.
 #   -e ENV_FILE   Host path to the .env file, mounted read-only at /work/.env
 #                 (default: ./.env). A keyless --dry-run needs none.
+#   -A ADAPTERS   Host path to a directory of adapter ``*.whl`` files, mounted
+#                 read-only at /work/adapters. The entrypoint installs them into
+#                 the image before the run. Omit for a native-only run.
 #   -h            Show this help and exit.
 #
 # Anything after ``--`` is forwarded verbatim to ``tolokaforge run`` (e.g.
@@ -44,18 +50,20 @@ CONFIG=""
 TASKS_DIR="./tasks"
 OUT_DIR="./out"
 ENV_FILE="./.env"
+ADAPTERS_DIR=""
 
 usage() {
-    sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-while getopts ":c:i:t:o:e:h" opt; do
+while getopts ":c:i:t:o:e:A:h" opt; do
     case "${opt}" in
         c) CONFIG="${OPTARG}" ;;
         i) IMAGE="${OPTARG}" ;;
         t) TASKS_DIR="${OPTARG}" ;;
         o) OUT_DIR="${OPTARG}" ;;
         e) ENV_FILE="${OPTARG}" ;;
+        A) ADAPTERS_DIR="${OPTARG}" ;;
         h) usage; exit 0 ;;
         :) echo "error: -${OPTARG} needs an argument" >&2; exit 2 ;;
         \?) echo "error: unknown option -${OPTARG}" >&2; exit 2 ;;
@@ -113,6 +121,18 @@ fi
 if [[ -f "${ENV_FILE}" ]]; then
     ENV_FILE_ABS="$(cd "$(dirname "${ENV_FILE}")" && pwd)/$(basename "${ENV_FILE}")"
     DOCKER_ARGS+=(-v "${ENV_FILE_ABS}:/work/.env:ro")
+fi
+
+# Adapters: a directory of adapter *.whl files, mounted read-only. The entrypoint
+# installs every wheel here into the image's venv before the run, so only the
+# adapters this run needs are added to the lean base.
+if [[ -n "${ADAPTERS_DIR}" ]]; then
+    if [[ ! -d "${ADAPTERS_DIR}" ]]; then
+        echo "error: adapters directory not found: ${ADAPTERS_DIR}" >&2
+        exit 1
+    fi
+    ADAPTERS_DIR_ABS="$(cd "${ADAPTERS_DIR}" && pwd)"
+    DOCKER_ARGS+=(-v "${ADAPTERS_DIR_ABS}:/work/adapters:ro")
 fi
 
 # Anything the operator appends in EXTRA_DOCKER_ARGS (e.g. --network host, an

@@ -17,8 +17,12 @@
 #
 # The default install is the engine plus the ``[dx]`` extra — the CLI shim
 # (``tolokaforge._entry:main``) prints an install hint and exits non-zero
-# without it. The default ``[dx]`` image runs the native backend; terminal_bench
-# and the other adapters ship as separate distributions and are opt-in via
+# without it. The image is deliberately LEAN: it runs the native backend and
+# bundles NO harness adapters. A run that needs one adds just that adapter at
+# start — the entrypoint (``orchestrator-entrypoint.sh``) installs adapter wheels
+# mounted at ``/work/adapters`` and/or specs named in ``$TOLOKAFORGE_ADAPTERS``
+# into the venv, so only the adapters a given run asks for are ever installed.
+# Baking a fixed adapter set into the image instead is still possible via
 # ``--build-arg EXTRAS=dx,adapters``.
 #
 # Secrets never enter the image. They reach a running container only through a
@@ -114,32 +118,31 @@ RUN apt-get update \
 
 COPY --from=builder /opt/venv /opt/venv
 
-# Strip the install toolchain — the runtime never installs packages. Reclaims
-# the pip/setuptools/wheel footprint the venv seeded at creation time.
-RUN rm -rf /opt/venv/lib/python*/site-packages/pip \
-    /opt/venv/lib/python*/site-packages/pip-*.dist-info \
-    /opt/venv/lib/python*/site-packages/setuptools \
-    /opt/venv/lib/python*/site-packages/setuptools-*.dist-info \
-    /opt/venv/lib/python*/site-packages/pkg_resources \
-    /opt/venv/lib/python*/site-packages/_distutils_hack \
-    /opt/venv/lib/python*/site-packages/distutils-precedence.pth \
-    /opt/venv/lib/python*/site-packages/wheel \
-    /opt/venv/lib/python*/site-packages/wheel-*.dist-info \
-    /opt/venv/bin/pip /opt/venv/bin/pip3 /opt/venv/bin/pip3.* \
-    /opt/venv/bin/wheel
+# pip stays in the venv on purpose: the entrypoint installs the adapters a run
+# asks for into this venv at start (see orchestrator-entrypoint.sh). That is the
+# lean-base/opt-in-adapter contract — the alternative, stripping pip, would force
+# every adapter to be baked at build time.
+
+# The adapter-install entrypoint. Keeps the base native and installs only the
+# adapters a given run requests, into /opt/venv, before exec-ing the CLI.
+COPY tolokaforge/docker/dockerfiles/orchestrator-entrypoint.sh /usr/local/bin/orchestrator-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/orchestrator-entrypoint.sh
 
 # Non-root user. Reaching the mounted host /var/run/docker.sock as this user
 # needs the socket's group added at run time:
 # ``--group-add "$(stat -c %g /var/run/docker.sock)"`` on Linux (see
-# scripts/docker/run-orchestrator.sh and docs/ORCHESTRATOR_IMAGE.md).
+# scripts/docker/run-orchestrator.sh and docs/ORCHESTRATOR_IMAGE.md). The venv is
+# chowned to runner so the entrypoint's opt-in adapter install writes as non-root.
 RUN useradd --create-home --uid 1000 runner \
     && mkdir -p /work \
-    && chown runner:runner /work
+    && chown runner:runner /work \
+    && chown -R runner:runner /opt/venv
 
 WORKDIR /work
 USER runner
 
 # ``docker run <img> run --config ...`` and ``docker run <img> --help`` both
-# work: the entrypoint is the CLI, the default command prints help.
-ENTRYPOINT ["tolokaforge"]
+# work: the entrypoint installs any requested adapters then hands off to the CLI,
+# and the default command prints help.
+ENTRYPOINT ["orchestrator-entrypoint.sh"]
 CMD ["--help"]
