@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.30.1 (2026-10-12)
+
+### Fix
+
+- **standalone**: keep baked .pyc for fast rag boot; poll service readiness in smoke (#1862)
+- **ci**: drop type=gha build cache that reintroduced the base-pull 401 (#1861)
+- **ci**: build standalone multi-arch on native per-arch runners + build/size opts (#1858)
+
 ## v0.30.0 (2026-10-12)
 
 ### BREAKING CHANGE
