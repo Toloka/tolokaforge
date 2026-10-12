@@ -224,8 +224,8 @@ is pushed by hand once the rc is verified.
 **Standalone publish cadence.** The five scale-out images publish on **every**
 `image-v*` tag. The heavier, multi-arch `standalone` image publishes **only on
 MINOR and MAJOR releases** (`image-vX.Y.0`), and is **skipped on patch
-releases** (`image-vX.Y.Z` with `Z > 0`) to keep its slow cross-arch build off
-every patch. A `setup` job in the workflow computes this gate (`patch == 0`) and
+releases** (`image-vX.Y.Z` with `Z > 0`) to keep its two-runner cross-arch build
+off every patch. A `setup` job in the workflow computes this gate (`patch == 0`) and
 emits both the build matrix and the name list every retag/move/digest loop reads,
 so the matrix and the loops always agree on whether `standalone` is in. **To
 publish `standalone` (and all images) off-cycle at any version** — e.g. for a
@@ -244,8 +244,14 @@ The five scale-out images are `linux/amd64` only; the standalone compose recipe
 pins `platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}`, so Apple-Silicon hosts run
 those under emulation. The all-in-one `standalone` image is the exception — it is
 published **multi-arch** (`linux/amd64` + `linux/arm64`) so it runs natively on
-Apple Silicon, ARM servers (Graviton), and Intel/Windows alike. arm64 is
-cross-built on the amd64 runner via the workflow's QEMU step.
+Apple Silicon, ARM servers (Graviton), and Intel/Windows alike. Each arch is
+built on its **native runner** (`amd64` on `ubuntu-latest`, `arm64` on the free
+`ubuntu-24.04-arm` public-repo runner) in the `publish-standalone` job and pushed
+by digest; `merge-standalone` then assembles the two digests into one manifest
+list with `imagetools create`. Native per-arch builds — not QEMU — are what let
+the standalone push reuse the same anonymous-base-pull trick the scale-out images
+use (a multi-arch push would 401 re-resolving the `library/python` base index
+under the repo-scoped token).
 
 ### Version guard
 

@@ -27,10 +27,16 @@ jobs:
     name: Resolve image set
     runs-on: ubuntu-latest
     outputs:
+      # Full name list every retag/move/digest loop reads (5 scale-out + standalone
+      # when it is published this run).
       images: ${{ steps.resolve.outputs.images }}
-      matrix: ${{ steps.resolve.outputs.matrix }}
+      # The five amd64 scale-out images — the `publish` job's matrix. Standalone is
+      # NOT here: it builds per-arch on native runners in its own job + a merge.
+      scaleout_matrix: ${{ steps.resolve.outputs.scaleout_matrix }}
+      # "true" when the all-in-one standalone image should publish this run.
+      standalone: ${{ steps.resolve.outputs.standalone }}
     steps:
-      - name: Resolve images + matrix (gate standalone to minor/major or dispatch)
+      - name: Resolve image set (gate standalone to minor/major or dispatch)
         id: resolve
         run: |
           set -euo pipefail
@@ -52,14 +58,13 @@ jobs:
 
           base_images="runner db-service rag-service mock-web grader"
           base_rows='{"image":"runner","dockerfile":"tolokaforge/docker/dockerfiles/runner.Dockerfile","needs_wheel":true},{"image":"rag-service","dockerfile":"tolokaforge/docker/dockerfiles/rag.Dockerfile","needs_wheel":true},{"image":"db-service","dockerfile":"tolokaforge/docker/dockerfiles/db_service.Dockerfile","needs_wheel":false},{"image":"mock-web","dockerfile":"tolokaforge/docker/dockerfiles/mock_web.Dockerfile","needs_wheel":false},{"image":"grader","dockerfile":"tolokaforge/docker/dockerfiles/grader.Dockerfile","needs_wheel":true}'
-          standalone_row='{"image":"standalone","dockerfile":"tolokaforge/docker/dockerfiles/standalone.Dockerfile","needs_wheel":true,"platforms":"linux/amd64,linux/arm64"}'
 
+          echo "scaleout_matrix={\"include\":[${base_rows}]}" >> "$GITHUB_OUTPUT"
+          echo "standalone=${include_standalone}" >> "$GITHUB_OUTPUT"
           if [ "$include_standalone" = "true" ]; then
             echo "images=${base_images} standalone" >> "$GITHUB_OUTPUT"
-            echo "matrix={\"include\":[${base_rows},${standalone_row}]}" >> "$GITHUB_OUTPUT"
           else
             echo "images=${base_images}" >> "$GITHUB_OUTPUT"
-            echo "matrix={\"include\":[${base_rows}]}" >> "$GITHUB_OUTPUT"
           fi
 
   build-wheel:
@@ -121,9 +126,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      # Matrix computed by the setup job: the five scale-out rows always, plus the
-      # standalone row only on minor/major releases or a manual dispatch.
-      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+      # The five amd64 scale-out images. The standalone image publishes multi-arch
+      # in its own per-arch jobs below.
+      matrix: ${{ fromJSON(needs.setup.outputs.scaleout_matrix) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -158,11 +163,6 @@ jobs:
           cp "$wheel" "./$(basename "$wheel")"
           echo "WHEEL_FILENAME=$(basename "$wheel")" >> "$GITHUB_ENV"
 
-      # QEMU enables the cross-arch (linux/arm64) build for the multi-arch
-      # standalone image on the amd64 runner. A no-op for the amd64-only rows.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -177,9 +177,14 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platforms || 'linux/amd64' }}
+          platforms: linux/amd64
           pull: false
           push: false
+          # Persist the layer cache across runs (GitHub Actions cache), so an
+          # unchanged-dependency rebuild reuses the heavy layers instead of
+          # starting cold. Scoped per image so they don't clobber each other.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           build-args: |
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
@@ -210,7 +215,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platforms || 'linux/amd64' }}
+          platforms: linux/amd64
           provenance: true
           pull: false
           push: true
@@ -219,10 +224,219 @@ jobs:
             PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
             ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
 
+  # The all-in-one standalone image publishes MULTI-ARCH (linux/amd64 +
+  # linux/arm64), unlike the five amd64-only scale-out images above. It is built
+  # on NATIVE per-arch runners — no QEMU — because (a) emulated arm64 builds are
+  # minutes-to-hours slower and (b) the repo-scoped Docker Hub OIDC token cannot
+  # pull `library/python`, and a multi-arch push re-resolves the base *manifest
+  # index* under that token and 401s; a single-arch native leg resolves only its
+  # own platform manifest (reusing the anonymous pre-login pull, pull:false),
+  # exactly like the scale-out images, so it never hits the 401. Each leg pushes
+  # by digest (no tag); the merge job assembles the manifest list. Only runs when
+  # `setup` says standalone publishes this run (minor/major or dispatch).
+  publish-standalone:
+    name: Publish standalone (${{ matrix.arch }})
+    needs: [setup, build-wheel]
+    if: needs.setup.outputs.standalone == 'true'
+    runs-on: ${{ matrix.runner }}
+    # Same tag-tier → environment gating as the `publish` job: rc under
+    # pre-stable, stable under release, a non-publishing dispatch under '' (so the
+    # dry-run binds no push-capable deployment policy). See that job's note.
+    environment: ${{ github.event_name != 'workflow_dispatch' && (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') || (inputs.publish && 'release' || '') }}
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Free native runners for public repos: amd64 on the default runner,
+          # arm64 on GitHub's arm64 image. Each leg builds ONLY its own platform.
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version and Python pin
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          else
+            version="${GITHUB_REF_NAME#image-v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "python_version=$(cat .python-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: tolokaforge-dist
+          path: dist/
+
+      - name: Stage wheel into build context
+        run: |
+          shopt -s nullglob
+          wheels=(dist/tolokaforge-*.whl)
+          wheel="${wheels[0]}"
+          if [ -z "$wheel" ]; then
+            echo "::error::no tolokaforge wheel found in dist/"
+            exit 1
+          fi
+          cp "$wheel" "./$(basename "$wheel")"
+          echo "WHEEL_FILENAME=$(basename "$wheel")" >> "$GITHUB_ENV"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Anonymous pre-login base pull (single platform → no 401), warming the
+      # cache the authenticated push-by-digest below reuses with pull:false.
+      - name: Build image (anonymous base pull, pre-login)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tolokaforge/docker/dockerfiles/standalone.Dockerfile
+          platforms: ${{ matrix.platform }}
+          pull: false
+          push: false
+          cache-from: type=gha,scope=standalone-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=standalone-${{ matrix.arch }}
+          build-args: |
+            PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
+            WHEEL_FILENAME=${{ env.WHEEL_FILENAME }}
+
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      # Push THIS arch by digest only — no tag. `name-canonical` keeps the digest
+      # addressable as tolokasoft1/tolokaforge-standalone@sha256:…; merge-standalone
+      # assembles the two digests into the tagged manifest list. provenance:false
+      # keeps one manifest per arch so the merge list is clean (an attestation
+      # manifest would otherwise ride along and confuse `imagetools create`).
+      - name: Push image by digest
+        id: push
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tolokaforge/docker/dockerfiles/standalone.Dockerfile
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          pull: false
+          cache-from: type=gha,scope=standalone-${{ matrix.arch }}
+          outputs: type=image,name=tolokasoft1/tolokaforge-standalone,push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
+            WHEEL_FILENAME=${{ env.WHEEL_FILENAME }}
+
+      - name: Export digest
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assemble the per-arch digests into one multi-arch manifest list tagged
+  # :{version}. `imagetools create` is the same primitive move-tags/auto-promote
+  # use — no rebuild, it references the digests publish-standalone already pushed.
+  # Skipped on a dry-run (nothing was pushed, so no digests) and on patch releases
+  # (publish-standalone did not run).
+  merge-standalone:
+    name: Merge standalone manifest list
+    needs: [setup, publish-standalone]
+    if: ${{ needs.setup.outputs.standalone == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name != 'workflow_dispatch' && (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') || 'release' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Resolve version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          else
+            version="${GITHUB_REF_NAME#image-v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: standalone-digest-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      # Build the manifest list from the per-arch digests under the one repo.
+      - name: Create multi-arch manifest list
+        working-directory: /tmp/digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo="tolokasoft1/tolokaforge-standalone"
+          refs=()
+          for digest in *; do
+            refs+=("${repo}@sha256:${digest}")
+          done
+          docker buildx imagetools create -t "${repo}:${VERSION}" "${refs[@]}"
+
+      - name: Confirm both arches present
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo="tolokasoft1/tolokaforge-standalone"
+          docker buildx imagetools inspect "${repo}:${VERSION}"
+
   smoke:
     name: rc-smoke against published images
-    needs: [setup, publish]
-    if: github.event_name != 'workflow_dispatch'
+    needs: [setup, publish, merge-standalone]
+    # Runs after the scale-out publish and (when it ran) the standalone merge.
+    # `!failure() && !cancelled()` lets smoke proceed when merge-standalone was
+    # SKIPPED (patch releases don't publish standalone) while still blocking if
+    # publish or the merge actually failed.
+    if: ${{ github.event_name != 'workflow_dispatch' && !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
