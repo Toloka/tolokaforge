@@ -519,7 +519,7 @@ class OrchestratorConfig(BaseModel):
     A future release will flip this to an opt-in cap (default ``None``);
     tracked as a post-M9 follow-up."""
 
-    max_trial_tokens: int | None = None
+    max_trial_tokens: int | None = Field(default=None, ge=1)
     """Run-level opt-in ceiling on cumulative model tokens (prompt + completion)
     per trial. ``None`` (the default) leaves trials uncapped on tokens; a value
     stops a trial that reaches it with

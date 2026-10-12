@@ -335,10 +335,14 @@ turns:
 ```yaml
 max_simulation_steps: 200     # absent: no step budget
 max_environment_errors: 10    # absent: no error budget
+max_trial_tokens: 2000000     # absent: no token budget
 ```
 
-- Both are opt-in. A task that sets neither runs with no budget; `max_turns` applies
+- All three are opt-in. A task that sets none runs with no budget; `max_turns` applies
   either way. Each value must be at least 1.
+- `max_trial_tokens` caps cumulative model tokens (prompt + completion) for the trial
+  and stops it with `trial_token_budget` when reached; it overrides the run-level
+  `orchestrator.max_trial_tokens`, and `None` falls back to that run-level value.
 - Steps are counted half-duplex. Every agent or user message is one step, and the
   environment's reply to a message's tool calls is one more step, however many calls
   that batch holds.

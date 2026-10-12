@@ -81,9 +81,9 @@ Never from matching prose against an exception message.
 
 ``API_ERROR`` is deliberately absent, and stays absent. It is also set by a
 catch-all that fires when an exception string merely *contains* "API", which
-is prose — the trial may well be one the agent failed. The typed evidence
-that used to share that value has its own reason above. A reason produced by text
-matching cannot gate exclusion
+is prose — the trial may well be one the agent failed. The typed cases that
+could otherwise share that value each have their own reason above. A reason
+produced by text matching cannot gate exclusion
 — a context-window overflow and a malformed tool schema both read as "an API
 error" — and excluding a trial the agent actually failed inflates every
 benchmark number with nothing in the output to show it. Counting a trial the

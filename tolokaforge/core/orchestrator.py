@@ -1132,9 +1132,9 @@ class Orchestrator:
         gate on that finer signal; today, fail-fast preserves diagnostic
         clarity and matches AGENTS.md rule 1.
 
-        Auth-shaped ``API_ERROR`` trajectories short-circuit to
-        non-retryable via :meth:`_is_auth_failure` — bad keys are
-        deterministic across attempts.
+        Auth-shaped ``API_ERROR`` and ``PROVIDER_REFUSED_ALL_REQUESTS``
+        trajectories short-circuit to non-retryable via
+        :meth:`_is_auth_failure` — bad keys are deterministic across attempts.
         """
         if trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
             return False
