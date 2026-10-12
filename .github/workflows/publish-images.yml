@@ -375,6 +375,10 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # Needed for the workflow_dispatch version resolver below, which reads
+      # pyproject.toml — the off-cycle `publish: true` path has no tag ref.
+      - uses: actions/checkout@v5
+
       - name: Resolve version
         id: meta
         run: |
