@@ -1643,14 +1643,17 @@ Two consistency rules run on the resolved document:
   load time and dispatches through the recipe registry (kind →
   module under `tolokaforge/runtime/reset_recipes/`) at reset
   time.
-- **A world service is never shared.** A task whose
+- **A world service is ephemeral only.** A task whose
   `initial_state.app_world.url` names a service
   ([ADR-0058](adr/0058-app-world-served-over-http.md)) keeps the trial's
-  whole state there, so that service must be labelled `ephemeral` or
-  `reset` in the resolved manifest — the project's `default_environment`
-  and the task's patch together. The native adapter refuses `shared`
-  (naming the service) and a `url` naming no service of the stack when it
-  builds the task's description, before any trial runs.
+  whole state there and claims the service's admin token at registration,
+  so that service must be labelled `ephemeral` in the resolved manifest —
+  the project's `default_environment` and the task's patch together. A
+  `shared` service would be one world for concurrent trials; a `reset` one
+  keeps its process, and the token the previous trial claimed, alive
+  across trials. The native adapter refuses both (naming the service) and
+  a `url` naming no service of the stack when it builds the task's
+  description, before any trial runs.
 
 **Per-service semantics live in the manifest, never in the
 substrate file.** The compose file defines what a service *is*;

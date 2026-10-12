@@ -179,6 +179,7 @@ def _write_pack(
     *,
     services: dict[str, Any] | None,
     project_default_environment: EnvironmentPatch | None = None,
+    url: str = WORLD["url"],
 ) -> NativeAdapter:
     task_dir = tmp_path / "tasks" / "world"
     task_dir.mkdir(parents=True)
@@ -192,7 +193,9 @@ def _write_pack(
             }
         },
     )
-    task = _task()
+    task = _task(
+        initial_state={"json_db": "initial_state.json", "app_world": {**WORLD, "url": url}}
+    )
     if services is not None:
         task["environment_manifest"] = {
             "stack": {"compose_file": "./environment.compose.yaml", "runner_service": "runner"},
@@ -219,9 +222,19 @@ def test_a_per_trial_world_service_reaches_the_runner(
     assert description.environment_manifest.services["world"].isolation == "ephemeral"
 
 
-def test_a_shared_world_service_is_refused_by_name(tmp_path: Path) -> None:
-    adapter = _write_pack(tmp_path, services={"world": {"isolation": "shared"}})
-    with pytest.raises(ValueError, match="service 'world', whose isolation is 'shared'"):
+@pytest.mark.parametrize(
+    ("isolation", "message"),
+    [
+        ("shared", "service 'world', whose isolation is 'shared'"),
+        ("reset", "service 'world', whose isolation is 'reset'.*admin token the previous trial"),
+    ],
+)
+def test_a_world_service_not_ephemeral_is_refused_by_name(
+    tmp_path: Path, isolation: str, message: str
+) -> None:
+    spec = {"isolation": isolation, "reset": {"seed": "baseline"}} if isolation == "reset" else {}
+    adapter = _write_pack(tmp_path, services={"world": {"isolation": isolation, **spec}})
+    with pytest.raises(ValueError, match=message):
         adapter.to_task_description("world")
 
 
@@ -237,6 +250,12 @@ def test_a_world_service_the_project_shares_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_world_url_naming_no_service_of_the_stack_is_refused(tmp_path: Path) -> None:
+    adapter = _write_pack(tmp_path, services={}, url="http://elsewhere:8080")
+    with pytest.raises(ValueError, match="'elsewhere', which is not a service of the task's stack"):
+        adapter.to_task_description("world")
+
+
+def test_a_world_url_with_no_stack_to_run_it_in_is_refused(tmp_path: Path) -> None:
     adapter = _write_pack(tmp_path, services=None)
     with pytest.raises(ValueError, match="resolves no environment stack"):
         adapter.to_task_description("world")

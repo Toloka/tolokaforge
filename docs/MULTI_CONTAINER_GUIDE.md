@@ -664,9 +664,13 @@ Refused at load or at `validate`: `app_world` without `json_db`, beside a
 `http_request` is not enabled, and a host outside that actor's `allowed_hosts`.
 Refused when the adapter binds the task to its (and its project's) environment: a
 `url` whose host is not a service of the stack, or a service whose isolation is
-`shared` — declare it `ephemeral` or `reset` so concurrent trials never share a
-world. No credential appears in the task; the vendor hosts must resolve to the
-world service on the trial's network (a compose network alias).
+not `ephemeral`. `shared` would let concurrent trials act on, and be graded
+against, one world; `reset` re-seeds the service in place but keeps its process,
+and with it the admin token the previous trial claimed, alive across trials, and
+the protocol has no release, so the next trial's claim would be refused. Only
+`ephemeral` gives each trial an unclaimed service of its own. No credential
+appears in the task; the vendor hosts must resolve to the world service on the
+trial's network (a compose network alias).
 
 ## Further reading
 

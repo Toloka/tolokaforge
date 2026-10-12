@@ -356,12 +356,15 @@ class AppWorldConfig(BaseModel):
         return hostname
 
     def isolation_refusal(self, manifest: EnvironmentManifest | None) -> str | None:
-        """Why :attr:`service` could hold more than one trial's world, or ``None``.
+        """Why :attr:`service` could not give this trial an unclaimed world of its own, or ``None``.
 
-        The service must be one of the task's stack labelled ``ephemeral`` or
-        ``reset``: under either the runtime gives each trial a world of its own,
-        while a ``shared`` one would let concurrent trials act on, and be graded
-        against, one world.
+        The service must be one of the task's stack labelled ``ephemeral``: a fresh
+        container per trial, so concurrent trials never share a world and every
+        trial claims a service nobody claimed before. A ``shared`` one would let
+        concurrent trials act on, and be graded against, one world. A ``reset`` one
+        is re-seeded in place, but the process keeps the admin token the previous
+        trial claimed and the protocol has no release, so the next trial's claim
+        would be refused.
         """
         service = self.service
         if manifest is None:
@@ -380,8 +383,16 @@ class AppWorldConfig(BaseModel):
             return (
                 f"initial_state.app_world.url names the service {service!r}, whose isolation "
                 "is 'shared': concurrent trials would act on and be graded against one world. "
-                f"Declare environment_manifest.services.{service}.isolation as 'ephemeral' or "
-                "'reset'"
+                f"Declare environment_manifest.services.{service}.isolation as 'ephemeral'"
+            )
+        if spec.isolation == "reset":
+            return (
+                f"initial_state.app_world.url names the service {service!r}, whose isolation "
+                "is 'reset': an in-place reset re-seeds the world but keeps the service "
+                "process, and with it the admin token the previous trial claimed, alive "
+                "across trials, so the next trial's claim would be refused. Only 'ephemeral' "
+                "gives each trial an unclaimed service of its own; declare "
+                f"environment_manifest.services.{service}.isolation as 'ephemeral'"
             )
         return None
 
