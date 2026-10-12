@@ -25,6 +25,7 @@ import grpc
 
 from tolokaforge.core.grading.substrate import RunTestSuiteResult
 from tolokaforge.core.grading.substrate_client import GrpcSubstrateClient
+from tolokaforge.runner.grpc_limits import channel_options, max_message_mb_from_env
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
@@ -89,6 +90,11 @@ class LiveRunnerCallbackGradingSubstrate:
     A grader losing the runner mid-grade raises
     :class:`SubstrateUnreachableError`; the seam translates that into
     ``GradingFailedError`` so the trial is booked as ungradeable.
+
+    The channel it opens is bounded by ``max_message_mb``. The grader
+    container constructs the substrate with the registered two-argument
+    shape and the bound comes from ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB``; an
+    engine-side caller passes the run's ``compute.grpc_max_message_mb``.
     """
 
     def __init__(
@@ -97,11 +103,15 @@ class LiveRunnerCallbackGradingSubstrate:
         trial_id: str,
         *,
         channel: grpc.Channel | None = None,
+        max_message_mb: int | None = None,
     ) -> None:
         self.runner_substrate_address = runner_substrate_address
         self.trial_id = trial_id
         if channel is None:
-            self._channel: grpc.Channel = grpc.insecure_channel(runner_substrate_address)
+            limit = max_message_mb if max_message_mb is not None else max_message_mb_from_env()
+            self._channel: grpc.Channel = grpc.insecure_channel(
+                runner_substrate_address, options=channel_options(limit)
+            )
             self._owns_channel = True
         else:
             self._channel = channel

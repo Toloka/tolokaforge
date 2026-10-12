@@ -23,6 +23,11 @@ from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
+from tolokaforge.runner.grpc_limits import (
+    DEFAULT_MAX_MESSAGE_MB,
+    MAX_MESSAGE_ENV_VAR,
+    validate_max_message_mb,
+)
 from tolokaforge.secrets import container_secrets_env
 
 
@@ -52,6 +57,7 @@ def core_stack(
     rag_service_url: str | None = None,
     typesense_address: TypeSenseAddress | None = None,
     expose_substrate: bool = False,
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
 ) -> EngineStack:
     """Create a core service stack with DB service and Runner.
 
@@ -102,6 +108,10 @@ def core_stack(
             off and every ``SubstrateService/*`` call returns
             ``UNIMPLEMENTED``, matching the honest-absence rule
             ``RAG_SERVICE_URL`` uses.
+        grpc_max_message_mb: Largest gRPC message, in MiB, the runner sends
+            or accepts, injected as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB``. The
+            orchestrator passes ``compute.grpc_max_message_mb`` — the bound
+            its own client channel uses — so both ends agree.
 
     Returns:
         EngineStack configured with db-service and runner.
@@ -146,6 +156,7 @@ def core_stack(
     runner_env = {
         "PYTHONUNBUFFERED": "1",
         "DB_SERVICE_URL": "http://tolokaforge-db-service:8000",
+        MAX_MESSAGE_ENV_VAR: str(validate_max_message_mb(grpc_max_message_mb)),
     }
     # Inject RAG_SERVICE_URL only when a rag-service is actually provisioned
     # (full stack). Absent on the core stack so the runner builds no RAG

@@ -11,6 +11,11 @@ The dispatch is stateless per call: every field the composite needs to
 grade the trial travels on the wire (see ``grader.proto`` schema v2 and
 ``docs/GRADER_SERVICE.md``). The service can be pointed at from any
 orchestrator without a prior registration handshake.
+
+The gRPC message bound (``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB``, default 50 MiB)
+applies to both the served ``Grade`` RPC and each substrate channel the
+dispatcher opens to the runner; set it to the run's
+``compute.grpc_max_message_mb``. An invalid value fails startup.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.grader import grader_pb2_grpc
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
 from tolokaforge.grader.service import GraderServiceImpl
+from tolokaforge.runner.grpc_limits import channel_options, max_message_mb_from_env
 
 
 def _resolve_port(cli_port: int | None) -> int:
@@ -61,10 +67,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     port = _resolve_port(args.port)
+    max_message_mb = max_message_mb_from_env()
     logger = StructuredLogger("grader-service")
 
+    # The dispatcher's per-trial substrate channels read the same variable.
     dispatch = GraderCompositeDispatch(logger)
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.max_workers))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=args.max_workers),
+        options=channel_options(max_message_mb),
+    )
     grader_pb2_grpc.add_GraderServiceServicer_to_server(
         GraderServiceImpl(judge_fn=dispatch.grade, logger=logger),
         server,
@@ -72,7 +83,12 @@ def main(argv: list[str] | None = None) -> int:
     listen_addr = f"[::]:{port}"
     server.add_insecure_port(listen_addr)
     server.start()
-    logger.info("grader-service started", port=port, workers=args.max_workers)
+    logger.info(
+        "grader-service started",
+        port=port,
+        workers=args.max_workers,
+        grpc_max_message_mb=max_message_mb,
+    )
 
     def _shutdown(signum: int, _frame: object) -> None:
         logger.info("grader-service shutting down", signal=signum)

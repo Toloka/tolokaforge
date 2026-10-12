@@ -1201,6 +1201,7 @@ class Orchestrator:
                 logger=self.logger,
                 grader_config=grader_config,
                 runtime_backend=in_process_backend_shim,
+                grpc_max_message_mb=self._grpc_max_message_mb(),
             )
         )
         # Drain any leftover from a prior aborted run on this orchestrator
@@ -1518,6 +1519,15 @@ class Orchestrator:
             on_success=compute.capture_logs_on_success,
         )
 
+    def _grpc_max_message_mb(self) -> int:
+        """The run's gRPC message bound in MiB (``compute.grpc_max_message_mb``).
+
+        One value for every channel between the engine, the runner and the
+        grader; the schema default applies when no ``compute`` block is
+        declared.
+        """
+        return (self.config.compute or ComputeConfig()).grpc_max_message_mb
+
     def _resolve_runtime_connect_budget(self) -> tuple[float, float]:
         """Resolve the runner health-check budget (env → YAML → default).
 
@@ -1661,6 +1671,7 @@ class Orchestrator:
                 per_trial_mode=per_trial_mode,
                 connect_timeout_s=connect_timeout_s,
                 connect_retry_interval_s=connect_retry_interval_s,
+                grpc_max_message_mb=self._grpc_max_message_mb(),
             )
         )
         self.logger.info(
@@ -3182,6 +3193,9 @@ class Orchestrator:
                 # Absent block == absent field == off.
                 if self.config.grader is not None and self.config.grader.expose_substrate:
                     core_stack_kwargs["expose_substrate"] = True
+                # The runner container serves with the bound the engine's
+                # client channels use (``compute.grpc_max_message_mb``).
+                core_stack_kwargs["grpc_max_message_mb"] = self._grpc_max_message_mb()
                 service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
                 # Any task-declared manifest hands the substrate to the
                 # composer — the task-declared compose owns the runner +

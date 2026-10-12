@@ -11,6 +11,7 @@ from __future__ import annotations
 import grpc
 
 from tolokaforge.grader import grader_pb2, grader_pb2_grpc
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB, channel_options
 
 
 class GrpcGraderClient:
@@ -24,16 +25,29 @@ class GrpcGraderClient:
     closes the channel on exit. Long-lived callers that need to keep the
     client for a whole orchestrator run still hold the instance directly
     and call :meth:`close` in their teardown.
+
+    ``max_message_mb`` bounds the channel's messages — the run's
+    ``compute.grpc_max_message_mb``. A ``Grade`` request carries the task
+    description, initial state included, so the grader service must serve
+    with the same bound.
     """
 
-    def __init__(self, grader_address: str = "grader:50052") -> None:
+    def __init__(
+        self,
+        grader_address: str = "grader:50052",
+        *,
+        max_message_mb: int = DEFAULT_MAX_MESSAGE_MB,
+    ) -> None:
         self.grader_address = grader_address
+        self.max_message_mb = max_message_mb
         self.channel: grpc.Channel | None = None
         self.stub: grader_pb2_grpc.GraderServiceStub | None = None
 
     def connect(self) -> None:
         if self.channel is None:
-            self.channel = grpc.insecure_channel(self.grader_address)
+            self.channel = grpc.insecure_channel(
+                self.grader_address, options=channel_options(self.max_message_mb)
+            )
             self.stub = grader_pb2_grpc.GraderServiceStub(self.channel)
 
     def close(self) -> None:

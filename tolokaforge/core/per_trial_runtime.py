@@ -30,6 +30,7 @@ from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.runtime import EnvHandle, IsolationMode
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import TaskDescription
 from tolokaforge.tools.registry import ToolResult
 
@@ -50,7 +51,8 @@ class PerTrialRuntimeBackend:
     :class:`SharedStackRuntimeBackend` in per-trial mode. Constructor
     kwargs (:attr:`seeds`, :attr:`log_capture`, :attr:`mount_docker_socket`,
     :attr:`expose_substrate`, :attr:`readiness_probe_loader`,
-    :attr:`connect_timeout`, :attr:`connect_retry_interval`) flow onto the
+    :attr:`connect_timeout`, :attr:`connect_retry_interval`,
+    :attr:`grpc_max_message_mb`) flow onto the
     delegate; the optional :attr:`composer` seam lets tests inject a
     materialiser stub without monkeypatching module symbols.
     """
@@ -74,6 +76,7 @@ class PerTrialRuntimeBackend:
     readiness_probe_loader: Callable[[str], ReadinessProbeFactory] = load_readiness_probe
     connect_timeout: float = 30.0
     connect_retry_interval: float = 1.0
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
     composer: SubstrateComposer | None = None
     _delegate: SharedStackRuntimeBackend = field(init=False)
 
@@ -86,6 +89,7 @@ class PerTrialRuntimeBackend:
             expose_substrate=self.expose_substrate,
             connect_timeout=self.connect_timeout,
             connect_retry_interval=self.connect_retry_interval,
+            grpc_max_message_mb=self.grpc_max_message_mb,
             composer=self._build_composer(),
         )
         self._delegate._per_trial_mode = True
@@ -242,6 +246,7 @@ def per_trial_runtime_backend_factory(
         expose_substrate=ctx.expose_substrate,
         connect_timeout=ctx.connect_timeout_s,
         connect_retry_interval=ctx.connect_retry_interval_s,
+        grpc_max_message_mb=ctx.grpc_max_message_mb,
     )
 
 

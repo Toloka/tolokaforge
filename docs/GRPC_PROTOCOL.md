@@ -1156,6 +1156,7 @@ See [`DB_SERVICE_API.md`](DB_SERVICE_API.md) for full endpoint specifications.
 | `DEADLINE_EXCEEDED` | Timeout | Retry or fail |
 | `INTERNAL` | Server error | Retry with backoff |
 | `UNAVAILABLE` | Service down | Wait and retry |
+| `RESOURCE_EXHAUSTED` | A message exceeded the gRPC message size bound (`compute.grpc_max_message_mb`, default 50 MiB, applied on both ends) | Raise the bound; see [RUNNER.md § gRPC message size](RUNNER.md#grpc-message-size) |
 
 ## Security Considerations
 

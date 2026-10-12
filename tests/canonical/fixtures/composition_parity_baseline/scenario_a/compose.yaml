@@ -21,6 +21,7 @@ services:
     environment:
       TOLOKAFORGE_SECRETS_JSON: '{"FAKE_JUDGE_API_KEY": "sk-fake-a$$bc", "FAKE_SEARCH_API_KEY":
         "fake-search-value"}'
+      TOLOKAFORGE_GRPC_MAX_MESSAGE_MB: '50'
 networks:
   tolokaforge_netpolicy_internal:
     internal: true

@@ -138,6 +138,7 @@ from tolokaforge.core.search.backend import (
     SearchIndexBuildError,
     SearchOutcome,
 )
+from tolokaforge.runner.grpc_limits import DEFAULT_MAX_MESSAGE_MB
 from tolokaforge.runner.models import SearchPlane
 
 if TYPE_CHECKING:
@@ -423,6 +424,11 @@ class RuntimeBackendBuildContext:
     Same resolution as :attr:`connect_timeout_s` via
     ``TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S`` and
     ``OrchestratorConfig.runtime_connect.retry_interval_s``."""
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
+    """Set by the orchestrator from ``RunConfig.compute.grpc_max_message_mb``.
+    Bounds every gRPC channel the backend opens to a runner and is injected
+    as ``TOLOKAFORGE_GRPC_MAX_MESSAGE_MB`` into every runner container the
+    backend materialises, so both ends of the channel share one limit."""
 
 
 @dataclass(frozen=True)
@@ -471,6 +477,10 @@ class TrialGraderContext:
     grader_address: str | None = None
     grader_config: GraderConfig | None = None
     runtime_backend: RuntimeBackend | None = None
+    grpc_max_message_mb: int = DEFAULT_MAX_MESSAGE_MB
+    """The run's ``compute.grpc_max_message_mb``: bounds the gRPC channel a
+    grader opens to the runner (``runner_rpc``) or to the grader service
+    (``grader_rpc``, ``queue``)."""
 
 
 @dataclass(frozen=True)
