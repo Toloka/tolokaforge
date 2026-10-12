@@ -557,7 +557,8 @@ recorded as `environment_error`; its output and TOOL-message text are the
 environment's exact response, without an additional prefix. A reply that declares
 the arguments refused (JSON-RPC `-32602`, or `isError: true` with `_meta`
 `tolokaforge/error_category: invalid_arguments`) is recorded as
-`invalid_arguments`, with the environment's response as its output.
+`invalid_arguments`, with the environment's response as its output; the agent
+reads that response behind the `Error: ` prefix, like any refused call.
 
 `call_id` is the trial's **episode-unique** tool-call id — the same value the
 matching `tool_calls` entry and `role: tool` message in `trajectory.yaml` carry,

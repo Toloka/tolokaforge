@@ -10,7 +10,7 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from jsonschema import ValidationError, validate
+from jsonschema import SchemaError, ValidationError, validate
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -594,10 +594,22 @@ class ToolExecutor:
                 duration_s=time.time() - start_time,
                 status=ToolExecutionStatus.INVALID_ARGUMENTS,
             )
+        except SchemaError as e:
+            # The tool's own schema is broken: a defect of the pack or harness, not
+            # of the call. Its message describes the schema, never the arguments.
+            logger.warning("Tool %s has an invalid parameters schema: %s", tool_name, e.message)
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Invalid arguments for tool '{tool_name}'",
+                duration_s=time.time() - start_time,
+                status=ToolExecutionStatus.INVALID_ARGUMENTS,
+            )
         except Exception as e:
-            # Not a rule the arguments broke (an unparseable tool schema, a
-            # wrapper the arguments could not be unwrapped from): the cause stays in
-            # the log, where the submitted values may appear, not in the reply.
+            # Not a rule the arguments broke: the reply stays generic and the
+            # warning names only the failure's type; its text, which may quote the
+            # submitted values, stays in the debug log.
+            logger.warning("Argument check for %s failed with %s", tool_name, type(e).__name__)
             logger.debug("Argument check for %s failed: %r", tool_name, e)
             return ToolResult(
                 success=False,

@@ -12,8 +12,11 @@ raised failure.
 from __future__ import annotations
 
 import json
+import time
+from concurrent import futures
 from pathlib import Path
 
+import grpc
 import pytest
 
 from tests.utils.runner_requests import (
@@ -22,9 +25,19 @@ from tests.utils.runner_requests import (
     simple_task_description,
     trial_spec_json,
 )
-from tolokaforge.core.models import ToolExecutionStatus
+from tolokaforge.core.docker_adapter import DockerRunnerAdapter
+from tolokaforge.core.llm.client import GenerationResult
+from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.logging import get_logger
+from tolokaforge.core.loop import LoopConfig, MetricsSink, ToolCallingLoop, classify_loop_error
+from tolokaforge.core.models import ToolCall, ToolExecutionStatus
+from tolokaforge.core.models.trajectory import MessageRole
+from tolokaforge.core.runner import TrialToolCallRecorder
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+from tolokaforge.core.tool_message_format import TOOL_ERROR_MESSAGE_PREFIX
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import ToolSchema
+from tolokaforge.runner.runner_pb2_grpc import add_RunnerServiceServicer_to_server
 from tolokaforge.runner.tool_factory import (
     INVALID_ARGUMENTS_CATEGORY,
     MCPProtocolError,
@@ -170,3 +183,70 @@ def test_the_runner_records_argument_errors_apart_from_environment_errors(
         ToolExecutionStatus.ENVIRONMENT_ERROR,
         ToolExecutionStatus.SUCCESS,
     ]
+
+
+class _NullSink(MetricsSink):
+    def record_generation(self, result: GenerationResult) -> None:
+        pass
+
+    def record_tool_call(self) -> None:
+        pass
+
+
+class _OneToolCall:
+    """A model that asks for one tool call."""
+
+    def __init__(self, call: ToolCall) -> None:
+        self._result = GenerationResult(text="", tool_calls=[call], usage=Usage(prompt_tokens=1))
+
+    def generate(self, system, messages, tools, tool_choice="auto", observation=None):
+        return self._result
+
+
+def test_the_refusal_reaches_the_model_and_the_record_over_the_docker_path(
+    runner_service, mock_grpc_context, server_script, pool, request
+):
+    """Runner service over gRPC → host client → agent loop: the server's own
+    feedback is what the model reads and what the trial records."""
+    trial_id = f"{request.node.name}:0"
+    registered = runner_service.RegisterTrial(
+        register_request(
+            trial_spec_json(simple_task_description(), trial_id=trial_id), trial_id=trial_id
+        ),
+        mock_grpc_context,
+    )
+    assert registered.success is True, registered.error
+    runner_service.trials[trial_id].agent_tools["strict_quantity"] = _wrapper(
+        "strict_quantity", server_script, pool, trial_id
+    )
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    add_RunnerServiceServicer_to_server(runner_service, server)
+    port = server.add_insecure_port("localhost:0")
+    server.start()
+    client = GrpcRunnerClient(f"localhost:{port}")
+    messages: list = []
+    try:
+        client.connect(timeout=10.0, retry_interval=0.1)
+        ToolCallingLoop(
+            llm_client=_OneToolCall(
+                ToolCall(id="toolu_refused", name="strict_quantity", arguments={"quantity": 0})
+            ),
+            tool_executor=DockerRunnerAdapter(client, trial_id),
+            tool_schemas=[],
+            config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+            metrics=_NullSink(),
+            should_terminate=lambda result, turn, history: None,
+            classify_error=lambda exc: classify_loop_error(exc, ()),
+            logger=get_logger("argument-refusal", strict=False),
+            recorder=TrialToolCallRecorder(),
+        ).run("sys", messages, time.time())
+    finally:
+        client.close()
+        server.stop(grace=None)
+
+    feedback = "quantity must be a positive integer"
+    (tool_message,) = [m for m in messages if m.role is MessageRole.TOOL]
+    assert tool_message.content == f"{TOOL_ERROR_MESSAGE_PREFIX}{feedback}"
+    record = runner_service.trials[trial_id].tool_call_history[-1]
+    assert record.status is ToolExecutionStatus.INVALID_ARGUMENTS
+    assert record.output == feedback

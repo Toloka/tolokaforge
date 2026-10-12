@@ -1698,7 +1698,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     if not result.declared_failure:
                         status = pb2.EXECUTION_STATUS_SUCCESS
                     elif result.category == INVALID_ARGUMENTS_CATEGORY:
+                        # A refused call, like any INVALID_ARGUMENTS: the host
+                        # renders and records ``error_message`` for a failed
+                        # call, so the server's feedback travels there too.
                         status = pb2.EXECUTION_STATUS_INVALID_ARGUMENTS
+                        error_message = result.output
                     else:
                         status = pb2.EXECUTION_STATUS_ENVIRONMENT_ERROR
                 elif isinstance(result, str):

@@ -105,3 +105,14 @@ def test_corrected_arguments_run_the_tool_once():
     registry.register(tool)
     accepted = ToolExecutor(registry).execute(tool.name, {"quantity": 2}, call_id="c2")
     assert accepted.status is ToolExecutionStatus.SUCCESS and tool.executions == 1
+
+
+def test_a_broken_tool_schema_is_logged_as_a_warning(caplog):
+    broken = {"type": "object", "properties": {"quantity": {"type": "not-a-type"}}}
+    with caplog.at_level("WARNING", logger="tolokaforge.tools.registry"):
+        result, tool = _run({"quantity": MARKER}, parameters=broken)
+    assert result.status is ToolExecutionStatus.INVALID_ARGUMENTS and tool.executions == 0
+    assert MARKER not in result.error
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("invalid parameters schema" in w for w in warnings)
+    assert not any(MARKER in w for w in warnings)
