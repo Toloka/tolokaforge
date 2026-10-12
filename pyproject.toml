@@ -541,6 +541,7 @@ only-include = [
     "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/tool_message_format.py",
     "tolokaforge/core/tool_output_truncation.py",
+    "tolokaforge/core/tools_interface.py",
     "tolokaforge/core/trial.py",
     "tolokaforge/core/unknown_keys.py",
 ]
