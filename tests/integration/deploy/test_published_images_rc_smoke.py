@@ -1,4 +1,8 @@
-"""Keyless image-level rc-smoke for the four published first-party images.
+"""Keyless image-level rc-smoke for the published first-party images.
+
+The service images are health-smoked; the orchestrator image is a CLI batch
+driver with no healthcheck, so it is smoked via ``--help`` (see
+``test_orchestrator_cli_help``). Both gate the ``:latest`` / ``:X.Y`` promotion.
 
 Runs only inside the publish workflow's ``smoke`` gate: skipped unless
 ``TOLOKAFORGE_SMOKE_IMAGE_TAG`` names the tag the ``publish`` job just pushed. So
@@ -132,3 +136,28 @@ def test_runner_run_trial_speaks_wire(runner_container: str) -> None:
         pytest.fail(f"run-trial stdout is not JSON: {lines[0]!r} ({exc})")
     assert envelope.get("v") == 1, f"wire line missing v:1: {envelope!r}"
     assert envelope.get("type") in {"result", "error"}, f"unexpected wire type: {envelope!r}"
+
+
+def test_orchestrator_cli_help(docker_daemon: None) -> None:
+    """The published orchestrator image is a CLI batch driver, not a service.
+
+    It carries no healthcheck, so it is smoked differently from the service images:
+    assert it pulls and its entrypoint prints the ``tolokaforge`` help surface with
+    a clean exit. Keyless, and the gate that blocks the orchestrator image's
+    ``:latest`` / ``:X.Y`` promotion the way health blocks the service images.
+    """
+    ref = published_image_ref("orchestrator", _tag())
+    obtained = obtain_image(ref)
+    assert obtained.returncode == 0, f"could not obtain {ref}: {obtained.stderr.strip()}"
+    proc = subprocess.run(
+        ["docker", "run", "--rm", ref, "--help"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert (
+        proc.returncode == 0
+    ), f"orchestrator --help failed (rc={proc.returncode}): {proc.stderr.strip()}"
+    assert (
+        "tolokaforge" in proc.stdout
+    ), f"orchestrator --help lacks the CLI surface: {proc.stdout!r}"

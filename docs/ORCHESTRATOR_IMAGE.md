@@ -3,7 +3,7 @@
 The orchestrator image runs a whole `tolokaforge run` batch from a single
 container. It is built for the "clean machine" case: a host that has only
 Docker and some provider credentials, no Python toolchain, no checkout. You
-build (or, once published, pull) the image, drop your credentials in a `.env`,
+build or pull the image, drop your credentials in a `.env`,
 mount a run config and a task pack, run one command, and collect the report
 from a mounted output directory.
 
@@ -41,8 +41,9 @@ scripts/docker/build-orchestrator.sh -t tolokaforge-orchestrator:local
 
 The script builds the engine wheel with `uv build`, stages it (plus the
 `tolokaforge_models` sibling source) into a temporary build context, and runs
-`docker build`. Publishing a prebuilt image to a registry is a separate
-follow-up; until then, build locally.
+`docker build`. Released versions are published to
+`tolokasoft1/tolokaforge-orchestrator:<tag>` by the image release workflow;
+build locally for an unreleased or custom (`EXTRAS`) image.
 
 Smoke the result — this proves the `[dx]` extra resolved and the entrypoint
 works:
@@ -152,61 +153,26 @@ scripts/docker/build-orchestrator.sh -e dx,adapters
 # or: make docker-build-orchestrator ORCHESTRATOR_EXTRAS=dx,adapters
 ```
 
-### Running Harbor from the image
+### Adapters that drive their own Docker sandbox
 
-The Harbor adapter delegates each trial to the real Harbor harness (`harbor run`
-+ Terminus 2), so it needs the adapters-included image and nothing special
-beyond the socket the wrapper already mounts:
+A delegated adapter may build its own Docker sandbox inside the agent container
+through the mounted socket (Docker-out-of-Docker, two levels deep). The wrapper
+already mounts the socket, so no extra flag is needed, but three DooD realities
+apply:
 
-```bash
-# 1. Build with the adapters extra (Harbor ships in it).
-make docker-build-orchestrator ORCHESTRATOR_EXTRAS=dx,adapters
+- **A host-visible staging path.** Any directory the adapter bind-mounts into
+  its sandbox through the host daemon must resolve on the **host**, not be a
+  container-only path like `/tmp` — point it under the mounted output dir.
+- **The model call can originate on the host.** When the sandbox is built on the
+  host daemon, the provider call can leave from the **host**, so host
+  name-resolution and egress to the provider must work, not just the trial
+  network's.
+- **The host needs `docker buildx`** when the adapter builds an image for its
+  sandbox (`docker buildx version` should succeed).
 
-# 2. Keyless free smoke — Harbor's `oracle` agent runs the task's reference
-#    solution, so no provider key is needed. Point -t at the TB2 pack dir.
-scripts/docker/run-orchestrator.sh \
-    -i tolokaforge-orchestrator:local \
-    -c examples/harbor/run_harbor.yaml \
-    -t examples/harbor \
-    -o ./out \
-    -- --image-source build
-```
+## Limitations
 
-For a real model run, set `models.agent.name` to the `provider/model` Terminus 2
-should run, keep `params.agent` at `terminus-2`, and drop the provider key in
-`.env` (`-e .env`); the engine forwards it into the trial container via
-`params.agent_provider_env`. Harbor itself needs the **host** Docker daemon:
-`harbor run -e docker` shells `docker compose` on the mounted `/var/run/docker.sock`
-to build **its own** sandbox (Docker-out-of-Docker, two levels deep). The wrapper
-already mounts that socket, so no extra flag is required — but the same DooD
-caveat as every child stack applies, doubly: Harbor builds its sandbox on the
-host daemon, outside tolokaforge's per-trial isolation, and a Harbor crash can
-orphan those sibling containers on the host.
-
-A **real Terminus** run (unlike the keyless oracle) adds three DooD realities to
-plan for:
-
-- **`staging_root` must be host-visible.** Point `params.staging_root` at a
-  directory under the mounted output dir (e.g. `/work/out/harbor-staging`), not a
-  container-only path like `/tmp`. Harbor's sandbox bind-mounts the job directory
-  through the host daemon, so a container-only staging root is invisible to it and
-  every trial silently produces no results. The adapter **fails loud** on a
-  non-host-visible `staging_root` when it detects it is containerised, rather than
-  producing empty results — but choosing a mounted path up front avoids the trip.
-- **The model call can originate on the host.** Because Harbor builds its sandbox
-  on the host daemon, the Terminus LLM/proxy call can leave from the **host**, not
-  from inside the trial container. Host name-resolution and egress to the provider
-  must work, not just the trial network's.
-- **The host needs `docker buildx`.** Harbor builds an egress sidecar for its
-  sandbox, which requires buildx on the host daemon (`docker buildx version`
-  should succeed before a keyed run).
-
-## Status
-
-The build + `--help` + keyless `--dry-run` path is exercised by the build
-script and the smoke command above. A **full keyed end-to-end** run — real
-provider keys, child compose stacks over the mounted socket — is the manual
-acceptance step. Note the DooD caveat: because child containers are started by
-the **host** daemon, any host-path bind mounts the generated compose stacks
-reference must resolve identically on the host and in the orchestrator
-container; run from a host path, not a container-only path.
+Because child containers are started by the **host** daemon (Docker-out-of-Docker),
+any host-path bind mounts the generated compose stacks reference must resolve
+identically on the host and in the orchestrator container — run from a host path,
+not a container-only path.

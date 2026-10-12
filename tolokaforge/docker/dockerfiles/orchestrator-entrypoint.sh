@@ -10,13 +10,13 @@
 #
 #   * Mounted wheels — every ``*.whl`` under ``$TOLOKAFORGE_ADAPTERS_DIR``
 #     (default ``/work/adapters``). The zero-index path: mount a directory of
-#     adapter wheels (e.g. an internal adapter not on a public index) and they
+#     adapter wheels (e.g. a private adapter not on a public index) and they
 #     install at start. Their dependencies resolve from the configured index
 #     (PyPI by default); mount those wheels too for a fully offline run.
 #   * Named specs — whitespace-separated requirement specifiers in
 #     ``$TOLOKAFORGE_ADAPTERS`` (e.g. ``tolokaforge-adapter-terminal-bench==1.2.0``).
-#     Honors pip's standard ``PIP_INDEX_URL`` / ``PIP_EXTRA_INDEX_URL`` for an
-#     internal index.
+#     Honors pip's standard ``PIP_INDEX_URL`` / ``PIP_EXTRA_INDEX_URL`` for a
+#     private or alternate index.
 #
 # With neither set, nothing installs and the image stays exactly the native base.
 set -euo pipefail

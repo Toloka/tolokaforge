@@ -11,7 +11,9 @@ Utility scripts for developing with Tolokaforge.
     │   ├── audit_preset_fallthrough.py         # Read-only audit: which models resolve to a shared preset that carries none of the budget knobs a sibling carries
     │   └── calibrate_rubric.sh                 # Calibrate a rubric judge against golden fixtures + apply the trust gate
     ├── docker/
-    │   └── prune-docker.sh                     # Reclaim Docker disk between many-trial runs (keeps layers held by running containers)
+    │   ├── build-orchestrator.sh               # Build the standalone orchestrator image (full `tolokaforge run` from one container)
+    │   ├── prune-docker.sh                     # Reclaim Docker disk between many-trial runs (keeps layers held by running containers)
+    │   └── run-orchestrator.sh                 # Drive a `tolokaforge run` batch through the orchestrator image (mounts config/tasks/.env, Docker-out-of-Docker)
     ├── hatch/
     │   └── hatch_runner_subset_builder.py     # Custom hatchling builder for the runner-subset wheel (Docker-only; hatch build --target custom)
     ├── setup/

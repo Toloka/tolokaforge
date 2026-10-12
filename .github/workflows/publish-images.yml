@@ -98,9 +98,9 @@ jobs:
             needs_wheel: true
           # The orchestrator is the only image with a wheel-extras selector: its
           # Dockerfile installs tolokaforge[${EXTRAS}] and defaults to dx (engine
-          # + CLI, native backend). Published as dx; an adapters variant is a
-          # later follow-up. It builds under context: ., which already carries the
-          # tolokaforge_models sibling its first stage compiles.
+          # + CLI, native backend); published with EXTRAS=dx. It builds under
+          # context: ., which already carries the tolokaforge_models sibling its
+          # first stage compiles.
           - image: orchestrator
             dockerfile: tolokaforge/docker/dockerfiles/orchestrator.Dockerfile
             needs_wheel: true
