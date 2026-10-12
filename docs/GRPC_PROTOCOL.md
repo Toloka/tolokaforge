@@ -749,6 +749,23 @@ the field the harness reads `None` and defers to the per-model cap alone. The
 field is proto3-`optional` so a runner that does not carry it sends nothing and
 the harness reads it as no per-tool cap declared, without a version bump.
 
+#### ToolSchema.mutates_state
+
+Each `ToolSchema` the runner returns in `RegisterTrialResponse.tool_schemas` may
+carry an optional `mutates_state: bool` — whether a call can change the graded
+state, as the tool's author declares it
+([ADR-0057](adr/0057-mutates-state-on-the-tool-wire.md)). The field is
+tri-state. The runner sets it only when the task description declares it: an
+MCP tool's `readOnlyHint` annotation read back by the native adapter, a
+builtin's `ToolPolicy.category` (`read` → `false`, `write` → `true`), the search
+tool's `false`, or an adapter's own sources. A tool that declares nothing leaves
+the field unset. The harness reads it back via `HasField("mutates_state")` and
+hands `None` on when it is unset; `None` is unknown and reads as mutating
+wherever the engine needs an answer, which is the behaviour every pack had
+before the field existed. The field is proto3-`optional`, so an older runner
+sends nothing and a newer harness reads every tool as undeclared, without a
+protocol version bump; nothing consumes the flag yet.
+
 ### ExecuteToolRequest/Response
 
 The tool execution flow:
