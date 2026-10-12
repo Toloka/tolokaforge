@@ -580,13 +580,13 @@ class TestTheConductorMustSupportTheMode:
         return orch
 
     def _build(self, orch: Orchestrator, tmp_path: Path) -> object:
-        with patch("tolokaforge.core.orchestrator.load_trial_grader", return_value=MagicMock()):
-            return orch._build_conductor(
+        with patch("tolokaforge.core.trial_node.load_trial_grader", return_value=MagicMock()):
+            return orch._build_trial_unit(
                 agent_client=MagicMock(),
                 runtime_backend=MagicMock(),
                 output_dir=tmp_path,
                 request_limiter=None,
-            )
+            ).conductor
 
     def test_the_in_process_conductor_declares_support(self) -> None:
         assert InProcessConductor.supports_rate_limit_probe is True

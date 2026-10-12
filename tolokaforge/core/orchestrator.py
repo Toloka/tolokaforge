@@ -41,12 +41,7 @@ from tolokaforge.core.budgets import (
     write_limit_hit_marker,
 )
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
-from tolokaforge.core.conductor import (
-    Conductor,
-    ConductorContext,
-    ConductorFactory,
-    require_rate_limit_probe_support,
-)
+from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
@@ -102,12 +97,9 @@ from tolokaforge.core.plugin_registry import (
     RAG_SERVICE_STACK_SERVICE,
     RegistryError,
     RuntimeBackendBuildContext,
-    TrialGraderContext,
     UnknownImplementationError,
     load_agent_loop,
-    load_conductor,
     load_runtime_backend,
-    load_trial_grader,
     load_user_simulator,
 )
 from tolokaforge.core.pricing import pricing_table_metadata, resolve_pricing
@@ -128,7 +120,11 @@ from tolokaforge.core.trial import (
     EnvironmentManifest,
     TrialSpec,
 )
-from tolokaforge.core.trial_executor import TrialExecutor
+from tolokaforge.core.trial_node import (
+    TrialExecutionContext,
+    TrialExecutionUnit,
+    build_trial_execution_unit,
+)
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.observability.factory import (
     RunIdentity,
@@ -820,12 +816,11 @@ class Orchestrator:
         self._previous_report_results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
-        # Trial graders whose ``close()`` must fire at run teardown. Populated
-        # by :meth:`_build_conductor`; drained in reverse order at the end of
-        # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
-        # (``queue``) shuts down cleanly regardless of the caller's flow.
-        # list[TrialGrader]; annotated bare to avoid a runtime import cycle.
-        self._trial_graders_to_close: list = []
+        # Trial execution units whose ``close()`` must fire at run teardown.
+        # Populated by :meth:`_build_trial_unit`; drained in reverse order at
+        # the end of :meth:`run` / :meth:`run_worker` so a broker + worker-pool
+        # grader (``queue``) shuts down cleanly regardless of the caller's flow.
+        self._trial_units_to_close: list[TrialExecutionUnit] = []
         # Shared per-trial writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
@@ -836,10 +831,6 @@ class Orchestrator:
         # ``None``, ``run()`` / ``run_worker()`` construct a default
         # :class:`SharedStackRuntimeBackend` from the resolved runner address — the
         # legacy behaviour. Tests / alternate backends inject via ``deps``.
-        # Per-trial executor: the orchestrator delegates each trial to a
-        # :class:`Conductor`. ``_build_conductor`` invokes the injected
-        # factory (typed against :class:`ConductorContext`) when one is
-        # supplied; otherwise it constructs :class:`InProcessConductor`.
         resolved_deps = deps if deps is not None else OrchestratorDeps()
         self._artifact_writer: TrialArtifactWriter = resolved_deps.artifact_writer
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
@@ -1137,108 +1128,55 @@ class Orchestrator:
             return True
         return False
 
-    def _build_conductor(
+    def _build_trial_unit(
         self,
         *,
         agent_client: LLMClient,
         runtime_backend: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
-    ) -> Conductor:
-        """Construct the per-trial executor for this run.
+    ) -> TrialExecutionUnit:
+        """Build this run's per-trial execution unit and register it for teardown.
 
-        Invokes the injected ``conductor_factory`` when one was supplied
-        on ``__init__``; otherwise defaults to a fresh :class:`InProcessConductor`
-        wired against the orchestrator's per-run dependencies.
-
-        Called once per ``run()`` / ``run_worker()`` invocation, after
-        the adapter is loaded, the artifact writer is initialised, and the
-        per-run wiring (LLM client, runtime backend, output directory,
-        rate limiter) is resolved. Raises ``RuntimeError`` if ``self.adapter``
-        is unset — surfaces a clear failure rather than propagating ``None``
-        into the Conductor's body (where it would crash deep in ``run()``).
-
-        Also the single choke point where rate-limit probe mode's two halves
-        meet: the orchestrator arms the agent client, but the simulator probe,
-        the per-task budget re-check and the telemetry accumulator belong to the
-        conductor. A conductor that does not declare support gets a raise here,
-        because the alternative is a run that really absorbs 429s while its
-        artifacts read all-default — see
-        :func:`~tolokaforge.core.conductor.require_rate_limit_probe_support`.
+        Called once per ``run()`` / ``run_worker()`` invocation, after the
+        adapter is loaded, the artifact writer is initialised, and the
+        per-run wiring (LLM client, runtime backend, output directory, rate
+        limiter) is resolved. Raises ``RuntimeError`` if ``self.adapter`` is
+        unset. The unit is closed by :meth:`_close_trial_units`.
         """
         if self.adapter is None:
             raise RuntimeError(
-                "Conductor cannot be built before the adapter is loaded. "
+                "Trial execution unit cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        # ``None`` when the backend has no runner surface (in-memory / test,
-        # or ``PerTrialRuntimeBackend`` — each trial owns its own runner
-        # endpoint so no single address applies); the built-in
-        # address-needing factories (``grader_rpc``, ``queue``) raise loudly
-        # when they observe it. Downstream graders that do not need a
-        # network address receive the ``None`` verbatim and ignore it, and
-        # ``runner_rpc`` picks the ``runtime_backend`` dispatch path below
-        # instead of dialling.
-        runner_address = getattr(runtime_backend, "runner_address", None)
-        # ``config.grader.name`` overrides the adapter's default for this
-        # run; the queue subblock rides the same context so
-        # ``queue_trial_grader_factory`` can build its broker + worker pool
-        # without a second config lookup. Absent block keeps every existing
-        # run's behaviour.
-        grader_config = self.config.grader
-        grader_name = (
-            grader_config.name if grader_config and grader_config.name else None
-        ) or self.adapter.trial_grader_name
-        # In-process routing shim: only populated when the backend has no
-        # static runner endpoint (``PerTrialRuntimeBackend`` — each trial
-        # owns its own endpoint). Shared-stack keeps its address-only,
-        # orchestrator-independent grader client so ADR-0038's seam
-        # invariant is preserved for every case that can honour it.
-        in_process_backend_shim = runtime_backend if runner_address is None else None
-        trial_grader = load_trial_grader(grader_name)(
-            TrialGraderContext(
-                runner_address=runner_address,
+        # Drain any leftover from a prior aborted run on this orchestrator
+        # instance before recording the fresh unit — a re-entered ``run()``
+        # on the same instance must never close a stale grader from the
+        # previous attempt.
+        if self._trial_units_to_close:
+            self._close_trial_units()
+        unit = build_trial_execution_unit(
+            TrialExecutionContext(
+                adapter=self.adapter,
+                artifact_writer=self._artifact_writer,
+                config=self.config,
                 logger=self.logger,
-                grader_config=grader_config,
-                runtime_backend=in_process_backend_shim,
+                verbose=self.verbose,
+                strict=self.strict,
+                agent_client=agent_client,
+                runtime_backend=runtime_backend,
+                output_dir=output_dir,
+                request_limiter=request_limiter,
+                events=self._events,
+                trial_observer=self._trial_observer,
+                run_identity=self._run_identity,
+                conductor_factory=self._conductor_factory,
+                grader_config=self.config.grader,
                 grpc_max_message_mb=self._grpc_max_message_mb(),
             )
         )
-        # Drain any leftover from a prior aborted run on this orchestrator
-        # instance before recording the fresh grader — a re-entered ``run()``
-        # on the same instance must never close a stale grader from the
-        # previous attempt.
-        if self._trial_graders_to_close:
-            self._close_trial_graders()
-        self._trial_graders_to_close.append(trial_grader)
-
-        ctx = ConductorContext(
-            adapter=self.adapter,
-            artifact_writer=self._artifact_writer,
-            config=self.config,
-            logger=self.logger,
-            verbose=self.verbose,
-            strict=self.strict,
-            agent_client=agent_client,
-            runtime_backend=runtime_backend,
-            trial_grader=trial_grader,
-            output_dir=output_dir,
-            request_limiter=request_limiter,
-            events=self._events,
-            trial_observer=self._trial_observer,
-            run_identity=self._run_identity,
-        )
-        factory = self._conductor_factory or load_conductor("in_process")
-        conductor = factory(ctx)
-        # Conductors are a plugin group, so the resolved implementation may be
-        # anything a downstream package registered — and the agent client handed
-        # in above is already armed.
-        require_rate_limit_probe_support(
-            conductor,
-            self.config.orchestrator.rate_limit_probe,
-            source="orchestrator",
-        )
-        return conductor
+        self._trial_units_to_close.append(unit)
+        return unit
 
     def _task_description(self, task_id: str) -> TaskDescription:
         """The task's wire-format description, resolved once per adapter configuration.
@@ -1818,40 +1756,6 @@ class Orchestrator:
                 "load its result into the daemon (buildx without `--load`) produces "
                 "this; point DOCKER_BUILDKIT / the compose builder at the local store."
             )
-
-    def _build_trial_executor(
-        self,
-        runtime_backend: RuntimeBackend,
-        conductor: Conductor,
-        output_dir: Path,
-    ) -> TrialExecutor:
-        """Compose the per-run :class:`TrialExecutor` (ADR-0015).
-
-        The executor owns the per-trial substrate lifecycle bracket
-        (``provision`` / ``await_ready`` / ``endpoints`` / ``teardown``)
-        around ``conductor.run``. The orchestrator submits
-        ``trial_executor.execute`` to the worker pool in place of
-        ``conductor.run``; the bracket runs on the worker thread so
-        provisioning parallelism equals worker count.
-
-        Threads :attr:`_events` in so the executor can fire
-        ``trial_provisioned`` after :meth:`RuntimeBackend.await_ready`
-        returns — the runtime is the only place with a handle on the
-        materialised infrastructure snapshot.
-
-        ``output_dir`` is the run's output root, threaded so the executor can
-        amend a trial's ``metrics.yaml`` with host-side per-trial values.
-        """
-        from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
-
-        return ProvisioningTrialExecutor(
-            runtime_backend=runtime_backend,
-            conductor=conductor,
-            logger=self.logger,
-            output_dir=output_dir,
-            artifact_writer=self._artifact_writer,
-            events=self._events,
-        )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
         """Refuse to start the run when the runtime backend's composer
@@ -3337,23 +3241,19 @@ class Orchestrator:
                 runner_url=env_endpoints.runner_url,
             )
 
-        conductor = self._build_conductor(
+        trial_unit = self._build_trial_unit(
             agent_client=agent_client,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        # ``try/finally`` from here to the run's return guarantees the
-        # grader teardown (broker close + worker join, gRPC channel close)
-        # fires even when the trial loop or a mid-run cleanup raises. The
+        # ``try/finally`` from here to the run's return guarantees the trial
+        # unit teardown (its grader's broker close + worker join, gRPC channel
+        # close) fires even when the trial loop or a mid-run cleanup raises. The
         # rest of the existing sequential teardown lives inside the try
-        # body — a mid-run exception still surfaces to the caller after
-        # the grader is closed.
+        # body — a mid-run exception still surfaces to the caller after the
+        # units are closed.
         try:
-            trial_executor = self._build_trial_executor(
-                runtime_backend, conductor, output_dir=output_dir
-            )
-
             executor_healthy = runtime_backend.health_check()
             self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
@@ -3482,7 +3382,7 @@ class Orchestrator:
                             retryable=False,
                         )
                         return True
-                    future = executor.submit(trial_executor.execute, spec, task)
+                    future = executor.submit(trial_unit.execute, spec, task)
                     active_futures[future] = lease
                     return True
 
@@ -3693,7 +3593,7 @@ class Orchestrator:
             # Flush the live traces on every exit path (an exception or Ctrl-C included): the
             # export thread is a daemon and would otherwise die with the last batch unsent.
             self._finish_tracing(output_dir)
-            self._close_trial_graders()
+            self._close_trial_units()
 
     def _finish_tracing(self, output_dir: Path) -> None:
         """Flush and close the run's trial observer; the export receipt lands in the run
@@ -3715,28 +3615,21 @@ class Orchestrator:
         else:
             self.logger.info("Live tracing export complete", **summary)
 
-    def _close_trial_graders(self) -> None:
-        """Release every ``TrialGrader`` built during this orchestrator's
+    def _close_trial_units(self) -> None:
+        """Release every trial execution unit built during this orchestrator's
         lifetime, in reverse construction order.
 
         The queue transport owns a broker + a worker pool that must shut
         down before the process exits, and the ``grader_rpc`` transport
-        owns a gRPC channel. Every built-in Protocol implementation ships
-        a ``close()`` (a noop for the transport-less ones); a downstream
-        registered grader that lacks one is tolerated so an old
-        registration does not fail a new run at teardown.
+        owns a gRPC channel; closing a unit releases its grader's transport.
         """
-        while self._trial_graders_to_close:
-            grader = self._trial_graders_to_close.pop()
-            close = getattr(grader, "close", None)
-            if not callable(close):
-                continue
+        while self._trial_units_to_close:
+            unit = self._trial_units_to_close.pop()
             try:
-                close()
+                unit.close()
             except Exception as exc:  # noqa: BLE001 — teardown must survive
                 self.logger.warning(
-                    "Trial grader close() raised",
-                    grader=type(grader).__name__,
+                    "Trial execution unit close() raised",
                     error=str(exc),
                 )
 
@@ -3835,14 +3728,11 @@ class Orchestrator:
             runner_url=env_endpoints.runner_url,
         )
 
-        conductor = self._build_conductor(
+        trial_unit = self._build_trial_unit(
             agent_client=agent_client,
             runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
-        )
-        trial_executor = self._build_trial_executor(
-            runtime_backend, conductor, output_dir=output_dir
         )
 
         task_by_id = {task.task_id: task for task in self.tasks}
@@ -3921,7 +3811,7 @@ class Orchestrator:
                         judge_config=judge_config,
                         env_endpoints=env_endpoints,
                     )
-                    trial_result = trial_executor.execute(spec, task)
+                    trial_result = trial_unit.execute(spec, task)
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
                     trial_cost = self._trial_total_spend_usd(trajectory)
@@ -3974,7 +3864,7 @@ class Orchestrator:
             # teardown; each failure is logged rather than raised so the
             # outer flow still surfaces the original exception.
             self._finish_tracing(output_dir)
-            self._close_trial_graders()
+            self._close_trial_units()
 
         self._publish_grading_completeness()
         summary = {
