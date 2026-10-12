@@ -12,13 +12,6 @@ build/
 **/build/
 *.egg
 
-# Secrets — never copy a credential file into a build layer. Keep the
-# .env.example templates (they carry no real secrets).
-.env
-**/.env
-!.env.example
-!**/.env.example
-
 # Virtual environments
 venv/
 env/

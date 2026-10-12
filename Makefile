@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-build-orchestrator docker-up docker-down docker-status help cbm-onboard cbm-offboard
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-build-standalone docker-up docker-down docker-status help cbm-onboard cbm-offboard
 
 # =============================================================================
 # Installation (using uv)
@@ -39,7 +39,7 @@ test-coverage:
 # =============================================================================
 
 # Directories to lint/format (contrib/ excluded - external libraries)
-LINT_DIRS = tolokaforge tests scripts tools
+LINT_DIRS = tolokaforge tests scripts tools tolokaforge_models tolokaforge_langfuse tolokaforge_coding_harnesses
 
 # Check linting (no fix) - CI ready, exits non-zero on issues
 lint:
@@ -69,14 +69,10 @@ docker-build:
 docker-build-core:
 	uv run tolokaforge docker build --core
 
-# Standalone orchestrator image — the full `tolokaforge run` batch driver.
-# Builds the engine wheel + the image via the build script (see
-# docs/ORCHESTRATOR_IMAGE.md). ORCHESTRATOR_TAG/ORCHESTRATOR_EXTRAS override the
-# defaults (tolokaforge-orchestrator:local, dx).
-ORCHESTRATOR_TAG ?= tolokaforge-orchestrator:local
-ORCHESTRATOR_EXTRAS ?= dx
-docker-build-orchestrator:
-	scripts/docker/build-orchestrator.sh -t $(ORCHESTRATOR_TAG) -e $(ORCHESTRATOR_EXTRAS)
+# All-in-one (single-image, multi-service) image. Built on demand — it bundles
+# every service, so it is not part of the default `docker-build` sweep.
+docker-build-standalone:
+	uv run tolokaforge docker build --service standalone
 
 docker-up:
 	uv run tolokaforge docker up --profile core
@@ -161,7 +157,7 @@ help:
 	@echo "Docker:"
 	@echo "  make docker-build       - Build all Docker images"
 	@echo "  make docker-build-core  - Build core images only (db-service + runner)"
-	@echo "  make docker-build-orchestrator - Build the standalone orchestrator image (full tolokaforge run)"
+	@echo "  make docker-build-standalone - Build the all-in-one single-container image"
 	@echo "  make docker-up          - Start Docker services (core stack)"
 	@echo "  make docker-down        - Stop and remove Docker services"
 	@echo "  make docker-status      - Show Docker service status"
