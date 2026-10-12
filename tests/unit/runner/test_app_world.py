@@ -497,6 +497,21 @@ def test_a_trial_that_diverged_from_the_golden_path_fails_its_hash(
     assert graded.grade.binary_pass is False
 
 
+def test_a_trials_credentials_are_forgotten_with_the_trial(
+    trial: _Trial, world: FakeAppWorld, world_url: str
+) -> None:
+    trial.register(_description(world_url))
+    minted = {world.admin_token, *world.callers}
+    names = [name for name in get_default().list_all_keys() if name.startswith("APP_WORLD_")]
+    assert len(names) == 3
+    assert minted <= get_default().known_values()
+
+    trial.runner.CleanupTrial(pb2.CleanupTrialRequest(trial_id=trial.trial_id), trial.context)
+
+    assert not [name for name in get_default().list_all_keys() if name.startswith("APP_WORLD_")]
+    assert not minted & get_default().known_values()
+
+
 def test_a_world_claimed_by_someone_else_fails_registration(
     trial: _Trial, world: FakeAppWorld, world_url: str
 ) -> None:
@@ -508,6 +523,7 @@ def test_a_world_claimed_by_someone_else_fails_registration(
     assert "another admin token was bound first" in response.error
     assert trial.trial_id not in trial.runner.trials
     assert world.tables is None
+    assert not [name for name in get_default().list_all_keys() if name.startswith("APP_WORLD_")]
 
 
 def test_no_credential_reaches_a_host_outside_the_world(

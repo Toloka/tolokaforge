@@ -21,7 +21,9 @@ The administration protocol, behind ``X-Admin-Token``:
 ``503`` until tables are loaded.
 
 Every minted value is admitted with :func:`register_runtime_secret` before it is
-sent anywhere, so the process-wide log redactor masks it from then on.
+sent anywhere, so the process-wide log redactor masks it from then on, and
+forgotten again when the client closes with the trial: a token that died with its
+service is not worth an entry in the process-wide manager for the runner's lifetime.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ import httpx
 
 from tolokaforge.runner.models import AppWorldActor, AppWorldConfig
 from tolokaforge.runner.tool_factory import BuiltinGenericToolWrapper
-from tolokaforge.secrets import register_runtime_secret
+from tolokaforge.secrets import forget_runtime_secret, register_runtime_secret
 
 ADMIN_TOKEN_HEADER = "X-Admin-Token"
 
@@ -72,6 +74,8 @@ class AppWorldCredentials:
 
     admin_token: str
     bearer_by_actor: Mapping[AppWorldActor, str]
+    secret_names: tuple[str, ...]
+    """The names the tokens are registered under, to forget with the trial."""
 
     def callers(self, actors: Mapping[AppWorldActor, str | None]) -> dict[str, str | None]:
         """The ``{token: caller}`` body of ``PUT /_admin/tokens``."""
@@ -85,11 +89,13 @@ def mint_credentials(actors: Mapping[AppWorldActor, str | None]) -> AppWorldCred
     ``CleanupTrial`` with new values, and one name never takes two values.
     """
     nonce = secrets.token_hex(8)
-    admin_token = _admitted(f"APP_WORLD_{nonce}_ADMIN_TOKEN")
-    bearer_by_actor = {
-        actor: _admitted(f"APP_WORLD_{nonce}_{actor.upper()}_TOKEN") for actor in actors
-    }
-    return AppWorldCredentials(admin_token=admin_token, bearer_by_actor=bearer_by_actor)
+    names = {actor: f"APP_WORLD_{nonce}_{actor.upper()}_TOKEN" for actor in actors}
+    admin_name = f"APP_WORLD_{nonce}_ADMIN_TOKEN"
+    return AppWorldCredentials(
+        admin_token=_admitted(admin_name),
+        bearer_by_actor={actor: _admitted(name) for actor, name in names.items()},
+        secret_names=(admin_name, *names.values()),
+    )
 
 
 def _admitted(name: str) -> str:
@@ -99,19 +105,24 @@ def _admitted(name: str) -> str:
 
 
 class AppWorldClient:
-    """Administers one trial's world service: claim, load, read back, restore."""
+    """Administers one trial's world service: claim, load, read back, restore.
+
+    Holds the trial's credentials and, on :meth:`close`, forgets them: the tokens
+    are the service's for the trial's lifetime and nothing else's.
+    """
 
     def __init__(
         self,
         config: AppWorldConfig,
-        admin_token: str,
+        credentials: AppWorldCredentials,
         *,
         timeout_s: float = ADMIN_TIMEOUT_S,
     ) -> None:
         self.config = config
+        self._secret_names = credentials.secret_names
         self._client = httpx.Client(
             base_url=config.url,
-            headers={ADMIN_TOKEN_HEADER: admin_token},
+            headers={ADMIN_TOKEN_HEADER: credentials.admin_token},
             timeout=timeout_s,
         )
 
@@ -150,7 +161,10 @@ class AppWorldClient:
         self._call("PUT", "/_admin/tables", dict(initial_state))
 
     def close(self) -> None:
+        """Close the connection and forget the trial's credentials."""
         self._client.close()
+        for name in self._secret_names:
+            forget_runtime_secret(name)
 
     def _call(self, method: str, path: str, payload: Any = None) -> Any:
         response = self._send(method, path, payload)
@@ -192,7 +206,7 @@ def open_app_world(
     """
     http_tools = {actor: _http_request_tool(actor, tools_by_actor) for actor in config.actors}
     credentials = mint_credentials(config.actors)
-    client = AppWorldClient(config, credentials.admin_token)
+    client = AppWorldClient(config, credentials)
     try:
         client.claim(credentials.callers(config.actors))
         client.reset_state(tables)

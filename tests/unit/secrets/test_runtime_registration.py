@@ -20,6 +20,7 @@ from tolokaforge.secrets import (
     RuntimeSecretConflictError,
     RuntimeSecretProvider,
     SecretManager,
+    forget_runtime_secret,
     get_default,
     init_default_from,
     register_runtime_secret,
@@ -184,3 +185,56 @@ def test_registering_an_empty_value_raises(tmp_path: Path) -> None:
         register_runtime_secret("TYPESENSE_API_KEY", "")
 
     assert get_default().get_secret("TYPESENSE_API_KEY") == "real-from-dotenv"
+
+
+def test_a_forgotten_key_resolves_nowhere_and_frees_its_name(tmp_path: Path) -> None:
+    init_default_from(_dotenv_manager(tmp_path, "OPENROUTER_API_KEY=sk-from-dotenv\n"))
+    register_runtime_secret("TYPESENSE_API_KEY", GENERATED)
+    register_runtime_secret("OTHER_RUNTIME_TOKEN", "second-runtime-value")
+
+    forget_runtime_secret("TYPESENSE_API_KEY")
+
+    assert get_default().get_secret("TYPESENSE_API_KEY") is None
+    assert "TYPESENSE_API_KEY" not in get_default().list_all_keys()
+    assert get_default().get_secret("OTHER_RUNTIME_TOKEN") == "second-runtime-value"
+    assert get_default().get_secret("OPENROUTER_API_KEY") == "sk-from-dotenv"
+    register_runtime_secret("TYPESENSE_API_KEY", "A-SECOND-SERVER-KEY")
+    assert get_default().get_secret("TYPESENSE_API_KEY") == "A-SECOND-SERVER-KEY"
+
+
+def test_forgetting_the_last_runtime_key_restores_the_configured_chain(tmp_path: Path) -> None:
+    init_default_from(_dotenv_manager(tmp_path, "OPENROUTER_API_KEY=sk-from-dotenv\n"))
+    register_runtime_secret("TYPESENSE_API_KEY", GENERATED)
+
+    forget_runtime_secret("TYPESENSE_API_KEY")
+
+    assert [type(p) for p in get_default().providers] == [DotEnvProvider, EnvProvider]
+    assert get_default().get_secret("OPENROUTER_API_KEY") == "sk-from-dotenv"
+
+
+def test_forgetting_a_key_never_registered_is_a_no_op(tmp_path: Path) -> None:
+    init_default_from(_dotenv_manager(tmp_path, "TYPESENSE_API_KEY=real-from-dotenv\n"))
+    before = get_default()
+
+    assert forget_runtime_secret("TYPESENSE_API_KEY") is before
+    assert get_default().get_secret("TYPESENSE_API_KEY") == "real-from-dotenv"
+
+
+def test_a_forgotten_value_leaves_the_warm_scrub_set(restore_log_record_factory) -> None:
+    """The redactor's cache is keyed by manager identity; forgetting must refresh it too."""
+    init_default_from(SecretManager.from_dict({}))
+    install_global_redactor()
+    logger, buf = _capturing_logger("tolokaforge.test.runtime_forgetting")
+    register_runtime_secret("TYPESENSE_API_KEY", GENERATED)
+    logger.info("while registered: %s", GENERATED)
+
+    forget_runtime_secret("TYPESENSE_API_KEY")
+    logger.info("once forgotten: %s", GENERATED)
+    for handler in logger.handlers:
+        handler.flush()
+
+    assert buf.getvalue().splitlines() == [
+        f"while registered: {PLACEHOLDER}",
+        f"once forgotten: {GENERATED}",
+    ]
+    assert get_default().known_values() == frozenset()
