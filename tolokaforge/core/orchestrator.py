@@ -760,8 +760,8 @@ class GradingCompleteness:
     def zero_coverage(self) -> bool:
         """No trial produced an agent-measured verdict on a run that had trials.
 
-        Two triggers, both fail-loud on the CLI when
-        ``--fail-on-zero-coverage`` is set: nothing reached the measurement
+        Two triggers, both fail-loud on the CLI unless
+        ``orchestrator.fail_on_zero_coverage`` is set to ``false``: nothing reached the measurement
         point (``measured_trials == 0``), or every measurement was a
         harness-synthesised auto-fail from
         ``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``

@@ -13,10 +13,15 @@ from tolokaforge.core.orchestrator import GradingCompleteness
 
 
 def complete_run(total_attempts: int = 0) -> GradingCompleteness:
-    """A run that produced a verdict for every attempt it made.
+    """A run that produced a measured, scored verdict for every attempt it made.
 
     The default of zero attempts is what a stub whose ``run()`` only returns a
     path honestly ran. A test asserting about the gate itself passes the count
     it means.
     """
-    return GradingCompleteness(total_attempts=total_attempts, ungradeable_trial_ids=())
+    return GradingCompleteness(
+        total_attempts=total_attempts,
+        ungradeable_trial_ids=(),
+        measured_trials=total_attempts,
+        scored_trials=total_attempts,
+    )
